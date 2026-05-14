@@ -113,13 +113,13 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 		}
 	}
 
-	// PRISM_SESSION_NAME should appear before the opencode binary.
-	opencodeIdx := strings.Index(cmd, "opencode ")
+	// PRISM_SESSION_NAME should appear before the pi binary.
+	opencodeIdx := strings.Index(cmd, "pi ")
 	if opencodeIdx == -1 {
-		t.Fatalf("opencode command not found in cmd: %q", cmd)
+		t.Fatalf("pi command not found in cmd: %q", cmd)
 	}
 	if sessionIdx > opencodeIdx {
-		t.Errorf("PRISM_SESSION_NAME (at %d) should appear before opencode (at %d) in cmd: %q",
+		t.Errorf("PRISM_SESSION_NAME (at %d) should appear before pi (at %d) in cmd: %q",
 			sessionIdx, opencodeIdx, cmd)
 	}
 
@@ -212,13 +212,13 @@ func TestBuildOpencodeCmd_HostMode(t *testing.T) {
 	}
 	cmd := BuildOpencodeCmd(opts)
 	if strings.HasPrefix(cmd, "podman") {
-		t.Errorf("host mode: got podman command %q, want direct opencode invocation", cmd)
+		t.Errorf("host mode: got podman command %q, want direct pi invocation", cmd)
 	}
 	if strings.HasPrefix(cmd, "prism agent-run") {
-		t.Errorf("host mode: got prism agent-run command %q, want direct opencode invocation", cmd)
+		t.Errorf("host mode: got prism agent-run command %q, want direct pi invocation", cmd)
 	}
-	if !strings.Contains(cmd, "opencode") {
-		t.Errorf("host mode: cmd does not contain 'opencode': %q", cmd)
+	if !strings.Contains(cmd, "pi") {
+		t.Errorf("host mode: cmd does not contain 'pi': %q", cmd)
 	}
 }
 
@@ -232,10 +232,10 @@ func TestBuildOpencodeCmd_EmptyIsolationMode(t *testing.T) {
 	}
 	cmd := BuildOpencodeCmd(opts)
 	if strings.HasPrefix(cmd, "podman attach") {
-		t.Errorf("empty IsolationMode: got podman command %q, want direct opencode invocation", cmd)
+		t.Errorf("empty IsolationMode: got podman command %q, want direct pi invocation", cmd)
 	}
-	if !strings.Contains(cmd, "opencode") {
-		t.Errorf("empty IsolationMode: cmd does not contain 'opencode': %q", cmd)
+	if !strings.Contains(cmd, "pi") {
+		t.Errorf("empty IsolationMode: cmd does not contain 'pi': %q", cmd)
 	}
 }
 
@@ -632,8 +632,8 @@ func TestHarnessBinary(t *testing.T) {
 		want    string
 	}{
 		{"pi", "pi"},
-		{"opencode", "opencode"},
-		{"", "opencode"},
+		{"", "pi"},
+		{"other", "other"},
 	}
 	for _, tc := range tests {
 		got := harnessBinary(tc.harness)

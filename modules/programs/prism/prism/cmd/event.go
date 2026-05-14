@@ -357,7 +357,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 				groupID = currentStatus.GroupID
 				rootAgentName = currentStatus.RootAgentName
 			}
-			harness := "opencode"
+			harness := "pi"
 			if currentStatus != nil && currentStatus.Harness != nil {
 				harness = *currentStatus.Harness
 			}

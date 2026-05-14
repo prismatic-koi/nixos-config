@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS agent_status (
   instance_id       TEXT,
   last_seen         INTEGER NOT NULL,
   ended_at          INTEGER,
-  harness           TEXT NOT NULL DEFAULT 'opencode',
+  harness           TEXT NOT NULL DEFAULT 'pi',
   harness_session_id TEXT,
   harness_port      INTEGER,
   group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -653,14 +653,14 @@ func migrateV7toV8(conn *sql.DB, version *int) error {
 		return nil
 	}
 	// Migration v7 → v8: add harness columns to agent_status for multi-harness
-	// support (RFC #691). harness defaults to 'opencode' so existing rows
+	// support (RFC #691). harness defaults to 'pi' so existing rows
 	// retain their implicit harness assignment without data loss.
 	// harness_session_id and harness_port are nullable parallels of
 	// opencode_sid and opencode_port; both old and new columns are written
 	// simultaneously (dual-write) from this schema version onward.
 	// Additive — existing rows are unaffected.
 	migrations := []string{
-		"ALTER TABLE agent_status ADD COLUMN harness TEXT NOT NULL DEFAULT 'opencode'",
+		"ALTER TABLE agent_status ADD COLUMN harness TEXT NOT NULL DEFAULT 'pi'",
 		"ALTER TABLE agent_status ADD COLUMN harness_session_id TEXT",
 		"ALTER TABLE agent_status ADD COLUMN harness_port INTEGER",
 		"UPDATE schema_version SET version = 8",
@@ -729,7 +729,7 @@ func migrateV8toV9(conn *sql.DB, version *int) error {
 			  instance_id       TEXT,
 			  last_seen         INTEGER NOT NULL,
 			  ended_at          INTEGER,
-			  harness           TEXT NOT NULL DEFAULT 'opencode',
+			  harness           TEXT NOT NULL DEFAULT 'pi',
 			  harness_session_id TEXT,
 			  harness_port      INTEGER,
 			  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -1023,7 +1023,7 @@ func migrateV15toV16(conn *sql.DB, version *int) error {
 	// INSERT OR IGNORE makes this idempotent.
 	backfillRows, err := conn.Query(`
 		SELECT session_name, instance_id, repo, worktree,
-		       COALESCE(harness, 'opencode'),
+		       COALESCE(harness, 'pi'),
 		       harness_session_id, group_id, root_agent_name
 		  FROM agent_status
 		 WHERE ended_at IS NULL
@@ -1553,7 +1553,7 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 				  instance_id       TEXT,
 				  last_seen         INTEGER NOT NULL,
 				  ended_at          INTEGER,
-				  harness           TEXT NOT NULL DEFAULT 'opencode',
+				  harness           TEXT NOT NULL DEFAULT 'pi',
 				  harness_session_id TEXT,
 				  harness_port      INTEGER,
 				  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL

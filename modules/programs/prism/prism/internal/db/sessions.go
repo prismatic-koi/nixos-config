@@ -91,11 +91,11 @@ func (d *DB) querySessions(q string, args ...any) ([]Session, error) {
 // the instance_id is minted (or confirmed) for the session.
 //
 // Fields not yet known at session-start time (ended_at, end_state,
-// archive_path) are stored as NULL. The harness field defaults to "opencode"
+// archive_path) are stored as NULL. The harness field defaults to "pi"
 // when empty. Inserting a duplicate instance_id is a no-op (INSERT OR IGNORE).
 func (d *DB) InsertSession(s Session) error {
 	if s.Harness == "" {
-		s.Harness = "opencode"
+		s.Harness = "pi"
 	}
 	if s.StartedAt.IsZero() {
 		s.StartedAt = time.Now()

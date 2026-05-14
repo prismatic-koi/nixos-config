@@ -32,7 +32,7 @@ func buildAbtestCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
 	cmd.Flags().Bool("attach", false, "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	cmd.Flags().StringArray("model-override", nil, "")
 	cmd.Flags().String("isolation", "", "")
 	cmd.Flags().Bool("ignore-concurrency-cap", false, "")

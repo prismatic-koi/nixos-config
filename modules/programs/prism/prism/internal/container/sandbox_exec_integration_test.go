@@ -237,14 +237,14 @@ func TestSandboxExecIntegration_WhichOpencode(t *testing.T) {
 		t.Skip("sandbox-exec not available")
 	}
 	// Only run this test if opencode is resolvable in PATH.
-	whichOut, err := exec.Command("/usr/bin/which", "opencode").Output()
+	whichOut, err := exec.Command("/usr/bin/which", "pi").Output()
 	if err != nil || strings.TrimSpace(string(whichOut)) == "" {
 		t.Skip("opencode not in PATH — skipping which test")
 	}
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/which", "opencode")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/which", "pi")
 	if code != 0 {
 		t.Errorf("/usr/bin/which opencode: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -284,7 +284,7 @@ func TestSandboxExecIntegration_OpencodeNoSIGABRT(t *testing.T) {
 		t.Skip("sandbox-exec not available")
 	}
 	// Find opencode in PATH.
-	opencodePath, err := exec.LookPath("opencode")
+	opencodePath, err := exec.LookPath("pi")
 	if err != nil || opencodePath == "" {
 		t.Skip("opencode not in PATH — skipping opencode SIGABRT test")
 	}

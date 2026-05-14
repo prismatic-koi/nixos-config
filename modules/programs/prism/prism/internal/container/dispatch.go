@@ -9,7 +9,7 @@
 //
 //   - Available()                 — D1: replaces checkBwrapPlatform / checkSandboxExecPlatform / CheckAvailability
 //   - Cap()                       — D2: replaces checkConcurrencyCap / checkBwrapConcurrencyCap / checkSandboxExecConcurrencyCap dispatch
-//   - WriteHarnessConfigBlob()    — D3: replaces the NeedsConfigBlob && configContent != "" / WriteOpencodeConfig sites
+//   - WriteHarnessConfigBlob()    — D3: replaces the NeedsConfigBlob && configContent != "" / WriteHarnessConfig sites
 //   - AgentPaneCmd()              — D4: replaces the BuildOpencodeCmd switch in internal/session/session.go
 //   - SidecarFlags()              — D5: replaces the per-mode argv builder in internal/session/sidecar.go
 //   - ArchivePaths()              — D6: replaces the per-mode resolveStorageRoot switch in internal/archive/archive.go (stopgap pending #1142)
@@ -222,7 +222,7 @@ type AgentPaneOpts struct {
 // internal/container (which would create a circular dependency).
 type ArchivePaths struct {
 	// StorageRoot is the host-side opencode storage root for this session.
-	// For host/bwrap/sandbox-exec: $HOME/.local/share/opencode/storage.
+	// For host/bwrap/sandbox-exec: $HOME/.local/share/pi/storage.
 	StorageRoot string
 
 	// ExtraFiles are absolute host paths that the archive should copy
@@ -294,7 +294,7 @@ func (b *bwrapIsolator) WriteHarnessConfigBlob(sessionName, content string) erro
 	if content == "" {
 		return nil
 	}
-	return WriteOpencodeConfig(NameForSession(sessionName), content)
+	return WriteHarnessConfig(NameForSession(sessionName), content)
 }
 
 // AgentPaneCmd returns the tmux pane command for bwrap: "prism agent-run
@@ -378,7 +378,7 @@ func (s *sandboxExecIsolator) WriteHarnessConfigBlob(sessionName, content string
 	if content == "" {
 		return nil
 	}
-	return WriteOpencodeConfig(NameForSession(sessionName), content)
+	return WriteHarnessConfig(NameForSession(sessionName), content)
 }
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
@@ -506,11 +506,10 @@ func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 	return out
 }
 
-// archiveSharedStorageRoot returns the host-side shared opencode storage root
-// used by host / bwrap / sandbox-exec. Mirrors the pre-refactor branch in
-// internal/archive/archive.go:267-268.
+// archiveSharedStorageRoot returns the host-side shared pi storage root
+// used by host / bwrap / sandbox-exec.
 func archiveSharedStorageRoot(home string) string {
-	return filepath.Join(home, ".local", "share", "opencode", "storage")
+	return filepath.Join(home, ".local", "share", "pi", "storage")
 }
 
 // archiveAgentRunLogPaths returns the agent-run log path for the named

@@ -1942,9 +1942,9 @@ func TestMigration_V7ToV11(t *testing.T) {
 		t.Errorf("HarnessPort after migration: got %v, want 14000 (back-filled from opencode_port)", s.HarnessPort)
 	}
 
-	// harness column must default to 'opencode' for rows written before migration.
-	if s.Harness == nil || *s.Harness != "opencode" {
-		t.Errorf("Harness: got %v, want \"opencode\" (default for pre-migration rows)", s.Harness)
+	// harness column must default to 'pi' for rows written before migration.
+	if s.Harness == nil || *s.Harness != "pi" {
+		t.Errorf("Harness: got %v, want 'pi' (default for pre-migration rows)", s.Harness)
 	}
 
 	// Second row (repo@feat) must also be preserved.
@@ -1958,8 +1958,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if sf.State != "finished" {
 		t.Errorf("State preserved for repo@feat: got %q, want \"finished\"", sf.State)
 	}
-	if sf.Harness == nil || *sf.Harness != "opencode" {
-		t.Errorf("Harness for repo@feat: got %v, want \"opencode\"", sf.Harness)
+	if sf.Harness == nil || *sf.Harness != "pi" {
+		t.Errorf("Harness for repo@feat: got %v, want 'pi'", sf.Harness)
 	}
 
 	// UpdateHarnessSessionID must unconditionally overwrite harness_session_id.
@@ -2425,7 +2425,7 @@ func TestMigration_V8ToV9(t *testing.T) {
 		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
 		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
 		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT, harness_port INTEGER
 		);
 		CREATE TABLE IF NOT EXISTS bus_messages (
@@ -2437,7 +2437,7 @@ func TestMigration_V8ToV9(t *testing.T) {
 		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 		INSERT INTO schema_version (version) VALUES (8);
 		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
-		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'pi', 0);
 	`)
 	rawConn.Close()
 	if err != nil {
@@ -2513,7 +2513,7 @@ func TestMigration_V9ToV10(t *testing.T) {
 		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
 		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
 		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT, harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
 		);
@@ -2526,7 +2526,7 @@ func TestMigration_V9ToV10(t *testing.T) {
 		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 		INSERT INTO schema_version (version) VALUES (9);
 		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
-		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'pi', 0);
 	`)
 	rawConn.Close()
 	if err != nil {
@@ -3142,7 +3142,7 @@ func seedV8DB(t *testing.T, dbPath string) {
 		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
 		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
 		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT, harness_port INTEGER
 		);
 		CREATE TABLE IF NOT EXISTS bus_messages (
@@ -3154,7 +3154,7 @@ func seedV8DB(t *testing.T, dbPath string) {
 		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 		INSERT INTO schema_version (version) VALUES (8);
 		INSERT INTO agent_status (session_name, repo, worktree, state, harness, last_seen)
-		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'opencode', 0);
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'pi', 0);
 	`)
 	rawConn.Close()
 	if err != nil {
@@ -4177,7 +4177,7 @@ func TestHasReviewGroup(t *testing.T) {
 func TestUpsertStatusWithAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 	d := openTestDB(t)
 
-	agentName := "opencode"
+	agentName := "pi"
 	modelID := "gpt-4o"
 
 	if err := d.UpsertStatusWithAgent("repo@main", "repo", "/old/worktree", "idle", nil, nil, &agentName, &modelID); err != nil {
@@ -4230,7 +4230,7 @@ func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
 func TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 	d := openTestDB(t)
 
-	agentName := "opencode"
+	agentName := "pi"
 	modelID := "gpt-4o"
 
 	if err := d.UpsertStatusWithRootAgent("repo@main", "repo", "/old/worktree", "idle", nil, nil, &agentName, &modelID); err != nil {
@@ -4296,7 +4296,7 @@ func seedV12DB(t *testing.T, dbPath string, rows []struct {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -4774,7 +4774,7 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -4900,7 +4900,7 @@ func TestMigration_V13ToV14_Idempotent(t *testing.T) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -5057,7 +5057,7 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -5250,7 +5250,7 @@ func seedV15DB(t *testing.T, dbPath string) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -5272,15 +5272,15 @@ func seedV15DB(t *testing.T, dbPath string) {
 
 		-- Live session with instance_id (should be backfilled into sessions).
 		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen)
-		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'iid-live-1', 'opencode', 1000);
+		  VALUES ('repo@main', 'repo', '/code/repo/main', 'active', 'iid-live-1', 'pi', 1000);
 
 		-- Ended session with instance_id (not backfilled: ended_at IS NOT NULL).
 		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen, ended_at)
-		  VALUES ('repo@feat', 'repo', '/code/repo/feat', 'finished', 'iid-ended-2', 'opencode', 2000, 3000);
+		  VALUES ('repo@feat', 'repo', '/code/repo/feat', 'finished', 'iid-ended-2', 'pi', 2000, 3000);
 
 		-- Live session WITHOUT instance_id (should be skipped by backfill).
 		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, harness, last_seen)
-		  VALUES ('repo@noid', 'repo', '/code/repo/noid', 'active', NULL, 'opencode', 4000);
+		  VALUES ('repo@noid', 'repo', '/code/repo/noid', 'active', NULL, 'pi', 4000);
 
 		-- Events for the live session.
 		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at)
@@ -5536,7 +5536,7 @@ func TestInsertSession_Basic(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/code/repo/main",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("InsertSession: %v", err)
@@ -5562,8 +5562,8 @@ func TestInsertSession_Basic(t *testing.T) {
 	if gotWorktree != "/code/repo/main" {
 		t.Errorf("worktree: got %q, want %q", gotWorktree, "/code/repo/main")
 	}
-	if gotHarness != "opencode" {
-		t.Errorf("harness: got %q, want \"opencode\"", gotHarness)
+	if gotHarness != "pi" {
+		t.Errorf("harness: got %q, want 'pi'", gotHarness)
 	}
 	if startedAt == 0 {
 		t.Error("started_at: got 0, want non-zero")
@@ -5581,7 +5581,7 @@ func TestInsertSession_Idempotent(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("first InsertSession: %v", err)
@@ -5611,7 +5611,7 @@ func TestUpdateSessionEnded(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("InsertSession: %v", err)
@@ -5667,7 +5667,7 @@ func TestWriteEvent_PropagatesInstanceID(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}); err != nil {
 		t.Fatalf("InsertSession: %v", err)
 	}
@@ -5781,7 +5781,7 @@ func TestSessionsFK_OnDeleteSetNull(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 		GroupID:     &g,
 	}
 	if err := d.InsertSession(sess); err != nil {
@@ -5839,7 +5839,7 @@ func TestInsertSession_ZeroStartedAt(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 		// StartedAt intentionally left as zero time.Time{}
 	}
 	if err := d.InsertSession(sess); err != nil {
@@ -5881,7 +5881,7 @@ func TestInsertSession_ExplicitStartedAt(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   want,
 	}
 	if err := d.InsertSession(sess); err != nil {
@@ -5946,7 +5946,7 @@ func seedV17DB(t *testing.T, dbPath string) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -5987,15 +5987,15 @@ func seedV17DB(t *testing.T, dbPath string) {
 
 		-- Broken row: started_at is the zero-time sentinel; has events.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-has-events', 'repo@main', 'repo', '/code/repo/main', 'opencode', -62135596800000);
+		  VALUES ('iid-has-events', 'repo@main', 'repo', '/code/repo/main', 'pi', -62135596800000);
 
 		-- Broken row: started_at is the zero-time sentinel; no matching events.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-no-events', 'repo@other', 'repo', '/code/repo/other', 'opencode', -62135596800000);
+		  VALUES ('iid-no-events', 'repo@other', 'repo', '/code/repo/other', 'pi', -62135596800000);
 
 		-- Valid row: started_at is already correct; must not be touched.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-good', 'repo@good', 'repo', '/code/repo/good', 'opencode', 1700000000000);
+		  VALUES ('iid-good', 'repo@good', 'repo', '/code/repo/good', 'pi', 1700000000000);
 
 		-- Events for iid-has-events; min created_at = 1600000000000.
 		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id)
@@ -6123,7 +6123,7 @@ func TestUpdateHarnessSessionID_AlsoWritesSessions(t *testing.T) {
 		SessionName: "repo@main",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}); err != nil {
 		t.Fatalf("InsertSession: %v", err)
 	}
@@ -6293,7 +6293,7 @@ func seedV20DB(t *testing.T, dbPath string) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -6350,7 +6350,7 @@ func seedV20DB(t *testing.T, dbPath string) {
 
 		-- sessions row needing backfill: harness_session_id is NULL.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-with-sid', 'repo@main', 'repo', '/wt', 'opencode', 1700000000000);
+		  VALUES ('iid-with-sid', 'repo@main', 'repo', '/wt', 'pi', 1700000000000);
 
 		-- Corresponding agent_status row with a non-NULL harness_session_id.
 		INSERT INTO agent_status (session_name, repo, worktree, state, instance_id, last_seen, harness_session_id)
@@ -6358,11 +6358,11 @@ func seedV20DB(t *testing.T, dbPath string) {
 
 		-- sessions row with NULL harness_session_id and no agent_status counterpart.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-no-agent', 'repo@other', 'repo', '/wt', 'opencode', 1700000000001);
+		  VALUES ('iid-no-agent', 'repo@other', 'repo', '/wt', 'pi', 1700000000001);
 
 		-- sessions row already has a harness_session_id — must not be overwritten.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, harness_session_id, started_at)
-		  VALUES ('iid-already-set', 'repo@branch', 'repo', '/wt', 'opencode', 'ses_pre_existing', 1700000000002);
+		  VALUES ('iid-already-set', 'repo@branch', 'repo', '/wt', 'pi', 'ses_pre_existing', 1700000000002);
 	`)
 	if err != nil {
 		t.Fatalf("seed v20 db: %v", err)
@@ -6514,7 +6514,7 @@ func seedV21DB(t *testing.T, dbPath string) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -6571,7 +6571,7 @@ func seedV21DB(t *testing.T, dbPath string) {
 
 		-- started_at = 0 with events → migration must fix it.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-zero-has-events', 'repo@main', 'repo', '/wt', 'opencode', 0);
+		  VALUES ('iid-zero-has-events', 'repo@main', 'repo', '/wt', 'pi', 0);
 		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id)
 		  VALUES ('ze-evt-1', 'repo@main', 'repo', '/wt', 'state_change', '{}', 1650000000000, 'iid-zero-has-events');
 		INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id)
@@ -6579,11 +6579,11 @@ func seedV21DB(t *testing.T, dbPath string) {
 
 		-- started_at = 0 with no events → migration must leave it unchanged.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-zero-no-events', 'repo@other', 'repo', '/wt', 'opencode', 0);
+		  VALUES ('iid-zero-no-events', 'repo@other', 'repo', '/wt', 'pi', 0);
 
 		-- started_at already valid → must not be touched.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
-		  VALUES ('iid-valid-started', 'repo@good', 'repo', '/wt', 'opencode', 1700000000000);
+		  VALUES ('iid-valid-started', 'repo@good', 'repo', '/wt', 'pi', 1700000000000);
 	`)
 	if err != nil {
 		t.Fatalf("seed v21 db: %v", err)
@@ -6721,7 +6721,7 @@ func seedV22DB(t *testing.T, dbPath string) {
 		  instance_id TEXT,
 		  last_seen INTEGER NOT NULL,
 		  ended_at INTEGER,
-		  harness TEXT NOT NULL DEFAULT 'opencode',
+		  harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT,
 		  harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
@@ -6949,7 +6949,7 @@ func seedV23DB(t *testing.T, dbPath string) {
 		  title TEXT, agent_name TEXT, model_id TEXT, root_agent_name TEXT,
 		  root_model_id TEXT, host_mode INTEGER NOT NULL DEFAULT 0,
 		  isolation_mode TEXT, instance_id TEXT, last_seen INTEGER NOT NULL,
-		  ended_at INTEGER, harness TEXT NOT NULL DEFAULT 'opencode',
+		  ended_at INTEGER, harness TEXT NOT NULL DEFAULT 'pi',
 		  harness_session_id TEXT, harness_port INTEGER,
 		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
 		);
@@ -6993,10 +6993,10 @@ func seedV23DB(t *testing.T, dbPath string) {
 
 		-- One session with outcome_summary set (should survive drop with data preserved).
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at, ended_at, end_state, outcome_summary)
-		  VALUES ('iid-with-summary', 'test@feat', 'repo', '/wt', 'opencode', 1000, 2000, 'finished', '{"foo":"bar"}');
+		  VALUES ('iid-with-summary', 'test@feat', 'repo', '/wt', 'pi', 1000, 2000, 'finished', '{"foo":"bar"}');
 		-- One session without outcome_summary.
 		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at, ended_at, end_state)
-		  VALUES ('iid-no-summary', 'test@main', 'repo', '/wt', 'opencode', 3000, 4000, 'finished');
+		  VALUES ('iid-no-summary', 'test@main', 'repo', '/wt', 'pi', 3000, 4000, 'finished');
 	`)
 	if err != nil {
 		t.Fatalf("seed v23 db: %v", err)
@@ -7105,7 +7105,7 @@ func TestWriteSpawnOutcome_Basic(t *testing.T) {
 		SessionName: "test@feat",
 		Repo:        "repo",
 		Worktree:    "/wt",
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   startedAt,
 	}); err != nil {
 		t.Fatalf("InsertSession: %v", err)
@@ -7322,7 +7322,7 @@ func TestAbtestPairsForSessions(t *testing.T) {
 			SessionName: sessionName,
 			Repo:        "repo",
 			Worktree:    "/code/repo/" + sessionName,
-			Harness:     "opencode",
+			Harness:     "pi",
 		}
 		if err := d.InsertSession(sess); err != nil {
 			t.Fatalf("InsertSession %q: %v", sessionName, err)
@@ -7411,7 +7411,7 @@ func TestUpsertStatus_PreservesHarness(t *testing.T) {
 }
 
 // TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode verifies that a fresh
-// insert via UpsertStatusWithRootAgent writes harness='opencode' when no row
+// insert via UpsertStatusWithRootAgent writes harness='pi' when no row
 // exists (issue #1290, Bug 1 — INSERT path).
 func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
 	d := openTestDB(t)
@@ -7429,19 +7429,19 @@ func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
 	if st == nil {
 		t.Fatal("no row found after upsert")
 	}
-	if st.Harness == nil || *st.Harness != "opencode" {
+	if st.Harness == nil || *st.Harness != "pi" {
 		got := "<nil>"
 		if st.Harness != nil {
 			got = *st.Harness
 		}
-		t.Errorf("harness = %q for fresh row; want %q", got, "opencode")
+		t.Errorf("harness = %q for fresh row; want %q", got, "pi")
 	}
 }
 
 // TestUpsertStatusSeedRootAgentName_OverridesStaleHarness verifies that calling
 // UpsertStatusSeedRootAgentName with an explicit non-empty harnessName overwrites
 // an existing harness value on the DB row. This is the ended-row case from
-// issue #1400: after prism reset, the ended row has harness='opencode'; the
+// issue #1400: after prism reset, the ended row has harness='pi'; the
 // next prism switch (with active profile declaring harness='pi') must write
 // 'pi' into the row when it falls through to UpsertStatusSeedRootAgentName.
 func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
@@ -7449,8 +7449,8 @@ func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
 
 	const session = "repo@override-branch"
 
-	// Seed the row with harness='opencode' (simulating a pre-reset ended row).
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "opencode"); err != nil {
+	// Seed the row with harness='pi' (simulating a pre-reset ended row).
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -7478,7 +7478,7 @@ func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
 
 // TestUpsertStatusSeedRootAgentName_PreservesHarness verifies that calling
 // UpsertStatusSeedRootAgentName with an empty harnessName on a row that already
-// has harness='pi' does NOT overwrite it with the 'opencode' default (issue #1297).
+// has harness='pi' does NOT overwrite it with the 'pi' default (issue #1297).
 func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 	d := openTestDB(t)
 

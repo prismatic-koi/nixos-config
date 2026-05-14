@@ -16,7 +16,7 @@ let
   # Returns 0 when the pane's current command indicates a prism agent pane
   # running under a supported isolation mode, 1 otherwise. The five
   # container-mode keybinds below (C-v paste bridge + C-u/C-d/C-g/C-M-g
-  # opencode scrolling) call this script via if-shell to decide whether to
+  # agent scrolling) call this script via if-shell to decide whether to
   # fire the agent-specific action or fall through to a pass-through.
   #
   # The single argument is the value of tmux's #{pane_current_command} format
@@ -26,9 +26,9 @@ let
   #   podman   — legacy podman isolation (`podman attach` is the pane command).
   #   bwrap    — bwrap isolation: `prism agent-run` execs bwrap directly, so
   #              the pane's direct child is the bwrap process.
-  #   opencode — defensive fallback for bwrap cases where tmux reports the
+  #   agent — defensive fallback for bwrap cases where tmux reports the
   #              foregrounded descendant rather than bwrap itself, and for
-  #              host-mode panes that run opencode directly (Linux legacy /
+  #              host-mode panes that run pi directly (Linux legacy /
   #              Darwin). Opencode is only ever launched in agent panes by
   #              prism, so matching it here does not affect plain shells,
   #              editors, or dashboard panes.
@@ -37,12 +37,12 @@ let
   # no binding keeps a hand-rolled pane_current_command equality check.
   sandboxedPaneGuard = pkgs.writeShellScript "prism-tmux-sandboxed-pane" ''
     case "$1" in
-      podman|bwrap|opencode) exit 0 ;;
+      podman|bwrap) exit 0 ;;
       *) exit 1 ;;
     esac
   '';
 
-  # Host-side clipboard paste bridge script for sandboxed opencode panes.
+  # Host-side clipboard paste bridge script for sandboxed agent panes.
   # Invoked by the tmux Ctrl-V keybind when the pane is running a prism
   # agent (see sandboxedPaneGuard above for the matching rules).
   # Argument $1 is the tmux pane ID (e.g. "%3") to inject the paste into.
@@ -62,7 +62,7 @@ let
     img="$(${prism} clipboard paste-image 2>/dev/null)"
     if [ -n "$img" ]; then
       # Image in clipboard: inject file path as bracketed-paste.
-      # opencode's drag-drop handler will stat() the path and attach the image.
+      # pi's drag-drop handler will stat() the path and attach the image.
       seq="$(printf '\033[200~%s\033[201~' "$img")"
       "$tmux" send-keys -t "$pane_id" -l -- "$seq"
       exit 0
@@ -132,7 +132,7 @@ in
               set -gq allow-passthrough on
               # sensible debugging behavior
               set -g remain-on-exit on
-              # Enable OSC 52 clipboard passthrough so opencode running inside a
+              # Enable OSC 52 clipboard passthrough so agent running inside a
               # sandbox (podman or bwrap) can write to the host clipboard via the
               # sandbox PTY bridge. Without this, tmux drops OSC 52 sequences and
               # clipboard is silently broken.
@@ -225,9 +225,9 @@ in
               bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single \
                 "${prism} spawn --attach"
 
-              # opencode scrolling keybinds — active when the pane is a prism agent
+              # agent scrolling keybinds — active when the pane is a prism agent
               # running under either supported isolation mode (podman or bwrap),
-              # or hosting opencode directly. See sandboxedPaneGuard above for the
+              # or hosting pi directly. See sandboxedPaneGuard above for the
               # matching rules. In any other pane (plain shell, editor, dashboard)
               # the literal keystroke is sent through unchanged.
               bind -n C-u if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys C-M-u' 'send-keys C-u'
@@ -235,16 +235,16 @@ in
               bind -n C-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys Home'
               bind -n C-M-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys End'
 
-              # Clipboard paste bridge for sandboxed opencode panes (issue #752).
+              # Clipboard paste bridge for sandboxed agent panes (issue #752).
               #
               # When Ctrl-V is pressed in a pane whose current command is one of
               # the sandboxed-agent values matched by sandboxedPaneGuard (podman
-              # attach / bwrap / direct opencode):
+              # attach / bwrap / direct pi):
               #
               #   Image path: `prism clipboard paste-image` reads the host clipboard,
               #   stages the PNG to ~/.cache/prism/clipboard/<uuid>.png, and prints
               #   the path. The path is injected into the pane as a bracketed-paste
-              #   sequence so opencode's existing drag-drop handler attaches it.
+              #   sequence so pi's existing drag-drop handler attaches it.
               #
               #   Text fallback path: if paste-image exits non-zero (no image in
               #   clipboard), read text from the host clipboard and inject it as a

@@ -39,6 +39,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -364,27 +365,13 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 	return nil
 }
 
-// deliverEscalationToTarget dispatches on harness shape, similar to runPrompt
-// but without the from_session-from-CWD logic.
+// deliverEscalationToTarget delivers the escalation to the target session.
+// Uses promptdelivery which dispatches based on harness transport shape.
 func deliverEscalationToTarget(target *db.Status, promptText string) error {
-	if target.Harness != nil && *target.Harness != "" {
-		// Same shape lookup as cmd/prompt.go.
-		if isSocketPipe(*target.Harness) {
-			return deliverViaSidecarHostAPI(target.SessionName, promptText, "followUp")
-		}
-	}
-	if target.HarnessPort == nil || target.HarnessSessionID == nil {
-		return fmt.Errorf("session %q has no harness port or session ID", target.SessionName)
-	}
-	return deliverViaHTTP(*target.HarnessPort, *target.HarnessSessionID, promptText, target)
+	return promptdelivery.DeliverToSession(target.SessionName, target, promptText, nil, "", "followUp")
 }
 
-// isSocketPipe is a small wrapper so we don't have to import harness.ShapeOf
-// inline in two places.
-func isSocketPipe(name string) bool {
-	// Only "pi" today, but keep the indirection for forward compatibility.
-	return name == "pi"
-}
+
 
 // discoverPRNumbers best-effort returns open PRs whose head matches the
 // worker's branch via `gh pr list`. Returns nil silently on any error so the

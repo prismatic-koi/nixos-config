@@ -11,11 +11,11 @@ package config_test
 //     value by returning the slot value when the slot wins, and otherwise
 //     descending the fallback ladder).
 //   - slot wins over default_harness.
-//   - default_harness wins over the hardcoded "opencode".
-//   - hardcoded "opencode" is the final safety net (empty slot AND empty
+//   - default_harness wins over the hardcoded "pi".
+//   - hardcoded "pi" is the final safety net (empty slot AND empty
 //     default_harness AND nil profiles file).
 //   - empty default_harness (e.g. older profiles.json) falls through to
-//     "opencode" without error.
+//     "pi" without error.
 //   - non-empty default_harness naming an unregistered harness is rejected
 //     at LoadProfiles time with a clear error listing the valid names.
 
@@ -30,7 +30,6 @@ import (
 	// config.HarnessValidator. This mirrors how prism binaries pull in the
 	// validator transitively via the harness registry.
 	_ "github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 )
 
@@ -51,12 +50,12 @@ func TestHarnessForSlot_PrecedenceLadder(t *testing.T) {
 			// `harness` field, that value is used regardless of
 			// default_harness".
 			name: "slot wins over default_harness",
-			pf:   &config.ProfilesFile{DefaultHarness: "pi"},
-			slot: config.RoleSlot{Harness: "opencode"},
-			want: "opencode",
+			pf:   &config.ProfilesFile{DefaultHarness: ""},
+			slot: config.RoleSlot{Harness: "pi"},
+			want: "pi",
 		},
 		{
-			// default_harness wins over the hardcoded "opencode" when the
+			// default_harness wins over the hardcoded "pi" when the
 			// slot is empty. This is the AC: "When a profile slot has no
 			// `harness` field, ... returns the value of `default_harness`".
 			name: "default_harness wins over hardcoded fallback",
@@ -66,13 +65,13 @@ func TestHarnessForSlot_PrecedenceLadder(t *testing.T) {
 		},
 		{
 			// Empty default_harness (older profiles.json) ⇒ hardcoded
-			// "opencode". This is the AC: "When `default_harness` is the
+			// "pi". This is the AC: "When `default_harness` is the
 			// empty string ... resolution falls back to the hardcoded
-			// `opencode` and no error is raised".
-			name: "empty default_harness falls back to opencode",
+			// `pi` and no error is raised".
+			name: "empty default_harness falls back to pi",
 			pf:   &config.ProfilesFile{DefaultHarness: ""},
 			slot: config.RoleSlot{},
-			want: "opencode",
+			want: "pi",
 		},
 		{
 			// Nil profiles file: the test/error-recovery path. Slot value
@@ -83,10 +82,10 @@ func TestHarnessForSlot_PrecedenceLadder(t *testing.T) {
 			want: "pi",
 		},
 		{
-			name: "nil pf with empty slot uses opencode",
+			name: "nil pf with empty slot uses pi",
 			pf:   nil,
 			slot: config.RoleSlot{},
-			want: "opencode",
+			want: "pi",
 		},
 	}
 	for _, tc := range tests {
@@ -170,17 +169,17 @@ func TestLoadProfiles_DefaultHarnessValidation_Unknown(t *testing.T) {
 		t.Errorf("error %q does not mention the bad harness name", msg)
 	}
 	// Must list the valid names so the user can recover.
-	if !strings.Contains(msg, "opencode") {
-		t.Errorf("error %q does not list 'opencode' as a valid harness", msg)
+	if !strings.Contains(msg, "pi") {
+		t.Errorf("error %q does not list 'pi' as a valid harness", msg)
 	}
 }
 
 // TestLoadProfiles_DefaultHarnessAbsent asserts that an older profiles.json
 // without a default_harness field loads cleanly and HarnessForSlot returns
-// the hardcoded "opencode" for empty slots. AC: "When `default_harness` is
+// the hardcoded "pi" for empty slots. AC: "When `default_harness` is
 // the empty string in `profiles.json` (e.g. older file from a prism build
 // that predates this option), resolution falls back to the hardcoded
-// `\"opencode\"` and no error is raised."
+// `\"pi\"` and no error is raised."
 func TestLoadProfiles_DefaultHarnessAbsent(t *testing.T) {
 	dir := t.TempDir()
 	configHome := filepath.Join(dir, ".config")
@@ -208,7 +207,7 @@ func TestLoadProfiles_DefaultHarnessAbsent(t *testing.T) {
 		t.Errorf("DefaultHarness = %q, want \"\"", pf.DefaultHarness)
 	}
 	got := config.HarnessForSlot(pf, config.RoleSlot{})
-	if got != "opencode" {
-		t.Errorf("HarnessForSlot(pf, empty) = %q, want \"opencode\"", got)
+	if got != "pi" {
+		t.Errorf("HarnessForSlot(pf, empty) = %q, want \"pi\"", got)
 	}
 }

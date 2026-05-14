@@ -23,7 +23,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -191,7 +190,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
+				spawnErr[i] = fmt.Errorf("review: write harness config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}
@@ -487,7 +486,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 				continue
 			}
 			if writeErr := iso.WriteHarnessConfigBlob(agentSession, agentConfigContent); writeErr != nil {
-				spawnErr[i] = fmt.Errorf("review: write opencode config for agent %s: %w", ag.Name, writeErr)
+				spawnErr[i] = fmt.Errorf("review: write harness config for agent %s: %w", ag.Name, writeErr)
 				if opts.OnProgress != nil {
 					opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnErr[i])))
 				}

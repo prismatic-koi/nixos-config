@@ -11,10 +11,10 @@ import (
 // FakeHarness is a minimal stub implementation of the Harness interface for
 // use in tests. It compiles against the full interface — any new method added
 // to Harness must be added here too, providing a compile-time check that the
-// interface is implementable by non-opencode harnesses.
+// interface is implementable by non-pi harnesses.
 //
-// This satisfies the acceptance criterion: "A stub harness (for tests, or even
-// just a fakeHarness in a test file) compiles against the updated interface."
+// Function fields (MapEventFn, ExtractMessageFn, ExtractEventTypeFn) allow
+// individual tests to inject custom event-handling logic without subclassing.
 type FakeHarness struct {
 	// ConfigEnvVarValue is the value returned by ConfigEnvVar().
 	ConfigEnvVarValue string
@@ -34,6 +34,22 @@ type FakeHarness struct {
 
 	// ConfigMountPathValue is returned by ConfigMountPath().
 	ConfigMountPathValue string
+
+	// MapEventFn, when non-nil, is called by MapEvent instead of the default
+	// stub (which always returns (StateTransition{}, false)).
+	MapEventFn func(HarnessEvent) (StateTransition, bool)
+
+	// ExtractMessageFn, when non-nil, is called by ExtractMessage instead of
+	// the default stub (which always returns (Message{}, false)).
+	ExtractMessageFn func(HarnessEvent) (Message, bool)
+
+	// ExtractEventTypeFn, when non-nil, is called by ExtractEventType instead
+	// of the default stub (which returns evt.Type).
+	ExtractEventTypeFn func(HarnessEvent) string
+
+	// SubscribeFn, when non-nil, is called by Subscribe instead of the
+	// default stub (which returns a closed channel).
+	SubscribeFn func(context.Context) (<-chan HarnessEvent, error)
 }
 
 // Compile-time assertion that *FakeHarness implements Harness.
@@ -49,17 +65,26 @@ func (f *FakeHarness) DeliverInitialPrompt(_ context.Context, _, _ string) error
 
 func (f *FakeHarness) DeliverPrompt(_ context.Context, _ string) error { return nil }
 
-func (f *FakeHarness) Subscribe(_ context.Context) (<-chan HarnessEvent, error) {
+func (f *FakeHarness) Subscribe(ctx context.Context) (<-chan HarnessEvent, error) {
+	if f.SubscribeFn != nil {
+		return f.SubscribeFn(ctx)
+	}
 	ch := make(chan HarnessEvent)
 	close(ch)
 	return ch, nil
 }
 
-func (f *FakeHarness) MapEvent(_ HarnessEvent) (StateTransition, bool) {
+func (f *FakeHarness) MapEvent(evt HarnessEvent) (StateTransition, bool) {
+	if f.MapEventFn != nil {
+		return f.MapEventFn(evt)
+	}
 	return StateTransition{}, false
 }
 
-func (f *FakeHarness) ExtractMessage(_ HarnessEvent) (Message, bool) {
+func (f *FakeHarness) ExtractMessage(evt HarnessEvent) (Message, bool) {
+	if f.ExtractMessageFn != nil {
+		return f.ExtractMessageFn(evt)
+	}
 	return Message{}, false
 }
 
@@ -69,7 +94,12 @@ func (f *FakeHarness) CreateSession(_ context.Context) (string, error) {
 
 func (f *FakeHarness) SessionID() string { return "fake-session-id" }
 
-func (f *FakeHarness) ExtractEventType(evt HarnessEvent) string { return evt.Type }
+func (f *FakeHarness) ExtractEventType(evt HarnessEvent) string {
+	if f.ExtractEventTypeFn != nil {
+		return f.ExtractEventTypeFn(evt)
+	}
+	return evt.Type
+}
 
 func (f *FakeHarness) ConfigEnvVar() string {
 	if f.ConfigEnvVarValue != "" {

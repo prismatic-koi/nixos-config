@@ -142,7 +142,7 @@ func baseParams(archiveRoot, dbPath string) Params {
 		SessionName:      "nixos-config@feature",
 		AgentRole:        "worker",
 		RootAgentName:    "worker",
-		Harness:          "opencode",
+		Harness:          "pi",
 		HarnessSessionID: "ses_test001",
 		HarnessVersion:   "1.1.30",
 		Repo:             "nixos-config",

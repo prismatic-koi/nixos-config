@@ -52,7 +52,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/mergequeue"
 	"github.com/prismatic-koi/prism/internal/payload"
@@ -123,7 +122,7 @@ type Config struct {
 	SessionName string
 	Repo        string
 	Worktree    string
-	OpencodeURL string
+	HarnessURL string
 	DB          *db.DB
 	Clock       Clock
 	// Harness is the agent runtime adapter used for all runtime-specific
@@ -263,7 +262,7 @@ type Sidecar struct {
 	recoveryTimer   Timer
 	manualDenial    bool
 	compacting      bool
-	opencodeSID     string
+	harnessSessionID string
 	writtenMessages map[string]bool // dedup message.updated writes
 	textByMessage   map[string]string
 	// msgCreatedAtMs tracks the time.created timestamp (ms since epoch) for
@@ -672,10 +671,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		return fmt.Errorf("sidecar: connect to SSE stream: %w", err)
 	}
 
-	// opencode_sid gap detection: warn if opencode_sid stays NULL for more than
-	// 30 seconds after session start. A missing opencode_sid means events from
-	// this session are invisible to forensics tools (checkin, stats) because
-	// they cannot be correlated to an opencode session.
+	// harness_session_id gap detection: warn if harness_session_id stays NULL
+	// for more than 30 seconds after session start. A missing harness_session_id
+	// means events from this session are invisible to forensics tools (checkin,
+	// stats) because they cannot be correlated to a harness session.
 	go func() {
 		select {
 		case <-sseCtx.Done():
@@ -683,10 +682,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		case <-time.After(30 * time.Second):
 		}
 		s.mu.Lock()
-		sid := s.opencodeSID
+		sid := s.harnessSessionID
 		s.mu.Unlock()
 		if sid == "" {
-			s.logger().Printf("[warning] opencode_sid not received after 30s — session may be invisible to forensics")
+			s.logger().Printf("[warning] harness_session_id not received after 30s — session may be invisible to forensics")
 		}
 	}()
 
@@ -709,7 +708,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		if startupTimeout == 0 {
 			startupTimeout = DefaultStartupConnectTimeout
 		}
-		url := s.cfg.OpencodeURL
+		url := s.cfg.HarnessURL
 		go func() {
 			select {
 			case <-sseCtx.Done():
@@ -736,14 +735,14 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			startupErr := fmt.Errorf("bwrap harness for %s never bound to %s within %v",
 				s.cfg.SessionName, url, startupTimeout)
 			s.logger().Printf("sidecar: startup-connect timeout fired: %v", startupErr)
-			// Emit a `[timing] opencode listening` line recording the timeout
+			// Emit a `[timing] harness listening` line recording the timeout
 			// duration so the grep-the-log workflow yields a coherent timeline
-			// even on the failure path (#1052 AC: "When opencode never reaches
+			// even on the failure path (#1052 AC: "When the harness never reaches
 			// the listening state and the sidecar times out, the timing line
 			// emitted records the timeout duration, not silence."). The
 			// "(timed out)" suffix distinguishes failure from a real listening
 			// marker without changing the leading prefix that grep targets.
-			s.logger().Printf("[timing] opencode listening: %s from start (timed out)",
+			s.logger().Printf("[timing] harness listening: %s from start (timed out)",
 				time.Since(s.spawnTime).Round(time.Millisecond))
 			s.writeStartupError(startupErr)
 			// writeStartupError notifies the parent worker for review-agent sessions.

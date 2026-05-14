@@ -125,7 +125,7 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 // back to "opencode" when the field is nil or empty (pre-migration rows).
 func displayHarness(h *string) string {
 	if h == nil || *h == "" {
-		return "opencode"
+		return "pi"
 	}
 	return *h
 }

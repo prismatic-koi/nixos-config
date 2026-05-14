@@ -61,7 +61,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -87,7 +86,7 @@ for direct user invocation.
 It reconstructs the container config from the session's DB row, writes temp
 files (SSH config, gitconfig), builds the sandbox argument list, and runs the
 sandbox as a child process. A PTY pair gives the sandbox a real terminal so
-that opencode's Bubble Tea TUI can query TIOCGWINSZ correctly. The master side
+that the agent TUI can query TIOCGWINSZ correctly. The master side
 is tee'd to both the tmux pane and ~/.local/state/prism/run/<session>/agent-run.log.`,
 	RunE: runAgentRun,
 }
@@ -254,7 +253,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 
 	// Resolve the harness name from the DB status. Fall back to "opencode"
 	// for pre-registry rows that have a NULL harness column.
-	harnessName := "opencode"
+	harnessName := "pi"
 	if status.Harness != nil && *status.Harness != "" {
 		harnessName = *status.Harness
 	}

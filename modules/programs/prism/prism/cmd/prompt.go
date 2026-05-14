@@ -22,8 +22,8 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -34,7 +34,7 @@ var httpClient = &http.Client{Timeout: 10 * time.Second}
 var promptCmd = &cobra.Command{
 	Use:   "prompt <session>",
 	Short: "Send a follow-up prompt to a running agent session",
-	Long: `Send a follow-up message to the opencode agent running in the named tmux
+	Long: `Send a follow-up message to the agent running in the named tmux
 session. The session must already exist and have an agent window.
 
 The prompt is delivered directly via POST /session/:id/prompt_async for
@@ -48,7 +48,7 @@ The --deliver-as flag controls the delivery mode for socket-pipe (PI) sessions:
   followUp  — queue as the next user turn after the current turn completes
   nextTurn  — alias for followUp; the sidecar's own default when no mode is set
 
-For opencode (HTTP) sessions the flag is accepted but has no effect — opencode
+For HTTP sessions the flag is accepted but has no effect — the harness
 uses prompt_async and does not support delivery modes.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runPrompt,
@@ -56,7 +56,7 @@ uses prompt_async and does not support delivery modes.`,
 
 func init() {
 	addPromptFlags(promptCmd)
-	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe (PI) sessions: steer (mid-turn), followUp, or nextTurn. No-op for opencode (HTTP) sessions.`)
+	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe sessions: steer (mid-turn), followUp, or nextTurn.`)
 	rootCmd.AddCommand(promptCmd)
 }
 
@@ -164,38 +164,23 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		SentAt:       time.Now(),
 	}
 
-	// Socket-pipe transports (e.g. PI) do not have an opencode HTTP port —
-	// route the prompt through the sidecar's per-session host-API socket
-	// instead. The sidecar's /prompt handler detects same-session targets
-	// with a TransportSocketPipe shape and forwards to harness.DeliverPrompt
-	// via the active pipe connection (P2.SIDECAR).
-	if status.Harness != nil {
+	// Dispatch based on harness transport shape:
+	// socket-pipe (pi) → host-API socket; other/unknown → HTTP fallback.
+	buildBody := func(text string, s *db.Status) map[string]any {
+		return buildPromptBody(text, s)
+	}
+	if err := promptdelivery.DeliverToSession(sessionName, status, promptText, buildBody, "", deliverAs); err != nil {
+		return fmt.Errorf("%w", err)
+	}
+	if err := database.WriteBusMessageDelivered(msg); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
+	}
+	// Report delivery method for feedback.
+	if status.Harness != nil && *status.Harness != "" {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
-			if err := deliverViaSidecarHostAPI(sessionName, promptText, deliverAs); err != nil {
-				return fmt.Errorf("socket-pipe delivery failed: %w", err)
-			}
-			if err := database.WriteBusMessageDelivered(msg); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
-			}
 			fmt.Printf("prompt delivered to %s via socket-pipe\n", sessionName)
 			return nil
 		}
-	}
-
-	// Require port and session ID for HTTP delivery.
-	if status.HarnessPort == nil || status.HarnessSessionID == nil {
-		return fmt.Errorf("session %q has no harness port or session ID — cannot deliver prompt", sessionName)
-	}
-
-	httpErr := deliverViaHTTP(*status.HarnessPort, *status.HarnessSessionID, promptText, status)
-	if httpErr != nil {
-		return fmt.Errorf("HTTP delivery failed: %w", httpErr)
-	}
-
-	// HTTP delivery succeeded — write audit trail with delivered_at set.
-	if err := database.WriteBusMessageDelivered(msg); err != nil {
-		// Non-fatal: HTTP delivery succeeded; audit write is best-effort.
-		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
 	}
 	fmt.Printf("prompt delivered to %s via HTTP\n", sessionName)
 	return nil
@@ -248,33 +233,6 @@ func deliverViaSidecarHostAPI(sessionName, promptText, deliverAs string) error {
 	return nil
 }
 
-// deliverViaHTTP sends a prompt to the opencode HTTP API.
-func deliverViaHTTP(port int, opencodeSID string, text string, status *db.Status) error {
-	body := buildPromptBody(text, status)
-	jsonBytes, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshal prompt body: %w", err)
-	}
-
-	url := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, opencodeSID)
-	req, err := http.NewRequest("POST", url, bytes.NewReader(jsonBytes))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("http status %d", resp.StatusCode)
-	}
-
-	return nil
-}
 
 // buildPromptBody constructs the request body for prompt_async.
 // When root_agent_name and root_model_id are known, they are included

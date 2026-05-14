@@ -162,7 +162,7 @@ var (
 //	// in internal/harness/opencode/register.go
 //	func init() {
 //	    harness.MustRegister(harness.Registration{
-//	        Name:             "opencode",
+//	        Name:             "pi",
 //	        Shape:            harness.TransportHTTPPort,
 //	        Factory:          ...,
 //	        ContainerFactory: ...,

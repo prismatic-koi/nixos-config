@@ -27,7 +27,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	if !s.firstEventLogged {
 		s.firstEventLogged = true
 		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
-		s.logger().Printf("sidecar: first event received from opencode (%s after spawn)", elapsed)
+		s.logger().Printf("sidecar: first event received from harness (%s after spawn)", elapsed)
 
 		// Bwrap path `[timing]` markers (#1052). The podman path emits these
 		// from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
@@ -50,7 +50,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		//     Emitted at the same moment for symmetry with the podman line
 		//     at sidecar.go:489.
 		if !container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
-			s.logger().Printf("[timing] opencode listening: %s from start", elapsed)
+			s.logger().Printf("[timing] harness listening: %s from start", elapsed)
 			s.logger().Printf("[timing] ready: %s from start", elapsed)
 			if s.cfg.InitialPrompt != "" {
 				s.logger().Printf("[timing] prompt delivered: %s from start", elapsed)
@@ -111,7 +111,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 				}
 			} else {
 				s.seenUnknown[eventType] = true
-				s.logger().Printf("sidecar: event: %s (unhandled — opencode may have added a new event type)", eventType)
+				s.logger().Printf("sidecar: event: %s (unhandled — unknown event type)", eventType)
 			}
 		}
 	}
@@ -382,7 +382,7 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 	}
 
 	info := payload.Properties.Info
-	s.opencodeSID = info.ID
+	s.harnessSessionID = info.ID
 
 	// Always persist the new harness session ID unconditionally so that if the
 	// user creates a new session mid-conversation (e.g. via /continue or TUI
@@ -435,7 +435,7 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 	}
 
 	// Normal session update (possibly a resume).
-	s.opencodeSID = info.ID
+	s.harnessSessionID = info.ID
 
 	// Check if this is a resume from a terminal state.
 	currentState := s.currentDBState()
@@ -974,7 +974,7 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 						"tool":             "bash",
 						"command":          cmd,
 						"sessionName":      s.cfg.SessionName,
-						"harnessSessionID": s.opencodeSID,
+						"harnessSessionID": s.harnessSessionID,
 						"messageId":        part.MessageID,
 					}, nil)
 					s.logger().Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))

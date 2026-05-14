@@ -92,7 +92,7 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
 		// Shared opencode data dir — bound directly into the bwrap sandbox.
-		filepath.Join(fakeHome, ".local", "share", "opencode"),
+		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
 	for _, d := range dirs {
@@ -404,7 +404,7 @@ func TestBwrapBuildArgs_McpAuthBound(t *testing.T) {
 
 func TestBwrapBuildArgs_OpencodeSharedDirBound(t *testing.T) {
 	// bwrap mode binds the shared host opencode data dir
-	// (~/.local/share/opencode/) directly into the sandbox so all sessions
+	// (~/.local/share/pi/) directly into the sandbox so all sessions
 	// share a single SQLite DB. The per-session prism-sessions/<name>/
 	// isolation used by the podman path is not needed on Linux (no virtiofs
 	// WAL-mode locking issue) and is intentionally omitted here.
@@ -418,14 +418,14 @@ func TestBwrapBuildArgs_OpencodeSharedDirBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	sharedDir := filepath.Join(fakeHome, ".local", "share", "opencode")
+	sharedDir := filepath.Join(fakeHome, ".local", "share", "pi")
 	if !hasBind(args, sharedDir) {
 		t.Errorf("opencode shared data dir %q not found as --bind SRC SRC in args: %v", sharedDir, args)
 	}
 
 	// Confirm the per-session prism-sessions path is NOT bound — bwrap
 	// must use the shared dir, not the per-session one.
-	perSessionDir := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.name)
+	perSessionDir := filepath.Join(fakeHome, ".local", "share", "pi", "prism-sessions", m.name)
 	if hasBind(args, perSessionDir) {
 		t.Errorf("per-session opencode dir %q should NOT be bound in bwrap mode, but was: %v", perSessionDir, args)
 	}
@@ -751,25 +751,25 @@ func TestBwrapBuildArgs_OpencodeJSONROBound(t *testing.T) {
 	defer cleanup()
 
 	// Write the opencode config temp file as cmd/spawn.go does at spawn time.
-	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o644); err != nil {
+	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o644); err != nil {
 		t.Fatalf("WriteFile opencode config: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(m.opencodeConfigFilePath()) })
+	t.Cleanup(func() { _ = os.Remove(m.harnessConfigFilePath()) })
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// SRC: generated temp file (role-specific opencode.json with model, agent, providers)
-	// DST: sandbox $HOME/.config/opencode/opencode.json (canonical path opencode reads)
-	configSrc := m.opencodeConfigFilePath()
-	configDst := filepath.Join(fakeHome, ".config", "opencode", "opencode.json")
+	// SRC: generated temp file (role-specific harness-config.json with model, agent, providers)
+	// DST: sandbox $HOME/.config/pi/harness-config.json (canonical path opencode reads)
+	configSrc := m.harnessConfigFilePath()
+	configDst := filepath.Join(fakeHome, ".config", "pi", "harness-config.json")
 	if !hasROBindSrcDst(args, configSrc, configDst) {
-		t.Errorf("opencode.json: want --ro-bind %q %q in args: %v", configSrc, configDst, args)
+		t.Errorf("harness-config.json: want --ro-bind %q %q in args: %v", configSrc, configDst, args)
 	}
 }
 
 // TestBwrapBuildArgs_OpencodeJSONNotMountedWhenAbsent asserts that the
-// opencode.json --ro-bind is omitted when the temp file does not exist on disk.
+// harness-config.json --ro-bind is omitted when the temp file does not exist on disk.
 func TestBwrapBuildArgs_OpencodeJSONNotMountedWhenAbsent(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -782,15 +782,15 @@ func TestBwrapBuildArgs_OpencodeJSONNotMountedWhenAbsent(t *testing.T) {
 	defer cleanup()
 
 	// Ensure the temp file does NOT exist (do not write it).
-	_ = os.Remove(m.opencodeConfigFilePath())
+	_ = os.Remove(m.harnessConfigFilePath())
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	configSrc := m.opencodeConfigFilePath()
-	configDst := filepath.Join(fakeHome, ".config", "opencode", "opencode.json")
+	configSrc := m.harnessConfigFilePath()
+	configDst := filepath.Join(fakeHome, ".config", "pi", "harness-config.json")
 	if hasROBindSrcDst(args, configSrc, configDst) {
-		t.Errorf("opencode.json --ro-bind should be absent when temp file does not exist, but found in args: %v", args)
+		t.Errorf("harness-config.json --ro-bind should be absent when temp file does not exist, but found in args: %v", args)
 	}
 }
 
@@ -807,7 +807,7 @@ func TestBwrapBuildArgs_OpencodeAllowlistNewEntries(t *testing.T) {
 	})
 	defer cleanup()
 
-	opencodeConfigDir := filepath.Join(fakeHome, ".config", "opencode")
+	opencodeConfigDir := filepath.Join(fakeHome, ".config", "pi")
 
 	// Create each new allowlist entry so the conditional stat() succeeds.
 	newEntries := []string{
@@ -847,7 +847,7 @@ func TestBwrapBuildArgs_OpencodeAllowlistNewEntriesOmittedWhenAbsent(t *testing.
 	})
 	defer cleanup()
 
-	opencodeConfigDir := filepath.Join(fakeHome, ".config", "opencode")
+	opencodeConfigDir := filepath.Join(fakeHome, ".config", "pi")
 
 	// Do NOT create the new entries — they should be absent from args.
 	newEntries := []string{
@@ -883,7 +883,7 @@ func TestBwrapBuildArgs_AgentsDirMountedForNonReview(t *testing.T) {
 			defer cleanup()
 
 			// Create agents/ so the stat() succeeds.
-			agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+			agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 				t.Fatalf("MkdirAll agents: %v", err)
 			}
@@ -913,7 +913,7 @@ func TestBwrapBuildArgs_AgentsDirNotMountedForReview(t *testing.T) {
 			defer cleanup()
 
 			// Create agents/ so the stat() would succeed if the code were wrong.
-			agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+			agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 			if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 				t.Fatalf("MkdirAll agents: %v", err)
 			}
@@ -1336,7 +1336,7 @@ func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
 	for _, d := range []string{
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
-		filepath.Join(fakeHome, ".local", "share", "opencode"),
+		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 		filepath.Join(fakeHome, ".ssh"),
 		filepath.Join(fakeHome, ".config", "aws"),
@@ -1395,7 +1395,7 @@ func TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
 	for _, d := range []string{
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
-		filepath.Join(fakeHome, ".local", "share", "opencode"),
+		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 		filepath.Join(fakeHome, ".ssh"),
 		filepath.Join(fakeHome, ".config", "kube"),
@@ -1572,7 +1572,7 @@ func TestBwrapBuildArgs_Terminator(t *testing.T) {
 	if len(tail) < 5 {
 		t.Fatalf("tail after -- too short (%d): %v", len(tail), tail)
 	}
-	if tail[0] != "opencode" {
+	if tail[0] != "pi" {
 		t.Errorf("tail[0] = %q, want opencode", tail[0])
 	}
 	if tail[1] != "--port" {
@@ -1614,7 +1614,7 @@ func TestBwrapBuildArgs_PortTracksAllocatedPort(t *testing.T) {
 		args := b.BuildArgs(m)
 		// Locate the terminator and return the --port value.
 		for i, a := range args {
-			if a == "--" && i+3 < len(args) && args[i+1] == "opencode" && args[i+2] == "--port" {
+			if a == "--" && i+3 < len(args) && args[i+1] == "pi" && args[i+2] == "--port" {
 				return args[i+3]
 			}
 		}
@@ -1646,7 +1646,7 @@ func TestBwrapBuildArgs_PortFallbackWhenUnset(t *testing.T) {
 
 	want := "4096" // ContainerPort — keep in sync with container.ContainerPort.
 	for i, a := range args {
-		if a == "--" && i+3 < len(args) && args[i+1] == "opencode" && args[i+2] == "--port" {
+		if a == "--" && i+3 < len(args) && args[i+1] == "pi" && args[i+2] == "--port" {
 			if args[i+3] != want {
 				t.Errorf("fallback --port = %q, want %q (ContainerPort)", args[i+3], want)
 			}
@@ -1860,7 +1860,7 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 	defer cleanup()
 
 	// Write the opencode config temp file as Create() would.
-	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o600); err != nil {
+	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o600); err != nil {
 		t.Fatalf("WriteFile opencode config: %v", err)
 	}
 
@@ -1889,9 +1889,9 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 			dst:  filepath.Join(fakeHome, ".gitconfig"),
 		},
 		{
-			name: "opencode.json → $HOME/.config/opencode/opencode.json",
-			src:  m.opencodeConfigFilePath(),
-			dst:  filepath.Join(fakeHome, ".config", "opencode", "opencode.json"),
+			name: "harness-config.json → $HOME/.config/pi/harness-config.json",
+			src:  m.harnessConfigFilePath(),
+			dst:  filepath.Join(fakeHome, ".config", "pi", "harness-config.json"),
 		},
 		{
 			name: "kube agents-config → $HOME/.kube/config",
@@ -2024,7 +2024,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	defer cleanup()
 
 	// Write the opencode config temp file.
-	if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o600); err != nil {
+	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o600); err != nil {
 		t.Fatalf("WriteFile opencode config: %v", err)
 	}
 
@@ -2117,10 +2117,10 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("kube agents-config: want --ro-bind src $HOME/.kube/config")
 	}
 	if !hasROBindSrcDst(args,
-		m.opencodeConfigFilePath(),
-		filepath.Join(fakeHome, ".config", "opencode", "opencode.json"),
+		m.harnessConfigFilePath(),
+		filepath.Join(fakeHome, ".config", "pi", "harness-config.json"),
 	) {
-		t.Errorf("opencode.json: want --ro-bind src $HOME/.config/opencode/opencode.json")
+		t.Errorf("harness-config.json: want --ro-bind src $HOME/.config/pi/harness-config.json")
 	}
 }
 
@@ -2707,7 +2707,7 @@ func TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI(t *testing.T) {
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
-		Harness:       "opencode", // not "pi"
+		Harness:       "pi", // not "pi"
 	})
 	defer cleanup()
 

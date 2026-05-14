@@ -613,14 +613,14 @@ func TestPrepareVolumeDirs_BwrapSkipsSessionDir(t *testing.T) {
 	}
 
 	// Per-session dir must NOT exist.
-	perSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
+	perSession := filepath.Join(fakeHome, ".local", "share", "pi", "prism-sessions", m.Name())
 	if _, err := os.Stat(perSession); !os.IsNotExist(err) {
 		t.Errorf("per-session dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
 	}
 
 	// Other shared dirs that bwrap also relies on should still be created.
 	for _, dir := range []string{
-		filepath.Join(fakeHome, ".cache", "opencode"),
+		filepath.Join(fakeHome, ".cache", "pi"),
 		filepath.Join(fakeHome, ".cache", "bun"),
 		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
 	} {
@@ -655,7 +655,7 @@ func TestPrepareVolumeDirs_CreatesSocketDirForBwrap(t *testing.T) {
 	}
 
 	// The per-session opencode dir must NOT exist (bwrap shares the host opencode dir directly).
-	perSession := filepath.Join(fakeHome, ".local", "share", "opencode", "prism-sessions", m.Name())
+	perSession := filepath.Join(fakeHome, ".local", "share", "pi", "prism-sessions", m.Name())
 	if _, err := os.Stat(perSession); !os.IsNotExist(err) {
 		t.Errorf("per-session opencode dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
 	}
@@ -686,30 +686,30 @@ func TestPrepareVolumeDirs_SocketDirOmittedWhenNoSockPath(t *testing.T) {
 // ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
 
 // TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
-// ~/.local/share/opencode/auth.json exists on the host, a --volume arg is
-// added overlaying it at /root/.local/share/opencode/auth.json inside the
+// ~/.local/share/pi/auth.json exists on the host, a --volume arg is
+// added overlaying it at /root/.local/share/pi/auth.json inside the
 // container so OAuth tokens are shared across per-session state directories.
-func TestOpencodeConfigFilePath_Deterministic(t *testing.T) {
+func TestHarnessConfigFilePath_Deterministic(t *testing.T) {
 	// The path derivation from session name must be stable across calls.
 	const sessionName = "nixos-config@feat"
-	a := OpencodeConfigFilePath(sessionName)
-	b := OpencodeConfigFilePath(sessionName)
+	a := HarnessConfigFilePath(sessionName)
+	b := HarnessConfigFilePath(sessionName)
 	if a != b {
-		t.Errorf("OpencodeConfigFilePath is not deterministic: %q != %q", a, b)
+		t.Errorf("HarnessConfigFilePath is not deterministic: %q != %q", a, b)
 	}
 }
 
-func TestOpencodeConfigFilePath_Format(t *testing.T) {
-	// The path must equal filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName).
+func TestHarnessConfigFilePath_Format(t *testing.T) {
+	// The path must equal filepath.Join(os.TempDir(), "prism-harness-config-"+sessionName).
 	const sessionName = "my-repo@branch"
-	got := OpencodeConfigFilePath(sessionName)
-	want := filepath.Join(os.TempDir(), "prism-opencode-config-"+sessionName)
+	got := HarnessConfigFilePath(sessionName)
+	want := filepath.Join(os.TempDir(), "prism-harness-config-"+sessionName)
 	if got != want {
-		t.Errorf("OpencodeConfigFilePath(%q) = %q, want %q", sessionName, got, want)
+		t.Errorf("HarnessConfigFilePath(%q) = %q, want %q", sessionName, got, want)
 	}
 }
 
-func TestWriteOpencodeConfig_WritesContent(t *testing.T) {
+func TestWriteHarnessConfig_WritesContent(t *testing.T) {
 	// Override TMPDIR so the written file lands in the test's temp dir.
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
@@ -717,12 +717,12 @@ func TestWriteOpencodeConfig_WritesContent(t *testing.T) {
 	const sessionName = "test-session@write"
 	const content = `{"model":"claude-sonnet-4-6"}`
 
-	if err := WriteOpencodeConfig(sessionName, content); err != nil {
-		t.Fatalf("WriteOpencodeConfig returned error: %v", err)
+	if err := WriteHarnessConfig(sessionName, content); err != nil {
+		t.Fatalf("WriteHarnessConfig returned error: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(OpencodeConfigFilePath(sessionName)) })
+	t.Cleanup(func() { _ = os.Remove(HarnessConfigFilePath(sessionName)) })
 
-	data, err := os.ReadFile(OpencodeConfigFilePath(sessionName))
+	data, err := os.ReadFile(HarnessConfigFilePath(sessionName))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -731,18 +731,18 @@ func TestWriteOpencodeConfig_WritesContent(t *testing.T) {
 	}
 }
 
-func TestWriteOpencodeConfig_Mode644(t *testing.T) {
+func TestWriteHarnessConfig_Mode644(t *testing.T) {
 	// The written file must have mode 0o644.
 	tmpDir := t.TempDir()
 	t.Setenv("TMPDIR", tmpDir)
 
 	const sessionName = "test-session@mode"
-	if err := WriteOpencodeConfig(sessionName, "{}"); err != nil {
-		t.Fatalf("WriteOpencodeConfig returned error: %v", err)
+	if err := WriteHarnessConfig(sessionName, "{}"); err != nil {
+		t.Fatalf("WriteHarnessConfig returned error: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(OpencodeConfigFilePath(sessionName)) })
+	t.Cleanup(func() { _ = os.Remove(HarnessConfigFilePath(sessionName)) })
 
-	info, err := os.Stat(OpencodeConfigFilePath(sessionName))
+	info, err := os.Stat(HarnessConfigFilePath(sessionName))
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
@@ -751,16 +751,16 @@ func TestWriteOpencodeConfig_Mode644(t *testing.T) {
 	}
 }
 
-func TestOpencodeConfigFilePath_MatchesManagerMethod(t *testing.T) {
+func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
 	// The exported function must return the same path as the manager method.
 	m := New(Config{
 		SessionName:   "nixos-config@feature",
 		AllocatedPort: 14001,
 	})
-	exported := OpencodeConfigFilePath(m.name)
-	unexported := m.opencodeConfigFilePath()
+	exported := HarnessConfigFilePath(m.name)
+	unexported := m.harnessConfigFilePath()
 	if exported != unexported {
-		t.Errorf("OpencodeConfigFilePath(%q) = %q, manager.opencodeConfigFilePath() = %q — must be identical",
+		t.Errorf("HarnessConfigFilePath(%q) = %q, manager.harnessConfigFilePath() = %q — must be identical",
 			m.name, exported, unexported)
 	}
 }

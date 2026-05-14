@@ -26,7 +26,7 @@ func insertAbtestSessionForTest(t *testing.T, d *db.DB, sessionName, iid, pairID
 		SessionName: sessionName,
 		Repo:        "repo",
 		Worktree:    "/wt/" + sessionName,
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   startedAt,
 	}
 	if err := d.InsertSession(sess); err != nil {
@@ -146,7 +146,7 @@ func TestSpawnInputsByInstanceID(t *testing.T) {
 		SessionName: "r@si-test",
 		Repo:        "r",
 		Worktree:    "/wt/si-test",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("InsertSession: %v", err)

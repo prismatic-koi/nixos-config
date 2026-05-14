@@ -197,7 +197,7 @@ func resolveRoleDefinition(roleFile string) string {
 		home, _ := os.UserHomeDir()
 		configHome = filepath.Join(home, ".config")
 	}
-	path := filepath.Join(configHome, "opencode", "agents", roleFile+".md")
+	path := filepath.Join(configHome, "prism", "agents", roleFile+".md")
 
 	data, err := os.ReadFile(path)
 	if err != nil {

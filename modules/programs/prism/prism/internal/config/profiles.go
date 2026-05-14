@@ -303,11 +303,11 @@ func SlotForRole(pf *ProfilesFile, profileName, role string) (RoleSlot, bool) {
 //  1. Slot-level Harness field (when non-empty).
 //  2. ProfilesFile.DefaultHarness (the Nix-level `default_harness` fallback,
 //     #1491) when set.
-//  3. Hardcoded "opencode" — the final safety net, used only when both the
+//  3. Hardcoded "pi" — the final safety net, used only when both the
 //     slot and the profiles file omit a harness.
 //
 // `pf` may be nil — callers without a loaded profiles file (tests, error
-// recovery paths) get the slot value or the hardcoded "opencode".
+// recovery paths) get the slot value or the hardcoded "pi".
 //
 // The `--harness` flag at spawn / pr / review time takes precedence over all
 // of the above; it is enforced by the call sites by short-circuiting before
@@ -322,7 +322,7 @@ func HarnessForSlot(pf *ProfilesFile, slot RoleSlot) string {
 	if pf != nil && pf.DefaultHarness != "" {
 		return pf.DefaultHarness
 	}
-	return "opencode"
+	return "pi"
 }
 
 // RequireSlot validates that the named profile defines a slot for the given

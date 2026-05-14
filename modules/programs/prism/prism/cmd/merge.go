@@ -149,7 +149,7 @@ Workers must not enqueue merges directly. Ask your coordinator to run:
 
   prism merge %d
 
-See: modules/programs/prism/opencode/agents/coordinator.md`, pr)
+See: modules/programs/prism/agents/coordinator.md`, pr)
 		}
 	}
 

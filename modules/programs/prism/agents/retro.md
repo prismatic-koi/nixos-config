@@ -72,7 +72,7 @@ If there are no cross-session patterns, say so explicitly.
 
 **Recommendations**
 Concrete, actionable changes. Each recommendation must reference a specific mechanism:
-- "Add a bash permission for X in opencode.nix"
+- "Add a bash permission for X in pi.nix"
 - "Add this rule to the worker prompt in worker.md: ..."
 - "File an issue for a new `prism stats` flag to surface ..."
 - "File an issue to implement ..."

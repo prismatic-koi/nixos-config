@@ -15,8 +15,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/prismatic-koi/prism/internal/harness/opencode"
-)
+	)
 
 // newSidecarWithCleanupStub returns a Sidecar whose host-API /cleanup handler
 // will exec a shell script we control instead of the real prism binary. The
@@ -32,12 +31,12 @@ func newSidecarWithCleanupStub(t *testing.T, sessionName, repo, role, scriptBody
 		SessionName:     sessionName,
 		Repo:            repo,
 		Worktree:        "/tmp/" + sessionName,
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           newTestClock(),
 		AgentRole:       role,
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, role, ""),
+		Harness:         newSSEHarness(),
 	}
 	return New(cfg)
 }

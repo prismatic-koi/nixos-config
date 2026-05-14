@@ -76,7 +76,7 @@ func TestOpenReadOnly_RejectsWrites(t *testing.T) {
 
 	// Any DML should fail with the read-only sentinel.
 	_, err = conn.ExecContext(context.Background(),
-		`INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','opencode',1)`)
+		`INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','pi',1)`)
 	if err == nil {
 		t.Fatal("expected error on INSERT against read-only handle")
 	}

@@ -3,7 +3,6 @@ package sidecar
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +19,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 )
 
 // ── test clock ──────────────────────────────────────────────────────────────
@@ -306,10 +304,10 @@ func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
-		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
@@ -331,6 +329,62 @@ func makeSSE(eventType string, properties any) harness.HarnessEvent {
 		"properties": properties,
 	})
 	return harness.HarnessEvent{Type: "message", Data: data}
+}
+
+// makeAssistantMessage creates a message.part.updated + message.updated pair
+// simulating a completed assistant message.
+func makeAssistantMessage(messageID, agentName, text string) []harness.HarnessEvent {
+	created := 1000.0
+	completed := 2000.0
+	return []harness.HarnessEvent{
+		makeSSE("message.part.updated", map[string]any{
+			"part": map[string]any{
+				"type":      "text",
+				"messageID": messageID,
+				"text":      text,
+			},
+		}),
+		makeSSE("message.updated", map[string]any{
+			"info": map[string]any{
+				"id":         messageID,
+				"role":       "assistant",
+				"agent":      agentName,
+				"providerID": "anthropic",
+				"modelID":    "claude-sonnet-4-5",
+				"time": map[string]*float64{
+					"created":   &created,
+					"completed": &completed,
+				},
+			},
+		}),
+	}
+}
+
+// makeUserMessage creates a message.part.updated + message.updated pair
+// simulating a user message.
+func makeUserMessage(messageID, agentName, text string) []harness.HarnessEvent {
+	return []harness.HarnessEvent{
+		makeSSE("message.part.updated", map[string]any{
+			"part": map[string]any{
+				"type":      "text",
+				"messageID": messageID,
+				"text":      text,
+			},
+		}),
+		makeSSE("message.updated", map[string]any{
+			"info": map[string]any{
+				"id":    messageID,
+				"role":  "user",
+				"agent": agentName,
+			},
+		}),
+	}
+}
+
+func sendEvents(sc *Sidecar, evts []harness.HarnessEvent) {
+	for _, e := range evts {
+		sc.HandleEvent(e)
+	}
 }
 
 // getState reads the current agent state from the DB.
@@ -586,7 +640,7 @@ func TestSessionCreated_WritesActiveWithTitle(t *testing.T) {
 		t.Errorf("title = %v, want %q", status.Title, "Fix the widget")
 	}
 	if status.HarnessSessionID == nil || *status.HarnessSessionID != "oc-session-123" {
-		t.Errorf("opencodeSID = %v, want %q", status.HarnessSessionID, "oc-session-123")
+		t.Errorf("harnessSessionID = %v, want %q", status.HarnessSessionID, "oc-session-123")
 	}
 }
 
@@ -1804,11 +1858,11 @@ func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar
 		SessionName: "test-repo@feature",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree-feature",
-		OpencodeURL: "http://localhost:14001",
+		HarnessURL: "http://localhost:14001",
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  httpClient,
-		Harness:     opencode.New("http://localhost:14001", httpClient, "", ""),
+		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
@@ -1833,10 +1887,11 @@ func seedCoordinatorWithPort(t *testing.T, d *db.DB, repo string, port int, sid 
 	).Scan(new(string)); err != nil {
 		t.Fatalf("seed coordinator: set root_agent_name: %v", err)
 	}
-	// Set the port directly via a UPDATE … RETURNING to verify it applied.
+	// Set the port and clear harness so HTTP fallback is used in tests
+	// (tests use httptest.Server, not a socket-pipe).
 	var got int
 	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
+		"UPDATE agent_status SET harness_port = ?, harness = '' WHERE session_name = ? RETURNING harness_port",
 		port, coordName,
 	).Scan(&got); err != nil {
 		t.Fatalf("seed coordinator: set port: %v", err)
@@ -2016,10 +2071,10 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-coord-worktree",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
-		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+		Harness:     newSSEHarness(),
 	}
 	coordinator := New(cfg)
 
@@ -2048,259 +2103,6 @@ func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
 	}
 	if totalMsgs != 0 {
 		t.Errorf("expected no bus messages for self-notification, got %d", totalMsgs)
-	}
-}
-
-func TestNotifyCoordinator_BusMessageAuditOnHTTPSuccess(t *testing.T) {
-	d := openTestDB(t)
-
-	coordSID := "coord-sid-audit"
-
-	// Record the POST body; also serve GET /session for SID validation.
-	var (
-		bodyMu       sync.Mutex
-		receivedBody []byte
-	)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			// Return the coordinator's SID in the session list.
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST /session/<sid>/prompt_async — capture body and respond 200.
-		body, _ := io.ReadAll(r.Body)
-		bodyMu.Lock()
-		receivedBody = body
-		bodyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
-
-	// Create worker sidecar with the test server's HTTP client.
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-	// Trigger idle debounce → finished (the real notification path).
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	// Wait for delivered bus message (audit trail).
-	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected delivered audit bus message")
-	}
-
-	// Verify no undelivered message was written (only the audit delivered row).
-	var undeliveredCount int
-	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NULL", "test-repo@main").Scan(&undeliveredCount); err != nil {
-		t.Fatalf("count undelivered: %v", err)
-	}
-	if undeliveredCount != 0 {
-		t.Errorf("expected no undelivered messages after HTTP success, got %d", undeliveredCount)
-	}
-
-	// Verify the HTTP body contained the notification text.
-	// waitForBusMessageDelivered ensures the HTTP call completed before we get here.
-	bodyMu.Lock()
-	captured := make([]byte, len(receivedBody))
-	copy(captured, receivedBody)
-	bodyMu.Unlock()
-
-	if len(captured) == 0 {
-		t.Fatal("expected HTTP request body to be captured, got empty")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(captured, &body); err != nil {
-		t.Fatalf("unmarshal HTTP body: %v", err)
-	}
-	parts, _ := body["parts"].([]any)
-	if len(parts) == 0 {
-		t.Fatal("expected parts in HTTP body")
-	}
-	part, _ := parts[0].(map[string]any)
-	text, _ := part["text"].(string)
-	wantText := "Agent test-repo@feature has finished its current task"
-	if text != wantText {
-		t.Errorf("HTTP body text = %q, want %q", text, wantText)
-	}
-}
-
-// TestNotifyCoordinator_HTTPFailure_WritesFailed verifies that when HTTP delivery
-// fails after all retries, a bus message with failed_at set (and delivered_at
-// NULL) is written — not silently dropped.
-func TestNotifyCoordinator_HTTPFailure_WritesFailed(t *testing.T) {
-	d := openTestDB(t)
-
-	coordSID := "coord-sid-http-fail"
-
-	// Server serves GET /session with the SID but always fails POST.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST always fails.
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
-
-	// Create worker sidecar with the test server's HTTP client (POST returns 500).
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-	// Trigger idle debounce → finished (the real notification path).
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	// Wait for failed_at to be set (all 3 retries exhausted).
-	if !waitForBusMessageFailed(t, d, "test-repo@main") {
-		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set after HTTP failure")
-	}
-
-	// delivered_at must NOT be set.
-	var deliveredCount int
-	if err := d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL", "test-repo@main").Scan(&deliveredCount); err != nil {
-		t.Fatalf("count delivered: %v", err)
-	}
-	if deliveredCount != 0 {
-		t.Errorf("expected no delivered messages after HTTP failure, got %d", deliveredCount)
-	}
-}
-
-// TestDeliverNotificationViaHTTP_BodyLogging verifies that a non-2xx response
-// body (up to 200 bytes) is included in the returned error, making HTTP 500s
-// from the coordinator self-diagnosing in the sidecar log.
-func TestDeliverNotificationViaHTTP_BodyLogging(t *testing.T) {
-	// Build a 300-byte body where the first 200 bytes are all 'a' and the
-	// last 100 bytes are all 'b'. After truncation at 200, the 'b' region
-	// must not appear in the error.
-	longBody := strings.Repeat("a", 200) + strings.Repeat("b", 100)
-
-	tests := []struct {
-		name          string
-		statusCode    int
-		body          string
-		wantInErr     string
-		wantNotInErr  string
-		exactErrMatch string // if set, error must equal this exactly
-	}{
-		{
-			name:       "500 with body snippet in error",
-			statusCode: http.StatusInternalServerError,
-			body:       `{"error":"session not found"}`,
-			wantInErr:  `session not found`,
-		},
-		{
-			// The body is 300 bytes (200 'a' + 100 'b'); only the first 200
-			// bytes should appear in the error, so 'b' must not be present.
-			name:         "body truncated at 200 bytes",
-			statusCode:   http.StatusInternalServerError,
-			body:         longBody,
-			wantInErr:    strings.Repeat("a", 200),
-			wantNotInErr: "b",
-		},
-		{
-			// Non-2xx with no body: error must be "http status NNN" with no
-			// trailing colon-space.
-			name:          "empty body does not add trailing colon-space",
-			statusCode:    http.StatusBadGateway,
-			body:          "",
-			exactErrMatch: "http status 502",
-		},
-		{
-			name:       "404 with body snippet in error",
-			statusCode: http.StatusNotFound,
-			body:       "session abc not found",
-			wantInErr:  "session abc not found",
-		},
-		{
-			name:       "200 ok returns no error",
-			statusCode: http.StatusOK,
-			body:       "",
-			wantInErr:  "",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.statusCode)
-				if tc.body != "" {
-					_, _ = w.Write([]byte(tc.body))
-				}
-			}))
-			defer srv.Close()
-
-			var srvPort int
-			_, err := fmt.Sscanf(srv.URL, "http://127.0.0.1:%d", &srvPort)
-			if err != nil {
-				_, err = fmt.Sscanf(srv.URL, "http://localhost:%d", &srvPort)
-			}
-			if err != nil {
-				t.Fatalf("parse test server port: %v", err)
-			}
-
-			agentName := "coordinator"
-			modelID := "anthropic/claude-sonnet-4-5"
-			status := &db.Status{
-				AgentName: &agentName,
-				ModelID:   &modelID,
-			}
-
-			gotErr := deliverNotificationViaHTTP(srvPort, "test-sid", "notify text", status, srv.Client())
-
-			if tc.wantInErr == "" && tc.exactErrMatch == "" {
-				if gotErr != nil {
-					t.Errorf("expected no error, got: %v", gotErr)
-				}
-				return
-			}
-
-			if gotErr == nil {
-				want := tc.wantInErr
-				if tc.exactErrMatch != "" {
-					want = tc.exactErrMatch
-				}
-				t.Fatalf("expected an error (want %q), got nil", want)
-			}
-
-			if tc.exactErrMatch != "" {
-				if gotErr.Error() != tc.exactErrMatch {
-					t.Errorf("error = %q, want exactly %q", gotErr.Error(), tc.exactErrMatch)
-				}
-				return
-			}
-
-			if !strings.Contains(gotErr.Error(), tc.wantInErr) {
-				t.Errorf("error = %q, want it to contain %q", gotErr.Error(), tc.wantInErr)
-			}
-			if tc.wantNotInErr != "" && strings.Contains(gotErr.Error(), tc.wantNotInErr) {
-				t.Errorf("error = %q, must NOT contain %q (body was not truncated)", gotErr.Error(), tc.wantNotInErr)
-			}
-		})
 	}
 }
 
@@ -2336,118 +2138,6 @@ func TestNotifyCoordinator_SilentSkipWhenNoCoordinator(t *testing.T) {
 	}
 }
 
-// TestNotifyCoordinator_PortSetButNoSID_TriesAndFails verifies that when
-// the coordinator has a port but no opencode_sid, notifyCoordinator still
-// attempts delivery (trying GET /session to discover the active session),
-// and if the port is unreachable, writes failed_at after retries.
-func TestNotifyCoordinator_PortSetButNoSID_TriesAndFails(t *testing.T) {
-	d := openTestDB(t)
-
-	// Use a server to make the port reachable but return an empty session list.
-	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-
-	// Seed coordinator with a port but no harness_session_id.
-	coordName := "test-repo@main"
-	if err := d.UpsertStatus(coordName, "test-repo", "/tmp/coord-worktree", "active", nil, nil); err != nil {
-		t.Fatalf("seed coordinator: UpsertStatus: %v", err)
-	}
-	// Set port but leave harness_session_id = NULL.
-	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
-		srvPort, coordName,
-	).Scan(new(int)); err != nil {
-		t.Fatalf("set port: %v", err)
-	}
-
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-	// Trigger idle debounce → finished (the real notification path).
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	if state := getState(t, d, worker.cfg.SessionName); state != "finished" {
-		t.Errorf("worker state = %q, want finished", state)
-	}
-
-	// Empty session list → failed_at is set, no delivered_at.
-	if !waitForBusMessageFailed(t, d, coordName) {
-		t.Fatal("timed out waiting for failed bus message — expected failed_at when empty session list")
-	}
-	var deliveredCount int
-	_ = d.QueryRow("SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL", coordName).Scan(&deliveredCount)
-	if deliveredCount != 0 {
-		t.Errorf("delivered_at rows = %d, want 0 (empty session list)", deliveredCount)
-	}
-}
-
-// ── subagent suppression tests ──────────────────────────────────────────────
-
-// makeAssistantMessage creates a message.part.updated + message.updated pair
-// that simulates an assistant message completing, as opencode sends them.
-func makeAssistantMessage(messageID, agentName, text string) []harness.HarnessEvent {
-	created := 1000.0
-	completed := 2000.0
-	return []harness.HarnessEvent{
-		makeSSE("message.part.updated", map[string]any{
-			"part": map[string]any{
-				"type":      "text",
-				"messageID": messageID,
-				"text":      text,
-			},
-		}),
-		makeSSE("message.updated", map[string]any{
-			"info": map[string]any{
-				"id":         messageID,
-				"role":       "assistant",
-				"agent":      agentName,
-				"providerID": "anthropic",
-				"modelID":    "claude-sonnet-4-5",
-				"time": map[string]*float64{
-					"created":   &created,
-					"completed": &completed,
-				},
-			},
-		}),
-	}
-}
-
-// makeUserMessage creates a message.part.updated + message.updated pair that
-// simulates a user message, as opencode sends them.
-func makeUserMessage(messageID, agentName, text string) []harness.HarnessEvent {
-	return []harness.HarnessEvent{
-		makeSSE("message.part.updated", map[string]any{
-			"part": map[string]any{
-				"type":      "text",
-				"messageID": messageID,
-				"text":      text,
-			},
-		}),
-		makeSSE("message.updated", map[string]any{
-			"info": map[string]any{
-				"id":    messageID,
-				"role":  "user",
-				"agent": agentName,
-			},
-		}),
-	}
-}
-
-func sendEvents(sc *Sidecar, evts []harness.HarnessEvent) {
-	for _, e := range evts {
-		sc.HandleEvent(e)
-	}
-}
-
-// TestSubagentIdle_SuppressesDebounce verifies that when session.idle fires
-// immediately after a subagent assistant message, no debounce timer is created
-// (the parent agent is expected to resume shortly).
 func TestSubagentIdle_SuppressesDebounce(t *testing.T) {
 	sc, clk := newTestSidecar(t)
 
@@ -2745,11 +2435,11 @@ func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
 		SessionName: reviewAgentSession,
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree-review-goal",
-		OpencodeURL: "http://localhost:14002",
+		HarnessURL: "http://localhost:14002",
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:14002", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	reviewAgent := New(cfg)
 
@@ -2964,10 +2654,10 @@ func TestNotifyCoordinator_SelfNotificationSkipped_StaleRootAgentName(t *testing
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-coord-stale-worktree",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
-		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+		Harness:     newSSEHarness(),
 	}
 	coordinator := New(cfg)
 
@@ -3081,10 +2771,10 @@ func TestOnReady_NotCalledAfterShutdown(t *testing.T) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          openTestDB(t),
 		Clock:       newTestClock(),
-		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+		Harness:     newSSEHarness(),
 		OnReady: func() {
 			called = true
 		},
@@ -3119,10 +2809,10 @@ func TestOnReady_CalledWhenNotShuttingDown(t *testing.T) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          openTestDB(t),
 		Clock:       newTestClock(),
-		Harness:     opencode.New("http://localhost:14000", nil, "", ""),
+		Harness:     newSSEHarness(),
 		OnReady: func() {
 			called = true
 		},
@@ -4236,12 +3926,12 @@ func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, r
 		SessionName: "test-repo@feature",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree-feature",
-		OpencodeURL: "http://localhost:14001",
+		HarnessURL: "http://localhost:14001",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   role,
 		HTTPClient:  httpClient,
-		Harness:     opencode.New("http://localhost:14001", httpClient, role, ""),
+		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
@@ -4423,11 +4113,11 @@ func TestRootAgentPreset_CoordinatorSession(t *testing.T) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-coord-worktree",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
-		Harness:     opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:     newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -4668,12 +4358,12 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			SessionName: "test-repo@main",
 			Repo:        "test-repo",
 			Worktree:    "/tmp/test-worktree",
-			OpencodeURL: "http://localhost:14000",
+			HarnessURL: "http://localhost:14000",
 			DB:          d,
 			Clock:       clk,
 			AgentRole:   "worker",
 			AgentModel:  "anthropic/claude-sonnet-4-6",
-			Harness:     opencode.New("http://localhost:14000", nil, "worker", "anthropic/claude-sonnet-4-6"),
+			Harness:     newSSEHarness(),
 		}
 		sc := New(cfg)
 
@@ -4713,12 +4403,12 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			SessionName: "test-repo@main",
 			Repo:        "test-repo",
 			Worktree:    "/tmp/test-worktree",
-			OpencodeURL: "http://localhost:14000",
+			HarnessURL: "http://localhost:14000",
 			DB:          d,
 			Clock:       clk,
 			AgentRole:   "worker",
 			AgentModel:  "anthropic/claude-sonnet-4-6",
-			Harness:     opencode.New("http://localhost:14000", nil, "worker", "anthropic/claude-sonnet-4-6"),
+			Harness:     newSSEHarness(),
 		}
 		sc := New(cfg)
 
@@ -4766,11 +4456,11 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 			SessionName: "test-repo@main",
 			Repo:        "test-repo",
 			Worktree:    "/tmp/test-worktree",
-			OpencodeURL: "http://localhost:14000",
+			HarnessURL: "http://localhost:14000",
 			DB:          d,
 			Clock:       clk,
 			// AgentRole and AgentModel intentionally left empty (legacy session).
-			Harness: opencode.New("http://localhost:14000", nil, "", ""),
+			Harness: newSSEHarness(),
 		}
 		sc := New(cfg)
 
@@ -4820,12 +4510,12 @@ func TestRootAgentName_SelfCorrectedFromSSEInference(t *testing.T) {
 		SessionName: "test-repo@main",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		// AgentRole intentionally empty — simulates a host-mode session
 		// started after the fix (no --agent-role passed).
-		Harness: opencode.New("http://localhost:14000", nil, "", ""),
+		Harness: newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5105,11 +4795,11 @@ func newSidecarWithRole(t *testing.T, sessionName, repo, role string, d *db.DB) 
 		SessionName: sessionName,
 		Repo:        repo,
 		Worktree:    "/tmp/" + sessionName,
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   role,
-		Harness:     opencode.New("http://localhost:14000", nil, role, ""),
+		Harness:     newSSEHarness(),
 	}
 	return New(cfg)
 }
@@ -5132,12 +4822,12 @@ func newSidecarWithRoleAndBinary(t *testing.T, sessionName, repo, role string, d
 		SessionName:     sessionName,
 		Repo:            repo,
 		Worktree:        "/tmp/" + sessionName,
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       role,
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, role, ""),
+		Harness:         newSSEHarness(),
 	}
 	return New(cfg)
 }
@@ -5652,12 +5342,12 @@ echo "session \"${last}@test-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5698,12 +5388,12 @@ echo "session \"${last}@new-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5780,12 +5470,12 @@ echo "session \"${last}@cross-branch\" created"
 		SessionName:     "myrepo@main",
 		Repo:            "myrepo",
 		Worktree:        "/tmp/myrepo@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5819,11 +5509,11 @@ func TestHostAPI_Spawn_HostModeProduces400(t *testing.T) {
 		SessionName: "nixos-config@main",
 		Repo:        "nixos-config",
 		Worktree:    "/tmp/nixos-config@main",
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
-		Harness:     opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:     newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5856,12 +5546,12 @@ echo "session \"${last}@cap-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -5908,12 +5598,12 @@ echo "session \"${last}@iso-branch\" created"
 				SessionName:     "nixos-config@main",
 				Repo:            "nixos-config",
 				Worktree:        "/tmp/nixos-config@main",
-				OpencodeURL:     "http://localhost:14000",
+				HarnessURL:     "http://localhost:14000",
 				DB:              d,
 				Clock:           clk,
 				AgentRole:       "coordinator",
 				PrismBinaryPath: stubPath,
-				Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+				Harness:         newSSEHarness(),
 			}
 			sc := New(cfg)
 
@@ -5959,12 +5649,12 @@ echo "session \"${last}@no-iso-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -6006,12 +5696,12 @@ exit 99
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -6055,12 +5745,12 @@ exit 1
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -6113,12 +5803,12 @@ echo "session \"${last}@override-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -6163,12 +5853,12 @@ echo "session \"${last}@no-override-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -6564,410 +6254,8 @@ WHERE to_session = ? AND failed_at IS NOT NULL AND delivered_at IS NULL`,
 }
 
 // TestNotifyCoordinator_SIDConfirmed_DeliveredAtSet verifies that when the
-// stored opencode_sid is present in GET /session, delivered_at is set and
+// stored harness_session_id is present in GET /session, delivered_at is set and
 // failed_at remains NULL.
-func TestNotifyCoordinator_SIDConfirmed_DeliveredAtSet(t *testing.T) {
-	d := openTestDB(t)
-
-	coordSID := "coord-sid-valid"
-	srv, promptCalls := makeSessionListServer(t, []string{coordSID}, http.StatusOK)
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected delivered bus message — timed out")
-	}
-
-	// Exactly one POST must have been made.
-	if *promptCalls != 1 {
-		t.Errorf("prompt_async calls = %d, want 1", *promptCalls)
-	}
-
-	// Verify delivered_at IS NOT NULL and failed_at IS NULL directly via DB.
-	var deliveredAtRaw *int64
-	var failedAtRaw *int64
-	if err := d.QueryRow(
-		"SELECT delivered_at, failed_at FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
-		"test-repo@main",
-	).Scan(&deliveredAtRaw, &failedAtRaw); err != nil {
-		t.Fatalf("query delivered_at/failed_at: %v", err)
-	}
-	if deliveredAtRaw == nil {
-		t.Error("delivered_at: got nil, want non-nil")
-	}
-	if failedAtRaw != nil {
-		t.Errorf("failed_at: got %v, want nil (delivery succeeded)", failedAtRaw)
-	}
-}
-
-// TestNotifyCoordinator_StaleSID_FallsBackToMostRecent verifies that when the
-// stored opencode_sid is NOT present in GET /session, notifyCoordinator
-// uses the most recently updated session from the list instead.
-func TestNotifyCoordinator_StaleSID_FallsBackToMostRecent(t *testing.T) {
-	d := openTestDB(t)
-
-	staleSID := "stale-sid"
-	freshSID := "fresh-sid" // time.updated=1001 > 1000, so this is "most recent"
-	srv, promptCalls := makeSessionListServer(t, []string{"other-sid", freshSID}, http.StatusOK)
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	// Seed coordinator with the stale SID.
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, staleSID)
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected delivered bus message — timed out")
-	}
-
-	// Exactly one successful POST was made (after SID refresh).
-	if *promptCalls != 1 {
-		t.Errorf("prompt_async calls = %d, want 1", *promptCalls)
-	}
-
-	// The coordinator's stored SID must have been updated to the fresh one.
-	coordStatus, _ := d.CurrentStatus("test-repo@main")
-	if coordStatus.HarnessSessionID == nil || *coordStatus.HarnessSessionID != freshSID {
-		t.Errorf("opencode_sid after fallback: got %v, want %q", coordStatus.HarnessSessionID, freshSID)
-	}
-}
-
-// TestNotifyCoordinator_EmptySessionList_WritesFailed verifies that when
-// GET /session returns an empty list, failed_at is written and delivered_at
-// remains NULL (edge case: no active sessions).
-func TestNotifyCoordinator_EmptySessionList_WritesFailed(t *testing.T) {
-	d := openTestDB(t)
-
-	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, "some-sid")
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	if !waitForBusMessageFailed(t, d, "test-repo@main") {
-		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set")
-	}
-
-	// delivered_at must remain NULL.
-	var deliveredCount int
-	_ = d.QueryRow(
-		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
-		"test-repo@main",
-	).Scan(&deliveredCount)
-	if deliveredCount != 0 {
-		t.Errorf("delivered_at rows = %d, want 0 (delivery failed — empty session list)", deliveredCount)
-	}
-}
-
-// TestNotifyCoordinator_GetSessionFails_WritesFailed verifies that when
-// GET /session itself fails (non-200), failed_at is written after retries.
-func TestNotifyCoordinator_GetSessionFails_WritesFailed(t *testing.T) {
-	d := openTestDB(t)
-
-	// Server returns 500 for GET /session.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, "some-sid")
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	if !waitForBusMessageFailed(t, d, "test-repo@main") {
-		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set")
-	}
-
-	// delivered_at must remain NULL.
-	var deliveredCount int
-	_ = d.QueryRow(
-		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
-		"test-repo@main",
-	).Scan(&deliveredCount)
-	if deliveredCount != 0 {
-		t.Errorf("delivered_at rows = %d, want 0 (GET /session failed)", deliveredCount)
-	}
-}
-
-// TestNotifyCoordinator_PostFails_Retries3Times_WritesFailed verifies that
-// when GET /session succeeds (SID confirmed) but the POST always fails, the
-// sidecar retries 3 times and ultimately writes failed_at.
-func TestNotifyCoordinator_PostFails_Retries3Times_WritesFailed(t *testing.T) {
-	d := openTestDB(t)
-
-	coordSID := "coord-sid-retries"
-	promptCalls := new(int)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			sessions := []map[string]any{{"id": coordSID}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// Always fail the POST.
-		*promptCalls++
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, coordSID)
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	if !waitForBusMessageFailed(t, d, "test-repo@main") {
-		t.Fatal("timed out waiting for failed bus message — expected failed_at to be set after retries")
-	}
-
-	// Exactly 3 POST attempts were made.
-	if *promptCalls != 3 {
-		t.Errorf("prompt_async calls = %d, want 3 (max retries)", *promptCalls)
-	}
-
-	// delivered_at must remain NULL.
-	var deliveredCount int
-	_ = d.QueryRow(
-		"SELECT COUNT(*) FROM bus_messages WHERE to_session = ? AND delivered_at IS NOT NULL",
-		"test-repo@main",
-	).Scan(&deliveredCount)
-	if deliveredCount != 0 {
-		t.Errorf("delivered_at rows = %d, want 0 (POST always failed)", deliveredCount)
-	}
-}
-
-// TestNotifyCoordinator_StaleSIDNoDeliveredAt verifies that a stale SID (not
-// in the session list) does NOT result in delivered_at being set (AC: stale SID
-// never produces false-positive delivery).
-func TestNotifyCoordinator_StaleSIDNoDeliveredAt(t *testing.T) {
-	d := openTestDB(t)
-
-	// Server has no sessions containing the stale SID.
-	staleSID := "stale-sid-no-match"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			// Return list that does NOT contain staleSID — only a fresh one.
-			sessions := []map[string]any{{"id": "fresh-sid-abc", "time": map[string]any{"updated": 9999.0}}}
-			data, _ := json.Marshal(sessions)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write(data)
-			return
-		}
-		// POST /session/<sid>/prompt_async — succeeds for fresh SID.
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, "test-repo", srvPort, staleSID)
-
-	worker, clk := newWorkerSidecar(t, d, srv.Client())
-	_ = d.UpsertStatus(worker.cfg.SessionName, worker.cfg.Repo, worker.cfg.Worktree, "active", nil, nil)
-
-	worker.HandleEvent(makeSSE("session.idle", map[string]any{}))
-	timer := clk.LastTimer()
-	if timer == nil {
-		t.Fatal("expected idle timer")
-	}
-	timer.Fire()
-
-	// The delivery succeeds via fallback — no failed_at row.
-	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
-	if msg == nil {
-		t.Fatal("expected delivered bus message via SID fallback — timed out")
-	}
-
-	// The coordinator's stored SID must have been refreshed.
-	coordStatus, _ := d.CurrentStatus("test-repo@main")
-	if coordStatus.HarnessSessionID == nil || *coordStatus.HarnessSessionID != "fresh-sid-abc" {
-		t.Errorf("opencode_sid after stale fallback: got %v, want \"fresh-sid-abc\"", coordStatus.HarnessSessionID)
-	}
-}
-
-// TestHandleSessionCreated_AlwaysUpdatesOpencodeSID verifies that handling
-// multiple session.created events always updates the stored opencode_sid to the
-// latest value, keeping the DB current when the user creates a new opencode
-// session mid-conversation.
-func TestHandleSessionCreated_AlwaysUpdatesOpencodeSID(t *testing.T) {
-	sc, _ := newTestSidecar(t)
-
-	// Seed an initial row with an old SID.
-	oldSID := "old-session-id"
-	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, &oldSID)
-
-	// First session.created event with oldSID.
-	sc.HandleEvent(makeSSE("session.created", map[string]any{
-		"info": map[string]string{"id": oldSID, "title": "First"},
-	}))
-
-	s1, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
-	if s1.HarnessSessionID == nil || *s1.HarnessSessionID != oldSID {
-		t.Errorf("after first session.created: opencode_sid = %v, want %q", s1.HarnessSessionID, oldSID)
-	}
-
-	// Second session.created event with a new SID (simulating /continue or TUI restart).
-	newSID := "new-session-id"
-	sc.HandleEvent(makeSSE("session.created", map[string]any{
-		"info": map[string]string{"id": newSID, "title": "Second"},
-	}))
-
-	s2, _ := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
-	if s2.HarnessSessionID == nil || *s2.HarnessSessionID != newSID {
-		t.Errorf("after second session.created: opencode_sid = %v, want %q", s2.HarnessSessionID, newSID)
-	}
-}
-
-// TestValidateOrRefreshCoordinatorSID_SIDPresent verifies that
-// validateOrRefreshCoordinatorSID returns the stored SID unchanged when it is
-// present in the session list.
-func TestValidateOrRefreshCoordinatorSID_SIDPresent(t *testing.T) {
-	d := openTestDB(t)
-
-	storedSID := "session-abc"
-	srv, _ := makeSessionListServer(t, []string{"session-xyz", storedSID}, http.StatusOK)
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-
-	got, err := validateOrRefreshCoordinatorSID(srvPort, storedSID, "test-repo@main", d, srv.Client(), log.Default())
-	if err != nil {
-		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
-	}
-	if got != storedSID {
-		t.Errorf("returned SID = %q, want %q", got, storedSID)
-	}
-}
-
-// TestValidateOrRefreshCoordinatorSID_SIDAbsent verifies that when the stored
-// SID is absent, the most recently updated session is selected and the DB is
-// updated.
-func TestValidateOrRefreshCoordinatorSID_SIDAbsent(t *testing.T) {
-	d := openTestDB(t)
-
-	// Seed coordinator so UpdateHarnessSessionID has a row to update.
-	coordName := "test-repo@main"
-	_ = d.UpsertStatus(coordName, "test-repo", "/wt", "active", nil, nil)
-
-	// Session list has two entries; "newer-sid" has higher updated timestamp.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessions := []map[string]any{
-			{"id": "older-sid", "time": map[string]any{"updated": 100.0}},
-			{"id": "newer-sid", "time": map[string]any{"updated": 200.0}},
-		}
-		data, _ := json.Marshal(sessions)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(data)
-	}))
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-
-	staleSID := "stale-sid"
-	got, err := validateOrRefreshCoordinatorSID(srvPort, staleSID, coordName, d, srv.Client(), log.Default())
-	if err != nil {
-		t.Fatalf("validateOrRefreshCoordinatorSID: unexpected error: %v", err)
-	}
-	if got != "newer-sid" {
-		t.Errorf("returned SID = %q, want %q", got, "newer-sid")
-	}
-
-	// DB must be updated.
-	status, _ := d.CurrentStatus(coordName)
-	if status.HarnessSessionID == nil || *status.HarnessSessionID != "newer-sid" {
-		t.Errorf("opencode_sid in DB = %v, want \"newer-sid\"", status.HarnessSessionID)
-	}
-}
-
-// TestValidateOrRefreshCoordinatorSID_EmptyList returns errEmptySessionList.
-func TestValidateOrRefreshCoordinatorSID_EmptyList(t *testing.T) {
-	d := openTestDB(t)
-
-	srv, _ := makeSessionListServer(t, []string{}, http.StatusOK)
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-
-	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client(), log.Default())
-	if err == nil {
-		t.Error("expected error for empty session list, got nil")
-	}
-	if !errors.Is(err, errEmptySessionList) {
-		t.Errorf("expected errEmptySessionList, got: %v", err)
-	}
-}
-
-// TestValidateOrRefreshCoordinatorSID_GetFails returns an error.
-func TestValidateOrRefreshCoordinatorSID_GetFails(t *testing.T) {
-	d := openTestDB(t)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-	srvPort := parseSrvPort(t, srv.URL)
-
-	_, err := validateOrRefreshCoordinatorSID(srvPort, "some-sid", "test-repo@main", d, srv.Client(), log.Default())
-	if err == nil {
-		t.Error("expected error when GET /session returns 500, got nil")
-	}
-}
-
-// ── /spawn harness validation ─────────────────────────────────────────────────
-
-// TestHostAPI_Spawn_UnknownHarnessReturns400 verifies that an unknown harness
-// value in a /spawn request is rejected with 400 and a clear error message,
-// without attempting to run the prism binary or create any session state.
 func TestHostAPI_Spawn_UnknownHarnessReturns400(t *testing.T) {
 	d := openTestDB(t)
 	// Use a stub that would record a call if invoked — we assert it is NOT called.
@@ -6985,12 +6273,12 @@ exit 0
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7024,7 +6312,7 @@ exit 0
 }
 
 // TestHostAPI_Spawn_KnownHarnessForwarded verifies that when harness="opencode"
-// is sent, it is passed as --harness opencode to the spawned prism binary.
+// is sent, it is passed as --harness pi to the spawned prism binary.
 func TestHostAPI_Spawn_KnownHarnessForwarded(t *testing.T) {
 	d := openTestDB(t)
 
@@ -7044,17 +6332,17 @@ echo "session \"${last}@harness-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"harness-branch","harness":"opencode"}`)
+		`{"branch":"harness-branch","harness":"pi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -7063,8 +6351,8 @@ echo "session \"${last}@harness-branch\" created"
 	if err != nil {
 		t.Fatalf("read captured args: %v", err)
 	}
-	if !strings.Contains(string(capturedArgs), "--harness opencode") {
-		t.Errorf("captured args %q do not contain '--harness opencode'", string(capturedArgs))
+	if !strings.Contains(string(capturedArgs), "--harness pi") {
+		t.Errorf("captured args %q do not contain '--harness pi'", string(capturedArgs))
 	}
 }
 
@@ -7091,12 +6379,12 @@ echo "session \"${last}@no-harness-branch\" created"
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7136,12 +6424,12 @@ func TestHostAPI_Review_WorkerAllowed(t *testing.T) {
 		SessionName:     "myrepo@feature",
 		Repo:            "myrepo",
 		Worktree:        "/tmp/myrepo@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 	rr := doHostAPI(t, sc, http.MethodPost, "/review", `{"pr_number":"123"}`)
@@ -7199,12 +6487,12 @@ exit 0
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7251,12 +6539,12 @@ exit 0
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7298,12 +6586,12 @@ exit 0
 		SessionName:     "nixos-config@feature",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7343,12 +6631,12 @@ exit 0
 		SessionName:     "nixos-config@feature",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7389,12 +6677,12 @@ exit 0
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7442,12 +6730,12 @@ func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7501,12 +6789,12 @@ exit 1
 		SessionName:     "nixos-config@feature",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7561,12 +6849,12 @@ exit 0
 		SessionName:     "nixos-config@feature",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7605,12 +6893,12 @@ func TestHostAPI_Review_StartFailureReturns500(t *testing.T) {
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: "/nonexistent/prism-binary",
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7688,12 +6976,12 @@ exit 0
 		SessionName:     "nixos-config@741-fix",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@741-fix",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7738,12 +7026,12 @@ exit 0
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7795,12 +7083,12 @@ exit 1
 		SessionName:     "nixos-config@main",
 		Repo:            "nixos-config",
 		Worktree:        "/tmp/nixos-config@main",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7865,12 +7153,12 @@ exit 0
 		SessionName:     "myrepo@feature",
 		Repo:            "myrepo",
 		Worktree:        worktreeDir,
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -7933,12 +7221,12 @@ func TestHostAPI_Review_CWDFallbackWhenWorktreeMissing(t *testing.T) {
 		SessionName:     "myrepo@feature",
 		Repo:            "myrepo",
 		Worktree:        missingWorktree,
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -8020,12 +7308,12 @@ func TestHostAPI_Review_ReviewingWriteFailureReturns500(t *testing.T) {
 		SessionName:     "myrepo@feature",
 		Repo:            "myrepo",
 		Worktree:        "/tmp/myrepo@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -8074,12 +7362,12 @@ func TestHostAPI_Review_ReviewingWriteSucceeds(t *testing.T) {
 		SessionName:     "myrepo@feature",
 		Repo:            "myrepo",
 		Worktree:        "/tmp/myrepo@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -8515,7 +7803,7 @@ func TestToolCallFailed_WritesToolErrorEvent(t *testing.T) {
 	getLogs := captureLog(sc)
 
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
-	sc.opencodeSID = "sid-abc"
+	sc.harnessSessionID = "sid-abc"
 
 	evt := makeSSE("message.part.updated", map[string]any{
 		"part": map[string]any{
@@ -8624,7 +7912,7 @@ func TestUnknownEventType_LoggedOnce(t *testing.T) {
 	logs := getLogs()
 
 	// Count occurrences of the "unhandled" marker.
-	count := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	count := strings.Count(logs, "unhandled — unknown event type")
 	if count != 1 {
 		t.Errorf("expected exactly 1 'unhandled' log line for duplicate event type, got %d; logs:\n%s", count, logs)
 	}
@@ -8651,7 +7939,7 @@ func TestUnknownEventType_MultipleTypes(t *testing.T) {
 
 	logs := getLogs()
 
-	count := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	count := strings.Count(logs, "unhandled — unknown event type")
 	if count != len(unknownTypes) {
 		t.Errorf("expected %d 'unhandled' log lines (one per unique type), got %d; logs:\n%s",
 			len(unknownTypes), count, logs)
@@ -8685,7 +7973,7 @@ func TestUnknownEventType_CapReached(t *testing.T) {
 	}
 
 	// Types beyond the cap should NOT have been logged as "unhandled".
-	unhandledCount := strings.Count(logs, "unhandled — opencode may have added a new event type")
+	unhandledCount := strings.Count(logs, "unhandled — unknown event type")
 	if unhandledCount > seenUnknownCap {
 		t.Errorf("expected ≤ %d 'unhandled' log lines (cap), got %d", seenUnknownCap, unhandledCount)
 	}
@@ -8776,12 +8064,12 @@ func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB, httpCli
 		SessionName: reviewSession,
 		Repo:        "test-repo",
 		Worktree:    "/tmp/" + reviewSession,
-		OpencodeURL: "http://localhost:14003",
+		HarnessURL: "http://localhost:14003",
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  httpClient,
 		AgentRole:   "review-goal",
-		Harness:     opencode.New("http://localhost:14003", httpClient, "review-goal", ""),
+		Harness:     newSSEHarness(),
 	}
 	return New(cfg), clk
 }
@@ -8794,8 +8082,9 @@ func seedParentWorkerWithPort(t *testing.T, d *db.DB, sessionName, repo string, 
 	if err := d.UpsertStatus(sessionName, repo, "/tmp/"+sessionName, "active", nil, &sid); err != nil {
 		t.Fatalf("seed parent worker: UpsertStatus: %v", err)
 	}
+	// Clear harness so HTTP fallback is used (tests use httptest.Server).
 	if err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING harness_port",
+		"UPDATE agent_status SET harness_port = ?, harness = '' WHERE session_name = ? RETURNING harness_port",
 		port, sessionName,
 	).Scan(new(int)); err != nil {
 		t.Fatalf("seed parent worker: set port: %v", err)
@@ -9173,7 +8462,7 @@ func newBwrapSidecarWithTimeout(t *testing.T, timeout time.Duration) (*Sidecar, 
 		SessionName:           "test-repo@feature~review-1-review-goal",
 		Repo:                  "test-repo",
 		Worktree:              "/tmp/test-bwrap-worktree",
-		OpencodeURL:           "http://localhost:19999",
+		HarnessURL:           "http://localhost:19999",
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
@@ -9232,7 +8521,7 @@ func TestStartupConnectTimeout_DoesNotFireAfterFirstEvent(t *testing.T) {
 		SessionName:           "test-repo@feature",
 		Repo:                  "test-repo",
 		Worktree:              "/tmp/test-worktree",
-		OpencodeURL:           "http://localhost:19998",
+		HarnessURL:           "http://localhost:19998",
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
@@ -9331,10 +8620,10 @@ func TestStartupConnectTimeout_ConfigurableViaField(t *testing.T) {
 		SessionName:           "test-repo@main",
 		Repo:                  "test-repo",
 		Worktree:              "/tmp/test-worktree",
-		OpencodeURL:           "http://localhost:19997",
+		HarnessURL:           "http://localhost:19997",
 		DB:                    d,
 		Clock:                 newTestClock(),
-		Harness:               opencode.New("http://localhost:19997", nil, "", ""),
+		Harness:               newSSEHarness(),
 		StartupConnectTimeout: custom,
 	}
 	sc := New(cfg)
@@ -9477,7 +8766,7 @@ func TestStartupConnectTimeout_WorkerSessionNotifiesCoordinator(t *testing.T) {
 		SessionName:           "test-repo@feature",
 		Repo:                  "test-repo",
 		Worktree:              "/tmp/test-worker-worktree",
-		OpencodeURL:           "http://localhost:19996",
+		HarnessURL:           "http://localhost:19996",
 		DB:                    d,
 		Clock:                 newTestClock(),
 		Harness:               &blockingHarness{},
@@ -9786,7 +9075,7 @@ func TestReviewing_TransitionsToFinishedAfterPromptDelivery(t *testing.T) {
 }
 
 // TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite
-// verifies the fix for #1384: on opencode-harness sessions the monitor writes
+// verifies the fix for #1384: on pi-harness sessions the monitor writes
 // "active" to the DB just before delivering the review-complete prompt via
 // deliverViaHTTP (bypassing the sidecar's /prompt handler, so
 // reviewingInFlight is never cleared by the socket-pipe path). The idle
@@ -9839,13 +9128,13 @@ func TestReviewing_OpencodeHarness_IdleDebounceNotSuppressedAfterMonitorWrite(t 
 	// The session must reach "finished" (not remain stuck in "reviewing" or
 	// "active" forever, which was the pre-fix symptom).
 	if state := getState(t, d, worker.cfg.SessionName); state != string(agent.StateFinished) {
-		t.Errorf("after idle debounce: state = %q, want %q (opencode-harness session must reach finished)", state, agent.StateFinished)
+		t.Errorf("after idle debounce: state = %q, want %q (pi-harness session must reach finished)", state, agent.StateFinished)
 	}
 
 	// Coordinator must receive the "has finished" notification.
 	msg := waitForBusMessageDelivered(t, d, "test-repo@main")
 	if msg == nil {
-		t.Fatal("expected coordinator notification after opencode-harness review-complete cycle, got none")
+		t.Fatal("expected coordinator notification after pi-harness review-complete cycle, got none")
 	}
 	wantText := "Agent test-repo@feature has finished its current task"
 	if msg.Text != wantText {
@@ -10013,12 +9302,12 @@ exit 0
 		SessionName:     sessionName,
 		Repo:            repo,
 		Worktree:        worktree,
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -10108,12 +9397,12 @@ func TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow(t *testing.T) {
 		SessionName:     "no-such-row@feature",
 		Repo:            "no-such-row",
 		Worktree:        "/tmp/no-such-row@feature",
-		OpencodeURL:     "http://localhost:14000",
+		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
 		AgentRole:       "worker",
 		PrismBinaryPath: stubPath,
-		Harness:         opencode.New("http://localhost:14000", nil, "worker", ""),
+		Harness:         newSSEHarness(),
 	}
 	sc := New(cfg)
 
@@ -10139,7 +9428,7 @@ func TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow(t *testing.T) {
 // ── [timing] markers — bwrap path (#1052) ───────────────────────────────────
 
 // TestBwrapTimingMarkers_FirstEvent verifies that on the bwrap path
-// (Container == nil), the sidecar emits both `[timing] opencode listening`
+// (Container == nil), the sidecar emits both `[timing] harness listening`
 // and `[timing] ready` lines on the first SSE event. AC #2 and #3 (#1052):
 // the markers must be sourced from "whatever signal the bwrap sidecar uses
 // to detect opencode readiness" — for bwrap that is the first SSE event.
@@ -10149,7 +9438,7 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 		SessionName: "test-repo@feature",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-bwrap-worktree",
-		OpencodeURL: "http://localhost:19999",
+		HarnessURL: "http://localhost:19999",
 		DB:          d,
 		Clock:       newTestClock(),
 		Harness:     &harness.FakeHarness{},
@@ -10163,11 +9452,11 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	out := getLogs()
 
-	if !strings.Contains(out, "[timing] opencode listening:") {
-		t.Errorf("missing `[timing] opencode listening` line in:\n%s", out)
+	if !strings.Contains(out, "[timing] harness listening:") {
+		t.Errorf("missing `[timing] harness listening` line in:\n%s", out)
 	}
 	if !strings.Contains(out, "from start") {
-		t.Errorf("`[timing] opencode listening` line missing `from start` suffix in:\n%s", out)
+		t.Errorf("`[timing] harness listening` line missing `from start` suffix in:\n%s", out)
 	}
 	if !strings.Contains(out, "[timing] ready:") {
 		t.Errorf("missing `[timing] ready` line in:\n%s", out)
@@ -10185,7 +9474,7 @@ func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
 		SessionName:   "test-repo@feature",
 		Repo:          "test-repo",
 		Worktree:      "/tmp/test-bwrap-worktree",
-		OpencodeURL:   "http://localhost:19999",
+		HarnessURL:   "http://localhost:19999",
 		DB:            d,
 		Clock:         newTestClock(),
 		Harness:       &harness.FakeHarness{},
@@ -10213,7 +9502,7 @@ func TestBwrapTimingMarkers_NoPromptDelivered(t *testing.T) {
 		SessionName: "test-repo@feature",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-bwrap-worktree",
-		OpencodeURL: "http://localhost:19999",
+		HarnessURL: "http://localhost:19999",
 		DB:          d,
 		Clock:       newTestClock(),
 		Harness:     &harness.FakeHarness{},
@@ -10241,7 +9530,7 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 		SessionName: "test-repo@feature",
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-bwrap-worktree",
-		OpencodeURL: "http://localhost:19999",
+		HarnessURL: "http://localhost:19999",
 		DB:          d,
 		Clock:       newTestClock(),
 		Harness:     &harness.FakeHarness{},
@@ -10253,7 +9542,7 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 	// First event: emits markers.
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	first := getLogs()
-	if !strings.Contains(first, "[timing] opencode listening:") {
+	if !strings.Contains(first, "[timing] harness listening:") {
 		t.Fatalf("first event missing markers:\n%s", first)
 	}
 
@@ -10262,8 +9551,8 @@ func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
 	sc.HandleEvent(makeSSE("server.connected", map[string]any{}))
 	sc.HandleEvent(makeSSE("session.idle", map[string]any{}))
 	final := getLogs()
-	if got := strings.Count(final, "[timing] opencode listening:"); got != 1 {
-		t.Errorf("got %d `[timing] opencode listening` lines, want exactly 1:\n%s", got, final)
+	if got := strings.Count(final, "[timing] harness listening:"); got != 1 {
+		t.Errorf("got %d `[timing] harness listening` lines, want exactly 1:\n%s", got, final)
 	}
 	if got := strings.Count(final, "[timing] ready:"); got != 1 {
 		t.Errorf("got %d `[timing] ready` lines, want exactly 1:\n%s", got, final)
@@ -10295,8 +9584,8 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 	}
 	out := getLogs()
 
-	if !strings.Contains(out, "[timing] opencode listening:") {
-		t.Errorf("missing `[timing] opencode listening` line on timeout path:\n%s", out)
+	if !strings.Contains(out, "[timing] harness listening:") {
+		t.Errorf("missing `[timing] harness listening` line on timeout path:\n%s", out)
 	}
 	if !strings.Contains(out, "(timed out)") {
 		t.Errorf("timeout-path `[timing]` line should include `(timed out)` suffix to distinguish from success:\n%s", out)

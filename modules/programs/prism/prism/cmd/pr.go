@@ -8,15 +8,15 @@ package cmd
 // Additional flags mirror prism spawn:
 //
 //	--repo <name>                   target repo by folder name under ~/code (or full path)
-//	--prompt <text>                 pass an initial prompt to opencode on launch
+//	--prompt <text>                 pass an initial prompt to the agent on launch
 //	--prompt-file <path>            read the initial prompt from a file
-//	--agent <name>                  opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--agent <name>                  agent to use (default: "coordinator" on main, "worker" otherwise)
 //	--attach                        switch the current tmux client to the new session
 //	--profile <name>                model profile to use from ~/.config/prism/profiles.json
 //	--model <name>                  model identifier override (overrides profile's primary model)
 //	--variant <name>                model variant override (overrides all agents' variant)
 //	--model-override role=model     per-role model override (repeatable)
-//	--harness <name>                agent harness to use (default: from profile slot or "opencode")
+//	--harness <name>                agent harness to use (default: from profile slot, or "pi")
 //	--isolation <mode>              isolation mode: podman, bwrap, sandbox-exec, or host
 
 import (
@@ -32,7 +32,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -217,7 +216,7 @@ var prCmd = &cobra.Command{
 		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(tmuxSessionName),
-		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
+		// and Manager.opencodeConfigFilePath() calls HarnessConfigFilePath(m.name).
 		// Isolator.WriteHarnessConfigBlob translates the prism session name to the
 		// container name internally so this call site stays mode-agnostic (D3,
 		// issue #1133). Mirrors the pattern in spawn.go.
@@ -295,7 +294,7 @@ func init() {
 	prCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	prCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	prCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
-	prCmd.Flags().String("harness", "", "Agent harness to use (default: from profile slot, or opencode)")
+	prCmd.Flags().String("harness", "", "Agent harness to use (default: from profile slot, or 'pi')")
 	prCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	rootCmd.AddCommand(prCmd)
 }

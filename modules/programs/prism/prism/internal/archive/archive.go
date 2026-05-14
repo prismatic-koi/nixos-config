@@ -335,13 +335,13 @@ func CopySessionFiles(harnessSessionID, dbPath, rawDir string) error {
 func exportSessionFromDB(harnessSessionID, dbPath, rawDir string) error {
 	// If the DB doesn't exist at all (fresh install, never run) — graceful no-op.
 	if _, statErr := os.Stat(dbPath); os.IsNotExist(statErr) {
-		log.Printf("[prism] archive: opencode DB not found at %s — skipping session export", dbPath)
+		log.Printf("[prism] archive: legacy archive DB not found at %s — skipping session export", dbPath)
 		return nil
 	}
 
 	db, err := sql.Open("sqlite", "file:"+dbPath+"?mode=ro&_busy_timeout=5000")
 	if err != nil {
-		return fmt.Errorf("archive: open opencode DB: %w", err)
+		return fmt.Errorf("archive: open legacy archive DB: %w", err)
 	}
 	defer db.Close()
 
@@ -352,7 +352,7 @@ func exportSessionFromDB(harnessSessionID, dbPath, rawDir string) error {
 	}
 	if sessionData == nil {
 		// Session not in DB — log and leave raw/ empty.
-		log.Printf("[prism] archive: session %q not found in opencode DB — skipping session export", harnessSessionID)
+		log.Printf("[prism] archive: session %q not found in legacy archive DB — skipping session export", harnessSessionID)
 		return nil
 	}
 

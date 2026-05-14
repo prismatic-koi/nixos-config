@@ -4,13 +4,13 @@ This document provides guidance for AI agents on how to interact with this NixOS
 
 ## Application Configuration Lives in This Repo
 
-Many applications — including opencode, prism, zsh, neovim, and others — are configured as Nix modules in this repository rather than having config files in `~/.config/` or other dotfile locations. **Before reading external config files or fetching docs to understand how an application is configured, search this repo first.**
+Many applications — including prism, zsh, neovim, and others — are configured as Nix modules in this repository rather than having config files in `~/.config/` or other dotfile locations. **Before reading external config files or fetching docs to understand how an application is configured, search this repo first.**
 
 For example:
-- opencode configuration → `modules/programs/prism/opencode.nix`
-- Custom opencode agents → `modules/programs/prism/opencode/agents/`
-- opencode skills → `modules/programs/prism/opencode/skills/`
-- Global opencode agent instructions (`~/.config/opencode/AGENTS.md`) → `modules/programs/prism/opencode.nix` (the `agentInstructions` string, rendered via `programs.opencode.context`) — **never edit the file at `~/.config` directly, it is overwritten on every switch**
+- pi (agent runtime) configuration → `modules/programs/prism/pi.nix`
+- Custom agent markdown files → `modules/programs/prism/agents/`
+- Skills → `modules/programs/prism/skills/`
+- Agent files at `~/.config/prism/agents/` and skills at `~/.config/prism/skills/` — **never edit these directly, they are overwritten on every switch**
 
 If you need to understand how something is configured, `grep` or `glob` within the working directory before reaching outside it.
 
@@ -30,9 +30,9 @@ Prism is a tmux-based AI development environment that is developed and configure
 
 - **Go CLI source**: `modules/programs/prism/prism/` — the `prism` binary (spawn, checkin, prompt, dashboard, etc.)
 - **Tmux configuration**: `modules/programs/prism/tmux.nix`
-- **Opencode configuration**: `modules/programs/prism/opencode.nix`
-- **Custom agents**: `modules/programs/prism/opencode/agents/`
-- **Skills**: `modules/programs/prism/opencode/skills/`
+- **Pi agent configuration**: `modules/programs/prism/pi.nix`
+- **Custom agents**: `modules/programs/prism/agents/`
+- **Skills**: `modules/programs/prism/skills/`
 
 When making changes to prism Go source, always build and test before committing:
 

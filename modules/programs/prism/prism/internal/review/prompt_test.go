@@ -22,7 +22,7 @@ func setupAgentsDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
-	agentsDir := filepath.Join(dir, "opencode", "agents")
+	agentsDir := filepath.Join(dir, "prism", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestBuildReviewPrompt_MissingRoleFile_ContainsNotice(t *testing.T) {
 		t.Errorf("prompt should contain 'role definition for review-goal-subagent not found'\nprompt:\n%s", prompt)
 	}
 	// The notice must name the path so readers know where to look.
-	if !findSubstring(prompt, "opencode/agents/review-goal-subagent.md") {
+	if !findSubstring(prompt, "prism/agents/review-goal-subagent.md") {
 		t.Errorf("prompt should include the expected path in the notice\nprompt:\n%s", prompt)
 	}
 }

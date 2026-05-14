@@ -18,7 +18,7 @@ func TestBuildProfileJSON_SnakeCaseAndActiveFlag(t *testing.T) {
 			Provider: "anthropic",
 			Model:    "anthropic/claude-sonnet-4-6",
 			Thinking: "high",
-			Harness:  "opencode",
+			Harness:  "pi",
 		},
 		"worker": config.RoleSlot{
 			Model: "anthropic/claude-sonnet-4-6",

@@ -20,7 +20,7 @@
             AWS_CONFIG_FILE = "$HOME/.config/aws/readonly-config";
             GIT_EDITOR = "true";
           };
-          description = "Environment variables to set for the AI agent (opencode)";
+          description = "Environment variables to set for the AI agent (pi)";
         };
 
         isolation = {
@@ -34,9 +34,9 @@
             example = "bwrap";
             description = ''
               Default isolation mode for new agent sessions. Valid values:
-              - "bwrap":        run opencode inside a bubblewrap sandbox (Linux-only, default on Linux).
-              - "host":         run opencode directly in the tmux pane with no isolation (default on Darwin).
-              - "sandbox-exec": run opencode inside a macOS sandbox-exec profile (Darwin-only).
+              - "bwrap":        run the agent inside a bubblewrap sandbox (Linux-only, default on Linux).
+              - "host":         run the agent directly in the tmux pane with no isolation (default on Darwin).
+              - "sandbox-exec": run the agent inside a macOS sandbox-exec profile (Darwin-only).
 
               This value is written to ~/.config/prism/config.json as default_isolation_mode.
               It can be overridden per-spawn via `prism spawn --isolation <mode>`.
@@ -154,7 +154,7 @@
           description = ''
             The system-wide default profile written as `default` in profiles.json.
             This controls which profile is active when prism spawns a new session
-            and affects all harnesses (opencode, pi, etc.), not just opencode.
+            and affects all harnesses, not just pi.
             Changing this selects a different set of model assignments for all
             session roles (coordinator, worker, explore, etc.).
           '';
@@ -164,7 +164,7 @@
       harness = {
         default = lib.mkOption {
           type = lib.types.str;
-          default = "opencode";
+          default = "pi";
           example = "pi";
           description = ''
             The fallback harness used when a profile slot does not specify a
@@ -175,18 +175,13 @@
               1. `--harness` flag at spawn / pr / review.
               2. Slot-level `harness` field in the active profile.
               3. This `default_harness` from profiles.json.
-              4. Hardcoded "opencode" (only if profiles.json predates this option).
+              4. Hardcoded "pi" (only if profiles.json predates this option).
 
             Validation that the value names a registered harness happens on the
             Go side at profiles-file load time, so the list of valid names is
             not duplicated in Nix. Setting this to a value not registered in
-            the Go `harness` package (e.g. "opencode", "pi") will fail at
-            runtime when prism reads profiles.json.
-
-            Setting this to "opencode" produces a profiles.json that is
-            byte-identical to the pre-option output for the same machine
-            config — the field is omitted from JSON when it equals the
-            hardcoded fallback so default installs see no incidental diff.
+            the Go `harness` package will fail at runtime when prism reads
+            profiles.json.
           '';
         };
       };
@@ -201,25 +196,8 @@
   };
 
   imports = [
-    (lib.mkRenamedOptionModule
-      [
-        "nx"
-        "programs"
-        "prism"
-        "opencode"
-        "provider"
-      ]
-      [
-        "nx"
-        "programs"
-        "prism"
-        "profile"
-        "default"
-      ]
-    )
     ./container-tokens.nix
     ./neovim
-    ./opencode.nix
     ./pi.nix
     ./profiles.nix
     ./secrets.nix
@@ -263,7 +241,6 @@
       {
         # Enable all submodules by default (can be individually disabled)
         nx.programs.prism.neovim.enable = lib.mkDefault true;
-        nx.programs.prism.opencode.enable = lib.mkDefault true;
         nx.programs.prism.tmux.enable = lib.mkDefault true;
         nx.programs.prism.sessioniser.enable = lib.mkDefault true;
         nx.programs.prism.contextSwitcher.enable = lib.mkDefault true;

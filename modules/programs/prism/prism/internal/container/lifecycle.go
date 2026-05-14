@@ -36,7 +36,7 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
-	_ = os.Remove(m.opencodeConfigFilePath())
+	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
@@ -148,7 +148,7 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.sshConfigFilePath())
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
-	_ = os.Remove(m.opencodeConfigFilePath())
+	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session sandbox-exec staging HOME directory tree.

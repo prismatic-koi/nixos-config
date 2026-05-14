@@ -103,7 +103,7 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".ssh"),
 		filepath.Join(stagingHome, ".aws"),
 		filepath.Join(stagingHome, ".kube"),
-		filepath.Join(stagingHome, ".config", "opencode"),
+		filepath.Join(stagingHome, ".config", "pi"),
 		filepath.Join(stagingHome, ".cache"),
 		filepath.Join(stagingHome, ".pi"),
 	}
@@ -295,61 +295,22 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".npm"),
 	)
 
-	// ── .config/opencode/ ─────────────────────────────────────────────────────
-	// Mirror bwrap.go:438-455 allowlist. opencode.json is a generated regular
-	// file (written below), not a symlink.
-	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
-	opencodeAllowlist := []string{
+	// ── .config/pi/ ───────────────────────────────────────────────────────────
+	// Mirror the pi config directory into staging so pi finds its configuration.
+	piConfigDir := filepath.Join(home, ".config", "pi")
+	piAllowlist := []string{
+		"settings.json",
 		"AGENTS.md",
-		"plugins",
+		"agents",
 		"skills",
-		"command",
-		"tui.json",
-		".gitignore",
-		"mcp-atlassian-slim-proxy.mjs",
-		// node_modules and bun.lock are included so that bun finds the
-		// pre-installed plugin packages without running `bun install` from
-		// scratch on every session. In bwrap, the host ~/.config/opencode dir
-		// is bind-mounted so node_modules is implicitly available; in sandbox-exec
-		// the staging .config/opencode is a fresh directory built from this
-		// allowlist, so without these entries bun re-downloads and re-installs
-		// every plugin on cold start (~8s per session).
-		"node_modules",
-		"bun.lock",
 	}
-	// agents/ is role-conditional: mirror bwrap.go:447-448.
-	if !strings.HasPrefix(m.cfg.AgentRole, "review-") {
-		opencodeAllowlist = append(opencodeAllowlist, "agents")
-	}
-	for _, entry := range opencodeAllowlist {
-		src := filepath.Join(opencodeConfigDir, entry)
-		dst := filepath.Join(stagingHome, ".config", "opencode", entry)
+	for _, entry := range piAllowlist {
+		src := filepath.Join(piConfigDir, entry)
+		dst := filepath.Join(stagingHome, ".config", "pi", entry)
 		symlinkIfExists(src, dst)
 	}
 
-	// opencode.json — regular generated file (not a symlink). Written from
-	// the temp file path (m.opencodeConfigFilePath()) when that file exists.
-	// The check is file-existence-based so files written at spawn time by
-	// cmd/spawn.go are picked up even when ConfigContent is not in memory
-	// (mirrors bwrap.go:419-422).
-	opencodeConfigPath := m.opencodeConfigFilePath()
-	if _, err := os.Stat(opencodeConfigPath); err == nil {
-		content, readErr := os.ReadFile(opencodeConfigPath)
-		if readErr == nil {
-			dstConfig := filepath.Join(stagingHome, ".config", "opencode", "opencode.json")
-			_ = os.Remove(dstConfig) // idempotent
-			if writeErr := os.WriteFile(dstConfig, content, 0o644); writeErr != nil {
-				log.Printf("container: sandbox-exec: write staging opencode.json: %v", writeErr)
-			}
-		}
-	}
-
 	// ── .cache/ ───────────────────────────────────────────────────────────────
-	// opencode cache — only linked when writable (mirrors bwrap.go:464-467).
-	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
-	if isWritable(opencodeCacheDir) {
-		symlinkIfExists(opencodeCacheDir, filepath.Join(stagingHome, ".cache", "opencode"))
-	}
 
 	// bun cache — only linked when writable (mirrors bwrap.go:474-477).
 	bunCacheDir := filepath.Join(home, ".cache", "bun")
@@ -775,7 +736,7 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// Scan the top-level staging HOME and all immediate subdirectories that
 	// the staging HOME builder creates (one level deep).
 	scanDir("")
-	subDirs := []string{".ssh", ".aws", ".kube", ".config/opencode", ".cache", ".pi"}
+	subDirs := []string{".ssh", ".aws", ".kube", ".config/pi", ".cache", ".pi"}
 	for _, sub := range subDirs {
 		scanDir(sub)
 	}

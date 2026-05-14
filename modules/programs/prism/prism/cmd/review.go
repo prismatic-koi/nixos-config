@@ -13,7 +13,7 @@ package cmd
 //
 // Flags:
 //
-//	--harness <name>    Runtime harness (default: "opencode")
+//	--harness <name>    Runtime harness (default: "pi")
 //	--timeout <dur>     Per-agent timeout (default: 10m)
 //	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
 //	--rebase            Inline-rebase onto origin/main (fetch + rebase + force-push) before review
@@ -32,7 +32,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -56,7 +55,7 @@ Do NOT commit, merge, or announce completion until the review-complete prompt ar
 }
 
 func init() {
-	reviewCmd.Flags().String("harness", "opencode", "Runtime harness to use for review agents")
+	reviewCmd.Flags().String("harness", "pi", "Runtime harness to use for review agents")
 	reviewCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait per agent")
 	reviewCmd.Flags().String("only", "", "Comma-separated list of agent names to run (e.g. review-goal,review-code)")
 	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
@@ -257,15 +256,16 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// always running on the host. The agent definition files are on the host
 	// filesystem and CheckAgentAvailability can inspect them correctly.
 	//
-	// The harness adapter's ValidateAgentRole method encapsulates the
-	// harness-specific check (for opencode: agent .md files in the agents
-	// directory). This keeps opencode-specific filesystem paths out of
-	// cmd/ and review/ packages.
-	// harnessFlag was validated via harness.Lookup above; the error is unreachable.
-	h, _ := harness.New(harnessFlag, "", nil, "", "")
-	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
+	// prismAgentRoleValidator checks that the agent .md definition file exists
+	// under ~/.config/prism/agents/ (the canonical location after the opencode
+	// runtime was removed).
+	if err := review.CheckAgentAvailability(agents, prismAgentRoleValidator); err != nil {
 		return fmt.Errorf("prism review: %w", err)
 	}
+
+	// Construct harness adapter for runtime env vars (e.g. pi extension config).
+	// harnessFlag was validated via harness.Lookup above; the error is unreachable.
+	h, _ := harness.New(harnessFlag, "", nil, "", "")
 
 	// progressLine writes and flushes a single progress line to stdout.
 	// Flushing after each write is critical: the enclosing bash tool invocation
@@ -420,16 +420,22 @@ func progressLineEager(line string) {
 }
 
 // agentsForHarness returns the agent list for the given harness.
-// Currently only "opencode" is supported as a harness.
 func agentsForHarness(harness string) []review.Agent {
-	switch harness {
-	case "opencode", "":
-		return review.Agents()
-	default:
-		// Unknown harness — return opencode agents as fallback.
-		fmt.Fprintf(os.Stderr, "[prism review] warning: unknown harness %q, using opencode\n", harness)
-		return review.Agents()
+	return review.Agents()
+}
+
+// prismAgentRoleValidator checks that a <role>.md definition file exists under
+// ~/.config/prism/agents/, returning an error if it is absent.
+func prismAgentRoleValidator(role string) error {
+	dir := prismAgentRolePath(role)
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return fmt.Errorf(
+			"prism: agent role %q is not available — no definition file at %s\n"+
+				"hint: ensure the system has been rebuilt with the prism NixOS module",
+			role, dir,
+		)
 	}
+	return nil
 }
 
 // resolveReviewWorktree returns the host-side worktree path for parentSession
@@ -537,7 +543,7 @@ PR branch and let that session run the review:
 
 Wait for the finish notification from that spawned session before reporting back.
 
-See: modules/programs/prism/opencode/agents/coordinator.md`)
+See: modules/programs/prism/agents/coordinator.md`)
 	}
 	return nil
 }

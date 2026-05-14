@@ -630,7 +630,7 @@ func setRootAgent(t *testing.T, d *db.DB, session, agentName string) {
 func TestRenderCheckinTurns_SubagentCollapsedDefault(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 
@@ -689,7 +689,7 @@ func TestRenderCheckinTurns_SubagentCollapsedDefault(t *testing.T) {
 func TestRenderCheckinTurns_SubagentVerboseExpanded(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 
@@ -740,7 +740,7 @@ func TestRenderCheckinTurns_SubagentVerboseExpanded(t *testing.T) {
 func TestRenderCheckinTurns_SubagentSingleToolCall(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 
@@ -772,7 +772,7 @@ func TestRenderCheckinTurns_SubagentSingleToolCall(t *testing.T) {
 func TestRenderCheckinTurns_SubagentNoToolCalls(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 
@@ -836,7 +836,7 @@ func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
 	msg1ID := "msg-1"
 	msg2ID := "msg-2"
 	ae1 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
-		assistantPayloadWithAgent(msg1ID, "turn one", "opencode"), base)
+		assistantPayloadWithAgent(msg1ID, "turn one", "worker"), base)
 	ae2 := writeEvent(t, d, uuid.New().String(), session, "msg_assistant",
 		assistantPayloadWithAgent(msg2ID, "turn two", "review"), base.Add(time.Second))
 
@@ -877,7 +877,7 @@ func TestRenderCheckinTurns_PreMigrationNoRootAgent(t *testing.T) {
 func TestRenderCheckinTurns_SubagentUserEventsCollapsed(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 
@@ -1211,7 +1211,7 @@ func TestToolKeyArg(t *testing.T) {
 func TestRenderCheckinTurns_StateChangeInsideSubagentCollapse(t *testing.T) {
 	d := openCheckinTestDB(t)
 	const session = "repo@main"
-	const rootAgent = "opencode"
+	const rootAgent = "worker"
 	const subAgent = "review"
 	base := time.Now().Truncate(time.Second)
 

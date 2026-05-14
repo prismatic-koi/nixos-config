@@ -34,7 +34,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -331,26 +330,21 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isoMode)
 
-	opencodeSession := ""
-	if s.HarnessSessionID != nil {
-		opencodeSession = *s.HarnessSessionID
-	}
-	// Resolve the harness name from the DB row. Fall back to "opencode" for
+	// Resolve the harness name from the DB row. Fall back to "pi" for
 	// pre-registry rows where the harness column is NULL.
-	restoreHarnessName := "opencode"
+	restoreHarnessName := "pi"
 	if s.Harness != nil && *s.Harness != "" {
 		restoreHarnessName = *s.Harness
 	}
 	// If the persisted harness is not registered (e.g. a future harness that
-	// was later uninstalled), fall back to the opencode adapter so that
+	// was later uninstalled), fall back to the pi adapter so that
 	// restore does not hard-fail on every row.
 	restoreHarness, restoreHarnessErr := harness.New(restoreHarnessName, "", nil, "", "")
 	if restoreHarnessErr != nil {
-		restoreHarness, _ = harness.New("opencode", "", nil, "", "")
+		restoreHarness, _ = harness.New("pi", "", nil, "", "")
 	}
 	opts := session.Opts{
-		Headless:         true,
-		OpencodeSession:  opencodeSession,
+		Headless: true,
 		Agent:            session.DefaultAgentForSession(s.SessionName, directory, "", d),
 		SessionName:      s.SessionName,
 		Layout:           session.LayoutFull,
@@ -437,7 +431,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(s.SessionName),
-		// and Manager.opencodeConfigFilePath() calls OpencodeConfigFilePath(m.name).
+		// and Manager.opencodeConfigFilePath() calls HarnessConfigFilePath(m.name).
 		// Isolator.WriteHarnessConfigBlob translates the prism session name to
 		// the container name internally so this call site stays mode-agnostic
 		// (D3, issue #1133). Mirrors the pattern in spawn.go.
@@ -447,7 +441,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 				// still be re-spawned; it just won't have the opencode.json
 				// mounted. This matches the general "restore is best-effort"
 				// posture (profile load errors are also non-fatal above).
-				fmt.Fprintf(os.Stderr, "restore %q: write opencode config: %v — session will spawn without opencode.json mounted\n", s.SessionName, err)
+				fmt.Fprintf(os.Stderr, "restore %q: write harness config: %v — session will spawn without config mounted\n", s.SessionName, err)
 			}
 		}
 	}

@@ -221,7 +221,7 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 	}
 }
 
-// renderSessionDetail renders the detailed block format for a single opencode session.
+// renderSessionDetail renders the detailed block format for a single harness session.
 func renderSessionDetail(m *sessionMetrics) {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
@@ -350,16 +350,16 @@ func renderSessionDetail(m *sessionMetrics) {
 }
 
 // renderSessionCompactTable renders a compact one-row-per-opencode-session table
-// for tmux sessions that contain multiple opencode sessions. If detail is true,
+// for tmux sessions that contain multiple harness sessions. If detail is true,
 // each session is rendered as a full block instead.
 func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, status *db.Status, detail bool) {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	// Compute summary totals. Count real (non-legacy) opencode sessions separately
+	// Compute summary totals. Count real (non-legacy) harness sessions separately
 	// from the legacy sentinel group — the legacy group is a synthetic bucket for
-	// pre-sidecar events, not a real opencode session.
+	// pre-sidecar events, not a real harness session.
 	var totalTurns int
 	var totalCost float64
 	var realSessionCount int
@@ -401,7 +401,7 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 	if totalCost > 0 {
 		costStr = formatCost(totalCost)
 	}
-	fmt.Printf("%s %d opencode sessions%s%s · %d turns · %s\n",
+	fmt.Printf("%s %d harness sessions%s%s · %d turns · %s\n",
 		styleLabel.Render("summary:"),
 		realSessionCount,
 		modelCountStr,
@@ -412,19 +412,19 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 	fmt.Println()
 
 	if detail {
-		// --detail: render each opencode session as a full block.
+		// --detail: render each harness session as a full block.
 		for i, m := range metrics {
 			if i > 0 {
 				fmt.Println(styleDim.Render(strings.Repeat("─", 60)))
 				fmt.Println()
 			}
 			if m.isLegacy() {
-				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render("(legacy, pre-sidecar)"))
+				fmt.Printf("%s %s\n", styleLabel.Render("harness session:"), styleDim.Render("(legacy, pre-sidecar)"))
 				if m.ModelID == "" {
 					m.ModelID = "(legacy)"
 				}
 			} else {
-				fmt.Printf("%s %s\n", styleLabel.Render("opencode session:"), styleDim.Render(m.HarnessSessionID))
+				fmt.Printf("%s %s\n", styleLabel.Render("harness session:"), styleDim.Render(m.HarnessSessionID))
 			}
 			fmt.Println()
 			renderSessionDetail(m)
@@ -510,5 +510,5 @@ func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, st
 	}
 
 	fmt.Println()
-	fmt.Println(styleDim.Render("use --detail to see full metrics for each opencode session"))
+	fmt.Println(styleDim.Render("use --detail to see full metrics for each harness session"))
 }

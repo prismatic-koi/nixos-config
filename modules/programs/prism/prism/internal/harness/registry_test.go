@@ -4,7 +4,7 @@ package harness_test
 //
 // Covers the acceptance-criteria edge cases:
 //   - harness.Lookup("unknown") returns (Registration{}, false)
-//   - harness.Names() returns ["opencode"] once the opencode init() has run
+//   - harness.Names() returns ["pi"] once the pi init() has run
 //   - MustRegister panics on duplicate registration
 //   - Register rejects empty Name / Shape / nil Factory
 
@@ -15,8 +15,8 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/harness"
-	// Blank import to trigger the opencode init() registration.
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
+	// Blank import to trigger the pi init() registration.
+	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 )
 
 // noopFactory is a minimal Factory that returns nil (sufficient for
@@ -35,36 +35,33 @@ func TestLookup_Unknown(t *testing.T) {
 	}
 }
 
-func TestLookup_Opencode(t *testing.T) {
-	reg, ok := harness.Lookup("opencode")
+func TestLookup_Pi(t *testing.T) {
+	reg, ok := harness.Lookup("pi")
 	if !ok {
-		t.Fatalf("Lookup(opencode): expected ok=true, got ok=false")
+		t.Fatalf("Lookup(pi): expected ok=true, got ok=false")
 	}
-	if reg.Name != "opencode" {
-		t.Errorf("Lookup(opencode): Name = %q, want %q", reg.Name, "opencode")
+	if reg.Name != "pi" {
+		t.Errorf("Lookup(pi): Name = %q, want %q", reg.Name, "pi")
 	}
-	if reg.Shape != harness.TransportHTTPPort {
-		t.Errorf("Lookup(opencode): Shape = %q, want %q", reg.Shape, harness.TransportHTTPPort)
+	if reg.Shape != harness.TransportSocketPipe {
+		t.Errorf("Lookup(pi): Shape = %q, want %q", reg.Shape, harness.TransportSocketPipe)
 	}
 	if reg.Factory == nil {
-		t.Error("Lookup(opencode): Factory is nil")
-	}
-	if reg.ContainerFactory == nil {
-		t.Error("Lookup(opencode): ContainerFactory is nil")
+		t.Error("Lookup(pi): Factory is nil")
 	}
 }
 
-func TestNames_ContainsOpencode(t *testing.T) {
+func TestNames_ContainsPi(t *testing.T) {
 	names := harness.Names()
 	found := false
 	for _, n := range names {
-		if n == "opencode" {
+		if n == "pi" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("Names() = %v, want it to contain %q", names, "opencode")
+		t.Errorf("Names() = %v, want it to contain %q", names, "pi")
 	}
 }
 
@@ -77,13 +74,13 @@ func TestNames_Sorted(t *testing.T) {
 	}
 }
 
-func TestShapeOf_Opencode(t *testing.T) {
-	shape, ok := harness.ShapeOf("opencode")
+func TestShapeOf_Pi(t *testing.T) {
+	shape, ok := harness.ShapeOf("pi")
 	if !ok {
-		t.Fatalf("ShapeOf(opencode): expected ok=true, got ok=false")
+		t.Fatalf("ShapeOf(pi): expected ok=true, got ok=false")
 	}
-	if shape != harness.TransportHTTPPort {
-		t.Errorf("ShapeOf(opencode) = %q, want %q", shape, harness.TransportHTTPPort)
+	if shape != harness.TransportSocketPipe {
+		t.Errorf("ShapeOf(pi) = %q, want %q", shape, harness.TransportSocketPipe)
 	}
 }
 
@@ -98,12 +95,12 @@ func TestShapeOf_Unknown(t *testing.T) {
 }
 
 func TestNew_KnownHarness(t *testing.T) {
-	h, err := harness.New("opencode", "", nil, "", "")
+	h, err := harness.New("pi", "", nil, "", "")
 	if err != nil {
-		t.Fatalf("New(opencode): unexpected error: %v", err)
+		t.Fatalf("New(pi): unexpected error: %v", err)
 	}
 	if h == nil {
-		t.Fatal("New(opencode): returned nil Harness")
+		t.Fatal("New(pi): returned nil Harness")
 	}
 }
 
@@ -118,12 +115,12 @@ func TestNew_UnknownHarness(t *testing.T) {
 }
 
 func TestNewContainer_KnownHarness(t *testing.T) {
-	h, err := harness.NewContainer("opencode", "", nil, "", "")
+	h, err := harness.NewContainer("pi", "", nil, "", "")
 	if err != nil {
-		t.Fatalf("NewContainer(opencode): unexpected error: %v", err)
+		t.Fatalf("NewContainer(pi): unexpected error: %v", err)
 	}
 	if h == nil {
-		t.Fatal("NewContainer(opencode): returned nil Harness")
+		t.Fatal("NewContainer(pi): returned nil Harness")
 	}
 }
 

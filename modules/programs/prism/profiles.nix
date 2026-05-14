@@ -33,8 +33,8 @@
           # A profile is a map from session role → per-role configuration record.
           # Each slot carries:
           #   - provider:         the routing provider (used by future PI work)
-          #   - model:            the model identifier emitted into opencode.json
-          #   - thinking:         the reasoning level (rendered as opencode "variant")
+          #   - model:            the model identifier emitted into harness-config.json
+          #   - thinking:         the reasoning level (rendered as pi "variant")
           #   - systemPromptPath: optional path to a per-role system prompt (P2.AGENTRUN)
           #
           # Helpers below build a profile by stamping the same `slot` value across
@@ -72,7 +72,7 @@
           };
 
           # Determine the system prompt file for a given role.
-          # Maps role names to agent files at ~/.config/opencode/agents/<file>.md.
+          # Maps role names to agent files at ~/.config/pi/agents/<file>.md.
           roleToSystemPromptFile =
             role:
             let
@@ -95,7 +95,7 @@
                 compaction = "worker";
               };
             in
-            "$HOME/.config/opencode/agents/${roleFileMap.${role}}.md";
+            "$HOME/.config/pi/agents/${roleFileMap.${role}}.md";
 
           # Stamp a slot value across the given list of role names, adding
           # role-specific systemPromptPath values for P2.AGENTRUN support.
@@ -125,7 +125,7 @@
           # migrated profiles below.
           # `systemPromptPath` is null until P2.AGENTRUN populates per-role prompts.
           # `harness` defaults to "" (omitted from JSON via omitempty) which the Go
-          # side treats as "opencode". Set explicitly to e.g. "pi" for PI sessions.
+          # side treats as "pi". Set explicitly to e.g. "pi" for PI sessions.
           slot =
             {
               provider ? "",
@@ -143,7 +143,7 @@
           # ── Migrated profiles ──────────────────────────────────────────────────
           # Each existing profile is expanded into per-role slots via
           # profileFromTiers. The output is bit-identical (modulo whitespace /
-          # key ordering) for opencode sessions because applyProfile (below)
+          # key ordering) for pi sessions because applyProfile (below)
           # consumes role-keyed slots directly and produces the same
           # {model, variant} merge per agent as the pre-#1206 implementation.
           profiles = {
@@ -259,9 +259,9 @@
             };
           };
 
-          # Translate a profile thinking value to the opencode variant string.
+          # Translate a profile thinking value to the pi variant string.
           # The canonical zero value in profiles is "off" (the PI harness
-          # convention), but opencode expects "none" as its zero value.
+          # convention), but pi expects "none" as its zero value.
           thinkingToVariant = thinking: if thinking == "off" then "none" else thinking;
         in
         {
@@ -293,11 +293,11 @@
                 role_mapping = config.nx.programs.prism.profiles.data.roleMapping;
               }
               # default_harness — emitted only when set to a non-default value so
-              # that machines using the hardcoded fallback ("opencode") produce
+              # that machines using the hardcoded fallback ("pi") produce
               # byte-identical profiles.json output, satisfying the
               # "no incidental diff for the default case" AC in #1491.
               // (
-                if config.nx.programs.prism.harness.default == "opencode" then
+                if config.nx.programs.prism.harness.default == "pi" then
                   { }
                 else
                   { default_harness = config.nx.programs.prism.harness.default; }
@@ -321,23 +321,7 @@
                     // (if (roleSlot.harness or "") == "" then { } else { harness = roleSlot.harness; })
                   ) profileEntry
                 ) config.nx.programs.prism.profiles.data.profiles;
-                # Container role configs — full opencode.json blobs injected as
-                # OPENCODE_CONFIG_CONTENT (precedence level 6) so no project-level
-                # opencode.jsonc can override agent identity or permissions.
-                container_worker_config = config.nx.programs.prism.opencode.containerWorkerConfigJson;
-                container_coordinator_config = config.nx.programs.prism.opencode.containerCoordinatorConfigJson;
-                # Per-agent review configs — each blob declares only its own agent.
-                # The old container_review_config (PR-A) is retired; PR-B replaces it
-                # with five agent-specific blobs.
-                container_review_goal_config = config.nx.programs.prism.opencode.containerReviewGoalConfigJson;
-                container_review_code_config = config.nx.programs.prism.opencode.containerReviewCodeConfigJson;
-                container_review_security_config =
-                  config.nx.programs.prism.opencode.containerReviewSecurityConfigJson;
-                container_review_qa_config = config.nx.programs.prism.opencode.containerReviewQaConfigJson;
-                container_review_context_config =
-                  config.nx.programs.prism.opencode.containerReviewContextConfigJson;
-                container_investigate_config = config.nx.programs.prism.opencode.containerInvestigateConfigJson;
-                # Agent environment variables to inject into host-mode opencode processes.
+                # Agent environment variables to inject into host-mode agent processes.
                 # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
                 # always contains absolute paths regardless of which form is used.
                 agent_env_vars = lib.mapAttrs (
@@ -357,10 +341,10 @@
           # applyProfile patches `model` and `variant` onto each baseAgent that
           # the active profile defines a slot for. Agents not present in the
           # profile (e.g. `build`) are returned unchanged so they inherit the
-          # top-level opencode model.
+          # top-level harness model.
           #
           # The mapping is direct under the role-keyed schema: `agentName` is the
-          # slot key. `slot.thinking` is translated to opencode's `variant` via
+          # slot key. `slot.thinking` is translated to pi's `variant` via
           # thinkingToVariant ("off" → "none") to preserve bit-identical output
           # with the pre-#1206 schema.
           applyProfile =
@@ -387,8 +371,8 @@
 
     # Write profiles.json to ~/.config/prism/ and persist that directory on
     # impermanence systems. This block is gated on prism.enable (not
-    # opencode.enable) so the file is present regardless of whether the
-    # opencode submodule is active — the prism CLI reads profiles.json
+    # prism.enable) so the file is present regardless of whether the
+    # pi submodule is active — the prism CLI reads profiles.json
     # unconditionally at runtime.
     (lib.mkIf config.nx.programs.prism.enable {
       home-manager.users.${config.nx.username} = {

@@ -471,7 +471,7 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	}
 
 	// The harness binary follows the profile path. We don't pin the exact
-	// string so future PRs can swap "opencode" for an absolute path without
+	// string so future PRs can swap "pi" for an absolute path without
 	// breaking this assertion, but it must be non-empty.
 	if args[3] == "" {
 		t.Errorf("args[3] (harness binary) is empty: %v", args)
@@ -627,8 +627,8 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 		t.Fatalf("expected leading sandbox-exec -f; got: %v", args)
 	}
 	// args[2] is the profile path; args[3] must be the harness binary.
-	if args[3] != "opencode" {
-		t.Errorf("expected args[3] to be the harness binary 'opencode'; got %q in %v", args[3], args)
+	if args[3] != "pi" {
+		t.Errorf("expected args[3] to be the harness binary 'pi'; got %q in %v", args[3], args)
 	}
 }
 
@@ -648,12 +648,12 @@ func newFakeHome(t *testing.T) string {
 		".config/aws",
 		".config/opencode",
 		".config/kube",
-		".cache/opencode",
+		".cache/pi",
 		".cache/bun",
 		".cache/nix",
 		".claude",
 		".mcp-auth",
-		".local/share/opencode",
+		".local/share/pi",
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o755); err != nil {
@@ -783,7 +783,7 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_RegularFilesNotSymlinks verifies that .gitconfig,
-// .ssh/config, and .config/opencode/opencode.json are regular generated files
+// .ssh/config, and .config/pi/harness-config.json are regular generated files
 // (not symlinks) in the staging HOME.
 func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
 	fakeHome := newFakeHome(t)
@@ -796,8 +796,8 @@ func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
 		GitUserEmail:  "test@example.com",
 	})
 	// Write the opencode config temp file.
-	_ = os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"test"}`), 0o644)
-	t.Cleanup(func() { _ = os.Remove(m.opencodeConfigFilePath()) })
+	_ = os.WriteFile(m.harnessConfigFilePath(), []byte(`{"model":"test"}`), 0o644)
+	t.Cleanup(func() { _ = os.Remove(m.harnessConfigFilePath()) })
 
 	stagingHome, err := m.PrepareSandboxExecHome()
 	if err != nil {
@@ -811,7 +811,7 @@ func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
 	regularFiles := []string{
 		filepath.Join(stagingHome, ".gitconfig"),
 		filepath.Join(stagingHome, ".ssh", "config"),
-		filepath.Join(stagingHome, ".config", "opencode", "opencode.json"),
+		filepath.Join(stagingHome, ".config", "pi", "harness-config.json"),
 	}
 	for _, p := range regularFiles {
 		info, err := os.Lstat(p)
@@ -826,12 +826,12 @@ func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_AgentsIncludedForNonReview verifies that
-// .config/opencode/agents/ is present when AgentRole does NOT start with
+// .config/pi/agents/ is present when AgentRole does NOT start with
 // "review-". Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	// Create agents/ dir in the fake home's opencode config.
-	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
 	}
@@ -849,7 +849,7 @@ func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			agentsLink := filepath.Join(stagingHome, ".config", "pi", "agents")
 			if _, err := os.Lstat(agentsLink); err != nil {
 				t.Errorf("agents/ symlink must exist for role %q: %v", role, err)
 			}
@@ -858,12 +858,12 @@ func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_AgentsExcludedForReview verifies that
-// .config/opencode/agents/ is NOT present when AgentRole starts with "review-".
+// .config/pi/agents/ is NOT present when AgentRole starts with "review-".
 // Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	// Create agents/ dir in the fake home's opencode config.
-	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
 	}
@@ -881,7 +881,7 @@ func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			agentsLink := filepath.Join(stagingHome, ".config", "pi", "agents")
 			if _, err := os.Lstat(agentsLink); err == nil {
 				t.Errorf("agents/ must NOT exist for review role %q", role)
 			}
@@ -1597,7 +1597,7 @@ func TestPrepareSandboxExecHome_PiOAuthNonPiHarnessNoOp(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
 
-	for _, harness := range []string{"", "opencode"} {
+	for _, harness := range []string{"", "pi"} {
 		t.Run("harness="+harness, func(t *testing.T) {
 			m := newSandboxExecManagerWithInstance(Config{
 				SessionName: "repo@non-pi-" + harness,
@@ -1799,15 +1799,15 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 	profile := generateProfile(m)
 
 	// The profile must contain (allow file-read* for RO targets (e.g. SSH keys)
-	// and (allow file-read* file-write* for RW targets (e.g. .cache/opencode).
+	// and (allow file-read* file-write* for RW targets (e.g. .cache/pi).
 	if !strings.Contains(profile, "(allow file-read*") {
 		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
 	}
 
-	// .cache/opencode, .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
+	// .cache/pi, .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
 	// profile must grant file-write* on their resolved targets.
 	rwPaths := []string{
-		filepath.Join(fakeHome, ".cache", "opencode"),
+		filepath.Join(fakeHome, ".cache", "pi"),
 		filepath.Join(fakeHome, ".cache", "bun"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 		filepath.Join(fakeHome, ".claude"),

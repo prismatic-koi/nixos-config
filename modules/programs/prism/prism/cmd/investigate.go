@@ -27,7 +27,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -150,8 +149,8 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 		isoMode = config.IsolationMode(cfg.DefaultIsolationMode)
 	}
 
-	// Use the default harness, falling back to "opencode".
-	harnessName := "opencode"
+	// Use the default harness, falling back to "pi".
+	harnessName := "pi"
 	if pf != nil && pf.DefaultHarness != "" {
 		harnessName = pf.DefaultHarness
 	}

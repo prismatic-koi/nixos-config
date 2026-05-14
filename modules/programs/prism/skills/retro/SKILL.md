@@ -152,8 +152,8 @@ Counterfactual: what information, instruction, or tooling would have prevented t
 **Recommendations**
 Concrete, actionable changes. Each recommendation must name a specific mechanism — not a vague improvement. Examples of acceptable mechanisms:
 - "Add a rule to `worker.md`: 'When a nix build fails, always add `--show-trace` to the next attempt.'"
-- "Add a bash permission for `<command>` in `opencode.nix`."
-- "Create a skill at `modules/programs/prism/opencode/skills/<name>/SKILL.md` covering <topic>."
+- "Add a bash permission for `<command>` in `pi.nix`."
+- "Create a skill at `modules/programs/prism/pi/skills/<name>/SKILL.md` covering <topic>."
 - "File an issue to implement <specific prism feature>."
 - "Split tasks of type X into two sessions at the <boundary>."
 
@@ -167,7 +167,7 @@ Concrete, actionable changes. Each recommendation must name a specific mechanism
 "The worker wasted 40 turns editing the wrong file because it didn't read the module index first" is more useful than "the worker encountered some challenges with file identification." Quantify where possible: turns wasted, tokens burned on a dead end, number of times the same blocker appeared.
 
 **Recommendations must name a specific mechanism.**
-Vague advice does not change agent behaviour. A skill, a permission rule in `opencode.nix`, a prompt change, or an issue to file — one of these must be named per recommendation. If you cannot name a mechanism, the recommendation is not ready.
+Vague advice does not change agent behaviour. A skill, a permission rule in `pi.nix`, a prompt change, or an issue to file — one of these must be named per recommendation. If you cannot name a mechanism, the recommendation is not ready.
 
 ---
 

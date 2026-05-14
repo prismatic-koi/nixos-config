@@ -327,15 +327,14 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
 		}
 		// opencode shared state dirs — both XDG locations opencode writes to:
-		//   ~/.local/share/opencode — SQLite DB, logs, snapshots (legacy + current)
-		//   ~/.local/state/opencode — frecency, kv store, model cache (added in recent opencode versions)
+		// pi data and state directories
 		// Must use (subpath ...) not (literal ...) so the sandbox can
 		// read/write files inside the directories (not just the directory nodes).
 		if home != "" {
-			opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
-			sb.WriteString("  (subpath " + quoteSBPL(opencodeDataDir) + ")\n")
-			opencodeStateDir := filepath.Join(home, ".local", "state", "opencode")
-			sb.WriteString("  (subpath " + quoteSBPL(opencodeStateDir) + ")\n")
+			piDataDir := filepath.Join(home, ".local", "share", "pi")
+			sb.WriteString("  (subpath " + quoteSBPL(piDataDir) + ")\n")
+			piStateDir := filepath.Join(home, ".local", "state", "pi")
+			sb.WriteString("  (subpath " + quoteSBPL(piStateDir) + ")\n")
 		}
 		sb.WriteString(")\n")
 		sb.WriteString("\n")
@@ -673,7 +672,7 @@ func writeProfile(m *Manager) (string, error) {
 
 // BuildArgs constructs the sandbox-exec argument list:
 //
-//	sandbox-exec -f <profile_path> opencode --port <port> --hostname 127.0.0.1 [--agent X] [--prompt Y]
+//	sandbox-exec -f <profile_path> pi [--agent X] [--prompt Y]
 //
 // The first element ("sandbox-exec") is argv[0]; the caller invokes
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). After -f and the profile
@@ -698,18 +697,8 @@ func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 
 	profilePath := m.sandboxExecProfilePath()
 
-	// The sandbox-exec wrapper precedes the harness invocation. For opencode
-	// sessions, HarnessInvocation returns ["opencode", "--port", ..., ...] and
-	// handles the AllocatedPort ∥ ContainerPort fallback. For PI sessions,
-	// PIInvocation returns ["pi", "--provider", ..., "--extension", ...] — the
-	// PI analogue of HarnessInvocation. The system prompt is delivered via
-	// PI_CODING_AGENT_DIR / APPEND_SYSTEM.md rather than a CLI flag.
 	args := []string{"sandbox-exec", "-f", profilePath}
-	if cfg.Harness == "pi" {
-		args = append(args, PIInvocation(cfg)...)
-	} else {
-		args = append(args, HarnessInvocation(cfg)...)
-	}
+	args = append(args, PIInvocation(cfg)...)
 
 	return args
 }

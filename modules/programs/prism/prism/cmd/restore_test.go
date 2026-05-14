@@ -126,9 +126,9 @@ func openRestoreTestDB(t *testing.T) *db.DB {
 }
 
 // seedStatus inserts an agent_status row into d and returns a db.Status for it.
-func seedStatus(t *testing.T, d *db.DB, sessionName, worktree string, opencodeSession *string) db.Status {
+func seedStatus(t *testing.T, d *db.DB, sessionName, worktree string, harnessSessionID *string) db.Status {
 	t.Helper()
-	if err := d.UpsertStatus(sessionName, "testrepo", worktree, "idle", nil, opencodeSession); err != nil {
+	if err := d.UpsertStatus(sessionName, "testrepo", worktree, "idle", nil, harnessSessionID); err != nil {
 		t.Fatalf("UpsertStatus %q: %v", sessionName, err)
 	}
 	statuses, err := d.AllActiveStatus()
@@ -596,12 +596,12 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// Agent pane start command must contain "opencode" but NOT "bwrap".
+	// Agent pane start command must contain "pi" but NOT "bwrap".
 	// For a non-worktree path (no .bare parent), no --agent flag is added,
 	// but the command is still opencode directly (host mode).
 	pane := agentPaneStartCmd(t, s, sessionName)
-	if !strings.Contains(pane, "opencode") {
-		t.Errorf("agent pane missing 'opencode' — captured:\n%s", pane)
+	if !strings.Contains(pane, "pi") {
+		t.Errorf("agent pane missing .pi. — captured:\n%s", pane)
 	}
 	if strings.Contains(pane, "podman attach") {
 		t.Errorf("agent pane contains 'podman attach' but should be in host mode — captured:\n%s", pane)
@@ -836,7 +836,7 @@ func TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile(t *testing.T)
 				"worker":      {Provider: "google", Model: "google/gemini-runtime-worker", Thinking: "medium"},
 			},
 		},
-		ContainerWorkerConfig: `{"$schema":"https://opencode.ai/opencode.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
+		ContainerWorkerConfig: `{"$schema":"https://prism.ai/config.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
 	}
 	withRestoreProfiles(t, pf, nil)
 
@@ -1272,11 +1272,11 @@ func TestRestoreSession_CircuitBreakerSkipsNotEnded_IdempotentRestore(t *testing
 // recorded isolation mode is bwrap, restoreProjectSession must:
 //
 //  1. Run the configContent generation block (widened "sandboxed" gate), so
-//     the worker/coordinator opencode.json blob ends up in opts.ConfigContent.
-//  2. Write the opencode.json temp file to disk via
-//     container.WriteOpencodeConfig(container.NameForSession(s.SessionName), …)
+//     the worker/coordinator harness-config.json blob ends up in opts.ConfigContent.
+//  2. Write the harness-config.json temp file to disk via
+//     container.WriteHarnessConfig(container.NameForSession(s.SessionName), …)
 //     so the bwrap sandbox can bind-mount it at
-//     $HOME/.config/opencode/opencode.json.
+//     $HOME/.config/pi/harness-config.json.
 //
 // The tests exercise restoreProjectSession with a DB row whose isolation_mode
 // column is set to "bwrap" (the authoritative source of truth post-v10), and
@@ -1284,7 +1284,7 @@ func TestRestoreSession_CircuitBreakerSkipsNotEnded_IdempotentRestore(t *testing
 
 // TestRestoreSession_BwrapMode_WorkerConfigContent verifies that a bwrap
 // session (IsolationMode="bwrap" recorded in the DB) flows the worker
-// opencode.json blob into opts.ConfigContent — the same way container mode
+// harness-config.json blob into opts.ConfigContent — the same way container mode
 // does. This is the widened "sandboxed" gate behaviour.
 func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 	// Uses withCmdServer — must not run in parallel.
@@ -1292,7 +1292,7 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	// Isolate the temp dir so the opencode temp file written by the restore
+	// Isolate the temp dir so the harness temp file written by the restore
 	// path lands in t.TempDir() and does not pollute /tmp.
 	t.Setenv("TMPDIR", t.TempDir())
 
@@ -1333,7 +1333,7 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 	t.Cleanup(func() {
-		_ = os.Remove(container.OpencodeConfigFilePath(container.NameForSession(sessionName)))
+		_ = os.Remove(container.HarnessConfigFilePath(container.NameForSession(sessionName)))
 	})
 
 	if !s.hasSession(sessionName) {
@@ -1356,8 +1356,8 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 }
 
 // TestRestoreSession_BwrapMode_TempFileWritten verifies that when a bwrap
-// session is restored, the opencode.json temp file is written to the
-// deterministic container path via container.WriteOpencodeConfig. The content
+// session is restored, the harness-config.json temp file is written to the
+// deterministic container path via container.WriteHarnessConfig. The content
 // on disk must match the worker blob injected into opts.ConfigContent, and
 // the path must match what the Manager will look up via
 // OpencodeConfigFilePath(NameForSession(sessionName)).
@@ -1390,7 +1390,7 @@ func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 
 	// Ensure the temp file does not exist beforehand — we want to confirm the
 	// restore path creates it.
-	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	expectedPath := container.HarnessConfigFilePath(container.NameForSession(sessionName))
 	_ = os.Remove(expectedPath)
 	t.Cleanup(func() { _ = os.Remove(expectedPath) })
 
@@ -1404,17 +1404,17 @@ func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 	// The temp file must exist and contain the worker blob.
 	data, err := os.ReadFile(expectedPath)
 	if err != nil {
-		t.Fatalf("opencode temp file %q not written for bwrap restore: %v", expectedPath, err)
+		t.Fatalf("harness temp file %q not written for bwrap restore: %v", expectedPath, err)
 	}
 	if string(data) != pf.ContainerWorkerConfig {
-		t.Errorf("opencode temp file content = %q, want %q (worker blob)",
+		t.Errorf("harness temp file content = %q, want %q (worker blob)",
 			string(data), pf.ContainerWorkerConfig)
 	}
 }
 
 // TestRestoreSession_HostMode_NoTempFileWritten verifies that host-mode
-// restore does NOT write the opencode temp file — host sessions use the real
-// ~/.config/opencode/opencode.json directly and must not leak a stray file
+// restore does NOT write the harness temp file — host sessions use the real
+// ~/.config/pi/harness-config.json directly and must not leak a stray file
 // into TMPDIR.
 func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -1442,7 +1442,7 @@ func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 	}
 	status.IsolationMode = string(config.IsolationHost)
 
-	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	expectedPath := container.HarnessConfigFilePath(container.NameForSession(sessionName))
 	_ = os.Remove(expectedPath) // precondition: file absent
 	t.Cleanup(func() { _ = os.Remove(expectedPath) })
 
@@ -1464,13 +1464,13 @@ func TestRestoreSession_HostMode_NoTempFileWritten(t *testing.T) {
 
 	// Temp file must NOT exist.
 	if _, err := os.Stat(expectedPath); err == nil {
-		t.Errorf("host-mode restore leaked opencode temp file at %q — must not write for host isolation",
+		t.Errorf("host-mode restore leaked harness temp file at %q — must not write for host isolation",
 			expectedPath)
 	}
 }
 
 // TestRestoreSession_BwrapMode_TempFileWritten2 verifies that bwrap-mode
-// restore writes the opencode temp file when NeedsConfigBlob is true. This
+// restore writes the harness temp file when NeedsConfigBlob is true. This
 // is an additional variant of the bwrap write test using SetIsolationMode
 // to simulate a persisted bwrap session being restored.
 func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
@@ -1496,7 +1496,7 @@ func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
 	}
 	status.IsolationMode = string(config.IsolationBwrap)
 
-	expectedPath := container.OpencodeConfigFilePath(container.NameForSession(sessionName))
+	expectedPath := container.HarnessConfigFilePath(container.NameForSession(sessionName))
 	_ = os.Remove(expectedPath) // precondition
 	t.Cleanup(func() { _ = os.Remove(expectedPath) })
 
@@ -1509,7 +1509,7 @@ func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
 
 	// Bwrap mode: NeedsConfigBlob=true, so restore.go writes the temp file.
 	if _, err := os.Stat(expectedPath); err != nil {
-		t.Errorf("bwrap restore did not write opencode temp file at %q — expected file when NeedsConfigBlob=true: %v",
+		t.Errorf("bwrap restore did not write harness temp file at %q — expected file when NeedsConfigBlob=true: %v",
 			expectedPath, err)
 	}
 }

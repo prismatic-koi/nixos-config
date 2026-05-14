@@ -245,7 +245,7 @@ func runClipboardClean(cmd *cobra.Command, args []string) error {
 
 var clipboardCmd = &cobra.Command{
 	Use:   "clipboard",
-	Short: "Host-side clipboard utilities for container-mode opencode",
+	Short: "Host-side clipboard utilities for container-mode agents",
 }
 
 var clipboardPasteImageCmd = &cobra.Command{

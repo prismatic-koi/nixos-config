@@ -282,7 +282,7 @@ func TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp(t *testing.T) {
 		Prompt:        "do the thing",
 		Layout:        LayoutAgentOnly,
 		IsolationMode: "host",
-		HarnessName:   "opencode",
+		HarnessName:   "pi",
 		// Short timeout so the test runs quickly; the gate trips because
 		// only a bare-active state_change will arrive (no turn_start).
 		ReadinessTimeout: 600 * time.Millisecond,
@@ -341,7 +341,7 @@ func TestSpawnSession_LostPromptRace_TurnStartUnblocksGate(t *testing.T) {
 		Prompt:        "do the thing",
 		Layout:        LayoutAgentOnly,
 		IsolationMode: "host",
-		HarnessName:   "opencode",
+		HarnessName:   "pi",
 		// Generous timeout; the goroutine below will write turn_start
 		// well before it expires.
 		ReadinessTimeout: 5 * time.Second,
@@ -386,7 +386,7 @@ func TestSpawnSession_NoPrompt_KeepsLooseGate(t *testing.T) {
 		// Prompt deliberately empty.
 		Layout:           LayoutAgentOnly,
 		IsolationMode:    "host",
-		HarnessName:      "opencode",
+		HarnessName:      "pi",
 		ReadinessTimeout: 2 * time.Second,
 	}
 

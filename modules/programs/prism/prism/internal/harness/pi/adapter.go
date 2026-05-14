@@ -403,7 +403,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		}
 		if f.Role != "assistant" {
 			// message_complete for non-assistant roles — not an opencode analogue.
-			log.Printf("pi: NormaliseFrame: message_complete role=%q — no opencode equivalent, skipping", f.Role)
+			log.Printf("pi: NormaliseFrame: message_complete role=%q — no equivalent prism event, skipping", f.Role)
 			return "", nil, false
 		}
 		model := f.Model
@@ -431,7 +431,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			return "", nil, false
 		}
 		if f.Role != "user" {
-			log.Printf("pi: NormaliseFrame: message_start role=%q — no opencode equivalent, skipping", f.Role)
+			log.Printf("pi: NormaliseFrame: message_start role=%q — no equivalent prism event, skipping", f.Role)
 			return "", nil, false
 		}
 		p := payload.MsgUser{
@@ -505,7 +505,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 	default:
 		// PI event type with no opencode equivalent: log at info level and skip.
 		// Logged (not silently dropped) per the edge-case AC.
-		log.Printf("pi: NormaliseFrame: unknown event type %q — no opencode equivalent, skipping", envelope.Type)
+		log.Printf("pi: NormaliseFrame: unknown event type %q — no equivalent prism event, skipping", envelope.Type)
 		return "", nil, false
 	}
 }

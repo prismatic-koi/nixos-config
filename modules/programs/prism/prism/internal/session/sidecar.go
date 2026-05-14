@@ -329,12 +329,12 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	// Start() hands it off to the child.
 	defer logFile.Close()
 
-	opencodeURL := fmt.Sprintf("http://localhost:%d", opts.Port)
+	harnessURL := fmt.Sprintf("http://localhost:%d", opts.Port)
 
 	// Build the sidecar command arguments.
 	cmdArgs := []string{"sidecar",
 		"--session", sessionName,
-		"--opencode-url", opencodeURL,
+		"--harness-url", harnessURL,
 	}
 
 	// Pass --isolation-mode when set; the sidecar uses this to branch on
