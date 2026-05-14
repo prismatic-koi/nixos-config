@@ -459,10 +459,11 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 // replaces the gh CLI calls with an injectable function.
 
 type fakeWatcher struct {
-	watcher  *Watcher
-	fetchFn  func(ctx context.Context, pr int) (*prInfo, error)
-	mergeFn  func(ctx context.Context, pr int) ([]byte, error)
-	updateFn func(ctx context.Context, pr int) error
+	watcher              *Watcher
+	fetchFn              func(ctx context.Context, pr int) (*prInfo, error)
+	mergeFn              func(ctx context.Context, pr int) ([]byte, error)
+	updateFn             func(ctx context.Context, pr int) error
+	fetchRequiredChecksFn func(ctx context.Context) ([]string, error)
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
@@ -515,7 +516,32 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
 		}
 
-	case "UNSTABLE", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+	case "UNSTABLE":
+		var required []string
+		var fetchErr error
+		if fw.fetchRequiredChecksFn != nil {
+			required, fetchErr = fw.fetchRequiredChecksFn(ctx)
+		}
+		if fetchErr != nil {
+			// stay watching
+			return
+		}
+		if requiredChecksAllPassed(prInfoVal.StatusCheckRollup, required) {
+			out, mergeErr := fw.mergeFn(ctx, head.PR)
+			if mergeErr == nil {
+				fw.watcher.succeedAndNotify(ctx, head)
+				return
+			}
+			combined := strings.ToLower(string(out) + mergeErr.Error())
+			if isBranchMovedRace(combined) {
+				return
+			}
+			errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
+			fw.watcher.failAndNotify(head, errMsg)
+		}
+		// stay watching if required checks not all passed
+
+	case "UNKNOWN", "HAS_HOOKS", "DRAFT":
 		// stay watching
 
 	}
@@ -536,6 +562,7 @@ func newFakeWatcher(
 		fetchFn:  fetchFn,
 		mergeFn:  mergeFn,
 		updateFn: updateFn,
+		// fetchRequiredChecksFn is nil by default; UNSTABLE tests set it explicitly.
 	}
 }
 
@@ -945,8 +972,9 @@ func TestWatcher_BLOCKEDNoReviewDecisionNoCIStaysWatching(t *testing.T) {
 	}
 }
 
-// TestWatcher_UNSTABLEStaysWatching verifies UNSTABLE leaves the row watching.
-func TestWatcher_UNSTABLEStaysWatching(t *testing.T) {
+// TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending verifies that when
+// UNSTABLE and a required check is still in progress, the row stays watching.
+func TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-unstable"
 	session := "myrepo@main"
@@ -957,11 +985,21 @@ func TestWatcher_UNSTABLEStaysWatching(t *testing.T) {
 
 	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
 		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "UNSTABLE"}, nil
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
+					{Name: "validate-flakes", Status: "COMPLETED", Conclusion: "SUCCESS"},
+				},
+			}, nil
 		},
 		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
 		func(_ context.Context, pr int) error { return nil },
 	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
 
 	fw.processHead(context.Background())
 
@@ -1522,5 +1560,467 @@ func TestNew_NoAgentStatusRow_LeavesRepoEmpty(t *testing.T) {
 	}
 	if w.repo != "" {
 		t.Errorf("Watcher.repo: got %q, want empty (no agent_status row)", w.repo)
+	}
+}
+
+// ── requiredChecksAllPassed unit tests ────────────────────────────────────────
+
+// TestRequiredChecksAllPassed_AllSuccess verifies the happy path: every
+// required name appears in the rollup with a SUCCESS conclusion.
+func TestRequiredChecksAllPassed_AllSuccess(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+		{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
+	}
+	if !requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want true when required check is SUCCESS, got false")
+	}
+}
+
+// TestRequiredChecksAllPassed_MissingRequired verifies that a required name
+// absent from the rollup causes the helper to return false.
+func TestRequiredChecksAllPassed_MissingRequired(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
+	}
+	if requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want false when required check is missing from rollup, got true")
+	}
+}
+
+// TestRequiredChecksAllPassed_InProgress verifies that a required check that
+// is still running (no conclusion yet) returns false.
+func TestRequiredChecksAllPassed_InProgress(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
+	}
+	if requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want false when required check is IN_PROGRESS, got true")
+	}
+}
+
+// TestRequiredChecksAllPassed_Failure verifies that a required check with
+// conclusion FAILURE returns false.
+func TestRequiredChecksAllPassed_Failure(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Conclusion: "FAILURE", Status: "COMPLETED"},
+	}
+	if requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want false when required check is FAILURE, got true")
+	}
+}
+
+// TestRequiredChecksAllPassed_EmptyConclusion verifies that a required check
+// with an empty conclusion (e.g. queued/pending) returns false.
+func TestRequiredChecksAllPassed_EmptyConclusion(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Conclusion: "", Status: "QUEUED"},
+	}
+	if requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want false when required check has empty conclusion, got true")
+	}
+}
+
+// TestRequiredChecksAllPassed_LegacyCommitStatus verifies that legacy
+// commit-status entries (State field instead of Conclusion, Context instead
+// of Name) are handled correctly.
+func TestRequiredChecksAllPassed_LegacyCommitStatus(t *testing.T) {
+	// Legacy entries use Context (not Name) and State (not Conclusion).
+	rollup := []checkEntry{
+		{Context: "pr-gate", State: "SUCCESS"},
+		{Context: "validate-flakes", State: "PENDING"},
+	}
+	// pr-gate passes via the legacy State field.
+	if !requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want true for legacy SUCCESS state, got false")
+	}
+	// validate-flakes is still PENDING.
+	if requiredChecksAllPassed(rollup, []string{"validate-flakes"}) {
+		t.Error("requiredChecksAllPassed: want false for legacy PENDING state, got true")
+	}
+}
+
+// TestRequiredChecksAllPassed_MixedModernAndLegacy verifies a rollup that
+// contains both modern check-run entries and legacy commit-status entries.
+func TestRequiredChecksAllPassed_MixedModernAndLegacy(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+		{Context: "legacy-status", State: "SUCCESS"},
+		{Name: "optional-slow", Status: "IN_PROGRESS", Conclusion: ""},
+	}
+	// Both required checks are SUCCESS (one modern, one legacy).
+	if !requiredChecksAllPassed(rollup, []string{"pr-gate", "legacy-status"}) {
+		t.Error("requiredChecksAllPassed: want true when all required (mixed) checks are SUCCESS, got false")
+	}
+	// optional-slow is not required — its IN_PROGRESS state must not block.
+	if !requiredChecksAllPassed(rollup, []string{"pr-gate"}) {
+		t.Error("requiredChecksAllPassed: want true when only required check is SUCCESS (optional ignored), got false")
+	}
+}
+
+// TestRequiredChecksAllPassed_EmptyRequired verifies that an empty required
+// list returns false (conservative: don't merge when no constraints configured).
+func TestRequiredChecksAllPassed_EmptyRequired(t *testing.T) {
+	rollup := []checkEntry{
+		{Name: "pr-gate", Conclusion: "SUCCESS"},
+	}
+	if requiredChecksAllPassed(rollup, nil) {
+		t.Error("requiredChecksAllPassed: want false for empty required list, got true")
+	}
+	if requiredChecksAllPassed(rollup, []string{}) {
+		t.Error("requiredChecksAllPassed: want false for empty (non-nil) required list, got true")
+	}
+}
+
+// ── handleHead / UNSTABLE path integration tests ──────────────────────────────
+
+// TestWatcher_UNSTABLEAllRequiredPass verifies that when mergeStateStatus is
+// UNSTABLE and all required checks are SUCCESS, the watcher proceeds to merge.
+func TestWatcher_UNSTABLEAllRequiredPass(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unstable-merge"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-unstable-merge")
+
+	if _, err := d.EnqueueMerge(1001, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				StatusCheckRollup: []checkEntry{
+					// Required check: SUCCESS
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+					// Optional check: still running — must not block merge
+					{Name: "validate-flakes", Status: "IN_PROGRESS", Conclusion: ""},
+				},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			mergeCalled = true
+			return nil, nil // merge succeeds
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
+
+	fw.processHead(context.Background())
+
+	if !mergeCalled {
+		t.Error("UNSTABLE+all-required-pass: merge was not attempted")
+	}
+	row, err := d.PendingMergeByPR(1001)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status: got %q, want merged", row.Status)
+	}
+}
+
+// TestWatcher_UNSTABLERequiredStillRunning verifies that when UNSTABLE and
+// the required check is IN_PROGRESS, the row stays watching.
+func TestWatcher_UNSTABLERequiredStillRunning(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unstable-running"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(1002, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
+				},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			mergeCalled = true
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
+
+	fw.processHead(context.Background())
+
+	if mergeCalled {
+		t.Error("UNSTABLE+required-in-progress: merge was called, want staying watching")
+	}
+	row, err := d.PendingMergeByPR(1002)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching", row.Status)
+	}
+}
+
+// TestWatcher_UNSTABLEBranchProtectionFetchError verifies that when the
+// branch-protection API call fails, the watcher logs and stays watching.
+func TestWatcher_UNSTABLEBranchProtectionFetchError(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unstable-fetcherr"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(1003, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			mergeCalled = true
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// Simulate a branch-protection API failure.
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return nil, fmt.Errorf("gh api: HTTP 403 forbidden")
+	}
+
+	fw.processHead(context.Background())
+
+	if mergeCalled {
+		t.Error("UNSTABLE+fetch-error: merge was called, want staying watching")
+	}
+	row, err := d.PendingMergeByPR(1003)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching", row.Status)
+	}
+}
+
+// TestWatcher_UNSTABLERequiredAbsentFromRollup verifies that when a required
+// check name is not present in the rollup at all, the watcher stays watching.
+func TestWatcher_UNSTABLERequiredAbsentFromRollup(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unstable-absent"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(1004, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				// Rollup does NOT include pr-gate at all.
+				StatusCheckRollup: []checkEntry{
+					{Name: "validate-flakes", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			mergeCalled = true
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
+
+	fw.processHead(context.Background())
+
+	if mergeCalled {
+		t.Error("UNSTABLE+required-absent: merge was called, want staying watching")
+	}
+	row, err := d.PendingMergeByPR(1004)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching", row.Status)
+	}
+}
+
+// ── fetchRequiredChecks cache tests ───────────────────────────────────────────
+
+// TestFetchRequiredChecks_ParsesModernChecks verifies that the branch-protection
+// API response is correctly parsed when it contains modern check-run entries
+// (the checks[] array).
+func TestFetchRequiredChecks_ParsesModernChecks(t *testing.T) {
+	d := openTestDB(t)
+
+	const repoSlug = "owner/testrepo"
+	var callCount int
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-bprot",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        repoSlug,
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			callCount++
+			// Return a modern branch-protection response.
+			body := `{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"},{"context":"lint"}]}}`
+			return []byte(body), nil
+		},
+	}
+
+	names, err := w.fetchRequiredChecks(context.Background())
+	if err != nil {
+		t.Fatalf("fetchRequiredChecks: %v", err)
+	}
+	if len(names) != 2 {
+		t.Fatalf("want 2 names, got %d: %v", len(names), names)
+	}
+	// Order should be stable (dedup preserves insertion order).
+	if names[0] != "pr-gate" || names[1] != "lint" {
+		t.Errorf("names: got %v, want [pr-gate lint]", names)
+	}
+}
+
+// TestFetchRequiredChecks_ParsesLegacyContexts verifies that legacy
+// commit-status contexts (the contexts[] array) are parsed correctly.
+func TestFetchRequiredChecks_ParsesLegacyContexts(t *testing.T) {
+	d := openTestDB(t)
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-bprot-legacy",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        "owner/testrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			body := `{"required_status_checks":{"contexts":["legacy-ci"],"checks":[]}}`
+			return []byte(body), nil
+		},
+	}
+
+	names, err := w.fetchRequiredChecks(context.Background())
+	if err != nil {
+		t.Fatalf("fetchRequiredChecks: %v", err)
+	}
+	if len(names) != 1 || names[0] != "legacy-ci" {
+		t.Errorf("names: got %v, want [legacy-ci]", names)
+	}
+}
+
+// TestFetchRequiredChecks_CacheTTL verifies that a cached response is reused
+// within the TTL and re-fetched after expiry.
+func TestFetchRequiredChecks_CacheTTL(t *testing.T) {
+	d := openTestDB(t)
+
+	var callCount int
+	current := time.Now()
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-bprot-ttl",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        "owner/testrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			callCount++
+			body := `{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`
+			return []byte(body), nil
+		},
+		nowFunc: func() time.Time { return current },
+	}
+
+	// First call: populates cache.
+	names1, err := w.fetchRequiredChecks(context.Background())
+	if err != nil {
+		t.Fatalf("first fetchRequiredChecks: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("first call: callCount = %d, want 1", callCount)
+	}
+
+	// Second call within TTL: cache hit, no new gh invocation.
+	names2, err := w.fetchRequiredChecks(context.Background())
+	if err != nil {
+		t.Fatalf("second fetchRequiredChecks: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("second call (within TTL): callCount = %d, want 1", callCount)
+	}
+	if len(names1) != len(names2) || names1[0] != names2[0] {
+		t.Errorf("cache miss returned different names: %v vs %v", names1, names2)
+	}
+
+	// Advance time past TTL.
+	current = current.Add(requiredChecksCacheTTL + time.Second)
+
+	// Third call after TTL: cache miss, re-fetches.
+	_, err = w.fetchRequiredChecks(context.Background())
+	if err != nil {
+		t.Fatalf("third fetchRequiredChecks: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("third call (after TTL): callCount = %d, want 2", callCount)
+	}
+}
+
+// TestFetchRequiredChecks_ErrorStaysWatching verifies the Watcher.tick()
+// integration: when fetchRequiredChecks returns an error on an UNSTABLE PR,
+// the row stays in watching and no merge is attempted. This exercises the
+// real tick() path (not fakeWatcher) using a stubbed runGHFunc.
+func TestFetchRequiredChecks_ErrorStaysWatching(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-bprot-err-tick"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(2001, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  http.DefaultClient,
+		repo:        "owner/testrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			// gh pr view succeeds, gh api branch protection fails.
+			if len(args) >= 3 && args[2] == "pr" && args[3] == "view" {
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"UNSTABLE","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}],"reviewDecision":""}`), nil
+			}
+			// Branch protection API call → simulate failure.
+			return []byte("forbidden"), fmt.Errorf("exit status 1")
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2001)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching (branch-protection fetch error must not merge)", row.Status)
 	}
 }
