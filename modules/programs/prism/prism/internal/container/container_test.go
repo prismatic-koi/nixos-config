@@ -137,7 +137,7 @@ func TestNew_UsesProvidedHTTPClient(t *testing.T) {
 
 func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "sk-ant-test")
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENROUTER_API_KEY", "")
 
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
 	vars := m.credentialEnvVars()
@@ -147,8 +147,8 @@ func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
 		if kv == "ANTHROPIC_API_KEY=sk-ant-test" {
 			found = true
 		}
-		if strings.HasPrefix(kv, "OPENAI_API_KEY=") {
-			t.Errorf("OPENAI_API_KEY should not be forwarded when empty; got %q", kv)
+		if strings.HasPrefix(kv, "OPENROUTER_API_KEY=") {
+			t.Errorf("OPENROUTER_API_KEY should not be forwarded when empty; got %q", kv)
 		}
 	}
 	if !found {
@@ -176,6 +176,37 @@ func TestCredentialEnvVars_AtlassianKeysNotForwarded(t *testing.T) {
 		}
 		if strings.HasPrefix(kv, "ATLASSIAN_API_TOKEN=") {
 			t.Errorf("ATLASSIAN_API_TOKEN should not be forwarded (CLI removed); got %q", kv)
+		}
+	}
+}
+
+func TestCredentialEnvVars_SpeculativeKeysNotForwarded(t *testing.T) {
+	// These keys were removed from forwardKeys because they are speculative:
+	// not populated on the host and not consumed by any in-repo agent/skill/config.
+	//   OPENAI_API_KEY    — no OpenAI provider configured in opencode.nix.
+	//   GEMINI_API_KEY    — Google auth uses opencode-gemini-auth OAuth plugin.
+	//   GOOGLE_API_KEY    — same rationale as GEMINI_API_KEY.
+	//   GITHUB_COPILOT_TOKEN — Copilot provider uses its own auth flow.
+	//   DEEPSEEK_API_KEY  — user-confirmed speculative; no consumer in-repo.
+	speculative := []string{
+		"OPENAI_API_KEY",
+		"GEMINI_API_KEY",
+		"GOOGLE_API_KEY",
+		"GITHUB_COPILOT_TOKEN",
+		"DEEPSEEK_API_KEY",
+	}
+	for _, k := range speculative {
+		t.Setenv(k, "should-not-appear")
+	}
+
+	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
+	vars := m.credentialEnvVars()
+
+	for _, kv := range vars {
+		for _, k := range speculative {
+			if strings.HasPrefix(kv, k+"=") {
+				t.Errorf("%s should not be forwarded (speculative key removed); got %q", k, kv)
+			}
 		}
 	}
 }
