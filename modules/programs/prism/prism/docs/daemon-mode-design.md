@@ -494,7 +494,7 @@ current model:**
 | Attack class | Why it is weaker | Mitigation |
 |---|---|---|
 | **Pi itself is a direct attack surface on the host** | Pi runs unsandboxed. A compromised pi binary can read `~/.ssh`, `~/.aws`, `~/.claude`, etc. directly without any tool call — it has the full host environment. In the current model, pi is sandboxed and sees only the fake home. | Pi is a first-party binary (or a pinned version of a trusted dependency). The daemon enforces `tool_result` boundaries even when pi is compromised in a behavioural (not binary) sense — i.e., prompt injection that controls pi's *actions* is still sandboxed at the tool level. Binary compromise of pi is a supply-chain risk mitigated by version pinning and checksum verification. |
-| **Pi's environment contains LLM API keys for the full session** | In the current model, LLM API keys are injected into the fake home environment for the session. In the new model, they are injected into pi's process environment on the host and are accessible for the entire session duration. A compromised or misbehaving pi binary could exfiltrate them. | The daemon can be designed to inject API keys via `register_provider` RPC frames at session start (keeping them out of the process environment entirely — open question §11.5). |
+| **Pi reads LLM credentials from `~/.pi/agent/` with no sandbox boundary** | In the current model, `~/.pi/agent/` is bind-mounted into the sandbox (contained). In the new model, pi runs on the host and reads `~/.pi/agent/` directly — no different from today's bind-mount in terms of what pi can access, but there is no sandbox boundary around pi itself. A compromised pi binary has the same access. | Pi is a first-party trusted binary. The attack surface is model-generated tool calls, not pi's own credential reads. This is the same trade-off named in §6.3. |
 | **Outbound network from pi is unrestricted** | Pi runs on the host with full network access. In the current model, the bwrap/sandbox-exec network restriction also limits pi's own outbound calls. | Pi's own network calls are LLM API calls to known providers. Restricting pi's outbound network is at odds with pi functioning at all. This is an accepted trade-off in the daemon model. |
 | **Model can influence pi's own file I/O** | If a future version of pi does direct filesystem I/O outside of tool calls (e.g. logging, caching, telemetry), that I/O is unrestricted on the host. The current model's fake-home limits this to the mounted artefacts. | See §9.2 for how this case is handled architecturally. |
 
@@ -522,24 +522,31 @@ model outputs, not compromised pi code.
 
 ### 7.1 Current architecture (4-PAT architecture)
 
-Today, credentials are injected into the pi process environment at session
-start via `internal/container/credentials.go:credentialEnvVars()`. The
-current 4-PAT GitHub token architecture selects one of:
+Today, pi runs inside a bwrap (Linux) or sandbox-exec (macOS) sandbox. The
+sandbox uses `--clearenv` to wipe the host environment and then explicitly
+re-introduces only what the agent needs via `--setenv` pairs.
+
+The role-scoped GitHub token is selected from the 4-PAT architecture:
 
 ```
-PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR
-PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER
-PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_COORDINATOR
-PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER
+PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR   — prismatic-koi + coordinator
+PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER        — prismatic-koi + worker
+PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_COORDINATOR — thankyou-payroll + coordinator
+PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
 ```
 
 based on the repo's GitHub account (derived from the git remote URL) and
-the session role.
+the session role, and injected as `GITHUB_TOKEN` into the sandbox.
 
-Additional credentials forwarded today (for opencode sessions; pi does not
-use Atlassian MCP, which is an opencode-only integration):
-- `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`
-- `GITHUB_COPILOT_TOKEN`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`
+The pi provider and model are passed as CLI flags (`--provider`, `--model`,
+`--thinking`) rather than env vars (see `internal/container/pi_invocation.go`).
+LLM API keys are not forwarded into the pi sandbox at all in the current
+architecture — pi authenticates via subscription (`/login`) or reads keys
+from its own config directory (`~/.pi/agent/`), which is bind-mounted into
+the sandbox.
+
+The profile `agent_env_vars` (`KUBECONFIG`, `AWS_CONFIG_FILE`, `GIT_EDITOR`)
+are injected as additional `--setenv` pairs for all session types.
 
 ### 7.2 Per-tool credential plan in daemon mode
 
@@ -554,15 +561,20 @@ receives only the credentials it needs:
 
 ### 7.3 Pi's own credentials
 
-Pi itself needs LLM API keys to call providers. In v1 of daemon mode, LLM
-API keys are injected into pi's process environment at spawn time (same as
-today). The daemon selects the key set based on the session's configured
-provider list and the `register_provider` RPC sequence.
+In the current architecture, pi reads LLM credentials from its own config
+directory (`~/.pi/agent/`) — either subscription tokens stored there by
+`/login`, or API keys written into pi's settings. LLM API keys are **not**
+forwarded as environment variables into the pi sandbox; the sandbox bind-mounts
+`~/.pi/agent/` so pi can read its own credentials directly.
 
-An improvement for v2 or later: the daemon injects API keys via `register_provider`
-frames rather than env vars, keeping them out of pi's environment entirely and
-allowing per-session key rotation without restarting pi. This is listed as an
-open question (§11.5).
+In daemon mode, pi runs unsandboxed and has direct access to `~/.pi/agent/`
+without any bind-mount. The provider and model are configured via `--provider`
+and `--model` CLI flags at spawn time. No separate credential injection is
+required for the basic daemon-mode design.
+
+A `register_provider` RPC frame approach (§11.5) remains an option for dynamic
+provider configuration or live credential rotation, but is not a prerequisite
+for the core daemon design.
 
 ### 7.4 Credential scoping summary
 
@@ -809,12 +821,13 @@ process. Decision deferred to the web UI design phase.
 MCP. Atlassian MCP is an opencode-specific integration; pi does not use it.
 This question number is reserved to avoid renumbering downstream references.
 
-**11.5 LLM API keys: env var vs `register_provider` RPC.**
-In v1, LLM API keys are injected into pi's process environment. A v2
-improvement injects them via `register_provider` RPC frames, keeping them
-out of the process environment. This requires pi to support `register_provider`
-before the first `prompt` frame. Whether this is feasible depends on pi's
-RPC protocol evolution (see §11.1).
+**11.5 `register_provider` RPC for dynamic provider configuration.**
+Pi currently reads its credentials from `~/.pi/agent/` directly. If a future
+use case requires the daemon to configure providers dynamically (live model
+switching, per-session key isolation), `register_provider` RPC frames are the
+natural mechanism. Whether pi's `--rpc` mode supports `register_provider`
+before the first `prompt` frame, and whether it supersedes the file-based
+credential store, are open questions dependent on pi's RPC protocol (see §11.1).
 
 **11.6 Session continuation after daemon restart.**
 When a session is re-spawned after a daemon crash, can the new pi child
