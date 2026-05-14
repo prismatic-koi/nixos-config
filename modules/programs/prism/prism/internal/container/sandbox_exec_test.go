@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -1362,6 +1363,316 @@ func TestPrepareSandboxExecHome_PiAgentDirMissingSkipped(t *testing.T) {
 	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
 	if _, err := os.Lstat(symlinkPath); err == nil {
 		t.Errorf(".pi/agent must not exist when ~/.pi/agent is absent")
+	}
+}
+
+// ── PI Atlassian MCP OAuth token staging (Darwin + pi harness) ─────────────
+
+// TestPrepareSandboxExecHome_PiOAuthTokenSymlinked verifies that after
+// PrepareSandboxExecHome runs for a Harness=="pi" Manager on Darwin,
+// <stagingHome>/.pi/agent/atlassian-mcp-oauth.json exists as a symlink
+// whose target equals the host path ~/.pi/agent/atlassian-mcp-oauth.json.
+func TestPrepareSandboxExecHome_PiOAuthTokenSymlinked(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-token-test",
+		InstanceID:  "pi-oauth-token-symlink-test",
+		Harness:     "pi",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+	})
+
+	// <stagingHome>/.pi/agent/atlassian-mcp-oauth.json must be a symlink.
+	stagingTokenPath := filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+	info, err := os.Lstat(stagingTokenPath)
+	if err != nil {
+		t.Fatalf("%s must exist: %v", stagingTokenPath, err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s must be a symlink, got mode %v", stagingTokenPath, info.Mode())
+	}
+
+	// The symlink target must be the real host path.
+	target, err := os.Readlink(stagingTokenPath)
+	if err != nil {
+		t.Fatalf("Readlink %s: %v", stagingTokenPath, err)
+	}
+	wantTarget := filepath.Join(fakeHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+	if target != wantTarget {
+		t.Errorf("symlink target = %q, want %q", target, wantTarget)
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthAgentDirIsRealDir verifies that after
+// PrepareSandboxExecHome runs for a Harness=="pi" Manager on Darwin,
+// <stagingHome>/.pi/agent is a real directory (not a symlink).
+func TestPrepareSandboxExecHome_PiOAuthAgentDirIsRealDir(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-agent-dir",
+		InstanceID:  "pi-oauth-agent-dir-test",
+		Harness:     "pi",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+	})
+
+	// <stagingHome>/.pi/agent must be a real directory, not a symlink.
+	agentPath := filepath.Join(stagingHome, ".pi", "agent")
+	info, err := os.Lstat(agentPath)
+	if err != nil {
+		t.Fatalf("%s must exist: %v", agentPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("%s must be a real directory, not a symlink", agentPath)
+	}
+	if !info.IsDir() {
+		t.Errorf("%s must be a directory, got mode %v", agentPath, info.Mode())
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthHostFileMode verifies that when
+// PrepareSandboxExecHome creates ~/.pi/agent/atlassian-mcp-oauth.json because
+// it was absent, the file has mode 0600.
+func TestPrepareSandboxExecHome_PiOAuthHostFileMode(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	// Ensure the token file does not exist before the test.
+	hostTokenPath := filepath.Join(fakeHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-mode",
+		InstanceID:  "pi-oauth-mode-test",
+		Harness:     "pi",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+	})
+
+	// Suppress the "declared and not used" warning for hostTokenPath.
+	info, err := os.Stat(hostTokenPath)
+	if err != nil {
+		t.Fatalf("host token file %s must exist: %v", hostTokenPath, err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("host token file mode = %04o, want 0600", info.Mode().Perm())
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthExistingFileNotOverwritten verifies that
+// when ~/.pi/agent/atlassian-mcp-oauth.json already exists with non-empty
+// content, PrepareSandboxExecHome does NOT truncate or overwrite it.
+func TestPrepareSandboxExecHome_PiOAuthExistingFileNotOverwritten(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	// Pre-create the token file with sentinel content.
+	hostAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
+		t.Fatalf("create host agent dir: %v", err)
+	}
+	hostTokenPath := filepath.Join(hostAgentDir, "atlassian-mcp-oauth.json")
+	const sentinel = `{"access_token":"sentinel-do-not-overwrite"}`
+	if err := os.WriteFile(hostTokenPath, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("write sentinel token: %v", err)
+	}
+	origStat, err := os.Stat(hostTokenPath)
+	if err != nil {
+		t.Fatalf("stat sentinel token: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-existing",
+		InstanceID:  "pi-oauth-existing-test",
+		Harness:     "pi",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.Remove(hostTokenPath)
+	})
+
+	// Verify content unchanged.
+	got, err := os.ReadFile(hostTokenPath)
+	if err != nil {
+		t.Fatalf("read host token: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Errorf("host token content changed: got %q, want %q", string(got), sentinel)
+	}
+
+	// Verify mtime unchanged.
+	afterStat, err := os.Stat(hostTokenPath)
+	if err != nil {
+		t.Fatalf("stat host token after: %v", err)
+	}
+	if !afterStat.ModTime().Equal(origStat.ModTime()) {
+		t.Errorf("host token mtime changed: orig %v, after %v", origStat.ModTime(), afterStat.ModTime())
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthMissingHostAgentDirAutoCreated verifies
+// that when ~/.pi/agent/ does not exist on the host, PrepareSandboxExecHome
+// creates it with mode 0700 and returns nil error.
+func TestPrepareSandboxExecHome_PiOAuthMissingHostAgentDirAutoCreated(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	// Ensure ~/.pi/agent does not exist.
+	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-mkdir",
+		InstanceID:  "pi-oauth-mkdir-test",
+		Harness:     "pi",
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome with missing host agent dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+	})
+
+	// Host agent dir must now exist with mode 0700.
+	hostAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	info, err := os.Stat(hostAgentDir)
+	if err != nil {
+		t.Fatalf("host agent dir %s must exist after autocreate: %v", hostAgentDir, err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Errorf("host agent dir mode = %04o, want 0700", info.Mode().Perm())
+	}
+
+	// The symlink in the staging dir must also be created.
+	stagingTokenPath := filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+	if _, err := os.Lstat(stagingTokenPath); err != nil {
+		t.Errorf("staging token symlink must exist after autocreate: %v", err)
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthNonPiHarnessNoOp verifies that when
+// Harness != "pi", PrepareSandboxExecHome does NOT create
+// <stagingHome>/.pi/agent and does NOT touch ~/.pi/agent/atlassian-mcp-oauth.json.
+func TestPrepareSandboxExecHome_PiOAuthNonPiHarnessNoOp(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+
+	for _, harness := range []string{"", "opencode"} {
+		t.Run("harness="+harness, func(t *testing.T) {
+			m := newSandboxExecManagerWithInstance(Config{
+				SessionName: "repo@non-pi-" + harness,
+				InstanceID:  "pi-oauth-non-pi-" + harness,
+				Harness:     harness,
+			})
+			stagingHome, err := m.PrepareSandboxExecHome()
+			if err != nil {
+				t.Fatalf("PrepareSandboxExecHome: %v", err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+			// <stagingHome>/.pi/agent must NOT be created for non-pi harness.
+			agentPath := filepath.Join(stagingHome, ".pi", "agent")
+			if _, err := os.Lstat(agentPath); err == nil {
+				t.Errorf("<stagingHome>/.pi/agent must not exist for harness=%q", harness)
+			}
+
+			// ~/.pi/agent/atlassian-mcp-oauth.json must NOT be created.
+			hostTokenPath := filepath.Join(fakeHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+			if _, err := os.Stat(hostTokenPath); err == nil {
+				t.Errorf("host token file must not be created for harness=%q", harness)
+			}
+		})
+	}
+}
+
+// TestPrepareSandboxExecHome_PiOAuthIdempotent verifies that calling
+// PrepareSandboxExecHome twice on the same staging HOME leaves the symlink
+// at <stagingHome>/.pi/agent/atlassian-mcp-oauth.json valid and pointing at
+// the same host path; no error is returned on the second call.
+func TestPrepareSandboxExecHome_PiOAuthIdempotent(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("PI OAuth token staging is Darwin-only")
+	}
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@pi-oauth-idem",
+		InstanceID:  "pi-oauth-idempotent-test",
+		Harness:     "pi",
+	})
+
+	// First call.
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("first PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(stagingHome)
+		_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
+	})
+
+	wantTarget := filepath.Join(fakeHome, ".pi", "agent", "atlassian-mcp-oauth.json")
+	getTarget := func() string {
+		t.Helper()
+		target, err := os.Readlink(filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json"))
+		if err != nil {
+			t.Fatalf("Readlink after first call: %v", err)
+		}
+		return target
+	}
+	firstTarget := getTarget()
+	if firstTarget != wantTarget {
+		t.Errorf("first call: symlink target = %q, want %q", firstTarget, wantTarget)
+	}
+
+	// Second call — must not fail and symlink must still point at same host path.
+	_, err = m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("second PrepareSandboxExecHome: %v", err)
+	}
+	secondTarget := getTarget()
+	if secondTarget != wantTarget {
+		t.Errorf("second call: symlink target = %q, want %q", secondTarget, wantTarget)
 	}
 }
 
