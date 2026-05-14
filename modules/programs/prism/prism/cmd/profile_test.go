@@ -150,8 +150,11 @@ func TestProfileUse_RejectsBogusNameWithFriendlyError(t *testing.T) {
 
 func TestProfileUse_RejectsMissingRequiredSlot(t *testing.T) {
 	stateDir := withProfileFixture(t, profileMissingWorkerJSON)
-
-	_, err := runProfileSubcommand(t, runProfileUse, []string{"broken"})
+	t.Setenv("PRISM_SESSION_NAME", "")
+	// Use --no-live so the test goes directly to SetActiveProfile and exercises
+	// the slot-validation path it claims to test, rather than hitting coordinator
+	// resolution (which would error first on "no active coordinator session found").
+	_, err := runProfileUseWithFlags(t, "", false, true, "", []string{"broken"})
 	if err == nil {
 		t.Fatal("runProfileUse(broken): want error, got nil")
 	}

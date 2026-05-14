@@ -102,38 +102,14 @@ var profileUseCmd = &cobra.Command{
 	Short: "Set the active profile (live-swaps running sessions by default)",
 	Long: `Set the active model profile.
 
-By default, this command does two things:
+Updates the state-file default ($XDG_STATE_HOME/prism/active-profile) AND
+live-swaps running sessions via the auto-discovered coordinator (scope=coordinator).
+Equivalent to the former "prism profile use NAME --scope all".
 
-  1. Updates $XDG_STATE_HOME/prism/active-profile (the state-file default
-     for future spawns).
-  2. Live-swaps every PI session in the current repo by routing a
-     POST /apply-profile (scope=coordinator) through the auto-discovered
-     coordinator session.
-
-This means bare "prism profile use NAME" is equivalent to the former
-"prism profile use NAME --scope all".
-
-Flags:
-
-  --no-live
-        Skip the live-swap. Updates the state-file default only —
-        running sessions keep their current profile.
-
-  --coordinator <session>
-        Explicit coordinator session to route the live-swap through
-        (e.g. nixos-config@main). Default: auto-discover from cwd or
-        active sessions.
-
-  --scope session=<name>|coordinator|global|all
-        Override the live-swap target. When --scope is given, the
-        state-file is updated only for scope=all (or omitted, the
-        new default). --no-live cannot be combined with --scope.
-
-  --yes
-        Skip the confirmation prompt for --scope global.
-
-  --verbose / -v
-        List each session's individual outcome when a live-swap occurs.`,
+Use --no-live to update the state file only (no live-swap).
+Use --coordinator <session> to bypass auto-discovery.
+Use --scope to override the live-swap target (session=<name>, coordinator,
+global, or all). --no-live cannot be combined with --scope.`,
 	Args:  cobra.ExactArgs(1),
 	RunE:  runProfileUse,
 }
