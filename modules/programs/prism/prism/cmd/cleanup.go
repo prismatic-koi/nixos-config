@@ -1309,11 +1309,25 @@ func isSafeToRemoveWorktree(session, worktreePath, bareRoot string) bool {
 	// session being cleaned up. The session's own DB row is still active at
 	// this point (SetEnded is called later), so we must exclude it from the
 	// comparison to avoid blocking legitimate cleanup of dedicated worktrees.
+	//
+	// Descendant sessions — review and investigator sub-sessions named
+	// "<session>~<anything>" (e.g. "<session>~review-1-review-code",
+	// "<session>~investigate-<slug>") — inherit the parent's worktree path by
+	// design and are torn down by the same cleanup invocation. They must not
+	// block worktree removal of their parent.
 	if d, err := openDB(); err == nil {
 		defer d.Close()
 		if statuses, err := d.AllActiveStatus(); err == nil {
 			for _, st := range statuses {
-				if st.SessionName != session && st.Worktree != "" && filepath.Clean(st.Worktree) == cleanPath {
+				if st.SessionName == session {
+					continue
+				}
+				// Skip descendant sessions (review / investigator sub-sessions)
+				// that reuse the parent's worktree path.
+				if strings.HasPrefix(st.SessionName, session+"~") {
+					continue
+				}
+				if st.Worktree != "" && filepath.Clean(st.Worktree) == cleanPath {
 					return false
 				}
 			}
