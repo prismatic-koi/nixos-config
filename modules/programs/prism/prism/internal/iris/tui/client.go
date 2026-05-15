@@ -32,6 +32,8 @@ type DaemonFrame struct {
 	Event *iris.DaemonSessionEventFrame
 	// State is populated when RawType == DaemonFrameSessionState.
 	State *iris.DaemonSessionStateFrame
+	// Spawned is populated when RawType == DaemonFrameSessionSpawned.
+	Spawned *iris.DaemonSessionSpawnedFrame
 	// Error is populated when RawType == DaemonFrameError.
 	Error *iris.DaemonErrorFrame
 }
@@ -142,12 +144,17 @@ func (c *DaemonClient) readLoop(conn net.Conn) {
 			if err := json.Unmarshal(line, &f); err == nil {
 				msg.State = &f
 			}
+		case iris.DaemonFrameSessionSpawned:
+			var f iris.DaemonSessionSpawnedFrame
+			if err := json.Unmarshal(line, &f); err == nil {
+				msg.Spawned = &f
+			}
 		case iris.DaemonFrameError:
 			var f iris.DaemonErrorFrame
 			if err := json.Unmarshal(line, &f); err == nil {
 				msg.Error = &f
 			}
-		// pong and session_spawned are handled silently.
+			// pong is handled silently (keepalive only).
 		}
 		c.send(msg)
 	}

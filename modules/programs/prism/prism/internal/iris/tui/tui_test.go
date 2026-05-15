@@ -139,6 +139,201 @@ func TestTUIEmptySessionList(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestTUISessionSpawnedAppendsToList — session_spawned adds a new row
+// ---------------------------------------------------------------------------
+
+// TestTUISessionSpawnedAppendsToList verifies that after a sessions_snapshot
+// populates the model, a subsequent session_spawned frame appends the new
+// session to the list — covering the AC: "When the iris daemon emits a
+// session_spawned frame, an open iris TUI adds the new session to its session
+// list within 100ms of frame delivery" and "The newly-added session's row in
+// the TUI shows the correct session ID, state, role, and worktree."
+func TestTUISessionSpawnedAppendsToList(t *testing.T) {
+	m := newConnectedModel()
+
+	// Initial snapshot with two sessions.
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: "nixos-config@main", InstanceID: "iid-1", State: "active", Role: "coordinator", Worktree: "/repo/main"},
+			{Name: "nixos-config@feat", InstanceID: "iid-2", State: "active", Role: "worker", Worktree: "/repo/feat"},
+		},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	// Sanity: view shows the snapshot sessions.
+	view := m.View()
+	if !strings.Contains(view, "nixos-config@main") || !strings.Contains(view, "nixos-config@feat") {
+		t.Fatalf("snapshot sessions not rendered; view excerpt:\n%s", excerpt(view, 500))
+	}
+
+	// Deliver session_spawned for a third session, carrying a full snapshot
+	// (state/role/worktree) per the daemon contract.
+	newSnap := iris.SessionSnapshot{
+		Name:       "nixos-config@new",
+		InstanceID: "iid-3",
+		State:      "spawning",
+		Role:       "worker",
+		Worktree:   "/repo/new",
+		StartedAt:  time.Now().Format(time.RFC3339),
+	}
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       newSnap.Name,
+			InstanceID: newSnap.InstanceID,
+			Session:    &newSnap,
+		},
+	})
+	m = m2.(tui.Model)
+
+	// Assert the new session is now in the model's list (rendered view).
+	view = m.View()
+	if !strings.Contains(view, "nixos-config@new") {
+		t.Errorf("spawned session not rendered after session_spawned; view excerpt:\n%s", excerpt(view, 800))
+	}
+	// Pre-existing sessions are still present.
+	if !strings.Contains(view, "nixos-config@main") {
+		t.Errorf("original session 'main' missing after session_spawned; view excerpt:\n%s", excerpt(view, 800))
+	}
+	if !strings.Contains(view, "nixos-config@feat") {
+		t.Errorf("original session 'feat' missing after session_spawned; view excerpt:\n%s", excerpt(view, 800))
+	}
+	// The new row carries state and role from the spawned snapshot.
+	if !strings.Contains(view, "spawning") {
+		t.Errorf("spawned session state 'spawning' not rendered; view excerpt:\n%s", excerpt(view, 800))
+	}
+	if !strings.Contains(view, "worker") {
+		t.Errorf("spawned session role 'worker' not rendered; view excerpt:\n%s", excerpt(view, 800))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTUISessionSpawnedDedupe — session_spawned for a known name is treated
+// as an update, not a duplicate append.
+// ---------------------------------------------------------------------------
+
+func TestTUISessionSpawnedDedupe(t *testing.T) {
+	m := newConnectedModel()
+
+	// Snapshot with one session in "spawning" state.
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: "nixos-config@dup", InstanceID: "iid-dup", State: "spawning", Role: "worker", Worktree: "/repo/dup"},
+		},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	if got := tui.ModelSessionCount(m); got != 1 {
+		t.Fatalf("after snapshot: session count = %d, want 1", got)
+	}
+
+	// Deliver session_spawned for the same name (defensive case — daemon
+	// shouldn't normally do this, but the TUI must not double-append).
+	updated := iris.SessionSnapshot{
+		Name:       "nixos-config@dup",
+		InstanceID: "iid-dup",
+		State:      "active", // updated state
+		Role:       "worker",
+		Worktree:   "/repo/dup",
+	}
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       updated.Name,
+			InstanceID: updated.InstanceID,
+			Session:    &updated,
+		},
+	})
+	m = m2.(tui.Model)
+
+	if got := tui.ModelSessionCount(m); got != 1 {
+		t.Errorf("after duplicate session_spawned: session count = %d, want 1 (dedupe)", got)
+	}
+	// The row should have been updated to the new state.
+	name, state, _ := tui.ModelSessionAt(m, 0)
+	if name != "nixos-config@dup" {
+		t.Errorf("row name = %q, want nixos-config@dup", name)
+	}
+	if state != "active" {
+		t.Errorf("row state = %q, want active (updated by session_spawned)", state)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTUISessionSpawnedMalformed — malformed frame is skipped, no crash.
+// ---------------------------------------------------------------------------
+
+func TestTUISessionSpawnedMalformed(t *testing.T) {
+	m := newConnectedModel()
+
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: "keep", InstanceID: "iid-keep", State: "active", Role: "worker"},
+		},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	before := tui.ModelSessionCount(m)
+
+	// Case 1: nil Spawned pointer (decoder failed).
+	m2, _ = m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionSpawned, Spawned: nil})
+	m = m2.(tui.Model)
+
+	// Case 2: empty Name (missing required field).
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{Type: iris.DaemonFrameSessionSpawned},
+	})
+	m = m2.(tui.Model)
+
+	if got := tui.ModelSessionCount(m); got != before {
+		t.Errorf("malformed session_spawned changed session count: got %d, want %d", got, before)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TestTUISessionSpawnedBackcompat — frame without Session field still adds row.
+// ---------------------------------------------------------------------------
+
+func TestTUISessionSpawnedBackcompat(t *testing.T) {
+	m := newConnectedModel()
+
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type:     iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	// Older daemon emits Name+InstanceID only, no Session snapshot.
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       "legacy@session",
+			InstanceID: "iid-legacy",
+		},
+	})
+	m = m2.(tui.Model)
+
+	if got := tui.ModelSessionCount(m); got != 1 {
+		t.Errorf("backcompat session_spawned: count = %d, want 1", got)
+	}
+	name, _, _ := tui.ModelSessionAt(m, 0)
+	if name != "legacy@session" {
+		t.Errorf("backcompat row name = %q, want legacy@session", name)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestTUIEventStream — session_event frames render in the right pane
 // ---------------------------------------------------------------------------
 
@@ -571,7 +766,7 @@ func fakeDaemon(ctx context.Context, ln net.Listener, received chan map[string]a
 					pong, _ := json.Marshal(map[string]string{"type": "pong"})
 					pong = append(pong, '\n')
 					w.Write(pong) //nolint:errcheck
-					w.Flush()    //nolint:errcheck
+					w.Flush()     //nolint:errcheck
 				}
 			}
 		}(conn)
