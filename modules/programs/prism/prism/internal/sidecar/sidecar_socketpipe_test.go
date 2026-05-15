@@ -2613,5 +2613,183 @@ func TestSocketPipe_SessionStatus_EmptySessionID_NoOp(t *testing.T) {
 	}
 }
 
+// ── #1652 regression tests ────────────────────────────────────────────────
+//
+// These tests guard against the race where the finished-debounce in
+// handleSessionFinished suppresses only when BOTH reviewingInFlight==true AND
+// the DB state is StateReviewing. Intermediate state_change frames can drive
+// the DB back to StateActive while the in-memory flag is still true, causing
+// the AND to fail and the session to prematurely transition to StateFinished.
+//
+// The fix (approach b from issue #1652): rely on the in-memory flag alone.
+
+// TestSocketPipe_StateChange_DoesNotClobberReviewing verifies that a
+// state_change{finished} frame while reviewingInFlight==true does NOT
+// transition the session to finished, even when the DB state has drifted back
+// to active (i.e. the old AND guard would have failed). This is the core
+// regression test for issue #1652.
+//
+// Synchronisation: WaitForTimerCount waits for the debounce timer, then we
+// fire it manually and assert the session stays not-finished.
+func TestSocketPipe_StateChange_DoesNotClobberReviewing(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Bring the session to active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateActive), 2*time.Second); st != string(agent.StateActive) {
+		t.Fatalf("state never reached active after turn_start, got %q", st)
+	}
+
+	// Simulate /review: write reviewing to the DB and set reviewingInFlight.
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateReviewing), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus reviewing: %v", err)
+	}
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
+
+	// Simulate DB state drifting back to active (the bug scenario from #1652):
+	// a state_change frame from a prior code path overwrote reviewing with active.
+	// We replicate this directly without going through the protocol.
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateActive), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus active (simulating drift): %v", err)
+	}
+
+	// Confirm DB is now active (not reviewing) — this is the buggy state.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateActive) {
+		t.Fatalf("expected DB to be active (drift simulation), got %q", s)
+	}
+
+	// Send state_change{finished} — this starts the finished debounce.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	// Wait for the debounce timer to be registered.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
+	}
+
+	// Fire the debounce timer — with the fix the suppression should trigger.
+	timer.Fire()
+
+	// Give the debounce closure time to run.
+	time.Sleep(100 * time.Millisecond)
+
+	// The session must NOT have transitioned to finished (reviewingInFlight is
+	// still true, so the debounce should be suppressed).
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st == string(agent.StateFinished) {
+		t.Errorf("session transitioned to finished while reviewingInFlight=true and DB state=active — #1652 regression")
+	}
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_FailedRetryReview_StateChangeDoesNotFinish reproduces the
+// exact timeline from issue #1652:
+//
+//  1. Worker starts, reaches active.
+//  2. /review is called (1st attempt) — writes reviewing to DB, sets flag.
+//  3. /review subprocess fails — reviewingInFlight stays true (HTTP 500 path).
+//  4. /review is called again (2nd attempt, --rebase) — flag is already true.
+//  5. Worker does fix-cycle work: state_change frames drive DB back to active.
+//  6. Worker emits state_change{finished} — debounce fires — session must NOT
+//     transition to finished.
+//
+// Synchronisation: WaitForTimerCount + manual Fire + sleep.
+func TestSocketPipe_FailedRetryReview_StateChangeDoesNotFinish(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Step 1: worker reaches active.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateActive), 2*time.Second); st != string(agent.StateActive) {
+		t.Fatalf("state never reached active after turn_start, got %q", st)
+	}
+
+	// Step 2: first /review attempt — writes reviewing + sets flag.
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateReviewing), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus reviewing (1st attempt): %v", err)
+	}
+	sc.mu.Lock()
+	sc.reviewingInFlight = true
+	sc.mu.Unlock()
+
+	// Step 3: /review subprocess fails. In the real code the HTTP handler
+	// returns 500 and does NOT clear reviewingInFlight (it stays true). The DB
+	// state stays "reviewing" at this point.
+
+	// Step 4: second /review attempt (--rebase). reviewingInFlight is already
+	// true; the handler skips the DB write and re-launches the subprocess.
+	// (Nothing to do here — the flag is already set.)
+
+	// Step 5: worker does fix-cycle work. state_change{active} frames via the
+	// default branch of handlePipeFrame drive DB back to active.
+	// We simulate this directly to avoid relying on internal protocol details.
+	if err := sc.cfg.DB.UpsertStatus(
+		sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree,
+		string(agent.StateActive), nil, nil,
+	); err != nil {
+		t.Fatalf("UpsertStatus active (fix-cycle drift): %v", err)
+	}
+
+	// Confirm DB has drifted back to active while flag is still set.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateActive) {
+		t.Fatalf("expected DB=active after fix-cycle drift, got %q", s)
+	}
+	sc.mu.Lock()
+	stillInFlight := sc.reviewingInFlight
+	sc.mu.Unlock()
+	if !stillInFlight {
+		t.Fatal("reviewingInFlight should still be true after failed-then-retried /review")
+	}
+
+	// Step 6: worker finishes its fix-cycle turn → state_change{finished}.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	// Wait for the debounce timer.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer created after state_change{finished}")
+	}
+
+	// Fire the debounce — with the fix it must be suppressed.
+	timer.Fire()
+	time.Sleep(100 * time.Millisecond)
+
+	// Session must NOT be finished — review is still in flight.
+	st := getState(t, sc.cfg.DB, sc.cfg.SessionName)
+	if st == string(agent.StateFinished) {
+		t.Errorf("session prematurely finished during failed-then-retried /review with DB state=active — #1652 regression")
+	}
+
+	// Cleanup: clear the flag and shut down.
+	sc.mu.Lock()
+	sc.reviewingInFlight = false
+	sc.mu.Unlock()
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
 // Ensure db import is used.
 var _ *db.DB
