@@ -52,6 +52,10 @@ type SupervisorConfig struct {
 	RunDir string
 	// Database is the open iris DB (used for event writes).
 	Database *db.DB
+	// Publisher is the optional EventPublisher wired to the harness socket so
+	// that every event written via the harness is also fanned out to client
+	// subscribers (D-6). When nil, fan-out is disabled (harness-only mode).
+	Publisher EventPublisher
 }
 
 // Supervisor manages a single pi child process.
@@ -105,6 +109,13 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		return nil, err
 	}
 
+	// Wire the client-socket publisher (D-6 fan-out). This must happen before
+	// AcceptOne is called so that every harness event is published from the
+	// first frame onward.
+	if cfg.Publisher != nil {
+		harness.SetPublisher(cfg.Publisher)
+	}
+
 	// Insert the session record into the DB.
 	if err := insertSessionRecord(cfg.Database, sess); err != nil {
 		// Non-fatal: log and continue.
@@ -124,6 +135,14 @@ func (s *Supervisor) InstanceID() string { return s.sess.InstanceID }
 
 // SessionRecord returns a copy of the session record.
 func (s *Supervisor) SessionRecord() SessionRecord { return s.sess }
+
+// SetPublisher wires an EventPublisher to this supervisor's harness socket.
+// It may be called at any time after NewSupervisor returns and before or
+// after Start(). The publisher receives a Publish call for every event written
+// to the DB by the harness (D-6 fan-out).
+func (s *Supervisor) SetPublisher(p EventPublisher) {
+	s.harness.SetPublisher(p)
+}
 
 // Start spawns the pi child and runs the supervisor loop. It blocks until the
 // session reaches a terminal state (finished or error) or ctx is cancelled.
@@ -514,4 +533,21 @@ func PiSessionPathFromSessionID(piAgentDir, encodedCwd, sessionID string) (strin
 		}
 	}
 	return "", fmt.Errorf("iris: pi session %q not found under %q", sessionID, sessionsDir)
+}
+
+// GenerateSessionName generates a default session name from a worktree path
+// and role. The format is "iris-<role>@<basename>" where basename is the
+// last path component of the worktree. This is used by the daemon when a
+// client sends a session_spawn frame without specifying a session name.
+//
+// Examples:
+//
+//	GenerateSessionName("/home/user/code/my-project", "worker")
+//	  → "iris-worker@my-project"
+func GenerateSessionName(worktree, role string) string {
+	base := filepath.Base(worktree)
+	if base == "" || base == "." || base == "/" {
+		base = "session"
+	}
+	return fmt.Sprintf("iris-%s@%s", role, base)
 }

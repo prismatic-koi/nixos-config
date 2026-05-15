@@ -32,6 +32,13 @@ import (
 
 // HarnessSocketServer manages a per-session harness socket. One instance is
 // created per session by the Supervisor when it spawns a pi child.
+// EventPublisher receives notifications when a new event is written to the DB.
+// It is set by the daemon to the ClientSocket.Publish method so that every
+// harness event is fanned out to all subscribed clients in real time (D-6).
+type EventPublisher interface {
+	Publish(EventPublication)
+}
+
 type HarnessSocketServer struct {
 	sess    *SessionRecord
 	database *db.DB
@@ -49,6 +56,10 @@ type HarnessSocketServer struct {
 	// writer is the current connected extension's writer (nil when no
 	// connection is active).
 	writer *jsonlWriter
+
+	// publisher receives Publish calls for every event written to the DB.
+	// Nil when no client socket is configured (e.g. in harness-only tests).
+	publisher EventPublisher
 
 	// sessionShutdownReceived is set to true when the session_shutdown
 	// frame arrives — used by the supervisor to detect clean exits.
@@ -70,6 +81,15 @@ func NewHarnessSocketServer(sess *SessionRecord, database *db.DB) (*HarnessSocke
 		inFlight:   make(map[string]chan ToolExecResultFrame),
 		abortChans: make(map[string]chan struct{}),
 	}, nil
+}
+
+// SetPublisher wires a ClientSocket (or any EventPublisher) to this harness
+// server. After this call, every event written to the DB is also published
+// to the client fan-out. Call before starting AcceptOne().
+func (h *HarnessSocketServer) SetPublisher(p EventPublisher) {
+	h.mu.Lock()
+	h.publisher = p
+	h.mu.Unlock()
 }
 
 // Listen binds the Unix domain socket and begins accepting connections.
@@ -372,9 +392,12 @@ func (h *HarnessSocketServer) writeEvent(eventType string, payload []byte) {
 		// sessions row and the FK constraint requires the parent to exist first.
 		// The event is still recorded and queryable by session_name.
 	}
-	if err := h.database.WriteEvent(event); err != nil {
+	rowID, err := h.database.WriteEventReturningRowID(event)
+	if err != nil {
 		log.Printf("[iris] harness: failed to write %s event: %v", eventType, err)
+		return
 	}
+	h.publishEvent(eventType, string(payload), rowID)
 }
 
 // writeObservationEvent writes a generic observation event (forwarded as-is)
@@ -389,9 +412,29 @@ func (h *HarnessSocketServer) writeObservationEvent(eventType string, rawLine []
 		Payload:     string(rawLine),
 		CreatedAt:   time.Now(),
 	}
-	if err := h.database.WriteEvent(event); err != nil {
+	rowID, err := h.database.WriteEventReturningRowID(event)
+	if err != nil {
 		log.Printf("[iris] harness: failed to write %s observation event: %v", eventType, err)
+		return
 	}
+	h.publishEvent(eventType, string(rawLine), rowID)
+}
+
+// publishEvent forwards a just-written event to the client fan-out (if a
+// publisher is configured). It is a no-op when publisher is nil.
+func (h *HarnessSocketServer) publishEvent(eventType, payload string, rowID int64) {
+	h.mu.Lock()
+	pub := h.publisher
+	h.mu.Unlock()
+	if pub == nil {
+		return
+	}
+	pub.Publish(EventPublication{
+		SessionName: h.sess.SessionName,
+		RowID:       rowID,
+		EventType:   eventType,
+		Payload:     payload,
+	})
 }
 
 // --- Helper: jsonlWriter ---
