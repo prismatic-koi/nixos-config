@@ -25,6 +25,7 @@ in
         home-manager.users.${username} = {
           home.packages = with pkgs; [
             fluxcd
+            hubble
             krew
             kubectl
             kubelogin
