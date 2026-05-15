@@ -55,6 +55,14 @@ type SupervisorConfig struct {
 	ShutdownTimeout time.Duration
 	// RunDir is the iris run directory (e.g. ~/.local/state/iris/run/).
 	RunDir string
+	// LogDir is the iris per-session log directory (e.g.
+	// ~/.local/state/iris/logs/). When non-empty, the supervisor opens a
+	// per-session log file at <LogDir>/<session-name>.log and tees its
+	// session-scoped log lines into it. The file is opened with O_APPEND
+	// so restart and re-spawn append rather than truncate. Empty disables
+	// per-session logging — in that case session log lines only go to the
+	// global logger (stderr / journal).
+	LogDir string
 	// Database is the open iris DB (used for event writes).
 	Database *db.DB
 	// Publisher is the optional EventPublisher wired to the harness socket so
@@ -81,8 +89,64 @@ type Supervisor struct {
 	// stdinPipe is the write end of pi's stdin (for sending RPC commands).
 	stdinPipe io.WriteCloser
 
+	// sessionLog is the per-session logger that writes to both the global
+	// log destination (stderr / journal) and the per-session log file under
+	// LogDir. Always non-nil after construction; falls back to the stderr-
+	// only global logger when LogDir is empty or the file cannot be opened.
+	sessionLog *log.Logger
+	// sessionLogFile is the per-session log file. May be nil when LogDir is
+	// empty or the file could not be opened. Closed by Start() on terminal
+	// state.
+	sessionLogFile *os.File
+
 	mu    sync.Mutex
 	state SessionState
+}
+
+// stateNotifier is implemented by publishers that want to receive
+// state-transition notifications. The supervisor calls PublishState on every
+// transition so subscribed clients can drive UI updates (e.g. the TUI session
+// table, or `iris logs --follow` exiting after terminal state).
+//
+// EventPublisher implementations may optionally satisfy this interface; the
+// supervisor checks for it at the call site rather than embedding it in the
+// EventPublisher interface so existing test publishers that only implement
+// Publish continue to compile.
+type stateNotifier interface {
+	PublishState(sessionName, state string)
+}
+
+// openSessionLogFile opens (creating if needed) the per-session log file under
+// logDir for the given session name. Returns (nil, nil) when logDir is empty
+// — callers must tolerate a nil file. Errors are returned for logging by the
+// caller but never made fatal: missing per-session logs do not block spawn.
+func openSessionLogFile(logDir, sessionName string) (*os.File, error) {
+	if logDir == "" || sessionName == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(logDir, 0o700); err != nil {
+		return nil, fmt.Errorf("mkdir log dir %q: %w", logDir, err)
+	}
+	path := (Paths{LogDir: logDir}).SessionLogPath(sessionName)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open session log %q: %w", path, err)
+	}
+	return f, nil
+}
+
+// newSessionLogger constructs a *log.Logger that writes to both the global
+// stderr destination and the given per-session file. When f is nil, the
+// returned logger writes only to stderr (matching the global log package).
+// The prefix is "[iris:<session>] " so per-session files self-identify even
+// after grepping across multiple logs.
+func newSessionLogger(f *os.File, sessionName string) *log.Logger {
+	prefix := fmt.Sprintf("[iris:%s] ", sessionName)
+	flags := log.LstdFlags | log.Lmicroseconds
+	if f == nil {
+		return log.New(os.Stderr, prefix, flags)
+	}
+	return log.New(io.MultiWriter(os.Stderr, f), prefix, flags)
 }
 
 // NewSupervisor creates a Supervisor for the given config and begins the
@@ -142,11 +206,19 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		log.Printf("[iris] supervisor: failed to set initial iris_state: %v", err)
 	}
 
+	logFile, logErr := openSessionLogFile(cfg.LogDir, cfg.SessionName)
+	if logErr != nil {
+		log.Printf("[iris] supervisor: open per-session log: %v (continuing without per-session log)", logErr)
+	}
+	sessionLog := newSessionLogger(logFile, cfg.SessionName)
+
 	sup := &Supervisor{
-		cfg:     cfg,
-		sess:    sess,
-		harness: harness,
-		state:   StateSpawning,
+		cfg:            cfg,
+		sess:           sess,
+		harness:        harness,
+		state:          StateSpawning,
+		sessionLog:     sessionLog,
+		sessionLogFile: logFile,
 	}
 	// Wire the session_status handler so the harness socket can update the
 	// in-memory SessionRecord.PiSessionPath as soon as pi delivers its
@@ -244,10 +316,35 @@ func (s *Supervisor) SetPublisher(p EventPublisher) {
 	s.harness.SetPublisher(p)
 }
 
+// logf writes a log line via the per-session logger (stderr + per-session
+// file). All supervisor lines should use this rather than the global log
+// package so per-session log files capture them.
+func (s *Supervisor) logf(format string, args ...any) {
+	if s.sessionLog != nil {
+		s.sessionLog.Printf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
+}
+
+// closeSessionLogFile closes the per-session log file if open. Safe to call
+// multiple times.
+func (s *Supervisor) closeSessionLogFile() {
+	if s.sessionLogFile != nil {
+		_ = s.sessionLogFile.Close()
+		s.sessionLogFile = nil
+	}
+}
+
 // Start spawns the pi child and runs the supervisor loop. It blocks until the
 // session reaches a terminal state (finished or error) or ctx is cancelled.
 // Start is intended to be called in its own goroutine.
 func (s *Supervisor) Start(ctx context.Context) {
+	// Ensure the per-session log file is closed when Start returns. The
+	// supervisor's lifetime is the goroutine that runs Start, so this is the
+	// correct close site.
+	defer s.closeSessionLogFile()
+
 	for {
 		exitCode := s.spawnAndRun(ctx)
 
@@ -262,7 +359,7 @@ func (s *Supervisor) Start(ctx context.Context) {
 
 		if exitCode == 0 {
 			if !cleanExit {
-				log.Printf("[iris] supervisor: session %s: pi exited 0 without session_shutdown (anomaly)", s.sess.InstanceID)
+				s.logf("supervisor: session %s: pi exited 0 without session_shutdown (anomaly)", s.sess.InstanceID)
 			}
 			s.setState(StateFinished)
 			return
@@ -271,13 +368,13 @@ func (s *Supervisor) Start(ctx context.Context) {
 		// Non-zero exit.
 		s.sess.RestartCount++
 		if s.sess.RestartCount >= s.cfg.RestartThreshold {
-			log.Printf("[iris] supervisor: session %s: circuit breaker opened after %d failures", s.sess.InstanceID, s.sess.RestartCount)
+			s.logf("supervisor: session %s: circuit breaker opened after %d failures", s.sess.InstanceID, s.sess.RestartCount)
 			s.setState(StateError)
 			return
 		}
 
 		backoff := RestartBackoff(s.sess.RestartCount)
-		log.Printf("[iris] supervisor: session %s: pi exited non-zero (attempt %d/%d), restarting in %v",
+		s.logf("supervisor: session %s: pi exited non-zero (attempt %d/%d), restarting in %v",
 			s.sess.InstanceID, s.sess.RestartCount, s.cfg.RestartThreshold-1, backoff)
 		s.setState(StateError)
 
@@ -301,7 +398,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 		var err error
 		piBin, err = exec.LookPath("pi")
 		if err != nil {
-			log.Printf("[iris] supervisor: pi not found on PATH: %v", err)
+			s.logf("supervisor: pi not found on PATH: %v", err)
 			return 1
 		}
 	}
@@ -309,7 +406,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	// Write a per-session pi config that loads the prism extension.
 	piConfigDir, err := s.writePerSessionPIConfig()
 	if err != nil {
-		log.Printf("[iris] supervisor: write pi config: %v", err)
+		s.logf("supervisor: write pi config: %v", err)
 		return 1
 	}
 
@@ -330,12 +427,12 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	// Wire stdin/stdout pipes.
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		log.Printf("[iris] supervisor: stdin pipe: %v", err)
+		s.logf("supervisor: stdin pipe: %v", err)
 		return 1
 	}
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Printf("[iris] supervisor: stdout pipe: %v", err)
+		s.logf("supervisor: stdout pipe: %v", err)
 		stdinPipe.Close()
 		return 1
 	}
@@ -348,7 +445,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	}
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("[iris] supervisor: start pi: %v", err)
+		s.logf("supervisor: start pi: %v", err)
 		return 1
 	}
 
@@ -356,7 +453,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	s.stdinPipe = stdinPipe
 	s.mu.Unlock()
 
-	log.Printf("[iris] supervisor: spawned pi pid=%d (session %s)", cmd.Process.Pid, s.sess.InstanceID)
+	s.logf("supervisor: spawned pi pid=%d (session %s)", cmd.Process.Pid, s.sess.InstanceID)
 	s.setState(StateActive)
 
 	// Run the harness socket acceptor in a goroutine.
@@ -364,7 +461,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	defer harnessCancel()
 	go func() {
 		if err := s.harness.AcceptOne(harnessCtx); err != nil && harnessCtx.Err() == nil {
-			log.Printf("[iris] supervisor: harness accept error (session %s): %v", s.sess.InstanceID, err)
+			s.logf("supervisor: harness accept error (session %s): %v", s.sess.InstanceID, err)
 		}
 	}()
 
@@ -412,15 +509,15 @@ func (s *Supervisor) handleRPCEvent(line []byte) {
 
 	var generic GenericFrame
 	if err := json.Unmarshal(line, &generic); err != nil {
-		log.Printf("[iris] supervisor: RPC parse error: %v", err)
+		s.logf("supervisor: RPC parse error: %v", err)
 		return
 	}
 
 	switch generic.Type {
 	case "agent_start":
-		log.Printf("[iris] supervisor: session %s: agent_start", s.sess.InstanceID)
+		s.logf("supervisor: session %s: agent_start", s.sess.InstanceID)
 	case "agent_end":
-		log.Printf("[iris] supervisor: session %s: agent_end", s.sess.InstanceID)
+		s.logf("supervisor: session %s: agent_end", s.sess.InstanceID)
 	case "response":
 		// Command acknowledgement — log at debug level (suppressed for now).
 	}
@@ -507,7 +604,7 @@ func (s *Supervisor) openLogFile() *os.File {
 	logPath := filepath.Join(logDir, "pi-stderr.log")
 	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		log.Printf("[iris] supervisor: open log file %q: %v (stderr will be discarded)", logPath, err)
+		s.logf("supervisor: open log file %q: %v (stderr will be discarded)", logPath, err)
 		return nil
 	}
 	return f
@@ -520,20 +617,33 @@ func (s *Supervisor) setState(newState SessionState) {
 	s.sess.State = newState
 	s.mu.Unlock()
 
+	// Log the transition into the per-session log so `iris logs <session>`
+	// captures lifecycle events even when no harness traffic is in flight.
+	s.logf("supervisor: session %s state=%s", s.sess.InstanceID, newState)
+
 	// Always write iris_state to the DB so the restore path can read it.
 	if err := s.cfg.Database.IrisUpdateSessionState(s.sess.InstanceID, string(newState)); err != nil {
-		log.Printf("[iris] supervisor: update iris_state: %v", err)
+		s.logf("supervisor: update iris_state: %v", err)
 	}
 
 	// Update the sessions DB row end state for terminal states.
 	switch newState {
 	case StateFinished:
 		if err := s.cfg.Database.UpdateSessionEnded(s.sess.InstanceID, "finished"); err != nil {
-			log.Printf("[iris] supervisor: update session ended: %v", err)
+			s.logf("supervisor: update session ended: %v", err)
 		}
 	case StateError:
 		if err := s.cfg.Database.UpdateSessionEnded(s.sess.InstanceID, "error"); err != nil {
-			log.Printf("[iris] supervisor: update session ended: %v", err)
+			s.logf("supervisor: update session ended: %v", err)
+		}
+	}
+
+	// Notify subscribers of state transitions via the EventPublisher when it
+	// implements stateNotifier (the production ClientSocket does; test
+	// publishers that only implement Publish are unaffected).
+	if s.cfg.Publisher != nil {
+		if n, ok := s.cfg.Publisher.(stateNotifier); ok {
+			n.PublishState(s.sess.SessionName, string(newState))
 		}
 	}
 }

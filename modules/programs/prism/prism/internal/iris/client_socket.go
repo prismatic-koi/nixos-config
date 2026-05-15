@@ -75,6 +75,16 @@ type EventPublication struct {
 	Payload     string
 }
 
+// subscriberMessage is the wrapper type carried on per-subscriber channels.
+// Exactly one of Event or State is populated. State carries a session-state
+// transition ("spawning" -> "active" -> "finished"|"error"); Event carries a
+// session_event from the harness. Splitting these in a union avoids the cost
+// of a separate channel per subscriber.
+type subscriberMessage struct {
+	Event *EventPublication
+	State string // "" when this message is an event
+}
+
 // ClientSocket is the user-facing IPC socket. It binds to the iris.sock path
 // and manages per-client connection goroutines and the per-session subscriber
 // map for fan-out.
@@ -101,7 +111,7 @@ type ClientSocket struct {
 // unsubscribe can remove the correct entry from the slice.
 type subscriberChan struct {
 	id string
-	ch chan EventPublication
+	ch chan subscriberMessage
 }
 
 // PublisherFunc is an adapter that allows a plain function to be used as an
@@ -222,14 +232,41 @@ func (cs *ClientSocket) Publish(pub EventPublication) {
 	copy(chans, cs.subscribers[pub.SessionName])
 	cs.subMu.Unlock()
 
+	event := pub // copy so the pointer below is stable for this iteration
+	msg := subscriberMessage{Event: &event}
 	for _, sc := range chans {
 		select {
-		case sc.ch <- pub:
+		case sc.ch <- msg:
 		default:
 			// The subscriber channel is full. We drop the event for this
 			// subscriber; the subscriber goroutine will detect the next
 			// failure and close the connection.
 			log.Printf("[iris] client socket: subscriber %s for session %q channel full, dropping event", sc.id, pub.SessionName)
+		}
+	}
+}
+
+// PublishState broadcasts a session_state transition to all clients
+// subscribed to the named session. Implements stateNotifier so the supervisor
+// can deliver state changes without coupling to the ClientSocket concrete
+// type. State is one of the SessionState string values ("spawning",
+// "active", "finished", "error").
+func (cs *ClientSocket) PublishState(sessionName, state string) {
+	cs.subMu.Lock()
+	chans := make([]subscriberChan, len(cs.subscribers[sessionName]))
+	copy(chans, cs.subscribers[sessionName])
+	cs.subMu.Unlock()
+
+	msg := subscriberMessage{State: state}
+	for _, sc := range chans {
+		select {
+		case sc.ch <- msg:
+		default:
+			// Channel full — the slow subscriber will be cleaned up on its
+			// next event. Dropping a state transition is acceptable here:
+			// the caller (e.g. `iris logs --follow`) can fall back to
+			// sessions_list to recover. Log so this is observable.
+			log.Printf("[iris] client socket: subscriber %s for session %q channel full, dropping state %q", sc.id, sessionName, state)
 		}
 	}
 }
@@ -444,7 +481,7 @@ func (cs *ClientSocket) runSubscription(
 	}
 
 	// Step 3: Register the live channel.
-	ch := make(chan EventPublication, subscriberChanSize)
+	ch := make(chan subscriberMessage, subscriberChanSize)
 	cs.addSubscriber(sessionName, subscriberChan{id: subID, ch: ch})
 
 	// Step 4: Replay from DB if since_event_id was given.
@@ -477,10 +514,25 @@ func (cs *ClientSocket) runSubscription(
 		select {
 		case <-ctx.Done():
 			return
-		case pub, ok := <-ch:
+		case msg, ok := <-ch:
 			if !ok {
 				return // Channel closed.
 			}
+			if msg.State != "" {
+				stateFrame := DaemonSessionStateFrame{
+					Type:        DaemonFrameSessionState,
+					SessionName: sessionName,
+					State:       msg.State,
+				}
+				if err := w.write(stateFrame); err != nil {
+					return // Client disconnected.
+				}
+				continue
+			}
+			if msg.Event == nil {
+				continue
+			}
+			pub := *msg.Event
 			// Skip events that were already sent during the DB replay.
 			if frame.SinceEventID > 0 && pub.RowID <= snapshotRowID {
 				continue

@@ -350,10 +350,18 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 	}
 
 
+	logFile, logErr := openSessionLogFile(cfg.LogDir, cfg.SessionName)
+	if logErr != nil {
+		log.Printf("[iris] restore: open per-session log: %v (continuing without per-session log)", logErr)
+	}
+	sessionLog := newSessionLogger(logFile, cfg.SessionName)
+
 	return &Supervisor{
-		cfg:     cfg,
-		sess:    record,
-		harness: harness,
-		state:   StateSpawning,
+		cfg:            cfg,
+		sess:           record,
+		harness:        harness,
+		state:          StateSpawning,
+		sessionLog:     sessionLog,
+		sessionLogFile: logFile,
 	}, nil
 }

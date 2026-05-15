@@ -61,6 +61,11 @@ type CleanupConfig struct {
 	// RunDir is the iris run directory (e.g. ~/.local/state/iris/run/).
 	// Per-session subdirs under this path are removed.
 	RunDir string
+	// LogDir is the iris per-session log directory (e.g.
+	// ~/.local/state/iris/logs/). When non-empty, cleanup removes the
+	// per-session log file at <LogDir>/<session>.log. Empty disables the
+	// log-removal step (used by tests that don't exercise the log path).
+	LogDir string
 	// ArchiveRoot is the root of the iris archive tree
 	// (e.g. ~/code/archives/iris/). Session JSONL files are copied to
 	// <ArchiveRoot>/<session>/<instance_id>/raw/session.jsonl.
@@ -88,6 +93,10 @@ type CleanupResult struct {
 	SessionRowRemoved bool
 	// RunDirRemoved is true when <RunDir>/<instance_id>/ was removed.
 	RunDirRemoved bool
+	// LogFileRemoved is true when the per-session log file at
+	// <LogDir>/<session>.log was removed (or was already absent). Always
+	// true on the success path when LogDir is non-empty.
+	LogFileRemoved bool
 	// WorktreeRemoved is true when the worktree was removed
 	// (RemoveWorktree=true and removal succeeded).
 	WorktreeRemoved bool
@@ -162,6 +171,21 @@ func CleanupSession(ctx context.Context, cfg CleanupConfig, sessionName string) 
 	} else {
 		log.Printf("[iris] cleanup: stat run dir %q: %v", sessionRunDir, err)
 		res.Errors = append(res.Errors, fmt.Errorf("stat run dir: %w", err))
+	}
+
+	// Step 4b: remove the per-session log file.
+	if cfg.LogDir != "" {
+		logPath := (Paths{LogDir: cfg.LogDir}).SessionLogPath(sess.SessionName)
+		if err := os.Remove(logPath); err != nil {
+			if os.IsNotExist(err) {
+				res.LogFileRemoved = true
+			} else {
+				log.Printf("[iris] cleanup: remove log file %q: %v", logPath, err)
+				res.Errors = append(res.Errors, fmt.Errorf("remove log file: %w", err))
+			}
+		} else {
+			res.LogFileRemoved = true
+		}
 	}
 
 	// Step 5: remove the worktree and branch when requested and safe.
