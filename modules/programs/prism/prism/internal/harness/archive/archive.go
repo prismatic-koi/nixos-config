@@ -26,6 +26,12 @@ type SourceParams struct {
 	HarnessSessionID string
 	// IsolationMode is "podman", "bwrap", "sandbox-exec", or "host".
 	IsolationMode string
+	// Worktree is the absolute path of the session's worktree (e.g.
+	// "/home/ben/code/nixos-config/feature"). Used by harnesses that
+	// organise on-disk session storage by cwd (e.g. pi encodes the cwd into
+	// the session directory name). May be empty for non-worktree sessions or
+	// when the harness does not need it.
+	Worktree string
 }
 
 // ArchiveAdapter is the interface each harness implements to plug into the
