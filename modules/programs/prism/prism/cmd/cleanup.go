@@ -984,6 +984,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		SessionName:   sessionName,
 		InstanceID:    instanceID,
 		IsolationMode: statusIsolationMode,
+		Worktree:      sess.Worktree,
 	}
 	if sess.HarnessSessionID != nil {
 		srcParams.HarnessSessionID = *sess.HarnessSessionID
