@@ -1009,10 +1009,8 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		IsolationMode:  statusIsolationMode,
 		PrismVersion:   archive.PrismGitSHA(),
 		HarnessVersion: harnessVersion,
-		StorageRoot:    srcPath,
 		// Copier delegates the harness-specific file-copy to the adapter's Archive
-		// method. This removes the hard-coded opencode copySessionFiles call from
-		// archive.Run and allows any registered harness to provide its own copy logic.
+		// method, allowing any registered harness to provide its own copy logic.
 		Copier: func(copyCtx context.Context, rawDir string) error {
 			return archiveAdapter.Archive(copyCtx, srcPath, rawDir, srcParams)
 		},
@@ -1088,7 +1086,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	// Translate the raw archive via the adapter's Export method.
 	// Failure is non-fatal: the raw archive remains intact for re-translation later.
 	if exportErr := archiveAdapter.Export(ctx, archivePath, srcParams); exportErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] piexport: translate failed for session %q: %v\n", sessionName, exportErr)
+		fmt.Fprintf(os.Stderr, "[prism] archive: export failed for session %q: %v\n", sessionName, exportErr)
 	}
 
 	return nil
