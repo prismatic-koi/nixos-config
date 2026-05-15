@@ -425,7 +425,11 @@ func TestDBEventWritten(t *testing.T) {
 }
 
 // TestReadTool verifies the read tool executor.
+// Requires bwrap with unprivileged user namespaces (skipped in CI environments
+// that lack this capability, e.g. GitHub Actions ubuntu runners and the Nix
+// build sandbox).
 func TestReadTool(t *testing.T) {
+	requireBwrap(t)
 	tmp := t.TempDir()
 
 	// Write a test file.
@@ -509,7 +513,10 @@ func TestSupervisorRestartPolicy(t *testing.T) {
 }
 
 // TestEditToolUniqueness verifies that runEdit rejects non-unique old_string.
+// Requires bwrap with unprivileged user namespaces (skipped in CI environments
+// that lack this capability).
 func TestEditToolUniqueness(t *testing.T) {
+	requireBwrap(t)
 	tmp := t.TempDir()
 
 	// Write a file with the target string appearing twice.
