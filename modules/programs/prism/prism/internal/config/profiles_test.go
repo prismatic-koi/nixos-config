@@ -10,50 +10,44 @@ import (
 )
 
 // sampleProfilesFile returns a minimal ProfilesFile for testing under the
-// role-keyed profile schema (#1206). Each profile is expanded into per-role
-// slots so coordinator/plan share the primary-tier slot, worker/review/ac
-// share the secondary-tier slot, and explore/title/summary/compaction share
-// the lightweight-tier slot — mirroring the migration shape produced by
-// profileFromTiers in profiles.nix.
+// flat per-role profile schema (#1612). Each profile is a direct map from
+// role name to slot — no tier indirection.
 func sampleProfilesFile() *config.ProfilesFile {
-	roleMapping := map[string][]string{
-		"primary":     {"coordinator", "plan"},
-		"secondary":   {"worker", "review", "ac"},
-		"lightweight": {"explore", "title", "summary", "compaction"},
-	}
-	expand := func(primary, secondary, lightweight config.RoleSlot) config.ProfileEntry {
-		entry := config.ProfileEntry{}
-		for _, name := range roleMapping["primary"] {
-			entry[name] = primary
-		}
-		for _, name := range roleMapping["secondary"] {
-			entry[name] = secondary
-		}
-		for _, name := range roleMapping["lightweight"] {
-			entry[name] = lightweight
-		}
-		return entry
-	}
 	return &config.ProfilesFile{
-		Default:     "anthropic",
-		RoleMapping: roleMapping,
+		Default: "anthropic",
 		Profiles: map[string]config.ProfileEntry{
-			"anthropic": expand(
-				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-opus-4-6"},
-				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
-				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-haiku-4-5"},
-			),
-			"gemini-hybrid": expand(
-				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-opus-4-6"},
-				config.RoleSlot{Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools", Thinking: "medium"},
-				config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-haiku-4-5"},
-			),
+			"anthropic": {
+				"coordinator":    {Provider: "anthropic", Model: "anthropic/claude-opus-4-7", Thinking: "medium"},
+				"worker":         {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", Thinking: "low"},
+				"ac":             {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"retro":          {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"investigate":    {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"review-goal":    {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"review-code":    {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"review-security": {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"review-qa":      {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"review-context": {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+			},
+			"gemini-hybrid": {
+				"coordinator":    {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"},
+				"worker":         {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools", Thinking: "medium"},
+				"ac":             {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+				"retro":          {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+				"investigate":    {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+				"review-goal":    {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools", Thinking: "medium"},
+				"review-code":    {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools", Thinking: "medium"},
+				"review-security": {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+				"review-qa":      {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+				"review-context": {Provider: "google", Model: "google/gemini-3.1-pro-preview-customtools"},
+			},
 		},
 	}
 }
 
+// ── BuildConfigContent tests ──────────────────────────────────────────────────
+
 func TestBuildConfigContent_NoFlags(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "", "")
+	result, err := config.BuildConfigContent(nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -62,14 +56,16 @@ func TestBuildConfigContent_NoFlags(t *testing.T) {
 	}
 }
 
-func TestBuildConfigContent_ProfileOnly(t *testing.T) {
+// TestBuildConfigContent_ProfileOnly_Coordinator verifies that --profile
+// resolves the coordinator slot's model when rootRole="coordinator".
+func TestBuildConfigContent_ProfileOnly_Coordinator(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "anthropic", "", "")
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result == "" {
-		t.Fatal("expected non-empty result for profile=anthropic")
+		t.Fatal("expected non-empty result for profile=anthropic role=coordinator")
 	}
 
 	var cfg map[string]any
@@ -77,46 +73,27 @@ func TestBuildConfigContent_ProfileOnly(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 
-	// Top-level model should be primary role's model.
-	if cfg["model"] != "anthropic/claude-opus-4-6" {
-		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-6", cfg["model"])
+	// Top-level model should be coordinator's model.
+	if cfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
 	}
 
-	// Agents section.
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatalf("agent section missing or wrong type")
+	// Variant: thinking="medium" → variant="medium".
+	if cfg["variant"] != "medium" {
+		t.Errorf("variant: got %v, want medium", cfg["variant"])
 	}
 
-	// coordinator is primary role.
-	coordinator, ok := agents["coordinator"].(map[string]any)
-	if !ok {
-		t.Fatalf("coordinator agent missing")
-	}
-	if coordinator["model"] != "anthropic/claude-opus-4-6" {
-		t.Errorf("coordinator model: got %v, want anthropic/claude-opus-4-6", coordinator["model"])
-	}
-	// No variant for anthropic profile.
-	if _, hasVariant := coordinator["variant"]; hasVariant {
-		t.Error("coordinator should have no variant field for anthropic profile")
-	}
-
-	// worker is secondary role.
-	worker, ok := agents["worker"].(map[string]any)
-	if !ok {
-		t.Fatalf("worker agent missing")
-	}
-	if worker["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6", worker["model"])
-	}
-	if _, hasVariant := worker["variant"]; hasVariant {
-		t.Error("worker should have no variant field for anthropic profile")
+	// No agent sub-map: pi sessions have a single root agent.
+	if _, hasAgent := cfg["agent"]; hasAgent {
+		t.Error("unexpected 'agent' sub-map — pi sessions use root-level model/variant only")
 	}
 }
 
-func TestBuildConfigContent_GeminiHybridProfile(t *testing.T) {
+// TestBuildConfigContent_ProfileOnly_Worker verifies that --profile with
+// rootRole="worker" resolves the worker slot, not coordinator's.
+func TestBuildConfigContent_ProfileOnly_Worker(t *testing.T) {
 	pf := sampleProfilesFile()
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "", "")
+	result, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,43 +103,20 @@ func TestBuildConfigContent_GeminiHybridProfile(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 
-	// Primary role: Opus, no variant.
-	agents := cfg["agent"].(map[string]any)
-	coordinator := agents["coordinator"].(map[string]any)
-	if coordinator["model"] != "anthropic/claude-opus-4-6" {
-		t.Errorf("coordinator model: got %v, want anthropic/claude-opus-4-6", coordinator["model"])
+	// Worker slot in anthropic profile.
+	if cfg["model"] != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("model: got %v, want anthropic/claude-sonnet-4-6 (worker slot)", cfg["model"])
 	}
-	if _, hasVariant := coordinator["variant"]; hasVariant {
-		t.Error("coordinator should have no variant for gemini-hybrid")
-	}
-
-	// Secondary role: Gemini 3.1 Pro with medium variant.
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "google/gemini-3.1-pro-preview-customtools" {
-		t.Errorf("worker model: got %v, want google/gemini-3.1-pro-preview-customtools", worker["model"])
-	}
-	if worker["variant"] != "medium" {
-		t.Errorf("worker variant: got %v, want medium", worker["variant"])
-	}
-
-	// review and ac should also have the secondary role model+variant.
-	review := agents["review"].(map[string]any)
-	if review["variant"] != "medium" {
-		t.Errorf("review variant: got %v, want medium", review["variant"])
-	}
-
-	// Lightweight role: Haiku, no variant.
-	explore := agents["explore"].(map[string]any)
-	if explore["model"] != "anthropic/claude-haiku-4-5" {
-		t.Errorf("explore model: got %v, want anthropic/claude-haiku-4-5", explore["model"])
-	}
-	if _, hasVariant := explore["variant"]; hasVariant {
-		t.Error("explore should have no variant for gemini-hybrid")
+	// Variant: thinking="low" → variant="low".
+	if cfg["variant"] != "low" {
+		t.Errorf("variant: got %v, want low", cfg["variant"])
 	}
 }
 
-func TestBuildConfigContent_ModelOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "anthropic/claude-haiku-4-5", "")
+// TestBuildConfigContent_ProfileOnly_ReviewGoal verifies the review-goal slot.
+func TestBuildConfigContent_ProfileOnly_ReviewGoal(t *testing.T) {
+	pf := sampleProfilesFile()
+	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "review-goal", "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -172,23 +126,80 @@ func TestBuildConfigContent_ModelOnly(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 
-	// Top-level model should be set.
+	if cfg["model"] != "google/gemini-3.1-pro-preview-customtools" {
+		t.Errorf("model: got %v, want google/gemini-3.1-pro-preview-customtools", cfg["model"])
+	}
+	if cfg["variant"] != "medium" {
+		t.Errorf("variant: got %v, want medium", cfg["variant"])
+	}
+}
+
+// TestBuildConfigContent_ProfileAndModelOverride verifies that --profile P
+// --model X overrides only the root role's model.
+func TestBuildConfigContent_ProfileAndModelOverride(t *testing.T) {
+	pf := sampleProfilesFile()
+	// --profile anthropic --model custom/model --agent coordinator
+	result, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "custom/model", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Model must be the override.
+	if cfg["model"] != "custom/model" {
+		t.Errorf("model: got %v, want custom/model", cfg["model"])
+	}
+}
+
+// TestBuildConfigContent_ProfileAndVariantOverride verifies that --profile P
+// --variant V overrides the root role's variant.
+func TestBuildConfigContent_ProfileAndVariantOverride(t *testing.T) {
+	pf := sampleProfilesFile()
+	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "low")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
+	// Variant must be the override (worker had "medium" from profile).
+	if cfg["variant"] != "low" {
+		t.Errorf("variant: got %v, want low", cfg["variant"])
+	}
+}
+
+// TestBuildConfigContent_ModelOnly verifies that --model X without --profile
+// sets only the root role's model (no "agent" map, single top-level model).
+func TestBuildConfigContent_ModelOnly(t *testing.T) {
+	result, err := config.BuildConfigContent(nil, "", "coordinator", "anthropic/claude-haiku-4-5", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
+		t.Fatalf("result is not valid JSON: %v", err)
+	}
+
 	if cfg["model"] != "anthropic/claude-haiku-4-5" {
 		t.Errorf("top-level model: got %v", cfg["model"])
 	}
-
-	// All agents should have the same model.
-	agents := cfg["agent"].(map[string]any)
-	for name, a := range agents {
-		entry := a.(map[string]any)
-		if entry["model"] != "anthropic/claude-haiku-4-5" {
-			t.Errorf("agent %s model: got %v, want anthropic/claude-haiku-4-5", name, entry["model"])
-		}
+	if _, hasAgent := cfg["agent"]; hasAgent {
+		t.Error("unexpected 'agent' sub-map — model-only override must not emit an agent map")
 	}
 }
 
+// TestBuildConfigContent_VariantOnly verifies that --variant X without
+// --profile sets only the root role's variant.
 func TestBuildConfigContent_VariantOnly(t *testing.T) {
-	result, err := config.BuildConfigContent(nil, "", "", "high")
+	result, err := config.BuildConfigContent(nil, "", "coordinator", "", "high")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -198,596 +209,231 @@ func TestBuildConfigContent_VariantOnly(t *testing.T) {
 		t.Fatalf("result is not valid JSON: %v", err)
 	}
 
-	// No top-level model (none set).
 	if _, ok := cfg["model"]; ok {
 		t.Error("unexpected top-level model when only variant is set")
 	}
-
-	// All agents should have variant=high.
-	agents := cfg["agent"].(map[string]any)
-	for name, a := range agents {
-		entry := a.(map[string]any)
-		if entry["variant"] != "high" {
-			t.Errorf("agent %s variant: got %v, want high", name, entry["variant"])
-		}
+	if cfg["variant"] != "high" {
+		t.Errorf("variant: got %v, want high", cfg["variant"])
 	}
 }
 
-func TestBuildConfigContent_ProfilePlusModelOverride(t *testing.T) {
-	pf := sampleProfilesFile()
-	// --profile anthropic --model custom/model → primary agents get custom/model,
-	// secondary and lightweight keep their profile values.
-	result, err := config.BuildConfigContent(pf, "anthropic", "custom/model", "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Top-level model: the override.
-	if cfg["model"] != "custom/model" {
-		t.Errorf("top-level model: got %v, want custom/model", cfg["model"])
-	}
-
-	agents := cfg["agent"].(map[string]any)
-
-	// Primary agents get override.
-	coordinator := agents["coordinator"].(map[string]any)
-	if coordinator["model"] != "custom/model" {
-		t.Errorf("coordinator model: got %v, want custom/model", coordinator["model"])
-	}
-
-	// Secondary agents retain profile value.
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6", worker["model"])
-	}
-}
-
-func TestBuildConfigContent_ProfilePlusVariantOverride(t *testing.T) {
-	pf := sampleProfilesFile()
-	// --profile gemini-hybrid --variant low → all agents get variant=low (overrides medium).
-	result, err := config.BuildConfigContent(pf, "gemini-hybrid", "", "low")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	agents := cfg["agent"].(map[string]any)
-	for name, a := range agents {
-		entry := a.(map[string]any)
-		if entry["variant"] != "low" {
-			t.Errorf("agent %s variant: got %v, want low", name, entry["variant"])
-		}
-	}
-}
-
+// TestBuildConfigContent_UnknownProfile verifies that an unknown profile returns an error.
 func TestBuildConfigContent_UnknownProfile(t *testing.T) {
 	pf := sampleProfilesFile()
-	_, err := config.BuildConfigContent(pf, "nonexistent", "", "")
+	_, err := config.BuildConfigContent(pf, "nonexistent", "coordinator", "", "")
 	if err == nil {
 		t.Fatal("expected error for unknown profile, got nil")
 	}
 }
 
-// sampleProfilesFileWithReview returns a ProfilesFile with per-agent review
-// config blobs set, for testing ContainerConfigForRole. The fixture blobs use
-// the correct opencode.ai schema key "agent" (singular), matching what real
-// Nix-generated blobs produce. Each blob declares only its own agent.
-func sampleProfilesFileWithReview() *config.ProfilesFile {
+// TestBuildConfigContent_OffThinkingTranslatesToNoneVariant verifies that
+// thinking="off" produces variant="none".
+func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
+	pf := &config.ProfilesFile{
+		Default: "off-test",
+		Profiles: map[string]config.ProfileEntry{
+			"off-test": {
+				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7", Thinking: "off"},
+				"worker":      {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", Thinking: "off"},
+			},
+		},
+	}
+	out, err := config.BuildConfigContent(pf, "off-test", "coordinator", "", "")
+	if err != nil {
+		t.Fatalf("BuildConfigContent: %v", err)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+	// thinking="off" must produce variant="none", not "off".
+	if v, hasVariant := cfg["variant"]; hasVariant && v == "off" {
+		t.Errorf("variant = 'off' — should have been translated to 'none'")
+	}
+	if v, hasVariant := cfg["variant"]; hasVariant && v != "none" {
+		t.Errorf("variant = %v, want none", v)
+	}
+}
+
+// TestBuildConfigContent_NonZeroThinkingPassesThrough verifies that a
+// non-zero thinking level (e.g. "medium") is passed through unchanged.
+func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
 	pf := sampleProfilesFile()
-	pf.ContainerWorkerConfig = `{"agent":{"worker":{}}}`
-	pf.ContainerCoordinatorConfig = `{"agent":{"coordinator":{}}}`
-	pf.ContainerReviewGoalConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-goal":{}}}`
-	pf.ContainerReviewCodeConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-code":{}}}`
-	pf.ContainerReviewSecurityConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-security":{}}}`
-	pf.ContainerReviewQaConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-qa":{}}}`
-	pf.ContainerReviewContextConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"review-context":{}}}`
-	pf.ContainerInvestigateConfig = `{"$schema":"https://opencode.ai/opencode.json","agent":{"investigate":{}}}`
-	return pf
-}
-
-// TestContainerConfigForRole_ReviewGoal verifies that passing role "review-goal"
-// returns the ContainerReviewGoalConfig blob (non-empty, valid JSON, has
-// "$schema" and "agent" keys).
-func TestContainerConfigForRole_ReviewGoal(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review-goal")
+	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "worker", "", "")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=review-goal")
+		t.Fatalf("BuildConfigContent: %v", err)
 	}
 	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
 	}
-	if _, ok := cfg["$schema"]; !ok {
-		t.Error("expected top-level '$schema' key in review-goal config blob")
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected top-level 'agent' key in review-goal config blob")
-	}
-	if _, ok := agents["review-goal"]; !ok {
-		t.Error("expected 'review-goal' agent in review-goal config blob")
-	}
-	// Must NOT declare other review agents.
-	for _, other := range []string{"review-code", "review-security", "review-qa", "review-context"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("review-goal blob must not declare agent %q", other)
-		}
+	if cfg["variant"] != "medium" {
+		t.Errorf("variant: got %v, want medium", cfg["variant"])
 	}
 }
 
-// TestContainerConfigForRole_ReviewCode verifies the review-code per-agent blob.
-func TestContainerConfigForRole_ReviewCode(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review-code")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=review-code")
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected 'agent' key in review-code config blob")
-	}
-	if _, ok := agents["review-code"]; !ok {
-		t.Error("expected 'review-code' agent in review-code config blob")
-	}
-	for _, other := range []string{"review-goal", "review-security", "review-qa", "review-context"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("review-code blob must not declare agent %q", other)
-		}
-	}
-}
-
-// TestContainerConfigForRole_ReviewSecurity verifies the review-security per-agent blob.
-func TestContainerConfigForRole_ReviewSecurity(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review-security")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=review-security")
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected 'agent' key in review-security config blob")
-	}
-	if _, ok := agents["review-security"]; !ok {
-		t.Error("expected 'review-security' agent in review-security config blob")
-	}
-	for _, other := range []string{"review-goal", "review-code", "review-qa", "review-context"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("review-security blob must not declare agent %q", other)
-		}
-	}
-}
-
-// TestContainerConfigForRole_ReviewQa verifies the review-qa per-agent blob.
-func TestContainerConfigForRole_ReviewQa(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review-qa")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=review-qa")
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected 'agent' key in review-qa config blob")
-	}
-	if _, ok := agents["review-qa"]; !ok {
-		t.Error("expected 'review-qa' agent in review-qa config blob")
-	}
-	for _, other := range []string{"review-goal", "review-code", "review-security", "review-context"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("review-qa blob must not declare agent %q", other)
-		}
-	}
-}
-
-// TestContainerConfigForRole_ReviewContext verifies the review-context per-agent blob.
-func TestContainerConfigForRole_ReviewContext(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "review-context")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=review-context")
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected 'agent' key in review-context config blob")
-	}
-	if _, ok := agents["review-context"]; !ok {
-		t.Error("expected 'review-context' agent in review-context config blob")
-	}
-	for _, other := range []string{"review-goal", "review-code", "review-security", "review-qa"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("review-context blob must not declare agent %q", other)
-		}
-	}
-}
-
-// TestContainerConfigForRole_Investigate verifies the investigate per-agent blob.
-func TestContainerConfigForRole_Investigate(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "investigate")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result == "" {
-		t.Fatal("expected non-empty result for role=investigate")
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("expected 'agent' key in investigate config blob")
-	}
-	if _, ok := agents["investigate"]; !ok {
-		t.Error("expected 'investigate' agent in investigate config blob")
-	}
-	for _, other := range []string{"review-goal", "review-code", "review-security", "review-qa", "review-context"} {
-		if _, ok := agents[other]; ok {
-			t.Errorf("investigate blob must not declare agent %q", other)
-		}
-	}
-}
-
-// TestContainerConfigForRole_Worker verifies that "worker" still returns the
-// worker blob (regression guard).
-func TestContainerConfigForRole_Worker(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "worker")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != pf.ContainerWorkerConfig {
-		t.Errorf("worker blob: got %q, want %q", result, pf.ContainerWorkerConfig)
-	}
-}
-
-// TestContainerConfigForRole_Coordinator verifies that "coordinator" still
-// returns the coordinator blob (regression guard).
-func TestContainerConfigForRole_Coordinator(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	result, err := config.ContainerConfigForRole(pf, "coordinator")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != pf.ContainerCoordinatorConfig {
-		t.Errorf("coordinator blob: got %q, want %q", result, pf.ContainerCoordinatorConfig)
-	}
-}
-
-// TestContainerConfigForRole_UnknownRole verifies that an unrecognised role
-// (e.g. "plan") returns ("", nil) without error. The retired "review" role
-// (from PR-A) also returns ("", nil) after PR-B retires it.
-func TestContainerConfigForRole_UnknownRole(t *testing.T) {
-	pf := sampleProfilesFileWithReview()
-	for _, role := range []string{"plan", "explore", "ac", "unknown", "review"} {
-		result, err := config.ContainerConfigForRole(pf, role)
-		if err != nil {
-			t.Errorf("role %q: unexpected error: %v", role, err)
-		}
-		if result != "" {
-			t.Errorf("role %q: expected empty string, got %q", role, result)
-		}
-	}
-}
-
-// TestContainerConfigForRole_NilProfilesFile verifies that a nil *ProfilesFile
-// returns ("", nil) for all roles — no panic.
-func TestContainerConfigForRole_NilProfilesFile(t *testing.T) {
-	roles := []string{
-		"worker", "coordinator",
-		"review-goal", "review-code", "review-security", "review-qa", "review-context",
-		"investigate",
-		"review", "plan", "unknown",
-	}
-	for _, role := range roles {
-		result, err := config.ContainerConfigForRole(nil, role)
-		if err != nil {
-			t.Errorf("nil pf, role %q: unexpected error: %v", role, err)
-		}
-		if result != "" {
-			t.Errorf("nil pf, role %q: expected empty string, got %q", role, result)
-		}
-	}
-}
-
-// ── ApplyModelOverrides tests ─────────────────────────────────────────────────
-
-// workerBlob is a realistic ContainerWorkerConfig blob as produced by Nix.
-// It includes a top-level model, agent entries with model fields, a $schema,
-// and a system prompt field to verify those are preserved unchanged.
-const workerBlob = `{
-  "$schema": "https://opencode.ai/opencode.json",
-  "model": "anthropic/claude-sonnet-4-6",
-  "agent": {
-    "worker": {
-      "model": "anthropic/claude-sonnet-4-6",
-      "system": "You are a worker agent."
-    },
-    "title": {
-      "model": "anthropic/claude-haiku-4-5"
-    }
-  }
-}`
-
-// TestApplyModelOverrides_NoOverrides verifies that an empty modelOverride and
-// variantOverride returns the blob unchanged (no re-marshal side-effects).
-func TestApplyModelOverrides_NoOverrides(t *testing.T) {
-	result, err := config.ApplyModelOverrides(workerBlob, "", "", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != workerBlob {
-		t.Errorf("expected blob unchanged, got %q", result)
-	}
-}
-
-// TestApplyModelOverrides_EmptyBlob verifies that an empty blob is returned
-// as-is even when overrides are set.
-func TestApplyModelOverrides_EmptyBlob(t *testing.T) {
-	result, err := config.ApplyModelOverrides("", "", "anthropic/claude-opus-4-7", "high", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result != "" {
-		t.Errorf("expected empty result for empty blob, got %q", result)
-	}
-}
-
-// TestApplyModelOverrides_ModelOnly verifies that --model sets the top-level
-// model and all agent models, preserving other fields.
-func TestApplyModelOverrides_ModelOnly(t *testing.T) {
-	result, err := config.ApplyModelOverrides(workerBlob, "", "anthropic/claude-opus-4-7", "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Top-level model must be overridden.
-	if cfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
-	}
-
-	// $schema must be preserved.
-	if cfg["$schema"] == nil {
-		t.Error("$schema field was dropped")
-	}
-
-	agents := cfg["agent"].(map[string]any)
-
-	// worker model must be overridden, system prompt preserved.
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
-	}
-	if worker["system"] == nil {
-		t.Error("worker system prompt was dropped")
-	}
-
-	// title model must also be overridden.
-	title := agents["title"].(map[string]any)
-	if title["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("title model: got %v, want anthropic/claude-opus-4-7", title["model"])
-	}
-}
-
-// TestApplyModelOverrides_VariantOnly verifies that --variant sets the variant
-// on all agents while leaving models unchanged.
-func TestApplyModelOverrides_VariantOnly(t *testing.T) {
-	result, err := config.ApplyModelOverrides(workerBlob, "", "", "high", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	// Top-level model must be unchanged.
-	if cfg["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("top-level model changed: got %v", cfg["model"])
-	}
-
-	agents := cfg["agent"].(map[string]any)
-
-	// worker: model unchanged, variant added.
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("worker model changed: got %v", worker["model"])
-	}
-	if worker["variant"] != "high" {
-		t.Errorf("worker variant: got %v, want high", worker["variant"])
-	}
-
-	// title: model unchanged, variant added.
-	title := agents["title"].(map[string]any)
-	if title["model"] != "anthropic/claude-haiku-4-5" {
-		t.Errorf("title model changed: got %v", title["model"])
-	}
-	if title["variant"] != "high" {
-		t.Errorf("title variant: got %v, want high", title["variant"])
-	}
-}
-
-// TestApplyModelOverrides_ModelAndVariant verifies that both --model and
-// --variant are applied together.
-func TestApplyModelOverrides_ModelAndVariant(t *testing.T) {
-	result, err := config.ApplyModelOverrides(workerBlob, "", "anthropic/claude-opus-4-7", "high", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
-	}
-
-	if cfg["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-7", cfg["model"])
-	}
-
-	agents := cfg["agent"].(map[string]any)
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
-	}
-	if worker["variant"] != "high" {
-		t.Errorf("worker variant: got %v, want high", worker["variant"])
-	}
-}
-
-// TestApplyModelOverrides_WithProfile verifies that when a profile name is
-// supplied alongside a model override, only primary-role agents have their
-// model overridden (matching BuildConfigContent semantics).
-func TestApplyModelOverrides_WithProfile(t *testing.T) {
+// TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker verifies that
+// coordinator and worker resolve different models for the anthropic profile
+// (edge-case AC from #1612).
+func TestBuildConfigContent_AnthropicCoordinatorNotEqualWorker(t *testing.T) {
 	pf := sampleProfilesFile()
-	// "anthropic" profile: primary=["coordinator","plan"], secondary=["worker","review","ac"],
-	// lightweight=["explore","title","summary","compaction"].
-	// The blob has worker (secondary) and title (lightweight) plus we add coordinator.
-	blob := `{
-		"model": "anthropic/claude-sonnet-4-6",
-		"agent": {
-			"coordinator": {"model": "anthropic/claude-opus-4-6"},
-			"worker":      {"model": "anthropic/claude-sonnet-4-6"},
-			"title":       {"model": "anthropic/claude-haiku-4-5"}
-		}
-	}`
 
-	result, err := config.ApplyModelOverrides(blob, "anthropic", "custom/model", "", pf)
+	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("coordinator: %v", err)
+	}
+	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "", "")
+	if err != nil {
+		t.Fatalf("worker: %v", err)
 	}
 
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	var coordCfg, workerCfg map[string]any
+	_ = json.Unmarshal([]byte(coordResult), &coordCfg)
+	_ = json.Unmarshal([]byte(workerResult), &workerCfg)
+
+	// Coordinator gets opus, worker gets sonnet.
+	if coordCfg["model"] == workerCfg["model"] {
+		t.Errorf("coordinator and worker resolved the same model %v — expected different slots",
+			coordCfg["model"])
 	}
-
-	// Top-level model must be overridden.
-	if cfg["model"] != "custom/model" {
-		t.Errorf("top-level model: got %v, want custom/model", cfg["model"])
+	if coordCfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("coordinator model: got %v, want anthropic/claude-opus-4-7", coordCfg["model"])
 	}
-
-	agents := cfg["agent"].(map[string]any)
-
-	// coordinator is primary → model overridden.
-	coordinator := agents["coordinator"].(map[string]any)
-	if coordinator["model"] != "custom/model" {
-		t.Errorf("coordinator model: got %v, want custom/model", coordinator["model"])
-	}
-
-	// worker is secondary → model NOT overridden.
-	worker := agents["worker"].(map[string]any)
-	if worker["model"] != "anthropic/claude-sonnet-4-6" {
-		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6 (unchanged)", worker["model"])
-	}
-
-	// title is lightweight → model NOT overridden.
-	title := agents["title"].(map[string]any)
-	if title["model"] != "anthropic/claude-haiku-4-5" {
-		t.Errorf("title model: got %v, want anthropic/claude-haiku-4-5 (unchanged)", title["model"])
+	if workerCfg["model"] != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("worker model: got %v, want anthropic/claude-sonnet-4-6", workerCfg["model"])
 	}
 }
 
-// TestApplyModelOverrides_PreservesNonModelFields verifies that non-model
-// fields in the blob (system prompt, tool permissions, $schema, etc.) are
-// preserved unchanged after applying overrides.
-func TestApplyModelOverrides_PreservesNonModelFields(t *testing.T) {
-	blob := `{
-		"$schema": "https://opencode.ai/opencode.json",
-		"model": "anthropic/claude-sonnet-4-6",
-		"agent": {
-			"worker": {
-				"model": "anthropic/claude-sonnet-4-6",
-				"system": "You are a worker agent.",
-				"tools": {"bash": {"deny": ["rm -rf"]}}
-			}
-		}
-	}`
-
-	result, err := config.ApplyModelOverrides(blob, "", "anthropic/claude-opus-4-7", "high", nil)
+// TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles verifies
+// the edge case: --profile anthropic --agent worker --model haiku overrides
+// only the worker's model and leaves other roles' configs unaffected.
+// (We verify by calling BuildConfigContent with "coordinator" separately.)
+func TestBuildConfigContent_WorkerModelOverrideDoesNotAffectOtherRoles(t *testing.T) {
+	pf := sampleProfilesFile()
+	// Spawn with worker role + model override.
+	workerResult, err := config.BuildConfigContent(pf, "anthropic", "worker", "anthropic/claude-haiku-4-5", "")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("worker override: %v", err)
+	}
+	var workerCfg map[string]any
+	_ = json.Unmarshal([]byte(workerResult), &workerCfg)
+	if workerCfg["model"] != "anthropic/claude-haiku-4-5" {
+		t.Errorf("worker model: got %v, want anthropic/claude-haiku-4-5", workerCfg["model"])
 	}
 
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(result), &cfg); err != nil {
-		t.Fatalf("result is not valid JSON: %v", err)
+	// Coordinator role (separate call, simulating a different session) must
+	// retain its profile model — the worker override must not bleed over.
+	coordResult, err := config.BuildConfigContent(pf, "anthropic", "coordinator", "", "")
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
 	}
-
-	if cfg["$schema"] == nil {
-		t.Error("$schema was dropped")
-	}
-
-	agents := cfg["agent"].(map[string]any)
-	worker := agents["worker"].(map[string]any)
-
-	if worker["system"] == nil {
-		t.Error("system prompt was dropped")
-	}
-	if worker["tools"] == nil {
-		t.Error("tools field was dropped")
-	}
-	if worker["model"] != "anthropic/claude-opus-4-7" {
-		t.Errorf("worker model: got %v, want anthropic/claude-opus-4-7", worker["model"])
-	}
-	if worker["variant"] != "high" {
-		t.Errorf("worker variant: got %v, want high", worker["variant"])
+	var coordCfg map[string]any
+	_ = json.Unmarshal([]byte(coordResult), &coordCfg)
+	if coordCfg["model"] != "anthropic/claude-opus-4-7" {
+		t.Errorf("coordinator model after worker override: got %v, want anthropic/claude-opus-4-7 (unaffected)",
+			coordCfg["model"])
 	}
 }
 
-// TestApplyModelOverrides_InvalidBlob verifies that an invalid JSON blob
-// returns an error.
-func TestApplyModelOverrides_InvalidBlob(t *testing.T) {
-	_, err := config.ApplyModelOverrides("not json {{", "", "some/model", "", nil)
+// ── SlotForRole tests ─────────────────────────────────────────────────────────
+
+func TestSlotForRole_HitsAndMisses(t *testing.T) {
+	pf := sampleProfilesFile()
+
+	// coordinator is present in "anthropic".
+	slot, ok := config.SlotForRole(pf, "anthropic", "coordinator")
+	if !ok {
+		t.Fatal("expected coordinator slot for anthropic")
+	}
+	if slot.Model != "anthropic/claude-opus-4-7" {
+		t.Errorf("coordinator model: got %q, want anthropic/claude-opus-4-7", slot.Model)
+	}
+	if slot.Provider != "anthropic" {
+		t.Errorf("coordinator provider: got %q, want anthropic", slot.Provider)
+	}
+
+	// review-goal is present.
+	slot, ok = config.SlotForRole(pf, "anthropic", "review-goal")
+	if !ok {
+		t.Fatal("expected review-goal slot for anthropic")
+	}
+	if slot.Model != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("review-goal model: got %q, want anthropic/claude-sonnet-4-6", slot.Model)
+	}
+
+	// "build" is not a pi role — clean miss.
+	if _, ok := config.SlotForRole(pf, "anthropic", "build"); ok {
+		t.Error("build should not have a slot in the anthropic profile")
+	}
+
+	// Unknown profile: clean miss.
+	if _, ok := config.SlotForRole(pf, "nonexistent", "coordinator"); ok {
+		t.Error("expected miss for unknown profile, got hit")
+	}
+
+	// Nil pf: clean miss, no panic.
+	if _, ok := config.SlotForRole(nil, "anthropic", "coordinator"); ok {
+		t.Error("expected miss for nil pf, got hit")
+	}
+}
+
+// ── RequireSlot tests ─────────────────────────────────────────────────────────
+
+func TestRequireSlot_PassesWhenPresent(t *testing.T) {
+	pf := sampleProfilesFile()
+	if err := config.RequireSlot(pf, "anthropic", "coordinator"); err != nil {
+		t.Errorf("RequireSlot(anthropic, coordinator): unexpected error: %v", err)
+	}
+	if err := config.RequireSlot(pf, "gemini-hybrid", "worker"); err != nil {
+		t.Errorf("RequireSlot(gemini-hybrid, worker): unexpected error: %v", err)
+	}
+}
+
+func TestRequireSlot_FailsWhenSlotMissing(t *testing.T) {
+	pf := &config.ProfilesFile{
+		Default: "minimal",
+		Profiles: map[string]config.ProfileEntry{
+			"minimal": {
+				// only worker is defined — no coordinator slot.
+				"worker": {Model: "anthropic/claude-sonnet-4-6"},
+			},
+		},
+	}
+	err := config.RequireSlot(pf, "minimal", "coordinator")
 	if err == nil {
-		t.Fatal("expected error for invalid JSON blob, got nil")
+		t.Fatal("expected error for missing coordinator slot, got nil")
+	}
+	msg := err.Error()
+	if !contains(msg, "coordinator") {
+		t.Errorf("error %q does not mention the missing role 'coordinator'", msg)
+	}
+	if !contains(msg, "minimal") {
+		t.Errorf("error %q does not mention the profile 'minimal'", msg)
+	}
+	if !contains(msg, "worker") {
+		t.Errorf("error %q does not list defined slots (expected to see 'worker')", msg)
 	}
 }
+
+func TestRequireSlot_FailsWhenProfileUnknown(t *testing.T) {
+	pf := sampleProfilesFile()
+	err := config.RequireSlot(pf, "nonexistent", "coordinator")
+	if err == nil {
+		t.Fatal("expected error for unknown profile, got nil")
+	}
+	if !contains(err.Error(), "anthropic") {
+		t.Errorf("error %q does not list available profiles", err.Error())
+	}
+}
+
+func TestRequireSlot_NilProfilesFile(t *testing.T) {
+	err := config.RequireSlot(nil, "anthropic", "coordinator")
+	if err == nil {
+		t.Fatal("expected error for nil pf, got nil")
+	}
+}
+
+// ── LoadProfiles tests ────────────────────────────────────────────────────────
 
 func TestLoadProfiles_MissingFile(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/nonexistent/path")
@@ -845,299 +491,38 @@ func TestLoadProfiles_ValidFile(t *testing.T) {
 	}
 }
 
-// ── Role-keyed schema (#1206) ─────────────────────────────────────────────────
+// TestLoadProfiles_StaleKeysIgnored verifies that an old profiles.json with
+// stale keys (role_mapping, default_harness, container_*_config) loads
+// cleanly — unknown JSON fields are ignored.
+func TestLoadProfiles_StaleKeysIgnored(t *testing.T) {
+	dir := t.TempDir()
+	prismDir := filepath.Join(dir, "prism")
+	if err := os.MkdirAll(prismDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	const body = `{
+  "default": "anthropic",
+  "default_harness": "pi",
+  "role_mapping": {"primary": ["coordinator"], "secondary": ["worker"]},
+  "container_worker_config": "{}",
+  "container_coordinator_config": "{}",
+  "profiles": {"anthropic": {"coordinator": {"model": "anthropic/claude-opus-4-7"}}}
+}`
+	if err := os.WriteFile(filepath.Join(prismDir, "profiles.json"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", dir)
 
-// TestSlotForRole_HitsAndMisses verifies that the role-keyed lookup returns
-// the slot for known roles and reports a clean miss for unknown roles. This
-// is the canonical accessor introduced by #1206 — every other helper that
-// resolves "what does role X get under profile Y" goes through it.
-func TestSlotForRole_HitsAndMisses(t *testing.T) {
-	pf := sampleProfilesFile()
-
-	// coordinator is in the primary tier of "anthropic".
-	slot, ok := config.SlotForRole(pf, "anthropic", "coordinator")
-	if !ok {
-		t.Fatal("expected coordinator slot for anthropic")
-	}
-	if slot.Model != "anthropic/claude-opus-4-6" {
-		t.Errorf("coordinator model: got %q, want anthropic/claude-opus-4-6", slot.Model)
-	}
-	if slot.Provider != "anthropic" {
-		t.Errorf("coordinator provider: got %q, want anthropic", slot.Provider)
-	}
-
-	// explore is in the lightweight tier of "anthropic".
-	slot, ok = config.SlotForRole(pf, "anthropic", "explore")
-	if !ok {
-		t.Fatal("expected explore slot for anthropic")
-	}
-	if slot.Model != "anthropic/claude-haiku-4-5" {
-		t.Errorf("explore model: got %q, want anthropic/claude-haiku-4-5", slot.Model)
-	}
-
-	// "build" is intentionally not in any tier — it inherits the top-level
-	// model rather than carrying a per-role override.
-	if _, ok := config.SlotForRole(pf, "anthropic", "build"); ok {
-		t.Error("build should not have a slot in the anthropic profile")
-	}
-
-	// Unknown profile: clean miss.
-	if _, ok := config.SlotForRole(pf, "nonexistent", "coordinator"); ok {
-		t.Error("expected miss for unknown profile, got hit")
-	}
-
-	// Nil pf: clean miss, no panic.
-	if _, ok := config.SlotForRole(nil, "anthropic", "coordinator"); ok {
-		t.Error("expected miss for nil pf, got hit")
-	}
-}
-
-// TestRequireSlot_PassesWhenPresent verifies that RequireSlot returns nil
-// when the active profile defines the requested slot.
-func TestRequireSlot_PassesWhenPresent(t *testing.T) {
-	pf := sampleProfilesFile()
-	if err := config.RequireSlot(pf, "anthropic", "coordinator"); err != nil {
-		t.Errorf("RequireSlot(anthropic, coordinator): unexpected error: %v", err)
-	}
-	if err := config.RequireSlot(pf, "gemini-hybrid", "worker"); err != nil {
-		t.Errorf("RequireSlot(gemini-hybrid, worker): unexpected error: %v", err)
-	}
-}
-
-// TestRequireSlot_FailsWhenSlotMissing verifies the spawn-time edge case
-// from #1206: a profile missing the slot the session needs must fail with a
-// clear error message that lists the slots the profile currently defines so
-// the operator can see the gap immediately.
-func TestRequireSlot_FailsWhenSlotMissing(t *testing.T) {
-	pf := &config.ProfilesFile{
-		Default: "minimal",
-		RoleMapping: map[string][]string{
-			"primary":   {"coordinator"},
-			"secondary": {"worker"},
-		},
-		Profiles: map[string]config.ProfileEntry{
-			"minimal": {
-				// only worker is defined — no coordinator slot.
-				"worker": {Model: "anthropic/claude-sonnet-4-6"},
-			},
-		},
-	}
-	err := config.RequireSlot(pf, "minimal", "coordinator")
-	if err == nil {
-		t.Fatal("expected error for missing coordinator slot, got nil")
-	}
-	msg := err.Error()
-	// Error must name the missing role …
-	if !contains(msg, "coordinator") {
-		t.Errorf("error %q does not mention the missing role 'coordinator'", msg)
-	}
-	// … the profile being checked …
-	if !contains(msg, "minimal") {
-		t.Errorf("error %q does not mention the profile 'minimal'", msg)
-	}
-	// … and list the slots the profile currently defines.
-	if !contains(msg, "worker") {
-		t.Errorf("error %q does not list defined slots (expected to see 'worker')", msg)
-	}
-}
-
-// TestRequireSlot_FailsWhenProfileUnknown verifies that an unknown profile
-// produces a clear error listing available profile names.
-func TestRequireSlot_FailsWhenProfileUnknown(t *testing.T) {
-	pf := sampleProfilesFile()
-	err := config.RequireSlot(pf, "nonexistent", "coordinator")
-	if err == nil {
-		t.Fatal("expected error for unknown profile, got nil")
-	}
-	if !contains(err.Error(), "anthropic") {
-		t.Errorf("error %q does not list available profiles", err.Error())
-	}
-}
-
-// TestRequireSlot_NilProfilesFile verifies that a nil profiles file produces
-// a descriptive error rather than panicking.
-func TestRequireSlot_NilProfilesFile(t *testing.T) {
-	err := config.RequireSlot(nil, "anthropic", "coordinator")
-	if err == nil {
-		t.Fatal("expected error for nil pf, got nil")
-	}
-}
-
-// TestLegacyOpencodeConfigFor_AnthropicProfile verifies the compatibility
-// shim renders the role-keyed "anthropic" profile into the legacy opencode
-// config blob shape: a top-level "model" plus per-agent "model" entries
-// matching the role-keyed slot for each role in role_mapping.
-func TestLegacyOpencodeConfigFor_AnthropicProfile(t *testing.T) {
-	pf := sampleProfilesFile()
-	out, err := config.LegacyOpencodeConfigFor(pf, "anthropic")
+	pf, err := config.LoadProfiles()
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("LoadProfiles: unexpected error for stale keys: %v", err)
 	}
-	if out == "" {
-		t.Fatal("expected non-empty output")
-	}
-
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	if cfg["model"] != "anthropic/claude-opus-4-6" {
-		t.Errorf("top-level model: got %v, want anthropic/claude-opus-4-6", cfg["model"])
-	}
-
-	agents, ok := cfg["agent"].(map[string]any)
-	if !ok {
-		t.Fatal("missing 'agent' map in output")
-	}
-	// Primary tier — coordinator/plan get the primary slot model.
-	for _, name := range []string{"coordinator", "plan"} {
-		entry, ok := agents[name].(map[string]any)
-		if !ok {
-			t.Errorf("missing agent %q", name)
-			continue
-		}
-		if entry["model"] != "anthropic/claude-opus-4-6" {
-			t.Errorf("%s model: got %v, want anthropic/claude-opus-4-6", name, entry["model"])
-		}
-	}
-	// Secondary tier — worker/review/ac get the secondary slot model.
-	for _, name := range []string{"worker", "review", "ac"} {
-		entry, ok := agents[name].(map[string]any)
-		if !ok {
-			t.Errorf("missing agent %q", name)
-			continue
-		}
-		if entry["model"] != "anthropic/claude-sonnet-4-6" {
-			t.Errorf("%s model: got %v, want anthropic/claude-sonnet-4-6", name, entry["model"])
-		}
-	}
-	// Lightweight tier — explore/title/summary/compaction get the lightweight slot.
-	for _, name := range []string{"explore", "title", "summary", "compaction"} {
-		entry, ok := agents[name].(map[string]any)
-		if !ok {
-			t.Errorf("missing agent %q", name)
-			continue
-		}
-		if entry["model"] != "anthropic/claude-haiku-4-5" {
-			t.Errorf("%s model: got %v, want anthropic/claude-haiku-4-5", name, entry["model"])
-		}
+	if pf.Default != "anthropic" {
+		t.Errorf("default: got %q, want anthropic", pf.Default)
 	}
 }
 
-// TestLegacyOpencodeConfigFor_GeminiHybridPropagatesThinking verifies that a
-// non-empty `thinking` value is rendered as opencode's `variant` field, while
-// roles without a thinking value omit `variant` entirely (preserving
-// opencode's default variant resolution).
-func TestLegacyOpencodeConfigFor_GeminiHybridPropagatesThinking(t *testing.T) {
-	pf := sampleProfilesFile()
-	out, err := config.LegacyOpencodeConfigFor(pf, "gemini-hybrid")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	agents := cfg["agent"].(map[string]any)
-	worker := agents["worker"].(map[string]any)
-	if worker["variant"] != "medium" {
-		t.Errorf("worker variant: got %v, want medium", worker["variant"])
-	}
-	coordinator := agents["coordinator"].(map[string]any)
-	if _, hasVariant := coordinator["variant"]; hasVariant {
-		t.Error("coordinator should have no variant when thinking is empty")
-	}
-}
-
-// TestLegacyOpencodeConfigFor_BitIdenticalToBuildConfigContent is the gate
-// from #1206: applying the role-keyed profile via the compat shim must
-// produce the same opencode config blob as BuildConfigContent for the same
-// profile with no overrides. Identical means "the same JSON object" —
-// compared after re-decode so key ordering does not affect the result.
-func TestLegacyOpencodeConfigFor_BitIdenticalToBuildConfigContent(t *testing.T) {
-	pf := sampleProfilesFile()
-	for _, profile := range []string{"anthropic", "gemini-hybrid"} {
-		shim, err := config.LegacyOpencodeConfigFor(pf, profile)
-		if err != nil {
-			t.Fatalf("LegacyOpencodeConfigFor(%s): %v", profile, err)
-		}
-		built, err := config.BuildConfigContent(pf, profile, "", "")
-		if err != nil {
-			t.Fatalf("BuildConfigContent(%s): %v", profile, err)
-		}
-
-		var shimMap, builtMap map[string]any
-		if err := json.Unmarshal([]byte(shim), &shimMap); err != nil {
-			t.Fatalf("shim output for %s is not valid JSON: %v", profile, err)
-		}
-		if err := json.Unmarshal([]byte(built), &builtMap); err != nil {
-			t.Fatalf("built output for %s is not valid JSON: %v", profile, err)
-		}
-		if !jsonDeepEqual(shimMap, builtMap) {
-			t.Errorf("profile %s: shim and BuildConfigContent diverged\n  shim:  %s\n  built: %s",
-				profile, shim, built)
-		}
-	}
-}
-
-// TestLegacyOpencodeConfigFor_UnknownProfile verifies that the shim returns
-// an error for unknown profiles (rather than silently producing an empty
-// blob), so callers can surface the misconfiguration.
-func TestLegacyOpencodeConfigFor_UnknownProfile(t *testing.T) {
-	pf := sampleProfilesFile()
-	_, err := config.LegacyOpencodeConfigFor(pf, "nonexistent")
-	if err == nil {
-		t.Fatal("expected error for unknown profile, got nil")
-	}
-}
-
-// TestLegacyOpencodeConfigFor_NilProfilesFile verifies that nil pf returns
-// an empty string with no error (matches the behaviour of other helpers
-// that gracefully degrade when the profiles file is unavailable).
-func TestLegacyOpencodeConfigFor_NilProfilesFile(t *testing.T) {
-	out, err := config.LegacyOpencodeConfigFor(nil, "anthropic")
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-	if out != "" {
-		t.Errorf("expected empty output, got %q", out)
-	}
-}
-
-// jsonDeepEqual compares two decoded JSON values for structural equality.
-// It is a minimal implementation tuned for the shapes BuildConfigContent
-// emits: nested map[string]any with string/number leaves.
-func jsonDeepEqual(a, b any) bool {
-	switch av := a.(type) {
-	case map[string]any:
-		bv, ok := b.(map[string]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for k, v := range av {
-			if !jsonDeepEqual(v, bv[k]) {
-				return false
-			}
-		}
-		return true
-	case []any:
-		bv, ok := b.([]any)
-		if !ok || len(av) != len(bv) {
-			return false
-		}
-		for i := range av {
-			if !jsonDeepEqual(av[i], bv[i]) {
-				return false
-			}
-		}
-		return true
-	default:
-		return a == b
-	}
-}
-
-// contains is a substring helper duplicated locally so the test file does
-// not need to import strings just for one call site.
+// contains is a substring helper.
 func contains(s, substr string) bool {
 	if len(substr) == 0 {
 		return true
@@ -1148,241 +533,4 @@ func contains(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-// ── ApplyProfileToBlob (#1207) ───────────────────────────────────────────────
-
-// preRenderedWorkerBlob simulates the shape of pf.ContainerWorkerConfig as
-// generated by Nix from pf.Default — top-level model + per-agent model and
-// variant fields, plus arbitrary unrelated metadata that ApplyProfileToBlob
-// must preserve verbatim.
-const preRenderedWorkerBlob = `{
-  "$schema": "https://opencode.ai/opencode.json",
-  "agent": {
-    "worker":   {"model": "anthropic/claude-opus-4-6", "variant": "none", "color": "#e67e80"},
-    "explore":  {"model": "anthropic/claude-haiku-4-5", "variant": "none"},
-    "compaction": {"model": "anthropic/claude-haiku-4-5", "variant": "none"}
-  },
-  "default_agent": "worker",
-  "model": "anthropic/claude-opus-4-6",
-  "permission": {"bash": {"*": "allow"}},
-  "plugin": ["./plugins/prism-hooks.ts"]
-}`
-
-func TestApplyProfileToBlob_NoOpOnDefaultProfile(t *testing.T) {
-	pf := sampleProfilesFile() // Default: anthropic
-	got, err := config.ApplyProfileToBlob(preRenderedWorkerBlob, "anthropic", pf)
-	if err != nil {
-		t.Fatalf("ApplyProfileToBlob: %v", err)
-	}
-	if got != preRenderedWorkerBlob {
-		t.Errorf("ApplyProfileToBlob with default profile mutated blob; want byte-identical passthrough")
-	}
-}
-
-func TestApplyProfileToBlob_NoOpOnEmptyProfileName(t *testing.T) {
-	pf := sampleProfilesFile()
-	got, err := config.ApplyProfileToBlob(preRenderedWorkerBlob, "", pf)
-	if err != nil {
-		t.Fatalf("ApplyProfileToBlob: %v", err)
-	}
-	if got != preRenderedWorkerBlob {
-		t.Errorf("ApplyProfileToBlob with empty profile mutated blob; want passthrough")
-	}
-}
-
-func TestApplyProfileToBlob_NoOpOnEmptyBlob(t *testing.T) {
-	pf := sampleProfilesFile()
-	got, err := config.ApplyProfileToBlob("", "gemini-hybrid", pf)
-	if err != nil {
-		t.Fatalf("ApplyProfileToBlob: %v", err)
-	}
-	if got != "" {
-		t.Errorf("ApplyProfileToBlob(\"\", ...) = %q, want empty passthrough", got)
-	}
-}
-
-func TestApplyProfileToBlob_RejectsUnknownProfile(t *testing.T) {
-	pf := sampleProfilesFile()
-	_, err := config.ApplyProfileToBlob(preRenderedWorkerBlob, "does-not-exist", pf)
-	if err == nil {
-		t.Fatal("ApplyProfileToBlob(unknown): want error")
-	}
-	if !contains(err.Error(), "unknown profile") {
-		t.Errorf("error %q does not mention unknown profile", err)
-	}
-}
-
-// TestApplyProfileToBlob_OverlaysModelsForNonDefaultProfile is the #1207
-// behaviour gate: when activeProfile differs from pf.Default, the per-agent
-// model fields and the top-level model field must reflect the active
-// profile. Other fields (permissions, plugin list, default_agent, $schema,
-// custom agent metadata like color) must remain untouched.
-func TestApplyProfileToBlob_OverlaysModelsForNonDefaultProfile(t *testing.T) {
-	pf := sampleProfilesFile() // Default: anthropic; gemini-hybrid worker uses gemini.
-	got, err := config.ApplyProfileToBlob(preRenderedWorkerBlob, "gemini-hybrid", pf)
-	if err != nil {
-		t.Fatalf("ApplyProfileToBlob: %v", err)
-	}
-
-	var parsed map[string]any
-	if jsonErr := json.Unmarshal([]byte(got), &parsed); jsonErr != nil {
-		t.Fatalf("Unmarshal patched blob: %v", jsonErr)
-	}
-
-	// Top-level model: coordinator slot from gemini-hybrid (which uses opus
-	// for primary, sonnet for secondary).
-	if got, want := parsed["model"], "anthropic/claude-opus-4-6"; got != want {
-		t.Errorf("top-level model = %v, want %v (coordinator slot of gemini-hybrid)", got, want)
-	}
-
-	agents, _ := parsed["agent"].(map[string]any)
-	if agents == nil {
-		t.Fatalf("agent map missing from patched blob")
-	}
-
-	// agent.worker — secondary tier in gemini-hybrid uses gemini-3.1-pro
-	// with thinking=medium. The blob already declared a worker entry, so
-	// the overlay must rewrite both model and variant fields.
-	worker, _ := agents["worker"].(map[string]any)
-	if worker == nil {
-		t.Fatal("agent.worker missing from patched blob")
-	}
-	if got, want := worker["model"], "google/gemini-3.1-pro-preview-customtools"; got != want {
-		t.Errorf("agent.worker.model = %v, want %v", got, want)
-	}
-	if got, want := worker["variant"], "medium"; got != want {
-		t.Errorf("agent.worker.variant = %v, want %v", got, want)
-	}
-	// Custom field on the worker entry must be preserved.
-	if got, want := worker["color"], "#e67e80"; got != want {
-		t.Errorf("agent.worker.color preserved = %v, want %v", got, want)
-	}
-
-	// agent.explore — lightweight tier in gemini-hybrid still uses
-	// claude-haiku, so the model is unchanged from the default. Variant
-	// is empty (Thinking="") so the overlay must DELETE the baked variant.
-	explore, _ := agents["explore"].(map[string]any)
-	if explore == nil {
-		t.Fatal("agent.explore missing from patched blob")
-	}
-	if got, want := explore["model"], "anthropic/claude-haiku-4-5"; got != want {
-		t.Errorf("agent.explore.model = %v, want %v", got, want)
-	}
-	if _, hasVariant := explore["variant"]; hasVariant {
-		t.Errorf("agent.explore.variant should be deleted when slot's thinking is empty")
-	}
-
-	// Untouched top-level fields must be preserved.
-	if got, want := parsed["default_agent"], "worker"; got != want {
-		t.Errorf("default_agent preserved = %v, want %v", got, want)
-	}
-	if _, ok := parsed["permission"]; !ok {
-		t.Error("permission field deleted by ApplyProfileToBlob")
-	}
-	if _, ok := parsed["plugin"]; !ok {
-		t.Error("plugin field deleted by ApplyProfileToBlob")
-	}
-	if got, want := parsed["$schema"], "https://opencode.ai/opencode.json"; got != want {
-		t.Errorf("$schema preserved = %v, want %v", got, want)
-	}
-}
-
-// TestApplyProfileToBlob_DoesNotAddSubagentEntries verifies the conservative
-// rule: roles in the active profile that are NOT already declared in the
-// blob must not be added. A worker blob that declares only worker/explore/
-// compaction must remain that shape — we don't widen its agent surface.
-func TestApplyProfileToBlob_DoesNotAddSubagentEntries(t *testing.T) {
-	pf := sampleProfilesFile()
-	got, err := config.ApplyProfileToBlob(preRenderedWorkerBlob, "gemini-hybrid", pf)
-	if err != nil {
-		t.Fatalf("ApplyProfileToBlob: %v", err)
-	}
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
-		t.Fatalf("Unmarshal: %v", err)
-	}
-	agents, _ := parsed["agent"].(map[string]any)
-	// gemini-hybrid defines plan, coordinator, ac, review, title, summary,
-	// etc. — none of these were declared in preRenderedWorkerBlob, so they
-	// must NOT appear in the patched blob.
-	for _, role := range []string{"plan", "coordinator", "ac", "review", "title", "summary"} {
-		if _, present := agents[role]; present {
-			t.Errorf("agent.%s leaked into worker blob; should not be added", role)
-		}
-	}
-}
-
-// TestApplyProfileToBlob_RejectsMalformedBlob exercises the parse path —
-// an upstream caller passing garbage JSON must surface the error rather
-// than silently passing through a corrupt blob.
-func TestApplyProfileToBlob_RejectsMalformedBlob(t *testing.T) {
-	pf := sampleProfilesFile()
-	_, err := config.ApplyProfileToBlob("not json {{", "gemini-hybrid", pf)
-	if err == nil {
-		t.Fatal("ApplyProfileToBlob(garbage): want parse error")
-	}
-}
-
-// ── thinking → variant translation (#1299) ────────────────────────────────────
-
-// TestBuildConfigContent_OffThinkingTranslatesToNoneVariant verifies that a
-// profile slot with thinking="off" produces variant="none" in the opencode
-// config content (the PI zero value must be translated to the opencode zero
-// value).
-func TestBuildConfigContent_OffThinkingTranslatesToNoneVariant(t *testing.T) {
-	pf := sampleProfilesFile()
-	// Add an "off-thinking" profile whose coordinator slot uses thinking="off".
-	pf.Profiles["off-test"] = config.ProfileEntry{
-		"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-6", Thinking: "off"},
-		"worker":      {Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6", Thinking: "off"},
-	}
-	pf.RoleMapping = map[string][]string{
-		"primary":     {"coordinator"},
-		"secondary":   {"worker"},
-		"lightweight": {},
-	}
-	out, err := config.BuildConfigContent(pf, "off-test", "", "")
-	if err != nil {
-		t.Fatalf("BuildConfigContent: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	agents, _ := cfg["agent"].(map[string]any)
-	for _, role := range []string{"coordinator", "worker"} {
-		entry, ok := agents[role].(map[string]any)
-		if !ok {
-			continue
-		}
-		// thinking="off" must produce variant="none" for opencode, not "off".
-		if v, hasVariant := entry["variant"]; hasVariant && v != "none" {
-			t.Errorf("agent.%s variant: got %v, want none (translated from off)", role, v)
-		}
-		// Must not pass "off" through to opencode.
-		if v, hasVariant := entry["variant"]; hasVariant && v == "off" {
-			t.Errorf("agent.%s variant: got 'off' — should have been translated to 'none'", role)
-		}
-	}
-}
-
-// TestBuildConfigContent_NonZeroThinkingPassesThrough verifies that a
-// non-zero thinking level (e.g. "medium") is passed through unchanged to
-// opencode's variant field.
-func TestBuildConfigContent_NonZeroThinkingPassesThrough(t *testing.T) {
-	pf := sampleProfilesFile()
-	out, err := config.BuildConfigContent(pf, "gemini-hybrid", "", "")
-	if err != nil {
-		t.Fatalf("BuildConfigContent: %v", err)
-	}
-	var cfg map[string]any
-	if err := json.Unmarshal([]byte(out), &cfg); err != nil {
-		t.Fatalf("output is not valid JSON: %v", err)
-	}
-	agents := cfg["agent"].(map[string]any)
-	worker := agents["worker"].(map[string]any)
-	if worker["variant"] != "medium" {
-		t.Errorf("worker variant: got %v, want medium (non-zero thinking passed through unchanged)", worker["variant"])
-	}
 }

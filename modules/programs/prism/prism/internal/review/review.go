@@ -266,8 +266,8 @@ type Opts struct {
 	// PluginHostPath is the path to the opencode plugin file.
 	PluginHostPath string
 	// ProfilesFile is the loaded profiles.json, used to resolve per-agent
-	// container config blobs via ContainerConfigForRole. When nil, no config
-	// injection is performed (equivalent to pre-PR-B behaviour).
+	// config content via BuildConfigContent. When nil, no config injection is
+	// performed.
 	ProfilesFile *config.ProfilesFile
 	// OnProgress is an optional callback invoked for each progress event:
 	// spawn, finish, timeout, and spawn failure. It receives a formatted
@@ -288,8 +288,8 @@ type Opts struct {
 	// ModelsByRole is an optional per-role model override map (C.2,
 	// issue #1122). When a role appears in the map, its model entry overrides
 	// the profile default for that agent's opencode.json config blob.
-	// The map is applied in run.go via config.ApplyModelOverrides after the
-	// per-agent blob is resolved from ProfilesFile.
+	// The map is applied in run.go via config.BuildConfigContent with a model
+	// override after the per-agent config is resolved from ProfilesFile.
 	// Nil or empty means no per-role overrides — all agents use the profile
 	// default (equivalent to pre-C.2 behaviour).
 	ModelsByRole map[string]string

@@ -448,13 +448,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	//   2. Runtime state file at $XDG_STATE_HOME/prism/active-profile
 	//   3. pf.Default (the nix-configured default, lowest)
 	//
-	// resolvedProfile threads through every downstream consumer that
-	// previously took profileFlag directly: BuildConfigContent (so the
-	// rendered OPENCODE_CONFIG_CONTENT carries the runtime profile),
-	// RequireSlot (so the spawn-time slot guard runs against the actually
-	// active profile), and ApplyModelOverrides (so --model overrides target
-	// the runtime profile's primary tier rather than the nix default's).
-	//
 	// Errors from the state-file read path are surfaced — corrupt state is
 	// a real problem, not a fallthrough condition.
 	resolvedProfile, profileSource, err := config.ResolveActiveProfile(pf, profileFlag)
@@ -462,11 +455,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	_ = profileSource // intentionally unused — kept for future debug logging
-
-	configContent, err := config.BuildConfigContent(pf, resolvedProfile, modelFlag, variantFlag)
-	if err != nil {
-		return err
-	}
+	// configContent is populated below, after the session role is determined.
+	var configContent string
 
 	// Resolve the bare repo root from the current pane path (or --repo flag).
 	bareRoot, err := resolveBareRoot(repoFlag)
@@ -556,23 +546,37 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		// Resolve harness from the profile slot when --harness was not
-		// explicitly passed (#1328). The --harness flag takes precedence;
-		// the profile slot provides the default when the flag is absent.
+		// Generate the pi harness config for this session's root role.
+		// BuildConfigContent applies the profile's slot model/variant and
+		// honours any --model/--variant overrides on the root role only.
+		var bccErr error
+		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, plannedRole, modelFlag, variantFlag)
+		if bccErr != nil {
+			return bccErr
+		}
+
+		// Pi is the sole harness. Use it directly unless --harness was
+		// explicitly set by the caller.
 		if !cmd.Flags().Changed("harness") {
-			if slot, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
-				slotHarness := config.HarnessForSlot(pf, slot)
-				if _, validHarness := harness.Lookup(slotHarness); !validHarness {
-					return fmt.Errorf("profile %q role %q declares unknown harness %q: valid harnesses: %s",
-						resolvedProfile, plannedRole, slotHarness, strings.Join(harness.Names(), ", "))
-				}
-				harnessFlag = slotHarness
-			} else if pf != nil && pf.DefaultHarness != "" {
-				// Profile defines no slot for this role — fall back to the
-				// file-level default_harness (#1491) before resorting to the
-				// hardcoded "opencode" baked into harness construction.
-				harnessFlag = config.HarnessForSlot(pf, config.RoleSlot{})
+			harnessFlag = "pi"
+		}
+	}
+
+	// If no profile is active but --model or --variant were passed, still
+	// generate a minimal config so the overrides take effect.
+	if configContent == "" && (modelFlag != "" || variantFlag != "") {
+		rootRole := agentFlag
+		if rootRole == "" {
+			if branch == "main" {
+				rootRole = "coordinator"
+			} else {
+				rootRole = "worker"
 			}
+		}
+		var bccErr error
+		configContent, bccErr = config.BuildConfigContent(pf, resolvedProfile, rootRole, modelFlag, variantFlag)
+		if bccErr != nil {
+			return bccErr
 		}
 	}
 
@@ -580,65 +584,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	worktreePath, err := git.CreateWorktree(bareRoot, branch)
 	if err != nil {
 		return fmt.Errorf("create worktree: %w", err)
-	}
-
-	// In container/bwrap/sandbox-exec mode, inject the role-specific opencode.json
-	// blob as the harness config env var so it takes precedence (level 6) over any
-	// project-level opencode.jsonc. This ensures agent identity is always
-	// determined by Nix config, not by the project file.
-	//
-	// effectiveRole is derived the same way the session uses: explicit --agent
-	// flag wins; otherwise "coordinator" on the main branch, "worker" elsewhere.
-	// This must run after worktreePath is known so that DefaultAgent can inspect
-	// the directory name (e.g. "main").
-	//
-	// This block fires for podman, bwrap, and sandbox-exec isolation modes.
-	// Host-mode sessions skip it because they run opencode directly with the
-	// host's real ~/.config/opencode/opencode.json via xdg.configFile.
-	//
-	// DefaultAgent (not DefaultAgentForSession) is intentional: at spawn time the
-	// session has no DB row yet, so this call ASSIGNS the role rather than reading it.
-	if isoCaps.NeedsConfigBlob && pf != nil {
-		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
-		// Non-worktree paths (effectiveRole == "") use the coordinator config blob
-		// so that build/plan agents are available, but pass no --agent flag.
-		lookupRole := effectiveRole
-		if lookupRole == "" {
-			lookupRole = "coordinator"
-		}
-		roleConfig, roleErr := config.ContainerConfigForRole(pf, lookupRole)
-		if roleErr != nil {
-			return roleErr
-		}
-		if roleConfig != "" {
-			// Role config governs agent identity and permissions (system prompt,
-			// tool allow-list, plugin list). The blob's model identifiers are
-			// pre-rendered from `pf.Default`, so when the runtime active profile
-			// differs we must overlay the active profile's model+variant on top
-			// — otherwise a `prism profile use gemini-hybrid && prism spawn`
-			// would silently launch with the anthropic-default models (#1207).
-			//
-			// ApplyProfileToBlob is a no-op when resolvedProfile == pf.Default
-			// or empty, so the legacy fast path is preserved.
-			profiled, profileErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
-			if profileErr != nil {
-				return profileErr
-			}
-			// Re-apply any --model/--variant overrides on top of the
-			// profile-targeted blob so that user-supplied flags are not
-			// silently discarded.
-			patched, patchErr := config.ApplyModelOverrides(profiled, resolvedProfile, modelFlag, variantFlag, pf)
-			if patchErr != nil {
-				return patchErr
-			}
-			configContent = patched
-		} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
-			// worker and coordinator are container-level roles that must have a
-			// config blob; an empty result means the system config is stale.
-			fmt.Fprintf(os.Stderr, "[prism spawn] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
-		}
-		// Other agent names (plan, review, explore, …) are subagents that
-		// don't have dedicated container blobs — empty result is expected.
 	}
 
 	// For bwrap sessions, write the opencode.json config file to disk now so
@@ -1165,15 +1110,10 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		if err := config.RequireSlot(pf, profileName, plannedRole); err != nil {
 			return fmt.Errorf("--abtest profile %q: %w", profileName, err)
 		}
+		// Pi is the sole harness. Use it directly unless --harness was explicitly set.
 		legHarness := harnessFlag
 		if !cmd.Flags().Changed("harness") {
-			if slot, ok := config.SlotForRole(pf, profileName, plannedRole); ok {
-				legHarness = config.HarnessForSlot(pf, slot)
-			} else if pf != nil && pf.DefaultHarness != "" {
-				// Profile defines no slot for this role — fall back to the
-				// file-level default_harness (#1491).
-				legHarness = config.HarnessForSlot(pf, config.RoleSlot{})
-			}
+			legHarness = "pi"
 		}
 		if _, ok := harness.Lookup(legHarness); !ok {
 			return fmt.Errorf("--abtest profile %q role %q declares unknown harness %q: valid harnesses: %s",
@@ -1321,31 +1261,13 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		return "", "", fmt.Errorf("create worktree for branch %q: %w", a.branch, err)
 	}
 
-	configContent, err := config.BuildConfigContent(a.pf, a.profileName, a.modelFlag, a.variantFlag)
+	rootRole := a.plannedRole
+	if rootRole == "" {
+		rootRole = "coordinator"
+	}
+	configContent, err := config.BuildConfigContent(a.pf, a.profileName, rootRole, a.modelFlag, a.variantFlag)
 	if err != nil {
 		return "", worktreePath, err
-	}
-
-	if a.isoCaps.NeedsConfigBlob && a.pf != nil {
-		lookupRole := a.plannedRole
-		if lookupRole == "" {
-			lookupRole = "coordinator"
-		}
-		roleConfig, roleErr := config.ContainerConfigForRole(a.pf, lookupRole)
-		if roleErr != nil {
-			return "", worktreePath, roleErr
-		}
-		if roleConfig != "" {
-			profiled, profileErr := config.ApplyProfileToBlob(roleConfig, a.profileName, a.pf)
-			if profileErr != nil {
-				return "", worktreePath, profileErr
-			}
-			patched, patchErr := config.ApplyModelOverrides(profiled, a.profileName, a.modelFlag, a.variantFlag, a.pf)
-			if patchErr != nil {
-				return "", worktreePath, patchErr
-			}
-			configContent = patched
-		}
 	}
 
 	sessionName = session.NameFor(worktreePath, a.bareRoot)

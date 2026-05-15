@@ -140,20 +140,14 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 
 	cfg := config.Load()
 
-	// Load profiles best-effort; non-fatal if absent.
-	pf, _ := config.LoadProfiles()
-
 	// Resolve isolation mode from the invoker session's DB row.
 	isoMode := config.IsolationMode(status.IsolationMode)
 	if isoMode == "" || isoMode == "podman" {
 		isoMode = config.IsolationMode(cfg.DefaultIsolationMode)
 	}
 
-	// Use the default harness, falling back to "pi".
+	// Pi is the sole harness. Use harness.Lookup("pi") as the single source of truth.
 	harnessName := "pi"
-	if pf != nil && pf.DefaultHarness != "" {
-		harnessName = pf.DefaultHarness
-	}
 	h, _ := harness.New(harnessName, "", nil, "", "")
 
 	spawnOpts := session.SpawnOpts{

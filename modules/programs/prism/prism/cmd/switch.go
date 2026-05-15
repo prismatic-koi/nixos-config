@@ -80,47 +80,28 @@ func writeHarnessConfigBlobFor(mode config.IsolationMode, sessionName, content, 
 	return nil
 }
 
-// injectContainerConfig loads the role-specific opencode.json blob from
-// profiles.json and sets opts.ConfigContent when sandboxed mode is active.
-// This mirrors the pattern in spawn.go and must be called after the final
-// worktree path is known (path is the directory passed to ensureAndSwitch).
+// injectContainerConfig generates the pi harness-config JSON for the given
+// path and sets opts.ConfigContent. The role is derived from the path
+// (main → coordinator, other → worker) unless opts.Agent overrides it.
 //
 // pf must be non-nil when called; callers are responsible for loading it when
-// the effective isolation mode is podman or bwrap.
-//
-// As of #1207, the runtime active profile is overlaid on the pre-rendered
-// blob via config.ApplyProfileToBlob so that `prism switch <project>` —
-// which creates new sessions — honours `prism profile use <name>` the same
-// way `prism spawn` does. The overlay is a no-op when the active profile
-// matches pf.Default.
-func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, cmdName string) error {
+// the effective isolation mode requires a config blob.
+func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.Opts, _ string) error {
 	effectiveRole := session.DefaultAgent(path, opts.Agent)
-	// Non-worktree paths (effectiveRole == "") use the coordinator config blob
-	// so that build/plan agents are available, but pass no --agent flag.
+	// Non-worktree paths (effectiveRole == "") use coordinator.
 	lookupRole := effectiveRole
 	if lookupRole == "" {
 		lookupRole = "coordinator"
 	}
-	roleConfig, err := config.ContainerConfigForRole(pf, lookupRole)
+	resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
+	if profErr != nil {
+		return profErr
+	}
+	content, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, "", "")
 	if err != nil {
 		return err
 	}
-	if roleConfig != "" {
-		// Overlay the runtime active profile (#1207). Surfaces state-file
-		// read errors so a corrupt state file does not silently leak the
-		// pf.Default profile into the new session.
-		resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
-		if profErr != nil {
-			return profErr
-		}
-		patched, applyErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
-		if applyErr != nil {
-			return applyErr
-		}
-		opts.ConfigContent = patched
-	} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
-		fmt.Fprintf(os.Stderr, "[%s] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", cmdName, effectiveRole)
-	}
+	opts.ConfigContent = content
 	return nil
 }
 
@@ -338,41 +319,14 @@ var switchCmd = &cobra.Command{
 			}
 		}
 
-		// Resolve the harness from the active profile's worker slot, mirroring
-		// the pattern in spawn.go. prism switch always opens worker sessions,
-		// so "worker" is the role to look up.
-		//
-		// When pf is nil (profiles.json missing or unloadable) or the profile
-		// has no worker slot, fall back to "opencode" so existing behaviour is
-		// preserved. A warning was already logged above in the pf==nil case.
+		// Pi is the sole harness. Use harness.Lookup("pi") as the single
+		// source of truth rather than a hardcoded string.
 		switchHarnessName := "pi"
-		if pf != nil {
-			resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
-			if profErr != nil {
-				// Corrupt or unreadable active-profile state file — surface the
-				// error rather than silently falling back. Matches the defensive
-				// posture of injectContainerConfig and spawn.go.
-				return fmt.Errorf("prism switch: resolve active profile: %w", profErr)
-			}
-			if resolvedProfile != "" {
-				var slot config.RoleSlot
-				if s, ok := config.SlotForRole(pf, resolvedProfile, "worker"); ok {
-					slot = s
-				}
-				switchHarnessName = config.HarnessForSlot(pf, slot)
-			} else if pf.DefaultHarness != "" {
-				// No active profile resolved but the profiles file declares a
-				// file-level default_harness (#1491) — honour it.
-				switchHarnessName = config.HarnessForSlot(pf, config.RoleSlot{})
-			}
-		}
 
-		// Validate the resolved harness name before using it. An unknown harness
-		// (e.g. declared in profiles.json but not compiled in) should fail with a
-		// clear error rather than producing a nil adapter that panics on the next
-		// method call. Mirrors the harness.Lookup guard in spawn.go.
+		// Validate the harness name. Pi is hardwired but guard against future
+		// misconfigurations via Lookup.
 		if _, ok := harness.Lookup(switchHarnessName); !ok {
-			return fmt.Errorf("prism switch: active profile worker slot declares unknown harness %q: valid harnesses: %s",
+			return fmt.Errorf("prism switch: unknown harness %q: valid harnesses: %s",
 				switchHarnessName, strings.Join(harness.Names(), ", "))
 		}
 

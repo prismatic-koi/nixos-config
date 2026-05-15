@@ -137,52 +137,31 @@ func FormatAgentDisplayName(name string) string {
 	return strings.Join(parts, "-")
 }
 
-// ResolveAgentConfigContent resolves the per-agent opencode.json config blob
-// for a single agent in sandboxed mode (podman, bwrap, or sandbox-exec). It is
-// factored out of Run so that it can be unit-tested independently of the
-// tmux/DB machinery.
+// ResolveAgentConfigContent resolves the pi harness-config JSON for a single
+// review agent in sandboxed mode (bwrap or sandbox-exec). It is factored out
+// of Run so that it can be unit-tested independently of the tmux/DB machinery.
 //
 // Returns ("", nil) in host mode (isolationMode == "host" or ""), because no
-// config injection is needed — opencode is launched directly on the host.
+// config injection is needed — pi is launched directly on the host.
 //
-// In sandboxed mode (isolationMode == "podman", "bwrap", or "sandbox-exec"):
-//   - Returns an error if pf is nil (missing profiles file).
-//   - Returns an error if ContainerConfigForRole returns an error.
-//   - Returns an error if the resolved blob is empty (stale profiles.json).
-//   - Returns the non-empty blob when resolution succeeds, with the runtime
-//     active profile overlaid via config.ApplyProfileToBlob so that
-//     `prism profile use <name>` actually changes the models review agents
-//     spawn with (#1207).
+// In sandboxed mode (isolationMode == "bwrap" or "sandbox-exec"):
+//   - Returns an error if pf is nil (missing profiles file) and activeProfile is set.
+//   - Returns ("", nil) when pf is nil and activeProfile is empty (no profile
+//     configured — the harness uses its built-in defaults).
+//   - Returns the profile-derived config blob for agentName's slot.
 //
 // Exported so that cmd/review_test.go (and integration tests) can exercise the
 // config-resolution path without needing a live DB or tmux session.
 //
 // activeProfile is the runtime active-profile name resolved by the caller
-// via config.ResolveActiveProfile. Pass "" to disable profile overlay (the
-// blob is then returned as pre-rendered from pf.Default). See Run() for the
-// canonical resolution path.
+// via config.ResolveActiveProfile. Pass "" when no profile is active.
 func ResolveAgentConfigContent(isolationMode string, pf *config.ProfilesFile, agentName, activeProfile string) (string, error) {
 	needsConfig := isolationMode == string(config.IsolationBwrap) || isolationMode == string(config.IsolationSandboxExec)
 	if !needsConfig {
 		return "", nil
 	}
-	if pf == nil {
+	if pf == nil && activeProfile != "" {
 		return "", fmt.Errorf("review: %s mode requires a profiles file to resolve per-agent config for %q; got nil ProfilesFile", isolationMode, agentName)
 	}
-	blob, cfgErr := config.ContainerConfigForRole(pf, agentName)
-	if cfgErr != nil {
-		return "", fmt.Errorf("review: ContainerConfigForRole(%q): %w", agentName, cfgErr)
-	}
-	if blob == "" {
-		return "", fmt.Errorf("review: no container config blob for agent %q — profiles.json appears to be stale (missing container_review_*_config fields)\nhint: rebuild the system with the prism NixOS module to regenerate profiles.json", agentName)
-	}
-	// Overlay the runtime active profile when it differs from pf.Default so
-	// that `prism profile use <name>` actually flows through to review agents.
-	// ApplyProfileToBlob is a no-op when activeProfile is empty or matches
-	// pf.Default, preserving the pre-#1207 fast path.
-	patched, applyErr := config.ApplyProfileToBlob(blob, activeProfile, pf)
-	if applyErr != nil {
-		return "", fmt.Errorf("review: apply runtime profile %q to %q blob: %w", activeProfile, agentName, applyErr)
-	}
-	return patched, nil
+	return config.BuildConfigContent(pf, activeProfile, agentName, "", "")
 }

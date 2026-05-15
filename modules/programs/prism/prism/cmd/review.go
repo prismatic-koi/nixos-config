@@ -340,16 +340,10 @@ func runReview(cmd *cobra.Command, args []string) error {
 		ModelsByRole:   modelsByRole,
 	}
 
-	// Load profiles for any sandboxed mode (podman, bwrap, or sandbox-exec) —
-	// passed through to review.RunAsync so each agent receives its own per-agent
-	// hardened opencode.json blob sourced from profiles.json via
-	// ContainerConfigForRole. In podman mode, a missing profiles.json means the
-	// per-agent opencode.json cannot be mounted, causing the container to fall
-	// back to the image default (build agent). In bwrap/sandbox-exec mode, a
-	// missing profiles.json means no per-agent opencode.json is written to disk,
-	// so the sandbox picks up the host's ~/.config/opencode/opencode.json (wrong
-	// agent identity). Surface this as an explicit error rather than silently
-	// spawning broken agents.
+	// Load profiles for any sandboxed mode (bwrap or sandbox-exec) so each
+	// agent receives its per-role harness-config JSON via BuildConfigContent.
+	// Surface a missing profiles.json as an explicit error rather than silently
+	// spawning agents with the wrong model.
 	if isoCaps.NeedsConfigBlob {
 		pf, pfErr := config.LoadProfiles()
 		if pfErr != nil {

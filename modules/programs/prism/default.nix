@@ -161,31 +161,6 @@
         };
       };
 
-      harness = {
-        default = lib.mkOption {
-          type = lib.types.str;
-          default = "pi";
-          example = "pi";
-          description = ''
-            The fallback harness used when a profile slot does not specify a
-            `harness` field. Written as `default_harness` in profiles.json and
-            consumed by the prism Go binary at session-resolution time.
-
-            Resolution precedence (most-specific to least):
-              1. `--harness` flag at spawn / pr / review.
-              2. Slot-level `harness` field in the active profile.
-              3. This `default_harness` from profiles.json.
-              4. Hardcoded "pi" (only if profiles.json predates this option).
-
-            Validation that the value names a registered harness happens on the
-            Go side at profiles-file load time, so the list of valid names is
-            not duplicated in Nix. Setting this to a value not registered in
-            the Go `harness` package will fail at runtime when prism reads
-            profiles.json.
-          '';
-        };
-      };
-
       # Internal computed values for submodules to use
       _internal = lib.mkOption {
         type = lib.types.attrs;

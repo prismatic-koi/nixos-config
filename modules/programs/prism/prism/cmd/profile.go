@@ -495,7 +495,6 @@ type profileSlotJSON struct {
 	Provider         string `json:"provider"`
 	Model            string `json:"model"`
 	Thinking         string `json:"thinking"`
-	Harness          string `json:"harness"`
 	SystemPromptPath string `json:"system_prompt_path"`
 }
 
@@ -516,7 +515,6 @@ func buildProfileJSON(name string, entry config.ProfileEntry, active string) pro
 			Provider:         slot.Provider,
 			Model:            slot.Model,
 			Thinking:         slot.Thinking,
-			Harness:          slot.Harness,
 			SystemPromptPath: slot.SystemPromptPath,
 		}
 	}
