@@ -56,6 +56,15 @@ type SupervisorConfig struct {
 	// that every event written via the harness is also fanned out to client
 	// subscribers (D-6). When nil, fan-out is disabled (harness-only mode).
 	Publisher EventPublisher
+	// PIAgentDir is the base directory where pi stores session files
+	// (~/.pi/agent/). Used by SpawnSessionContinue to locate the JSONL file.
+	// When empty, defaults to ~/.pi/agent/.
+	PIAgentDir string
+	// SessionContinuePath is the full path to an existing pi JSONL session
+	// file to pass as --session <path> on the pi command line. When non-empty,
+	// the pi child resumes conversation history from this file. Set by the
+	// D-9 restore path when re-spawning after daemon restart.
+	SessionContinuePath string
 }
 
 // Supervisor manages a single pi child process.
@@ -120,6 +129,11 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	if err := insertSessionRecord(cfg.Database, sess); err != nil {
 		// Non-fatal: log and continue.
 		log.Printf("[iris] supervisor: failed to insert session record: %v", err)
+	}
+	// Write initial iris_state=spawning to the DB so the restore path can
+	// distinguish sessions that crashed during creation from active ones.
+	if err := cfg.Database.IrisUpdateSessionState(instanceID, string(StateSpawning)); err != nil {
+		log.Printf("[iris] supervisor: failed to set initial iris_state: %v", err)
 	}
 
 	return &Supervisor{
@@ -217,6 +231,10 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	args := []string{"--mode", "rpc"}
 	if s.cfg.ExtensionPath != "" {
 		args = append(args, "--extension", s.cfg.ExtensionPath)
+	}
+	// Pass --session <path> when resuming a previous conversation (D-9 restore).
+	if s.cfg.SessionContinuePath != "" {
+		args = append(args, "--session", s.cfg.SessionContinuePath)
 	}
 
 	cmd := exec.CommandContext(ctx, piBin, args...)
@@ -415,6 +433,11 @@ func (s *Supervisor) setState(newState SessionState) {
 	s.state = newState
 	s.sess.State = newState
 	s.mu.Unlock()
+
+	// Always write iris_state to the DB so the restore path can read it.
+	if err := s.cfg.Database.IrisUpdateSessionState(s.sess.InstanceID, string(newState)); err != nil {
+		log.Printf("[iris] supervisor: update iris_state: %v", err)
+	}
 
 	// Update the sessions DB row end state for terminal states.
 	switch newState {

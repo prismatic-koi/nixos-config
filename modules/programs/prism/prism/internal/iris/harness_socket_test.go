@@ -21,20 +21,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/iris"
 )
 
 // openTestDB returns an in-memory (temp dir) iris DB for tests.
-func openTestDB(t *testing.T) interface{ Close() error } {
+func openTestDB(t *testing.T) *db.DB {
 	t.Helper()
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "iris.db")
-	db, err := iris.OpenDB(dbPath)
+	database, err := iris.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
-	return db
+	t.Cleanup(func() { database.Close() })
+	return database
+}
+
+// insertTestSessionRow inserts a sessions row so that agent_events written
+// with instance_id satisfy the FK constraint. Must be called before any
+// HarnessSocketServer starts writing events for the given instance.
+func insertTestSessionRow(t *testing.T, database *db.DB, instanceID, sessionName, worktree string) {
+	t.Helper()
+	sess := db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Worktree:    worktree,
+		Harness:     "pi",
+		StartedAt:   time.Now(),
+	}
+	if err := database.InsertSession(sess); err != nil {
+		t.Fatalf("insertTestSessionRow(%q): %v", instanceID, err)
+	}
 }
 
 // dialHarness dials the harness socket and returns a json-line writer/reader pair.
@@ -101,26 +119,30 @@ func doHandshake(t *testing.T, conn net.Conn, r *bufio.Reader) map[string]any {
 }
 
 // startServer starts a HarnessSocketServer in a background goroutine and
-// returns it plus the session.
+// returns it. A sessions row is inserted so FK constraints on agent_events
+// are satisfied when events are written with instance_id set.
 func startServer(t *testing.T) *iris.HarnessSocketServer {
 	t.Helper()
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "iris.db")
-	db, err := iris.OpenDB(dbPath)
+	database, err := iris.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	t.Cleanup(func() { db.Close() })
+	t.Cleanup(func() { database.Close() })
+
+	const instanceID = "test-instance-001"
+	insertTestSessionRow(t, database, instanceID, "test@branch", tmp)
 
 	sockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
-		InstanceID:      "test-instance-001",
+		InstanceID:      instanceID,
 		SessionName:     "test@branch",
 		Worktree:        tmp,
 		Role:            "worker",
 		HarnessSockPath: sockPath,
 	}
-	srv, err := iris.NewHarnessSocketServer(sess, db)
+	srv, err := iris.NewHarnessSocketServer(sess, database)
 	if err != nil {
 		t.Fatalf("NewHarnessSocketServer: %v", err)
 	}
@@ -354,21 +376,24 @@ func TestSessionShutdown(t *testing.T) {
 func TestDBEventWritten(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "iris.db")
-	db, err := iris.OpenDB(dbPath)
+	database, err := iris.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.Close()
+	defer database.Close()
+
+	const instanceID = "test-db-events"
+	insertTestSessionRow(t, database, instanceID, "test@db", tmp)
 
 	sockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
-		InstanceID:      "test-db-events",
+		InstanceID:      instanceID,
 		SessionName:     "test@db",
 		Worktree:        tmp,
 		Role:            "worker",
 		HarnessSockPath: sockPath,
 	}
-	srv, err := iris.NewHarnessSocketServer(sess, db)
+	srv, err := iris.NewHarnessSocketServer(sess, database)
 	if err != nil {
 		t.Fatalf("NewHarnessSocketServer: %v", err)
 	}
@@ -401,7 +426,7 @@ func TestDBEventWritten(t *testing.T) {
 
 	// Query DB for events.
 	time.Sleep(50 * time.Millisecond)
-	events, err := db.AllSessionEvents("test@db")
+	events, err := database.AllSessionEvents("test@db")
 	if err != nil {
 		t.Fatalf("AllSessionEvents: %v", err)
 	}
@@ -439,21 +464,24 @@ func TestReadTool(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(tmp, "iris.db")
-	db, err := iris.OpenDB(dbPath)
+	database, err := iris.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.Close()
+	defer database.Close()
+
+	const instanceID = "test-read-tool"
+	insertTestSessionRow(t, database, instanceID, "test@read", tmp)
 
 	sockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
-		InstanceID:      "test-read-tool",
+		InstanceID:      instanceID,
 		SessionName:     "test@read",
 		Worktree:        tmp,
 		Role:            "worker",
 		HarnessSockPath: sockPath,
 	}
-	srv, err := iris.NewHarnessSocketServer(sess, db)
+	srv, err := iris.NewHarnessSocketServer(sess, database)
 	if err != nil {
 		t.Fatalf("NewHarnessSocketServer: %v", err)
 	}
@@ -526,21 +554,24 @@ func TestEditToolUniqueness(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(tmp, "iris.db")
-	db, err := iris.OpenDB(dbPath)
+	database, err := iris.OpenDB(dbPath)
 	if err != nil {
 		t.Fatalf("OpenDB: %v", err)
 	}
-	defer db.Close()
+	defer database.Close()
+
+	const instanceID = "test-edit-unique"
+	insertTestSessionRow(t, database, instanceID, "test@edit", tmp)
 
 	sockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
-		InstanceID:      "test-edit-unique",
+		InstanceID:      instanceID,
 		SessionName:     "test@edit",
 		Worktree:        tmp,
 		Role:            "worker",
 		HarnessSockPath: sockPath,
 	}
-	srv, err := iris.NewHarnessSocketServer(sess, db)
+	srv, err := iris.NewHarnessSocketServer(sess, database)
 	if err != nil {
 		t.Fatalf("NewHarnessSocketServer: %v", err)
 	}
