@@ -98,6 +98,10 @@ type ClientSocket struct {
 	spawnSession func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)
 	// deliverPrompt delivers a prompt to a named session. Set by the daemon.
 	deliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
+	// killSession terminates a named session. Returns the terminal state
+	// reached ("finished", "error", "already_terminal") on success. Set by
+	// the daemon at construction.
+	killSession func(ctx context.Context, name string, timeout time.Duration) (string, error)
 
 	listener net.Listener
 
@@ -134,6 +138,9 @@ type ClientSocketConfig struct {
 	SpawnSession func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)
 	// DeliverPrompt delivers a prompt to a named session.
 	DeliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
+	// KillSession terminates a named session. Returns the terminal state
+	// ("finished" / "error" / "already_terminal") on success.
+	KillSession func(ctx context.Context, name string, timeout time.Duration) (string, error)
 }
 
 // NewClientSocket creates a ClientSocket. Call Listen() to bind the socket,
@@ -145,6 +152,7 @@ func NewClientSocket(cfg ClientSocketConfig) *ClientSocket {
 		getActiveSessions: cfg.GetActiveSessions,
 		spawnSession:      cfg.SpawnSession,
 		deliverPrompt:     cfg.DeliverPrompt,
+		killSession:       cfg.KillSession,
 		subscribers:       make(map[string][]subscriberChan),
 	}
 }
@@ -211,6 +219,13 @@ func (cs *ClientSocket) SockPath() string { return cs.sockPath }
 // clientSock needs spawnFn). Call before Serve().
 func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)) {
 	cs.spawnSession = fn
+}
+
+// SetKillSession wires the kill function after construction. Symmetric with
+// SetSpawnSession; call before Serve() when the daemon's killFn captures a
+// reference to the ClientSocket.
+func (cs *ClientSocket) SetKillSession(fn func(ctx context.Context, name string, timeout time.Duration) (string, error)) {
+	cs.killSession = fn
 }
 
 // Close closes the listener and removes the socket file.
@@ -392,7 +407,7 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFrameSessionKill, "invalid frame: "+err.Error())
 				continue
 			}
-			sendError(w, ClientFrameSessionKill, "session_kill not yet implemented")
+			go cs.handleSessionKill(connCtx, w, frame)
 
 		case ClientFramePromptDeliver:
 			var frame ClientPromptDeliverFrame
@@ -586,6 +601,43 @@ func (cs *ClientSocket) handleSessionSpawn(ctx context.Context, w *jsonlWriter, 
 		Name:       snap.Name,
 		InstanceID: snap.InstanceID,
 		Session:    &snap,
+	})
+}
+
+// killSessionTimeout is the SIGTERM grace period the daemon applies on every
+// session_kill frame. It matches the AC for issue #1674: SIGTERM, 5s wait,
+// then SIGKILL escalation.
+const killSessionTimeout = 5 * time.Second
+
+// handleSessionKill terminates a named session and writes a session_killed
+// ack back to the client. Errors (no-such-session, kill timed out, no kill
+// function wired) come back as DaemonErrorFrame so the client can distinguish
+// success from failure on the same conn.
+//
+// Idempotent: a session already in a terminal state returns success with
+// state="already_terminal" without re-killing.
+func (cs *ClientSocket) handleSessionKill(ctx context.Context, w *jsonlWriter, frame ClientSessionKillFrame) {
+	if cs.killSession == nil {
+		sendError(w, ClientFrameSessionKill, "session kill not configured on this daemon instance")
+		return
+	}
+	if frame.Name == "" {
+		sendError(w, ClientFrameSessionKill, "name is required")
+		return
+	}
+	if !cs.sessionExists(frame.Name) {
+		sendError(w, ClientFrameSessionKill, fmt.Sprintf("session %q not found", frame.Name))
+		return
+	}
+	state, err := cs.killSession(ctx, frame.Name, killSessionTimeout)
+	if err != nil {
+		sendError(w, ClientFrameSessionKill, fmt.Sprintf("kill failed: %v", err))
+		return
+	}
+	_ = w.write(DaemonSessionKilledFrame{
+		Type:  DaemonFrameSessionKilled,
+		Name:  frame.Name,
+		State: state,
 	})
 }
 

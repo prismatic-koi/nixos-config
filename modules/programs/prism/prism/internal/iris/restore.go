@@ -363,5 +363,6 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		state:          StateSpawning,
 		sessionLog:     sessionLog,
 		sessionLogFile: logFile,
+		done:           make(chan struct{}),
 	}, nil
 }

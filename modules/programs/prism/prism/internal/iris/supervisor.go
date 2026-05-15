@@ -16,6 +16,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +91,11 @@ type Supervisor struct {
 	// stdinPipe is the write end of pi's stdin (for sending RPC commands).
 	stdinPipe io.WriteCloser
 
+	// process is the live pi *os.Process while pi is running, nil otherwise.
+	// Used by Kill() to escalate to SIGKILL after a SIGTERM timeout. Guarded
+	// by mu — same lock as stdinPipe and state.
+	process *os.Process
+
 	// sessionLog is the per-session logger that writes to both the global
 	// log destination (stderr / journal) and the per-session log file under
 	// LogDir. Always non-nil after construction; falls back to the stderr-
@@ -99,8 +106,21 @@ type Supervisor struct {
 	// state.
 	sessionLogFile *os.File
 
+	// cancel is the per-session context cancel function. It is set by Start()
+	// at the top of the loop and used by Kill() to send SIGTERM via
+	// exec.CommandContext. Guarded by mu.
+	cancel context.CancelFunc
+	// done is closed by Start() when the supervisor goroutine returns. Kill()
+	// waits on it to determine when pi has fully exited. Initialised in
+	// NewSupervisor so callers can wait even before Start() runs.
+	done chan struct{}
+
 	mu    sync.Mutex
 	state SessionState
+	// killReason, when non-empty, overrides the default termination reason in
+	// the session_end event emitted on terminal state. Set by Kill() to
+	// "killed_sigterm" or "killed_sigkill". Guarded by mu.
+	killReason string
 }
 
 // stateNotifier is implemented by publishers that want to receive
@@ -219,6 +239,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		state:          StateSpawning,
 		sessionLog:     sessionLog,
 		sessionLogFile: logFile,
+		done:           make(chan struct{}),
 	}
 	// Wire the session_status handler so the harness socket can update the
 	// in-memory SessionRecord.PiSessionPath as soon as pi delivers its
@@ -340,10 +361,26 @@ func (s *Supervisor) closeSessionLogFile() {
 // session reaches a terminal state (finished or error) or ctx is cancelled.
 // Start is intended to be called in its own goroutine.
 func (s *Supervisor) Start(ctx context.Context) {
+	// Wrap the caller's context in a per-session cancel so Kill() can SIGTERM
+	// this one pi child without disturbing other sessions sharing the daemon
+	// context. The wrapped context is the one that flows to exec.CommandContext
+	// in spawnAndRun — cancelling it triggers SIGTERM delivery to pi.
+	ctx, cancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.cancel = cancel
+	s.mu.Unlock()
+	defer cancel()
+
 	// Ensure the per-session log file is closed when Start returns. The
 	// supervisor's lifetime is the goroutine that runs Start, so this is the
-	// correct close site.
+	// correct close site. Match the natural session-end teardown convention
+	// here too: close the harness listener (which removes the Unix socket
+	// inode on Linux per the D-5 cycle-4 fix) so the kill path and the
+	// natural exit path leave the same observable filesystem state.
 	defer s.closeSessionLogFile()
+	defer s.harness.Close()
+	// Signal completion to anyone waiting on Kill().
+	defer close(s.done)
 
 	for {
 		exitCode := s.spawnAndRun(ctx)
@@ -423,6 +460,17 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 	cmd := exec.CommandContext(ctx, piBin, args...)
 	cmd.Dir = s.cfg.Worktree
 	cmd.Env = s.buildEnv(piConfigDir)
+	// Override the default SIGKILL-on-cancel behaviour with SIGTERM so the
+	// kill ladder (issue #1674) runs SIGTERM → 5s grace → SIGKILL. WaitDelay
+	// is intentionally NOT set: Kill() owns the SIGKILL escalation via the
+	// recorded *os.Process handle, and a WaitDelay set here would race with
+	// the explicit escalation path.
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
 
 	// Wire stdin/stdout pipes.
 	stdinPipe, err := cmd.StdinPipe()
@@ -451,6 +499,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 
 	s.mu.Lock()
 	s.stdinPipe = stdinPipe
+	s.process = cmd.Process
 	s.mu.Unlock()
 
 	s.logf("supervisor: spawned pi pid=%d (session %s)", cmd.Process.Pid, s.sess.InstanceID)
@@ -484,6 +533,7 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 
 	s.mu.Lock()
 	s.stdinPipe = nil
+	s.process = nil
 	s.mu.Unlock()
 
 	if waitErr == nil {
@@ -613,8 +663,34 @@ func (s *Supervisor) openLogFile() *os.File {
 // setState updates the in-memory and DB state of the session.
 func (s *Supervisor) setState(newState SessionState) {
 	s.mu.Lock()
+	// Suppress redundant transitions — the kill path may re-assert
+	// StateError after setState already drove the supervisor into a terminal
+	// state via the normal restart-policy path. Without this guard, the
+	// session_end event would be written twice for a single kill.
+	if s.state == newState && (newState == StateFinished || newState == StateError) {
+		s.mu.Unlock()
+		return
+	}
+	// When Kill has set killReason, the supervisor loop's race with ctx
+	// cancellation can briefly drive the state through StateFinished (the
+	// ctx.Err()-check branch at the top of Start's for-loop maps cancelled
+	// context to StateFinished). That is wrong for a kill: the canonical
+	// outcome of session_kill is StateFinished only when pi exited cleanly
+	// on SIGTERM, otherwise StateError. Suppress the intermediate
+	// StateFinished from the loop so the kill path produces one terminal
+	// transition with the correct reason — Kill itself drives the final
+	// setState call.
+	if s.killReason != "" && newState == StateFinished && s.state != StateFinished {
+		// Re-map to StateError when SIGKILL was already needed; otherwise
+		// leave the SIGTERM-clean path to set StateFinished explicitly.
+		if s.killReason == "killed_sigkill" || s.killReason == "killed_no_process" {
+			s.mu.Unlock()
+			return
+		}
+	}
 	s.state = newState
 	s.sess.State = newState
+	killReason := s.killReason
 	s.mu.Unlock()
 
 	// Log the transition into the per-session log so `iris logs <session>`
@@ -626,13 +702,26 @@ func (s *Supervisor) setState(newState SessionState) {
 		s.logf("supervisor: update iris_state: %v", err)
 	}
 
-	// Update the sessions DB row end state for terminal states.
+	// Update the sessions DB row end state for terminal states. PR #1657
+	// ordering: write the session_end event FIRST (into agent_events) so any
+	// subscriber observing the event stream sees the termination reason
+	// before the sessions.end_state column reflects it.
 	switch newState {
 	case StateFinished:
+		reason := killReason
+		if reason == "" {
+			reason = "clean_exit"
+		}
+		s.writeSessionEndEvent(reason, string(newState))
 		if err := s.cfg.Database.UpdateSessionEnded(s.sess.InstanceID, "finished"); err != nil {
 			s.logf("supervisor: update session ended: %v", err)
 		}
 	case StateError:
+		reason := killReason
+		if reason == "" {
+			reason = "error"
+		}
+		s.writeSessionEndEvent(reason, string(newState))
 		if err := s.cfg.Database.UpdateSessionEnded(s.sess.InstanceID, "error"); err != nil {
 			s.logf("supervisor: update session ended: %v", err)
 		}
@@ -645,6 +734,51 @@ func (s *Supervisor) setState(newState SessionState) {
 		if n, ok := s.cfg.Publisher.(stateNotifier); ok {
 			n.PublishState(s.sess.SessionName, string(newState))
 		}
+	}
+}
+
+// writeSessionEndEvent writes a session_end row into agent_events with the
+// termination reason and terminal state. Mirrors the harness writeEvent
+// shape (uuid id, instance_id pointer, payload JSON-encoded). The publisher
+// fan-out is invoked when configured so subscribed clients see the
+// session_end event the same way they see a session_status or tool_call
+// frame.
+func (s *Supervisor) writeSessionEndEvent(reason, state string) {
+	payload, err := json.Marshal(map[string]any{
+		"type":   "session_end",
+		"reason": reason,
+		"state":  state,
+	})
+	if err != nil {
+		s.logf("supervisor: marshal session_end payload: %v", err)
+		return
+	}
+	iid := s.sess.InstanceID
+	var iidPtr *string
+	if iid != "" {
+		iidPtr = &iid
+	}
+	event := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: s.sess.SessionName,
+		Worktree:    s.sess.Worktree,
+		Type:        "session_end",
+		Payload:     string(payload),
+		CreatedAt:   time.Now(),
+		InstanceID:  iidPtr,
+	}
+	rowID, err := s.cfg.Database.WriteEventReturningRowID(event)
+	if err != nil {
+		s.logf("supervisor: write session_end event: %v", err)
+		return
+	}
+	if s.cfg.Publisher != nil {
+		s.cfg.Publisher.Publish(EventPublication{
+			SessionName: s.sess.SessionName,
+			RowID:       rowID,
+			EventType:   "session_end",
+			Payload:     string(payload),
+		})
 	}
 }
 
@@ -682,6 +816,119 @@ func formatDuration(d time.Duration) string {
 
 // rpcAbortCmd is the JSON payload for the pi abort RPC command.
 var rpcAbortCmd = map[string]any{"type": "abort"}
+
+// DefaultKillTimeout is the SIGTERM grace period applied by Kill when the
+// caller passes 0. After this elapses without pi exiting cleanly, Kill
+// escalates to SIGKILL on the underlying process.
+const DefaultKillTimeout = 5 * time.Second
+
+// State returns the supervisor's current session state under the lock.
+func (s *Supervisor) State() SessionState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.state
+}
+
+// Done returns a channel that is closed when the supervisor's Start
+// goroutine returns. Useful for callers that want to wait for full session
+// teardown without polling SessionRecord().State.
+func (s *Supervisor) Done() <-chan struct{} { return s.done }
+
+// Kill terminates the pi child managed by this supervisor.
+//
+//   1. If the session is already terminal (finished/error) the call is a
+//      no-op and returns (state, nil). This is the idempotent path — callers
+//      that re-kill an already-dead session see success.
+//   2. Otherwise the per-session context is cancelled; exec.CommandContext
+//      delivers SIGTERM to pi. Kill then waits up to timeout (or
+//      DefaultKillTimeout when timeout is 0) for the Start goroutine to
+//      finish.
+//   3. If pi has not exited by the deadline, Kill sends SIGKILL directly to
+//      the recorded process handle and waits a further 2 seconds for the
+//      goroutine to converge. The terminal state in that case is
+//      StateError; the clean SIGTERM path produces StateFinished.
+//
+// Kill is safe to call concurrently from multiple goroutines; the lock
+// protects the cancel/process handles and the Done channel disambiguates
+// the convergence.
+func (s *Supervisor) Kill(ctx context.Context, timeout time.Duration) (SessionState, error) {
+	if timeout <= 0 {
+		timeout = DefaultKillTimeout
+	}
+
+	s.mu.Lock()
+	current := s.state
+	s.mu.Unlock()
+	if current == StateFinished || current == StateError {
+		return current, nil
+	}
+
+	// Step 1: cancel the per-session context. spawnAndRun configures
+	// cmd.Cancel to send SIGTERM (overriding the default SIGKILL) so this
+	// triggers a graceful shutdown attempt rather than an immediate kill.
+	s.mu.Lock()
+	cancel := s.cancel
+	s.mu.Unlock()
+	if cancel == nil {
+		// Start() has not been entered yet — there is no pi child to signal.
+		// Mark the session error and let the caller proceed.
+		s.mu.Lock()
+		s.killReason = "killed_no_process"
+		s.mu.Unlock()
+		s.setState(StateError)
+		return StateError, fmt.Errorf("iris kill: supervisor for %q has no live context", s.sess.SessionName)
+	}
+	s.mu.Lock()
+	// Default to the SIGTERM-clean reason; if we escalate to SIGKILL below
+	// we'll overwrite it before setState runs.
+	s.killReason = "killed_sigterm"
+	s.mu.Unlock()
+	s.logf("supervisor: session %s: kill requested, sending SIGTERM via ctx cancel", s.sess.InstanceID)
+	cancel()
+
+	// Step 2: wait up to timeout for Start to exit cleanly.
+	select {
+	case <-s.done:
+		return s.State(), nil
+	case <-time.After(timeout):
+	case <-ctx.Done():
+		return s.State(), ctx.Err()
+	}
+
+	// Step 3: SIGKILL escalation.
+	s.mu.Lock()
+	proc := s.process
+	s.mu.Unlock()
+	s.mu.Lock()
+	s.killReason = "killed_sigkill"
+	s.mu.Unlock()
+	if proc != nil {
+		s.logf("supervisor: session %s: SIGTERM grace expired after %s, sending SIGKILL", s.sess.InstanceID, timeout)
+		if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			s.logf("supervisor: session %s: SIGKILL: %v", s.sess.InstanceID, err)
+		}
+	} else {
+		s.logf("supervisor: session %s: SIGTERM grace expired with no live process handle", s.sess.InstanceID)
+	}
+
+	// Wait briefly for the supervisor goroutine to converge. We bound this
+	// so a wedged Wait() does not hang the daemon — a SIGKILLed process
+	// almost always reaps within milliseconds.
+	select {
+	case <-s.done:
+	case <-time.After(2 * time.Second):
+		s.logf("supervisor: session %s: supervisor goroutine did not converge after SIGKILL", s.sess.InstanceID)
+	case <-ctx.Done():
+		return s.State(), ctx.Err()
+	}
+
+	// Force the terminal state to StateError so the SIGKILL outcome is
+	// distinguishable from a clean SIGTERM exit — setState is idempotent on
+	// the DB side, so re-asserting it here when the supervisor loop already
+	// did is safe.
+	s.setState(StateError)
+	return StateError, nil
+}
 
 // StopGracefully sends abort to pi, waits up to shutdownTimeout for it to exit.
 // If it doesn't exit, SIGTERM is sent.
