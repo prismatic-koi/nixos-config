@@ -38,6 +38,10 @@ type SupervisorConfig struct {
 	Worktree string
 	// Role is the agent role ("worker", "coordinator", etc.).
 	Role string
+	// BareRoot is the bare git repository root for this session. Used by the
+	// bash sandbox to select the role-scoped GITHUB_TOKEN via the 4-PAT
+	// architecture.  May be empty; falls back to host GITHUB_TOKEN.
+	BareRoot string
 	// PIBinaryPath is the path to the pi binary. Falls back to "pi" on PATH.
 	PIBinaryPath string
 	// ExtensionPath is the absolute path to prism.ts.
@@ -98,6 +102,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		SessionName:      cfg.SessionName,
 		Worktree:         cfg.Worktree,
 		Role:             cfg.Role,
+		BareRoot:         cfg.BareRoot,
 		State:            StateSpawning,
 		HarnessSockPath:  harnessSockPath,
 		RestartCount:     0,

@@ -196,7 +196,9 @@ func TestHandshakeVersionMismatch(t *testing.T) {
 }
 
 // TestToolExecEcho verifies that a tool_exec for bash executes and returns a result.
+// Requires bwrap: D-5 routes bash through runBashInSandbox (bwrap on Linux).
 func TestToolExecEcho(t *testing.T) {
+	requireBwrap(t)
 	srv := startServer(t)
 	conn, r := dialHarness(t, srv.SockPath())
 	doHandshake(t, conn, r)
@@ -235,7 +237,9 @@ func TestToolExecEcho(t *testing.T) {
 
 // TestParallelToolCalls verifies that two concurrent tool_exec frames are
 // dispatched independently and their results correlate by id without crossing.
+// TestParallelToolCalls requires bwrap: D-5 routes bash through runBashInSandbox.
 func TestParallelToolCalls(t *testing.T) {
+	requireBwrap(t)
 	srv := startServer(t)
 	conn, r := dialHarness(t, srv.SockPath())
 	doHandshake(t, conn, r)
@@ -292,7 +296,9 @@ func TestParallelToolCalls(t *testing.T) {
 }
 
 // TestToolAbort verifies that a tool_abort kills the in-flight subprocess.
+// TestToolAbort requires bwrap: D-5 routes bash through runBashInSandbox.
 func TestToolAbort(t *testing.T) {
+	requireBwrap(t)
 	srv := startServer(t)
 	conn, r := dialHarness(t, srv.SockPath())
 	doHandshake(t, conn, r)
@@ -373,7 +379,9 @@ func TestSessionShutdown(t *testing.T) {
 
 // TestDBEventWritten verifies that tool_call and tool_result events are
 // written to the DB for each tool_exec / tool_exec_result pair.
+// TestDBEventWritten requires bwrap: D-5 routes bash through runBashInSandbox.
 func TestDBEventWritten(t *testing.T) {
+	requireBwrap(t)
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "iris.db")
 	database, err := iris.OpenDB(dbPath)
@@ -650,7 +658,9 @@ func TestEnsureSessionDir(t *testing.T) {
 
 // TestToolExecUpdate verifies that tool_exec_update frames are sent during
 // long bash commands (streaming partial output).
+// TestToolExecUpdate requires bwrap: D-5 routes bash through runBashInSandbox.
 func TestToolExecUpdate(t *testing.T) {
+	requireBwrap(t)
 	srv := startServer(t)
 	conn, r := dialHarness(t, srv.SockPath())
 	doHandshake(t, conn, r)
@@ -693,7 +703,9 @@ func TestToolExecUpdate(t *testing.T) {
 // TestConcurrentMultipleClients verifies that AcceptOne handles one client at
 // a time. This protects the invariant that each session has exactly one
 // harness connection.
+// Requires bwrap: D-5 routes bash through runBashInSandbox.
 func TestConcurrentMultipleClients(t *testing.T) {
+	requireBwrap(t)
 	srv := startServer(t)
 
 	// First client performs handshake.

@@ -52,6 +52,12 @@ type toolDispatcher struct {
 	//   tmpDir     = filepath.Join(sessionDir, "tmp")
 	// Populated by the harness socket server before dispatching.
 	tmpDir     string
+	// role is the session's agent role ("worker", "coordinator", etc.).
+	// Used by the bash sandbox to select the role-scoped GITHUB_TOKEN.
+	role       string
+	// bareRoot is the bare git repository root, used to derive the GitHub
+	// account for the 4-PAT token selection.
+	bareRoot   string
 	writer     *jsonlWriter
 	abortCh    <-chan struct{}
 	toolExecID string
@@ -250,14 +256,46 @@ func sigkillProcessGroup(pid int) {
 
 // --- Tool executors (D-4: sandboxed subprocesses for file tools) ---
 
-// runBash remains unsandboxed in D-4.  D-5 will add the restricted
-// subprocess sandbox for bash.
+// runBash executes the bash tool in a sandbox (D-5).
+//
+// On Linux: bwrap with the D-5 mount set (see bash_sandbox_linux.go).
+// On macOS: sandbox-exec with a generated SBPL profile (see bash_sandbox_darwin.go).
+//
+// The bash subprocess receives:
+//   - A role-scoped GITHUB_TOKEN from the 4-PAT architecture.
+//   - AWS credential file mounts (config, credentials, sso, cli).
+//   - Git and SSH configuration via synthesised temp files.
+//   - Network access (outbound, unrestricted).
+//
+// LLM API keys (ANTHROPIC_API_KEY, OPENROUTER_API_KEY) are NOT injected.
+//
+// Output exceeding spillThreshold is written to a spill file in the
+// per-session /tmp directory (matching pi's /tmp/pi-bash-<id>.log convention).
 func (d *toolDispatcher) runBash(ctx context.Context, frame ToolExecFrame) toolResult {
 	command := stringArg(frame.Args, "command")
 	if command == "" {
 		return toolResult{Success: false, IsError: true, Output: "bash: missing 'command' argument"}
 	}
-	return d.runSubprocess(ctx, d.worktree, nil, "bash", "-c", command)
+
+	// Run in the OS-specific sandbox.
+	result := d.runBashInSandbox(ctx, command)
+
+	// Apply spill semantics: write oversized output to a temp file.
+	if result.Success || result.Output != "" {
+		spilled, details := maybeSpill(result.Output, d.toolExecID, d.tmpDir)
+		result.Output = spilled
+		if details != nil {
+			if result.Details == nil {
+				result.Details = details
+			} else {
+				for k, v := range details {
+					result.Details[k] = v
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 // runRead executes the read tool in a sandboxed subprocess (worktree RO).

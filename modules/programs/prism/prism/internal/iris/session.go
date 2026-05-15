@@ -71,6 +71,12 @@ type SessionRecord struct {
 	// daemon-restart continuation (§8.2 of the design doc, Q5 of
 	// pi-rpc-interface.md). Populated from the session_status frame.
 	PiSessionPath string
+	// BareRoot is the bare git repository root for this session (the directory
+	// containing the .bare subdirectory). Used by the bash sandbox to derive
+	// the GitHub account for the 4-PAT GITHUB_TOKEN selection. May be empty
+	// when the worktree is not associated with a known bare repo — in that
+	// case the bash sandbox falls back to the host GITHUB_TOKEN.
+	BareRoot string
 	// cleanExit is set to true when a session_shutdown frame is received
 	// before the pi child exits — used by the supervisor to distinguish clean
 	// from unclean exits.

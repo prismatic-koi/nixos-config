@@ -27,6 +27,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/iris"
 )
 
@@ -186,10 +187,15 @@ func spawnSession() error {
 		extensionPath = cfg.PIExtensionPath
 	}
 
+	// Derive the bare repo root from the worktree path for the 4-PAT
+	// GITHUB_TOKEN selection in the bash sandbox (D-5).
+	spawnBareRoot := git.BareRoot(spawnWorktree)
+
 	superCfg := iris.SupervisorConfig{
 		SessionName:      fmt.Sprintf("iris@%s", spawnRole),
 		Worktree:         spawnWorktree,
 		Role:             spawnRole,
+		BareRoot:         spawnBareRoot,
 		PIBinaryPath:     cfg.PIBinaryPath,
 		ExtensionPath:    extensionPath,
 		RestartThreshold: cfg.RestartThreshold,
@@ -332,10 +338,14 @@ func runDaemon() error {
 	// the harness publisher (D-6 fan-out: harness events → client subscribers).
 	spawnFn := func(spawnCtx context.Context, worktree, role string, configOverrides map[string]any) (*iris.Supervisor, error) {
 		extPath := cfg.PIExtensionPath
+		// Derive the bare repo root from the worktree for 4-PAT GITHUB_TOKEN
+		// selection in the bash sandbox (D-5).
+		bareRoot := git.BareRoot(worktree)
 		superCfg := iris.SupervisorConfig{
 			SessionName:      iris.GenerateSessionName(worktree, role),
 			Worktree:         worktree,
 			Role:             role,
+			BareRoot:         bareRoot,
 			PIBinaryPath:     cfg.PIBinaryPath,
 			ExtensionPath:    extPath,
 			RestartThreshold: cfg.RestartThreshold,
