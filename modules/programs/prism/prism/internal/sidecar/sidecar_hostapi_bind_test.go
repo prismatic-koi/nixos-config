@@ -290,26 +290,19 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects(t *testing.T)
 	// StartupConnectTimeout is 200ms for this test.
 	// The sidecar should record error state in the DB but NOT tear down the
 	// host-API socket.
-	time.Sleep(300 * time.Millisecond) // > StartupConnectTimeout (200ms)
 
-	// The host-API must still be serving.
+	// Poll until the DB shows error state (written by runStartupSocketPipe
+	// timeout path). This replaces a fixed sleep-then-assert — the state write
+	// can land any time after the timeout fires, so a poll-loop is required to
+	// avoid a race under contended scheduling (issue #1595).
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
+	}
+
+	// The host-API must still be serving after the timeout-induced error state.
 	code, body := dialHostAPIHTTP(t, hostAPISockPath, "/list-sessions")
 	if code != http.StatusOK {
 		t.Errorf("host-API /list-sessions after harness-pipe timeout: status=%d body=%q, want 200", code, body)
-	}
-
-	// The DB state must be error (written by runStartupSocketPipe timeout path).
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-		if s == "error" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Errorf("DB state after harness-pipe timeout = %q, want error", s)
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
 	}
 
 	// Trigger external shutdown — only NOW should the host-API go down.
@@ -374,8 +367,12 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T
 	fmt.Fprintf(conn, "this is not json\n")
 	conn.Close()
 
-	// Wait for the error state to propagate (runStartupSocketPipe returns err).
-	time.Sleep(200 * time.Millisecond)
+	// Poll until the DB shows error state — the error write from
+	// runStartupSocketPipe can land any time after the malformed hello is
+	// rejected, so polling avoids a sleep-then-assert race (issue #1595).
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+		t.Errorf("DB state after malformed hello = %q, want error", st)
+	}
 
 	// The host-API must still be serving after the malformed hello.
 	code, body := dialHostAPIHTTP(t, hostAPISockPath, "/list-sessions")
@@ -409,13 +406,12 @@ func TestHostAPI_HarnessPipeFailureRecordsErrorState(t *testing.T) {
 
 	go func() { sc.Run(ctx) }() //nolint:errcheck
 
-	// Wait for harness-pipe socket, then let the startup timeout expire.
+	// Wait for harness-pipe socket, then poll until the DB shows error state.
+	// A fixed sleep-then-assert races the timeout handler's DB write under
+	// contended scheduling (e.g. the Nix sandbox runner); a poll-loop with a
+	// 2s ceiling is robust without materially slowing healthy runs (issue #1595).
 	waitForHostAPISock(t, hostAPISockPath)
-	time.Sleep(350 * time.Millisecond) // > StartupConnectTimeout (200ms) + reconnect (50ms)
-
-	// DB must show error state.
-	s := getState(t, sc.cfg.DB, sc.cfg.SessionName)
-	if s != "error" {
+	if s := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); s != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", s)
 	}
 
@@ -636,8 +632,14 @@ func TestHostAPI_NoGoroutineLeak(t *testing.T) {
 	// Wait for the host-API socket (proves Run() has started listeners).
 	waitForHostAPISock(t, hostAPISockPath)
 
-	// Let the harness-pipe startup timeout expire (harness-pipe failure path).
-	time.Sleep(350 * time.Millisecond)
+	// Poll until the DB shows error state — this confirms the startup timeout
+	// has fired and its handler has committed the state write. Only then do we
+	// check that the host-API is still serving. Using a poll-loop instead of a
+	// fixed sleep avoids a sleep-then-assert race under contended scheduling
+	// (e.g. the Nix sandbox runner) (issue #1595).
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
+	}
 
 	// Host-API must still be serving at this point (primary regression check).
 	code, _ := dialHostAPIHTTP(t, hostAPISockPath, "/list-sessions")
