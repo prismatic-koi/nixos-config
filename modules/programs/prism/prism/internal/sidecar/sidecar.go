@@ -1985,6 +1985,18 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// archiving. Bug #1538 fix #1: this frame was previously falling
 		// through to the default case and only stored as a raw event; the
 		// harness_session_id column was never populated for PI sessions.
+		//
+		// Write ordering invariant (fix for issue #1656): the agent_events row
+		// is written BEFORE agent_status.harness_session_id is set. This
+		// guarantees that any reader polling agent_status for harness_session_id
+		// will always see the corresponding session_status event already present
+		// in agent_events — eliminating the race that caused intermittent test
+		// failures under -race.
+		//
+		// Persist the frame as a raw event first, for forward-compatibility and
+		// diagnostics (P2.WIRE §8.2). writeEvent is called while s.mu is held,
+		// consistent with all other writeEvent call sites.
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 		var statusFrame struct {
 			SessionID string `json:"session_id"`
 		}
@@ -2013,9 +2025,6 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			}
 			s.mu.Lock()
 		}
-		// Persist the frame as a raw event for forward-compatibility and
-		// diagnostics (P2.WIRE §8.2).
-		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
 	case "session_shutdown":
 		// Flush any partial accumulator before marking finished.
