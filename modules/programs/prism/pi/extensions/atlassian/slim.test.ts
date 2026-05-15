@@ -357,20 +357,26 @@ describe("buildCloudIdErrorHint", () => {
 })
 
 describe("slimMcpResultContent — cloudId error nudge (Issue #5)", () => {
-  it("appends hint to plain text cloudId error without default", () => {
+  it("appends hint exactly once to plain text cloudId error without default", () => {
     const errText = `${CLOUD_ID_ERROR_PATTERN}: abc-123. Status: 404`
     const content = [{ type: "text", text: errText }]
     const result = slimMcpResultContent(content, "getJiraIssue")
     assert.ok(result.includes(CLOUD_ID_ERROR_PATTERN))
     assert.ok(result.includes("getAccessibleAtlassianResources"))
+    // Hint must appear exactly once, not twice
+    const hintText = "getAccessibleAtlassianResources to discover valid cloud IDs"
+    assert.equal(result.indexOf(hintText), result.lastIndexOf(hintText), "hint appeared more than once")
   })
 
-  it("appends default-cloudId hint when default is configured", () => {
+  it("appends default-cloudId hint exactly once when default is configured", () => {
     const errText = `${CLOUD_ID_ERROR_PATTERN}: abc-123. Status: 404`
     const content = [{ type: "text", text: errText }]
     const result = slimMcpResultContent(content, "getJiraIssue", "08986a80-a6ed-4480-ae2d-4a439d50d71b")
     assert.ok(result.includes("configured default cloud ID"))
     assert.ok(!result.includes("getAccessibleAtlassianResources"))
+    // Hint must appear exactly once, not twice
+    const hintText = "configured default cloud ID"
+    assert.equal(result.indexOf(hintText), result.lastIndexOf(hintText), "hint appeared more than once")
   })
 
   it("does not append hint when no cloudId error", () => {

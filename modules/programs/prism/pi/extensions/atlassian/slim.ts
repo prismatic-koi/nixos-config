@@ -241,12 +241,7 @@ export function slimMcpResultContent(
           parts.push(JSON.stringify(slimmed))
         } catch {
           // Not JSON — pass through as-is
-          // Issue #5: append hint for cloudId errors
-          if (text.includes(CLOUD_ID_ERROR_PATTERN)) {
-            parts.push(text + buildCloudIdErrorHint(defaultCloudId))
-          } else {
-            parts.push(text)
-          }
+          parts.push(text)
         }
       }
     }
