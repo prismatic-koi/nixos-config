@@ -12,13 +12,13 @@ package cmd
 //	sandbox-exec <args...> (sandbox-exec mode — supervised child with kqueue lifecycle, Darwin-only; see #1018)
 //
 // as a child process (not a direct exec). A PTY pair is created so that bwrap
-// and opencode see a real terminal on all three fds (stdin/stdout/stderr).
+// and the agent sees a real terminal on all three fds (stdin/stdout/stderr).
 // The master side is read and tee'd to both the tmux pane (os.Stdout) and a
 // per-session log file at:
 //
 //	~/.local/state/prism/run/<session>/agent-run.log
 //
-// Using a PTY pair preserves terminal semantics that are required for opencode
+// Using a PTY pair preserves terminal semantics that are required for the agent
 // to work correctly:
 //   - TIOCGWINSZ on stdout succeeds (Bubble Tea uses fd 1 for size queries)
 //   - SIGWINCH is delivered when the host terminal resizes
@@ -221,7 +221,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
 	}
 
-	// Resolve port from the DB status. HarnessPort is used for the opencode
+	// Resolve port from the DB status. HarnessPort is used for the harness
 	// --port flag in the bwrap args.
 	port := 0
 	if status.HarnessPort != nil {
@@ -251,7 +251,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		agentEnvVars = pf.AgentEnvVars
 	}
 
-	// Resolve the harness name from the DB status. Fall back to "opencode"
+	// Resolve the harness name from the DB status. Fall back to "pi"
 	// for pre-registry rows that have a NULL harness column.
 	harnessName := "pi"
 	if status.Harness != nil && *status.Harness != "" {
@@ -306,7 +306,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 
 	// Read the initial prompt from the pane env var set by session.go at
 	// window-creation time. When non-empty, populate InitialPrompt so that
-	// bwrap.go's BuildArgs appends --prompt to the opencode invocation.
+	// bwrap.go's BuildArgs appends --prompt to the agent invocation.
 	// The env var is set via tmux's -e flag in tmux.NewWindow, which means
 	// it lives only in this pane's environment and dies with the pane.
 	applyInitialPromptEnvVar(&ctrCfg)
@@ -349,7 +349,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	bwrapCmd := exec.Command(bwrapBin, bwrapArgs...)
 	bwrapCmd.Env = minimalBwrapExecEnv(os.Environ())
 
-	// Pass the real PTY fds directly to bwrap so that opencode's Bubble Tea
+	// Pass the real PTY fds directly to bwrap so that the agent's Bubble Tea
 	// TUI sees a real terminal on stdin/stdout. This is essential: Bubble Tea
 	// calls TIOCGWINSZ on stdout (fd 1); if stdout is a pipe the ioctl returns
 	// ENOTTY and the TUI renders at zero width. Using the real fds replicates
@@ -357,7 +357,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	//
 	// stderr is piped so that bwrap harness startup errors can be tee'd to
 	// both the pane and the log file. stderr does not need TIOCGWINSZ (it is
-	// not used for TUI rendering), so a pipe is fine there. Once opencode is
+	// not used for TUI rendering), so a pipe is fine there. Once the agent is
 	// running its TUI output goes via stdout (the real PTY) and is not
 	// separately logged — which is acceptable since the log's purpose is
 	// forensic inspection of startup failures, not session transcripts.
@@ -391,9 +391,9 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// syscall.Exec because agent-run supervises the child for PTY/signal
 	// handling, but the wall-time semantic is identical: this is the point
 	// at which control passes to the bwrap binary. Sidecar-side markers
-	// (`[timing] opencode listening: <d> from start`) measure from sidecar
+	// (`[timing] agent listening: <d> from start`) measure from sidecar
 	// spawn, not from this point, so the two timelines are independent —
-	// stitch them via wall-clock from each log to bound "exec → opencode up".
+	// stitch them via wall-clock from each log to bound "exec → agent up".
 	logTimingTo(logFile, "bwrap exec", time.Since(agentRunStart))
 
 	if err := bwrapCmd.Start(); err != nil {

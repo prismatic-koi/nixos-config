@@ -5,7 +5,7 @@ package session_test
 //
 //   - "state_change" event written to agent_events (the cleanest readiness
 //     marker — only ever written by the sidecar after the first SSE event
-//     from opencode).
+//     from the agent).
 //   - agent_status.harness_session_id set non-NULL (the secondary signal).
 //
 // We do NOT spin up a real sidecar or tmux session here; the readiness gate
@@ -48,7 +48,7 @@ func seedSession(t *testing.T, d *db.DB, sessionName string) {
 // TestWaitForReady_StateChangeEventSatisfiesGate verifies that an agent_events
 // row of type "state_change" causes WaitForReady to return nil. This is the
 // primary signal SpawnSession's gate uses, and it's the one the sidecar emits
-// when the first SSE event from opencode arrives.
+// when the first SSE event from the agent arrives.
 func TestWaitForReady_StateChangeEventSatisfiesGate(t *testing.T) {
 	d := openReadinessTestDB(t)
 	const sess = "myrepo@feature"

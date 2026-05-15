@@ -14,7 +14,7 @@ import (
 // TestSidecarFlag_AgentRoleDefaultIsEmpty verifies that the --agent-role flag
 // on sidecarCmd defaults to "" (empty string) after the fix. A non-empty
 // default ("worker") would cause every host-mode session to be labelled
-// "worker" in the DB, regardless of the actual agent name emitted by opencode
+// "worker" in the DB, regardless of the actual agent name emitted by the agent
 // SSE events (issue #776).
 func TestSidecarFlag_AgentRoleDefaultIsEmpty(t *testing.T) {
 	flag := sidecarCmd.Flags().Lookup("agent-role")

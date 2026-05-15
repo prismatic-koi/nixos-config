@@ -321,11 +321,11 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 
 	// The agentCmd (the `sh -c <cmd>` argument) must use $(cat <path>) rather
 	// than inlining the prompt body. Verify the body snippet doesn't appear
-	// anywhere in the tmux argv — if it does, buildDirectOpencodeCmd inlined
+	// anywhere in the tmux argv — if it does, buildDirectAgentCmd inlined
 	// the prompt despite the PromptFilePath being set (#1195 review-code AC).
 	bodySnippet := largeDiff[:200]
 	if strings.Contains(joined, bodySnippet) {
-		t.Errorf("tmux argv (host mode) contains prompt body inline (snippet: %.50q…) — spawnAgentOnlyLayout must pass PromptFilePath to BuildOpencodeCmd (#1195)", bodySnippet)
+		t.Errorf("tmux argv (host mode) contains prompt body inline (snippet: %.50q…) — spawnAgentOnlyLayout must pass PromptFilePath to BuildAgentCmd (#1195)", bodySnippet)
 	}
 
 	// (c) File content must match.

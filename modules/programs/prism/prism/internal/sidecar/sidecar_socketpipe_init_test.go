@@ -5,7 +5,7 @@ package sidecar
 // These tests exercise Sidecar.Run with a TransportSocketPipe harness and
 // assert that the transport-agnostic init blocks (instance_id mint/load and
 // merge-queue watcher start) run correctly for PI sessions, not just for
-// HTTP-port (opencode) sessions.
+// HTTP-port sessions.
 
 import (
 	"context"

@@ -15,9 +15,9 @@
 // # Problem
 //
 // Three delivery paths in prism (review-complete monitor, coordinator notify,
-// merge-queue watcher) originally always POSTed to the opencode HTTP API
+// merge-queue watcher) originally always POSTed to the harness HTTP API
 // (http://localhost:<port>/session/<sid>/prompt_async). That path only works
-// for opencode sessions — pi sessions do not have an opencode HTTP server.
+// for HTTP harness sessions — pi sessions do not have an HTTP server.
 //
 // # Solution
 //
@@ -27,7 +27,7 @@
 //     the session's host-API Unix socket at /prompt. The sidecar's /prompt
 //     handler detects the same-session socket-pipe shape and forwards the text
 //     to the pi process via DeliverPrompt (stdin pipe write).
-//   - harness = "opencode" (or anything else) → POST to the opencode HTTP API
+//   - harness != "pi" (or unknown) → POST to the harness HTTP API
 //     at http://localhost:<port>/session/<sid>/prompt_async (unchanged path).
 //
 // All callers must pass the result of db.CurrentStatus for the target session.
@@ -59,13 +59,13 @@ import (
 // socket and POSTs /prompt. The socket path is derived from sessionName via
 // session.SidecarHostAPIPath.
 //
-// For opencode sessions (or when the harness is unknown / unset), it POSTs
+// For HTTP harness sessions (or when the harness is unknown / unset), it POSTs
 // to http://localhost:<HarnessPort>/session/<HarnessSessionID>/prompt_async.
 //
 // status must be non-nil. The caller is expected to have already verified that
 // the session is active (EndedAt == nil) before calling this function.
 //
-// buildHTTPBody is called for the opencode path to construct the POST body.
+// buildHTTPBody is called for HTTP harness sessions to construct the POST body.
 // For the pi path, only the plain text is sent (the sidecar handles wrapping).
 // When buildHTTPBody is nil, a minimal body with just a "parts" array is used.
 //
@@ -80,7 +80,7 @@ import (
 // /prompt handler, which validates and passes it through to DeliverPrompt.
 // Accepted values: "steer", "followUp", "nextTurn". Empty string defaults to
 // "nextTurn" (current behaviour, for backward-compatible callers).
-// For opencode sessions the parameter is ignored (opencode uses prompt_async).
+// For HTTP harness sessions the parameter is ignored (they use prompt_async).
 func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
@@ -90,7 +90,7 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 		}
 	}
 
-	// Default: opencode HTTP path.
+	// Default: HTTP delivery path.
 	return deliverViaHTTP(status, text, buildHTTPBody)
 }
 
@@ -179,7 +179,7 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs string) error 
 	return nil
 }
 
-// deliverViaHTTP sends text to the opencode HTTP API at
+// deliverViaHTTP sends text to the harness HTTP API at
 // http://localhost:<HarnessPort>/session/<HarnessSessionID>/prompt_async.
 func deliverViaHTTP(status *db.Status, text string, buildBody func(string, *db.Status) map[string]any) error {
 	if status.HarnessPort == nil || status.HarnessSessionID == nil {

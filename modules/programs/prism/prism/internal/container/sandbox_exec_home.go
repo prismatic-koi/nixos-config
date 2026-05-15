@@ -4,7 +4,7 @@ package container
 //
 // PrepareSandboxExecHome populates a staging HOME directory at
 // ~/.local/state/prism/sessions/<instance_id>/home/ with symlinks to the real
-// credential, config, and cache paths opencode needs. The SBPL profile grants
+// credential, config, and cache paths the agent needs. The SBPL profile grants
 // read access to every resolved symlink target, while the staging HOME itself
 // is writable so the sandbox can do things like write to ~/.cache/opencode
 // inside it (which symlinks through to the host path).
@@ -63,7 +63,7 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 
 // PrepareSandboxExecHome creates the per-session staging HOME directory and
 // populates it with symlinks to the real credential, config, and cache paths
-// that opencode needs. Returns the absolute path to the staging HOME.
+// that the agent needs. Returns the absolute path to the staging HOME.
 //
 // The staging HOME layout mirrors the bwrap sandbox home layout (every path
 // that bwrap creates via bind-mount, sandbox-exec achieves via a symlink). The
@@ -596,7 +596,7 @@ type StagingSymlinkTarget struct {
 //
 // All other targets (.ssh, .aws, .kube, .config/opencode, .cache/prism/clipboard)
 // are read-only. .cache/prism/clipboard mirrors bwrap.go's --ro-bind treatment —
-// opencode only reads image files staged there by `prism clipboard paste-image`.
+// the agent only reads image files staged there by `prism clipboard paste-image`.
 //
 // Symlink targets that fall under a path that will be denied by the profile
 // (e.g. host $HOME/.aws) are excluded from the results to avoid the

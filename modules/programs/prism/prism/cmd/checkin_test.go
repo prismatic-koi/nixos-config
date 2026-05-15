@@ -1116,7 +1116,7 @@ func TestRenderCheckinTurns_ToolOneLinerReadFile(t *testing.T) {
 		assistantPayload(msgID, "reading file"), base)
 
 	// Tool call/result for a read tool. Args is stored as a JSON-encoded string
-	// containing a JSON object (as the opencode plugin produces).
+	// containing a JSON object (as the pi plugin produces).
 	readResult := "line1\nline2\nline3\n"
 	writeEvent(t, d, uuid.New().String(), session, "tool_call",
 		toolCallPayload(msgID, "read", `{"filePath":"/workspace/main.go"}`),

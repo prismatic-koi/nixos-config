@@ -97,9 +97,9 @@ func TestDefaultAgent_ExplicitOverridesDefault(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_UsesAgent verifies that BuildOpencodeCmd generates the
+// TestBuildAgentCmd_UsesAgent verifies that BuildAgentCmd generates the
 // correct pi invocation for various Opts combinations.
-func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
+func TestBuildAgentCmd_UsesAgent(t *testing.T) {
 	cases := []struct {
 		opts session.Opts
 		want string
@@ -125,9 +125,9 @@ func TestBuildOpencodeCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", SessionName: ""}, "pi --agent worker"},
 	}
 	for _, tc := range cases {
-		got := session.BuildOpencodeCmd(tc.opts)
+		got := session.BuildAgentCmd(tc.opts)
 		if got != tc.want {
-			t.Errorf("BuildOpencodeCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
+			t.Errorf("BuildAgentCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
 		}
 	}
 }

@@ -230,26 +230,26 @@ func TestSandboxExecIntegration_UnameDashA(t *testing.T) {
 	}
 }
 
-// TestSandboxExecIntegration_WhichOpencode verifies that /usr/bin/which
-// opencode exits 0 under the v3 profile (P6 in F.1 §3.1).
-func TestSandboxExecIntegration_WhichOpencode(t *testing.T) {
+// TestSandboxExecIntegration_WhichPi verifies that /usr/bin/which
+// pi exits 0 under the v3 profile (P6 in F.1 §3.1).
+func TestSandboxExecIntegration_WhichPi(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
 	}
-	// Only run this test if opencode is resolvable in PATH.
+	// Only run this test if pi is resolvable in PATH.
 	whichOut, err := exec.Command("/usr/bin/which", "pi").Output()
 	if err != nil || strings.TrimSpace(string(whichOut)) == "" {
-		t.Skip("opencode not in PATH — skipping which test")
+		t.Skip("pi not in PATH — skipping which test")
 	}
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
 	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/which", "pi")
 	if code != 0 {
-		t.Errorf("/usr/bin/which opencode: want exit 0, got %d\noutput: %s", code, out)
+		t.Errorf("/usr/bin/which pi: want exit 0, got %d\noutput: %s", code, out)
 	}
 	if strings.TrimSpace(out) == "" {
-		t.Errorf("/usr/bin/which opencode: expected non-empty output (resolved path); got empty")
+		t.Errorf("/usr/bin/which pi: expected non-empty output (resolved path); got empty")
 	}
 }
 
@@ -275,27 +275,27 @@ func TestSandboxExecIntegration_SSHVersion(t *testing.T) {
 	}
 }
 
-// TestSandboxExecIntegration_OpencodeNoSIGABRT verifies that the opencode
+// TestSandboxExecIntegration_PiNoSIGABRT verifies that the pi
 // harness exits without SIGABRT under the v3 profile (P8 in F.1 §3.1).
 // Exit 0 or any non-SIGABRT exit code is acceptable — "unexpected error"
 // from a missing server is fine. SIGABRT (exit code 134 on Darwin) is not.
-func TestSandboxExecIntegration_OpencodeNoSIGABRT(t *testing.T) {
+func TestSandboxExecIntegration_PiNoSIGABRT(t *testing.T) {
 	if !sandboxExecAvailable() {
 		t.Skip("sandbox-exec not available")
 	}
-	// Find opencode in PATH.
-	opencodePath, err := exec.LookPath("pi")
-	if err != nil || opencodePath == "" {
-		t.Skip("opencode not in PATH — skipping opencode SIGABRT test")
+	// Find pi in PATH.
+	piPath, err := exec.LookPath("pi")
+	if err != nil || piPath == "" {
+		t.Skip("pi not in PATH — skipping pi SIGABRT test")
 	}
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	_, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), opencodePath, "--help")
+	_, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), piPath, "--help")
 	// SIGABRT = signal 6, which becomes exit code 134 on Darwin (128+6).
 	const sigabrtExit = 134
 	if code == sigabrtExit {
-		t.Errorf("opencode --help: exited with SIGABRT (exit code %d) under v3 profile — the dyld fix is not working", code)
+		t.Errorf("pi --help: exited with SIGABRT (exit code %d) under v3 profile — the dyld fix is not working", code)
 	}
 }
 

@@ -257,7 +257,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// filesystem and CheckAgentAvailability can inspect them correctly.
 	//
 	// prismAgentRoleValidator checks that the agent .md definition file exists
-	// under ~/.config/prism/agents/ (the canonical location after the opencode
+	// under ~/.config/prism/agents/ (the canonical agent location after the
 	// runtime was removed).
 	if err := review.CheckAgentAvailability(agents, prismAgentRoleValidator); err != nil {
 		return fmt.Errorf("prism review: %w", err)

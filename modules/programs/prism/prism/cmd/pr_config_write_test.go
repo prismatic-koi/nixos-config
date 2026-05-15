@@ -1,16 +1,16 @@
 package cmd
 
-// Tests for the bwrap opencode.json config file write added to prCmd
+// Tests for the bwrap harness config file write added to prCmd
 // (issue #904). These mirror the contract tests in spawn_config_write_test.go
 // and verify that:
 //
 //	1. The "sandboxed" gate (isoMode == IsolationBwrap)
 //	   correctly admits bwrap and rejects host.
-//	2. The WriteOpencodeConfig write path used by pr.go
+//	2. The WriteHarnessConfig write path used by pr.go
 //	   (container.HarnessConfigFilePath(container.NameForSession(tmuxSession)))
 //	   matches the Manager's read path, so prism agent-run's reconstructed
 //	   Manager can find the file at the path bwrap expects.
-//	3. The gate for calling WriteOpencodeConfig
+//	3. The gate for calling WriteHarnessConfig
 //	   (isoMode == IsolationBwrap && configContent != "") is reflected in the
 //	   actual write behaviour — bwrap with content writes; host does not; bwrap
 //	   with empty content does not.
@@ -55,7 +55,7 @@ func TestPrBwrapSandboxedGate(t *testing.T) {
 
 // TestPrBwrapWritePathMatchesManagerPath guards against the path mismatch
 // where pr.go passes the raw tmux session name and the Manager uses the
-// transformed container name. Both must resolve to the same OpencodeConfigFilePath.
+// transformed container name. Both must resolve to the same HarnessConfigFilePath.
 func TestPrBwrapWritePathMatchesManagerPath(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
@@ -73,8 +73,8 @@ func TestPrBwrapWritePathMatchesManagerPath(t *testing.T) {
 
 	writePath := container.HarnessConfigFilePath(containerName)
 
-	// Read path: Manager.opencodeConfigFilePath() calls
-	// OpencodeConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
+	// Read path: Manager.harnessConfigFilePath() calls
+	// HarnessConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
 	readPath := container.HarnessConfigFilePath(container.NameForSession(tmuxSessionName))
 
 	if writePath != readPath {
@@ -113,7 +113,7 @@ func TestPrBwrapWritesConfigFileWhenContentPresent(t *testing.T) {
 	isoMode := config.IsolationBwrap
 	if isoMode == config.IsolationBwrap && configContent != "" {
 		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
-			t.Fatalf("WriteOpencodeConfig: %v", err)
+			t.Fatalf("WriteHarnessConfig: %v", err)
 		}
 	}
 	t.Cleanup(func() { _ = os.Remove(container.HarnessConfigFilePath(containerName)) })
@@ -128,9 +128,9 @@ func TestPrBwrapWritesConfigFileWhenContentPresent(t *testing.T) {
 }
 
 // TestPrBwrapNoWriteWhenConfigContentEmpty asserts that pr.go's conditional
-// skips WriteOpencodeConfig when configContent is empty — even though the
+// skips WriteHarnessConfig when configContent is empty — even though the
 // isolation mode is bwrap. This matches the spec's `configContent != ""`
-// guard and prevents an empty opencode.json from being mounted.
+// guard and prevents an empty harness config from being mounted.
 func TestPrBwrapNoWriteWhenConfigContentEmpty(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
@@ -150,7 +150,7 @@ func TestPrBwrapNoWriteWhenConfigContentEmpty(t *testing.T) {
 	// Simulate the pr.go guard.
 	if isoMode == config.IsolationBwrap && configContent != "" {
 		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
-			t.Fatalf("WriteOpencodeConfig: %v", err)
+			t.Fatalf("WriteHarnessConfig: %v", err)
 		}
 	}
 
@@ -162,7 +162,7 @@ func TestPrBwrapNoWriteWhenConfigContentEmpty(t *testing.T) {
 	}
 }
 
-// TestPrHostModeNoWrite asserts that host mode does NOT write the opencode
+// TestPrHostModeNoWrite asserts that host mode does NOT write the harness
 // temp file. The pr.go guard `isoMode == config.IsolationBwrap && ...` must
 // reject IsolationHost.
 func TestPrHostModeNoWrite(t *testing.T) {
@@ -185,7 +185,7 @@ func TestPrHostModeNoWrite(t *testing.T) {
 	// whether configContent is populated.
 	if isoMode == config.IsolationBwrap && configContent != "" {
 		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
-			t.Fatalf("WriteOpencodeConfig: %v", err)
+			t.Fatalf("WriteHarnessConfig: %v", err)
 		}
 	}
 

@@ -398,8 +398,8 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 
 // deliverPrompt sends text to workerSession via the harness-aware delivery
 // helper. For pi sessions (TransportSocketPipe), it routes through the
-// session's host-API Unix socket. For opencode sessions, it uses the
-// opencode HTTP API (prompt_async).
+// session's host-API Unix socket. For HTTP-harness sessions, it uses the
+// harness HTTP API (prompt_async).
 func deliverPrompt(workerSession, text, dbPath string) error {
 	if dbPath == "" {
 		dbPath = defaultDBPath()
@@ -613,7 +613,7 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Pure-infrastructure failures (every member never bound its
 // port) are excluded by condition 2 — mirroring the documented contract in
-// `modules/programs/prism/opencode/skills/prism/SKILL.md`:
+// `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //   "Count re-run cycles from the first round that had a full set of agent
 //    results; do not count infrastructure-failure rounds toward your 3-cycle

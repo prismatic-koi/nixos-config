@@ -122,7 +122,7 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 }
 
 // displayHarness returns the harness display string for a session, falling
-// back to "opencode" when the field is nil or empty (pre-migration rows).
+// back to "pi" when the field is nil or empty (pre-migration rows).
 func displayHarness(h *string) string {
 	if h == nil || *h == "" {
 		return "pi"

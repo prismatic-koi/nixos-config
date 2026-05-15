@@ -11,7 +11,7 @@
 //   - Others  → keep watching (transient)
 //
 // On each terminal outcome (merged, failed, closed) a bus notification is
-// delivered to the enqueuing coordinator session via the opencode HTTP API.
+// delivered to the enqueuing coordinator session via the harness HTTP API.
 // The notification text names the PR, includes the worker session's archive
 // path, and prompts git pull + prism cleanup.
 //
@@ -360,7 +360,7 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 // notify delivers a notification to the coordinator via the appropriate
 // delivery path based on the harness type. For pi (TransportSocketPipe)
 // coordinators, it routes through the host-API Unix socket (#1364). For
-// opencode coordinators, it uses the opencode HTTP API (prompt_async).
+// HTTP harness coordinators, it uses the HTTP API (prompt_async).
 // Failure is non-fatal (logged).
 func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, text string) {
 	status, err := w.db.CurrentStatus(targetSession)
@@ -369,7 +369,7 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 		return
 	}
 
-	// PI (socket-pipe) coordinators do not have an opencode HTTP server —
+	// PI (socket-pipe) coordinators do not have an HTTP server —
 	// route through the coordinator's host-API Unix socket instead (#1364).
 	if status.Harness != nil {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
@@ -386,7 +386,7 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 		}
 	}
 
-	// Opencode path: require harness port and session ID.
+	// HTTP harness path: require harness port and session ID.
 	if status.HarnessPort == nil {
 		log.Printf("[mergequeue] notify: coordinator %q has no harness port", targetSession)
 		return
@@ -451,7 +451,7 @@ func (w *Watcher) lookupWorkerArchivePath(pr int) string {
 	return ""
 }
 
-// buildNotifyBody constructs the opencode prompt_async body.
+// buildNotifyBody constructs the prompt_async body.
 func buildNotifyBody(text string, status *db.Status) map[string]any {
 	body := map[string]any{
 		"parts": []map[string]string{

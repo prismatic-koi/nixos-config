@@ -313,10 +313,10 @@ func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 }
 
 // makeSSE creates a harness.HarnessEvent using the real wire format that
-// opencode emits. opencode does NOT use the SSE `event:` field — it sends all
+// the agent emits. The agent does NOT use the SSE `event:` field — it sends all
 // events as plain `data:` lines. The SSE client therefore sets Type to
 // "message" (the SSE spec default). The real event type and properties are
-// embedded inside the JSON data payload, mirroring what opencode actually
+// embedded inside the JSON data payload, mirroring what the agent actually
 // sends:
 //
 //	data: {"type":"session.status","properties":{...}}
@@ -2299,7 +2299,7 @@ func TestSubagentIdle_NoRootAgent_AllowsDebounce(t *testing.T) {
 }
 
 // TestSubagentIdle_UnknownAssistantAgent_AllowsDebounce verifies that when an
-// assistant message arrives with an empty agent name (e.g. older opencode
+// assistant message arrives with an empty agent name (e.g. older agent
 // versions), session.idle is not incorrectly suppressed.
 func TestSubagentIdle_UnknownAssistantAgent_AllowsDebounce(t *testing.T) {
 	sc, clk := newTestSidecar(t)
@@ -3008,7 +3008,7 @@ func TestMessageUpdated_UserMessage_UpdatesRootModelID(t *testing.T) {
 	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
 	// Fire a user message with a model set (simulates user switching model in
-	// the opencode picker and then sending a message).
+	// the agent picker and then sending a message).
 	sc.HandleEvent(makeSSE("message.part.updated", map[string]any{
 		"part": map[string]any{
 			"type":      "text",
@@ -3555,7 +3555,7 @@ func TestServerConnected_RecoveryTimer_CancelledByShutdown(t *testing.T) {
 
 // TestSubagentFinish_NoSecondIdle_TransitionsToFinished is the primary regression
 // test for #538. It reproduces the exact scenario from the bug report: the worker's
-// final action is invoking a @review subagent, so opencode emits one session.idle
+// final action is invoking a @review subagent, so the agent emits one session.idle
 // (after the subagent returns, before the root agent writes its final message). The
 // root agent then appends its handoff message but no second session.idle arrives.
 //
@@ -3960,7 +3960,7 @@ func TestRootAgentPreset_SubagentUserMessageDoesNotOverwrite(t *testing.T) {
 
 	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
 
-	// Simulate opencode's prompt_async user message with empty agent field
+	// Simulate the agent's prompt_async user message with empty agent field
 	// (the actual bug: these arrive with agent="" even though worker is root).
 	sendEvents(sc, makeUserMessage("msg-user-prompt", "", "Worker spawn prompt"))
 
@@ -6311,7 +6311,7 @@ exit 0
 	}
 }
 
-// TestHostAPI_Spawn_KnownHarnessForwarded verifies that when harness="opencode"
+// TestHostAPI_Spawn_KnownHarnessForwarded verifies that when harness="pi"
 // is sent, it is passed as --harness pi to the spawned prism binary.
 func TestHostAPI_Spawn_KnownHarnessForwarded(t *testing.T) {
 	d := openTestDB(t)
@@ -7401,7 +7401,7 @@ func TestHostAPI_Review_ReviewingWriteSucceeds(t *testing.T) {
 // Background: issue #848 flagged setting "agent" as dangerous because it could
 // switch a subagent's context. The status passed to buildNotifyPromptBody is
 // the *receiving* session's own status; re-asserting root_agent_name is safe
-// and necessary to prevent opencode from defaulting to its last-active (wrong)
+// and necessary to prevent the agent from defaulting to its last-active (wrong)
 // agent in host mode — see issue #1203.
 func TestBuildNotifyPromptBody_AgentField(t *testing.T) {
 	coordinatorAgent := "coordinator"

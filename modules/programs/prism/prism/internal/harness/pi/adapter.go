@@ -5,11 +5,11 @@
 // # B5.TR — Translate payload strategy
 //
 // Under the Translate strategy (B5 §6), the PI adapter normalises PI's native
-// JSONL event frames into opencode-shaped payload structs before they are written
+// JSONL event frames into pi-shaped payload structs before they are written
 // to agent_events. Downstream consumers (cmd/checkin, cmd/stats, cmd/audit) work
 // without harness-specific branches because every row in agent_events has the
 // same camelCase JSON field layout regardless of whether the session was run
-// under opencode or PI.
+// under PI.
 //
 // The normalisation map is documented on NormaliseFrame below.
 //
@@ -349,7 +349,7 @@ func extractText(content []struct {
 }
 
 // marshalArgs marshals a JSON value to a compact string representation,
-// truncated to 500 characters to match opencode's truncation budget.
+// truncated to 500 characters to match the pi truncation budget.
 func marshalArgs(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -361,7 +361,7 @@ func marshalArgs(raw json.RawMessage) string {
 	return s
 }
 
-// NormaliseFrame maps a raw PI JSONL frame to a canonical opencode-shaped
+// NormaliseFrame maps a raw PI JSONL frame to a canonical pi-shaped
 // (eventType, payload, shouldWrite) tuple (implements FrameNormaliser).
 //
 // Note: PI is registered as TransportSocketPipe. NormaliseFrame is only called
@@ -384,7 +384,7 @@ func marshalArgs(raw json.RawMessage) string {
 //
 // The SQL pushdown invariants that Translate must preserve (B5 consumer table):
 //   - $.messageId present on msg_assistant, msg_user, tool_call, tool_result
-//   - $.state present on state_change with the same enum as opencode
+//   - $.state present on state_change with the same enum values
 //   - $.model, $.inputTokens, $.outputTokens, $.cacheReadTokens,
 //     $.cacheWriteTokens, $.cost present on msg_assistant (for SessionTurnTokens)
 func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload any, shouldWrite bool) {
@@ -402,7 +402,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			return "", nil, false
 		}
 		if f.Role != "assistant" {
-			// message_complete for non-assistant roles — not an opencode analogue.
+			// message_complete for non-assistant roles — no direct pi analogue.
 			log.Printf("pi: NormaliseFrame: message_complete role=%q — no equivalent prism event, skipping", f.Role)
 			return "", nil, false
 		}
@@ -503,7 +503,7 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		return "msg_assistant", p, true
 
 	default:
-		// PI event type with no opencode equivalent: log at info level and skip.
+		// PI event type with no direct mapping: log at info level and skip.
 		// Logged (not silently dropped) per the edge-case AC.
 		log.Printf("pi: NormaliseFrame: unknown event type %q — no equivalent prism event, skipping", envelope.Type)
 		return "", nil, false

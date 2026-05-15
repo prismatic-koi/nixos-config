@@ -437,50 +437,6 @@ func TestRestoreSession_EmptyWorktree(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_OpencodeSessionResumed verifies that when a stored
-// OpencodeSID is present, the opencode launch command delivered to the agent
-// window includes the session ID (-s flag).
-//
-// It reads #{pane_start_command} from the agent window (window 1) — the agent
-// window is now created with "new-window ... sh -c <cmd>" so the command is
-// embedded in the pane's start command, not echoed via send-keys.
-func TestRestoreSession_OpencodeSessionResumed(t *testing.T) {
-	skipRestoreOnGHA(t)
-	// Uses withCmdServer — must not run in parallel.
-	// Redirect XDG_STATE_HOME so StartSidecar writes its PID file to an
-	// isolated temp dir rather than the production ~/.local/state/prism/.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	s := newCmdTestServer(t)
-	withCmdServer(t, s)
-
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "myrepo@feature"
-	sid := "oc-session-abc123"
-	status := seedStatus(t, d, sessionName, worktreeDir, &sid)
-
-	if err := callRestoreSession(d, status); err != nil {
-		t.Fatalf("restoreSession: %v", err)
-	}
-	// Kill any sidecar that setupFullLayout may have launched.
-	t.Cleanup(func() { session.KillSidecar(sessionName) })
-
-	if !s.hasSession(sessionName) {
-		t.Fatalf("session %q was not created", sessionName)
-	}
-
-	// Read the pane start command — the agent window is created via
-	// "new-window ... sh -c <cmd>" so the command appears in #{pane_start_command}.
-	paneCmd, err := s.output("display-message", "-t", sessionName+":1", "-p", "#{pane_start_command}")
-	if err != nil {
-		t.Fatalf("display-message pane_start_command: %v", err)
-	}
-
-	if !strings.Contains(paneCmd, "-s "+sid) {
-		t.Errorf("agent pane_start_command does not contain '-s %s'; got:\n%s", sid, paneCmd)
-	}
-}
 
 // TestRestoreSession_AllThreeWindows is a table-driven test confirming that
 // all three windows (edit/agent/term) are always created in the right order,
@@ -550,7 +506,7 @@ func TestRestoreSession_AllThreeWindows(t *testing.T) {
 // TestRestoreSession_HostModeOverride verifies that when a session was
 // explicitly spawned in host mode (isolation_mode="host" in agent_status),
 // restore preserves that mode even when cfg.DefaultIsolationMode is "bwrap".
-// The agent pane must run "opencode --agent ..." rather than using bwrap.
+// The agent pane must run "pi --agent ..." rather than using bwrap.
 func TestRestoreSession_HostModeOverride(t *testing.T) {
 	skipRestoreOnGHA(t)
 	// Uses withCmdServer — must not run in parallel.
@@ -598,7 +554,7 @@ func TestRestoreSession_HostModeOverride(t *testing.T) {
 
 	// Agent pane start command must contain "pi" but NOT "bwrap".
 	// For a non-worktree path (no .bare parent), no --agent flag is added,
-	// but the command is still opencode directly (host mode).
+	// but the command is still pi directly (host mode).
 	pane := agentPaneStartCmd(t, s, sessionName)
 	if !strings.Contains(pane, "pi") {
 		t.Errorf("agent pane missing .pi. — captured:\n%s", pane)
@@ -1357,7 +1313,7 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 // deterministic container path via container.WriteHarnessConfig. The content
 // on disk must match the worker blob injected into opts.ConfigContent, and
 // the path must match what the Manager will look up via
-// OpencodeConfigFilePath(NameForSession(sessionName)).
+// HarnessConfigFilePath(NameForSession(sessionName)).
 func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	s := newCmdTestServer(t)

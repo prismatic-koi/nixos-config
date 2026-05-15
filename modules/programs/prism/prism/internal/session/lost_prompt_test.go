@@ -181,9 +181,9 @@ func TestWaitForReadyWithOpts_StrictMode_TurnStartSatisfiesGate(t *testing.T) {
 }
 
 // TestWaitForReadyWithOpts_StrictMode_HarnessSessionIDSatisfiesGate verifies
-// that harness_session_id non-NULL satisfies the strict gate. opencode emits
+// that harness_session_id non-NULL satisfies the strict gate. the agent emits
 // session.created → sidecar writes harness_session_id when it has parsed
-// --prompt and accepted the message; for the opencode CLI-prompt mode this
+// --prompt and accepted the message; for the agent CLI-prompt mode this
 // is on its own evidence the prompt landed.
 func TestWaitForReadyWithOpts_StrictMode_HarnessSessionIDSatisfiesGate(t *testing.T) {
 	d := openLostPromptTestDB(t)

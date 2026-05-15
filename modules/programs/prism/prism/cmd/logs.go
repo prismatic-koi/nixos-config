@@ -248,7 +248,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 
 // sidecarLogIsStuckOnSSERetries returns true when the named sidecar log file
 // contains nothing beyond the [prism sidecar] starting line and a series of
-// "sse: …" retry messages — i.e. the sidecar started, opencode never bound
+// "sse: …" retry messages — i.e. the sidecar started, the agent never bound
 // its port, and we have no further evidence of progress. Used by runLogs to
 // surface a startup-log hint to operators reading the wrong file.
 //

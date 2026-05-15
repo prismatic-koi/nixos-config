@@ -1,6 +1,6 @@
 package cmd
 
-// Tests for the bwrap opencode.json config file write added to runSpawn
+// Tests for the bwrap harness config file write added to runSpawn
 // (issue #900).
 //
 // The config file write block in runSpawn:
@@ -12,10 +12,10 @@ package cmd
 //	}
 //
 // The key insight: the path used at write time must match the path used at
-// read time. Manager.opencodeConfigFilePath() calls
-// OpencodeConfigFilePath(m.name) where m.name = NameForSession(tmuxSession).
+// read time. Manager.harnessConfigFilePath() calls
+// HarnessConfigFilePath(m.name) where m.name = NameForSession(tmuxSession).
 // So spawn.go must pass NameForSession(tmuxSession) — NOT the raw tmux session
-// name — to WriteOpencodeConfig.
+// name — to WriteHarnessConfig.
 //
 // Calling runSpawn directly in a test is not safe: it spawns tmux sessions,
 // sidecar processes, and other long-running side effects that pollute the test
@@ -36,7 +36,7 @@ import (
 // TestBwrapSpawn_WritePathMatchesManagerPath is the critical correctness test:
 // it asserts that the path used by spawn.go when writing the config file
 // (container.HarnessConfigFilePath(container.NameForSession(tmuxSession)))
-// equals the path used by Manager.opencodeConfigFilePath() when reading it
+// equals the path used by Manager.harnessConfigFilePath() when reading it
 // (container.HarnessConfigFilePath(m.name) where m.name=NameForSession(tmuxSession)).
 //
 // This guards against the path mismatch where spawn.go passes the raw tmux
@@ -55,14 +55,14 @@ func TestBwrapSpawn_WritePathMatchesManagerPath(t *testing.T) {
 	// Step 1: derive tmux session name (as spawn.go does).
 	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
 
-	// Step 2: derive container name (as spawn.go does before WriteOpencodeConfig).
+	// Step 2: derive container name (as spawn.go does before WriteHarnessConfig).
 	containerName := container.NameForSession(tmuxSessionName)
 
-	// Step 3: path at write time (spawn.go's WriteOpencodeConfig argument).
+	// Step 3: path at write time (spawn.go's WriteHarnessConfig argument).
 	writePath := container.HarnessConfigFilePath(containerName)
 
-	// Step 4: path at read time. Manager.opencodeConfigFilePath() calls
-	// OpencodeConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
+	// Step 4: path at read time. Manager.harnessConfigFilePath() calls
+	// HarnessConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
 	// Since cfg.SessionName = tmuxSessionName, the read path is:
 	readPath := container.HarnessConfigFilePath(container.NameForSession(tmuxSessionName))
 
@@ -73,8 +73,8 @@ func TestBwrapSpawn_WritePathMatchesManagerPath(t *testing.T) {
 }
 
 // TestBwrapSpawn_WriteAndReadConfigFile asserts the write/read round-trip:
-// WriteOpencodeConfig(containerName, content) writes the file, and reading
-// from OpencodeConfigFilePath(containerName) returns the original content.
+// WriteHarnessConfig(containerName, content) writes the file, and reading
+// from HarnessConfigFilePath(containerName) returns the original content.
 func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
@@ -94,11 +94,11 @@ func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
 
 	// Write as spawn.go does (using containerName, not tmuxSessionName).
 	if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
-		t.Fatalf("WriteOpencodeConfig: %v", err)
+		t.Fatalf("WriteHarnessConfig: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Remove(container.HarnessConfigFilePath(containerName)) })
 
-	// Read back as Manager.opencodeConfigFilePath() would resolve.
+	// Read back as Manager.harnessConfigFilePath() would resolve.
 	data, err := os.ReadFile(container.HarnessConfigFilePath(containerName))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
@@ -109,7 +109,7 @@ func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
 }
 
 // TestBwrapSpawn_NoWriteWhenConfigContentEmpty asserts that the spawn.go
-// conditional does NOT call WriteOpencodeConfig when configContent is empty.
+// conditional does NOT call WriteHarnessConfig when configContent is empty.
 func TestBwrapSpawn_NoWriteWhenConfigContentEmpty(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("bwrap mode is Linux-only")
@@ -128,7 +128,7 @@ func TestBwrapSpawn_NoWriteWhenConfigContentEmpty(t *testing.T) {
 	configContent := ""
 	if configContent != "" {
 		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
-			t.Fatalf("WriteOpencodeConfig: %v", err)
+			t.Fatalf("WriteHarnessConfig: %v", err)
 		}
 	}
 

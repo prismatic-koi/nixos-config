@@ -21,17 +21,17 @@ import (
 type IsolationMode string
 
 const (
-	// IsolationBwrap runs opencode inside a bubblewrap sandbox, launched and
+	// IsolationBwrap runs the agent inside a bubblewrap sandbox, launched and
 	// owned by the tmux pane via "prism agent-run". The sidecar does not
 	// manage the process lifecycle. Linux only.
 	IsolationBwrap IsolationMode = "bwrap"
 
-	// IsolationSandboxExec runs opencode inside an Apple sandbox-exec profile
+	// IsolationSandboxExec runs the agent inside an Apple sandbox-exec profile
 	// sandbox, launched and owned by the tmux pane via "prism agent-run". The
 	// sidecar does not manage the process lifecycle. macOS (Darwin) only.
 	IsolationSandboxExec IsolationMode = "sandbox-exec"
 
-	// IsolationHost runs opencode directly in the tmux pane with no isolation.
+	// IsolationHost runs the agent directly in the tmux pane with no isolation.
 	// Equivalent to the legacy --host-mode flag.
 	IsolationHost IsolationMode = "host"
 )
@@ -70,7 +70,7 @@ type Config struct {
 	// DefaultIsolationMode is the machine-level default isolation mode for new
 	// agent sessions. Valid values: "bwrap", "sandbox-exec", "host".
 	DefaultIsolationMode IsolationMode `json:"default_isolation_mode,omitempty"`
-	// SidecarPluginPath is the host-side path to the opencode plugin file that
+	// SidecarPluginPath is the host-side path to the agent plugin file that
 	// is bind-mounted into the container. Empty string = no plugin.
 	SidecarPluginPath string `json:"sidecar_plugin_path"`
 	// GitUserName is the git user.name to write into the container's .gitconfig.

@@ -104,7 +104,7 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - Host ~/.aws deny (only staged entries accessible)
 //   - Staging HOME / worktree / bare repo / host-API socket dir (RW)
 //   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
-//   - Process and IPC primitives required by dyld, AMFI, and opencode
+//   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*)
 //
 // New top-level allow/deny clauses introduced beyond what is sketched in
@@ -155,13 +155,13 @@ func generateProfile(m *Manager) string {
 	// /private/var/select, /var/select — xcode-select developer_dir.
 	// /private/var/folders, /var/folders — Darwin per-user TMPDIR. Listed
 	//   here for read access; write access is granted separately below because
-	//   bun (opencode's runtime) extracts native dylibs (libopentui, etc.) to
+	//   bun (pi's runtime) extracts native dylibs (libopentui, etc.) to
 	//   hidden files under the user TMPDIR and dlopen()s them — requiring both
 	//   file-write* and file-map-executable on that subtree.
 	// /dev/null, /dev/random, /dev/urandom — device nodes.
 	// /dev/dtracehelper — Apple-signed binaries probe at startup.
 	// /             — required by libignition's openat(2) root probe.
-	// /$bunfs       — bun's virtual in-process asset filesystem. opencode is
+	// /$bunfs       — bun's virtual in-process asset filesystem. pi is
 	//   packaged as a bun single-file executable; bun serves bundled assets
 	//   (locale files, etc.) from a synthetic /$bunfs/ path. The kernel
 	//   returns EPERM for open(2) calls on /$bunfs/* under deny-default even
@@ -205,7 +205,7 @@ func generateProfile(m *Manager) string {
 	// /tmp and /private/tmp are used by xcrun, git, and other tools for
 	// transient files. Both symlink forms needed. See F.1 §2 rule 3.
 	//
-	// file-map-executable is required: opencode's TUI (OpenTUI) and the
+	// file-map-executable is required: pi's TUI (OpenTUI) and the
 	// file-watcher binding extract native .dylib/.node files to /tmp and
 	// dlopen() them. dlopen calls mmap(PROT_EXEC) on the extracted file,
 	// which requires file-map-executable. Without it the sandbox returns
@@ -217,11 +217,11 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("\n")
 
 	// ── 3b. Darwin per-user TMPDIR read-write ─────────────────────────────
-	// bun (opencode's runtime) extracts native dylibs — libopentui, the
+	// bun (pi's runtime) extracts native dylibs — libopentui, the
 	// file-watcher binding, etc. — to hidden files under the Darwin per-user
 	// TMPDIR (/private/var/folders/<hash>/T/) and dlopen()s them. Without
 	// file-write* the extraction fails silently (EPERM) and the TUI library
-	// is never loaded, causing opencode to crash with exit 255.
+	// is never loaded, causing pi to crash with exit 255.
 	// file-map-executable is required for the subsequent dlopen(PROT_EXEC).
 	//
 	// We allow only the specific per-user TMPDIR (os.TempDir()), NOT all of
@@ -309,7 +309,7 @@ func generateProfile(m *Manager) string {
 		if m.cfg.Worktree != "" {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.Worktree) + ")\n")
 		}
-		// Bare repo root — full RW access so opencode can probe for project
+		// Bare repo root — full RW access so the agent can probe for project
 		// config files (e.g. .opencode/, AGENTS.md) at the top level and git
 		// can write pack files, ref updates, etc. in .bare/.
 		if m.cfg.BareRoot != "" {
@@ -326,7 +326,7 @@ func generateProfile(m *Manager) string {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")
 		}
-		// opencode shared state dirs — both XDG locations opencode writes to:
+		// pi shared state dirs — both XDG locations pi writes to:
 		// pi data and state directories
 		// Must use (subpath ...) not (literal ...) so the sandbox can
 		// read/write files inside the directories (not just the directory nodes).
@@ -416,7 +416,7 @@ func generateProfile(m *Manager) string {
 			for _, a := range ancestors {
 				sb.WriteString("  (subpath " + quoteSBPL(a) + ")\n")
 			}
-			// opencode's fromDirectory walk has no stop parameter and walks all
+			// pi's fromDirectory walk has no stop parameter and walks all
 			// the way to filesystem root, probing .opencode and .git at each
 			// level. Emit literal allows for the probe targets at every ancestor
 			// from HOME up to / so the walk returns ENOENT rather than EPERM.
@@ -529,10 +529,10 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("\n")
 
 	// ── 8b. TTY ioctl ─────────────────────────────────────────────────────
-	// opencode calls tcsetattr(2) to put the terminal into raw mode for the
+	// pi calls tcsetattr(2) to put the terminal into raw mode for the
 	// TUI. Under deny-default this is blocked (errno EPERM) which prevents
 	// the TUI from rendering and causes the sidecar to never see a
-	// session.created event (opencode detects no TTY and exits the TUI path
+	// session.created event (pi detects no TTY and exits the TUI path
 	// without emitting one). (allow file-ioctl (subpath "/dev")) covers the
 	// TIOCGETA/TIOCSETA ioctls on /dev/ttysXXX and /dev/ptmx without
 	// granting any file-read/file-write access to /dev beyond what the
@@ -549,7 +549,7 @@ func generateProfile(m *Manager) string {
 	//   Without this, git and ssh abort with SIGABRT during dyld init. See F.1 §2.
 	// signal         — allow the sandboxed process to send signals to itself.
 	// mach-lookup    — bootstrap service lookups (logd, opendirectoryd, etc.).
-	// mach-register  — per-pid Mach name registration (opencode IPC).
+	// mach-register  — per-pid Mach name registration (pi IPC).
 	// sysctl-read    — system library init queries (kern.*, hw.*, machdep.*).
 	// NOTE: iokit-open is REMOVED in v3 (not needed, see F.1 §4.1 / §2 note).
 	// NOTE: ipc-posix-shm is REMOVED (unbound variable in v3 — replaced below).
@@ -602,7 +602,7 @@ func generateProfile(m *Manager) string {
 
 	// ── 18. Socket options ────────────────────────────────────────────────
 	// CRITICAL: (allow network*) in v3 does NOT cover setsockopt/getsockopt.
-	// opencode's HTTP server calls setsockopt(SOL_SOCKET, SO_REUSEADDR)
+	// pi's HTTP server calls setsockopt(SOL_SOCKET, SO_REUSEADDR)
 	// when binding its listener port. Without this, setsockopt returns EPERM
 	// and the server never binds — the sidecar sees connection refused for
 	// the full 30-second readiness timeout. socket-option-get is included
@@ -611,7 +611,7 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("\n")
 
 	// ── 19. Dynamic code generation ───────────────────────────────────────
-	// CRITICAL: Bun (opencode's runtime) uses a JIT compiler. Under
+	// CRITICAL: Bun (pi's runtime) uses a JIT compiler. Under
 	// deny-default in (version 3), JIT requires explicit permission via
 	// (allow dynamic-code-generation). Without it, the sandbox sends SIGABRT
 	// to the process the moment it attempts to mark pages executable for JIT
@@ -676,7 +676,7 @@ func writeProfile(m *Manager) (string, error) {
 //
 // The first element ("sandbox-exec") is argv[0]; the caller invokes
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). After -f and the profile
-// path comes the harness binary (opencode) and its arguments — the inner
+// path comes the harness binary (pi) and its arguments — the inner
 // command sandbox-exec executes inside the SBPL sandbox.
 //
 // The harness invocation mirrors bwrap.go:BuildArgs (see lines 608–636) so

@@ -3,10 +3,10 @@ package session
 // Per-session initial-prompt file (#1064 Option A).
 //
 // In host-mode sessions, the initial prompt was historically interpolated
-// directly onto the opencode launch command (`opencode --prompt '<text>'`),
+// directly onto the agent launch command (`pi --prompt '<text>'`),
 // which was then handed to `tmux new-window ... sh -c <cmd>`. tmux's command
 // argument handling has practical size limits; prompts above ~12 KB were
-// observed to be silently truncated, leaving opencode unable to start and
+// observed to be silently truncated, leaving the agent unable to start and
 // the operator with no visible signal beyond a session that idles forever
 // (#1064 root cause).
 //
@@ -14,7 +14,7 @@ package session
 // host-mode SpawnSession writes the prompt to a small file in the per-session
 // run directory and the constructed launch command reads it with $(cat …)
 // inside the pane shell. The launch command itself stays a few hundred bytes
-// regardless of prompt size, while the prompt content reaches opencode via
+// regardless of prompt size, while the prompt content reaches the agent via
 // argv (which comfortably handles 100s of KB on both Linux and Darwin).
 //
 // The file lives next to agent-startup.log (#1051 / #1062), agent-run.log

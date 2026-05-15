@@ -126,7 +126,7 @@ func TestNewContainer_KnownHarness(t *testing.T) {
 
 func TestRegister_RejectsDuplicateName(t *testing.T) {
 	// Register a temporary harness with a unique name, then try to register
-	// the same name again.  We can't use "opencode" (already registered by
+	// the same name again.  We can't use "pi" (already registered by
 	// init()), so we create a uniquely-named one.
 	const name = "test-duplicate-harness"
 

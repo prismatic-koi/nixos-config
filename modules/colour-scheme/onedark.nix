@@ -7,7 +7,6 @@
 {
   theme = lib.mkIf (config.nx.desktop.theme == "onedark") {
     name = "onedark";
-    opencodename = "one-dark";
     type = "dark";
     foreground = "#abb2bf";
     primary = "#98c379";

@@ -535,7 +535,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 
 		// "started" is now emitted by the readiness gate below, not here.
-		// See #1051 — "spawned" is not the same as "opencode is ready".
+		// See #1051 — "spawned" is not the same as "agent is ready".
 	}
 
 	// Per-agent readiness gate (#1051 Piece A). Runs concurrently so one

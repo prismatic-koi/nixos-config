@@ -7,7 +7,6 @@
 {
   theme = lib.mkIf (config.nx.desktop.theme == "nightcity-kabuki") {
     name = "nightcity-kabuki";
-    opencodename = "everforest";
     type = "dark";
     foreground = "#f9efc5";
     primary = "#ff9457";

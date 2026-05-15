@@ -31,13 +31,13 @@ import (
 )
 
 // legacySentinel is the key used to group events that have a NULL harness_session_id.
-// These are pre-sidecar "legacy" events that predate opencode session tracking.
+// These are pre-sidecar "legacy" events that predate agent session tracking.
 const legacySentinel = ""
 
 // modelCosts contains per-million-token pricing for known models.
 // Cost is in USD. Keys are "providerID/modelID" exactly as stored in payloads —
-// these must match the model IDs emitted by the opencode plugin verbatim.
-// Add new entries when new models are configured in opencode.nix.
+// these must match the model IDs emitted by the pi plugin verbatim.
+// Add new entries when new models are configured.
 var modelCosts = map[string]struct {
 	Input      float64
 	Output     float64

@@ -58,7 +58,7 @@ func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Op
 	return override, effCaps
 }
 
-// writeHarnessConfigBlobFor dispatches the per-mode "write opencode.json blob
+// writeHarnessConfigBlobFor dispatches the per-mode "write harness config blob
 // to the deterministic per-session temp path" step through the registered
 // Isolator (D3, issue #1133). cmdName is used in the error wrapper so the
 // caller's command name surfaces in user-facing messages.
@@ -108,7 +108,7 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 // ensureAndSwitch creates the session if it doesn't exist (with the appropriate
 // layout) and then switches the current client to it, unless opts.Headless is set.
 // For full-layout sessions, a port is allocated from the 14000–14999 range and
-// passed through to opencode via BuildOpencodeCmd.
+// passed through to the agent via BuildAgentCmd.
 func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	var sessionName string
 	var directory string
@@ -121,7 +121,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// Set SessionName for consistency with the full-layout branch.
 		// LayoutScratchpad does not call BuildOpencodeCmd today, so this has
 		// no runtime effect, but keeps the struct complete in case the
-		// scratchpad layout ever gains an opencode agent window.
+		// scratchpad layout ever gains an agent window.
 		opts.SessionName = sessionName
 	} else {
 		directory = expandHome(path)
@@ -209,7 +209,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 	if opts.Layout == session.LayoutFull {
 		port, err := allocatePortForSession(sessionName, directory, opts.HarnessName)
 		if err != nil {
-			// Non-fatal: log and continue without a port. opencode will still
+			// Non-fatal: log and continue without a port. the agent will still
 			// work, just without the serve API.
 			fmt.Fprintf(os.Stderr, "warning: port allocation failed for %q: %v\n", sessionName, err)
 		} else {
@@ -233,9 +233,9 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 // and then allocates a port from the DB. If the session already has a port
 // allocated (e.g. on restore), it returns the existing port.
 //
-// harnessName is the resolved harness for the new session (e.g. "opencode"
+// harnessName is the resolved harness for the new session (e.g. "pi"
 // or "pi"). It is written to the DB row so that prism restore can replay the
-// correct harness. When empty, defaults to "opencode" (handled by
+// correct harness. When empty, defaults to "pi" (handled by
 // UpsertStatusSeedRootAgentName's own default logic).
 func allocatePortForSession(sessionName, directory, harnessName string) (int, error) {
 	d, err := openDB()
@@ -331,7 +331,7 @@ var switchCmd = &cobra.Command{
 		}
 
 		// Populate harness-specific env var names from the adapter so that
-		// no opencode-specific string literals appear in session.go.
+		// no harness-specific string literals appear in session.go.
 		// harnessFlag was validated above so the error is unreachable.
 		switchHarness, _ := harness.New(switchHarnessName, "", nil, "", "")
 		opts := session.Opts{

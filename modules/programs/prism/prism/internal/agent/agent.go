@@ -7,7 +7,7 @@
 // Convert at call sites with string(agent.StateXxx) and agent.AgentState(s).
 package agent
 
-// AgentState is the lifecycle state of an opencode agent session.
+// AgentState is the lifecycle state of a prism agent session.
 type AgentState string
 
 const (

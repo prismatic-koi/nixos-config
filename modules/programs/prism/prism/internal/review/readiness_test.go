@@ -53,7 +53,7 @@ func seedAgentRow(t *testing.T, d *db.DB, sess string) {
 }
 
 // signalReady inserts a state_change event for sess, simulating the sidecar
-// receiving the first SSE event from opencode.
+// receiving the first SSE event from the agent.
 func signalReady(t *testing.T, d *db.DB, sess string) {
 	t.Helper()
 	if err := d.WriteEvent(db.Event{

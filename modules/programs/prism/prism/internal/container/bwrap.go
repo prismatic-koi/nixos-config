@@ -120,7 +120,7 @@ func fallbackPATH() string {
 //     /bin/ inside the sandbox only contains the NixOS-provided /bin/sh
 //     symlink — bash itself lives in the Nix store at a hash-prefixed path,
 //     not at /bin/bash. Pinning SHELL to /bin/sh means any tool that uses
-//     $SHELL (opencode's bash tool, most TUIs) gets a clean shell that
+//     $SHELL (the agent bash tool, most TUIs) gets a clean shell that
 //     doesn't wipe credentials.
 //
 // TERM is NOT included here — it is handled separately by BuildArgs, where
@@ -165,7 +165,7 @@ func standardSandboxEnvArgs() []string {
 // Worktrees mount at their host path directly inside the bwrap sandbox.
 //
 // The returned slice begins with the baseline namespace flags and ends with
-// -- followed by the opencode invocation.
+// -- followed by the agent invocation.
 //
 // # Mounts not included (deferred or out of scope)
 //
@@ -270,7 +270,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	}
 
 	// ── Per-user nix profiles (read-only, conditional) ──────────────────────
-	// These locations hold the home-manager per-user profile (opencode,
+	// These locations hold the home-manager per-user profile (pi,
 	// git, nix, …). They are conditional because they may not exist on
 	// all hosts (e.g. fresh installs, CI, Darwin). Use os.Stat — no
 	// EvalSymlinks — matching the pattern for other conditional mounts.
@@ -623,7 +623,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	args = append(args, "--chdir", cfg.Worktree)
 
 	// ── Terminator: -- <harness invocation> ─────────────────────────────────
-	// For opencode: opencode --port <port> --hostname 127.0.0.1
+	// For pi: pi --port <port> --hostname 127.0.0.1
 	// For PI:       pi --provider <p> --model <m> --extension ...
 	//
 	// bwrap uses 127.0.0.1 (not 0.0.0.0): the host network namespace is shared
@@ -634,7 +634,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// namespace, every sandbox binds directly to a host port — two sessions both
 	// trying to bind ContainerPort (4096) would collide with EADDRINUSE and the
 	// second would silently fail with "Failed to start server on port 4096" in
-	// the opencode log. ContainerPort is retained as a fallback for the
+	// the agent log. ContainerPort is retained as a fallback for the
 	// theoretical case where AllocatedPort is unset (e.g. a malformed session
 	// row); in normal operation cfg.AllocatedPort is always populated by
 	// agent-run from the DB's harness_port column.

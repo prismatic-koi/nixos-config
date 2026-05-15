@@ -1355,10 +1355,10 @@ func TestAllocatePort_NoConflicts(t *testing.T) {
 		t.Fatalf("CurrentStatus: %v", err)
 	}
 	if s.HarnessPort == nil {
-		t.Fatal("OpencodePort: got nil, want non-nil")
+		t.Fatal("HarnessPort: got nil, want non-nil")
 	}
 	if *s.HarnessPort != port {
-		t.Errorf("OpencodePort: got %d, want %d", *s.HarnessPort, port)
+		t.Errorf("HarnessPort: got %d, want %d", *s.HarnessPort, port)
 	}
 }
 
@@ -1486,7 +1486,7 @@ func TestReleasePort(t *testing.T) {
 		t.Fatalf("CurrentStatus: %v", err)
 	}
 	if s.HarnessPort != nil {
-		t.Errorf("OpencodePort after release: got %v, want nil", *s.HarnessPort)
+		t.Errorf("HarnessPort after release: got %v, want nil", *s.HarnessPort)
 	}
 
 	// After release the port must re-enter the pool so a new session can claim it.
@@ -1606,7 +1606,7 @@ func TestMigration_V3ToV4(t *testing.T) {
 		t.Fatal("CurrentStatus: got nil, want existing row")
 	}
 	if s.HarnessPort != nil {
-		t.Errorf("OpencodePort: got %v, want nil (newly added column)", s.HarnessPort)
+		t.Errorf("HarnessPort: got %v, want nil (newly added column)", s.HarnessPort)
 	}
 	if s.AgentName == nil || *s.AgentName != "worker" {
 		t.Errorf("AgentName preserved: got %v, want \"worker\"", s.AgentName)
@@ -2996,7 +2996,7 @@ func TestGroupResults_StartupError(t *testing.T) {
 	}
 
 	// Write the startup_error event that writeStartupError emits.
-	const startupReason = "opencode: health check timed out after 60s on port 14004"
+	const startupReason = "pi: health check timed out after 60s on port 14004"
 	if err := d.WriteEvent(db.Event{
 		ID:          "evt-startup-err-1",
 		SessionName: noStartSession,
@@ -7410,13 +7410,13 @@ func TestUpsertStatus_PreservesHarness(t *testing.T) {
 	}
 }
 
-// TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode verifies that a fresh
+// TestUpsertStatusWithRootAgent_FreshRowDefaultsPi verifies that a fresh
 // insert via UpsertStatusWithRootAgent writes harness='pi' when no row
 // exists (issue #1290, Bug 1 — INSERT path).
-func TestUpsertStatusWithRootAgent_FreshRowDefaultsOpencode(t *testing.T) {
+func TestUpsertStatusWithRootAgent_FreshRowDefaultsPi(t *testing.T) {
 	d := openTestDB(t)
 
-	const session = "repo@fresh-opencode"
+	const session = "repo@fresh-pi"
 	agentName := "coordinator"
 	if err := d.UpsertStatusWithRootAgent(session, "repo", "/wt", "idle", nil, nil, &agentName, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)

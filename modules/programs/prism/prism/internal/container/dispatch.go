@@ -221,7 +221,7 @@ type AgentPaneOpts struct {
 // dispatch on the Isolator so internal/archive does not need to import
 // internal/container (which would create a circular dependency).
 type ArchivePaths struct {
-	// StorageRoot is the host-side opencode storage root for this session.
+	// StorageRoot is the host-side agent storage root for this session.
 	// For host/bwrap/sandbox-exec: $HOME/.local/share/pi/storage.
 	StorageRoot string
 
@@ -319,7 +319,7 @@ func (b *bwrapIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
 }
 
 // ArchivePaths returns the bwrap archive layout: storage lives in the shared
-// host opencode storage root (no per-session sub-dir). Includes the agent-run
+// host agent storage root (no per-session sub-dir). Includes the agent-run
 // log as an extra archive file when present.
 func (b *bwrapIsolator) ArchivePaths(home, sessionName string) ArchivePaths {
 	return ArchivePaths{
@@ -329,7 +329,7 @@ func (b *bwrapIsolator) ArchivePaths(home, sessionName string) ArchivePaths {
 }
 
 // LogPaths returns the per-mode log file set for bwrap. The agent-run log
-// is populated for bwrap because prism agent-run tees opencode's stdout/
+// is populated for bwrap because prism agent-run tees the agent's stdout/
 // stderr there (cmd/agent_run.go:563).
 func (b *bwrapIsolator) LogPaths() LogPaths {
 	return LogPaths{}
@@ -373,7 +373,7 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 
 // WriteHarnessConfigBlob writes the opencode.json config blob to the
 // deterministic per-session temp path. For sandbox-exec the file is read
-// directly by opencode at the sandbox-mapped HOME path (sandbox_exec_home.go:274).
+// directly by the agent at the sandbox-mapped HOME path (sandbox_exec_home.go:274).
 func (s *sandboxExecIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
 	if content == "" {
 		return nil
@@ -411,7 +411,7 @@ func (s *sandboxExecIsolator) ArchivePaths(home, sessionName string) ArchivePath
 
 // LogPaths returns the per-mode log file set for sandbox-exec. Same shape
 // as bwrap — agent-run.log is produced because prism agent-run tees
-// opencode's stdout/stderr there.
+// the agent's stdout/stderr there.
 func (s *sandboxExecIsolator) LogPaths() LogPaths {
 	return LogPaths{}
 }
@@ -420,7 +420,7 @@ func (s *sandboxExecIsolator) LogPaths() LogPaths {
 // hostIsolator
 // ----------------------------------------------------------------------------
 
-// Available is always nil for host mode. The host isolator runs opencode
+// Available is always nil for host mode. The host isolator runs the agent
 // directly in the tmux pane with no sandbox layer; there is nothing to
 // check beyond what cobra has already validated.
 func (h *hostIsolator) Available() error {
@@ -441,7 +441,7 @@ func (h *hostIsolator) WriteHarnessConfigBlob(sessionName, content string) error
 	return nil
 }
 
-// AgentPaneCmd returns DirectCmd unchanged — host mode runs opencode
+// AgentPaneCmd returns DirectCmd unchanged — host mode runs the agent
 // directly in the tmux pane and has no sandbox wrapper command. The caller
 // is responsible for constructing DirectCmd with all env vars and flags.
 func (h *hostIsolator) AgentPaneCmd(opts AgentPaneOpts) string {

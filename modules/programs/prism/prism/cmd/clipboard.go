@@ -1,6 +1,6 @@
 package cmd
 
-// prism clipboard — host-side clipboard utilities for container-mode opencode.
+// prism clipboard — host-side clipboard utilities for container-mode agents.
 //
 // Subcommands:
 //
@@ -17,7 +17,7 @@ package cmd
 //   - All clipboard I/O is done on the host. No clipboard tool, socket, or
 //     env var is exposed inside the running container.
 //   - The staging directory (~/.cache/prism/clipboard/) is bind-mounted into
-//     the container read-only so opencode's stat() call resolves without
+//     the container read-only so the agent's stat() call resolves without
 //     modification. The container cannot write to it.
 //   - Platform detection is done at runtime via WAYLAND_DISPLAY / DISPLAY
 //     env vars on Linux, and runtime.GOOS on Darwin.

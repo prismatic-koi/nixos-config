@@ -463,9 +463,9 @@ func TestRunStatsSession_NotFound(t *testing.T) {
 	}
 }
 
-// TestRunStatsSession_MultipleOpencodeSessions verifies that a tmux session
-// with multiple opencode sessions renders a compact table.
-func TestRunStatsSession_MultipleOpencodeSessions(t *testing.T) {
+// TestRunStatsSession_MultipleSessions verifies that a tmux session
+// with multiple agent sessions renders a compact table.
+func TestRunStatsSession_MultipleSessions(t *testing.T) {
 	d := openStatsTestDB(t)
 	const session = "testrepo@main"
 	base := time.Now().Truncate(time.Second)
@@ -517,7 +517,7 @@ func TestRunStatsSession_MultipleOpencodeSessions(t *testing.T) {
 }
 
 // TestRunStatsSession_SingleSessionUnchanged verifies that a tmux session with
-// exactly one opencode session renders the pre-existing detailed block format.
+// exactly one agent session renders the pre-existing detailed block format.
 func TestRunStatsSession_SingleSessionUnchanged(t *testing.T) {
 	d := openStatsTestDB(t)
 	const session = "testrepo@feature"
@@ -1180,7 +1180,7 @@ func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
 	sid2 := "ses_pi_bbb"
 	sid3 := "ses_pi_ccc"
 
-	// Three distinct opencode sessions all within the same tmux session "repo@main",
+	// Three distinct agent sessions all within the same tmux session "repo@main",
 	// all using the same model.
 	events := []db.Event{
 		{ID: "1", SessionName: "repo@main", Type: "msg_assistant", HarnessSessionID: &sid1,
@@ -1492,7 +1492,7 @@ func TestRunStatsSummary_ShowsAllRepos(t *testing.T) {
 }
 
 // TestRunStatsSummary_MultiModelCost verifies that the summary table sums cost
-// per opencode session (each with its own model pricing) rather than applying
+// per agent session (each with its own model pricing) rather than applying
 // a single live model's rate to all accumulated tokens. This is critical for
 // long-lived tmux sessions that span multiple model changes.
 func TestRunStatsSummary_MultiModelCost(t *testing.T) {
@@ -1574,7 +1574,7 @@ func TestRenderSessionCompactTable_LegacyLabelFits(t *testing.T) {
 }
 
 // TestRenderSessionCompactTable_SummaryExcludesLegacy verifies that the summary
-// line counts only real opencode sessions, not the legacy sentinel group, and
+// line counts only real agent sessions, not the legacy sentinel group, and
 // appends "(+ legacy events)" when legacy data is present.
 func TestRenderSessionCompactTable_SummaryExcludesLegacy(t *testing.T) {
 	d := openStatsTestDB(t)
@@ -1585,12 +1585,12 @@ func TestRenderSessionCompactTable_SummaryExcludesLegacy(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	// Legacy events (NULL sid) — should NOT count as an opencode session.
+	// Legacy events (NULL sid) — should NOT count as an agent session.
 	writeStatsEvent(t, d, session, "msg_assistant",
 		`{"messageId":"old1","text":"r","agent":"coordinator","model":"anthropic/claude-opus-4-6","inputTokens":100,"outputTokens":50,"durationMs":3000}`,
 		base)
 
-	// Two real opencode sessions.
+	// Two real agent sessions.
 	sid1 := "ses_aaa"
 	sid2 := "ses_bbb"
 	writeStatsEventWithSID(t, d, session, sid1, "msg_assistant",
