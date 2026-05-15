@@ -255,7 +255,40 @@ func runDaemon() error {
 		supervisors: make(map[string]*iris.Supervisor),
 	}
 
+	// deliverFn is called by the client socket when a prompt_deliver frame arrives.
+	// It sends the prompt via the supervisor's RPC channel.
+	deliverFn := func(_ context.Context, name, text, deliverAs string, images []string) error {
+		state.mu.Lock()
+		sup, ok := state.supervisors[name]
+		state.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("session %q not found", name)
+		}
+		kind := deliverAs
+		if kind == "" {
+			kind = "prompt"
+		}
+		return sup.SendRPC(map[string]any{
+			"type":    kind,
+			"message": text,
+			"images":  images,
+		})
+	}
+
+	// Create the client IPC socket first so spawnFn can capture it and wire
+	// each new harness as a publisher (D-6 fan-out). spawnFn is passed to
+	// NewClientSocket as ClientSocketConfig.SpawnSession.
+	clientSock := iris.NewClientSocket(iris.ClientSocketConfig{
+		SockPath:          p.Sock,
+		Database:          database,
+		GetActiveSessions: state.activeSessions,
+		// SpawnSession is assigned below after spawnFn is defined.
+		DeliverPrompt: deliverFn,
+	})
+
 	// spawnFn is called by the client socket when a session_spawn frame arrives.
+	// It must be defined after clientSock so it can capture clientSock and wire
+	// the harness publisher (D-6 fan-out: harness events → client subscribers).
 	spawnFn := func(spawnCtx context.Context, worktree, role string, configOverrides map[string]any) (*iris.Supervisor, error) {
 		extPath := cfg.PIExtensionPath
 		superCfg := iris.SupervisorConfig{
@@ -267,6 +300,9 @@ func runDaemon() error {
 			RestartThreshold: cfg.RestartThreshold,
 			RunDir:           p.RunDir,
 			Database:         database,
+			// Wire the client socket as the harness publisher so that every
+			// harness event is fanned out to all subscribed clients in real time.
+			Publisher: clientSock,
 		}
 		sup, err := iris.SpawnSession(ctx, superCfg)
 		if err != nil {
@@ -292,35 +328,8 @@ func runDaemon() error {
 		}()
 		return sup, nil
 	}
-
-	// deliverFn is called by the client socket when a prompt_deliver frame arrives.
-	// It sends the prompt via the supervisor's RPC channel.
-	deliverFn := func(_ context.Context, name, text, deliverAs string, images []string) error {
-		state.mu.Lock()
-		sup, ok := state.supervisors[name]
-		state.mu.Unlock()
-		if !ok {
-			return fmt.Errorf("session %q not found", name)
-		}
-		kind := deliverAs
-		if kind == "" {
-			kind = "prompt"
-		}
-		return sup.SendRPC(map[string]any{
-			"type":    kind,
-			"message": text,
-			"images":  images,
-		})
-	}
-
-	// Create the client IPC socket.
-	clientSock := iris.NewClientSocket(iris.ClientSocketConfig{
-		SockPath:          p.Sock,
-		Database:          database,
-		GetActiveSessions: state.activeSessions,
-		SpawnSession:      spawnFn,
-		DeliverPrompt:     deliverFn,
-	})
+	// Wire the spawn function now that it is defined.
+	clientSock.SetSpawnSession(spawnFn)
 	if err := clientSock.Listen(); err != nil {
 		return fmt.Errorf("iris: client socket: %w", err)
 	}

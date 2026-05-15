@@ -104,6 +104,13 @@ type subscriberChan struct {
 	ch chan EventPublication
 }
 
+// PublisherFunc is an adapter that allows a plain function to be used as an
+// EventPublisher. Useful in tests where a full ClientSocket is not needed.
+type PublisherFunc func(EventPublication)
+
+// Publish implements EventPublisher.
+func (f PublisherFunc) Publish(pub EventPublication) { f(pub) }
+
 // ClientSocketConfig holds the parameters for constructing a ClientSocket.
 type ClientSocketConfig struct {
 	// SockPath is the absolute path for the Unix domain socket.
@@ -187,6 +194,14 @@ func (cs *ClientSocket) Serve(ctx context.Context) {
 
 // SockPath returns the filesystem path of the client IPC socket.
 func (cs *ClientSocket) SockPath() string { return cs.sockPath }
+
+// SetSpawnSession wires the spawn function after construction. This is used
+// by the daemon when it needs to capture a reference to the ClientSocket
+// inside the spawn function (circular dependency: spawnFn needs clientSock,
+// clientSock needs spawnFn). Call before Serve().
+func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)) {
+	cs.spawnSession = fn
+}
 
 // Close closes the listener and removes the socket file.
 func (cs *ClientSocket) Close() {
