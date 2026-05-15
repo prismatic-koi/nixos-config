@@ -9,15 +9,31 @@ let
   username = config.nx.username;
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
 
-  # Canonical per-user socket path. Aligned with the default that the iris Go
-  # binary resolves in `internal/iris/paths.go` (`$XDG_STATE_HOME/iris/iris.sock`,
-  # which on a default home defaults to `~/.local/state/iris/iris.sock`). The
-  # env var is therefore redundant rather than required — see issue #1663.
+  # NOTE on the daemon's socket path and IRIS_DAEMON_SOCK
+  # ---------------------------------------------------------------------------
+  # An earlier revision of this module set `IRIS_DAEMON_SOCK` in the daemon's
+  # service environment, mirroring the wording of issue #1663. That was wrong.
   #
-  # macOS does not export `XDG_RUNTIME_DIR`, so we use the same XDG_STATE_HOME
-  # path on both platforms to keep the contract uniform. Clients dial
-  # `IRIS_DAEMON_SOCK` and get the same answer regardless of OS.
-  irisDaemonSock = "${homeDir}/.local/state/iris/iris.sock";
+  # In the iris codebase, `IRIS_DAEMON_SOCK` is **not** the daemon's bind
+  # address: the daemon resolves its bind path purely from XDG_STATE_HOME via
+  # `internal/iris/paths.go::ResolvePaths()`, and all in-tree clients
+  # (`cmd/iris/{main,tui,stats}.go`) use the same `ResolvePaths().Sock` —
+  # never `os.Getenv("IRIS_DAEMON_SOCK")`. The env var is reserved for a
+  # different role: the daemon sets it on each pi child it spawns, pointing
+  # at that child's per-session **harness** socket. The prism extension reads
+  # it as a trigger to register iris tool overrides and to dial the harness
+  # socket. See `internal/iris/supervisor.go` (writer) and
+  # `modules/programs/prism/pi/extensions/prism.ts` (reader), and
+  # `docs/daemon-mode-design.md` §3.4 for the explicit contract.
+  #
+  # If we exported `IRIS_DAEMON_SOCK=<daemon client socket>` in the daemon's
+  # service environment, and that value ever escaped into a user login shell
+  # (e.g. via `systemctl --user import-environment` on Linux, or any pi
+  # process inheriting it from launchd on Darwin), the prism extension would
+  # dial the daemon's client socket as if it were a harness socket — wrong
+  # protocol, wrong endpoint. The conservative fix is to leave the env var
+  # unset on the daemon side and rely on the binary's XDG-derived default.
+  # Clients do the same; the contract is path-based, not env-var-based.
 in
 {
   options = {
@@ -46,12 +62,8 @@ in
             ExecStart = "${pkgs.iris}/bin/iris daemon";
             Restart = "on-failure";
             RestartSec = 5;
-            # Export the canonical socket path so anything the daemon spawns
-            # (and any login shell that inherits this env via `systemctl --user
-            # show-environment`) agrees with the daemon's bind path.
-            Environment = [
-              "IRIS_DAEMON_SOCK=${irisDaemonSock}"
-            ];
+            # Intentionally no Environment= block. See the comment at the top
+            # of this file for why `IRIS_DAEMON_SOCK` is *not* set here.
           };
 
           Install = {
@@ -76,9 +88,8 @@ in
             KeepAlive = {
               SuccessfulExit = false;
             };
-            EnvironmentVariables = {
-              IRIS_DAEMON_SOCK = irisDaemonSock;
-            };
+            # Intentionally no EnvironmentVariables block. See the comment at
+            # the top of this file for why `IRIS_DAEMON_SOCK` is *not* set here.
             # launchd has no journal — capture stdout/stderr to per-user logs.
             StandardOutPath = "${homeDir}/Library/Logs/iris/stdout.log";
             StandardErrorPath = "${homeDir}/Library/Logs/iris/stderr.log";
