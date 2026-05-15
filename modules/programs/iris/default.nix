@@ -60,7 +60,11 @@ in
           Service = {
             Type = "simple";
             ExecStart = "${pkgs.iris}/bin/iris daemon";
-            Restart = "on-failure";
+            # Always restart — iris is an always-up user daemon, so even a
+            # clean SIGTERM exit (e.g. `systemctl --user kill iris`) should
+            # bring it back. `systemctl --user stop iris` remains the explicit
+            # "keep it down" verb and is unaffected.
+            Restart = "always";
             RestartSec = 5;
             # Intentionally no Environment= block. See the comment at the top
             # of this file for why `IRIS_DAEMON_SOCK` is *not* set here.
@@ -83,11 +87,14 @@ in
               "daemon"
             ];
             RunAtLoad = true;
-            # Restart on crash but not on clean exit — `iris daemon` exiting 0
-            # is an explicit shutdown request and should not loop.
-            KeepAlive = {
-              SuccessfulExit = false;
-            };
+            # KeepAlive = true: launchd analogue of Restart=always.
+            # Always restart the daemon, regardless of exit code. Clean exit 0
+            # from SIGTERM, internal os.Exit(0), or any other graceful path
+            # still triggers a restart — the daemon should be up whenever the
+            # user is logged in. The "keep it down" verbs are
+            # `launchctl unload` / `launchctl bootout` / `launchctl stop`,
+            # not a clean exit.
+            KeepAlive = true;
             # Intentionally no EnvironmentVariables block. See the comment at
             # the top of this file for why `IRIS_DAEMON_SOCK` is *not* set here.
             # launchd has no journal — capture stdout/stderr to per-user logs.
