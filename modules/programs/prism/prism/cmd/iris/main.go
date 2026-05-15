@@ -12,6 +12,8 @@
 //	iris daemon                                 — start the full daemon (client socket + sessions)
 //	iris spawn --worktree <path> [--role <role>] — spawn a pi session (no client socket)
 //	iris tui [--socket <path>]                  — open the bubbletea TUI
+//	iris sessions list [--json]                 — list daemon-tracked sessions (human or JSON)
+//	iris sessions status [--json]               — print session counts by state
 package main
 
 import (
@@ -268,12 +270,13 @@ func (ds *daemonState) activeSessions() []iris.SessionSnapshot {
 	for _, sup := range ds.supervisors {
 		rec := sup.SessionRecord()
 		out = append(out, iris.SessionSnapshot{
-			Name:       rec.SessionName,
-			InstanceID: rec.InstanceID,
-			State:      string(rec.State),
-			Role:       rec.Role,
-			Worktree:   rec.Worktree,
-			StartedAt:  rec.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
+			Name:             rec.SessionName,
+			InstanceID:       rec.InstanceID,
+			State:            string(rec.State),
+			Role:             rec.Role,
+			Worktree:         rec.Worktree,
+			StartedAt:        rec.StartedAt.UTC().Format(time.RFC3339),
+			HarnessSessionID: rec.PiSessionPath,
 		})
 	}
 	return out
