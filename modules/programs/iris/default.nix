@@ -60,7 +60,11 @@ in
           Service = {
             Type = "simple";
             ExecStart = "${pkgs.iris}/bin/iris daemon";
-            Restart = "on-failure";
+            # Always restart — iris is an always-up user daemon, so even a
+            # clean SIGTERM exit (e.g. `systemctl --user kill iris`) should
+            # bring it back. `systemctl --user stop iris` remains the explicit
+            # "keep it down" verb and is unaffected.
+            Restart = "always";
             RestartSec = 5;
             # Intentionally no Environment= block. See the comment at the top
             # of this file for why `IRIS_DAEMON_SOCK` is *not* set here.
