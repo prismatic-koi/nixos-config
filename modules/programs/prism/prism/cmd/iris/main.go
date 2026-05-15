@@ -191,10 +191,20 @@ func spawnSession() error {
 	// GITHUB_TOKEN selection in the bash sandbox (D-5).
 	spawnBareRoot := git.BareRoot(spawnWorktree)
 
+	// Resolve the agent role. If --role was given explicitly (the cobra flag
+	// default is "worker"), the explicit value wins; when the caller sets
+	// --role="" we apply the bare+worktree default-agent heuristic. Callers
+	// using the default "worker" still get the explicit-wins path, matching
+	// prism's session.DefaultAgent contract.
+	resolvedRole := iris.ResolveAgent(spawnWorktree, spawnRole)
+	if resolvedRole == "" {
+		resolvedRole = "worker"
+	}
+
 	superCfg := iris.SupervisorConfig{
-		SessionName:      fmt.Sprintf("iris@%s", spawnRole),
+		SessionName:      fmt.Sprintf("iris@%s", resolvedRole),
 		Worktree:         spawnWorktree,
-		Role:             spawnRole,
+		Role:             resolvedRole,
 		BareRoot:         spawnBareRoot,
 		PIBinaryPath:     cfg.PIBinaryPath,
 		ExtensionPath:    extensionPath,
@@ -341,10 +351,17 @@ func runDaemon() error {
 		// Derive the bare repo root from the worktree for 4-PAT GITHUB_TOKEN
 		// selection in the bash sandbox (D-5).
 		bareRoot := git.BareRoot(worktree)
+		// Apply the iris default-agent rule when role is empty. Explicit role
+		// from session_spawn wins; on miss, basename=="main" under a .bare
+		// parent → "coordinator", otherwise → "worker".
+		resolvedRole := iris.ResolveAgent(worktree, role)
+		if resolvedRole == "" {
+			resolvedRole = "worker"
+		}
 		superCfg := iris.SupervisorConfig{
-			SessionName:      iris.GenerateSessionName(worktree, role),
+			SessionName:      iris.GenerateSessionName(worktree, resolvedRole),
 			Worktree:         worktree,
-			Role:             role,
+			Role:             resolvedRole,
 			BareRoot:         bareRoot,
 			PIBinaryPath:     cfg.PIBinaryPath,
 			ExtensionPath:    extPath,

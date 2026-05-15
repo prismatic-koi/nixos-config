@@ -301,6 +301,13 @@ func (d *toolDispatcher) runBash(ctx context.Context, frame ToolExecFrame) toolR
 		return toolResult{Success: false, IsError: true, Output: "bash: missing 'command' argument"}
 	}
 
+	// Role-keyed permission check (D-10 parity gate). Coordinator-only
+	// commands like `prism merge` are denied for non-coordinator roles
+	// before the subprocess is spawned. See internal/iris/bash_permission.go.
+	if allowed, reason := CheckBashPermission(d.role, command); !allowed {
+		return toolResult{Success: false, IsError: true, Output: reason}
+	}
+
 	// Run in the OS-specific sandbox.
 	result := d.runBashInSandbox(ctx, command)
 
