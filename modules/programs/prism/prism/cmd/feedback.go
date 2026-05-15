@@ -137,6 +137,17 @@ func runFeedbackRecord(cmd *cobra.Command, args []string) error {
 
 	entry := buildFeedbackEntry(text, time.Now().UTC())
 
+	// Sandbox proxy path: when $PRISM_HOST_API is set the process is running
+	// inside a bwrap worker sandbox whose filesystem namespace is ephemeral.
+	// Writes to ~/.local/state/prism/ inside the sandbox never reach the host,
+	// so the data would be silently lost on sandbox exit (issue #1644).
+	// Route through the host-API instead so the sidecar — which runs on the
+	// host — performs the actual append.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return runFeedbackRecordViaHostAPI(cmd, apiURL, entry)
+	}
+
+	// Host path: write directly to the local feedback store.
 	store, err := resolveFeedbackStore()
 	if err != nil {
 		return err
@@ -160,6 +171,28 @@ func runFeedbackRecord(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(),
 		"feedback recorded locally and sent upstream (status: %d)\n", status)
+	return nil
+}
+
+// runFeedbackRecordViaHostAPI proxies the feedback entry to the host-API
+// sidecar when running inside a bwrap sandbox (PRISM_HOST_API is set).
+// The sidecar appends the entry to the host's feedback.jsonl and returns
+// the resolved path, which is printed in the success message so the
+// worker sees where the data actually landed (AC: "message prints the path
+// the entry actually landed at").
+//
+// On any error (missing socket, HTTP error, malformed response) this
+// function returns a non-nil error and does NOT fall back to the sandbox-
+// internal write path — that fallback is the current failure mode this fix
+// is resolving (issue #1644).
+func runFeedbackRecordViaHostAPI(cmd *cobra.Command, apiURL string, entry feedback.Entry) error {
+	var resp struct {
+		Path string `json:"path"`
+	}
+	if err := proxyToHostAPI(apiURL, "/feedback", entry, &resp); err != nil {
+		return fmt.Errorf("feedback: host-API proxy failed (not writing to sandbox-local path): %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "feedback recorded via host-API (%s)\n", resp.Path)
 	return nil
 }
 

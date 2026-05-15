@@ -22,13 +22,19 @@ import (
 )
 
 // withTempFeedbackStore points the feedback store at a tempdir and clears
-// PRISM_FEEDBACK_ENDPOINT so tests don't accidentally hit the real one.
+// PRISM_FEEDBACK_ENDPOINT and PRISM_HOST_API so tests don't accidentally use
+// the real endpoint or proxy through the host-API of the developer's live
+// prism session.
 // Returns the on-disk path so individual tests can inspect the JSONL.
 func withTempFeedbackStore(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", dir)
 	t.Setenv(PRISMFeedbackEndpointEnv, "")
+	// Clear PRISM_HOST_API so tests that exercise the local-write path are not
+	// accidentally routed through the sandbox proxy (which would happen when the
+	// test binary runs inside a prism worker session where PRISM_HOST_API is set).
+	t.Setenv("PRISM_HOST_API", "")
 	return filepath.Join(dir, "prism", "feedback.jsonl")
 }
 
@@ -417,6 +423,139 @@ func TestFeedback_Record_ReadsEndpointFromConfigFile(t *testing.T) {
 	}
 	if _, statErr := os.Stat(storePath); statErr != nil {
 		t.Errorf("local store missing: %v", statErr)
+	}
+}
+
+// ── host-API proxy path (PRISM_HOST_API) ────────────────────────────────────
+
+// TestFeedback_Record_HostAPIProxy_Success verifies that when PRISM_HOST_API
+// is set, the entry is POSTed to the host-API /feedback endpoint and the
+// success message shows the path returned by the server. Nothing is written
+// to the local store (the current process is inside a sandbox and the local
+// path is ephemeral).
+func TestFeedback_Record_HostAPIProxy_Success(t *testing.T) {
+	// Point the local store to a tempdir so we can verify nothing was written
+	// locally by the proxy path.
+	local := withTempFeedbackStore(t)
+
+	var (
+		gotMethod string
+		gotBody   []byte
+	)
+	hostPath := "/host/state/prism/feedback.jsonl"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"path":"` + hostPath + `"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("PRISM_HOST_API", srv.URL)
+
+	out, err := runFeedbackCmd(t, "sandbox note")
+	if err != nil {
+		t.Fatalf("feedback via host-API: %v\nout=%s", err, out)
+	}
+
+	// Success message must show the host path (not the sandbox-local path).
+	if !strings.Contains(out, "host-API") {
+		t.Errorf("output missing 'host-API': %q", out)
+	}
+	if !strings.Contains(out, hostPath) {
+		t.Errorf("output missing host path %q: %q", hostPath, out)
+	}
+
+	// The entry must have been POSTed as JSON.
+	if gotMethod != http.MethodPost {
+		t.Errorf("method = %q, want POST", gotMethod)
+	}
+	var posted feedback.Entry
+	if err := json.Unmarshal(gotBody, &posted); err != nil {
+		t.Errorf("posted body not valid JSON: %v (raw: %s)", err, gotBody)
+	}
+	if posted.Text != "sandbox note" {
+		t.Errorf("posted text = %q, want 'sandbox note'", posted.Text)
+	}
+
+	// Nothing must have been written locally — the sandbox write path is the
+	// bug this fix resolves.
+	if _, statErr := os.Stat(local); statErr == nil {
+		data, _ := os.ReadFile(local)
+		t.Errorf("data unexpectedly written to local store: %s", data)
+	}
+}
+
+// TestFeedback_Record_HostAPIProxy_ErrorExitsNonZero verifies that when
+// PRISM_HOST_API is set but the host-API returns an error, the CLI exits
+// non-zero and does NOT silently write to the sandbox-internal path.
+func TestFeedback_Record_HostAPIProxy_ErrorExitsNonZero(t *testing.T) {
+	local := withTempFeedbackStore(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"append feedback: disk full"}`))
+	}))
+	defer srv.Close()
+	t.Setenv("PRISM_HOST_API", srv.URL)
+
+	_, err := runFeedbackCmd(t, "will fail")
+	if err == nil {
+		t.Fatalf("expected non-zero exit when host-API returns 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "host-API") {
+		t.Errorf("error %v: want mention of 'host-API'", err)
+	}
+
+	// Crucially: nothing written locally (no silent fallback).
+	if _, statErr := os.Stat(local); statErr == nil {
+		data, _ := os.ReadFile(local)
+		t.Errorf("data written locally despite host-API failure: %s", data)
+	}
+}
+
+// TestFeedback_Record_HostAPIProxy_UnreachableExitsNonZero verifies that when
+// PRISM_HOST_API is set but the socket is missing/unresponsive, the CLI exits
+// non-zero and does NOT silently write to the sandbox-internal path.
+func TestFeedback_Record_HostAPIProxy_UnreachableExitsNonZero(t *testing.T) {
+	local := withTempFeedbackStore(t)
+
+	// Point to a URL where nothing is listening.
+	t.Setenv("PRISM_HOST_API", "http://127.0.0.1:19999")
+
+	_, err := runFeedbackCmd(t, "unreachable")
+	if err == nil {
+		t.Fatalf("expected non-zero exit when host-API is unreachable, got nil")
+	}
+
+	// Nothing written locally.
+	if _, statErr := os.Stat(local); statErr == nil {
+		data, _ := os.ReadFile(local)
+		t.Errorf("data written locally despite unreachable host-API: %s", data)
+	}
+}
+
+// TestFeedback_Record_NoHostAPI_WritesLocally verifies that when PRISM_HOST_API
+// is NOT set (running from a host shell, not inside a sandbox), the existing
+// local-write path applies unchanged — no regression.
+func TestFeedback_Record_NoHostAPI_WritesLocally(t *testing.T) {
+	storePath := withTempFeedbackStore(t)
+	t.Setenv("PRISM_HOST_API", "") // explicitly unset
+
+	out, err := runFeedbackCmd(t, "host note")
+	if err != nil {
+		t.Fatalf("feedback: %v\nout=%s", err, out)
+	}
+	if !strings.Contains(out, "feedback recorded locally") {
+		t.Errorf("output missing 'feedback recorded locally': %q", out)
+	}
+	data, readErr := os.ReadFile(storePath)
+	if readErr != nil {
+		t.Fatalf("ReadFile %s: %v", storePath, readErr)
+	}
+	if !strings.Contains(string(data), "host note") {
+		t.Errorf("local store missing entry: %s", data)
 	}
 }
 
