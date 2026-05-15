@@ -515,3 +515,20 @@ func PiSessionPathFromSessionID(piAgentDir, encodedCwd, sessionID string) (strin
 	}
 	return "", fmt.Errorf("iris: pi session %q not found under %q", sessionID, sessionsDir)
 }
+
+// GenerateSessionName generates a default session name from a worktree path
+// and role. The format is "iris-<role>@<basename>" where basename is the
+// last path component of the worktree. This is used by the daemon when a
+// client sends a session_spawn frame without specifying a session name.
+//
+// Examples:
+//
+//	GenerateSessionName("/home/user/code/my-project", "worker")
+//	  → "iris-worker@my-project"
+func GenerateSessionName(worktree, role string) string {
+	base := filepath.Base(worktree)
+	if base == "" || base == "." || base == "/" {
+		base = "session"
+	}
+	return fmt.Sprintf("iris-%s@%s", role, base)
+}
