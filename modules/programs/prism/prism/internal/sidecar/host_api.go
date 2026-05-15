@@ -19,6 +19,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/feedback"
 	"github.com/prismatic-koi/prism/internal/harness"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
@@ -162,6 +163,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /event         — write a lifecycle event to the host DB (all roles)
 //	POST /escalate      — escalate to coordinator (worker sessions)
 //	POST /investigate   — spawn an investigate-agent session (worker sessions)
+//	POST /feedback      — append a feedback entry to the host feedback.jsonl (all roles)
 //
 // /db/query, /db/schema, /db/tables are coordinator-only because /db/query
 // exposes a strict superset of /checkin: raw cross-session payloads (e.g.
@@ -1748,6 +1750,60 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		s.logger().Printf("sidecar: host-API /event: kind=%s session=%s written to host DB", req.Kind, req.Session)
 		writeJSON(w, http.StatusOK, map[string]string{})
+	})
+
+	// POST /feedback
+	// Request:  feedback.Entry JSON (same struct used by cmd/feedback.go and
+	//           internal/feedback/feedback.go).
+	// Response: {"path":"<absolute path to feedback.jsonl>"} | {"error":"..."}
+	//
+	// Appends one feedback entry to the host's feedback.jsonl file. This is the
+	// proxy path for `prism feedback` invoked from inside a bwrap worker sandbox
+	// where the sandbox namespace is ephemeral — writes inside the sandbox never
+	// reach the host filesystem (issue #1644). The sidecar runs on the host, so
+	// its Append call lands in the real ~/.local/state/prism/feedback.jsonl.
+	//
+	// All roles (worker and coordinator) are permitted — feedback is intentionally
+	// low-privilege: any sandboxed child that can reach the host-API socket may
+	// record a note.
+	//
+	// The response includes the resolved path so the CLI can print it in the
+	// success message — the worker sees the host path, which is the same path
+	// `prism feedback list` will read from on the host (AC: "message prints the
+	// path the entry actually landed at").
+	mux.HandleFunc("/feedback", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var entry feedback.Entry
+		if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if strings.TrimSpace(entry.Text) == "" {
+			writeError(w, http.StatusBadRequest, "text is required")
+			return
+		}
+
+		// Resolve the host-side feedback store path. DefaultPath honours
+		// $XDG_STATE_HOME, which the test suite sets to a t.TempDir() so that
+		// the homeless-shelter gate (HOME=/homeless-shelter in nix sandbox) is
+		// avoided. The production path is the user's real state dir.
+		path, err := feedback.DefaultPath()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "resolve feedback path: "+err.Error())
+			return
+		}
+		store := feedback.NewStore(path)
+		if err := store.Append(entry); err != nil {
+			s.logger().Printf("sidecar: host-API /feedback: append: %v", err)
+			writeError(w, http.StatusInternalServerError, "append feedback: "+err.Error())
+			return
+		}
+
+		s.logger().Printf("sidecar: host-API /feedback: entry appended to %s", path)
+		writeJSON(w, http.StatusOK, map[string]string{"path": path})
 	})
 
 	// POST /escalate
