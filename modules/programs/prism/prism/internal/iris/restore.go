@@ -31,6 +31,7 @@ import (
 	piharness "github.com/prismatic-koi/prism/internal/harness/pi"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/git"
 )
 
 // RestoreConfig holds the parameters needed to run the restore sequence.
@@ -212,6 +213,10 @@ func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSe
 	superCfg.SessionName = sess.SessionName
 	superCfg.Worktree = sess.Worktree
 	superCfg.Role = sess.Role
+	// Derive the bare repo root from the worktree for 4-PAT GITHUB_TOKEN
+	// selection in the bash sandbox (D-5). Mirrors the pattern used in
+	// cmd/iris/main.go for the spawn and daemon paths.
+	superCfg.BareRoot = git.BareRoot(sess.Worktree)
 	superCfg.SessionContinuePath = jsonlPath
 	superCfg.Database = cfg.Database
 	superCfg.RunDir = cfg.RunDir
