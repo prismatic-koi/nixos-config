@@ -2,6 +2,7 @@
 //
 // D-3 adds: spawn, harness-socket dispatch, tool override registration.
 // D-6 adds: client IPC socket (iris.sock), session fan-out, subscribe/replay.
+// D-8 adds: bubbletea TUI (iris tui) — session list + live event stream + prompt delivery.
 // See docs/daemon-mode-design.md §3 and §4 for the architecture.
 //
 // Usage:
@@ -10,6 +11,7 @@
 //	iris version                                — same, as a subcommand
 //	iris daemon                                 — start the full daemon (client socket + sessions)
 //	iris spawn --worktree <path> [--role <role>] — spawn a pi session (no client socket)
+//	iris tui [--socket <path>]                  — open the bubbletea TUI
 package main
 
 import (
@@ -33,7 +35,7 @@ import (
 //
 // This intentionally does NOT reuse the prism version string or any
 // prism-internal ldflags variable — iris has its own identity.
-const irisVersion = "0.1.0-d6"
+const irisVersion = "0.1.0-d8"
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
@@ -66,6 +68,7 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(spawnCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(tuiCmd)
 	spawnCmd.Flags().StringVar(&spawnWorktree, "worktree", "", "Absolute path to the git worktree (required)")
 	spawnCmd.Flags().StringVar(&spawnRole, "role", "worker", "Agent role (worker, coordinator, etc.)")
 	spawnCmd.Flags().StringVar(&spawnExtension, "extension", "", "Path to the prism.ts extension file (overrides config)")

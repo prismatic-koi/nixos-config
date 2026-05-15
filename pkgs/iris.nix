@@ -14,7 +14,7 @@
 
 buildGoModule {
   pname = "iris";
-  version = "0.1.0-d4";
+  version = "0.1.0-d8";
 
   src = ../modules/programs/prism/prism;
 
