@@ -279,11 +279,18 @@ func (s *Sidecar) handleSessionFinished() {
 		// If reviewingInFlight, suppress finished — the worker is awaiting review
 		// results; it will transition to finished naturally after the
 		// review-complete prompt is delivered and the worker resolves the results.
+		//
+		// Note: we rely on the in-memory flag alone (not the DB state) because the
+		// DB state can be overwritten back to active by intermediate state_change
+		// frames while reviewingInFlight is still true (the TOCTOU race fixed by
+		// #1652). The flag has a clear, well-defined clearing path: only
+		// source="review-complete" prompt delivery clears it, so it cannot wedge
+		// the session. See handleSessionIdle for the SSE-path equivalent.
 		currentState := s.currentDBState()
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
 			return
 		}
-		if s.reviewingInFlight && currentState == agent.StateReviewing {
+		if s.reviewingInFlight {
 			s.logger().Printf("sidecar: finished debounce suppressed (cause=reviewing — awaiting review-complete prompt)")
 			return
 		}
@@ -345,6 +352,14 @@ func (s *Sidecar) handleSessionIdle() {
 		// If reviewingInFlight, suppress finished — the worker is awaiting review
 		// results; it will transition to finished naturally after the
 		// review-complete prompt is delivered and the worker resolves the results.
+		//
+		// Note: unlike handleSessionFinished (the PI socket-pipe path, fixed by
+		// #1652), this SSE path retains the AND with DB state deliberately. The
+		// monitor writes "active" to DB just before delivering the review-complete
+		// prompt via deliverViaHTTP (bypassing the sidecar's /prompt handler).
+		// That pre-delivery write is the signal that review is done; if we
+		// suppressed on reviewingInFlight alone here, the session would wedge
+		// after review-complete delivery on SSE-harness workers (#1384).
 		currentState := s.currentDBState()
 		if currentState == agent.StateInterrupted || currentState == agent.StateError {
 			return
