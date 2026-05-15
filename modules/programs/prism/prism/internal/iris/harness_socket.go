@@ -333,6 +333,8 @@ func (h *HarnessSocketServer) dispatchToolExec(ctx context.Context, w *jsonlWrit
 	dispatcher := &toolDispatcher{
 		worktree:   h.sess.Worktree,
 		tmpDir:     tmpDir,
+		role:       h.sess.Role,
+		bareRoot:   h.sess.BareRoot,
 		writer:     w,
 		abortCh:    abortCh,
 		toolExecID: frame.ID,
