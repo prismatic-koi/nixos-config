@@ -14,7 +14,23 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/tmuxstatus"
 )
+
+// statusColors returns the tmuxstatus.Colors palette derived from the loaded
+// prism theme (cmd/colors.go). Wrapped in a helper so the iris CLI and the
+// prism CLI can share the formatter implementation without sharing the
+// cmd-package theme globals — iris loads the same internal/config and builds
+// its own equivalent struct.
+func statusColors() tmuxstatus.Colors {
+	return tmuxstatus.Colors{
+		Yellow:  ColorYellow,
+		Purple:  ColorPurple,
+		Green:   ColorGreen,
+		Red:     ColorRed,
+		Primary: ColorPrimary,
+	}
+}
 
 var statusCmd = &cobra.Command{
 	Use:    "status",
@@ -90,11 +106,18 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		return renderStatusJSON(nActive, nWaiting, nIdle, nFinished, nError)
 	}
 
+	counts := tmuxstatus.Counts{
+		Active: nActive, Waiting: nWaiting, Idle: nIdle,
+		Finished: nFinished, Error: nError,
+	}
+
 	if waitingOnly {
 		if tmuxFormat {
 			// Emit a tmux-formatted colour string, or nothing if count is zero.
-			if nWaiting > 0 {
-				fmt.Printf("#[fg=%s]%d waiting #[fg=%s]| ", ColorYellow, nWaiting, ColorPrimary)
+			// The shared tmuxstatus.FormatWaiting helper guarantees the iris
+			// segment renders byte-identically to this one.
+			if s := tmuxstatus.FormatWaiting(counts, statusColors()); s != "" {
+				fmt.Print(s)
 			}
 		} else {
 			fmt.Println(nWaiting)
@@ -111,21 +134,8 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	// here, otherwise error sessions silently disappear from the status
 	// bar. Render in red so they're visually distinct from idle.
 	if tmuxFormat {
-		var parts []string
-		if nWaiting > 0 {
-			parts = append(parts, fmt.Sprintf("#[fg=%s]%d waiting", ColorYellow, nWaiting))
-		}
-		if nActive > 0 {
-			parts = append(parts, fmt.Sprintf("#[fg=%s]%d active", ColorPurple, nActive))
-		}
-		if nFinished > 0 {
-			parts = append(parts, fmt.Sprintf("#[fg=%s]%d done", ColorGreen, nFinished))
-		}
-		if nError > 0 {
-			parts = append(parts, fmt.Sprintf("#[fg=%s]%d error", ColorRed, nError))
-		}
-		if len(parts) > 0 {
-			fmt.Printf("%s #[fg=%s]| ", strings.Join(parts, " "), ColorPrimary)
+		if s := tmuxstatus.Format(counts, statusColors()); s != "" {
+			fmt.Print(s)
 		}
 	} else {
 		var parts []string

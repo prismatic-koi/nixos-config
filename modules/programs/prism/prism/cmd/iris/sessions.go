@@ -16,7 +16,6 @@ package main
 //
 // Out of scope for this command group (see #1669):
 //   - --all (no cross-repo model in iris)
-//   - --tmux-format on status (#1672)
 //   - sessions watch (use the TUI)
 //   - backward-compat aliases (iris is new; no legacy surface)
 //   - state/role/since filter flags
@@ -80,7 +79,17 @@ Without flags: a single human-readable line, e.g.
     active: 2  waiting: 0  finished: 1  error: 0
 
 With --json: a JSON object keyed by state with integer values, e.g.
-    {"active":2,"waiting":0,"idle":0,"finished":1,"error":0}`,
+    {"active":2,"waiting":0,"idle":0,"finished":1,"error":0}
+
+With --tmux-format: a tmux #[fg=...] colour-formatted segment suitable for
+embedding in tmux's status-right. Combine with --waiting to restrict the
+segment to just the waiting count (matching the prism segment shape).
+
+When the iris daemon is not running, --tmux-format and --waiting --tmux-format
+exit 0 with an empty string — tmux re-runs status-right continuously, so an
+error message there would be permanently visible in the status bar.
+
+--json and --tmux-format are mutually exclusive.`,
 	RunE:          runSessionsStatus,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -90,7 +99,9 @@ func init() {
 	sessionsListCmd.Flags().Bool("json", false, "Emit a JSON array of session objects instead of the human-readable table")
 	sessionsListCmd.Flags().String("socket", "", "Path to the iris daemon client socket (default: ~/.local/state/iris/iris.sock)")
 
-	sessionsStatusCmd.Flags().Bool("json", false, "Emit a JSON object keyed by state with integer counts")
+	sessionsStatusCmd.Flags().Bool("json", false, "Emit a JSON object keyed by state with integer counts (mutually exclusive with --tmux-format)")
+	sessionsStatusCmd.Flags().Bool("tmux-format", false, "Emit a tmux #[fg=...] colour-formatted segment suitable for status-right; exits 0 with empty output when the daemon is unreachable")
+	sessionsStatusCmd.Flags().Bool("waiting", false, "Restrict output to the waiting-session count (with --tmux-format, emits the prism-compatible waiting segment)")
 	sessionsStatusCmd.Flags().String("socket", "", "Path to the iris daemon client socket (default: ~/.local/state/iris/iris.sock)")
 
 	sessionsCmd.AddCommand(sessionsListCmd)

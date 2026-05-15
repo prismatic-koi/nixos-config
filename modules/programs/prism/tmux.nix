@@ -10,13 +10,17 @@ let
   isDarwin = pkgs.stdenv.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
-  # iris binary path, used by the prefix+i context-switcher popup binding
-  # (issue #1671). The iris module's `pkgs.iris` is enabled per-host via
-  # nx.programs.iris.enable, but the tmux binding is wired unconditionally:
-  # hosts that do not enable iris simply get a popup that fails fast with
-  # "iris daemon not running" (or "command not found" if the binary is
-  # missing). That is acceptable for the coexistence window — the binding
-  # is opt-in via the prism prefix, so it never fires unless the user asks.
+  # iris binary path. Two consumers share this path:
+  #   - the prefix+i context-switcher popup binding (issue #1671); and
+  #   - the tmux status-right iris segment (issue #1672), which calls
+  #     `iris sessions status --waiting --tmux-format` alongside the prism
+  #     equivalent during the iris coexistence window.
+  # The iris module's `nx.programs.iris.enable` gates whether the daemon
+  # runs, but both tmux integrations are wired unconditionally: hosts that
+  # do not enable iris see an empty status-right segment (the command
+  # gracefully degrades when the daemon socket is absent) and a popup
+  # binding that fails fast if pressed. Acceptable for the coexistence
+  # window — neither costs anything visible until the user opts in.
   irisPkg = pkgs.callPackage ../../../pkgs/iris.nix { };
   iris = "${irisPkg}/bin/iris";
 
@@ -131,7 +135,12 @@ in
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
               # set -g status-right "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}#{=21:pane_title} "
-              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#h "
+              # status-right composition (#1672): prism segment first, then the
+              # iris segment, then the hostname. Both segments emit empty
+              # strings when their respective daemons are down or have nothing
+              # waiting, so the visible bar collapses cleanly to just `#h `
+              # in the steady state.
+              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(${iris} sessions status --waiting --tmux-format)#h "
               set -g status-style 'bg=${bg1} fg=${secondary}'
               set -g message-style 'bg=${primary} fg=${bg1}'
               set -g mode-style 'bg=${bg3} fg=${foreground}'

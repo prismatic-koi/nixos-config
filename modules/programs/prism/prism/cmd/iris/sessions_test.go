@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -303,6 +304,177 @@ func TestFormatUptime(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("formatUptime(%q): got %q, want %q", tc.started, got, tc.want)
 		}
+	}
+}
+
+// TestRenderStatusWaitingPlain asserts `--waiting` (no --tmux-format) prints
+// the integer waiting count followed by a newline. Mirrors `prism sessions
+// status --waiting`.
+func TestRenderStatusWaitingPlain(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusWaitingPlain(&buf, sessionStateCounts{Waiting: 3, Active: 7}); err != nil {
+		t.Fatalf("renderStatusWaitingPlain: %v", err)
+	}
+	if got := buf.String(); got != "3\n" {
+		t.Errorf("got %q, want %q", got, "3\n")
+	}
+}
+
+// TestRenderStatusTmux_WaitingZeroIsEmpty asserts the AC: zero-waiting under
+// --waiting --tmux-format produces no output (so the tmux status segment
+// vanishes when nothing is waiting).
+func TestRenderStatusTmux_WaitingZeroIsEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusTmux(&buf, sessionStateCounts{Active: 5, Finished: 2}, true); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected empty output for zero waiting, got %q", buf.String())
+	}
+}
+
+// TestRenderStatusTmux_WaitingNonZero asserts the --waiting --tmux-format
+// output contains a tmux #[fg=...] colour escape and the waiting count.
+// Exact byte-shape is locked down in the shared tmuxstatus package's tests;
+// here we just confirm the wiring (counts + colour palette) is plumbed
+// through.
+func TestRenderStatusTmux_WaitingNonZero(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusTmux(&buf, sessionStateCounts{Waiting: 4}, true); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "4 waiting") {
+		t.Errorf("expected '4 waiting' in output: %q", out)
+	}
+	if !strings.Contains(out, "#[fg=") {
+		t.Errorf("expected a tmux #[fg=...] colour escape in output: %q", out)
+	}
+	if !strings.HasSuffix(out, "| ") {
+		t.Errorf("expected trailing '| ' separator: %q", out)
+	}
+}
+
+// TestRenderStatusTmux_FullEmptyWhenNothingActionable asserts the full
+// (non-waiting) tmux-format renderer also collapses to empty when there's
+// nothing worth showing in the status bar (only idle, or no sessions).
+func TestRenderStatusTmux_FullEmptyWhenNothingActionable(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusTmux(&buf, sessionStateCounts{Idle: 3}, false); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected empty output for idle-only counts, got %q", buf.String())
+	}
+}
+
+// TestRenderStatusTmux_FullFoldsSpawningIntoActive asserts that the full
+// tmux segment surfaces spawning sessions under the active pip — operator
+// perspective: a session coming up is "in flight".
+func TestRenderStatusTmux_FullFoldsSpawningIntoActive(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusTmux(&buf, sessionStateCounts{Active: 1, Spawning: 2}, false); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	if !strings.Contains(buf.String(), "3 active") {
+		t.Errorf("expected '3 active' (1 active + 2 spawning), got %q", buf.String())
+	}
+}
+
+// TestSessionsStatusCmd_JSONAndTmuxFormatMutuallyExclusive asserts the AC:
+// passing both flags errors before any I/O happens (the error must surface
+// even if the daemon is unreachable, so it must be a flag-parse-time check).
+func TestSessionsStatusCmd_JSONAndTmuxFormatMutuallyExclusive(t *testing.T) {
+	// Snapshot and restore the flag values around the test so we don't leak
+	// state into other tests sharing the package-level cobra command.
+	jsonOrig := sessionsStatusCmd.Flag("json").Value.String()
+	tmuxOrig := sessionsStatusCmd.Flag("tmux-format").Value.String()
+	defer func() {
+		_ = sessionsStatusCmd.Flags().Set("json", jsonOrig)
+		_ = sessionsStatusCmd.Flags().Set("tmux-format", tmuxOrig)
+	}()
+
+	if err := sessionsStatusCmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+	if err := sessionsStatusCmd.Flags().Set("tmux-format", "true"); err != nil {
+		t.Fatalf("set --tmux-format: %v", err)
+	}
+
+	err := runSessionsStatus(sessionsStatusCmd, nil)
+	if err == nil {
+		t.Fatal("expected error when --json and --tmux-format both set, got nil")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("expected 'mutually exclusive' in error, got: %v", err)
+	}
+}
+
+// TestSessionsStatusCmd_TmuxFormat_DaemonDownIsSilent asserts the
+// graceful-degradation AC: when the daemon is unreachable AND --tmux-format
+// is set, the command exits 0 with empty output (so the tmux status bar
+// does not display a connection-refused error).
+//
+// The non-tmux variant still surfaces the error (operators running the
+// command interactively want to know the daemon is down).
+func TestSessionsStatusCmd_TmuxFormat_DaemonDownIsSilent(t *testing.T) {
+	// Point at a guaranteed-non-existent socket path so fetchSessionsSnapshot
+	// fails fast with a clear "daemon not running" error.
+	bogusSock := t.TempDir() + "/no-such-iris.sock"
+
+	// Snapshot & restore flag state.
+	sockOrig := sessionsStatusCmd.Flag("socket").Value.String()
+	tmuxOrig := sessionsStatusCmd.Flag("tmux-format").Value.String()
+	waitOrig := sessionsStatusCmd.Flag("waiting").Value.String()
+	defer func() {
+		_ = sessionsStatusCmd.Flags().Set("socket", sockOrig)
+		_ = sessionsStatusCmd.Flags().Set("tmux-format", tmuxOrig)
+		_ = sessionsStatusCmd.Flags().Set("waiting", waitOrig)
+		sessionsStatusCmd.SetContext(nil)
+	}()
+	// cobra populates cmd.Context() during Execute(); when we invoke RunE
+	// directly we have to set it ourselves or the context.WithTimeout call
+	// in runSessionsStatus panics on a nil parent.
+	sessionsStatusCmd.SetContext(context.Background())
+	if err := sessionsStatusCmd.Flags().Set("socket", bogusSock); err != nil {
+		t.Fatalf("set --socket: %v", err)
+	}
+
+	// 1. --tmux-format alone: must exit 0 with empty output.
+	if err := sessionsStatusCmd.Flags().Set("tmux-format", "true"); err != nil {
+		t.Fatalf("set --tmux-format: %v", err)
+	}
+	var out bytes.Buffer
+	sessionsStatusCmd.SetOut(&out)
+	if err := runSessionsStatus(sessionsStatusCmd, nil); err != nil {
+		t.Fatalf("--tmux-format with daemon down: expected nil error, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("--tmux-format with daemon down: expected empty output, got %q", out.String())
+	}
+
+	// 2. --waiting --tmux-format: same graceful-degradation behaviour.
+	if err := sessionsStatusCmd.Flags().Set("waiting", "true"); err != nil {
+		t.Fatalf("set --waiting: %v", err)
+	}
+	out.Reset()
+	if err := runSessionsStatus(sessionsStatusCmd, nil); err != nil {
+		t.Fatalf("--waiting --tmux-format with daemon down: expected nil error, got %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("--waiting --tmux-format with daemon down: expected empty output, got %q", out.String())
+	}
+
+	// 3. Without --tmux-format the error must still surface (interactive use).
+	if err := sessionsStatusCmd.Flags().Set("tmux-format", "false"); err != nil {
+		t.Fatalf("unset --tmux-format: %v", err)
+	}
+	if err := sessionsStatusCmd.Flags().Set("waiting", "false"); err != nil {
+		t.Fatalf("unset --waiting: %v", err)
+	}
+	out.Reset()
+	if err := runSessionsStatus(sessionsStatusCmd, nil); err == nil {
+		t.Errorf("plain mode with daemon down: expected error, got nil (output=%q)", out.String())
 	}
 }
 
