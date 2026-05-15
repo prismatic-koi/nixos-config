@@ -29,8 +29,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/narrative"
 	"github.com/prismatic-koi/prism/internal/iris/tui"
 )
+
+// renderEventForTest is a thin alias so the existing TestNarrativeRenderEvent
+// assertions keep working after narrative.go moved from internal/iris/tui to
+// internal/iris/narrative (issue #1676). The rendering itself is identical;
+// only the package home changed.
+var renderEventForTest = narrative.RenderEvent
 
 // ---------------------------------------------------------------------------
 // TestNoDBImport — compile-time audit: the tui package must not import internal/db
@@ -628,7 +635,7 @@ func TestDisconnectedState(t *testing.T) {
 func TestNarrativeRenderEvent(t *testing.T) {
 	t.Run("state_change", func(t *testing.T) {
 		p, _ := json.Marshal(map[string]string{"state": "active"})
-		lines := tui.RenderEvent(1, "state_change", string(p))
+		lines := renderEventForTest(1, "state_change", string(p))
 		if len(lines) == 0 {
 			t.Fatal("no lines rendered for state_change")
 		}
@@ -646,7 +653,7 @@ func TestNarrativeRenderEvent(t *testing.T) {
 			"text":      "I'll help with that.",
 			"agent":     "worker",
 		})
-		lines := tui.RenderEvent(2, "msg_assistant", string(p))
+		lines := renderEventForTest(2, "msg_assistant", string(p))
 		if len(lines) < 2 {
 			t.Fatalf("expected 2 lines for msg_assistant, got %d", len(lines))
 		}
@@ -663,7 +670,7 @@ func TestNarrativeRenderEvent(t *testing.T) {
 			"messageId": "mid-2",
 			"text":      "Please fix the bug.",
 		})
-		lines := tui.RenderEvent(3, "msg_user", string(p))
+		lines := renderEventForTest(3, "msg_user", string(p))
 		if len(lines) < 2 {
 			t.Fatalf("expected 2 lines for msg_user, got %d", len(lines))
 		}
@@ -681,7 +688,7 @@ func TestNarrativeRenderEvent(t *testing.T) {
 			"args":      `{"command":"go test ./..."}`,
 			"messageId": "mid-3",
 		})
-		lines := tui.RenderEvent(4, "tool_call", string(p))
+		lines := renderEventForTest(4, "tool_call", string(p))
 		if len(lines) == 0 {
 			t.Fatal("no lines for tool_call")
 		}
@@ -698,7 +705,7 @@ func TestNarrativeRenderEvent(t *testing.T) {
 			"tool":      "bash",
 			"messageId": "mid-4",
 		})
-		lines := tui.RenderEvent(5, "permission_ask", string(p))
+		lines := renderEventForTest(5, "permission_ask", string(p))
 		if len(lines) == 0 {
 			t.Fatal("no lines for permission_ask")
 		}
@@ -708,21 +715,21 @@ func TestNarrativeRenderEvent(t *testing.T) {
 	})
 
 	t.Run("turn_start_collapsed", func(t *testing.T) {
-		lines := tui.RenderEvent(6, "turn_start", `{}`)
+		lines := renderEventForTest(6, "turn_start", `{}`)
 		if len(lines) != 0 {
 			t.Errorf("turn_start should be collapsed, got %d lines", len(lines))
 		}
 	})
 
 	t.Run("turn_end_collapsed", func(t *testing.T) {
-		lines := tui.RenderEvent(7, "turn_end", `{}`)
+		lines := renderEventForTest(7, "turn_end", `{}`)
 		if len(lines) != 0 {
 			t.Errorf("turn_end should be collapsed, got %d lines", len(lines))
 		}
 	})
 
 	t.Run("unknown_event", func(t *testing.T) {
-		lines := tui.RenderEvent(8, "future_event_type", `{}`)
+		lines := renderEventForTest(8, "future_event_type", `{}`)
 		if len(lines) == 0 {
 			t.Fatal("unknown event should produce at least one line")
 		}
