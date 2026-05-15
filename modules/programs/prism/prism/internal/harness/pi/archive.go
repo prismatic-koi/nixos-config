@@ -2,26 +2,40 @@ package pi
 
 // archive.go — PI implementation of harness/archive.ArchiveAdapter (B6.PI).
 //
-// PI stores session data as JSONL files on disk (RFC #606 "Session persistence":
-// "JSONL files with a tree structure (parent/child IDs for branching)").
+// PI stores session data as JSONL files on disk.
 // Unlike some harnesses, PI has no SQLite database — it is a pure flat-file store.
 //
-// Source path layout (confirmed via PI_CODING_AGENT_SESSION_DIR env var and
-// PI's --help which shows "~/.pi/agent/sessions/" as the export example path):
+// Source path layout (authoritative reference: docs/pi-rpc-interface.md Q5,
+// confirmed against pi 0.72.1 dist/core/session-manager.js line 213):
 //
-//   ~/.pi/agent/sessions/<harness_session_id>/
-//       session.jsonl        — the full conversation transcript
-//       [additional *.jsonl files per branch or compaction round]
+//	~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 //
-// The PI_CODING_AGENT_DIR defaults to ~/.pi/agent and session storage is a
-// subdirectory of it. The XDG path ~/.local/share/pi/sessions/ does NOT
-// exist — it was incorrectly assumed in issue #1419.
+// The <encoded-cwd> directory name is derived from the session's working
+// directory (p.Worktree) via encodePiCWD. The formula mirrors pi's own JS:
 //
-// Archive copies all *.jsonl files from the session directory into raw/.
-// Export normalises the raw JSONL to pi-mono v3 session.jsonl (currently a
-// near-identity pass since PI's JSONL is already pi-mono-shaped; the main
-// operation is stripping PI-internal fields prism does not consume and
-// canonicalising timestamps).
+//	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--
+//
+// Strip the leading '/' (or '\'), replace every '/', '\', and ':' with '-',
+// wrap in "--…--". Example:
+//
+//	/home/ben/code/nixos-config/main → --home-ben-code-nixos-config-main--
+//
+// The session UUID (HarnessSessionID) is embedded in the filename, NOT used as
+// a directory name. The adapter locates the session file by scanning the
+// encoded-cwd directory for an entry matching "*_<HarnessSessionID>.jsonl".
+//
+// For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes to the
+// per-session staging HOME instead of the real home directory (bug #1538 fix).
+// The staging HOME is ~/.local/state/prism/sessions/<instance_id>/home/.
+// The worktree path that pi sees as its CWD is the same as the host worktree
+// path (sandbox-exec mounts it at its native path, only $HOME is remapped).
+// Therefore the encoded-cwd is derived from p.Worktree in both cases; only the
+// sessions root base (home) differs between host and sandbox-exec modes.
+//
+// Archive copies the single matched JSONL file into rawDir/session.jsonl so
+// that Export (which expects raw/session.jsonl) finds it without further change.
+// Export currently performs a near-identity normalisation pass (PI's on-disk
+// JSONL is already pi-mono v3 shaped).
 
 import (
 	"context"
@@ -45,23 +59,33 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 	return &piArchiveAdapter{}
 }
 
-// SourcePath returns the host-side PI session directory for the session.
+// SourcePath returns the host-side PI session JSONL file path for the session.
 //
-// PI stores sessions under $HOME/.pi/agent/sessions/<harness_session_id>/.
-// This matches PI_CODING_AGENT_DIR (defaults to ~/.pi/agent) with the sessions/
-// subdirectory appended, and is confirmed by PI's own --help example path.
-// The harness_session_id is populated at session-create time when PI starts.
-// When HarnessSessionID is empty (PI failed to start), SourcePath returns the
-// sessions root directory; the caller handles the missing-directory case.
+// PI stores sessions at:
 //
-// For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes to the
-// staging HOME instead of the real home directory. The staging HOME path is:
-//   ~/.local/state/prism/sessions/<instance_id>/home/
-// So PI's session directory is <stagingHome>/.pi/agent/sessions/<harness_session_id>.
-// Bug #1538 fix #2: using os.UserHomeDir() for sandbox-exec sessions pointed at
-// the wrong directory — PI never wrote there.
+//	~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
+//
+// where <encoded-cwd> is derived from p.Worktree via encodePiCWD, and <uuid>
+// matches p.HarnessSessionID. The adapter scans the encoded-cwd directory for
+// a file whose name ends in "_<HarnessSessionID>.jsonl" and returns its path.
+// If no match is found, a sentinel path inside the encoded-cwd dir is returned;
+// Archive treats non-existent paths as a no-op.
+//
+// When HarnessSessionID is empty (harness failed to start), or Worktree is
+// empty (non-worktree session), SourcePath returns the sessions root; Archive's
+// os.IsNotExist handling treats it as a no-op.
+//
+// For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes under
+// the staging HOME (<stagingHome>/.pi/agent/sessions/...) instead of the real
+// home directory. The worktree path pi uses as its CWD is the same host path in
+// both modes (sandbox-exec mounts the worktree at its native path), so the
+// encoded-cwd is derived from p.Worktree in both cases. Bug #1538 fix: only
+// the home base differs for sandbox-exec sessions.
+//
+// See docs/pi-rpc-interface.md Q5 for the authoritative path specification.
 func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, error) {
 	var home string
+
 	if p.IsolationMode == "sandbox-exec" && p.InstanceID != "" {
 		// sandbox-exec: PI writes into the per-session staging HOME, not
 		// the real home directory. Use the same path formula as
@@ -78,44 +102,69 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 			return "", fmt.Errorf("pi archive: resolve home: %w", err)
 		}
 	}
+
 	sessionsRoot := filepath.Join(home, ".pi", "agent", "sessions")
-	if p.HarnessSessionID == "" {
+
+	if p.HarnessSessionID == "" || p.Worktree == "" {
+		// No session ID or no worktree: return sessions root.
+		// Archive's os.IsNotExist tolerance handles the missing-dir case.
 		return sessionsRoot, nil
 	}
-	return filepath.Join(sessionsRoot, p.HarnessSessionID), nil
+
+	// Compute the encoded-cwd directory name from the worktree path.
+	encodedCWD := encodePiCWD(p.Worktree)
+	cwdDir := filepath.Join(sessionsRoot, encodedCWD)
+
+	// Scan the encoded-cwd directory for a file matching *_<HarnessSessionID>.jsonl.
+	suffix := "_" + p.HarnessSessionID + ".jsonl"
+	entries, err := os.ReadDir(cwdDir)
+	if os.IsNotExist(err) {
+		// Directory doesn't exist yet — return a sentinel path that Archive
+		// will treat as missing (os.IsNotExist → no-op).
+		return filepath.Join(cwdDir, "session_"+p.HarnessSessionID+".jsonl"), nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("pi archive: scan session dir %q: %w", cwdDir, err)
+	}
+
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			return filepath.Join(cwdDir, e.Name()), nil
+		}
+	}
+
+	// No matching file — return a sentinel; Archive's IsNotExist path applies.
+	log.Printf("pi archive: SourcePath: no file matching *%s in %q — session may not have written any data", suffix, cwdDir)
+	return filepath.Join(cwdDir, "session_"+p.HarnessSessionID+".jsonl"), nil
 }
 
-// Archive copies PI's JSONL session files from srcPath into rawDir.
+// Archive copies PI's JSONL session file from srcPath into rawDir/session.jsonl.
 //
-// All *.jsonl files found in srcPath are copied flat into rawDir. Subdirectory
-// traversal is intentionally shallow (RFC #606 describes the session directory
-// as a flat set of JSONL files). Missing files within srcPath are tolerated;
-// real I/O errors are propagated.
+// srcPath is expected to be a single file (the session JSONL), as returned by
+// SourcePath. If the path does not exist or is a directory (the latter occurs
+// when HarnessSessionID was empty and SourcePath returned the sessions root),
+// Archive returns nil and rawDir is left empty — preserving the no-op contract
+// for sessions where PI never started.
 //
-// When srcPath does not exist (PI failed to start or produced no output),
-// Archive returns nil and rawDir is left empty.
+// The destination is always named "session.jsonl" so that Export's expectation
+// is met regardless of the timestamp prefix in the source filename.
 func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, rawDir string, _ harnessarchive.SourceParams) error {
-	entries, err := os.ReadDir(srcPath)
+	fi, err := os.Stat(srcPath)
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("pi archive: read dir %q: %w", srcPath, err)
+		return fmt.Errorf("pi archive: stat %q: %w", srcPath, err)
+	}
+	if fi.IsDir() {
+		// SourcePath returned a directory (e.g. sessions root when
+		// HarnessSessionID is empty). Nothing to copy — no-op.
+		return nil
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".jsonl") {
-			continue
-		}
-		src := filepath.Join(srcPath, name)
-		dst := filepath.Join(rawDir, name)
-		if err := copyFile(src, dst); err != nil {
-			return fmt.Errorf("pi archive: copy %q → %q: %w", src, dst, err)
-		}
+	dst := filepath.Join(rawDir, "session.jsonl")
+	if err := copyFile(srcPath, dst); err != nil {
+		return fmt.Errorf("pi archive: copy %q → %q: %w", srcPath, dst, err)
 	}
 	return nil
 }
@@ -153,6 +202,22 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 		return "", nil
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// encodePiCWD encodes an absolute directory path to the directory name pi uses
+// for its session storage. The formula mirrors pi 0.72.1
+// dist/core/session-manager.js line 213:
+//
+//	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--
+//
+// In Go terms: strip the leading '/' or '\', replace every occurrence of '/',
+// '\', and ':' with '-', then wrap in "--…--".
+func encodePiCWD(cwd string) string {
+	// Strip leading slash or backslash.
+	stripped := strings.TrimLeft(cwd, "/\\")
+	// Replace path separators and Windows drive colons with dashes.
+	replaced := strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(stripped)
+	return "--" + replaced + "--"
 }
 
 // copyFile copies the file at src to dst, creating dst if necessary.
