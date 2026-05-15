@@ -47,7 +47,7 @@ type MsgUser struct {
 // calculated as (inputTokens / contextWindowSize) * 100. Zero means
 // "not available" (model context window size unknown or inputTokens absent).
 //
-// Cost is the cost of the turn in USD as reported directly by the opencode
+// Cost is the cost of the turn in USD as reported directly by the agent
 // event payload. This is populated for providers (e.g. openrouter) that
 // report cost in the event metadata but are not in the local pricing table.
 // Zero means "not available" — use the local pricing table instead.
@@ -183,7 +183,7 @@ type DoomLoopDetected struct {
 
 // Audit is the payload for audit events, written when a high-impact bash
 // command is executed (e.g. gh pr merge, git push, prism spawn). These events
-// are promoted from the ephemeral opencode DB to the persistent prism DB so
+// are promoted from the ephemeral agent DB to the persistent prism DB so
 // they survive worktree cleanup.
 //
 // The Command field contains the full command string as passed to the bash tool.

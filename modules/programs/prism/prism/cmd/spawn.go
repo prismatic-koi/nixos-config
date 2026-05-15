@@ -245,7 +245,7 @@ func init() {
 	spawnCmd.Flags().String("pr", "", "PR number — check out its branch")
 	spawnCmd.Flags().String("repo", "", "Repo shorthand name or absolute path (default: inferred from current pane)")
 	addPromptFlags(spawnCmd)
-	spawnCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
+	spawnCmd.Flags().String("agent", "", `Agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	spawnCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	spawnCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	spawnCmd.Flags().StringArray("abtest", nil, "A/B test: spawn two sessions with the given profile names (e.g. --abtest profileA --abtest profileB); mutually exclusive with --profile")
@@ -600,7 +600,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	//
 	// IMPORTANT: the path key used here must match the one used by Manager
 	// internally. Manager.name = container.NameForSession(tmuxSessionName)
-	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
+	// (e.g. "prism-nixos-config-feat"), and Manager.harnessConfigFilePath()
 	// calls HarnessConfigFilePath(m.name). The Isolator.WriteHarnessConfigBlob
 	// method translates the prism session name to the container name internally
 	// so this call site stays mode-agnostic (D3, issue #1133).
@@ -631,7 +631,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// Resolve harness-specific env var names and runtime env vars.
 	// These are populated from the harness adapter and threaded through
 	// SpawnOpts → Opts → buildDirectOpencodeCmd so that no
-	// opencode-specific string literals appear in the session package.
+	// harness-specific string literals appear in the session package.
 	// harnessFlag was already validated above, so the error is unreachable.
 	h, _ := harness.New(harnessFlag, "", nil, "", "")
 	spawnOpts := session.SpawnOpts{
@@ -659,12 +659,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// read-only mount ensures even a denylist gap cannot modify the repo).
 		WorktreeReadOnly: agentRole == "investigate",
 		// ReadinessTimeout=DefaultReadinessTimeout (30s) gates SpawnSession's
-		// return on opencode actually binding its port (#1051 AC-14).
+		// return on the agent actually binding its port (#1051 AC-14).
 		// Single-worker spawns benefit from the same readiness check that
 		// review fan-outs do: an operator running `prism spawn --branch foo`
 		// sees a clear "failed to start: not ready within 30s" instead of
 		// "session created" followed by a session that idles forever
-		// because opencode never came up.
+		// because the agent never came up.
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	// For socket-pipe harnesses (e.g. "pi") in host isolation mode, pre-compute

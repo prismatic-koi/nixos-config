@@ -4,7 +4,7 @@ package cmd
 //
 // Coverage:
 //   - runSpawn rejects unknown harness values before any state is created
-//   - runSpawn accepts "opencode" (explicitly or as default)
+//   - runSpawn accepts "pi" (explicitly or as default)
 //   - proxySpawn forwards the harness field only when explicitly set (#1421)
 //   - proxySpawn omits the harness field when --harness is not explicitly passed (#1421)
 
@@ -59,8 +59,8 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 	}
 }
 
-// TestRunSpawn_HarnessOpencode_Explicit_PassesValidation verifies that when
-// --harness opencode is set explicitly, the validation passes (no harness error).
+// TestRunSpawn_HarnessPi_Explicit_PassesValidation verifies that when
+// --harness pi is set explicitly, the validation passes (no harness error).
 //
 // We intentionally exercise the validation only — not the full spawn flow —
 // by ensuring PRISM_HOST_API is unset and the command does not have a valid
@@ -74,7 +74,7 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 // resolveBareRoot falls through to CurrentPanePath which reads the live tmux
 // pane path — potentially a nixos-config worktree — causing runSpawn to create
 // real worktrees, DB rows, and tmux sessions in the live environment. See #1180.
-func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
+func TestRunSpawn_HarnessPi_Explicit_PassesValidation(t *testing.T) {
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
 	cmd.Flags().String("pr", "", "")
@@ -111,9 +111,9 @@ func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 }
 
 // TestRunSpawn_HarnessDefault_PassesValidation verifies that when --harness is
-// omitted (defaults to "opencode"), the validation passes.
+// omitted (defaults to "pi"), the validation passes.
 //
-// Same approach as TestRunSpawn_HarnessOpencode_Explicit_PassesValidation: the
+// Same approach as TestRunSpawn_HarnessPi_Explicit_PassesValidation: the
 // command will fail after the harness check, but not on the harness itself.
 // See that test's IMPORTANT ISOLATION comment for the PRISM_SPAWN_PATH rationale.
 func TestRunSpawn_HarnessDefault_PassesValidation(t *testing.T) {
@@ -128,10 +128,10 @@ func TestRunSpawn_HarnessDefault_PassesValidation(t *testing.T) {
 	cmd.Flags().Bool("attach", false, "")
 	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
-	// No --harness flag set — stays at default "opencode".
+	// No --harness flag set — stays at default "pi".
 
 	t.Setenv("PRISM_HOST_API", "")
-	// See TestRunSpawn_HarnessOpencode_Explicit_PassesValidation for why
+	// See TestRunSpawn_HarnessPi_Explicit_PassesValidation for why
 	// PRISM_SPAWN_PATH must be a non-git temp dir rather than empty string.
 	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
 	t.Setenv("PRISM_BARE_ROOT", "")
@@ -224,7 +224,7 @@ func TestProxySpawn_HarnessAbsentWhenNotExplicit(t *testing.T) {
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "default-harness")
-	// harness stays at default ("opencode") but is NOT explicitly changed
+	// harness stays at default ("pi") but is NOT explicitly changed
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)

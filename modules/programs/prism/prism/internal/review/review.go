@@ -23,7 +23,7 @@
 // Readiness gate (#1051 Piece A):
 //
 // Each per-agent session.SpawnSession call only returns "the tmux session was
-// created and the sidecar process was kicked off" — opencode itself runs
+// created and the sidecar process was kicked off" — the agent itself runs
 // inside the bwrap/podman/host process the tmux pane launches, several steps
 // further along, and may take seconds to bind its TCP port (≈8.5s observed
 // in the worst healthy case captured in #1051) or never bind at all if
@@ -33,10 +33,10 @@
 //
 // Each gate calls session.WaitForReady, which polls the DB for either:
 //   - any state_change event (the sidecar wrote one when the first SSE event
-//     arrived from opencode, which can only happen after opencode bound its
+//     arrived from the agent, which can only happen after the agent bound its
 //     port), or
 //   - agent_status.harness_session_id becoming non-NULL (the sidecar saw
-//     opencode's session.created event).
+//     the agent's session.created event).
 //
 // The default per-agent readiness window is 30s
 // (DefaultReviewReadinessTimeout). On timeout, the gate emits
@@ -57,7 +57,7 @@
 // covering the gap between "session created in DB" and "first SSE event
 // arrives at the sidecar" — exactly the window in which the silent failure
 // reported by #1051 occurs. The bwrap-side stderr lands in agent-run.log in
-// the same directory; together they cover the full pre-opencode startup
+// the same directory; together they cover the full pre-agent startup
 // timeline.
 //
 // Async Ack contract (#1051 Piece C):
@@ -246,12 +246,12 @@ type Opts struct {
 	Worktree string
 	// Agents is the list of review agents to spawn.
 	Agents []Agent
-	// Harness is the runtime harness to use ("opencode").
+	// Harness is the runtime harness to use (e.g. "pi").
 	Harness string
 	// HarnessExplicit is true when the caller explicitly set --harness on the
 	// command line. When true, Harness takes precedence over the profile slot's
 	// harness field. When false, the profile slot's harness field wins (and
-	// Harness is the default "opencode" value).
+	// Harness is the default "pi" value).
 	HarnessExplicit bool
 	// RuntimeEnvVars holds harness-specific environment variables to inject
 	// into each spawned agent session (host-mode only; container-mode sessions
@@ -263,7 +263,7 @@ type Opts struct {
 	Timeout time.Duration
 	// DBPath is the path to the prism database. If empty, the default is used.
 	DBPath string
-	// PluginHostPath is the path to the opencode plugin file.
+	// PluginHostPath is the path to the agent plugin file.
 	PluginHostPath string
 	// ProfilesFile is the loaded profiles.json, used to resolve per-agent
 	// config content via BuildConfigContent. When nil, no config injection is

@@ -39,7 +39,7 @@ const (
 	// dials it on a TCP port. Health checks are HTTP probes against
 	// a known endpoint. Event delivery is server-sent events (SSE) or
 	// long-polling. Prompts are POSTed; the response status code is the
-	// delivery acknowledgement. Examples: opencode (today),
+	// delivery acknowledgement. Examples: pi (today),
 	// Claude Code (planned).
 	TransportHTTPPort TransportShape = "http-port"
 
@@ -120,8 +120,8 @@ type Registration struct {
 	Factory Factory
 
 	// ContainerFactory, when non-nil, is the factory used in container
-	// mode. It exists because the opencode adapter today exposes
-	// opencode.New / opencode.NewContainerMode as two separate
+	// mode. It exists because some adapters expose
+	// New / NewContainerMode as two separate
 	// constructors that differ in CreateSession and DeliverInitialPrompt
 	// semantics. Other harnesses (stdio especially) probably need a
 	// single Factory; ContainerFactory is opt-in.
@@ -159,7 +159,7 @@ var (
 // duplicate Name. MustRegister panics on the same conditions and is
 // the form intended for init().
 //
-//	// in internal/harness/opencode/register.go
+//	// in internal/harness/<name>/register.go
 //	func init() {
 //	    harness.MustRegister(harness.Registration{
 //	        Name:             "pi",
@@ -212,7 +212,7 @@ func Lookup(name string) (Registration, bool) {
 
 // Names returns the registered harness names in deterministic order
 // (sorted ascending). Used by:
-//   - the --harness flag's validation error message ("valid: opencode, pi"),
+//   - the --harness flag's validation error message ("valid: pi"),
 //   - the host-API /spawn handler's allow-list,
 //   - dashboard / stats display.
 func Names() []string {
@@ -231,8 +231,8 @@ func Names() []string {
 // httpClient / agentRole / agentModel arguments are forwarded to the
 // registered Factory verbatim.
 //
-// Replaces the hard-coded opencode.New(...) calls at cmd/sidecar.go:296
-// and the construction-only-for-side-effects opencode.New("", nil, "", "")
+// Replaces the hard-coded harness constructor calls at cmd/sidecar.go:296
+// and the construction-only-for-side-effects harness.New("", nil, "", "")
 // calls in cmd/spawn.go, cmd/agent_run.go, cmd/restore.go, cmd/switch.go,
 // cmd/pr.go, cmd/review.go.
 func New(name, endpoint string, httpClient *http.Client, agentRole, agentModel string) (Harness, error) {
@@ -267,7 +267,7 @@ func NewWithModelOverrides(name, endpoint string, httpClient *http.Client, agent
 // otherwise Factory is used. Returns an error if the name is not
 // registered.
 //
-// Replaces the hard-coded opencode.NewContainerMode(...) call at
+// Replaces the hard-coded NewContainerMode(...) call at
 // cmd/sidecar.go:294.
 func NewContainer(name, endpoint string, httpClient *http.Client, agentRole, agentModel string) (Harness, error) {
 	reg, ok := Lookup(name)

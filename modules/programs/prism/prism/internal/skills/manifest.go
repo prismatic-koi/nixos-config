@@ -24,7 +24,7 @@ package skills
 //
 // # Opencode skill-loading lifecycle
 //
-// Skills are loaded once at session initialisation by opencode's Skill.state
+// Skills are loaded once at session initialisation by the agent's Skill.state
 // Ref (Effect-TS q.make call in the Skill service layer). The scan runs
 // Z2() which walks the skills directories synchronously before the session
 // event loop starts. After that point the skills set is frozen for the
@@ -35,8 +35,8 @@ package skills
 // skills_manifest_hash_end column on sessions is NOT needed; the spawn-time
 // value is authoritative for the full session.
 //
-// (This conclusion was reached by reading the opencode 1.14.18 JS bundle.
-// If a future opencode version adds dynamic re-scanning, add
+// (This conclusion was reached by reading the agent JS bundle.
+// If a future agent version adds dynamic re-scanning, add
 // skills_manifest_hash_end TEXT on the sessions table to capture session-end
 // state, and file a TODO here.)
 

@@ -16,14 +16,14 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Delegate opencode-specific event type extraction to the harness adapter.
-	// opencode sends all events as plain `data:` lines with no `event:` field;
+	// Delegate harness-specific event type extraction to the harness adapter.
+	// Some harnesses send all events as plain `data:` lines with no `event:` field;
 	// the real event type is embedded in the JSON `type` field of the payload.
 	eventType := s.harness.ExtractEventType(evt)
 
 	s.logger().Printf("sidecar: event: %s", eventType)
 
-	// Gap 1b: log the first event received from opencode (once per session).
+	// Gap 1b: log the first event received from the agent (once per session).
 	if !s.firstEventLogged {
 		s.firstEventLogged = true
 		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
@@ -31,21 +31,21 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 
 		// Bwrap path `[timing]` markers (#1052). The podman path emits these
 		// from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
-		// mode opencode is launched by the tmux pane (via prism agent-run)
+		// mode the agent is launched by the tmux pane (via prism agent-run)
 		// and the sidecar's only signal of readiness is the first SSE event,
 		// so the markers are emitted here.
 		//
-		//   - opencode listening: equivalent to the podman WaitHealthy ok
-		//     marker — opencode's HTTP endpoint is reachable, since SSE has
+		//   - agent listening: equivalent to the podman WaitHealthy ok
+		//     marker — the agent's HTTP endpoint is reachable, since SSE has
 		//     successfully connected and delivered an event.
 		//   - ready: the sidecar is processing events. In bwrap there is no
-		//     CreateSession step (opencode is started with --prompt by
+		//     CreateSession step (the agent is started with --prompt by
 		//     agent-run, so the session pre-exists), which means listening
 		//     and ready coincide. Both lines are still emitted so the bwrap
 		//     and podman timelines have the same shape for grepping.
 		//   - prompt delivered: when InitialPrompt is non-empty, the prompt
-		//     was supplied to opencode via --prompt at agent-run time. From
-		//     the sidecar's POV "delivered" is observable when opencode
+		//     was supplied to the agent via --prompt at agent-run time. From
+		//     the sidecar's POV "delivered" is observable when the agent
 		//     starts emitting events — the prompt is in flight by then.
 		//     Emitted at the same moment for symmetry with the podman line
 		//     at sidecar.go:489.
@@ -62,11 +62,11 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	case "server.connected":
 		s.handleServerConnected()
 	case "server.heartbeat":
-		// Periodic keep-alive emitted by opencode when running in --prompt
+		// Periodic keep-alive emitted by the agent when running in --prompt
 		// (server-only) mode without an interactive TUI. In that mode
 		// session.created is never emitted on the SSE stream (the session
 		// pre-exists by the time the sidecar connects), so the heartbeat is
-		// the only signal that opencode is alive and the port is up.
+		// the only signal that the agent is alive and the port is up.
 		// Write a state_change to agent_events so WaitForReady's DB poll
 		// unblocks — but only once, and only if no state has been written yet
 		// (i.e. lastState is still empty), to avoid stomping on a real state
@@ -119,7 +119,7 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 
 // ── event handlers (must be called with s.mu held) ──────────────────────────
 
-// handleServerHeartbeat is called when opencode emits server.heartbeat.
+// handleServerHeartbeat is called when the agent emits server.heartbeat.
 // In --prompt (server-only) mode the TUI is absent and session.created is
 // never emitted, so the heartbeat is the only liveness signal the sidecar
 // receives before the agent starts working. We treat the first heartbeat as
@@ -132,7 +132,7 @@ func (s *Sidecar) handleServerHeartbeat() {
 	s.writeStateChange(agent.StateActive)
 }
 
-// handleServerConnected is called when opencode sends the server.connected
+// handleServerConnected is called when the agent sends the server.connected
 // event on each new SSE connection. On the initial connection the sidecar has
 // no prior state (lastState is empty) so this is a no-op. On reconnects the
 // sidecar may have been in active state when the connection dropped, in which
@@ -160,8 +160,8 @@ func (s *Sidecar) handleServerConnected() {
 		}
 		// Suppress if reviewingInFlight AND the DB still shows "reviewing".
 		// For socket-pipe (pi) sessions, reviewingInFlight is cleared by the
-		// /prompt handler when source='review-complete'. For opencode-harness
-		// sessions, the monitor delivers via deliverViaHTTP (opencode's
+		// /prompt handler when source='review-complete'. For HTTP-harness
+		// sessions, the monitor delivers via deliverViaHTTP (the harness
 		// prompt_async API), bypassing /prompt entirely — so reviewingInFlight
 		// stays true. The monitor writes "active" to the DB just before
 		// delivering, so checking currentDBState() == StateReviewing detects
@@ -235,13 +235,13 @@ func (s *Sidecar) handleSessionStatus(evt harness.HarnessEvent) {
 
 // handleSessionFinished is the PI-path handler for state_change{finished}
 // frames (protocol v2, issue #1434). It applies the same 2 s debounce as
-// the opencode handleSessionIdle path: on timer fire it writes StateFinished
+// the SSE handleSessionIdle path: on timer fire it writes StateFinished
 // and calls notifyCoordinator(), subject to the existing role-policy
 // suppression in notifyCoordinator. The debounce is cancelled if a turn_start
 // frame arrives before the timer fires (Gap 1 fix from #1430, preserved here).
 //
 // This function is only called from handlePipeFrame (PI socket-pipe path).
-// The opencode SSE path retains handleSessionIdle below.
+// The SSE path retains handleSessionIdle below.
 func (s *Sidecar) handleSessionFinished() {
 	// Cancel any in-flight debounce or recovery timer first.
 	s.cancelIdleTimer()
@@ -301,11 +301,11 @@ func (s *Sidecar) handleSessionFinished() {
 	})
 }
 
-// handleSessionIdle is the opencode-SSE-path handler for the session.idle
-// event. It adapts the third-party opencode vocabulary (session.idle) into the
+// handleSessionIdle is the SSE-path handler for the session.idle
+// event. It adapts the harness vocabulary (session.idle) into the
 // sidecar's StateFinished transition via the same 2 s debounce mechanism.
 //
-// This function is only called from the opencode SSE dispatcher in
+// This function is only called from the SSE dispatcher in
 // handleOpenCodeEvent. The PI socket-pipe path uses handleSessionFinished
 // (renamed in #1434) to handle state_change{finished} frames instead.
 func (s *Sidecar) handleSessionIdle() {
@@ -450,7 +450,7 @@ func (s *Sidecar) handleSessionUpdated(evt harness.HarnessEvent) {
 	case agent.StateError:
 		// Resume from error: only transition to active if we are outside the
 		// post-error debounce window. Within ErrorResumeDebounce of the last
-		// session.error, this event is treated as post-error churn that opencode
+		// session.error, this event is treated as post-error churn that the agent
 		// emits in the same millisecond burst (session.error → session.updated),
 		// not as a genuine user-initiated resume. After the window, genuine
 		// resumes (e.g. user presses Enter) transition normally.
@@ -527,7 +527,7 @@ func (s *Sidecar) handleSessionError(evt harness.HarnessEvent) {
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
 		// Record the error time so handleSessionUpdated can suppress the
-		// post-error session.updated churn that opencode emits in the same
+		// post-error session.updated churn that the agent emits in the same
 		// millisecond as session.error (see ErrorResumeDebounce).
 		s.lastErrorAt = s.cfg.Clock.Now()
 		s.logger().Printf("sidecar: transition -> error (cause=error_finish)")
@@ -753,7 +753,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		s.lastAssistantAgent = agentName
 		// If the root agent just completed, clear the tracking so the
 		// next session.idle can proceed normally to finished. Also start
-		// the idle debounce timer immediately: opencode emits only one
+		// the idle debounce timer immediately: the agent emits only one
 		// session.idle per agent cycle (before the root agent writes its
 		// final message), so a second session.idle may never arrive after
 		// the root agent appends its handoff message. Starting the timer
@@ -772,11 +772,11 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			s.logger().Printf("sidecar: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
 
-			// Start the idle debounce timer immediately. opencode emits only
+			// Start the idle debounce timer immediately. The agent emits only
 			// one session.idle per agent cycle — the idle fires after the
 			// subagent returns, before the root agent writes its final turn.
 			// The root agent then appends its handoff message, but because the
-			// session was already idle from opencode's perspective, no second
+			// session was already idle from the agent's perspective, no second
 			// session.idle is emitted. Starting the timer here ensures the
 			// session always reaches finished even when no second idle arrives
 			// (#538).

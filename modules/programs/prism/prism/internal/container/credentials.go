@@ -22,7 +22,7 @@ import (
 // Sets m.claudeCredentialsReady to true on success so that buildRunArgs can
 // add the bind-mount. Logs and returns without error on failure — a missing
 // Keychain entry (e.g. not logged in) should surface as an auth error from
-// opencode rather than a hard container launch failure.
+// the agent harness rather than a hard container launch failure.
 func (m *Manager) writeClaudeCredentials() {
 	m.claudeCredentialsReady = false
 	if runtime.GOOS != "darwin" {
@@ -131,7 +131,7 @@ func (m *Manager) credentialEnvVars() []string {
 	// Keys intentionally NOT forwarded:
 	//   ATLASSIAN_SITE/EMAIL/API_TOKEN — atlassian CLI removed; OAuth PKCE used.
 	//   OPENAI_API_KEY    — speculative; no OpenAI provider configured.
-	//   GEMINI_API_KEY    — speculative; Google auth uses opencode-gemini-auth OAuth.
+	//   GEMINI_API_KEY    — speculative; Google auth uses a Gemini OAuth plugin.
 	//   GOOGLE_API_KEY    — speculative; same as GEMINI_API_KEY.
 	//   GITHUB_COPILOT_TOKEN — speculative; Copilot provider uses its own auth flow.
 	//   DEEPSEEK_API_KEY  — speculative; not populated and no consumer in-repo.
@@ -180,7 +180,7 @@ func (m *Manager) credentialEnvVars() []string {
 
 	// Note: GIT_DIR and GIT_COMMON_DIR are intentionally NOT injected.
 	// Instead, Create() writes a corrected .git pointer file and bind-mounts it
-	// over /workspace/.git so all tools — including opencode's internal git
+	// over /workspace/.git so all tools — including the agent's internal git
 	// library which reads .git directly rather than honouring GIT_DIR — resolve
 	// the correct container-internal path (#492).
 	// GIT_COMMON_DIR breaks ref lookup in the git version used in the container

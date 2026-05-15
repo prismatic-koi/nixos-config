@@ -294,7 +294,7 @@ func runStatsSummary() error {
 		events, _ := d.AllSessionEvents(s.SessionName)
 		grouped, order := groupEventsByHarnessSessionID(events)
 		// For the summary table, accumulate tokens, cost, and duration across
-		// all opencode sessions within the tmux session. Cost is summed per-session
+		// all agent sessions within the tmux session. Cost is summed per-session
 		// (each session uses its own model's pricing) rather than applying a single
 		// model's rate to all tokens — critical for sessions that spanned model changes.
 		var totalInput, totalOutput int
@@ -414,10 +414,10 @@ func runStatsHistorical(days int) error {
 
 	for session, evts := range bySession {
 		totalSessions++
-		// Sum across all opencode sessions within this tmux session.
+		// Sum across all agent sessions within this tmux session.
 		grouped, order := groupEventsByHarnessSessionID(evts)
 		// Hoist status lookup outside the inner loop to avoid N+1 queries when
-		// multiple opencode SID groups have no model data.
+		// multiple harness SID groups have no model data.
 		st, _ := d.CurrentStatus(session)
 		var sessionCost float64
 		var sessionDur time.Duration
@@ -532,7 +532,7 @@ func runStatsSession(session string, detail bool) error {
 	// Group events by harness_session_id.
 	grouped, order := groupEventsByHarnessSessionID(events)
 
-	// Build a sessionMetrics per opencode session.
+	// Build a sessionMetrics per agent session.
 	var allMetrics []*sessionMetrics
 	for _, key := range order {
 		m := collectMetrics(grouped[key], key)
@@ -555,9 +555,9 @@ func runStatsSession(session string, detail bool) error {
 	}
 
 	// Determine rendering mode:
-	// - Exactly one opencode session, no legacy group → detailed block
+	// - Exactly one agent session, no legacy group → detailed block
 	// - Only legacy group (all NULL-sid events), no real sessions → detailed block labelled legacy
-	// - Multiple opencode sessions, OR mixed legacy+real, OR --detail flag → compact table or forced detail
+	// - Multiple agent sessions, OR mixed legacy+real, OR --detail flag → compact table or forced detail
 	nonLegacyCount := 0
 	hasLegacy := false
 	for _, key := range order {
@@ -570,7 +570,7 @@ func runStatsSession(session string, detail bool) error {
 
 	// Use detailed block only for pure single-session cases (no mixing with legacy).
 	if !detail && nonLegacyCount == 1 && !hasLegacy {
-		// Exactly one opencode session, no legacy data — detailed block format.
+		// Exactly one agent session, no legacy data — detailed block format.
 		for _, m := range allMetrics {
 			if !m.isLegacy() {
 				renderSessionDetail(m)

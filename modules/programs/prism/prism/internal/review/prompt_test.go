@@ -4,7 +4,7 @@ package review_test
 //
 // These tests exercise the role-definition splice behaviour introduced in
 // issue #1439: the full role rubric is now embedded inline in the prompt so
-// that every harness (opencode, PI, etc.) receives it without relying on an
+// that every harness (pi, etc.) receives it without relying on an
 // out-of-band system-prompt injection.
 
 import (

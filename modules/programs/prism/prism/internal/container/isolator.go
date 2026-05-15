@@ -250,7 +250,7 @@ type Isolator interface {
 	// list for the sandbox launcher. Bwrap returns the bwrap argv;
 	// sandbox-exec returns the sandbox-exec argv. Podman/host return nil
 	// args and a non-nil error — they do not use this dispatch path
-	// (podman uses Create; host runs opencode directly in the tmux pane).
+	// (podman uses Create; host runs the agent directly in the tmux pane).
 	// Cites: internal/container/container.go:581 (Manager.PrepareBwrap);
 	//        internal/container/container.go:637 (Manager.PrepareSandboxExec).
 	Prepare(ctx context.Context, m *Manager) ([]string, error)
@@ -258,19 +258,19 @@ type Isolator interface {
 	// Create starts a new isolated session: writes any pre-launch temp
 	// files, builds the launcher arg list, and runs it under the supplied
 	// context. Today only podman implements a non-stub body — bwrap and
-	// sandbox-exec use Prepare + cmd/agent-run, and host runs opencode
+	// sandbox-exec use Prepare + cmd/agent-run, and host runs the agent
 	// directly in the tmux pane. Non-podman implementations return nil
 	// (host) or an error noting that Create is not the right entry point
 	// for that mode (bwrap, sandbox-exec).
 	// Cites: internal/container/lifecycle.go:79 (Manager.Create body).
 	Create(ctx context.Context, m *Manager) error
 
-	// AgentRun executes the agent (opencode) inside this isolation mode.
+	// AgentRun executes the agent binary inside this isolation mode.
 	// Bwrap and sandbox-exec own a real implementation: they reconstruct
 	// the container.Config from the supplied AgentRunOpts, materialise
 	// temp files, and exec/spawn the sandbox launcher with PTY and signal
 	// forwarding. Host returns an error because `prism agent-run`
-	// is not the entry point for that mode (host runs opencode directly
+	// is not the entry point for that mode (host runs the agent directly
 	// in the tmux pane).
 	// Cites: cmd/agent_run.go:90 (runAgentRun dispatch);
 	//        cmd/agent_run.go:128-143 (per-mode switch).

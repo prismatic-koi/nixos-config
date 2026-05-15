@@ -3,7 +3,7 @@
 // The sidecar subscribes to the agent runtime's event stream (via a
 // harness.Harness adapter) and translates events into agent state transitions,
 // DB writes, and dashboard sentinel touches — replicating the logic in
-// opencode/plugins/prism-hooks.ts.
+// pi/plugins/prism-hooks.ts.
 //
 // Host-API socket path budget. The Unix socket the sidecar binds for the
 // host-API server (Config.HostAPISockPath) must fit the kernel's sun_path
@@ -19,7 +19,7 @@
 // All runtime-specific logic (session creation, prompt delivery, SSE
 // subscription, event type mapping, message extraction, container command,
 // health check, config mount path) is delegated to the Harness interface.
-// The concrete implementation used in production is internal/harness/opencode.
+// The concrete implementation used in production is internal/harness/pi.
 // The Harness value is injected at construction time via Config.Harness
 // (Phase 0a of the multi-harness migration, RFC #691).
 //
@@ -84,7 +84,7 @@ const ReconnectRecoveryDelay = 60 * time.Second
 // transition the session from error to active. After this window, a genuine
 // user-initiated resume (session.updated) transitions normally.
 //
-// The opencode runtime emits a rapid burst of events in the same millisecond
+// The agent runtime emits a rapid burst of events in the same millisecond
 // after an error (session.error → session.status → session.updated → session.idle),
 // and the session.updated is internal housekeeping, not a user action. Without
 // this guard, the false resume would erase the error state and the coordinator
@@ -139,7 +139,7 @@ type Config struct {
 	// agent for follow-up messages (#557).
 	AgentRole string
 	// AgentModel is the model identifier for the agent role (e.g.
-	// "anthropic/claude-sonnet-4-6"), read from the opencode config at startup.
+	// "anthropic/claude-sonnet-4-6"), read from the harness config at startup.
 	// When non-empty it is seeded into root_model_id in the DB so that
 	// buildPromptBody can include the model in the prompt_async body (#557).
 	AgentModel string
@@ -147,7 +147,7 @@ type Config struct {
 	// it takes precedence over AgentModel for any role present in the map.
 	// The map is passed directly to the harness adapter at construction time.
 	ModelsByRole map[string]string
-	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// HarnessName is the registered harness name (e.g. "pi"). When
 	// non-empty, Run consults harness.ShapeOf(HarnessName) at the top of the
 	// function to determine the transport shape and route to the appropriate
 	// startup helper (runStartupHTTP or runStartupStdio). When empty, Run
@@ -176,8 +176,8 @@ type Config struct {
 	// typed caps rather than raw mode strings or the Container!=nil proxy.
 	IsolationMode config.IsolationMode
 	// Container, when non-nil, enables container mode: the sidecar creates and
-	// manages a podman container running opencode in combined TUI + HTTP mode
-	// instead of relying on a directly-launched opencode process.
+	// manages a podman container running the agent in combined TUI + HTTP mode
+	// instead of relying on a directly-launched agent process.
 	Container *container.Config
 	// HostAPISockPath, when non-empty, is the path at which the sidecar starts a
 	// Unix socket HTTP server exposing host-side tmux operations to agents running
@@ -194,7 +194,7 @@ type Config struct {
 	// No-op when nil.
 	OnReady func()
 	// InitialPrompt, when non-empty, is passed to the container via
-	// opencode --prompt <text> at startup. The opencode process creates its
+	// agent --prompt <text> at startup. The agent process creates its
 	// session with the prompt already in flight so the conversation is visible
 	// in the TUI from the start. The sidecar then calls CreateSession (GET
 	// /session) to discover the session ID for subsequent prism prompt delivery.
@@ -269,7 +269,7 @@ type Sidecar struct {
 	// in-flight assistant messages. Used to compute TTFT when the first text
 	// part arrives. Keyed by message ID; entries are deleted when the message
 	// is written (same lifecycle as textByMessage). Messages abandoned mid-turn
-	// (e.g. opencode interrupted) are not cleaned up; this matches the existing
+	// (e.g. agent interrupted) are not cleaned up; this matches the existing
 	// textByMessage behaviour and is acceptable for short-lived sidecar processes.
 	msgCreatedAtMs map[string]float64
 	// ttftByMessage tracks the computed TTFT (ms) for each assistant message,
@@ -325,7 +325,7 @@ type Sidecar struct {
 	lastTitle string
 	// lastErrorAt records the time when handleSessionError last wrote StateError
 	// for a non-MessageAbortedError. Used by handleSessionUpdated to suppress
-	// false resumes caused by the post-error session.updated churn that opencode
+	// false resumes caused by the post-error session.updated churn that the agent
 	// emits in the same millisecond as session.error. Protected by s.mu.
 	lastErrorAt time.Time
 	// spawnTime records when the sidecar Run() began; used to compute elapsed
@@ -377,11 +377,11 @@ type Sidecar struct {
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
-	// TransportSocketPipe path only — opencode-harness sessions bypass /prompt).
+	// TransportSocketPipe path only — HTTP-harness sessions bypass /prompt).
 	//
 	// The suppress guards in events.go additionally check currentDBState() ==
 	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
-	// write ("active") lands, even on opencode-harness sessions where
+	// write ("active") lands, even on HTTP-harness sessions where
 	// reviewingInFlight is never cleared via /prompt. See #1384.
 	//
 	// Protected by s.mu.
@@ -490,7 +490,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// produces a partially-functional agent: bwrap exec proceeds with
 			// PRISM_HOST_API set but nothing listening, so anything inside the
 			// container that hits the host-API channel hangs or fails in a
-			// downstream way that prevents opencode from ever binding its TCP
+			// downstream way that prevents the agent from ever binding its TCP
 			// port. The agent then appears as "idle" with no title, the SSE
 			// loop retries forever, and the user has no clear signal that
 			// anything is wrong. Returning the error here surfaces it via the
@@ -541,7 +541,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// B.3 Stage 2: Start the merge-queue watcher for coordinator sessions.
 	// This is transport-agnostic and must run for ALL transport shapes so that
 	// PI coordinator sessions receive merge-queue notifications exactly like
-	// opencode coordinator sessions.
+	// HTTP-harness coordinator sessions.
 	//
 	// The watcher polls the pending_merges head on a 45s ticker and drives PRs
 	// through the merge lifecycle. It is started only when:
@@ -635,7 +635,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
-	// Start the host-API TCP server — Darwin only, for HTTP-port (opencode
+	// Start the host-API TCP server — Darwin only, for HTTP-port (pi
 	// container) sessions. The TCP listener is bound inside runStartupHTTP
 	// (before container creation, so the port is known at container launch
 	// time). We start the server goroutine here, after runStartupHTTP returns,
@@ -897,7 +897,7 @@ func (s *Sidecar) Shutdown() {
 }
 
 // runStartupHTTP runs the HTTP-port startup sequence for TransportHTTPPort
-// harnesses (e.g. opencode). It is called from Run when the harness transport
+// harnesses (e.g. pi). It is called from Run when the harness transport
 // shape is TransportHTTPPort (or when HarnessName is empty for back-compat).
 //
 // When OwnsContainerLifecycle is false (bwrap / host mode), this function is a
@@ -1019,12 +1019,12 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
 		// Discover the session ID and deliver the initial prompt (#487).
-		// In container mode (opencode --prompt "text"), the prompt was already
-		// delivered via the CLI flag — opencode starts the session and begins
+		// In container mode (agent --prompt "text"), the prompt was already
+		// delivered via the CLI flag — the agent starts the session and begins
 		// processing immediately. The sidecar still needs the session ID for
 		// subsequent prism prompt follow-up delivery.
 		//
-		// 1. GET /session  — retrieve the session opencode already created
+		// 1. GET /session  — retrieve the session the agent already created
 		//    (via --prompt on CLI). In non-container mode, POST /session creates
 		//    a new session. The harness adapter handles both cases.
 		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
@@ -1173,7 +1173,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 	// Check whether the harness implements FrameNormaliser (B5.TR Translate
 	// strategy). When it does, NormaliseFrame is called for each raw JSONL line
-	// to produce opencode-shaped payloads before writing to agent_events. When
+	// to produce pi-shaped payloads before writing to agent_events. When
 	// the harness does not implement FrameNormaliser, the legacy fallback path
 	// below is used (which writes raw frames for state_change and msg_assistant,
 	// and raw JSON bytes for all other event types).
@@ -1208,7 +1208,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 
 		if hasNormaliser {
 			// B5.TR path: the harness adapter normalises PI frames to
-			// opencode-shaped payloads at write time. The normaliser is
+			// pi-shaped payloads at write time. The normaliser is
 			// responsible for logging unknown event types at info level
 			// (not silently dropping them) per the edge-case AC.
 			eventType, normPayload, shouldWrite := normaliser.NormaliseFrame(line)
@@ -1941,7 +1941,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.lastAssistantAgent = agentName
 		// When the root agent just completed its turn, clear lastAssistantAgent
 		// so the next state_change{finished} starts the debounce normally
-		// (mirrors the opencode handleMessageUpdated behaviour for root-agent completion).
+		// (mirrors the handleMessageUpdated behaviour for root-agent completion).
 		if agentName != "" && agentName == s.rootAgent {
 			s.logger().Printf("sidecar: pi turn_end: lastAssistantAgent cleared (root agent completed)")
 			s.lastAssistantAgent = ""
@@ -2230,7 +2230,7 @@ func (s *Sidecar) Abort() {
 // The returned bool is true when bwrap is used.
 //
 // Sandbox design: the sandbox is intentionally minimal for the stdio transport
-// shape. Unlike the opencode bwrap sandbox (which mounts a full NixOS tree for
+// shape. Unlike the pi bwrap sandbox (which mounts a full NixOS tree for
 // a long-lived interactive session), the stdio harness is a short-lived,
 // non-interactive process whose only output is the JSONL stream on stdout.
 // The minimal sandbox provides:

@@ -169,7 +169,7 @@ var prCmd = &cobra.Command{
 			return err
 		}
 
-		// For bwrap sessions, write the opencode.json config file to disk now
+		// For bwrap sessions, write the harness config file to disk now
 		// so it is present before the agent pane opens. prism agent-run
 		// reconstructs a container.Manager from DB state (which does not carry
 		// ConfigContent), so the file must be written here via the deterministic
@@ -178,14 +178,14 @@ var prCmd = &cobra.Command{
 		//
 		// Podman mode does NOT need this write — the sidecar's Create() path
 		// already writes the file before the container starts. Host mode does
-		// NOT need this write — it uses ~/.config/opencode/opencode.json
+		// NOT need this write — it uses the host harness config
 		// directly via xdg.configFile. sandbox-exec mode does NOT yet use this
 		// path — config delivery for sandbox-exec is deferred to #1016 (no
 		// bwrap-equivalent mount mechanism exists yet).
 		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(tmuxSessionName),
-		// and Manager.opencodeConfigFilePath() calls HarnessConfigFilePath(m.name).
+		// and Manager.harnessConfigFilePath() calls HarnessConfigFilePath(m.name).
 		// Isolator.WriteHarnessConfigBlob translates the prism session name to the
 		// container name internally so this call site stays mode-agnostic (D3,
 		// issue #1133). Mirrors the pattern in spawn.go.
@@ -237,7 +237,7 @@ var prCmd = &cobra.Command{
 func init() {
 	prCmd.Flags().String("repo", "", "Target repo name under ~/code, or full path")
 	addPromptFlags(prCmd)
-	prCmd.Flags().String("agent", "", `Opencode agent to use (default: "coordinator" on main, "worker" otherwise)`)
+	prCmd.Flags().String("agent", "", `Agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
 	prCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	prCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")

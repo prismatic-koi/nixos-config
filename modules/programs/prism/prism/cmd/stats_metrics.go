@@ -10,7 +10,7 @@ import (
 
 // ---------- legacy per-session detail (kept for --doomloops/denials/asks) ----------
 
-// sessionMetrics holds aggregated metrics for a single opencode session.
+// sessionMetrics holds aggregated metrics for a single agent session.
 type sessionMetrics struct {
 	SessionName      string
 	HarnessSessionID string // empty string = legacy sentinel (NULL harness_session_id)
@@ -28,7 +28,7 @@ type sessionMetrics struct {
 	CacheReadTokens  int
 	CacheWriteTokens int
 
-	// EventCost is the sum of per-turn costs reported directly in the opencode
+	// EventCost is the sum of per-turn costs reported directly in the agent
 	// SSE event payload (MsgAssistant.Cost). It is used as a fallback when the
 	// model is not present in the local modelCosts pricing table — for example,
 	// openrouter/* models that are billed at rates not known to this client.
@@ -261,7 +261,7 @@ type modelMetrics struct {
 	Provider     string
 	Model        string
 	Turns        int
-	Sessions     map[string]struct{} // distinct opencode session IDs
+	Sessions     map[string]struct{} // distinct harness session IDs
 	DurationsMs  []float64           // durationMs values for P50 (zero values excluded)
 	TtftMs       []float64           // ttftMs values for P50 (zero/absent values excluded)
 	TokPerSec    []float64           // output tokens/sec per turn (zero-duration turns excluded)
@@ -276,7 +276,7 @@ type modelMetrics struct {
 // throughput calculations.
 //
 // Sessions are counted by distinct harness_session_id (not session_name) so that
-// long-lived tmux sessions with multiple opencode sessions are counted correctly.
+// long-lived tmux sessions with multiple agent sessions are counted correctly.
 // Events with a NULL harness_session_id are counted as distinct sessions only if the
 // session_name is distinct — they're bucketed by session_name as a fallback.
 func collectModelMetrics(events []db.Event) map[string]*modelMetrics {

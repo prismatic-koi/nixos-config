@@ -1632,7 +1632,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 //
 // This test exercises the seeding path by running review.Run in non-container
 // host mode with a single agent and verifying the DB row's root_agent_name is
-// set after spawn (even if the full session fails due to no real opencode).
+// set after spawn (even if the full session fails due to no real agent).
 // Because the tmux-session-start call happens asynchronously inside
 // session.Create, and we cannot easily intercept it in a unit test without a
 // live tmux server, we instead verify the DB state after the initial
@@ -2122,7 +2122,7 @@ func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 
 // TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort verifies that review.Run
 // does NOT abort the fan-out prematurely when all review slots are present in
-// the active profile. In host mode with no real opencode, SpawnSession will
+// the active profile. In host mode with no real agent, SpawnSession will
 // fail for other reasons — but the RequireSlot gate must not be the cause.
 func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
@@ -2143,7 +2143,7 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	ctx := context.Background()
 	_, err := review.Run(ctx, opts, nil)
 
-	// We expect some error (no real opencode running), but it must NOT be a
+	// We expect some error (no real agent running), but it must NOT be a
 	// RequireSlot / "fan-out aborted" error.
 	if err != nil && findSubstring(err.Error(), "fan-out aborted") {
 		t.Errorf("Run aborted on RequireSlot check despite all slots being present: %v", err)

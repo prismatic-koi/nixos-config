@@ -243,7 +243,7 @@ func scriptCmdArgs(cmd string) []string {
 //     runs but the PTY slave cannot become the controlling terminal for tmux's
 //     client process, so the client never appears in list-clients.
 //
-//  2. opencode/prism bwrap sandbox: detects via /proc/1/comm == "bwrap". This
+//  2. prism bwrap sandbox: detects via /proc/1/comm == "bwrap". This
 //     sandbox uses --unshare-pid so bwrap itself is PID 1. In this environment
 //     a single script-attached client works, but a second concurrent attachment
 //     causes both clients to exit immediately due to bwrap devpts namespace
@@ -263,7 +263,7 @@ func insideSandbox() bool {
 	if os.Getenv("NIX_BUILD_TOP") != "" {
 		return true
 	}
-	// opencode/prism bwrap sandbox: PID 1 is the bwrap binary itself.
+	// prism bwrap sandbox: PID 1 is the bwrap binary itself.
 	comm, err := os.ReadFile("/proc/1/comm")
 	if err != nil {
 		return false
@@ -276,7 +276,7 @@ func insideSandbox() bool {
 //
 // In the nix build sandbox (detectable via $NIX_BUILD_TOP), script(1) runs
 // but tmux's client process cannot acquire a controlling terminal, so the
-// client never appears in list-clients. In the opencode bwrap sandbox
+// client never appears in list-clients. In the prism bwrap sandbox
 // (/proc/1/comm == "bwrap"), a second concurrent script-attached client causes
 // both clients to exit immediately. On a GitHub Actions runner step
 // (GITHUB_ACTIONS=true) script(1) cannot supply a controlling TTY for the

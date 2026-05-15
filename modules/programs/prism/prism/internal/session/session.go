@@ -49,16 +49,16 @@ func openDB() (*db.DB, error) {
 
 // Opts carries optional parameters for session creation.
 type Opts struct {
-	// Prompt is passed to opencode via --prompt at startup.
+	// Prompt is passed to the agent via --prompt at startup.
 	//
-	// In host mode, when PromptFilePath is also set, BuildOpencodeCmd
+	// In host mode, when PromptFilePath is also set, BuildAgentCmd
 	// emits `--prompt "$(cat <quoted PromptFilePath>)"` rather than
 	// inlining Prompt onto the launch command. Prompt is still required
 	// (non-empty) to enable the substitution; the field's value is not
 	// embedded in the command in that case. See #1064.
 	Prompt string
 	// PromptFilePath, when non-empty AND IsolationMode is "host" AND Prompt
-	// is non-empty, makes buildDirectOpencodeCmd emit
+	// is non-empty, makes buildDirectAgentCmd emit
 	// `--prompt "$(cat <PromptFilePath>)"` so the prompt content does not
 	// travel through the tmux command line. The file at PromptFilePath must
 	// already contain the prompt bytes (caller-owned: see
@@ -66,28 +66,28 @@ type Opts struct {
 	// those route the prompt through the host-API or sidecar instead.
 	// See #1064 for the failure mode this guards against.
 	PromptFilePath string
-	// Agent is the opencode agent name (e.g. "coordinator", "worker").
+	// Agent is the agent name (e.g. "coordinator", "worker").
 	// When empty, DefaultAgent is called to derive a default from the directory.
 	Agent string
 	// Headless: if true, the session is created but no client is switched to it.
 	Headless bool
-	// Fresh: if true, opencode skips any stored session ID and starts fresh.
+	// Fresh: if true, the agent skips any stored session ID and starts fresh.
 	Fresh bool
 	// Layout controls which window layout to set up on creation.
 	Layout Layout
 	// SessionName is the canonical prism session name. When set, it is passed
-	// to opencode via the PRISM_SESSION_NAME environment variable so the plugin
+	// to the agent via the PRISM_SESSION_NAME environment variable so the plugin
 	// can skip its own session-name derivation.
 	SessionName string
-	// Port is the allocated opencode serve port. When non-zero, BuildOpencodeCmd
-	// includes --port <n> and --hostname 127.0.0.1 in the opencode launch command.
+	// Port is the allocated harness serve port. When non-zero, BuildAgentCmd
+	// includes --port <n> and --hostname 127.0.0.1 in the agent launch command.
 	// In container mode, the port is also passed to the sidecar so it knows which
 	// host port to bind.
 	Port int
 	// IsolationMode is the resolved isolation mode for this session.
 	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	IsolationMode string
-	// PluginHostPath is the host-side path to the opencode plugin file that
+	// PluginHostPath is the host-side path to the agent plugin file that
 	// is bind-mounted into the container. Empty string = no plugin. Only used
 	// in podman mode.
 	PluginHostPath string
@@ -135,7 +135,7 @@ type Opts struct {
 	// --variant flags. When empty, no config env var is injected and the
 	// agent runtime uses its baked-in config unchanged.
 	ConfigContent string
-	// AgentEnvVars holds environment variables to prepend to the opencode
+	// AgentEnvVars holds environment variables to prepend to the agent
 	// command string in host-mode sessions. Each entry is emitted as
 	// KEY=<quoted-value> before PRISM_SESSION_NAME so that the sh -c
 	// invocation in tmux new-window receives the restricted env vars without
@@ -146,25 +146,23 @@ type Opts struct {
 	// podman --env flags in the sidecar.
 	AgentEnvVars map[string]string
 	// ConfigEnvVarName is the environment variable name used to inject
-	// serialised config content into the agent runtime (e.g.
-	// "OPENCODE_CONFIG_CONTENT" for opencode). Populated from
+	// serialised config content into the agent runtime. Populated from
 	// harness.Harness.ConfigEnvVar() by callers that have a harness
 	// instance. When empty, config content injection is skipped in
-	// buildDirectOpencodeCmd (podman callers inject config via mounted
+	// buildDirectAgentCmd (podman callers inject config via mounted
 	// files, not env vars).
 	ConfigEnvVarName string
 	// RuntimeEnvVars holds harness-specific environment variables to
-	// prepend to the agent command in host-mode sessions (e.g. opencode's
-	// experimental bash-tool timeout). Populated from
+	// prepend to the agent command in host-mode sessions. Populated from
 	// harness.Harness.RuntimeEnv() by callers that have a harness instance.
 	// When empty, no harness-specific env vars are injected.
 	// These are prepended outermost (before AgentEnvVars and
 	// PRISM_SESSION_NAME).
 	RuntimeEnvVars map[string]string
-	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// HarnessName is the registered harness name (e.g. "pi"). When
 	// non-empty it is forwarded to the sidecar via --harness so the sidecar
 	// can call harness.ShapeOf to determine its own transport shape. When
-	// empty, the sidecar defaults to "opencode".
+	// empty, the sidecar defaults to "pi".
 	HarnessName string
 	// HarnessPipeSockPath is the Unix socket path for the PI harness pipe
 	// (TransportSocketPipe). When non-empty and isolation mode is "host",
@@ -193,7 +191,7 @@ const (
 	LayoutScratchpad
 
 	// LayoutFull sets up the standard three-window layout:
-	// window 0 "edit" (nvim), window 1 "agent" (opencode), window 2 "term".
+	// window 0 "edit" (nvim), window 1 "agent" (pi), window 2 "term".
 	LayoutFull
 
 	// LayoutAgentOnly sets up a minimal two-window layout: window 0 is a
@@ -265,20 +263,20 @@ func effectiveIsolationMode(opts Opts) string {
 	return "host"
 }
 
-// BuildOpencodeCmd returns the opencode launch command string for the given opts.
+// BuildAgentCmd returns the agent launch command string for the given opts.
 //
 // Isolation mode determines the command:
 //   - "podman":       "podman attach --sig-proxy=false <container-name>"
 //   - "bwrap":        "prism agent-run --session <session-name>"
 //   - "sandbox-exec": "prism agent-run --session <session-name>"
-//   - "host":         direct opencode invocation (default)
+//   - "host":         direct agent invocation (default)
 //
 // D4 (issue #1133): the per-mode switch collapses into a single
 // Isolator.AgentPaneCmd dispatch. Unknown / unregistered modes fall back to
 // the direct (host-shape) command — matching the pre-refactor "default" arm.
-func BuildOpencodeCmd(opts Opts) string {
+func BuildAgentCmd(opts Opts) string {
 	mode := config.IsolationMode(effectiveIsolationMode(opts))
-	direct := buildDirectOpencodeCmd(opts)
+	direct := buildDirectAgentCmd(opts)
 	iso, err := container.For(mode, container.ConstructorOpts{Name: opts.SessionName})
 	if err != nil {
 		// Unknown mode: behave like the pre-refactor default arm.
@@ -301,10 +299,10 @@ func harnessBinary(harnessName string) string {
 	}
 }
 
-// buildDirectOpencodeCmd returns the direct-launch command for the session
+// buildDirectAgentCmd returns the direct-launch command for the session
 // harness (pre-container mode). For harness="" or "pi" this is a pi
 // invocation.
-func buildDirectOpencodeCmd(opts Opts) string {
+func buildDirectAgentCmd(opts Opts) string {
 	binary := harnessBinary(opts.HarnessName)
 	agent := opts.Agent
 	var cmd string
@@ -318,7 +316,7 @@ func buildDirectOpencodeCmd(opts Opts) string {
 		// $(cat …) so the prompt content is loaded inside the pane shell
 		// from disk rather than carried on the tmux command line. Keeps
 		// the launch command small (a few hundred bytes) regardless of
-		// prompt size; the prompt itself reaches opencode via argv after
+		// prompt size; the prompt itself reaches the agent via argv after
 		// the shell substitutes the file contents in. The single double-
 		// quotes around the substitution preserve newlines and prevent
 		// word-splitting; the file path is single-quoted so any unusual
@@ -416,7 +414,7 @@ const HostLaunchCmdSafeBound = 16 * 1024
 // SpawnSession enriches a readiness-gate timeout error with a hint that
 // prompt size may be the cause (see #1064 AC-7). Most healthy host-mode
 // launch commands are a few hundred bytes (env-var prefixes plus the
-// opencode invocation); 1 KB is "unusual but not necessarily broken" and
+// agent invocation); 1 KB is "unusual but not necessarily broken" and
 // big enough to be worth mentioning when a timeout fires.
 const HostLaunchCmdWarnThreshold = 1024
 
@@ -586,14 +584,14 @@ func Create(name, directory string, opts Opts) error {
 // file path.
 //
 // Skipped entirely for host mode: the host-mode launch path reads the
-// prompt directly via $(cat …) (see buildDirectOpencodeCmd / #1064), so
+// prompt directly via $(cat …) (see buildDirectAgentCmd / #1064), so
 // no agent-pane env var is needed at all.
 //
 // Returns nil when no env vars are needed, producing no -e flags in tmux.
 func agentPaneEnvVars(opts Opts) map[string]string {
 	if effectiveIsolationMode(opts) == "host" {
 		// In host mode the prompt is delivered via $(cat …) in the launch
-		// command (buildDirectOpencodeCmd / #1064), so no PRISM_INITIAL_PROMPT
+		// command (buildDirectAgentCmd / #1064), so no PRISM_INITIAL_PROMPT
 		// env var is needed. However, for socket-pipe harnesses (e.g. "pi")
 		// we must inject PRISM_HARNESS_PIPE so the PI extension can find the
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
@@ -619,7 +617,7 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 }
 
 // setupFullLayout configures the three-window layout for a project session:
-// window 0 "edit" (nvim auto-launched), window 1 "agent" (opencode),
+// window 0 "edit" (nvim auto-launched), window 1 "agent" (pi),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
 //
 // In podman mode (isolation mode "podman"), the sidecar is started first and
@@ -671,8 +669,8 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// and the sidecar does not write a ready file for bwrap sessions.
 	// opts.SessionName must be set by the caller before setupFullLayout is
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
-	// BuildOpencodeCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
-	agentCmd := BuildOpencodeCmd(opts)
+	// BuildAgentCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
+	agentCmd := BuildAgentCmd(opts)
 
 	// Persist isolation_mode BEFORE opening the agent window. This is the
 	// critical ordering fix: prism agent-run in window 1 reads isolation_mode

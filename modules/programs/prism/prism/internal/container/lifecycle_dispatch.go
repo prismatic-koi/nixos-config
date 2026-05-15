@@ -137,7 +137,7 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 		return nil, fmt.Errorf("container: bwrap: write gitconfig: %w", err)
 	}
 
-	// Write the opencode config file, if provided.
+	// Write the harness config file, if provided.
 	if m.cfg.ConfigContent != "" {
 		if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
 			return nil, fmt.Errorf("container: bwrap: write harness config: %w", err)
@@ -183,7 +183,7 @@ func (b *bwrapIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 
 // EnsureRemoved cleans up the legacy per-session temp files. The
 // sandbox-exec specific files (SBPL profile, staging HOME, Claude
-// credentials, opencode config) are owned by the Manager-level lifecycle
+// credentials, harness config) are owned by the Manager-level lifecycle
 // (Manager.EnsureRemoved); EnsureRemoved here mirrors the legacy cleanup.go
 // behaviour which only touched the 5-file legacy set.
 func (s *sandboxExecIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
@@ -261,14 +261,14 @@ func (h *hostIsolator) WriteGitconfig(m *Manager) error { return nil }
 // Reset is a no-op for host mode: there is no sandbox state to wipe.
 func (h *hostIsolator) Reset(ctx context.Context) error { return nil }
 
-// Prepare is not the entry point for host mode — host runs opencode
+// Prepare is not the entry point for host mode — host runs the agent
 // directly in the tmux pane via the BuildOpencodeCmd (DirectCmd) path.
 // Returns an error so callers route correctly.
 func (h *hostIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
 	return nil, fmt.Errorf("container: host does not use Prepare; pi launches directly in the tmux pane")
 }
 
-// Create is a no-op for host mode: opencode is launched directly by the
+// Create is a no-op for host mode: the agent is launched directly by the
 // tmux pane command, not via a Create call.
 func (h *hostIsolator) Create(ctx context.Context, m *Manager) error { return nil }
 

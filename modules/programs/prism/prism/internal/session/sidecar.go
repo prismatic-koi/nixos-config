@@ -1,6 +1,6 @@
 package session
 
-// StartSidecar launches a detached `prism sidecar` process alongside opencode.
+// StartSidecar launches a detached `prism sidecar` process alongside the agent.
 //
 // It derives the prism binary path via os.Executable, creates the log and PID
 // directories under $XDG_STATE_HOME/prism/ (falling back to
@@ -147,7 +147,7 @@ func SidecarHarnessPipePath(sessionName string) (string, error) {
 	}
 	return filepath.Join(base, "run", SessionDirName(sessionName), "pipe.sock"), nil
 }
-// The log captures the stdout and stderr of the bwrap sandbox (and the opencode
+// The log captures the stdout and stderr of the bwrap sandbox (and the agent
 // harness running inside it) for the lifetime of the session. It lives alongside
 // hostapi.sock in the per-session run directory so that the directory is already
 // created by the time agent-run opens the file (the sidecar pre-creates it via
@@ -234,7 +234,7 @@ func KillSidecar(sessionName string) {
 
 // StartSidecarOpts holds optional parameters for launching a sidecar process.
 type StartSidecarOpts struct {
-	// Port is the allocated opencode serve port.
+	// Port is the allocated harness serve port.
 	Port int
 	// IsolationMode is the resolved isolation mode for this session. When set,
 	// it is passed to the sidecar via --isolation-mode so the sidecar can
@@ -254,13 +254,13 @@ type StartSidecarOpts struct {
 	// readiness. Passed via --initial-prompt in container mode (#487).
 	// Empty string means no prompt delivery.
 	InitialPrompt string
-	// ConfigContent is the JSON blob for the container's opencode.json config
+	// ConfigContent is the JSON blob for the container's harness config
 	// file. When non-empty and IsolationMode is "podman", it is forwarded to
 	// the sidecar via --config-content so the container can write it to a
-	// temp file and mount it at /root/.config/opencode/opencode.json.
+	// temp file and mount it at the harness config path inside the container.
 	//
-	// In host/bwrap/sandbox-exec mode, OPENCODE_CONFIG_CONTENT is injected
-	// directly by buildDirectOpencodeCmd (prepended to the opencode shell
+	// In host/bwrap/sandbox-exec mode, the config env var is injected
+	// directly by buildDirectAgentCmd (prepended to the agent shell
 	// command) and does not need to go through the sidecar.
 	ConfigContent string
 	// InstanceID is the UUID instance identifier for this session incarnation.
@@ -273,10 +273,10 @@ type StartSidecarOpts struct {
 	// container. Set for review agent containers so they cannot modify the
 	// branch under review. Passed via --worktree-readonly to the sidecar.
 	WorktreeReadOnly bool
-	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// HarnessName is the registered harness name (e.g. "pi"). When
 	// non-empty it is forwarded to the sidecar via --harness so the sidecar
 	// can call harness.ShapeOf to determine its own transport shape. When
-	// empty, the sidecar defaults to "opencode".
+	// empty, the sidecar defaults to "pi".
 	HarnessName string
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override role=model

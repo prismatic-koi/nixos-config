@@ -12,7 +12,7 @@ package container
 //     fixed in-sandbox path and set PI_CODING_AGENT_DIR to that path.
 //  3. Bind-mount the prism PI extension directory read-only into the bwrap
 //     sandbox.
-//  4. Invoke PI (not opencode) with the appropriate flags as the sandbox
+//  4. Invoke PI with the appropriate flags as the sandbox
 //     terminator.
 //
 // This file provides PIInvocation (analogous to HarnessInvocation) and

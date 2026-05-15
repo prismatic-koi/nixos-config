@@ -57,7 +57,7 @@ type SpawnOpts struct {
 	AgentRole string
 
 	// Prompt is the initial prompt delivered to the agent on startup.
-	// Passed via opencode's --prompt CLI flag (host mode) or via the sidecar
+	// Passed via the agent's --prompt CLI flag (host mode) or via the sidecar
 	// (container/bwrap mode).
 	Prompt string
 
@@ -80,7 +80,7 @@ type SpawnOpts struct {
 	// should leave this empty; SpawnSession populates it from opts.Prompt
 	// before the layout-specific spawn runs.
 	//
-	// For LayoutFull + host: BuildOpencodeCmd emits `--prompt "$(cat
+	// For LayoutFull + host: BuildAgentCmd emits `--prompt "$(cat
 	// <path>)"` rather than inlining the prompt body.
 	//
 	// For LayoutAgentOnly + bwrap/sandbox-exec: spawnAgentPaneEnvVars sets
@@ -106,7 +106,7 @@ type SpawnOpts struct {
 	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
 	IsolationMode string
 
-	// PluginHostPath is the host-side path to the opencode plugin bind-mounted
+	// PluginHostPath is the host-side path to the agent plugin bind-mounted
 	// into the container.
 	PluginHostPath string
 
@@ -128,7 +128,7 @@ type SpawnOpts struct {
 	// not create the group itself.
 	GroupID string
 
-	// AgentEnvVars are additional env vars prefixed to the opencode command
+	// AgentEnvVars are additional env vars prefixed to the agent command
 	// in host-mode sessions (see profiles.json agent_env_vars). Ignored in
 	// container/bwrap mode — those paths deliver env vars via podman --env
 	// in the sidecar.
@@ -149,8 +149,7 @@ type SpawnOpts struct {
 
 	// ConfigEnvVarName is the environment variable name used to inject
 	// serialised config content into the agent runtime. Populated from
-	// harness.Harness.ConfigEnvVar() by callers that have a harness
-	// instance (e.g. "OPENCODE_CONFIG_CONTENT" for opencode).
+	// harness.Harness.ConfigEnvVar() by callers that have a harness instance.
 	ConfigEnvVarName string
 
 	// RuntimeEnvVars holds harness-specific environment variables to
@@ -160,7 +159,7 @@ type SpawnOpts struct {
 	// PRISM_SESSION_NAME) in the agent command string.
 	RuntimeEnvVars map[string]string
 
-	// HarnessName is the registered harness name (e.g. "opencode"). When
+	// HarnessName is the registered harness name (e.g. "pi"). When
 	// non-empty it is forwarded to the sidecar via --harness so the sidecar
 	// can call harness.ShapeOf to determine its own transport shape.
 	HarnessName string
@@ -171,7 +170,7 @@ type SpawnOpts struct {
 	// agent tmux pane. Pre-computed by the caller (cmd/spawn.go) from
 	// SidecarHarnessPipePath so that the spawner and sidecar agree on the
 	// path deterministically without a round-trip through the sidecar process.
-	// Empty for non-socket-pipe harnesses (e.g. "opencode").
+	// Empty for non-socket-pipe harnesses (e.g. HTTP-based ones).
 	HarnessPipeSockPath string
 
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
@@ -243,7 +242,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// per-session run directory and let the launch path reference it by
 	// path rather than inlining the prompt body into the tmux command.
 	//
-	//   - LayoutFull + host: buildDirectOpencodeCmd emits
+	//   - LayoutFull + host: buildDirectAgentCmd emits
 	//     `--prompt "$(cat <path>)"` so tmux's `sh -c <cmd>` stays small.
 	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec: the
 	//     prompt used to be carried as `-e PRISM_INITIAL_PROMPT=<huge>`
@@ -256,7 +255,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     to the bwrap/sandbox-exec --prompt path.
 	//
 	// Podman mode delivers the prompt through the sidecar (StartSidecarOpts
-	// .InitialPrompt → opencode --prompt inside the container), so it does
+	// .InitialPrompt → agent --prompt inside the container), so it does
 	// not need a tmux-side env var at all and is intentionally skipped here.
 	// All other modes (host and sandbox) write the prompt file regardless of
 	// layout — see the needsPromptFile gate below (#1195).
@@ -301,7 +300,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//
 	// Four combinations are guarded:
 	//
-	//   - LayoutFull + host: BuildOpencodeCmd returns the direct opencode
+	//   - LayoutFull + host: BuildAgentCmd returns the direct agent
 	//     invocation. Without the prompt-file plumbing the prompt body
 	//     would be inlined onto `sh -c <cmd>`; with it the cmd stays O(1)
 	//     in prompt size.
@@ -313,7 +312,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     covered by the unified gate below.
 	//
 	//   - LayoutFull / LayoutAgentOnly + bwrap or sandbox-exec:
-	//     BuildOpencodeCmd returns `prism agent-run --session <name>`,
+	//     BuildAgentCmd returns `prism agent-run --session <name>`,
 	//     but the env-var map (which becomes `-e KEY=VALUE` flags on
 	//     tmux new-window) used to carry the entire prompt — the failure
 	//     mode in #1092. The "size" measured here adds the env-var
@@ -327,7 +326,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	switch {
 	case mode == "host" && opts.Layout == LayoutFull:
 		previewOpts := buildOptsForLayout(opts, 0, promptFilePath)
-		hostLaunchCmd := BuildOpencodeCmd(previewOpts)
+		hostLaunchCmd := BuildAgentCmd(previewOpts)
 		hostLaunchCmdSize = len(hostLaunchCmd)
 		if hostLaunchCmdSize > HostLaunchCmdSafeBound {
 			startup.log("spawn-session: host launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
@@ -348,7 +347,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	case mode == "host" && opts.Layout == LayoutAgentOnly:
 		// LayoutAgentOnly + host: Darwin coordinator review fan-out (#1195).
 		// The agent command is `prism agent-run --session <name>` in bwrap
-		// and sandbox-exec, but for host mode it is a direct opencode
+		// and sandbox-exec, but for host mode it is a direct agent
 		// invocation — same as LayoutFull + host but without the sidecar-
 		// managed 3-window layout. The env-var map carries PRISM_INITIAL_PROMPT_FILE
 		// (post-#1195 path); measure the full contribution so any exotic
@@ -362,7 +361,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			size += len(k) + len(v) + 4
 		}
 		// The host-mode LayoutAgentOnly command is built inside
-		// spawnAgentOnlyLayout; approximate via buildDirectOpencodeCmd.
+		// spawnAgentOnlyLayout; approximate via buildDirectAgentCmd.
 		previewOpts := Opts{
 			Prompt:           opts.Prompt,
 			PromptFilePath:   promptFilePath,
@@ -372,7 +371,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			IsolationMode:    mode,
 			ConfigEnvVarName: opts.ConfigEnvVarName,
 		}
-		size += len(BuildOpencodeCmd(previewOpts))
+		size += len(BuildAgentCmd(previewOpts))
 		hostLaunchCmdSize = size
 		if size > HostLaunchCmdSafeBound {
 			startup.log("spawn-session: host/LayoutAgentOnly launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
@@ -391,7 +390,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		// Mirror what the layout spawner will hand to tmux: the agentCmd
 		// (a small `prism agent-run --session <name>` for the sandbox
 		// modes) plus each `-e KEY=VALUE` env entry. previewOpts is the
-		// minimal shape BuildOpencodeCmd needs for the sandbox mode.
+		// minimal shape BuildAgentCmd needs for the sandbox mode.
 		previewOpts := Opts{
 			Prompt:           opts.Prompt,
 			Agent:            opts.AgentRole,
@@ -400,7 +399,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			IsolationMode:    mode,
 			ConfigEnvVarName: opts.ConfigEnvVarName,
 		}
-		previewCmd := BuildOpencodeCmd(previewOpts)
+		previewCmd := BuildAgentCmd(previewOpts)
 		// For the env-var preview, route through the same helper used at
 		// spawn time so the file-path branch (post-#1092) and the legacy
 		// inline branch produce matching size estimates.
@@ -560,7 +559,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 
 	// Step 3: Allocate a port from the configured range. Fails fast if the
-	// allocation fails — a session with no port cannot start opencode.
+	// allocation fails — a session with no port cannot start the agent.
 	port, err := d.AllocatePort(opts.SessionName)
 	if err != nil {
 		startup.log("spawn-session: allocate port FAILED: %v", err)
@@ -593,7 +592,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 
 	// Step 6 (#1051 Piece A): readiness gate. When the caller opted in by
 	// setting opts.ReadinessTimeout > 0, block here until the sidecar
-	// observes the first SSE event from opencode (i.e. opencode actually
+	// observes the first SSE event from the agent (i.e. the agent actually
 	// bound its port and the sidecar connected). On timeout, clean up the
 	// half-alive session so a second spawn attempt with the same name does
 	// not see stale state, and surface a *ReadinessTimeoutError so callers
@@ -629,7 +628,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// #1064 AC-7: enrich the readiness-gate error when the host-mode
 			// launch command was unusually large. The bare timeout message
 			// ("not ready within 30s") leaves the operator without a hint
-			// for why opencode never came up; for the size-driven failure
+			// for why the agent never came up; for the size-driven failure
 			// mode the cause is structural and predictable, so name it.
 			if mode == "host" && hostLaunchCmdSize > HostLaunchCmdWarnThreshold {
 				// errors.As (rather than a bare type assertion) so a future
@@ -645,7 +644,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 				}
 			}
 			// Clean up: the sidecar is still running and reporting
-			// `connection refused` to its own log, but opencode never came
+			// `connection refused` to its own log, but the agent never came
 			// up. KillSidecar releases the sidecar process, the DB cleanup
 			// releases the port and marks the row ended, and tmux.KillSession
 			// releases the pane. All three are best-effort and idempotent.
@@ -662,7 +661,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 }
 
 // resolveLayoutIsolationMode returns the resolved isolation mode for the
-// SpawnOpts, mirroring the lookup in BuildOpencodeCmd / spawnAgentOnlyLayout.
+// SpawnOpts, mirroring the lookup in BuildAgentCmd / spawnAgentOnlyLayout.
 // Kept as a small helper so SpawnSession can decide whether to write the
 // initial-prompt file and whether to apply the launch-command size guard
 // without duplicating the precedence logic.
@@ -685,7 +684,7 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 }
 
 // buildOptsForLayout returns the Opts struct that spawnFullLayout (and the
-// pre-spawn size guard in SpawnSession) hands to BuildOpencodeCmd. Centralised
+// pre-spawn size guard in SpawnSession) hands to BuildAgentCmd. Centralised
 // here so the size-guard preview and the actual layout invocation cannot
 // drift — both share the same constructed command.
 //
@@ -743,7 +742,7 @@ func cleanupHalfAliveSession(d *db.DB, sessionName string) {
 }
 
 // spawnFullLayout delegates to Create, which handles the 3-window spawn-path
-// layout: edit (nvim), agent (opencode), and term. Create also fires the
+// layout: edit (nvim), agent (pi), and term. Create also fires the
 // tmux-session-start hook (which idempotently re-seeds root_agent_name) and
 // starts the sidecar from inside setupFullLayout.
 func spawnFullLayout(d *db.DB, opts SpawnOpts, port int) error {
@@ -797,7 +796,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// When IsolationMode is not set, resolve the machine default from config
 	// rather than silently falling back to host. A silent host fallback breaks
 	// bwrap sessions: review agents would run without the sandbox, pick up the
-	// host opencode.json (which only defines the build agent), and trigger the
+	// host harness config (which only defines the build agent), and trigger the
 	// recursive review explosion described in issue #1001.
 	if mode == "" {
 		mode = string(config.Load().DefaultIsolationMode)
@@ -828,9 +827,9 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 			opts.SessionName, err)
 	}
 
-	// Build the agent command. BuildOpencodeCmd produces the right shape
+	// Build the agent command. BuildAgentCmd produces the right shape
 	// for the resolved isolation mode (podman attach / prism agent-run /
-	// direct opencode). For podman mode, wrap it in the readiness-wait
+	// direct pi). For podman mode, wrap it in the readiness-wait
 	// script so the pane blocks until the sidecar has health-checked the
 	// container.
 	buildOpts := Opts{
@@ -847,7 +846,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}
-	agentCmd := BuildOpencodeCmd(buildOpts)
+	agentCmd := BuildAgentCmd(buildOpts)
 
 	// Persist isolation_mode to the DB BEFORE creating the agent window.
 	// prism agent-run (the bwrap entry point) reads isolation_mode from

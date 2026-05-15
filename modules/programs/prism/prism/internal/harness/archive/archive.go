@@ -1,7 +1,7 @@
 // Package archive defines the ArchiveAdapter interface for harness-specific
 // archive operations.
 //
-// Each harness implementation (e.g. opencode) provides an ArchiveAdapter that
+// Each harness implementation (e.g. pi) provides an ArchiveAdapter that
 // knows how to locate the harness's on-disk session storage, copy session files
 // into the prism raw archive directory, export the archive to a downstream
 // format, and report its own version string.
@@ -21,7 +21,7 @@ type SourceParams struct {
 	// InstanceID is the session's UUID (from sessions.instance_id).
 	InstanceID string
 	// HarnessSessionID is the harness-specific session ID
-	// (e.g. opencode's ses_<ULID>, from sessions.harness_session_id).
+	// (e.g. pi's ses_<ULID>, from sessions.harness_session_id).
 	// May be empty when the harness failed to start.
 	HarnessSessionID string
 	// IsolationMode is "podman", "bwrap", "sandbox-exec", or "host".

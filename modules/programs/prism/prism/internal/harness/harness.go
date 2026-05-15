@@ -1,12 +1,12 @@
 // Package harness defines the Harness interface and its supporting types.
 //
 // A Harness is a pluggable adapter that teaches the prism sidecar how to
-// communicate with a specific agent runtime (e.g. opencode, PI, Claude Code).
+// communicate with a specific agent runtime (e.g. pi / Claude Code).
 // Each harness implementation encapsulates the container command, health-check
 // logic, prompt-delivery mechanism, and event-stream mapping for one runtime.
 //
 // This package contains only the interface definition and its supporting types.
-// Concrete implementations live in sub-packages (e.g. internal/harness/opencode/).
+// Concrete implementations live in sub-packages (e.g. internal/harness/pi/).
 // The sidecar receives a Harness at construction time (via sidecar.Config.Harness)
 // and delegates all runtime-specific behaviour through it (Phase 0a, RFC #691).
 package harness
@@ -24,7 +24,7 @@ import (
 type Harness interface {
 	// ContainerCommand returns the command string used to launch the agent
 	// runtime as the main process inside its container.
-	// Example: "opencode --port 4096 --hostname 0.0.0.0"
+	// Example: "pi --port 4096 --hostname 0.0.0.0"
 	ContainerCommand() string
 
 	// HealthCheck verifies that the agent runtime is ready to accept requests
@@ -34,7 +34,7 @@ type Harness interface {
 
 	// ConfigMountPath returns the XDG config path inside the container where
 	// the runtime expects its configuration to be mounted.
-	// Example: "/home/user/.config/opencode"
+	// Example: "/home/user/.config/pi"
 	ConfigMountPath() string
 
 	// DeliverInitialPrompt delivers the initial prompt and role system prompt
@@ -61,8 +61,8 @@ type Harness interface {
 	// CreateSession retrieves (or creates) a session on the agent runtime and
 	// returns its ID. The session ID is also stored internally so that
 	// DeliverInitialPrompt can use it without the caller having to pass it back.
-	// For the opencode harness in combined TUI + HTTP mode, this retrieves the
-	// existing session opencode auto-created at startup (via GET /session) so
+	// For the pi harness in combined TUI + HTTP mode, this retrieves the
+	// existing session the agent auto-created at startup (via GET /session) so
 	// the prompt is delivered to the session already visible in the TUI.
 	CreateSession(ctx context.Context) (string, error)
 
@@ -73,27 +73,27 @@ type Harness interface {
 
 	// ExtractEventType returns the canonical event type string for the given
 	// HarnessEvent. Harnesses that embed the event type inside the payload
-	// (e.g. opencode, which uses the JSON "type" field rather than the SSE
+	// (e.g. pi, which uses the JSON "type" field rather than the SSE
 	// "event:" header) must implement this to decode it. Harnesses that use the
 	// SSE "event:" field directly may return evt.Type unchanged.
 	ExtractEventType(evt HarnessEvent) string
 
 	// ConfigEnvVar returns the environment variable name this harness uses
 	// to receive its serialised config content (e.g. "OPENCODE_CONFIG_CONTENT"
-	// for opencode). The returned name is used in both host-mode (inline
+	// for opencode-compat harnesses — empty for pi). The returned name is used in both host-mode (inline
 	// shell env-var prefix) and container-mode (podman --env) session
 	// creation to inject config overrides into the agent runtime.
 	ConfigEnvVar() string
 
 	// RuntimeEnv returns additional environment variables this harness needs
-	// set in the container / process it runs in. For opencode, this includes
+	// set in the container / process it runs in. For pi, this includes
 	// experimental flags like the bash-tool timeout. The returned map is
 	// merged into the session environment alongside other env vars —
 	// existing vars with the same name are NOT overwritten.
 	RuntimeEnv() map[string]string
 
 	// ValidateAgentRole reports whether a given agent role is supported by
-	// this harness. For opencode, this means the agent definition file
+	// this harness. For pi, this means the agent definition file
 	// exists in the agents directory. Returns nil when the role is valid.
 	// The error message should mention the harness name and the role.
 	ValidateAgentRole(role string) error
@@ -145,7 +145,7 @@ type StateTransition struct {
 // sidecar calls NormaliseFrame for each raw JSONL line instead of writing the raw
 // bytes as the event payload. This is the mechanism used by the PI harness adapter
 // to implement the B5.TR Translate payload strategy: PI's native JSONL frames are
-// normalised to opencode-shaped payload.* structs at write time, so downstream
+// normalised to pi-shaped payload.* structs at write time, so downstream
 // consumers (cmd/checkin, cmd/stats, cmd/audit) require no harness-specific branches.
 //
 // Returning (_, _, false) from NormaliseFrame means the frame should be skipped

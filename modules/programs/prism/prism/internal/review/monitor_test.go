@@ -70,7 +70,7 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 		t.Fatalf("UpsertStatus worker: %v", err)
 	}
 
-	// Start an httptest server to simulate the opencode prompt_async endpoint.
+	// Start an httptest server to simulate the harness prompt_async endpoint.
 	var deliveredText string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -88,7 +88,7 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 
 	// Extract port from test server URL and set harness info directly.
 	port := extractPort(t, srv.URL)
-	sessionID := "test-opencode-session-id"
+	sessionID := "test-pi-session-id"
 	if err := setHarnessInfo(t, d, workerSession, port, sessionID); err != nil {
 		t.Fatalf("SetHarnessInfo: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery(t *testing.T) {
 	defer srv.Close()
 
 	port := extractPort(t, srv.URL)
-	if err := setHarnessInfo(t, d, workerSession, port, "test-opencode-session-id"); err != nil {
+	if err := setHarnessInfo(t, d, workerSession, port, "test-pi-session-id"); err != nil {
 		t.Fatalf("SetHarnessInfo: %v", err)
 	}
 
@@ -941,7 +941,7 @@ func TestBuildMonitorResults_NoStartError(t *testing.T) {
 			SessionName:  sess,
 			State:        "error",
 			LastMessage:  "",
-			StartupError: "opencode: health check timed out after 60s on port 14004",
+			StartupError: "pi: health check timed out after 60s on port 14004",
 		},
 	}
 

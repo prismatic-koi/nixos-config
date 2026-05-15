@@ -1480,9 +1480,9 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Write the opencode config temp file as Create() would.
+	// Write the harness config temp file as Create() would.
 	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(`{"model":"claude-3-5-sonnet"}`), 0o600); err != nil {
-		t.Fatalf("WriteFile opencode config: %v", err)
+		t.Fatalf("WriteFile harness config: %v", err)
 	}
 
 	// Create AWS credentials so the conditional bind fires.
@@ -1639,9 +1639,9 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	})
 	defer cleanup()
 
-	// Write the opencode config temp file.
+	// Write the harness config temp file.
 	if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o600); err != nil {
-		t.Fatalf("WriteFile opencode config: %v", err)
+		t.Fatalf("WriteFile harness config: %v", err)
 	}
 
 	b := &bwrapIsolator{name: m.name}

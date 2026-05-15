@@ -11,7 +11,7 @@ package cmd
 //   be hours / days for an interactive coordinator session).
 //
 // Concretely, the wait succeeds as soon as the session's state transitions
-// from "active"/"idle"/"reviewing" to "finished" — opencode's signal that
+// from "active"/"idle"/"reviewing" to "finished" — the agent's signal that
 // the initial prompt's turn loop has completed and the agent is awaiting
 // further input. This matches the issue guidance ("wait for the spawned
 // agent to finish its initial prompt").

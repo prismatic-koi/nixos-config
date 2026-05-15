@@ -584,8 +584,8 @@ func TestValidateSandboxExecArgs_BadShape(t *testing.T) {
 		{"sandbox-exec"},
 		{"sandbox-exec", "-f"},
 		{"sandbox-exec", "-f", "/tmp/x"}, // missing harness
-		{"sandbox-exec", "WRONG", "/tmp/x", "opencode"}, // wrong flag
-		{"NOT-SANDBOX", "-f", "/tmp/x", "opencode"},     // wrong argv[0]
+		{"sandbox-exec", "WRONG", "/tmp/x", "pi"}, // wrong flag
+		{"NOT-SANDBOX", "-f", "/tmp/x", "pi"},     // wrong argv[0]
 	}
 	for i, args := range cases {
 		err := validateSandboxExecArgs(args)

@@ -7,7 +7,6 @@
 {
   theme = lib.mkIf (config.nx.desktop.theme == "catppuccin-latte") {
     name = "catppuccin-latte";
-    opencodename = "catppuccin";
     type = "light";
     foreground = "#4c4f69";
     primary = "#40a02b";

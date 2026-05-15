@@ -74,7 +74,7 @@ func TestDefaultAgent(t *testing.T) {
 
 // prepended to the command string before PRISM_SESSION_NAME in host-mode
 // (ContainerMode = false) sessions.
-func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
+func TestBuildDirectAgentCmd_AgentEnvVars(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
 		Port:        14000,
@@ -85,7 +85,7 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 			"KUBECONFIG":      "/Users/bensherman/.config/kube/agents-config",
 		},
 	}
-	cmd := buildDirectOpencodeCmd(opts)
+	cmd := buildDirectAgentCmd(opts)
 
 	// All three env vars should appear in the command.
 	for _, envVar := range []string{"AWS_CONFIG_FILE", "GIT_EDITOR", "KUBECONFIG"} {
@@ -114,13 +114,13 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 	}
 
 	// PRISM_SESSION_NAME should appear before the pi binary.
-	opencodeIdx := strings.Index(cmd, "pi ")
-	if opencodeIdx == -1 {
+	piIdx := strings.Index(cmd, "pi ")
+	if piIdx == -1 {
 		t.Fatalf("pi command not found in cmd: %q", cmd)
 	}
-	if sessionIdx > opencodeIdx {
+	if sessionIdx > piIdx {
 		t.Errorf("PRISM_SESSION_NAME (at %d) should appear before pi (at %d) in cmd: %q",
-			sessionIdx, opencodeIdx, cmd)
+			sessionIdx, piIdx, cmd)
 	}
 
 	// Keys should be in sorted order (AWS < GIT < KUBECONFIG).
@@ -133,24 +133,24 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars(t *testing.T) {
 	}
 }
 
-// TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty verifies that an empty
+// TestBuildDirectAgentCmd_AgentEnvVarsEmpty verifies that an empty
 // AgentEnvVars map produces no change to the command (beyond the
 // outermost RuntimeEnvVars prefix when provided via the harness).
-func TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty(t *testing.T) {
+func TestBuildDirectAgentCmd_AgentEnvVarsEmpty(t *testing.T) {
 	opts := Opts{
 		Agent:        "worker",
 		Port:         14000,
 		SessionName:  "myrepo@branch",
 		AgentEnvVars: map[string]string{},
 		RuntimeEnvVars: map[string]string{
-			"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+			"PRISM_TEST_HARNESS_ENV_VAR": "900000",
 		},
 	}
-	cmd := buildDirectOpencodeCmd(opts)
+	cmd := buildDirectAgentCmd(opts)
 
 	// Cmd should begin with the runtime env var prefix (from harness).
-	if !strings.HasPrefix(cmd, "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=") {
-		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when RuntimeEnvVars is set, got: %q", cmd)
+	if !strings.HasPrefix(cmd, "PRISM_TEST_HARNESS_ENV_VAR=") {
+		t.Errorf("expected cmd to begin with PRISM_TEST_HARNESS_ENV_VAR when RuntimeEnvVars is set, got: %q", cmd)
 	}
 	// PRISM_SESSION_NAME should still appear in the command.
 	if !strings.Contains(cmd, "PRISM_SESSION_NAME=") {
@@ -158,24 +158,24 @@ func TestBuildDirectOpencodeCmd_AgentEnvVarsEmpty(t *testing.T) {
 	}
 }
 
-// TestBuildDirectOpencodeCmd_AgentEnvVarsNil verifies that a nil AgentEnvVars
+// TestBuildDirectAgentCmd_AgentEnvVarsNil verifies that a nil AgentEnvVars
 // map produces no change to the command (beyond the
 // outermost RuntimeEnvVars prefix when provided via the harness).
-func TestBuildDirectOpencodeCmd_AgentEnvVarsNil(t *testing.T) {
+func TestBuildDirectAgentCmd_AgentEnvVarsNil(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
 		Port:        14000,
 		SessionName: "myrepo@branch",
 		// AgentEnvVars intentionally nil
 		RuntimeEnvVars: map[string]string{
-			"OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS": "900000",
+			"PRISM_TEST_HARNESS_ENV_VAR": "900000",
 		},
 	}
-	cmd := buildDirectOpencodeCmd(opts)
+	cmd := buildDirectAgentCmd(opts)
 
 	// Cmd should begin with the runtime env var prefix (from harness).
-	if !strings.HasPrefix(cmd, "OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS=") {
-		t.Errorf("expected cmd to begin with OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS when RuntimeEnvVars is set, got: %q", cmd)
+	if !strings.HasPrefix(cmd, "PRISM_TEST_HARNESS_ENV_VAR=") {
+		t.Errorf("expected cmd to begin with PRISM_TEST_HARNESS_ENV_VAR when RuntimeEnvVars is set, got: %q", cmd)
 	}
 	// PRISM_SESSION_NAME should still appear in the command.
 	if !strings.Contains(cmd, "PRISM_SESSION_NAME=") {
@@ -185,14 +185,14 @@ func TestBuildDirectOpencodeCmd_AgentEnvVarsNil(t *testing.T) {
 
 // ── Isolation mode command construction ─────────────────────────────────────
 
-// TestBuildOpencodeCmd_BwrapMode verifies that IsolationMode="bwrap" produces
+// TestBuildAgentCmd_BwrapMode verifies that IsolationMode="bwrap" produces
 // "prism agent-run --session <session-name>".
-func TestBuildOpencodeCmd_BwrapMode(t *testing.T) {
+func TestBuildAgentCmd_BwrapMode(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "bwrap",
 		SessionName:   "nixos-config@feature",
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 	if !strings.HasPrefix(cmd, "prism agent-run --session") {
 		t.Errorf("bwrap mode: got %q, want prefix 'prism agent-run --session'", cmd)
 	}
@@ -201,16 +201,16 @@ func TestBuildOpencodeCmd_BwrapMode(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_HostMode verifies that IsolationMode="host" produces
-// a direct opencode command (not podman attach).
-func TestBuildOpencodeCmd_HostMode(t *testing.T) {
+// TestBuildAgentCmd_HostMode verifies that IsolationMode="host" produces
+// a direct agent command (not podman attach).
+func TestBuildAgentCmd_HostMode(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "host",
 		Agent:         "worker",
 		Port:          14000,
 		SessionName:   "nixos-config@feature",
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 	if strings.HasPrefix(cmd, "podman") {
 		t.Errorf("host mode: got podman command %q, want direct pi invocation", cmd)
 	}
@@ -222,15 +222,15 @@ func TestBuildOpencodeCmd_HostMode(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_EmptyIsolationMode verifies that an empty IsolationMode
+// TestBuildAgentCmd_EmptyIsolationMode verifies that an empty IsolationMode
 // falls back to the host command (not podman attach).
-func TestBuildOpencodeCmd_EmptyIsolationMode(t *testing.T) {
+func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 	opts := Opts{
 		SessionName: "nixos-config@feature",
 		Agent:       "worker",
 		Port:        14000,
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 	if strings.HasPrefix(cmd, "podman attach") {
 		t.Errorf("empty IsolationMode: got podman command %q, want direct pi invocation", cmd)
 	}
@@ -239,9 +239,9 @@ func TestBuildOpencodeCmd_EmptyIsolationMode(t *testing.T) {
 	}
 }
 
-// TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted verifies that env var
+// TestBuildDirectAgentCmd_AgentEnvVars_ValuesQuoted verifies that env var
 // values containing spaces or special characters are properly shell-quoted.
-func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
+func TestBuildDirectAgentCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 	opts := Opts{
 		Agent:       "worker",
 		Port:        14000,
@@ -250,7 +250,7 @@ func TestBuildDirectOpencodeCmd_AgentEnvVars_ValuesQuoted(t *testing.T) {
 			"GIT_EDITOR": "true",
 		},
 	}
-	cmd := buildDirectOpencodeCmd(opts)
+	cmd := buildDirectAgentCmd(opts)
 
 	// Value should be single-quoted.
 	if !strings.Contains(cmd, "GIT_EDITOR='true'") {

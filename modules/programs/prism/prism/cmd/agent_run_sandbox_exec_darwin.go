@@ -100,7 +100,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		agentEnvVars = pf.AgentEnvVars
 	}
 
-	// Resolve the harness name from the DB status. Fall back to "opencode"
+	// Resolve the harness name from the DB status. Fall back to "pi"
 	// for pre-registry rows that have a NULL harness column.
 	sandboxHarnessName := "pi"
 	if status.Harness != nil && *status.Harness != "" {
@@ -197,26 +197,16 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Override HOME → staging HOME so the sandbox sees the staged layout.
 	// The staging HOME was created by PrepareSandboxExecHome() inside
 	// PrepareSandboxExec(). Only override when the staging dir exists on disk.
-	//
-	// Also inject OPENCODE_TEST_HOME with the same staging path. opencode's
-	// global.ts resolves Path.home via os.homedir() which on macOS calls
-	// NSHomeDirectory()/getpwuid() — both ignore the HOME env var and return
-	// the real home from the directory services database. OPENCODE_TEST_HOME
-	// is the official override hook in global.ts:
-	//   get home() { return process.env.OPENCODE_TEST_HOME ?? os.homedir() }
-	// Without it, opencode probes (and tries to mkdir) paths under the real
-	// $HOME even when HOME is overridden, causing EPERM under deny-default.
 	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
 		if _, statErr := os.Stat(stagingHome); statErr == nil {
 			// Strip any existing HOME and XDG vars from the filtered env —
 			// we replace them all with staging-HOME-relative paths below.
 			xdgKeys := map[string]bool{
-				"HOME":              true,
-				"XDG_CACHE_HOME":   true,
-				"XDG_DATA_HOME":    true,
-				"XDG_CONFIG_HOME":  true,
-				"XDG_STATE_HOME":   true,
-				"OPENCODE_TEST_HOME": true,
+				"HOME":            true,
+				"XDG_CACHE_HOME": true,
+				"XDG_DATA_HOME":  true,
+				"XDG_CONFIG_HOME": true,
+				"XDG_STATE_HOME": true,
 			}
 			filtered := make([]string, 0, len(env))
 			for _, kv := range env {
@@ -234,7 +224,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			}
 			// Resolve the real home directory for XDG_DATA_HOME and
 			// XDG_STATE_HOME. These must point to the host paths so all
-			// sessions share a single opencode DB and state store.
+			// sessions share a single agent DB and state store.
 			realHome, realHomeErr := os.UserHomeDir()
 			if realHomeErr != nil {
 				// os.UserHomeDir() failed: fall back to the staging HOME for
@@ -247,25 +237,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			}
 			env = append(filtered,
 				"HOME="+stagingHome,
-				// OPENCODE_TEST_HOME overrides os.homedir() inside opencode.
-				// opencode's global.ts uses os.homedir() (which on macOS calls
-				// NSHomeDirectory()/getpwuid() and ignores $HOME) for Path.home.
-				// OPENCODE_TEST_HOME is the official escape hatch:
-				//   get home() { return process.env.OPENCODE_TEST_HOME ?? os.homedir() }
-				"OPENCODE_TEST_HOME="+stagingHome,
 				// XDG_CACHE_HOME and XDG_CONFIG_HOME point into the staging
-				// HOME so opencode's module-load mkdir calls land inside
+				// HOME so the agent's module-load mkdir calls land inside
 				// sandbox-allowed paths.
 				"XDG_CACHE_HOME="+filepath.Join(stagingHome, ".cache"),
 				"XDG_CONFIG_HOME="+filepath.Join(stagingHome, ".config"),
-				// XDG_DATA_HOME and XDG_STATE_HOME must be set explicitly to
-				// the real host paths. Without them, opencode derives these
-				// from OPENCODE_TEST_HOME (the staging HOME) and tries to
-				// mkdir ~/.local/state inside the staging directory — a path
-				// that is not in the SBPL profile's RW allow set. Setting them
-				// explicitly ensures opencode writes its DB and state to the
-				// shared host locations (both of which ARE in the profile's RW
-				// block).
+				// XDG_DATA_HOME and XDG_STATE_HOME point to the real host
+				// paths so all sessions share a single agent DB and state
+				// store (both of which ARE in the SBPL profile's RW block).
 				"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
 				"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
 			)

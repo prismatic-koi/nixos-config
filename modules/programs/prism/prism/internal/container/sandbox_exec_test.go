@@ -127,7 +127,7 @@ func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 }
 
 // TestGenerateProfile_ProcessAndIPCAllows verifies that the profile contains
-// the process/IPC/syscall primitives required for node, opencode, dyld, and
+// the process/IPC/syscall primitives required for node, pi, dyld, and
 // AMFI to run under the v3 profile. See #1200 / F.1 §2.
 //
 // v3 changes vs v1:
@@ -242,7 +242,7 @@ func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
 	if !strings.Contains(profile, "/tmp/fake-worktree") {
 		t.Errorf("profile missing worktree path /tmp/fake-worktree; full profile:\n%s", profile)
 	}
-	// The profile allows the full BareRoot (not just .bare/) so opencode can
+	// The profile allows the full BareRoot (not just .bare/) so the agent can
 	// probe for project config files (e.g. .opencode/) at the repo root.
 	if !strings.Contains(profile, "/tmp/fake-bare") {
 		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
@@ -689,7 +689,7 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 // "review-". Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
-	// Create agents/ dir in the fake home's opencode config.
+	// Create agents/ dir in the fake home's pi config.
 	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
@@ -721,7 +721,7 @@ func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 // Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
-	// Create agents/ dir in the fake home's opencode config.
+	// Create agents/ dir in the fake home's pi config.
 	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
@@ -1775,8 +1775,8 @@ func TestGenerateProfile_PiAuthJSONAbsentForNonPiSession(t *testing.T) {
 	t.Setenv("HOME", fakeHome)
 
 	m := newSandboxExecManager(Config{
-		SessionName: "repo@opencode-session",
-		// Harness is empty (default opencode session)
+		SessionName: "repo@pi-session",
+		// Harness is empty (default pi session)
 	})
 	profile := generateProfile(m)
 
