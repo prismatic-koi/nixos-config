@@ -330,15 +330,9 @@ func (h *HarnessSocketServer) dispatchToolExec(ctx context.Context, w *jsonlWrit
 		h.mu.Unlock()
 	}()
 
-	// Write tool_call event to DB (AC: every tool_exec → tool_call event).
-	payloadBytes, _ := json.Marshal(map[string]any{
-		"id":   frame.ID,
-		"name": frame.Name,
-		"args": frame.Args,
-	})
-	h.writeEvent("tool_call", payloadBytes)
-
-	// Execute the tool.
+	// Build the dispatcher first so we can ask the broker which credentials
+	// are about to be injected — that list is recorded on the tool_call event
+	// (D-7 audit logging) before dispatch runs.
 	//
 	// Derive tmpDir from the harness socket path:
 	//   sessionDir = filepath.Dir(sess.HarnessSockPath)
@@ -352,10 +346,33 @@ func (h *HarnessSocketServer) dispatchToolExec(ctx context.Context, w *jsonlWrit
 		tmpDir:     tmpDir,
 		role:       h.sess.Role,
 		bareRoot:   h.sess.BareRoot,
+		broker:     NewCredentialBroker(),
 		writer:     w,
 		abortCh:    abortCh,
 		toolExecID: frame.ID,
 	}
+
+	// D-7: record which credentials are about to be injected. Names only,
+	// never values. nil/empty → no credentials (still a valid audit record).
+	credentialsInjected := dispatcher.CredentialNamesForTool(frame.Name)
+	if credentialsInjected == nil {
+		// Use an empty (non-nil) slice so the JSON field is [], not null —
+		// downstream consumers can distinguish "no credentials injected" from
+		// "field missing on a pre-D-7 event".
+		credentialsInjected = []string{}
+	}
+
+	// Write tool_call event to DB (AC: every tool_exec → tool_call event).
+	payloadBytes, _ := json.Marshal(map[string]any{
+		"id":                   frame.ID,
+		"name":                 frame.Name,
+		"args":                 frame.Args,
+		"credentials_injected": credentialsInjected,
+		"agent_role":           h.sess.Role,
+	})
+	h.writeEvent("tool_call", payloadBytes)
+
+	// Execute the tool.
 	result := dispatcher.dispatch(ctx, frame)
 
 	// Send the result frame.

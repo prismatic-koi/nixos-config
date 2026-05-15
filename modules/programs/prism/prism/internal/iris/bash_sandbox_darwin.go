@@ -71,7 +71,14 @@ func (d *toolDispatcher) runBashInSandbox(ctx context.Context, command string) t
 	//
 	// We construct: env -i VAR=val ... bash -c '<command>'
 	// This produces a clean environment without the host LLM API keys.
-	envPairs := bashEnv(d.role, d.bareRoot)
+	// Use the dispatcher's broker so credential resolution is consistent
+	// with the audit-log decision recorded against the matching tool_call
+	// event (D-7).
+	broker := d.broker
+	if broker == nil {
+		broker = NewCredentialBroker()
+	}
+	envPairs := broker.ResolveBash(d.role, d.bareRoot).Env
 
 	// Build the argv for sandbox-exec.
 	allArgs := []string{"-f", profilePath}

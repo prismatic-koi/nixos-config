@@ -107,6 +107,14 @@ func (m *Manager) CredentialEnvVars() []string {
 	return m.credentialEnvVars()
 }
 
+// GithubAccountFromBareRoot is the exported version of githubAccountFromBareRoot.
+// Used by the iris credential broker (D-7) to identify which role-scoped
+// PRISM_GITHUB_TOKEN_<account>_<role> env var was the source of the resolved
+// token, so the audit log can distinguish role-scoped from host-fallback hits.
+func GithubAccountFromBareRoot(bareRoot string) string {
+	return githubAccountFromBareRoot(bareRoot)
+}
+
 // GithubTokenForBareRootAndRole returns the role-scoped GitHub token for the
 // given bare repo root and agent role, using the 4-PAT architecture.
 // Returns "" when no matching token is found in the host environment.
