@@ -69,7 +69,15 @@ go test ./...
 nix build .#prism
 ```
 
-This catches build/test failures fast. The full homeless-shelter signal is then exercised by CI on the PR. If you want to reproduce CI's checked build locally:
+This catches build/test failures fast. The full homeless-shelter signal is then exercised by CI on the PR.
+
+**Test-suite isolation (issue #1608).** The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully isolated from host bus / DB / tmux state:
+
+- Tests that construct a `sidecar.Sidecar` must use `sidecartest.NewIsolated(t, ...)` which redirects `$XDG_STATE_HOME` to a `t.TempDir()` and sets the `PRISM_TEST_MODE_RESTRICT_HOSTAPI` guard.
+- Test session names use the `prism-test@` prefix, never `nixos-config@main` or any other slug that matches a live coordinator on the developer's host.
+- Running `go test ./...` will not deliver any notification to a live coordinator, write to the real `prism.db`, create files under `$XDG_STATE_HOME/prism/run/`, or invoke `tmux` against the host server.
+
+If you add a new test that exercises notification delivery, use `sidecartest.NewIsolated` — do not construct a `sidecar.Config` that touches the host environment. If you want to reproduce CI's checked build locally:
 
 ```bash
 # From the repo root

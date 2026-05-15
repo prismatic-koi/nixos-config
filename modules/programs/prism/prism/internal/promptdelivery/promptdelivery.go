@@ -2,6 +2,16 @@
 // by all out-of-process callers that need to send a follow-up prompt to a
 // running agent session.
 //
+// # Test-mode isolation guard
+//
+// When the environment variable PRISM_TEST_MODE_RESTRICT_HOSTAPI is set to any
+// non-empty value, deliverViaSidecarSocket refuses to dial any socket path that
+// does not reside under the process's $XDG_STATE_HOME directory. This prevents
+// test code from accidentally dialling a live coordinator's host-API socket
+// when a test's XDG_STATE_HOME is redirected to a tempdir but an incorrect
+// socket path is computed. The guard is set automatically by
+// sidecartest.NewIsolated and must never be set in production.
+//
 // # Problem
 //
 // Three delivery paths in prism (review-complete monitor, coordinator notify,
@@ -33,6 +43,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -102,10 +113,31 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 //
 // Returns an error if the socket does not exist (session ended / socket cleaned
 // up) or the HTTP request fails.
+// EnvRestrictHostAPI is the env-var name of the test-mode isolation guard.
+// When set to a non-empty value, deliverViaSidecarSocket refuses to dial
+// socket paths outside the current XDG_STATE_HOME — see package-level comment.
+const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
+
 func deliverViaSidecarSocket(sessionName, text, source, deliverAs string) error {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
+	}
+
+	// Test-mode isolation guard: when PRISM_TEST_MODE_RESTRICT_HOSTAPI is set,
+	// refuse to dial any socket that does not live under $XDG_STATE_HOME. This
+	// prevents a test from accidentally reaching a live coordinator socket when
+	// XDG_STATE_HOME is redirected to a tempdir (the hash of the session name
+	// is identical between test and production, so the path collision is real).
+	// The guard is set automatically by sidecartest.NewIsolated.
+	if os.Getenv(EnvRestrictHostAPI) != "" {
+		stateHome := os.Getenv("XDG_STATE_HOME")
+		if stateHome != "" && !hasPathPrefix(sockPath, stateHome) {
+			return fmt.Errorf(
+				"test-mode isolation guard: refusing to dial host-API socket at %s — path is outside XDG_STATE_HOME=%s (set PRISM_TEST_MODE_RESTRICT_HOSTAPI only in tests)",
+				sockPath, stateHome,
+			)
+		}
 	}
 
 	if _, statErr := os.Stat(sockPath); statErr != nil {
@@ -188,6 +220,19 @@ func deliverViaHTTP(status *db.Status, text string, buildBody func(string, *db.S
 		return fmt.Errorf("http status %d from %s", resp.StatusCode, url)
 	}
 	return nil
+}
+
+// hasPathPrefix reports whether path p is equal to or a sub-path of prefix.
+// Both paths are cleaned before comparison so trailing slashes are normalised.
+func hasPathPrefix(p, prefix string) bool {
+	cleanP := filepath.Clean(p)
+	cleanPfx := filepath.Clean(prefix)
+	if cleanP == cleanPfx {
+		return true
+	}
+	// cleanP must start with cleanPfx + "/" to be a sub-path.
+	return len(cleanP) > len(cleanPfx) && cleanP[len(cleanPfx)] == '/' &&
+		cleanP[:len(cleanPfx)] == cleanPfx
 }
 
 // newUnixClient returns an *http.Client that dials sockPath over a Unix socket.

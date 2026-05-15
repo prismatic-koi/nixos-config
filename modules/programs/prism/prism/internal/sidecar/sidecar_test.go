@@ -2505,7 +2505,7 @@ func TestIsReviewAgentSession(t *testing.T) {
 		{"round session shape", "nixos-config@feature~review-1", true},
 		// Normal worker — must NOT be suppressed
 		{"normal worker", "nixos-config@feature", false},
-		{"coordinator", "nixos-config@main", false},
+		{"coordinator", "test-repo@main", false},
 		// Session with "review" in branch name but no "~review" (edge case)
 		{"branch named review-fixes", "nixos-config@review-fixes", false},
 		{"branch named my-review", "nixos-config@my-review", false},
@@ -5202,7 +5202,7 @@ func TestHostAPI_RepoFromSession(t *testing.T) {
 		wantErr bool
 	}{
 		{"myrepo@main", "myrepo", false},
-		{"nixos-config@feature/foo", "nixos-config", false},
+		{"test-repo@feature/foo", "test-repo", false},
 		{"norepo", "", true},
 		{"", "", true},
 	}
@@ -5318,7 +5318,7 @@ func TestHostAPI_Checkin_LastParamParsed(t *testing.T) {
 // TestHostAPI_Spawn_ClientRepoIsIgnoredServerUsesOwnRepo verifies the fix for
 // issue #616: when a client sends an arbitrary "repo" value (e.g. a container
 // mount-path name like "prism-git"), the server ignores it and substitutes its
-// own repo derived from its session name ("nixos-config").
+// own repo derived from its session name ("test-repo").
 //
 // The test uses a stub binary that echoes a spawn success line containing the
 // repo argument passed to it, so we can verify which repo was used.
@@ -5339,9 +5339,9 @@ echo "session \"${last}@test-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5352,7 +5352,7 @@ echo "session \"${last}@test-branch\" created"
 	sc := New(cfg)
 
 	// Client sends "repo":"prism-git" (a container mount-path name).
-	// Server must ignore this and use "nixos-config" (from session name).
+	// Server must ignore this and use "test-repo" (from session name).
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
 		`{"repo":"prism-git","branch":"test-branch"}`)
 	if rr.Code != http.StatusOK {
@@ -5361,9 +5361,9 @@ echo "session \"${last}@test-branch\" created"
 	var respBody map[string]string
 	decodeJSONBody(t, rr, &respBody)
 	// Session name must reflect the actual repo, not the mount-path name.
-	if respBody["session_name"] != "nixos-config@test-branch" {
+	if respBody["session_name"] != "test-repo@test-branch" {
 		t.Errorf("session_name = %q, want %q (server must use ownRepo, not client-supplied repo)",
-			respBody["session_name"], "nixos-config@test-branch")
+			respBody["session_name"], "test-repo@test-branch")
 	}
 }
 
@@ -5385,9 +5385,9 @@ echo "session \"${last}@new-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5404,8 +5404,8 @@ echo "session \"${last}@new-branch\" created"
 	}
 	var respBody map[string]string
 	decodeJSONBody(t, rr, &respBody)
-	if respBody["session_name"] != "nixos-config@new-branch" {
-		t.Errorf("session_name = %q, want %q", respBody["session_name"], "nixos-config@new-branch")
+	if respBody["session_name"] != "test-repo@new-branch" {
+		t.Errorf("session_name = %q, want %q", respBody["session_name"], "test-repo@new-branch")
 	}
 }
 
@@ -5413,9 +5413,9 @@ echo "session \"${last}@new-branch\" created"
 // missing or empty "branch" field still returns 400 "branch is required".
 func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
-	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"repo":"nixos-config"}`)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"repo":"test-repo"}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for missing branch", rr.Code)
 	}
@@ -5506,9 +5506,9 @@ func TestHostAPI_Spawn_HostModeProduces400(t *testing.T) {
 
 	clk := newTestClock()
 	cfg := Config{
-		SessionName: "nixos-config@main",
-		Repo:        "nixos-config",
-		Worktree:    "/tmp/nixos-config@main",
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/test-repo@main",
 		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
@@ -5543,9 +5543,9 @@ echo "session \"${last}@cap-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5595,9 +5595,9 @@ echo "session \"${last}@iso-branch\" created"
 			}
 			clk := newTestClock()
 			cfg := Config{
-				SessionName:     "nixos-config@main",
-				Repo:            "nixos-config",
-				Worktree:        "/tmp/nixos-config@main",
+				SessionName:     "test-repo@main",
+				Repo:            "test-repo",
+				Worktree:        "/tmp/test-repo@main",
 				HarnessURL:     "http://localhost:14000",
 				DB:              d,
 				Clock:           clk,
@@ -5646,9 +5646,9 @@ echo "session \"${last}@no-iso-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5693,9 +5693,9 @@ exit 99
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5734,7 +5734,7 @@ func TestHostAPI_Spawn_SubprocessOutputIncludedInError(t *testing.T) {
 echo "error: prism concurrency cap reached (6 agent containers already in flight)"
 echo ""
 echo "Active containers:"
-echo "  nixos-config@main   (coordinator)"
+echo "  test-repo@main   (coordinator)"
 exit 1
 `
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
@@ -5742,9 +5742,9 @@ exit 1
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5766,7 +5766,7 @@ exit 1
 	if !strings.Contains(errMsg, "concurrency cap reached") {
 		t.Errorf("error %q should include subprocess output (concurrency cap message)", errMsg)
 	}
-	if !strings.Contains(errMsg, "nixos-config@main") {
+	if !strings.Contains(errMsg, "test-repo@main") {
 		t.Errorf("error %q should include subprocess output (active container list)", errMsg)
 	}
 	// Verify trailing whitespace/newlines are trimmed.
@@ -5800,9 +5800,9 @@ echo "session \"${last}@override-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5850,9 +5850,9 @@ echo "session \"${last}@no-override-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -5882,7 +5882,7 @@ echo "session \"${last}@no-override-branch\" created"
 // value (not valid JSON) returns HTTP 400 rather than silently ignoring it.
 func TestHostAPI_Spawn_ModelOverrideMalformedReturns400(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	// malformed: not valid JSON-encoded map
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
@@ -6270,9 +6270,9 @@ exit 0
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6329,9 +6329,9 @@ echo "session \"${last}@harness-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6376,9 +6376,9 @@ echo "session \"${last}@no-harness-branch\" created"
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6484,9 +6484,9 @@ exit 0
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6536,9 +6536,9 @@ exit 0
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6584,7 +6584,7 @@ exit 0
 	clk := newTestClock()
 	cfg := Config{
 		SessionName:     "nixos-config@feature",
-		Repo:            "nixos-config",
+		Repo:            "test-repo",
 		Worktree:        "/tmp/nixos-config@feature",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
@@ -6629,7 +6629,7 @@ exit 0
 	clk := newTestClock()
 	cfg := Config{
 		SessionName:     "nixos-config@feature",
-		Repo:            "nixos-config",
+		Repo:            "test-repo",
 		Worktree:        "/tmp/nixos-config@feature",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
@@ -6674,9 +6674,9 @@ exit 0
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6727,9 +6727,9 @@ func TestHostAPI_Review_InfraFailureStreamsSentinelFailed(t *testing.T) {
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6787,7 +6787,7 @@ exit 1
 	clk := newTestClock()
 	cfg := Config{
 		SessionName:     "nixos-config@feature",
-		Repo:            "nixos-config",
+		Repo:            "test-repo",
 		Worktree:        "/tmp/nixos-config@feature",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
@@ -6847,7 +6847,7 @@ exit 0
 	clk := newTestClock()
 	cfg := Config{
 		SessionName:     "nixos-config@feature",
-		Repo:            "nixos-config",
+		Repo:            "test-repo",
 		Worktree:        "/tmp/nixos-config@feature",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
@@ -6890,9 +6890,9 @@ func TestHostAPI_Review_StartFailureReturns500(t *testing.T) {
 
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -6974,7 +6974,7 @@ exit 0
 	clk := newTestClock()
 	cfg := Config{
 		SessionName:     "nixos-config@741-fix",
-		Repo:            "nixos-config",
+		Repo:            "test-repo",
 		Worktree:        "/tmp/nixos-config@741-fix",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
@@ -7023,9 +7023,9 @@ exit 0
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -7080,9 +7080,9 @@ exit 1
 	}
 	clk := newTestClock()
 	cfg := Config{
-		SessionName:     "nixos-config@main",
-		Repo:            "nixos-config",
-		Worktree:        "/tmp/nixos-config@main",
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
 		HarnessURL:     "http://localhost:14000",
 		DB:              d,
 		Clock:           clk,
@@ -8415,7 +8415,7 @@ func TestReviewAgentParentSession(t *testing.T) {
 		{"nixos-config@feature~review-3", "nixos-config@feature", true},
 		// Normal worker — no "~review" in name.
 		{"nixos-config@feature", "", false},
-		{"nixos-config@main", "", false},
+		{"test-repo@main", "", false},
 		// Empty string
 		{"", "", false},
 	}

@@ -54,13 +54,13 @@ func TestHostAPI_Stats_Doomloops_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
 	// Seed status row so WriteEvent does not fail FK constraint.
-	if err := d.UpsertStatus("nixos-config@main", "nixos-config", "/tmp/w", "active", nil, nil); err != nil {
+	if err := d.UpsertStatus("test-repo@main", "test-repo", "/tmp/w", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	writeDoomLoopEventForSidecar(t, d, "nixos-config@main", "bash", "git status", 5, time.Now().Add(-1*time.Hour))
+	writeDoomLoopEventForSidecar(t, d, "test-repo@main", "bash", "git status", 5, time.Now().Add(-1*time.Hour))
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=doomloops&days=7", "")
 	if rr.Code != http.StatusOK {
@@ -84,7 +84,7 @@ func TestHostAPI_Stats_Doomloops_HappyPath(t *testing.T) {
 // {"events":[]} (not null).
 func TestHostAPI_Stats_Doomloops_EmptyResult(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=doomloops&days=7", "")
 	if rr.Code != http.StatusOK {
@@ -110,12 +110,12 @@ func TestHostAPI_Stats_Doomloops_EmptyResult(t *testing.T) {
 func TestHostAPI_Stats_Denials_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatus("nixos-config@main", "nixos-config", "/tmp/w", "active", nil, nil); err != nil {
+	if err := d.UpsertStatus("test-repo@main", "test-repo", "/tmp/w", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	writePermissionEventForSidecar(t, d, "nixos-config@main", "permission_denied", "bash", time.Now().Add(-1*time.Hour))
+	writePermissionEventForSidecar(t, d, "test-repo@main", "permission_denied", "bash", time.Now().Add(-1*time.Hour))
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=denials&days=7", "")
 	if rr.Code != http.StatusOK {
@@ -138,9 +138,9 @@ func TestHostAPI_Stats_Denials_HappyPath(t *testing.T) {
 // matches no known session.
 func TestHostAPI_Stats_Denials_UnknownSession(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
-	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=denials&session=nixos-config%40ghost&days=7", "")
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=denials&session=test-repo%40ghost&days=7", "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %q, want 404", rr.Code, rr.Body.String())
 	}
@@ -153,12 +153,12 @@ func TestHostAPI_Stats_Denials_UnknownSession(t *testing.T) {
 func TestHostAPI_Stats_Asks_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatus("nixos-config@main", "nixos-config", "/tmp/w", "active", nil, nil); err != nil {
+	if err := d.UpsertStatus("test-repo@main", "test-repo", "/tmp/w", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	writePermissionEventForSidecar(t, d, "nixos-config@main", "permission_ask", "bash", time.Now().Add(-1*time.Hour))
+	writePermissionEventForSidecar(t, d, "test-repo@main", "permission_ask", "bash", time.Now().Add(-1*time.Hour))
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=asks&days=7", "")
 	if rr.Code != http.StatusOK {
@@ -184,8 +184,8 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 	instanceID := "aaaa1111-2222-3333-4444-555555555555"
 	sess := db.Session{
 		InstanceID:  instanceID,
-		SessionName: "nixos-config@main",
-		Repo:        "nixos-config",
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
 		Worktree:    "/tmp/w",
 		Harness:     "pi",
 	}
@@ -193,7 +193,7 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 		t.Fatalf("InsertSession: %v", err)
 	}
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=summary", "")
 	if rr.Code != http.StatusOK {
@@ -207,8 +207,8 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 	if len(resp.Sessions) != 1 {
 		t.Fatalf("got %d sessions, want 1", len(resp.Sessions))
 	}
-	if resp.Sessions[0].SessionName != "nixos-config@main" {
-		t.Errorf("session name = %q, want nixos-config@main", resp.Sessions[0].SessionName)
+	if resp.Sessions[0].SessionName != "test-repo@main" {
+		t.Errorf("session name = %q, want test-repo@main", resp.Sessions[0].SessionName)
 	}
 }
 
@@ -216,7 +216,7 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 // returns {"sessions":[]} (not null).
 func TestHostAPI_Stats_Summary_EmptyResult(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=summary", "")
 	if rr.Code != http.StatusOK {
@@ -242,8 +242,8 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 	instanceID := "bbbb1111-2222-3333-4444-555555555555"
 	sess := db.Session{
 		InstanceID:  instanceID,
-		SessionName: "nixos-config@main",
-		Repo:        "nixos-config",
+		SessionName: "test-repo@main",
+		Repo:        "test-repo",
 		Worktree:    "/tmp/w",
 		Harness:     "pi",
 	}
@@ -251,9 +251,9 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 		t.Fatalf("InsertSession: %v", err)
 	}
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
-	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail&session=nixos-config%40main", "")
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail&session=test-repo%40main", "")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
 	}
@@ -265,15 +265,15 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 	if resp.Session == nil {
 		t.Fatal("session field is nil, want non-nil")
 	}
-	if resp.Session.SessionName != "nixos-config@main" {
-		t.Errorf("session name = %q, want nixos-config@main", resp.Session.SessionName)
+	if resp.Session.SessionName != "test-repo@main" {
+		t.Errorf("session name = %q, want test-repo@main", resp.Session.SessionName)
 	}
 }
 
 // TestHostAPI_Stats_Detail_MissingSession returns 400 when session param is absent.
 func TestHostAPI_Stats_Detail_MissingSession(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail", "")
 	if rr.Code != http.StatusBadRequest {
@@ -284,9 +284,9 @@ func TestHostAPI_Stats_Detail_MissingSession(t *testing.T) {
 // TestHostAPI_Stats_Detail_UnknownSession returns 404 when the session is not found.
 func TestHostAPI_Stats_Detail_UnknownSession(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
-	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail&session=nixos-config%40ghost", "")
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail&session=test-repo%40ghost", "")
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, body = %q, want 404", rr.Code, rr.Body.String())
 	}
@@ -297,7 +297,7 @@ func TestHostAPI_Stats_Detail_UnknownSession(t *testing.T) {
 // TestHostAPI_Stats_UnknownView returns 400 for an unknown view parameter.
 func TestHostAPI_Stats_UnknownView(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=badview", "")
 	if rr.Code != http.StatusBadRequest {
@@ -316,7 +316,7 @@ func TestHostAPI_Stats_UnknownView(t *testing.T) {
 // TestHostAPI_Stats_MethodNotAllowed verifies that POST /stats returns 405.
 func TestHostAPI_Stats_MethodNotAllowed(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/stats", `{}`)
 	if rr.Code != http.StatusMethodNotAllowed {
@@ -328,7 +328,7 @@ func TestHostAPI_Stats_MethodNotAllowed(t *testing.T) {
 // is accessible to worker sessions (read-only, no coordinator restriction).
 func TestHostAPI_Stats_WorkerCanAccessStats(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarWithRole(t, "nixos-config@feature", "nixos-config", "worker", d)
+	sc := newSidecarWithRole(t, "nixos-config@feature", "test-repo", "worker", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=doomloops&days=7", "")
 	if rr.Code != http.StatusOK {
@@ -344,12 +344,12 @@ func TestHostAPI_Stats_WorkerCanAccessStats(t *testing.T) {
 func TestHostAPI_Stats_Doomloops_JSONSchema(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatus("nixos-config@main", "nixos-config", "/tmp/w", "active", nil, nil); err != nil {
+	if err := d.UpsertStatus("test-repo@main", "test-repo", "/tmp/w", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
-	writeDoomLoopEventForSidecar(t, d, "nixos-config@main", "bash", "git diff", 3, time.Now().Add(-30*time.Minute))
+	writeDoomLoopEventForSidecar(t, d, "test-repo@main", "bash", "git diff", 3, time.Now().Add(-30*time.Minute))
 
-	sc := newSidecarWithRole(t, "nixos-config@main", "nixos-config", "coordinator", d)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
 	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=doomloops&days=1", "")
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
