@@ -114,7 +114,18 @@ func (h *HarnessSocketServer) Listen() error {
 // AcceptOne accepts a single connection from the pi extension and runs the
 // handshake + dispatch loop. It returns when the connection closes or ctx is
 // cancelled. Designed to be called in its own goroutine.
+//
+// When ctx is cancelled, AcceptOne unblocks the Accept call by setting a
+// past deadline on the listener rather than closing it. This preserves the
+// socket file on disk so the next pi spawn attempt can connect to the same
+// socket. The listener is only closed (and the socket file removed) by an
+// explicit call to Close().
 func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
+	// Ensure any prior deadline is cleared before we start waiting.
+	if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = dl.SetDeadline(time.Time{})
+	}
+
 	// Set a deadline on the Accept so we can respect context cancellation.
 	type acceptResult struct {
 		conn net.Conn
@@ -128,7 +139,13 @@ func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		h.listener.Close()
+		// Interrupt the Accept goroutine by setting a past deadline. This
+		// unblocks Accept without closing the listener or removing the socket
+		// file — the socket must survive so the next pi spawn can connect.
+		if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
+			_ = dl.SetDeadline(time.Now())
+		}
+		<-ch // wait for the Accept goroutine to unblock and exit
 		return ctx.Err()
 	case res := <-ch:
 		if res.err != nil {
