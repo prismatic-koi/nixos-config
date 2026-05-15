@@ -1,19 +1,26 @@
 package iris
 
-// tool_dispatcher.go — host-mode tool execution for D-3.
+// tool_dispatcher.go — per-tool sandboxed execution (D-4).
 //
-// In D-3 all tool subprocesses run directly on the host with no sandbox.
-// This is the deliberate intermediate state before D-4 (worktree-scoped
-// subprocess) and D-5 (bash restricted subprocess). The point is to prove the
-// dispatch loop end-to-end; sandboxing is layered on later without changing
-// the protocol.
+// D-3 proved the dispatch loop end-to-end with host-mode (unsandboxed)
+// executors.  D-4 replaces the six file-tool executors with sandboxed
+// subprocess wrappers:
 //
-// Each tool call runs in its own subprocess. The tool dispatcher:
-//  1. Selects the executor for the named tool.
-//  2. Runs the executor in a subprocess, capturing stdout+stderr.
-//  3. Streams partial output via tool_exec_update frames.
-//  4. Watches for a tool_abort signal and kills the subprocess + descendants.
-//  5. Returns a toolResult with success/isError/output/details.
+//   - Linux:  bwrap (bubblewrap)
+//   - macOS:  sandbox-exec with a generated SBPL profile
+//
+// The bash executor remains unsandboxed (that is D-5's scope).
+//
+// Each tool call runs in its own subprocess.  The tool dispatcher:
+//  1. Validates the path argument (Go-side, before starting any subprocess).
+//  2. Selects the executor for the named tool.
+//  3. Runs the executor in a sandboxed subprocess, capturing stdout+stderr.
+//  4. Streams partial output via tool_exec_update frames.
+//  5. Watches for a tool_abort signal and kills the subprocess + descendants.
+//  6. Returns a toolResult with success/isError/output/details.
+//
+// Path validation is the primary enforcement mechanism; the sandbox is
+// defence-in-depth.
 
 import (
 	"context"
@@ -39,6 +46,12 @@ type toolResult struct {
 // toolDispatcher holds the context for a single tool_exec dispatch.
 type toolDispatcher struct {
 	worktree   string
+	// tmpDir is the per-session host-side backing directory for the in-sandbox
+	// /tmp mount.  Computed from the harness socket path:
+	//   sessionDir = filepath.Dir(sess.HarnessSockPath)
+	//   tmpDir     = filepath.Join(sessionDir, "tmp")
+	// Populated by the harness socket server before dispatching.
+	tmpDir     string
 	writer     *jsonlWriter
 	abortCh    <-chan struct{}
 	toolExecID string
@@ -235,8 +248,10 @@ func sigkillProcessGroup(pid int) {
 	_ = syscall.Kill(pgid, syscall.SIGKILL)
 }
 
-// --- Tool executors (D-3: host-mode, no sandbox) ---
+// --- Tool executors (D-4: sandboxed subprocesses for file tools) ---
 
+// runBash remains unsandboxed in D-4.  D-5 will add the restricted
+// subprocess sandbox for bash.
 func (d *toolDispatcher) runBash(ctx context.Context, frame ToolExecFrame) toolResult {
 	command := stringArg(frame.Args, "command")
 	if command == "" {
@@ -245,6 +260,7 @@ func (d *toolDispatcher) runBash(ctx context.Context, frame ToolExecFrame) toolR
 	return d.runSubprocess(ctx, d.worktree, nil, "bash", "-c", command)
 }
 
+// runRead executes the read tool in a sandboxed subprocess (worktree RO).
 func (d *toolDispatcher) runRead(ctx context.Context, frame ToolExecFrame) toolResult {
 	filePath := stringArg(frame.Args, "file_path")
 	if filePath == "" {
@@ -253,14 +269,28 @@ func (d *toolDispatcher) runRead(ctx context.Context, frame ToolExecFrame) toolR
 	if filePath == "" {
 		return toolResult{Success: false, IsError: true, Output: "read: missing 'file_path' argument"}
 	}
-	abs := resolveWorktreePath(d.worktree, filePath)
-	data, err := os.ReadFile(abs)
+
+	// Path validation — primary enforcement (sandbox is defence-in-depth).
+	resolved, err := validateToolPath(d.worktree, d.tmpDir, filePath)
 	if err != nil {
 		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("read: %v", err)}
 	}
-	content := string(data)
 
-	// Apply offset/limit if provided.
+	// Build argv: cat for reading (handles binary; offset/limit applied in Go
+	// after capture).  We cat the resolved path so the subprocess sees the
+	// symlink-resolved location — the sandbox bind-mount covers the resolved
+	// location, so the cat will succeed.
+	output, ok, sandboxErr := d.runInFileSandbox(ctx, true, "cat", resolved)
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("read: sandbox: %v", sandboxErr)}
+	}
+	if !ok {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("read: %s", output)}
+	}
+
+	content := output
+
+	// Apply offset/limit if provided (applied after capture in Go).
 	offset := intArg(frame.Args, "offset")
 	limit := intArg(frame.Args, "limit")
 	if offset > 0 || limit > 0 {
@@ -283,6 +313,7 @@ func (d *toolDispatcher) runRead(ctx context.Context, frame ToolExecFrame) toolR
 	return toolResult{Success: true, IsError: false, Output: content}
 }
 
+// runEdit executes the edit tool in a sandboxed subprocess (worktree RW).
 func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolResult {
 	filePath := stringArg(frame.Args, "file_path")
 	if filePath == "" {
@@ -294,12 +325,25 @@ func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolR
 		return toolResult{Success: false, IsError: true, Output: "edit: missing 'file_path' argument"}
 	}
 
-	abs := resolveWorktreePath(d.worktree, filePath)
-	data, err := os.ReadFile(abs)
+	// Path validation — primary enforcement.
+	resolved, err := validateToolPath(d.worktree, d.tmpDir, filePath)
 	if err != nil {
-		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: read: %v", err)}
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: %v", err)}
 	}
-	content := string(data)
+
+	// Read the file content in a RO sandbox, then perform the edit in-process,
+	// then write the result via a RW sandbox.  This keeps the actual file
+	// manipulation logic in Go (clear error messages, count checks) while
+	// ensuring both reads and writes go through the sandbox path.
+	readOutput, readOK, sandboxErr := d.runInFileSandbox(ctx, true, "cat", resolved)
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: sandbox read: %v", sandboxErr)}
+	}
+	if !readOK {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: read: %s", readOutput)}
+	}
+
+	content := readOutput
 	if oldText != "" {
 		count := strings.Count(content, oldText)
 		if count == 0 {
@@ -319,12 +363,22 @@ func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolR
 	} else {
 		newContent = strings.Replace(content, oldText, newText, 1)
 	}
-	if err := os.WriteFile(abs, []byte(newContent), 0o644); err != nil {
-		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: write: %v", err)}
+
+	// Write the new content via a sandboxed tee/dd into the resolved path.
+	// We use a shell invocation via the RW sandbox to write the file.
+	// The content is passed via stdin.
+	writeOutput, writeOK, sandboxErr := d.runInFileSandboxWithStdin(ctx, false, newContent, "sh", "-c", "cat > "+shellQuote(resolved))
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: sandbox write: %v", sandboxErr)}
 	}
+	if !writeOK {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: write: %s", writeOutput)}
+	}
+
 	return toolResult{Success: true, IsError: false, Output: "file edited successfully"}
 }
 
+// runWrite executes the write tool in a sandboxed subprocess (worktree RW).
 func (d *toolDispatcher) runWrite(ctx context.Context, frame ToolExecFrame) toolResult {
 	filePath := stringArg(frame.Args, "file_path")
 	if filePath == "" {
@@ -335,41 +389,81 @@ func (d *toolDispatcher) runWrite(ctx context.Context, frame ToolExecFrame) tool
 		return toolResult{Success: false, IsError: true, Output: "write: missing 'file_path' argument"}
 	}
 
-	abs := resolveWorktreePath(d.worktree, filePath)
+	// Path validation — primary enforcement.
+	_, err := validateToolPath(d.worktree, d.tmpDir, filePath)
+	if err != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("write: %v", err)}
+	}
+
+	// Resolve to absolute for the sandboxed write.
+	abs := filePath
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(d.worktree, filePath)
+	}
+	abs = filepath.Clean(abs)
+
+	// The parent directory may not exist; create it on the host before entering
+	// the sandbox (the sandbox's worktree RW bind-mount allows directory creation,
+	// but mkdir -p is simpler to do in Go).
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("write: mkdir: %v", err)}
 	}
-	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
-		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("write: %v", err)}
+
+	// Write via a sandboxed subprocess with content on stdin.
+	writeOutput, writeOK, sandboxErr := d.runInFileSandboxWithStdin(ctx, false, content, "sh", "-c", "cat > "+shellQuote(abs))
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("write: sandbox: %v", sandboxErr)}
+	}
+	if !writeOK {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("write: %s", writeOutput)}
 	}
 	return toolResult{Success: true, IsError: false, Output: "file written successfully"}
 }
 
+// runGrep executes the grep tool in a sandboxed subprocess (worktree RO).
 func (d *toolDispatcher) runGrep(ctx context.Context, frame ToolExecFrame) toolResult {
 	pattern := stringArg(frame.Args, "pattern")
 	path := stringArg(frame.Args, "path")
 	if pattern == "" {
 		return toolResult{Success: false, IsError: true, Output: "grep: missing 'pattern' argument"}
 	}
+
 	target := d.worktree
 	if path != "" {
-		target = resolveWorktreePath(d.worktree, path)
+		// Validate the path argument.
+		resolved, err := validateToolPath(d.worktree, d.tmpDir, path)
+		if err != nil {
+			return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("grep: %v", err)}
+		}
+		target = resolved
 	}
-	args := []string{"-rn", "--", pattern, target}
-	return d.runSubprocess(ctx, d.worktree, nil, "grep", args...)
+
+	output, ok, sandboxErr := d.runInFileSandbox(ctx, true, "grep", "-rn", "--", pattern, target)
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("grep: sandbox: %v", sandboxErr)}
+	}
+	// grep exits 1 when no matches found — treat as success with empty output.
+	if !ok && output == "" {
+		return toolResult{Success: true, IsError: false, Output: ""}
+	}
+	return toolResult{Success: ok || output != "", IsError: false, Output: output}
 }
 
+// runFind executes the find tool in a sandboxed subprocess (worktree RO).
 func (d *toolDispatcher) runFind(ctx context.Context, frame ToolExecFrame) toolResult {
 	path := stringArg(frame.Args, "path")
 	if path == "" {
 		path = "."
 	}
-	target := resolveWorktreePath(d.worktree, path)
+
+	// Validate the path argument.
+	resolved, err := validateToolPath(d.worktree, d.tmpDir, path)
+	if err != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("find: %v", err)}
+	}
 
 	var argv []string
-	argv = append(argv, target)
-
-	// Optional name pattern filter.
+	argv = append(argv, resolved)
 	if name := stringArg(frame.Args, "name"); name != "" {
 		argv = append(argv, "-name", name)
 	}
@@ -377,16 +471,36 @@ func (d *toolDispatcher) runFind(ctx context.Context, frame ToolExecFrame) toolR
 		argv = append(argv, "-type", typeFilter)
 	}
 
-	return d.runSubprocess(ctx, d.worktree, nil, "find", argv...)
+	output, ok, sandboxErr := d.runInFileSandbox(ctx, true, "find", argv...)
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("find: sandbox: %v", sandboxErr)}
+	}
+	return toolResult{Success: ok, IsError: !ok, Output: output}
 }
 
+// runLs executes the ls tool in a sandboxed subprocess (worktree RO).
 func (d *toolDispatcher) runLs(ctx context.Context, frame ToolExecFrame) toolResult {
 	path := stringArg(frame.Args, "path")
 	if path == "" {
 		path = "."
 	}
-	target := resolveWorktreePath(d.worktree, path)
-	return d.runSubprocess(ctx, d.worktree, nil, "ls", "-la", target)
+
+	// Validate the path argument.
+	resolved, err := validateToolPath(d.worktree, d.tmpDir, path)
+	if err != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("ls: %v", err)}
+	}
+
+	output, ok, sandboxErr := d.runInFileSandbox(ctx, true, "ls", "-la", resolved)
+	if sandboxErr != nil {
+		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("ls: sandbox: %v", sandboxErr)}
+	}
+	return toolResult{Success: ok, IsError: !ok, Output: output}
+}
+
+// shellQuote wraps s in single quotes, escaping embedded single quotes.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // resolveWorktreePath resolves a (potentially relative) path against the

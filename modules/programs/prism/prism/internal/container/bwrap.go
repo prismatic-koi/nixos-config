@@ -325,7 +325,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// (bwrap evaluates arguments left-to-right but each --bind is
 	// independent), so this is a behaviour-preserving reordering.
 	for _, spec := range StandardSandboxMounts(cfg, home, home, isolationBwrap) {
-		args = appendBwrapBind(args, spec)
+		args = AppendBwrapBind(args, spec)
 	}
 
 	// NOTE: An unconditional --bind of ~/.local/share/pi used to live here as

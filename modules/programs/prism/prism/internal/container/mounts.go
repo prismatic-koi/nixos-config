@@ -276,7 +276,7 @@ func appendPodmanVolume(args []string, spec MountSpec) []string {
 	return append(args, "--volume", src+":"+spec.SandboxPath+flags)
 }
 
-// appendBwrapBind appends a bwrap --ro-bind or --bind argument triple for the
+// AppendBwrapBind appends a bwrap --ro-bind or --bind argument triple for the
 // given MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via
 // resolveMountHostPath and emits the correct flag based on spec.ReadOnly.
 // SELinuxRelabel is ignored — bwrap does not participate in SELinux labelling.
@@ -284,7 +284,10 @@ func appendPodmanVolume(args []string, spec MountSpec) []string {
 //
 // Free function (not a method on bwrapIsolator) — the emitter is stateless
 // and a free function is symmetric with appendPodmanVolume above.
-func appendBwrapBind(args []string, spec MountSpec) []string {
+//
+// Exported so that the iris package can reuse the MountSpec emission machinery
+// without depending on bwrapIsolator directly (D-4 requirement).
+func AppendBwrapBind(args []string, spec MountSpec) []string {
 	src, ok := resolveMountHostPath(spec)
 	if !ok {
 		return args
