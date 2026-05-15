@@ -8,6 +8,9 @@ import {
   slimJson,
   slimMcpResultContent,
   optionsForTool,
+  deduplicateById,
+  buildCloudIdErrorHint,
+  CLOUD_ID_ERROR_PATTERN,
   UNIVERSAL_DROP_KEYS,
   JIRA_ISSUE_DROP_KEYS,
   CONFLUENCE_DROP_KEYS,
@@ -264,6 +267,116 @@ describe("slimMcpResultContent", () => {
   it("handles null/undefined content", () => {
     const result = slimMcpResultContent(null, "anyTool")
     assert.equal(result, "null")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// deduplicateById tests (Issue #4)
+// ---------------------------------------------------------------------------
+
+describe("deduplicateById", () => {
+  it("deduplicates two identical entries (same id and name)", () => {
+    const input = [
+      { id: "08986a80-a6ed-4480-ae2d-4a439d50d71b", name: "thankyoupayroll" },
+      { id: "08986a80-a6ed-4480-ae2d-4a439d50d71b", name: "thankyoupayroll" },
+    ]
+    const result = deduplicateById(input)
+    assert.equal(result.length, 1)
+    assert.equal(result[0].id, "08986a80-a6ed-4480-ae2d-4a439d50d71b")
+  })
+
+  it("deduplicates entries with matching id but different name (first occurrence wins)", () => {
+    const input = [
+      { id: "08986a80-a6ed-4480-ae2d-4a439d50d71b", name: "thankyoupayroll" },
+      { id: "08986a80-a6ed-4480-ae2d-4a439d50d71b", name: "thankyoupayroll-copy" },
+    ]
+    const result = deduplicateById(input)
+    assert.equal(result.length, 1)
+    assert.equal(result[0].name, "thankyoupayroll")
+  })
+
+  it("preserves entries with different ids", () => {
+    const input = [
+      { id: "aaaa", name: "site-a" },
+      { id: "bbbb", name: "site-b" },
+    ]
+    const result = deduplicateById(input)
+    assert.equal(result.length, 2)
+  })
+
+  it("preserves order (first occurrence wins)", () => {
+    const input = [
+      { id: "aaaa", name: "first" },
+      { id: "bbbb", name: "second" },
+      { id: "aaaa", name: "third" },
+    ]
+    const result = deduplicateById(input)
+    assert.equal(result.length, 2)
+    assert.equal(result[0].name, "first")
+    assert.equal(result[1].name, "second")
+  })
+
+  it("handles empty array", () => {
+    assert.deepEqual(deduplicateById([]), [])
+  })
+})
+
+describe("slimMcpResultContent — getAccessibleAtlassianResources dedup (Issue #4)", () => {
+  it("deduplicates resources with the same id", () => {
+    const resource = { id: "08986a80-a6ed-4480-ae2d-4a439d50d71b", name: "thankyoupayroll" }
+    const content = [{ type: "text", text: JSON.stringify([resource, resource]) }]
+    const result = slimMcpResultContent(content, "getAccessibleAtlassianResources")
+    const parsed = JSON.parse(result) as unknown[]
+    assert.equal(parsed.length, 1)
+  })
+
+  it("does not deduplicate for other tools", () => {
+    const item = { id: "aaaa", name: "x" }
+    const content = [{ type: "text", text: JSON.stringify([item, item]) }]
+    const result = slimMcpResultContent(content, "searchJiraIssuesUsingJql")
+    const parsed = JSON.parse(result) as unknown[]
+    assert.equal(parsed.length, 2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// buildCloudIdErrorHint tests (Issue #5)
+// ---------------------------------------------------------------------------
+
+describe("buildCloudIdErrorHint", () => {
+  it("returns getAccessibleAtlassianResources hint when no default cloudId", () => {
+    const hint = buildCloudIdErrorHint(undefined)
+    assert.ok(hint.includes("getAccessibleAtlassianResources"))
+  })
+
+  it("returns default cloud ID hint when default is set", () => {
+    const hint = buildCloudIdErrorHint("08986a80-a6ed-4480-ae2d-4a439d50d71b")
+    assert.ok(hint.includes("configured default cloud ID"))
+    assert.ok(hint.includes("omit the cloudId parameter"))
+  })
+})
+
+describe("slimMcpResultContent — cloudId error nudge (Issue #5)", () => {
+  it("appends hint to plain text cloudId error without default", () => {
+    const errText = `${CLOUD_ID_ERROR_PATTERN}: abc-123. Status: 404`
+    const content = [{ type: "text", text: errText }]
+    const result = slimMcpResultContent(content, "getJiraIssue")
+    assert.ok(result.includes(CLOUD_ID_ERROR_PATTERN))
+    assert.ok(result.includes("getAccessibleAtlassianResources"))
+  })
+
+  it("appends default-cloudId hint when default is configured", () => {
+    const errText = `${CLOUD_ID_ERROR_PATTERN}: abc-123. Status: 404`
+    const content = [{ type: "text", text: errText }]
+    const result = slimMcpResultContent(content, "getJiraIssue", "08986a80-a6ed-4480-ae2d-4a439d50d71b")
+    assert.ok(result.includes("configured default cloud ID"))
+    assert.ok(!result.includes("getAccessibleAtlassianResources"))
+  })
+
+  it("does not append hint when no cloudId error", () => {
+    const content = [{ type: "text", text: "Some normal response" }]
+    const result = slimMcpResultContent(content, "getJiraIssue")
+    assert.ok(!result.includes("Hint:"))
   })
 })
 

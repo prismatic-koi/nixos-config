@@ -14,9 +14,11 @@ export const UNIVERSAL_DROP_KEYS = new Set(
     .filter(Boolean),
 )
 
-// Fields to drop from Jira issue responses
+// Fields to drop from Jira issue responses.
+// Note: "transitions" is intentionally NOT in this list because the getJiraIssue
+// response is augmented with a transitions array (Issue #2) and we want it preserved.
 export const JIRA_ISSUE_DROP_KEYS = new Set(
-  "renderedFields,operations,permissions,transitions,watchers,worklog,attachments,properties,names,subtask,hierarchyLevel,editmeta,versionedRepresentations,colorName"
+  "renderedFields,operations,permissions,watchers,worklog,attachments,properties,names,subtask,hierarchyLevel,editmeta,versionedRepresentations,colorName"
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
@@ -159,14 +161,53 @@ export function slimJson(value: unknown, options: SlimOptions, depth = 0): unkno
 }
 
 /**
+ * Deduplicate an array of resources (e.g. from getAccessibleAtlassianResources)
+ * by their `id` field. Order is preserved; first occurrence wins.
+ */
+export function deduplicateById<T extends Record<string, unknown>>(items: T[]): T[] {
+  const seen = new Set<unknown>()
+  const result: T[] = []
+  for (const item of items) {
+    const id = item["id"]
+    if (!seen.has(id)) {
+      seen.add(id)
+      result.push(item)
+    }
+  }
+  return result
+}
+
+/**
+ * Pattern that indicates a wrong/missing cloudId error from the upstream MCP.
+ */
+export const CLOUD_ID_ERROR_PATTERN = "Failed to fetch tenant info for cloud ID"
+
+/**
+ * Build the hint to append when a cloudId error is detected.
+ * If defaultCloudId is set, the hint points to using the default.
+ * Otherwise it points to getAccessibleAtlassianResources.
+ */
+export function buildCloudIdErrorHint(defaultCloudId: string | undefined): string {
+  if (defaultCloudId) {
+    return "\nHint: this site has a configured default cloud ID — omit the cloudId parameter to use it."
+  }
+  return "\nHint: call getAccessibleAtlassianResources to discover valid cloud IDs."
+}
+
+/**
  * Apply slim field-drop logic to the text content of an MCP tool result.
  * The MCP result content is an array of {type, text} blocks.
  * For each text block, parse as JSON (if possible) and apply slimJson.
  * Returns a string (the slimmed text content).
+ *
+ * Also applies post-processing:
+ * - Deduplicates resources by id for getAccessibleAtlassianResources.
+ * - Appends a hint when a cloudId error is detected.
  */
 export function slimMcpResultContent(
   content: unknown,
   toolName: string,
+  defaultCloudId?: string,
 ): string {
   if (!Array.isArray(content)) {
     return typeof content === "string" ? content : JSON.stringify(content)
@@ -186,15 +227,35 @@ export function slimMcpResultContent(
         // Try to parse as JSON and slim
         try {
           const parsed = JSON.parse(text)
-          const slimmed = slimJson(parsed, options)
+
+          // Issue #4: deduplicate resources for getAccessibleAtlassianResources
+          let processed: unknown = parsed
+          if (
+            toolName === "getAccessibleAtlassianResources" &&
+            Array.isArray(parsed)
+          ) {
+            processed = deduplicateById(parsed as Record<string, unknown>[])
+          }
+
+          const slimmed = slimJson(processed, options)
           parts.push(JSON.stringify(slimmed))
         } catch {
           // Not JSON — pass through as-is
-          parts.push(text)
+          // Issue #5: append hint for cloudId errors
+          if (text.includes(CLOUD_ID_ERROR_PATTERN)) {
+            parts.push(text + buildCloudIdErrorHint(defaultCloudId))
+          } else {
+            parts.push(text)
+          }
         }
       }
     }
   }
 
-  return parts.join("\n")
+  // Issue #5: also check if the joined result contains the error pattern (JSON-parsed path)
+  const joined = parts.join("\n")
+  if (joined.includes(CLOUD_ID_ERROR_PATTERN)) {
+    return joined + buildCloudIdErrorHint(defaultCloudId)
+  }
+  return joined
 }
