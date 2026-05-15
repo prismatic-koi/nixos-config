@@ -459,11 +459,14 @@ func TestMergeQueueForInstance_AbandonedFilter(t *testing.T) {
 // replaces the gh CLI calls with an injectable function.
 
 type fakeWatcher struct {
-	watcher              *Watcher
-	fetchFn              func(ctx context.Context, pr int) (*prInfo, error)
-	mergeFn              func(ctx context.Context, pr int) ([]byte, error)
-	updateFn             func(ctx context.Context, pr int) error
+	watcher               *Watcher
+	fetchFn               func(ctx context.Context, pr int) (*prInfo, error)
+	mergeFn               func(ctx context.Context, pr int) ([]byte, error)
+	updateFn              func(ctx context.Context, pr int) error
 	fetchRequiredChecksFn func(ctx context.Context) ([]string, error)
+	// checkMergedStateFn is called on the error path of tryMerge to reconcile
+	// PR state. When nil, returns "" (unknown / fall-through to keyword check).
+	checkMergedStateFn func(ctx context.Context, pr int) string
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
@@ -496,6 +499,16 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 			fw.watcher.succeedAndNotify(ctx, head)
 			return
 		}
+		// First: reconcile by checking the PR's actual state.
+		var reconciledState string
+		if fw.checkMergedStateFn != nil {
+			reconciledState = fw.checkMergedStateFn(ctx, head.PR)
+		}
+		if reconciledState == "MERGED" {
+			fw.watcher.succeedAndNotify(ctx, head)
+			return
+		}
+		// Second: keyword-based branch-moved-race check.
 		combined := strings.ToLower(string(out) + mergeErr.Error())
 		if isBranchMovedRace(combined) {
 			return // transient
@@ -532,6 +545,16 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 				fw.watcher.succeedAndNotify(ctx, head)
 				return
 			}
+			// First: reconcile state.
+			var reconciledState string
+			if fw.checkMergedStateFn != nil {
+				reconciledState = fw.checkMergedStateFn(ctx, head.PR)
+			}
+			if reconciledState == "MERGED" {
+				fw.watcher.succeedAndNotify(ctx, head)
+				return
+			}
+			// Second: keyword check.
 			combined := strings.ToLower(string(out) + mergeErr.Error())
 			if isBranchMovedRace(combined) {
 				return
@@ -1982,6 +2005,204 @@ func TestFetchRequiredChecks_CacheTTL(t *testing.T) {
 	}
 	if callCount != 2 {
 		t.Errorf("third call (after TTL): callCount = %d, want 2", callCount)
+	}
+}
+
+// ── tryMerge reconciliation tests (issue #1645) ─────────────────────────────
+
+// TestWatcher_MergeAlreadyInProgress_PRIsMerged verifies AC: when gh pr merge
+// returns an error and checkPRMergedState returns "MERGED", the watcher
+// transitions to merged and sends the success notification.
+func TestWatcher_MergeAlreadyInProgress_PRIsMerged(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-reconcile-merged"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-merged")
+
+	if _, err := d.EnqueueMerge(2100, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			// Simulate "Merge already in progress" GraphQL error.
+			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
+				fmt.Errorf("exit status 1")
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// checkMergedStateFn returns MERGED — PR did actually merge.
+	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
+		return "MERGED"
+	}
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(2100)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status: got %q, want merged", row.Status)
+	}
+	if row.MergedAt == nil {
+		t.Error("merged_at: got nil, want set")
+	}
+	// Success notification must have been sent.
+	if srv.called == 0 {
+		t.Fatal("no success notification sent to coordinator")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
+		t.Fatalf("unmarshal notification body: %v", err)
+	}
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "PR #2100") {
+		t.Errorf("notification text %q does not mention PR #2100", text)
+	}
+	if !strings.Contains(text, "merged") {
+		t.Errorf("notification text %q does not mention 'merged'", text)
+	}
+}
+
+// TestWatcher_MergeAlreadyInProgress_PRIsOpen verifies AC: when gh pr merge
+// returns an error and checkPRMergedState returns "OPEN" (not merged), the
+// watcher falls through to the keyword check and then to failAndNotify.
+func TestWatcher_MergeAlreadyInProgress_PRIsOpen(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-reconcile-open"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-open")
+
+	if _, err := d.EnqueueMerge(2101, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			// Error that doesn't match any keyword.
+			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
+				fmt.Errorf("exit status 1")
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// checkMergedStateFn returns OPEN — PR did NOT merge.
+	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
+		return "OPEN"
+	}
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(2101)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+}
+
+// TestWatcher_MergeError_CheckPRStateItself_Fails verifies AC (edge-case):
+// when gh pr merge errors AND checkPRMergedState itself fails (returns ""),
+// the watcher falls through to the keyword check. When neither the state
+// reconciliation nor the keywords match, failAndNotify is called.
+func TestWatcher_MergeError_CheckPRStateItself_Fails(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-reconcile-viewerr"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-reconcile-viewerr")
+
+	if _, err := d.EnqueueMerge(2102, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			// Error that doesn't match any keyword.
+			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
+				fmt.Errorf("exit status 1")
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// checkMergedStateFn returns "" — gh pr view failed (network error, etc.).
+	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
+		return ""
+	}
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(2102)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (checkMergedState failure must fall through to failAndNotify)", row.Status)
+	}
+}
+
+// TestWatcher_GenuineFailure_NoRegression verifies AC: a genuine gh pr merge
+// error (not a race keyword, not reconciled as MERGED) still transitions to
+// failed. This is a non-regression test for the existing failure path.
+func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-genuine-fail"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-genuine-fail")
+
+	if _, err := d.EnqueueMerge(2103, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			// A genuine failure unrelated to any race.
+			return []byte("GraphQL: repository has no pull request with the number 2103"),
+				fmt.Errorf("exit status 1")
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// checkMergedStateFn returns OPEN — PR was not merged.
+	fw.checkMergedStateFn = func(_ context.Context, pr int) string {
+		return "OPEN"
+	}
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(2103)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (genuine error must not reconcile as merged)", row.Status)
 	}
 }
 
