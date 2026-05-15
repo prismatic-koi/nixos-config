@@ -105,6 +105,23 @@ export const DOOM_LOOP_THRESHOLD = 5
 export const EXCLUDED_TOOLS = new Set(["read", "grep", "glob", "todowrite"])
 
 /**
+ * Bash command bases that are search/read/inspect operations. Excluded from
+ * doom-loop detection for the same reason EXCLUDED_TOOLS excludes the native
+ * read/grep/glob tools: legitimate exploration revisits the same pattern
+ * across many files, and the bash similarity key collapses
+ * `<base> "<pattern>" <file1>`, `<base> "<pattern>" <file2>`, … to one key
+ * because positional #2+ is discarded by the default bash key formula.
+ */
+export const EXCLUDED_BASH_BASES = new Set([
+  "grep", "rg", "ag",                              // search
+  "find", "fd",                                    // file listing
+  "cat", "head", "tail", "less", "more",           // read
+  "ls", "tree", "stat", "file", "wc",              // inspect
+  "awk", "sed", "cut", "sort", "uniq",             // text munging (read-only when piped)
+  "jq", "yq",                                      // structured read
+])
+
+/**
  * Compute a normalised similarity key for a tool call.
  * Returns null for excluded tools (no detection).
  *
@@ -134,6 +151,10 @@ export function similarityKey(tool: string, args: unknown): string | null {
         baseIdx++
       }
       const base = meaningful[baseIdx] ?? ""
+
+      if (EXCLUDED_BASH_BASES.has(base)) {
+        return null
+      }
 
       const SUBCOMMAND_CLIS = new Set(["gh", "git", "kubectl", "helm", "docker", "podman"])
       if (SUBCOMMAND_CLIS.has(base)) {
@@ -218,16 +239,13 @@ export function processDoomLoop(
   toolName: string,
   toolArgs: unknown,
 ): string | null {
-  if (EXCLUDED_TOOLS.has(toolName)) {
-    // Break the current run without tracking.
+  const key = similarityKey(toolName, toolArgs)
+  if (key === null) {
+    // Excluded by similarityKey (either an excluded tool or an excluded bash
+    // base). Treat as a run-breaker for symmetry with the EXCLUDED_TOOLS path.
     state.currentKey = null
     state.consecutiveCount = 0
     state.fired = false
-    return null
-  }
-
-  const key = similarityKey(toolName, toolArgs)
-  if (key === null) {
     return null
   }
 
