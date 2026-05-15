@@ -26,6 +26,7 @@ import (
 
 var (
 	tuiSocketPath string
+	tuiSession    string
 )
 
 // tuiCmd is the `iris tui` subcommand.
@@ -57,7 +58,7 @@ The daemon must be running ('iris daemon') before opening the TUI.`,
 
 		fmt.Fprintf(os.Stderr, "iris tui: connecting to %s\n", sockPath)
 
-		if err := tui.Run(sockPath); err != nil {
+		if err := tui.RunFocused(sockPath, tuiSession); err != nil {
 			return fmt.Errorf("iris tui: %w", err)
 		}
 		return nil
@@ -66,4 +67,5 @@ The daemon must be running ('iris daemon') before opening the TUI.`,
 
 func init() {
 	tuiCmd.Flags().StringVar(&tuiSocketPath, "socket", "", "Path to the iris daemon socket (default: ~/.local/state/iris/iris.sock)")
+	tuiCmd.Flags().StringVar(&tuiSession, "session", "", "Pre-select this session by name on the first snapshot (used by the iris-switch picker to focus the TUI on a specific session)")
 }

@@ -111,6 +111,12 @@ type Model struct {
 	sessions []sessionItem
 	cursor   int // selected row index
 
+	// initialSession is the session name to focus on when the first
+	// sessions_snapshot frame arrives. Empty means "use the daemon's
+	// natural ordering and select the first row". Set by the --session
+	// CLI flag (and consumed/cleared after first use).
+	initialSession string
+
 	// Subscribed session name (may differ from sessions[cursor].snap.Name
 	// transiently during session switching).
 	subscribedTo string
@@ -138,6 +144,17 @@ func NewModel(client *DaemonClient) Model {
 		seenRowIDs:      make(map[int64]bool),
 		toolCallByMsgID: make(map[string]int),
 	}
+}
+
+// NewModelFocused is like NewModel but pre-seeds an initial session name. On
+// the first sessions_snapshot frame, if a session with that name is present
+// the cursor is positioned on it (and the subscription targets it) instead
+// of defaulting to row 0. Used by `iris tui --session <name>` so that the
+// `iris switch` picker can hand the TUI a specific session to focus on.
+func NewModelFocused(client *DaemonClient, initialSession string) Model {
+	m := NewModel(client)
+	m.initialSession = initialSession
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -191,14 +208,22 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		if m.cursor < len(m.sessions) {
 			prevSelected = m.sessions[m.cursor].snap.Name
 		}
+		// On the first snapshot, an initialSession from --session takes
+		// precedence over the previous-cursor heuristic. Consume the field
+		// after applying it so later snapshots fall back to prevSelected.
+		target := prevSelected
+		if m.initialSession != "" {
+			target = m.initialSession
+			m.initialSession = ""
+		}
 		m.sessions = make([]sessionItem, len(msg.Snapshot.Sessions))
 		for i, s := range msg.Snapshot.Sessions {
 			m.sessions[i] = sessionItem{snap: s}
 		}
-		// Restore cursor position if the previously selected session is still present.
+		// Restore cursor position if the target session is present.
 		m.cursor = 0
 		for i, si := range m.sessions {
-			if si.snap.Name == prevSelected {
+			if si.snap.Name == target {
 				m.cursor = i
 				break
 			}
@@ -712,8 +737,16 @@ func formatRelTime(s string) string {
 // Run starts the bubbletea program and connects the daemon client.
 // It blocks until the user quits.
 func Run(sockPath string) error {
+	return RunFocused(sockPath, "")
+}
+
+// RunFocused is like Run but pre-selects a session by name on the first
+// sessions_snapshot frame. Used by `iris tui --session <name>` so the
+// context-switcher picker can hand off to the TUI focused on a specific
+// session. An empty initialSession is equivalent to Run.
+func RunFocused(sockPath, initialSession string) error {
 	client := NewDaemonClient(sockPath)
-	m := NewModel(client)
+	m := NewModelFocused(client, initialSession)
 
 	opts := []tea.ProgramOption{
 		tea.WithAltScreen(),
