@@ -78,6 +78,10 @@ artefacts. This "fake-home dance" has been a chronic source of bugs:
   at runtime (see `mounts.go`: `awsSSOReadOnly = false`).
 - Atlassian OAuth tokens live in `~/.mcp-auth` and must be mounted
   conditionally (only when the directory exists).
+- The Atlassian MCP extension's OAuth token store at
+  `~/.pi/agent/atlassian-mcp-oauth.json` must be touched (created if absent)
+  and bind-mounted read-write so that tokens written by `/login-atlassian`
+  inside the sandbox persist to the host path across sessions.
 - The per-session gitconfig and `.git` pointer file must be synthesised and
   mounted over the worktree's `.git` to fix path resolution inside the
   sandbox (`credentials.go` comment: "GIT_COMMON_DIR breaks ref lookup").
@@ -371,12 +375,23 @@ The following table enumerates the built-in tools pi exposes, sourced from the
 (`--tools` flag documentation and the "Available built-in tools" list). The pi
 tool set must not be conflated with opencode's tool set — they differ
 substantially. Notably, pi explicitly ships without sub-agents (`task`), without
-a todo tool (`todowrite`), and without `glob`, `webfetch`, or any Atlassian MCP.
+a todo tool (`todowrite`), and without `glob` or `webfetch`.
 Extensions registered via `pi.registerTool()` can add more, but the
 prism-hooks extension does not register additional tools today.
+Atlassian MCP is available as a separate MCP-bridge extension (see below),
+not as a built-in tool.
 
 The seven pi built-in tools are: `read`, `bash`, `edit`, `write`, `grep`,
 `find`, `ls`.
+
+**MCP-bridge tools.** In addition to the seven built-in tools, the Atlassian
+MCP extension (added in #1587, gated on `m4mac` hardware via #1588) is a
+separate category of tooling that reaches pi via an MCP bridge rather than
+being registered as a pi built-in. MCP-bridge tools are not listed in the
+table below — they are a distinct integration layer. When executed in daemon
+mode, an MCP-bridge tool call would run in a network-permitted sandbox profile
+similar to `bash`, because Atlassian API calls require outbound HTTPS. The
+exact sandbox profile for MCP-bridge tools is deferred to a future child issue.
 
 **Sandbox decision key:**
 
@@ -540,10 +555,14 @@ the session role, and injected as `GITHUB_TOKEN` into the sandbox.
 
 The pi provider and model are passed as CLI flags (`--provider`, `--model`,
 `--thinking`) rather than env vars (see `internal/container/pi_invocation.go`).
-LLM API keys are not forwarded into the pi sandbox at all in the current
-architecture — pi authenticates via subscription (`/login`) or reads keys
-from its own config directory (`~/.pi/agent/`), which is bind-mounted into
-the sandbox.
+LLM API keys with real in-repo consumers are forwarded into the pi sandbox
+via `credentialEnvVars()` in `internal/container/credentials.go`. As of
+#1605, only two keys are forwarded: `ANTHROPIC_API_KEY` and
+`OPENROUTER_API_KEY`. Five speculative keys (`OPENAI_API_KEY`,
+`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GITHUB_COPILOT_TOKEN`,
+`DEEPSEEK_API_KEY`) were pruned in #1605 — they were not populated on the
+host and had no in-repo consumers. Pi also reads credentials from its own
+config directory (`~/.pi/agent/`), which is bind-mounted into the sandbox.
 
 The profile `agent_env_vars` (`KUBECONFIG`, `AWS_CONFIG_FILE`, `GIT_EDITOR`)
 are injected as additional `--setenv` pairs for all session types.
@@ -563,9 +582,11 @@ receives only the credentials it needs:
 
 In the current architecture, pi reads LLM credentials from its own config
 directory (`~/.pi/agent/`) — either subscription tokens stored there by
-`/login`, or API keys written into pi's settings. LLM API keys are **not**
-forwarded as environment variables into the pi sandbox; the sandbox bind-mounts
-`~/.pi/agent/` so pi can read its own credentials directly.
+`/login`, or API keys written into pi's settings. The sandbox bind-mounts
+`~/.pi/agent/` so pi can read its own credentials directly. Additionally,
+`~/.pi/agent/atlassian-mcp-oauth.json` is bind-mounted read-write so that
+Atlassian OAuth tokens written by `/login-atlassian` inside the sandbox
+persist to the host path.
 
 In daemon mode, pi runs unsandboxed and has direct access to `~/.pi/agent/`
 without any bind-mount. The provider and model are configured via `--provider`
@@ -586,8 +607,10 @@ The key improvement over the current model:
 - **LLM API keys** remain in pi's process environment in v1 (necessary for pi
   to make provider calls). This is the primary remaining credential exposure
   in the new model and is called out explicitly in the threat model (§6.3).
-- **No Atlassian credentials** are involved in the pi daemon design. Atlassian
-  MCP is an opencode-specific integration and does not exist in pi's tool set.
+- **Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`)
+  are part of pi's on-disk credential surface in the current architecture.
+  In daemon mode, pi runs unsandboxed and reads this file directly without
+  a bind-mount.
 
 ---
 
@@ -793,12 +816,20 @@ phases. They are listed here rather than resolved unilaterally because they
 require empirical data, external input, or design review that is beyond the
 scope of this initial design doc.
 
-**Environmental snapshot note.** The tool inventory in §5 and the coexistence
-checklist in §10 reflect the prism environment as it stands at the time of
-writing. Three concurrent cleanups — opencode removal, atlassian-cli retirement,
-and an audit of speculative env var injections (e.g. an unused `DEEPSEEK_API_KEY`)
-— will land independently of this design and will require revising §5 and §10
-afterwards. Tracking issues will be filed separately.
+**Environmental snapshot note.** The tool inventory in §5 and the credential
+descriptions in §7 have been updated to reflect the three cleanups that landed
+after the initial draft of this document:
+
+- **Opencode removal** — #1609 removed the opencode runtime and harness
+  wiring; #1617 removed the opencode archive/export plumbing. Pi has been
+  the exclusive agent harness since those PRs merged.
+- **Atlassian-CLI retirement** — #1602/#1604 removed the standalone `atlassian`
+  CLI in favour of the pi atlassian-mcp MCP extension; #1606 removed the
+  associated SOPS secrets.
+- **Speculative env-var audit** — #1605 pruned five speculative keys
+  (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`,
+  `GITHUB_COPILOT_TOKEN`, `DEEPSEEK_API_KEY`) from `forwardKeys` in
+  `internal/container/credentials.go`.
 
 **11.1 Pi `--rpc` mode: does it exist, and what is the exact interface?**
 This design assumes pi supports a `--rpc` (or equivalent) mode where it
@@ -825,8 +856,11 @@ socket? Native HTTP adds complexity to the daemon; a proxy is an extra
 process. Decision deferred to the web UI design phase.
 
 **11.4 (reserved)** — Previously referred to MCP proxy lifecycle for Atlassian
-MCP. Atlassian MCP is an opencode-specific integration; pi does not use it.
-This question number is reserved to avoid renumbering downstream references.
+MCP as an opencode-specific integration. Atlassian MCP is now a pi extension
+(#1587, gated on `m4mac` via #1588). The proxy lifecycle question for
+daemon-mode MCP-bridge tools is deferred to the child issue that implements
+MCP-bridge sandbox support. This question number is reserved to avoid
+renumbering downstream references.
 
 **11.5 `register_provider` RPC for dynamic provider configuration.**
 Pi currently reads its credentials from `~/.pi/agent/` directly. If a future
