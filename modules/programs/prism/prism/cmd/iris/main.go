@@ -15,6 +15,7 @@
 //	iris tui [--socket <path>]                  — open the bubbletea TUI
 //	iris sessions list [--json]                 — list daemon-tracked sessions (human or JSON)
 //	iris sessions status [--json]               — print session counts by state
+//	iris prompt <session> --prompt <text>       — deliver a prompt to a running session
 package main
 
 import (
@@ -70,8 +71,8 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	// spawnCmd is registered in cmd/iris/spawn.go's init() so the spawn
-	// subcommand and its flags live together in one file.
+	// spawnCmd, sessionsCmd and promptCmd are registered in their own files'
+	// init() functions so each subcommand and its flags live together.
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(tuiCmd)
 }
