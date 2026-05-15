@@ -50,10 +50,10 @@ func newSidecarCoordinatorWithInstance(t *testing.T, sessionName, repo, instance
 func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 	d := openTestDB(t)
 	const (
-		sess     = "nixos-config@main"
+		sess     = "test-repo@main"
 		instance = "11111111-2222-3333-4444-555555555555"
 	)
-	sc := newSidecarCoordinatorWithInstance(t, sess, "nixos-config", instance, d)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/merge",
 		`{"pr": 1234, "title": "do the mahi"}`)
@@ -102,10 +102,10 @@ func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 	d := openTestDB(t)
 	const (
-		sess     = "nixos-config@main"
+		sess     = "test-repo@main"
 		instance = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
 	)
-	sc := newSidecarCoordinatorWithInstance(t, sess, "nixos-config", instance, d)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
 	// Body contains stray fields that are not part of the schema; they must
 	// be ignored.
@@ -135,7 +135,7 @@ func TestHostAPI_Merge_WorkerForbidden(t *testing.T) {
 
 func TestHostAPI_Merge_RejectsInvalidPR(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "i1", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "i1", d)
 
 	for _, body := range []string{
 		`{"pr": 0, "title": null}`,
@@ -154,7 +154,7 @@ func TestHostAPI_Merge_NoInstanceIDIsServerError(t *testing.T) {
 	// Coordinator sidecar with no InstanceID configured — we should refuse to
 	// enqueue rather than write a row keyed on an empty instance_id (which
 	// would be invisible to a watcher that has a real instance_id).
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "", d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/merge", `{"pr": 5, "title": null}`)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 for missing instance_id", rr.Code)
@@ -163,7 +163,7 @@ func TestHostAPI_Merge_NoInstanceIDIsServerError(t *testing.T) {
 
 func TestHostAPI_Merge_RejectsNonPOST(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "i1", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "i1", d)
 	rr := doHostAPI(t, sc, http.MethodGet, "/merge", "")
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
@@ -175,10 +175,10 @@ func TestHostAPI_Merge_RejectsNonPOST(t *testing.T) {
 func TestHostAPI_Merges_ListWatching(t *testing.T) {
 	d := openTestDB(t)
 	const (
-		sess     = "nixos-config@main"
+		sess     = "test-repo@main"
 		instance = "deadbeef-1111-2222-3333-444444444444"
 	)
-	sc := newSidecarCoordinatorWithInstance(t, sess, "nixos-config", instance, d)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
 	// Seed a couple of watching rows directly via the DB.
 	t1 := "first"
@@ -211,7 +211,7 @@ func TestHostAPI_Merges_ListWatching(t *testing.T) {
 
 func TestHostAPI_Merges_EmptyArrayWhenEmpty(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "i1", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "i1", d)
 
 	rr := doHostAPI(t, sc, http.MethodGet, "/merges", "")
 	if rr.Code != http.StatusOK {
@@ -240,10 +240,10 @@ func TestHostAPI_Merges_WorkerForbidden(t *testing.T) {
 func TestHostAPI_MergesCancel_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 	const (
-		sess     = "nixos-config@main"
+		sess     = "test-repo@main"
 		instance = "11111111-1111-1111-1111-111111111111"
 	)
-	sc := newSidecarCoordinatorWithInstance(t, sess, "nixos-config", instance, d)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
 	if _, err := d.EnqueueMerge(77, sess, instance, nil); err != nil {
 		t.Fatalf("seed EnqueueMerge: %v", err)
@@ -274,7 +274,7 @@ func TestHostAPI_MergesCancel_HappyPath(t *testing.T) {
 
 func TestHostAPI_MergesCancel_NonExistentReturnsFalse(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "i1", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "i1", d)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/merges/cancel", `{"pr": 9999}`)
 	if rr.Code != http.StatusOK {
@@ -296,11 +296,11 @@ func TestHostAPI_MergesCancel_NonExistentReturnsFalse(t *testing.T) {
 func TestHostAPI_MergesCancel_DifferentInstanceReturnsRowWatching(t *testing.T) {
 	d := openTestDB(t)
 	const (
-		sess          = "nixos-config@main"
+		sess          = "test-repo@main"
 		ourInstance   = "instance-A"
 		theirInstance = "instance-B"
 	)
-	sc := newSidecarCoordinatorWithInstance(t, sess, "nixos-config", ourInstance, d)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", ourInstance, d)
 
 	// Seed a row owned by a DIFFERENT incarnation.
 	if _, err := d.EnqueueMerge(55, sess, theirInstance, nil); err != nil {
@@ -338,7 +338,7 @@ func TestHostAPI_MergesCancel_WorkerForbidden(t *testing.T) {
 
 func TestHostAPI_MergesCancel_RejectsInvalidPR(t *testing.T) {
 	d := openTestDB(t)
-	sc := newSidecarCoordinatorWithInstance(t, "nixos-config@main", "nixos-config", "i1", d)
+	sc := newSidecarCoordinatorWithInstance(t, "test-repo@main", "test-repo", "i1", d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/merges/cancel", `{"pr": 0}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rr.Code)

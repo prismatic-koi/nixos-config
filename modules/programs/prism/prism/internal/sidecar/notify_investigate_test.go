@@ -1,8 +1,21 @@
+// Tests in this file exercise notifyInvestigatorCompletion and related helpers.
+//
+// # Isolation contract
+//
+// Every test that constructs a sidecar.Sidecar MUST:
+//   - Use sidecartest.NewIsolated(t, ...) to redirect XDG_STATE_HOME to a
+//     tempdir and activate the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard.
+//   - Use session names with the "prism-test@" prefix — never "nixos-config@main"
+//     or any other slug that could collide with a real coordinator on the host.
+//
+// These invariants ensure that running `go test ./internal/sidecar/...` on a
+// host with a live nixos-config@main coordinator does NOT deliver any
+// notifications to that coordinator, and does NOT write to the real prism DB.
 package sidecar
 
 import (
-	"net/http"
-	"net/http/httptest"
+	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -10,45 +23,8 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
-	)
-
-// seedSessionWithHarnessPort seeds an agent_status row for sessionName with a
-// harness_port and harness_session_id. Used to set up invoker sessions that
-// accept HTTP-based prompt delivery.
-func seedSessionWithHarnessPort(t *testing.T, database *db.DB, sessionName, repo, sid string, port int) {
-	t.Helper()
-	agentName := "coordinator"
-	modelID := "anthropic/claude-sonnet-4-5"
-	if err := database.UpsertStatusWithAgent(sessionName, repo, "/tmp/test-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
-		t.Fatalf("seedSessionWithHarnessPort: UpsertStatusWithAgent(%q): %v", sessionName, err)
-	}
-	// Set harness to empty so promptdelivery uses the HTTP fallback path
-	// (these tests use httptest.Server, not a socket-pipe).
-	if err := database.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness_session_id = ?, harness = '' WHERE session_name = ? RETURNING session_name",
-		port, sid, sessionName,
-	).Scan(new(string)); err != nil {
-		t.Fatalf("seedSessionWithHarnessPort: set port/sid for %q: %v", sessionName, err)
-	}
-}
-
-// seedEndedSession seeds an agent_status row with ended_at set.
-func seedEndedSession(t *testing.T, database *db.DB, sessionName, repo string) {
-	t.Helper()
-	agentName := "coordinator"
-	modelID := "anthropic/claude-sonnet-4-5"
-	if err := database.UpsertStatusWithAgent(sessionName, repo, "/tmp/test-worktree", "finished", nil, nil, &agentName, &modelID); err != nil {
-		t.Fatalf("seedEndedSession: UpsertStatusWithAgent(%q): %v", sessionName, err)
-	}
-	// Use Unix millisecond timestamp so SQLite can scan it as int64.
-	nowMs := time.Now().UnixMilli()
-	if err := database.QueryRow(
-		"UPDATE agent_status SET ended_at = ? WHERE session_name = ? RETURNING session_name",
-		nowMs, sessionName,
-	).Scan(new(string)); err != nil {
-		t.Fatalf("seedEndedSession: set ended_at for %q: %v", sessionName, err)
-	}
-}
+	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
+)
 
 // ── investigateAgentInvokerSession ──────────────────────────────────────────
 
@@ -110,46 +86,19 @@ func TestInvestigateAgentInvokerSession(t *testing.T) {
 // finishes with a non-empty final text. The notification body must contain the
 // sender label, the text block verbatim, and the steering-channel hint.
 func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-delivery"
 	investigatorSession := invokerSession + "~investigate-testslug"
-	invokerSID := "invoker-sid-001"
 
-	var mu sync.Mutex
-	var receivedBodies []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + invokerSID + `"}]`))
-			return
-		}
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/prompt_async") {
-			body := make([]byte, 4096)
-			n, _ := r.Body.Read(body)
-			mu.Lock()
-			receivedBodies = append(receivedBodies, string(body[:n]))
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedSessionWithHarnessPort(t, d, invokerSession, repo, invokerSID, srvPort)
+	bus := sidecartest.NewIsolated(t, invokerSession)
 
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-test-wt",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -160,22 +109,17 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 	// Allow async HTTP call to complete.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(receivedBodies)
-		mu.Unlock()
-		if n > 0 {
+		if len(bus.CopyBodies()) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(receivedBodies) != 1 {
-		t.Fatalf("want 1 delivery, got %d", len(receivedBodies))
+	bodies := bus.CopyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("want 1 delivery, got %d", len(bodies))
 	}
-	body := receivedBodies[0]
+	body := bodies[0]
 
 	// The body is a JSON-encoded prompt_async payload; the text is inside.
 	// Check that all required elements are present in the delivered payload.
@@ -194,46 +138,19 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 // final text, a completion notice is still delivered (so the invoker learns
 // the investigation finished, even if no output was recorded).
 func TestNotifyInvestigatorCompletion_EmptyText(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-emptytext"
 	investigatorSession := invokerSession + "~investigate-testslug"
-	invokerSID := "invoker-sid-empty"
 
-	var mu sync.Mutex
-	var receivedBodies []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + invokerSID + `"}]`))
-			return
-		}
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/prompt_async") {
-			body := make([]byte, 4096)
-			n, _ := r.Body.Read(body)
-			mu.Lock()
-			receivedBodies = append(receivedBodies, string(body[:n]))
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedSessionWithHarnessPort(t, d, invokerSession, repo, invokerSID, srvPort)
+	bus := sidecartest.NewIsolated(t, invokerSession)
 
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-test-empty",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -243,22 +160,17 @@ func TestNotifyInvestigatorCompletion_EmptyText(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(receivedBodies)
-		mu.Unlock()
-		if n > 0 {
+		if len(bus.CopyBodies()) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(receivedBodies) != 1 {
-		t.Fatalf("want 1 delivery for empty-text finished, got %d", len(receivedBodies))
+	bodies := bus.CopyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("want 1 delivery for empty-text finished, got %d", len(bodies))
 	}
-	body := receivedBodies[0]
+	body := bodies[0]
 	if !strings.Contains(body, "Investigation complete") {
 		t.Errorf("empty-text completion notice missing expected phrase; got: %s", body)
 	}
@@ -267,46 +179,19 @@ func TestNotifyInvestigatorCompletion_EmptyText(t *testing.T) {
 // TestNotifyInvestigatorCompletion_ErrorState verifies that an error-state
 // completion delivers a notification containing the failure state name.
 func TestNotifyInvestigatorCompletion_ErrorState(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-errorstate"
 	investigatorSession := invokerSession + "~investigate-errslug"
-	invokerSID := "invoker-sid-error"
 
-	var mu sync.Mutex
-	var receivedBodies []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + invokerSID + `"}]`))
-			return
-		}
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/prompt_async") {
-			body := make([]byte, 4096)
-			n, _ := r.Body.Read(body)
-			mu.Lock()
-			receivedBodies = append(receivedBodies, string(body[:n]))
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedSessionWithHarnessPort(t, d, invokerSession, repo, invokerSID, srvPort)
+	bus := sidecartest.NewIsolated(t, invokerSession)
 
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-test-error",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -315,22 +200,17 @@ func TestNotifyInvestigatorCompletion_ErrorState(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(receivedBodies)
-		mu.Unlock()
-		if n > 0 {
+		if len(bus.CopyBodies()) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	mu.Lock()
-	defer mu.Unlock()
-
-	if len(receivedBodies) != 1 {
-		t.Fatalf("want 1 delivery for error state, got %d", len(receivedBodies))
+	bodies := bus.CopyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("want 1 delivery for error state, got %d", len(bodies))
 	}
-	body := receivedBodies[0]
+	body := bodies[0]
 	if !strings.Contains(body, string(agent.StateError)) {
 		t.Errorf("error-state notification missing state name; got: %s", body)
 	}
@@ -342,30 +222,22 @@ func TestNotifyInvestigatorCompletion_ErrorState(t *testing.T) {
 // TestNotifyInvestigatorCompletion_InvokerEnded verifies that the notification
 // is dropped silently (no panic, no delivery) when the invoker session has ended.
 func TestNotifyInvestigatorCompletion_InvokerEnded(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-ended"
 	investigatorSession := invokerSession + "~investigate-ended"
 
-	var delivered int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			delivered++
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	// NewIsolated with empty invoker — we seed an ended row manually.
+	bus := sidecartest.NewIsolated(t, "")
 
-	seedEndedSession(t, d, invokerSession, repo)
+	seedEndedSessionInvestigate(t, bus.DB, invokerSession, "prism-test")
 
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-test-ended",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -373,35 +245,25 @@ func TestNotifyInvestigatorCompletion_InvokerEnded(t *testing.T) {
 	s.notifyInvestigatorCompletion(agent.StateFinished, "some findings here")
 	time.Sleep(50 * time.Millisecond)
 
-	if delivered > 0 {
-		t.Errorf("expected no delivery when invoker has ended, got %d", delivered)
+	if bodies := bus.CopyBodies(); len(bodies) > 0 {
+		t.Errorf("expected no delivery when invoker has ended, got %d", len(bodies))
 	}
 }
 
 // TestNotifyInvestigatorCompletion_NotInvestigateSession verifies that a session
 // NOT named with ~investigate does NOT trigger any delivery.
 func TestNotifyInvestigatorCompletion_NotInvestigateSession(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-
-	var delivered int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			delivered++
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	bus := sidecartest.NewIsolated(t, "")
 
 	clk := newTestClock()
 	cfg := Config{
 		// A plain worker session — no ~investigate in the name.
-		SessionName: repo + "@feature",
-		Repo:        repo,
+		SessionName: "prism-test@feature",
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-test-not-investigate",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -409,8 +271,8 @@ func TestNotifyInvestigatorCompletion_NotInvestigateSession(t *testing.T) {
 	s.notifyInvestigatorCompletion(agent.StateFinished, "some text that should not be delivered")
 	time.Sleep(50 * time.Millisecond)
 
-	if delivered > 0 {
-		t.Errorf("expected no delivery for non-investigate session, got %d", delivered)
+	if bodies := bus.CopyBodies(); len(bodies) > 0 {
+		t.Errorf("expected no delivery for non-investigate session, got %d", len(bodies))
 	}
 }
 
@@ -418,38 +280,29 @@ func TestNotifyInvestigatorCompletion_NotInvestigateSession(t *testing.T) {
 // investigate-agent session does NOT emit a bare "has finished" notification
 // to the coordinator.
 func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	coordSID := "coord-sid-investigate-suppressed"
+	// Use a test-prefixed coordinator session that cannot collide with any
+	// live coordinator on the host.
+	coordSession := "prism-test@coordinator-suppressed"
+	investigatorSession := coordSession + "~investigate-abc"
 
-	var notifyCount int
-	var notifyMu sync.Mutex
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + coordSID + `"}]`))
-			return
-		}
-		notifyMu.Lock()
-		notifyCount++
-		notifyMu.Unlock()
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
+	bus := sidecartest.NewIsolated(t, coordSession)
 
-	srvPort := parseSrvPort(t, srv.URL)
-	seedCoordinatorWithPort(t, d, repo, srvPort, coordSID)
+	// Mark the coordinator row so CoordinatorForRepo can find it.
+	if err := bus.DB.QueryRow(
+		"UPDATE agent_status SET root_agent_name = 'coordinator' WHERE session_name = ? RETURNING session_name",
+		coordSession,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("set root_agent_name: %v", err)
+	}
 
 	clk := newTestClock()
-	investigatorSession := repo + "@main~investigate-abc"
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-coord-suppressed",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -459,12 +312,8 @@ func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	notifyMu.Lock()
-	count := notifyCount
-	notifyMu.Unlock()
-
-	if count != 0 {
-		t.Errorf("investigate-agent should not emit bare_finish notification; got %d notifications", count)
+	if bodies := bus.CopyBodies(); len(bodies) != 0 {
+		t.Errorf("investigate-agent should not emit bare_finish notification; got %d notifications", len(bodies))
 	}
 }
 
@@ -472,56 +321,29 @@ func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
 // concurrent investigator sessions can deliver completion notifications to the
 // same invoker without mangling each other's sender labels.
 func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-concurrent"
 	investigator1 := invokerSession + "~investigate-alpha"
 	investigator2 := invokerSession + "~investigate-beta"
-	invokerSID := "invoker-sid-concurrent"
 
-	var mu sync.Mutex
-	var receivedBodies []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + invokerSID + `"}]`))
-			return
-		}
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/prompt_async") {
-			body := make([]byte, 4096)
-			n, _ := r.Body.Read(body)
-			mu.Lock()
-			receivedBodies = append(receivedBodies, string(body[:n]))
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedSessionWithHarnessPort(t, d, invokerSession, repo, invokerSID, srvPort)
+	bus := sidecartest.NewIsolated(t, invokerSession)
 
 	clk := newTestClock()
 	cfg1 := Config{
 		SessionName: investigator1,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-concurrent-1",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	cfg2 := Config{
 		SessionName: investigator2,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-concurrent-2",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s1 := New(cfg1)
@@ -535,20 +357,13 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := len(receivedBodies)
-		mu.Unlock()
-		if n >= 2 {
+		if len(bus.CopyBodies()) >= 2 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	mu.Lock()
-	bodies := make([]string, len(receivedBodies))
-	copy(bodies, receivedBodies)
-	mu.Unlock()
-
+	bodies := bus.CopyBodies()
 	if len(bodies) != 2 {
 		t.Fatalf("want 2 deliveries, got %d", len(bodies))
 	}
@@ -580,44 +395,19 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 // noise notifications. The new code accumulates the text and fires exactly
 // once at terminal state.
 func TestInvestigatorNoIntermediatePings(t *testing.T) {
-	d := openTestDB(t)
-	repo := "nixos-config"
-	invokerSession := repo + "@main"
+	invokerSession := "prism-test@invoker-nopings"
 	investigatorSession := invokerSession + "~investigate-nopings"
-	invokerSID := "invoker-sid-nopings"
 
-	var mu sync.Mutex
-	var deliveryCount int
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/session" {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`[{"id":"` + invokerSID + `"}]`))
-			return
-		}
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/prompt_async") {
-			mu.Lock()
-			deliveryCount++
-			mu.Unlock()
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	srvPort := parseSrvPort(t, srv.URL)
-	seedSessionWithHarnessPort(t, d, invokerSession, repo, invokerSID, srvPort)
+	bus := sidecartest.NewIsolated(t, invokerSession)
 
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: investigatorSession,
-		Repo:        repo,
+		Repo:        "prism-test",
 		Worktree:    "/tmp/investigate-nopings",
-		DB:          d,
+		DB:          bus.DB,
 		Clock:       clk,
-		HTTPClient:  srv.Client(),
+		HTTPClient:  bus.HTTPServer.Client(),
 		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
@@ -633,11 +423,8 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 
 	// No deliveries should have happened yet.
 	time.Sleep(50 * time.Millisecond)
-	mu.Lock()
-	countAfterTurns := deliveryCount
-	mu.Unlock()
-	if countAfterTurns != 0 {
-		t.Errorf("expected 0 deliveries after intermediate turns, got %d", countAfterTurns)
+	if n := len(bus.CopyBodies()); n != 0 {
+		t.Errorf("expected 0 deliveries after intermediate turns, got %d", n)
 	}
 
 	// Now fire completion — exactly one delivery should occur.
@@ -649,19 +436,150 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		mu.Lock()
-		n := deliveryCount
-		mu.Unlock()
-		if n > 0 {
+		if len(bus.CopyBodies()) > 0 {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	mu.Lock()
-	finalCount := deliveryCount
-	mu.Unlock()
-	if finalCount != 1 {
-		t.Errorf("expected exactly 1 delivery at completion, got %d", finalCount)
+	if n := len(bus.CopyBodies()); n != 1 {
+		t.Errorf("expected exactly 1 delivery at completion, got %d", n)
 	}
+}
+
+// TestNotifyInvestigatorCompletion_NoHostBusLeak asserts that constructing a
+// sidecar with a session name that looks like a real coordinator
+// ("nixos-config@main~investigate-leakcheck") against an isolated DB + bus
+// does NOT write any file under the process-default $XDG_STATE_HOME/prism/
+// path (i.e. the path that would be used if the test had NOT set the env var).
+//
+// This is the "defence in depth" test for issue #1608: it verifies that the
+// isolation invariants hold even when the test session name collides with a
+// live coordinator slug.
+func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
+	// Capture the real XDG_STATE_HOME *before* NewIsolated redirects it.
+	// We need to record this now so we can verify it's untouched after the test.
+	realXDGStateHome := os.Getenv("XDG_STATE_HOME")
+	if realXDGStateHome == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			realXDGStateHome = home + "/.local/state"
+		}
+	}
+	realPrismDir := realXDGStateHome + "/prism"
+
+	// Record the current state of the real prism/ directory before the test.
+	beforeSnapshot := snapshotDirNames(realPrismDir + "/run")
+	beforeDBMtime := fileModTime(realPrismDir + "/prism.db")
+
+	// Use a session name that matches a real coordinator slug — this is the
+	// exact scenario that caused the observed leak in issue #1608. The
+	// investigatorSession parses to invokerSession="nixos-config@main", which
+	// is what collided with the live coordinator on the host. We seed that
+	// session in the ISOLATED DB so the delivery path exercises the same code
+	// as the original bug — but routes to our test server, not the real bus.
+	invokerSession := "nixos-config@main"
+	investigatorSession := "nixos-config@main~investigate-leakcheck"
+
+	// NewIsolated redirects XDG_STATE_HOME and sets the isolation guard.
+	// We seed "nixos-config@main" into the isolated DB so that delivery is
+	// attempted and we can verify it lands on the httptest.Server rather than
+	// the real host coordinator socket.
+	bus := sidecartest.NewIsolated(t, invokerSession)
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName: investigatorSession,
+		Repo:        "prism-test",
+		Worktree:    "/tmp/investigate-leakcheck",
+		DB:          bus.DB,
+		Clock:       clk,
+		HTTPClient:  bus.HTTPServer.Client(),
+		Harness:     newSSEHarness(),
+	}
+	s := New(cfg)
+
+	s.notifyInvestigatorCompletion(agent.StateFinished, "leakcheck findings")
+
+	// Give async delivery a moment to settle.
+	time.Sleep(200 * time.Millisecond)
+
+	// Assert: the real prism/run/ directory is unchanged (no socket files created).
+	afterSnapshot := snapshotDirNames(realPrismDir + "/run")
+	if beforeSnapshot != afterSnapshot {
+		t.Errorf("real $XDG_STATE_HOME/prism/run/ changed during test:\nbefore: %q\nafter:  %q\nThis indicates isolation breach — test wrote to host prism state.", beforeSnapshot, afterSnapshot)
+	}
+
+	// Assert: the real prism.db mtime is unchanged (no writes to the real DB).
+	afterDBMtime := fileModTime(realPrismDir + "/prism.db")
+	if beforeDBMtime != afterDBMtime {
+		t.Errorf("real prism.db mtime changed during test (before=%d after=%d) — DB isolation breach", beforeDBMtime, afterDBMtime)
+	}
+
+	// Assert: all HTTP traffic went to the isolated httptest.Server.
+	// The delivery must have been captured — not dropped silently.
+	bodies := bus.CopyBodies()
+	if len(bodies) == 0 {
+		t.Error("expected delivery to be captured by the isolated httptest.Server, got none — delivery was either dropped or escaped to host")
+		return
+	}
+	found := false
+	for _, body := range bodies {
+		if strings.Contains(body, "leakcheck findings") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("delivery bodies did not contain expected text 'leakcheck findings'; bodies: %v", bodies)
+	}
+}
+
+// ── test DB helpers ──────────────────────────────────────────────────────────
+
+// seedEndedSession seeds an agent_status row with ended_at set.
+// This is used by TestNotifyInvestigatorCompletion_InvokerEnded to set up an
+// invoker session that has already finished — delivery must be dropped.
+func seedEndedSessionInvestigate(t *testing.T, database *db.DB, sessionName, repo string) {
+	t.Helper()
+	agentName := "coordinator"
+	modelID := "anthropic/claude-sonnet-4-5"
+	if err := database.UpsertStatusWithAgent(sessionName, repo, "/tmp/test-worktree", "finished", nil, nil, &agentName, &modelID); err != nil {
+		t.Fatalf("seedEndedSessionInvestigate: UpsertStatusWithAgent(%q): %v", sessionName, err)
+	}
+	// Use Unix millisecond timestamp so SQLite can scan it as int64.
+	nowMs := time.Now().UnixMilli()
+	if err := database.QueryRow(
+		"UPDATE agent_status SET ended_at = ? WHERE session_name = ? RETURNING session_name",
+		nowMs, sessionName,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("seedEndedSessionInvestigate: set ended_at for %q: %v", sessionName, err)
+	}
+}
+
+// ── OS helpers ────────────────────────────────────────────────────────────────
+
+// snapshotDirNames returns a sorted string of all filenames in dir (non-recursive,
+// first level only). Returns "" if the directory does not exist or cannot be read.
+func snapshotDirNames(dir string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// Directory doesn't exist — return empty (no files to change).
+		return ""
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, fmt.Sprintf("%s:%v", e.Name(), e.IsDir()))
+	}
+	return strings.Join(names, ",")
+}
+
+// fileModTime returns the modification time of path as Unix nanoseconds.
+// Returns 0 if the file does not exist.
+func fileModTime(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.ModTime().UnixNano()
 }
