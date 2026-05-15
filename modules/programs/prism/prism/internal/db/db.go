@@ -68,7 +68,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at            INTEGER,
   end_state           TEXT,
   archive_path        TEXT,
-  prism_version       TEXT
+  prism_version       TEXT,
+  iris_state          TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC);
@@ -368,6 +369,11 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration is
 // idempotent on fresh databases where the base schema already includes the
 // column.
+// v28→v29 adds the iris_state TEXT column to the sessions table (D-9, iris
+// daemon restart / orphan detection, #1640). The iris supervisor writes this
+// column at each state transition so the restore path can distinguish
+// spawning sessions from active ones. NULL means a non-iris or pre-D-9
+// session. The ALTER TABLE is guarded by pragma_table_info for idempotency.
 //
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -527,6 +533,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV27ToV28(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV28ToV29(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1672,6 +1681,45 @@ func migrateV27ToV28(conn *sql.DB, version *int) error {
 		}
 	}
 	*version = 28
+	return nil
+}
+
+// migrateV28ToV29 adds the iris_state TEXT column to the sessions table (D-9,
+// iris daemon restart / orphan detection). The iris supervisor writes this
+// column at each state transition ("spawning", "active") so that the restore
+// path at daemon startup can distinguish sessions that were mid-creation
+// (spawning) from sessions that were fully running (active).
+//
+// The column is nullable TEXT; NULL means a non-iris session or a session
+// predating D-9. The ALTER TABLE is guarded by a pragma_table_info check so
+// the migration is idempotent on fresh databases where the base schema already
+// includes the column.
+func migrateV28ToV29(conn *sql.DB, version *int) error {
+	if *version >= 29 {
+		return nil
+	}
+	// Only ALTER TABLE when the column does not yet exist.
+	var colExists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'iris_state'`,
+	).Scan(&colExists); err != nil {
+		return fmt.Errorf("db: migration v28→v29: check iris_state column: %w", err)
+	}
+	if colExists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE sessions ADD COLUMN iris_state TEXT`); err != nil {
+			return fmt.Errorf("db: migration v28→v29: add iris_state column: %w", err)
+		}
+	}
+	steps := []string{
+		`CREATE INDEX IF NOT EXISTS idx_sessions_iris_state ON sessions(iris_state) WHERE iris_state IS NOT NULL`,
+		`UPDATE schema_version SET version = 29`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v28→v29: %w", err)
+		}
+	}
+	*version = 29
 	return nil
 }
 

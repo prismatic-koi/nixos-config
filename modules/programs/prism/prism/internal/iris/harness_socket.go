@@ -268,16 +268,16 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 			return nil
 
 		case "session_status":
-			// Extract pi_session_path if present — used for restart continuation.
+			// Extract session_id (pi's JSONL session UUID) and persist it in
+			// sessions.harness_session_id so the D-9 restore path can locate
+			// the JSONL file at daemon restart.
 			var statusFrame map[string]any
 			if err := json.Unmarshal(line, &statusFrame); err == nil {
 				if sessionID, ok := statusFrame["session_id"].(string); ok && sessionID != "" {
-					// Reconstruct pi session path from session_id and worktree.
-					// Per pi-rpc-interface.md Q5, path is:
-					//   ~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
-					// We store the session_id here; the full path requires listing
-					// the pi sessions dir. For D-3 we store the session_id for D-9.
-					_ = sessionID // stored for D-9 orphan detection
+					if err := h.database.IrisUpdateHarnessSessionID(h.sess.InstanceID, sessionID); err != nil {
+						log.Printf("[iris] harness: failed to persist session_id %q for instance %s: %v",
+							sessionID, h.sess.InstanceID, err)
+					}
 				}
 			}
 			// Write observation event to DB.
@@ -375,22 +375,38 @@ func (h *HarnessSocketServer) handleToolAbort(id string) {
 	}
 }
 
-// writeEvent writes an event row to the iris DB.
-// InstanceID is set only when a sessions row exists for this instance — the
-// FK constraint on agent_events.instance_id requires the parent row to exist
-// before we can reference it.
+// writeEvent writes an event row to the iris DB, setting instance_id so the
+// D-9 orphan-detection query can correlate events by session instance.
+// The sessions row is inserted by NewSupervisor / newRestoreSupervisor before
+// the harness socket opens, satisfying the FK constraint.
+// After writing, the event is published to the client fan-out (D-6).
 func (h *HarnessSocketServer) writeEvent(eventType string, payload []byte) {
+	h.writeEventWithInstanceID(eventType, payload, h.sess.InstanceID)
+}
+
+// writeObservationEvent writes a generic observation event (forwarded as-is)
+// to the iris DB, associated with this session's instance_id.
+func (h *HarnessSocketServer) writeObservationEvent(eventType string, rawLine []byte) {
+	h.writeEventWithInstanceID(eventType, rawLine, h.sess.InstanceID)
+}
+
+// writeEventWithInstanceID is the shared write helper. iid may be empty when
+// no sessions row exists (stored NULL). After writing to the DB it publishes
+// to the client fan-out (D-6).
+func (h *HarnessSocketServer) writeEventWithInstanceID(eventType string, payload []byte, iid string) {
+	var iidPtr *string
+	if iid != "" {
+		iidPtr = &iid
+	}
 	event := db.Event{
 		ID:          uuid.New().String(),
 		SessionName: h.sess.SessionName,
-		Repo:        "", // iris does not have a repo field in D-3
+		Repo:        "", // iris does not carry repo in the harness socket context
 		Worktree:    h.sess.Worktree,
 		Type:        eventType,
 		Payload:     string(payload),
 		CreatedAt:   time.Now(),
-		// InstanceID is deliberately left nil here; the Supervisor inserts the
-		// sessions row and the FK constraint requires the parent to exist first.
-		// The event is still recorded and queryable by session_name.
+		InstanceID:  iidPtr,
 	}
 	rowID, err := h.database.WriteEventReturningRowID(event)
 	if err != nil {
@@ -398,26 +414,6 @@ func (h *HarnessSocketServer) writeEvent(eventType string, payload []byte) {
 		return
 	}
 	h.publishEvent(eventType, string(payload), rowID)
-}
-
-// writeObservationEvent writes a generic observation event (forwarded as-is)
-// to the iris DB. InstanceID is left nil for the same FK reason as writeEvent.
-func (h *HarnessSocketServer) writeObservationEvent(eventType string, rawLine []byte) {
-	event := db.Event{
-		ID:          uuid.New().String(),
-		SessionName: h.sess.SessionName,
-		Repo:        "",
-		Worktree:    h.sess.Worktree,
-		Type:        eventType,
-		Payload:     string(rawLine),
-		CreatedAt:   time.Now(),
-	}
-	rowID, err := h.database.WriteEventReturningRowID(event)
-	if err != nil {
-		log.Printf("[iris] harness: failed to write %s observation event: %v", eventType, err)
-		return
-	}
-	h.publishEvent(eventType, string(rawLine), rowID)
 }
 
 // publishEvent forwards a just-written event to the client fan-out (if a
