@@ -90,8 +90,8 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 
 // generateProfile returns the SBPL profile content for this session.
 //
-// This is a (version 3) SBPL profile — see the migration design doc at
-// docs/reviews/F1-sandbox-exec-version-3-migration.md and issue #1200.
+// This is a (version 3) SBPL profile — see the migration that actioned this
+// in PR #1201 (issue #1200).
 //
 // The profile shape includes:
 //   - Cryptex graft points (dyld shared cache, macOS 15+)
