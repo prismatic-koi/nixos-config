@@ -41,22 +41,14 @@ import (
 // (anthropic, gemini-hybrid), both defining coordinator and worker slots.
 const sampleProfilesJSON = `{
   "default": "anthropic",
-  "role_mapping": {
-    "primary": ["coordinator", "plan"],
-    "secondary": ["worker", "review"]
-  },
   "profiles": {
     "anthropic": {
       "coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-6", "thinking": "none"},
-      "plan":        {"provider": "anthropic", "model": "anthropic/claude-opus-4-6", "thinking": "none"},
-      "worker":      {"provider": "anthropic", "model": "anthropic/claude-sonnet-4-6", "thinking": "none"},
-      "review":      {"provider": "anthropic", "model": "anthropic/claude-sonnet-4-6", "thinking": "none"}
+      "worker":      {"provider": "anthropic", "model": "anthropic/claude-sonnet-4-6", "thinking": "none"}
     },
     "gemini-hybrid": {
       "coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-6", "thinking": "none"},
-      "plan":        {"provider": "anthropic", "model": "anthropic/claude-opus-4-6", "thinking": "none"},
-      "worker":      {"provider": "google", "model": "google/gemini-3.1-pro-preview", "thinking": "medium"},
-      "review":      {"provider": "google", "model": "google/gemini-3.1-pro-preview", "thinking": "medium"}
+      "worker":      {"provider": "google", "model": "google/gemini-3.1-pro-preview", "thinking": "medium"}
     }
   }
 }`
@@ -65,7 +57,6 @@ const sampleProfilesJSON = `{
 // profile that is missing a required slot (here: worker).
 const profileMissingWorkerJSON = `{
   "default": "broken",
-  "role_mapping": {"primary": ["coordinator"]},
   "profiles": {
     "broken": {
       "coordinator": {"provider": "anthropic", "model": "anthropic/claude-opus-4-6", "thinking": "none"}
@@ -227,8 +218,8 @@ func TestProfileShow_DefaultsToActiveProfile(t *testing.T) {
 	if !strings.Contains(out, "profile: gemini-hybrid") {
 		t.Errorf("output %q does not include `profile: gemini-hybrid` header", out)
 	}
-	// Must contain rows for the four roles defined in the gemini-hybrid profile.
-	for _, role := range []string{"coordinator", "plan", "worker", "review"} {
+	// Must contain rows for the roles defined in the gemini-hybrid profile.
+	for _, role := range []string{"coordinator", "worker"} {
 		if !strings.Contains(out, role) {
 			t.Errorf("output %q missing row for role %q", out, role)
 		}

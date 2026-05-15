@@ -675,12 +675,17 @@ func TestRestoreSession_KillsStaleSidecarPID(t *testing.T) {
 	}
 }
 
-// fakeProfilesFile returns a *config.ProfilesFile with known worker and
-// coordinator container config blobs for use in container-mode tests.
+// fakeProfilesFile returns a *config.ProfilesFile with distinct worker and
+// coordinator models for use in container-mode tests.
 func fakeProfilesFile() *config.ProfilesFile {
 	return &config.ProfilesFile{
-		ContainerWorkerConfig:      `{"model":"worker-model"}`,
-		ContainerCoordinatorConfig: `{"model":"coordinator-model"}`,
+		Default: "test",
+		Profiles: map[string]config.ProfileEntry{
+			"test": {
+				"coordinator": {Provider: "anthropic", Model: "coordinator-model"},
+				"worker":      {Provider: "anthropic", Model: "worker-model"},
+			},
+		},
 	}
 }
 
@@ -737,10 +742,9 @@ func TestRestoreSession_ContainerMode_WorkerConfigContent(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The worker blob must be in ConfigContent.
-	if capturedOpts.ConfigContent != pf.ContainerWorkerConfig {
-		t.Errorf("opts.ConfigContent = %q, want %q (worker blob)",
-			capturedOpts.ConfigContent, pf.ContainerWorkerConfig)
+	// ConfigContent must carry the worker slot's model.
+	if !strings.Contains(capturedOpts.ConfigContent, "worker-model") {
+		t.Errorf("opts.ConfigContent = %q, want worker-model from worker slot", capturedOpts.ConfigContent)
 	}
 }
 
@@ -788,10 +792,9 @@ func TestRestoreSession_ContainerMode_CoordinatorConfigContent(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The coordinator blob must be in ConfigContent.
-	if capturedOpts.ConfigContent != pf.ContainerCoordinatorConfig {
-		t.Errorf("opts.ConfigContent = %q, want %q (coordinator blob)",
-			capturedOpts.ConfigContent, pf.ContainerCoordinatorConfig)
+	// ConfigContent must carry the coordinator slot's model.
+	if !strings.Contains(capturedOpts.ConfigContent, "coordinator-model") {
+		t.Errorf("opts.ConfigContent = %q, want coordinator-model from coordinator slot", capturedOpts.ConfigContent)
 	}
 }
 
@@ -822,10 +825,6 @@ func TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile(t *testing.T)
 
 	pf := &config.ProfilesFile{
 		Default: "anthropic",
-		RoleMapping: map[string][]string{
-			"primary":   {"coordinator"},
-			"secondary": {"worker"},
-		},
 		Profiles: map[string]config.ProfileEntry{
 			"anthropic": {
 				"coordinator": {Provider: "anthropic", Model: "anthropic/claude-opus-4-7"},
@@ -836,7 +835,6 @@ func TestRestoreSession_ContainerMode_OverlaysRuntimeActiveProfile(t *testing.T)
 				"worker":      {Provider: "google", Model: "google/gemini-runtime-worker", Thinking: "medium"},
 			},
 		},
-		ContainerWorkerConfig: `{"$schema":"https://prism.ai/config.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
 	}
 	withRestoreProfiles(t, pf, nil)
 
@@ -1340,11 +1338,10 @@ func TestRestoreSession_BwrapMode_WorkerConfigContent(t *testing.T) {
 		t.Fatalf("session %q was not created", sessionName)
 	}
 
-	// The worker blob must be in ConfigContent — the widened "sandboxed" gate
-	// must fire for bwrap too.
-	if capturedOpts.ConfigContent != pf.ContainerWorkerConfig {
-		t.Errorf("opts.ConfigContent = %q, want %q (worker blob)",
-			capturedOpts.ConfigContent, pf.ContainerWorkerConfig)
+	// ConfigContent must carry the worker slot's model — the widened "sandboxed"
+	// gate must fire for bwrap too.
+	if !strings.Contains(capturedOpts.ConfigContent, "worker-model") {
+		t.Errorf("opts.ConfigContent = %q, want worker-model from worker slot", capturedOpts.ConfigContent)
 	}
 
 	// IsolationMode must be recorded as bwrap on the opts, so session.Create
@@ -1401,14 +1398,13 @@ func TestRestoreSession_BwrapMode_TempFileWritten(t *testing.T) {
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	// The temp file must exist and contain the worker blob.
+	// The temp file must exist and contain the worker slot's model.
 	data, err := os.ReadFile(expectedPath)
 	if err != nil {
 		t.Fatalf("harness temp file %q not written for bwrap restore: %v", expectedPath, err)
 	}
-	if string(data) != pf.ContainerWorkerConfig {
-		t.Errorf("harness temp file content = %q, want %q (worker blob)",
-			string(data), pf.ContainerWorkerConfig)
+	if !strings.Contains(string(data), "worker-model") {
+		t.Errorf("harness temp file content = %q, want worker-model from worker slot", string(data))
 	}
 }
 

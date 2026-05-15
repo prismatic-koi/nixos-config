@@ -28,223 +28,140 @@
     {
       nx.programs.prism.profiles =
         let
-          # ── Role-keyed profile schema (#1206) ──────────────────────────────────
+          # ── Flat per-role profile schema (#1612) ────────────────────────────────
           #
-          # A profile is a map from session role → per-role configuration record.
+          # A profile is a flat map from session role → per-role configuration
+          # record. The 10 roles are exactly the 10 pi agent files in
+          # modules/programs/prism/agents/.
+          #
           # Each slot carries:
-          #   - provider:         the routing provider (used by future PI work)
-          #   - model:            the model identifier emitted into harness-config.json
+          #   - provider:         the routing provider
+          #   - model:            the model identifier
           #   - thinking:         the reasoning level (rendered as pi "variant")
-          #   - systemPromptPath: optional path to a per-role system prompt (P2.AGENTRUN)
-          #
-          # Helpers below build a profile by stamping the same `slot` value across
-          # every role in a list. This keeps migration concise while leaving room
-          # for per-role divergence (e.g. a different reasoning level for review
-          # agents) without further schema changes.
+          #   - systemPromptPath: absolute path to the role's system prompt file
 
-          # Role tier classification — preserved for legacy override semantics.
-          # `--model` alongside a `--profile` overrides only the primary-tier
-          # roles (mirrors pre-#1206 behaviour). It is also exported into
-          # profiles.json under role_mapping for the Go-side override logic.
-          roleMapping = {
-            primary = [
-              "coordinator"
-              "plan"
-            ];
-            secondary = [
-              "worker"
-              "review"
-              "review-goal"
-              "review-code"
-              "review-security"
-              "review-qa"
-              "review-context"
-              "ac"
-              "retro"
-              "investigate"
-            ];
-            lightweight = [
-              "explore"
-              "title"
-              "summary"
-              "compaction"
-            ];
+          # The canonical set of pi agent roles (mirrors the files in ./agents/).
+          piRoles = [
+            "coordinator"
+            "worker"
+            "ac"
+            "retro"
+            "investigate"
+            "review-goal"
+            "review-code"
+            "review-security"
+            "review-qa"
+            "review-context"
+          ];
+
+          # Map a role name to its agent prompt file (sans .md extension).
+          roleToAgentFile = {
+            coordinator = "coordinator";
+            worker = "worker";
+            ac = "ac";
+            retro = "retro";
+            investigate = "investigate";
+            "review-goal" = "review-goal-subagent";
+            "review-code" = "review-code-subagent";
+            "review-security" = "review-security-subagent";
+            "review-qa" = "review-qa-subagent";
+            "review-context" = "review-context-subagent";
           };
 
-          # Determine the system prompt file for a given role.
-          # Maps role names to agent files at ~/.config/prism/agents/<file>.md.
-          roleToSystemPromptFile =
-            role:
-            let
-              roleFileMap = {
-                coordinator = "coordinator";
-                plan = "coordinator";
-                worker = "worker";
-                review = "review-code-subagent";
-                "review-goal" = "review-goal-subagent";
-                "review-code" = "review-code-subagent";
-                "review-security" = "review-security-subagent";
-                "review-qa" = "review-qa-subagent";
-                "review-context" = "review-context-subagent";
-                ac = "ac";
-                retro = "retro";
-                investigate = "investigate";
-                explore = "worker";
-                title = "worker";
-                summary = "worker";
-                compaction = "worker";
-              };
-            in
-            "$HOME/.config/prism/agents/${roleFileMap.${role}}.md";
-
-          # Stamp a slot value across the given list of role names, adding
-          # role-specific systemPromptPath values for P2.AGENTRUN support.
-          slotsForWithPrompts =
-            roles: baseSlot:
-            lib.genAttrs roles (
-              role:
-              baseSlot
-              // {
-                systemPromptPath = roleToSystemPromptFile role;
-              }
-            );
-
-          # Build a profile by combining tiered slot values. Each tier is a
-          # `{primary, secondary, lightweight}` triple of slot values — the
-          # canonical migration shape from the pre-#1206 schema. Tiers map onto
-          # roleMapping so existing per-agent model assignments are preserved
-          # bit-identically.
-          profileFromTiers =
-            tiers:
-            (slotsForWithPrompts roleMapping.primary tiers.primary)
-            // (slotsForWithPrompts roleMapping.secondary tiers.secondary)
-            // (slotsForWithPrompts roleMapping.lightweight tiers.lightweight);
-
-          # Convenience: build a slot. `thinking` defaults to "off" (the PI harness
-          # zero value). `provider` defaults to "" — populated explicitly by the
-          # migrated profiles below.
-          # `systemPromptPath` is null until P2.AGENTRUN populates per-role prompts.
-          # `harness` defaults to "" (omitted from JSON via omitempty) which the Go
-          # side treats as "pi". Set explicitly to e.g. "pi" for PI sessions.
+          # Convenience: build a slot with a systemPromptPath derived from
+          # the role's agent file. `thinking` defaults to "off" (the PI
+          # harness zero value). `provider` defaults to "".
           slot =
+            role:
             {
               provider ? "",
               model,
               thinking ? "off",
-              systemPromptPath ? null,
-              harness ? "",
             }:
             {
               inherit provider model thinking;
-              systemPromptPath = if systemPromptPath == null then "" else toString systemPromptPath;
-            }
-            // (if harness == "" then { } else { inherit harness; });
+              systemPromptPath = "$HOME/.config/prism/agents/${roleToAgentFile.${role}}.md";
+            };
 
-          # ── Migrated profiles ──────────────────────────────────────────────────
-          # Each existing profile is expanded into per-role slots via
-          # profileFromTiers. The output is bit-identical (modulo whitespace /
-          # key ordering) for pi sessions because applyProfile (below)
-          # consumes role-keyed slots directly and produces the same
-          # {model, variant} merge per agent as the pre-#1206 implementation.
+          # Build a profile entry by calling `fn role` for every pi role.
+          # `fn` returns the per-role slot attrset.
+          profileFromFn = fn: lib.genAttrs piRoles (role: fn role);
+
+          # Convenience: build a profile where every role with a given set of
+          # roles receives the same slot value. Roles not in the map fall back
+          # to the provided default. Used to express "coordinator gets opus,
+          # everything else gets sonnet".
+          profileFromSlots =
+            slotMap:
+            lib.genAttrs piRoles (
+              role:
+              let
+                s = slotMap.${role} or slotMap._default or null;
+              in
+              if s == null then
+                throw "profiles.nix: no slot defined for role '${role}' and no _default"
+              else
+                s
+                // {
+                  systemPromptPath = "$HOME/.config/prism/agents/${roleToAgentFile.${role}}.md";
+                }
+            );
+
+          # ── Profiles ────────────────────────────────────────────────────────────
+
           profiles = {
-            anthropic = profileFromTiers {
-              primary = slot {
+            anthropic = profileFromSlots {
+              coordinator = slot "coordinator" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
                 thinking = "medium";
               };
-              secondary = slot {
+              _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-sonnet-4-6";
                 thinking = "low";
               };
-              lightweight = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-haiku-4-5";
-              };
             };
-            anthropic-opus = profileFromTiers {
-              primary = slot {
+
+            anthropic-opus = profileFromSlots {
+              coordinator = slot "coordinator" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
                 thinking = "medium";
               };
-              secondary = slot {
+              _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
               };
-              lightweight = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-haiku-4-5";
-              };
             };
-            gemini-hybrid = profileFromTiers {
-              primary = slot {
+
+            gemini-hybrid = profileFromSlots {
+              coordinator = slot "coordinator" {
                 provider = "anthropic";
                 model = "anthropic/claude-sonnet-4-6";
               };
-              secondary = slot {
+              _default = slot "worker" {
                 provider = "google";
                 model = "google/gemini-3.1-pro-preview-customtools";
               };
-              lightweight = slot {
-                provider = "anthropic";
-                model = "anthropic/claude-haiku-4-5";
-              };
             };
-            github-copilot = profileFromTiers {
-              primary = slot {
+
+            github-copilot = profileFromSlots {
+              coordinator = slot "coordinator" {
                 provider = "github-copilot";
                 model = "github-copilot/claude-sonnet-4.6";
                 thinking = "medium";
               };
-              secondary = slot {
+              _default = slot "worker" {
                 provider = "github-copilot";
                 model = "github-copilot/claude-sonnet-4.6";
               };
-              lightweight = slot {
-                provider = "github-copilot";
-                model = "github-copilot/claude-haiku-4.5";
-              };
             };
-            github-copilot-pi-worker =
-              (profileFromTiers {
-                primary = slot {
-                  provider = "github-copilot";
-                  model = "github-copilot/claude-sonnet-4.6";
-                };
-                secondary = slot {
-                  provider = "github-copilot";
-                  model = "github-copilot/claude-sonnet-4.6";
-                };
-                lightweight = slot {
-                  provider = "github-copilot";
-                  model = "github-copilot/claude-haiku-4.5";
-                };
-              })
-              // {
-                worker =
-                  slot {
-                    provider = "github-copilot";
-                    model = "github-copilot/claude-sonnet-4.6";
-                    harness = "pi";
-                  }
-                  // {
-                    systemPromptPath = roleToSystemPromptFile "worker";
-                  };
-              };
-            google = profileFromTiers {
-              primary = slot {
+
+            google = profileFromSlots {
+              _default = slot "coordinator" {
                 provider = "google";
                 model = "google/gemini-3-flash";
-              };
-              secondary = slot {
-                provider = "google";
-                model = "google/gemini-3.1-flash-lite";
-              };
-              lightweight = slot {
-                provider = "google";
-                model = "google/gemini-3.1-flash-lite";
               };
             };
           };
@@ -266,14 +183,13 @@
         in
         {
           data = {
-            inherit roleMapping profiles quickProfiles;
+            inherit profiles quickProfiles;
           };
 
           json =
             let
               homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-              # Resolve a possible $HOME reference inside a string. Used so that
-              # systemPromptPath values pass through with $HOME expanded.
+              # Resolve a possible $HOME reference inside a string.
               expandHome =
                 s:
                 lib.strings.replaceStrings
@@ -290,50 +206,26 @@
             builtins.toJSON (
               {
                 default = config.nx.programs.prism.profile.default;
-                role_mapping = config.nx.programs.prism.profiles.data.roleMapping;
               }
-              # default_harness — emitted only when set to a non-default value so
-              # that machines using the hardcoded fallback ("pi") produce
-              # byte-identical profiles.json output, satisfying the
-              # "no incidental diff for the default case" AC in #1491.
-              // (
-                if config.nx.programs.prism.harness.default == "pi" then
-                  { }
-                else
-                  { default_harness = config.nx.programs.prism.harness.default; }
-              )
               // {
-                # Profiles are role-keyed. Each slot is emitted with its full record
-                # (provider, model, thinking, systemPromptPath). systemPromptPath is
-                # always present (empty string when unset) to keep the JSON shape
-                # uniform — Go reads it via the `omitempty` tag so empty values
-                # round-trip cleanly.
+                # Profiles are role-keyed. Each slot is emitted with its full
+                # record (provider, model, thinking, systemPromptPath).
                 profiles = lib.mapAttrs (
                   _name: profileEntry:
-                  lib.mapAttrs (
-                    _role: roleSlot:
-                    {
-                      provider = roleSlot.provider or "";
-                      model = roleSlot.model;
-                      thinking = roleSlot.thinking or "off";
-                      systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
-                    }
-                    // (if (roleSlot.harness or "") == "" then { } else { harness = roleSlot.harness; })
-                  ) profileEntry
+                  lib.mapAttrs (_role: roleSlot: {
+                    provider = roleSlot.provider or "";
+                    model = roleSlot.model;
+                    thinking = roleSlot.thinking or "off";
+                    systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
+                  }) profileEntry
                 ) config.nx.programs.prism.profiles.data.profiles;
                 # Agent environment variables to inject into host-mode agent processes.
-                # Both $HOME and ${HOME} are expanded at Nix eval time so the JSON
-                # always contains absolute paths regardless of which form is used.
                 agent_env_vars = lib.mapAttrs (
                   _name: value: expandHome value
                 ) config.nx.programs.prism.agent.envVars;
-                # Quick command profiles — lightweight model configs for prism quick subcommands.
+                # Quick command profiles.
                 quick_profiles = config.nx.programs.prism.profiles.data.quickProfiles;
-                # Per-container resource caps. These are read by the prism sidecar
-                # and passed to container.Config so that podman run receives
-                # --memory, --memory-swap, and --pids-limit for every agent container.
-                # Values flow: nix option → _internal.agentResources → here → profiles.json
-                # → prism sidecar → container.Config → buildRunArgs → podman run.
+                # Per-container resource caps.
                 container_resources = config.nx.programs.prism._internal.agentResources;
               }
             );
@@ -342,11 +234,6 @@
           # the active profile defines a slot for. Agents not present in the
           # profile (e.g. `build`) are returned unchanged so they inherit the
           # top-level harness model.
-          #
-          # The mapping is direct under the role-keyed schema: `agentName` is the
-          # slot key. `slot.thinking` is translated to pi's `variant` via
-          # thinkingToVariant ("off" → "none") to preserve bit-identical output
-          # with the pre-#1206 schema.
           applyProfile =
             profileName: baseAgents:
             let
@@ -370,16 +257,9 @@
     }
 
     # Write profiles.json to ~/.config/prism/ and persist that directory on
-    # impermanence systems. This block is gated on prism.enable (not
-    # prism.enable) so the file is present regardless of whether the
-    # pi submodule is active — the prism CLI reads profiles.json
-    # unconditionally at runtime.
+    # impermanence systems.
     (lib.mkIf config.nx.programs.prism.enable {
       home-manager.users.${config.nx.username} = {
-        # Model profiles — written to ~/.config/prism/profiles.json.
-        # The Go CLI reads this at runtime when --profile is passed to
-        # prism spawn. It contains all profile definitions and the role-to-agent
-        # mapping, and records which profile is the current default.
         xdg.configFile."prism/profiles.json".text = config.nx.programs.prism.profiles.json;
         home.persistence."/persist" = {
           directories = [

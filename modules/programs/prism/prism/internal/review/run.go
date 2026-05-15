@@ -150,7 +150,9 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// happens via the sidecar's --model-override flags instead.
 		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
 			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
-				patched, patchErr := config.ApplyModelOverrides(agentConfigContent, activeProfile, roleModel, "", opts.ProfilesFile)
+				// Rebuild the config with the overridden model, preserving the
+				// profile's variant (pass "" variant override to keep profile value).
+				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "")
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {
@@ -158,7 +160,9 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 					}
 					continue
 				}
-				agentConfigContent = patched
+				if patched != "" {
+					agentConfigContent = patched
+				}
 			}
 		}
 
@@ -206,18 +210,11 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// WorktreeReadOnly=true ensures review containers cannot modify the
 		// branch under review (satisfies the [security] acceptance criterion).
 		//
-		// Per-agent harness resolution (#1328): resolve the harness for this
-		// agent from the active profile's slot. opts.HarnessExplicit is true
-		// when the caller passed --harness explicitly; in that case opts.Harness
-		// wins unconditionally. Otherwise the profile slot's harness takes
-		// precedence (defaulting to "opencode" via HarnessForSlot).
+		// Pi is the sole harness. Use it directly unless --harness was
+		// explicitly passed (opts.HarnessExplicit).
 		agentHarnessName := opts.Harness
 		if !opts.HarnessExplicit {
-			var slot config.RoleSlot
-			if s, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-				slot = s
-			}
-			agentHarnessName = config.HarnessForSlot(opts.ProfilesFile, slot)
+			agentHarnessName = "pi"
 		}
 		agentH, agentHErr := harness.New(agentHarnessName, "", nil, "", "")
 		if agentHErr != nil {
@@ -454,7 +451,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// Apply per-role model override (C.2, issue #1122).
 		if agentConfigContent != "" && len(opts.ModelsByRole) > 0 {
 			if roleModel, ok := opts.ModelsByRole[ag.Name]; ok {
-				patched, patchErr := config.ApplyModelOverrides(agentConfigContent, activeProfile, roleModel, "", opts.ProfilesFile)
+				patched, patchErr := config.BuildConfigContent(opts.ProfilesFile, activeProfile, ag.Name, roleModel, "")
 				if patchErr != nil {
 					spawnErr[i] = fmt.Errorf("review: apply --model-override for %s: %w", ag.Name, patchErr)
 					if opts.OnProgress != nil {
@@ -462,7 +459,9 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 					}
 					continue
 				}
-				agentConfigContent = patched
+				if patched != "" {
+					agentConfigContent = patched
+				}
 			}
 		}
 
@@ -494,15 +493,10 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			}
 		}
 
-		// Per-agent harness resolution (#1328): same semantics as Run() —
-		// opts.HarnessExplicit guards whether the profile slot or the flag wins.
+		// Pi is the sole harness. Use it directly unless --harness was explicitly passed.
 		asyncAgentHarnessName := opts.Harness
 		if !opts.HarnessExplicit {
-			var slot config.RoleSlot
-			if s, slotOK := config.SlotForRole(opts.ProfilesFile, activeProfile, ag.Name); slotOK {
-				slot = s
-			}
-			asyncAgentHarnessName = config.HarnessForSlot(opts.ProfilesFile, slot)
+			asyncAgentHarnessName = "pi"
 		}
 		asyncAgentH, asyncAgentHErr := harness.New(asyncAgentHarnessName, "", nil, "", "")
 		if asyncAgentHErr != nil {

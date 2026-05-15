@@ -158,46 +158,15 @@ var prCmd = &cobra.Command{
 			return profErr
 		}
 
-		// In container/bwrap/sandbox-exec mode, inject the role-specific
-		// opencode.json blob as the harness config env var so it takes precedence
-		// (level 6) over any project-level opencode.jsonc. This mirrors the pattern
-		// in spawn.go.
-		//
-		// This block fires for podman, bwrap, and sandbox-exec isolation modes.
-		// Host-mode sessions skip it because they run opencode directly with the
-		// host's real ~/.config/opencode/opencode.json via xdg.configFile.
-		var configContent string
-		if isoCaps.NeedsConfigBlob && pf != nil {
-			effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
-			// Non-worktree paths (effectiveRole == "") use the coordinator config blob
-			// so that build/plan agents are available, but pass no --agent flag.
-			lookupRole := effectiveRole
-			if lookupRole == "" {
-				lookupRole = "coordinator"
-			}
-			roleConfig, roleErr := config.ContainerConfigForRole(pf, lookupRole)
-			if roleErr != nil {
-				return roleErr
-			}
-			if roleConfig != "" {
-				// Role config governs agent identity and permissions. Overlay
-				// the runtime active profile (#1207) so `prism profile use
-				// <name>` flows through to `prism pr` spawns. ApplyProfileToBlob
-				// is a no-op when the resolved profile matches pf.Default.
-				profiled, profileErr := config.ApplyProfileToBlob(roleConfig, resolvedProfile, pf)
-				if profileErr != nil {
-					return profileErr
-				}
-				// Re-apply any --model/--variant overrides on top so they are
-				// not lost.
-				patched, patchErr := config.ApplyModelOverrides(profiled, resolvedProfile, modelFlag, variantFlag, pf)
-				if patchErr != nil {
-					return patchErr
-				}
-				configContent = patched
-			} else if effectiveRole == "worker" || effectiveRole == "coordinator" {
-				fmt.Fprintf(os.Stderr, "[prism pr] warning: no container role config for %q in profiles.json — rebuild the system config to generate it\n", effectiveRole)
-			}
+		// Generate the pi harness config for this session's root role.
+		effectiveRole := session.DefaultAgent(worktreePath, agentFlag)
+		lookupRole := effectiveRole
+		if lookupRole == "" {
+			lookupRole = "coordinator"
+		}
+		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag)
+		if err != nil {
+			return err
 		}
 
 		// For bwrap sessions, write the opencode.json config file to disk now
@@ -231,29 +200,10 @@ var prCmd = &cobra.Command{
 			}
 		}
 
-		// Resolve the effective harness via the canonical precedence ladder
-		// (#1328 / #1491):
-		//   1. --harness flag (when explicitly set).
-		//   2. Slot-level Harness from the active profile.
-		//   3. File-level default_harness from profiles.json.
-		//   4. Hardcoded "opencode" — encapsulated inside HarnessForSlot.
+		// Pi is the sole harness. Use it directly unless --harness was explicitly set.
 		effectiveHarness := harnessFlag
 		if !cmd.Flags().Changed("harness") {
-			plannedRole := agentFlag
-			if plannedRole == "" {
-				if branch == "main" {
-					plannedRole = "coordinator"
-				} else {
-					plannedRole = "worker"
-				}
-			}
-			var slot config.RoleSlot
-			if pf != nil && resolvedProfile != "" {
-				if s, ok := config.SlotForRole(pf, resolvedProfile, plannedRole); ok {
-					slot = s
-				}
-			}
-			effectiveHarness = config.HarnessForSlot(pf, slot)
+			effectiveHarness = "pi"
 		}
 		if _, ok := harness.Lookup(effectiveHarness); !ok {
 			return fmt.Errorf("unknown harness %q: valid harnesses: %s", effectiveHarness, strings.Join(harness.Names(), ", "))

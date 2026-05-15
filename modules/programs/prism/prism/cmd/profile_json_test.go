@@ -18,7 +18,6 @@ func TestBuildProfileJSON_SnakeCaseAndActiveFlag(t *testing.T) {
 			Provider: "anthropic",
 			Model:    "anthropic/claude-sonnet-4-6",
 			Thinking: "high",
-			Harness:  "pi",
 		},
 		"worker": config.RoleSlot{
 			Model: "anthropic/claude-sonnet-4-6",
@@ -57,7 +56,7 @@ func TestBuildProfileJSON_SnakeCaseAndActiveFlag(t *testing.T) {
 	}
 
 	coord := slots["coordinator"].(map[string]interface{})
-	for _, k := range []string{"provider", "model", "thinking", "harness", "system_prompt_path"} {
+	for _, k := range []string{"provider", "model", "thinking", "system_prompt_path"} {
 		if _, ok := coord[k]; !ok {
 			t.Errorf("slots.coordinator missing snake_case key %q", k)
 		}

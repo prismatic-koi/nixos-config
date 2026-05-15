@@ -26,7 +26,6 @@ in
     programs = {
       prism = {
         profile.default = "anthropic";
-        harness.default = "pi";
         agent.isolation.default = "sandbox-exec";
         pi.atlassian.enable = true;
         projects.isolationOverrides = {
