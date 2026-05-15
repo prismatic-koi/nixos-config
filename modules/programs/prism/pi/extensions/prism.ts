@@ -1405,8 +1405,8 @@ export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
   for (const t of tools) {
     const source = t.sourceInfo.source
     if (source === "builtin") {
-      // Condition 1: unknown built-in.
       if (!canonicalSet.has(t.name)) {
+        // Condition 1: unknown built-in — pi has added a tool iris has not reviewed.
         const msg =
           `[iris-extension] fatal: unknown built-in tool "${t.name}" ` +
           `(not in canonical seven). Update iris's tool allowlist or ` +
@@ -1414,9 +1414,9 @@ export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
           `Unset IRIS_DAEMON_SOCK to use vanilla pi while the issue is resolved.`
         console.error(msg)
         throw new Error(msg)
-      }
-      // Condition 3: canonical built-in that was NOT overridden.
-      if (canonicalSet.has(t.name)) {
+      } else {
+        // Condition 3: canonical built-in that was NOT overridden — registerTool
+        // was called but the tool still resolves to the original built-in.
         const msg =
           `[iris-extension] fatal: canonical built-in "${t.name}" was not ` +
           `overridden by iris (still resolves to "builtin"). This indicates ` +
@@ -1450,10 +1450,24 @@ export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
  * Exported for testing.
  */
 export function extractExtensionName(path: string): string {
-  // Use the last component, strip .ts / .js
-  const parts = path.replace(/\\/g, "/").split("/")
-  const basename = parts[parts.length - 1] ?? path
-  return basename.replace(/\.(ts|js|mjs|cjs)$/, "")
+  // Normalise separators then split into components, filtering empty segments
+  // (e.g. from leading slashes or double-slashes).
+  const parts = path.replace(/\\/g, "/").split("/").filter((p) => p.length > 0)
+  if (parts.length === 0) return path
+
+  // Strip the file extension from the last component.
+  const basename = (parts[parts.length - 1] ?? "").replace(/\.(ts|js|mjs|cjs)$/, "")
+
+  // When the filename is a generic entry-point name ("index", "main", "mod"),
+  // the meaningful extension identity is the parent directory name — e.g.
+  // "anthropic-oauth/index.ts" → "anthropic-oauth".  Fall back to the
+  // basename when there is no parent segment.
+  const GENERIC_FILENAMES = new Set(["index", "main", "mod"])
+  if (GENERIC_FILENAMES.has(basename) && parts.length >= 2) {
+    return parts[parts.length - 2] ?? basename
+  }
+
+  return basename
 }
 
 /**

@@ -16,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -504,6 +505,79 @@ func TestSupervisorRestartPolicy(t *testing.T) {
 	// Verify DefaultRestartThreshold matches the prism sidecar's value.
 	if iris.DefaultRestartThreshold != 3 {
 		t.Errorf("DefaultRestartThreshold = %d, want 3", iris.DefaultRestartThreshold)
+	}
+}
+
+// TestEditToolUniqueness verifies that runEdit rejects non-unique old_string.
+func TestEditToolUniqueness(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Write a file with the target string appearing twice.
+	testFile := filepath.Join(tmp, "dup.txt")
+	if err := os.WriteFile(testFile, []byte("hello hello\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	dbPath := filepath.Join(tmp, "iris.db")
+	db, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer db.Close()
+
+	sockPath := filepath.Join(tmp, "harness.sock")
+	sess := &iris.SessionRecord{
+		InstanceID:      "test-edit-unique",
+		SessionName:     "test@edit",
+		Worktree:        tmp,
+		Role:            "worker",
+		HarnessSockPath: sockPath,
+	}
+	srv, err := iris.NewHarnessSocketServer(sess, db)
+	if err != nil {
+		t.Fatalf("NewHarnessSocketServer: %v", err)
+	}
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.AcceptOne(ctx) }()
+
+	conn, r := dialHarness(t, sockPath)
+	doHandshake(t, conn, r)
+
+	sendFrame(t, conn, map[string]any{
+		"type": "tool_exec",
+		"id":   "call-edit-dup",
+		"name": "edit",
+		"args": map[string]any{
+			"file_path":  "dup.txt",
+			"old_string": "hello",
+			"new_string": "world",
+		},
+	})
+
+	var result map[string]any
+	for {
+		frame := readFrame(t, r)
+		if frame["type"] == "tool_exec_result" {
+			result = frame
+			break
+		}
+	}
+
+	if result["success"] != false {
+		t.Errorf("edit with non-unique old_string: success = %v, want false", result["success"])
+	}
+	if result["is_error"] != true {
+		t.Errorf("edit with non-unique old_string: is_error = %v, want true", result["is_error"])
+	}
+	output, _ := result["output"].(string)
+	if output == "" || (!strings.Contains(output, "2") && !strings.Contains(output, "unique")) {
+		t.Errorf("edit uniqueness error message = %q, expected mention of count or 'unique'", output)
 	}
 }
 

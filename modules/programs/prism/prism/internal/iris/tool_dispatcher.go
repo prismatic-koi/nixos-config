@@ -268,14 +268,24 @@ func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolR
 		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: read: %v", err)}
 	}
 	content := string(data)
-	if oldText != "" && !strings.Contains(content, oldText) {
-		return toolResult{Success: false, IsError: true, Output: "edit: old_string not found in file"}
+	if oldText != "" {
+		count := strings.Count(content, oldText)
+		if count == 0 {
+			return toolResult{Success: false, IsError: true, Output: "edit: old_string not found in file"}
+		}
+		if count > 1 {
+			return toolResult{
+				Success: false,
+				IsError: true,
+				Output:  fmt.Sprintf("edit: old_string appears %d times in file; it must be unique for a safe replacement", count),
+			}
+		}
 	}
 	var newContent string
 	if oldText == "" {
 		newContent = newText
 	} else {
-		newContent = strings.ReplaceAll(content, oldText, newText)
+		newContent = strings.Replace(content, oldText, newText, 1)
 	}
 	if err := os.WriteFile(abs, []byte(newContent), 0o644); err != nil {
 		return toolResult{Success: false, IsError: true, Output: fmt.Sprintf("edit: write: %v", err)}

@@ -2884,7 +2884,19 @@ describe("extractExtensionName", () => {
     assert.equal(extractExtensionName("/path/to/atlassian.js"), "atlassian")
   })
   it("extracts 'anthropic-oauth' from anthropic-oauth/index.ts", () => {
-    assert.equal(extractExtensionName("anthropic-oauth/index.ts"), "index")
+    assert.equal(extractExtensionName("anthropic-oauth/index.ts"), "anthropic-oauth")
+  })
+  it("extracts 'anthropic-oauth' from absolute path ending in anthropic-oauth/index.ts", () => {
+    assert.equal(
+      extractExtensionName("/etc/prism/pi-extensions/anthropic-oauth/index.ts"),
+      "anthropic-oauth",
+    )
+  })
+  it("returns basename when generic filename has no parent segment", () => {
+    assert.equal(extractExtensionName("index.ts"), "index")
+  })
+  it("extracts 'my-ext' from my-ext/main.ts (generic 'main' basename)", () => {
+    assert.equal(extractExtensionName("my-ext/main.ts"), "my-ext")
   })
   it("handles Windows-style backslash paths", () => {
     assert.equal(extractExtensionName("C:\\path\\to\\prism.ts"), "prism")
