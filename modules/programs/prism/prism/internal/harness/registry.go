@@ -9,8 +9,7 @@ package harness
 // without importing the adapter package directly (only a blank import is
 // needed to trigger registration).
 //
-// B.2 proposal: modules/programs/prism/prism/docs/reviews/
-// B2-harness-registry-and-transport-shape.md §3–§4.
+// B.2 proposal actioned in PR #1162.
 
 import (
 	"fmt"
