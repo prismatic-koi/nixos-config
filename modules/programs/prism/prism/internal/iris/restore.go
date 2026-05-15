@@ -318,6 +318,12 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		RestartThreshold: cfg.RestartThreshold,
 		StartedAt:        sess.StartedAt,
 		PiSessionPath:    cfg.SessionContinuePath,
+		// BareRoot must be populated here so the D-5/D-7 credential broker can
+		// resolve the role-scoped GITHUB_TOKEN for bash subprocesses run by a
+		// restored session. Without this, restored sessions would always fall
+		// back to host GITHUB_TOKEN — a silent credential downgrade. Mirrors
+		// the spawn and daemon paths in cmd/iris/main.go.
+		BareRoot: cfg.BareRoot,
 	}
 
 	// Create session run directory (may already exist from previous incarnation).

@@ -58,9 +58,33 @@ type toolDispatcher struct {
 	// bareRoot is the bare git repository root, used to derive the GitHub
 	// account for the 4-PAT token selection.
 	bareRoot   string
+	// broker resolves per-call credentials for tool subprocesses (D-7).
+	// May be nil in legacy tests; callers should populate it from the harness.
+	broker     *CredentialBroker
 	writer     *jsonlWriter
 	abortCh    <-chan struct{}
 	toolExecID string
+}
+
+// CredentialNamesForTool returns the audit-only credential names that would
+// be injected into a subprocess for the named tool, given the dispatcher's
+// role and bareRoot. Used by the harness socket server to populate the
+// `credentials_injected` field on tool_call events before dispatch runs.
+//
+// The list mirrors what dispatch() will actually inject; it is computed by
+// asking the broker, not by re-implementing the policy here.
+func (d *toolDispatcher) CredentialNamesForTool(toolName string) []string {
+	broker := d.broker
+	if broker == nil {
+		broker = NewCredentialBroker()
+	}
+	switch toolName {
+	case "bash":
+		return broker.ResolveBash(d.role, d.bareRoot).Names
+	default:
+		// File tools and any unknown tool: no credentials injected.
+		return nil
+	}
 }
 
 // dispatch selects and runs the appropriate tool executor for the frame.

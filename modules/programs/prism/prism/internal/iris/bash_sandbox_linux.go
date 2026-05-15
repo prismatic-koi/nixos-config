@@ -71,8 +71,14 @@ func (d *toolDispatcher) runBashInSandbox(ctx context.Context, command string) t
 	)
 	args = append(args, mountArgs...)
 
-	// Inject env vars via --setenv.
-	for _, kv := range bashEnv(d.role, d.bareRoot) {
+	// Inject env vars via --setenv. Use the dispatcher's broker so credential
+	// resolution is consistent with the audit-log decision recorded against
+	// the matching tool_call event (D-7).
+	broker := d.broker
+	if broker == nil {
+		broker = NewCredentialBroker()
+	}
+	for _, kv := range broker.ResolveBash(d.role, d.bareRoot).Env {
 		k, v, _ := strings.Cut(kv, "=")
 		args = append(args, "--setenv", k, v)
 	}

@@ -455,6 +455,117 @@ func TestDBEventWritten(t *testing.T) {
 	if toolResultCount == 0 {
 		t.Error("no tool_result event written to DB")
 	}
+
+	// D-7: every tool_call payload must carry a credentials_injected field
+	// (JSON array of names). For bash the field is non-empty when a host
+	// GITHUB_TOKEN is configured — we don't assert specific names here
+	// (env-dependent), only the field's presence and shape.
+	for _, e := range events {
+		if e.Type != "tool_call" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+			t.Fatalf("unmarshal tool_call payload: %v", err)
+		}
+		if _, ok := payload["credentials_injected"]; !ok {
+			t.Errorf("tool_call payload missing credentials_injected field: %s", e.Payload)
+		}
+		if _, ok := payload["credentials_injected"].([]any); !ok {
+			t.Errorf("credentials_injected is not a JSON array: %T (%s)",
+				payload["credentials_injected"], e.Payload)
+		}
+	}
+}
+
+// TestDBEventWritten_CredentialsInjectedShape exercises the harness dispatch
+// path WITHOUT a sandbox so it runs on every platform / sandbox config.
+//
+// We send a tool_exec for an unknown tool name: the dispatcher returns an
+// immediate error toolResult without spawning any subprocess, but the
+// harness still writes a tool_call event for the dispatch attempt. The test
+// asserts that the tool_call payload includes a credentials_injected field
+// (per D-7) and that it is an empty array for non-bash tools.
+func TestDBEventWritten_CredentialsInjectedShape(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer database.Close()
+
+	const instanceID = "test-creds-shape"
+	insertTestSessionRow(t, database, instanceID, "test@creds-shape", tmp)
+
+	sockPath := filepath.Join(tmp, "harness.sock")
+	sess := &iris.SessionRecord{
+		InstanceID:      instanceID,
+		SessionName:     "test@creds-shape",
+		Worktree:        tmp,
+		Role:            "worker",
+		HarnessSockPath: sockPath,
+	}
+	srv, err := iris.NewHarnessSocketServer(sess, database)
+	if err != nil {
+		t.Fatalf("NewHarnessSocketServer: %v", err)
+	}
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = srv.AcceptOne(ctx) }()
+
+	conn, r := dialHarness(t, sockPath)
+	doHandshake(t, conn, r)
+
+	sendFrame(t, conn, map[string]any{
+		"type": "tool_exec",
+		"id":   "call-shape-001",
+		"name": "definitely-not-a-real-tool",
+		"args": map[string]any{},
+	})
+
+	for {
+		frame := readFrame(t, r)
+		if frame["type"] == "tool_exec_result" {
+			break
+		}
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	events, err := database.AllSessionEvents("test@creds-shape")
+	if err != nil {
+		t.Fatalf("AllSessionEvents: %v", err)
+	}
+
+	var found bool
+	for _, e := range events {
+		if e.Type != "tool_call" {
+			continue
+		}
+		found = true
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(e.Payload), &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		arr, ok := payload["credentials_injected"].([]any)
+		if !ok {
+			t.Fatalf("credentials_injected missing or not an array: %s", e.Payload)
+		}
+		if len(arr) != 0 {
+			t.Errorf("credentials_injected for unknown tool should be []; got %v", arr)
+		}
+		if payload["agent_role"] != "worker" {
+			t.Errorf("agent_role = %v; want \"worker\"", payload["agent_role"])
+		}
+	}
+	if !found {
+		t.Error("no tool_call event written")
+	}
 }
 
 // TestReadTool verifies the read tool executor.
