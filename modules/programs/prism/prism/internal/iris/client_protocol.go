@@ -103,7 +103,8 @@ type DaemonSessionsSnapshotFrame struct {
 }
 
 // SessionSnapshot is a single session entry in a sessions_snapshot frame.
-// Fields are a subset of the iris SessionRecord, sufficient for the TUI.
+// Fields are a subset of the iris SessionRecord, sufficient for the TUI and
+// for the `iris sessions list` / `iris sessions status` CLI commands.
 type SessionSnapshot struct {
 	// Name is the logical session name (e.g. "nixos-config@my-branch").
 	Name string `json:"name"`
@@ -117,6 +118,11 @@ type SessionSnapshot struct {
 	Worktree string `json:"worktree"`
 	// StartedAt is the RFC3339 timestamp when this session was created.
 	StartedAt string `json:"started_at"`
+	// HarnessSessionID is the harness-side session identifier — for the pi
+	// harness this is the full path to the pi JSONL session file (a stable
+	// identifier suitable for cross-referencing pi-side logs). May be empty
+	// before the harness handshake has completed.
+	HarnessSessionID string `json:"harness_session_id,omitempty"`
 }
 
 // DaemonSessionEventFrame wraps a raw event payload from the subscribed
