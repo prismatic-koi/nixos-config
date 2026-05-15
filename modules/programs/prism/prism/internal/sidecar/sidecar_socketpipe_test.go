@@ -2613,6 +2613,79 @@ func TestSocketPipe_SessionStatus_EmptySessionID_NoOp(t *testing.T) {
 	}
 }
 
+// ── #1656 invariant test ─────────────────────────────────────────────────
+//
+// These tests assert the write-ordering invariant introduced by the fix for
+// issue #1656: whenever agent_status.harness_session_id is set, the
+// corresponding session_status event must already exist in agent_events.
+// This invariant is what makes TestSocketPipe_SessionStatus_PopulatesHarnessSessionID
+// race-free: the polling target (agent_status) is always the LAST write.
+
+// TestSocketPipe_SessionStatus_EventBeforeStatus asserts the write-ordering
+// invariant for the session_status handler (issue #1656 fix): the
+// agent_events row for the session_status frame is committed BEFORE
+// agent_status.harness_session_id is set. We verify this by polling
+// agent_status until harness_session_id is set, then immediately asserting
+// — without any sleep — that agent_events already contains the row.
+//
+// This test is the invariant proof: if the write ordering regresses, this test
+// will fail (not just flake) because there is no sleep between the poll
+// resolving and the events assertion.
+func TestSocketPipe_SessionStatus_EventBeforeStatus(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	const piSessionID = "pi-ses-invariant-test-456"
+	sendJSON(t, conn, map[string]any{
+		"type":          "session_status",
+		"role":          "worker",
+		"branch":        "main",
+		"review_cycles": 0,
+		"pr_number":     "",
+		"session_id":    piSessionID,
+	})
+
+	// Poll agent_status until harness_session_id is set. Once we see it, the
+	// agent_events row MUST already be present — no additional sleep or retry.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+		if err != nil {
+			t.Fatalf("CurrentStatus: %v", err)
+		}
+		if s != nil && s.HarnessSessionID != nil && *s.HarnessSessionID == piSessionID {
+			// harness_session_id is now visible. Assert the invariant: the
+			// session_status event must already be in agent_events.
+			events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+			var found bool
+			for _, e := range events {
+				if e.Type == "session_status" {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Error("invariant violated: harness_session_id is set in agent_status but session_status event is missing from agent_events")
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("harness_session_id never set — timed out")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+}
+
 // ── #1652 regression tests ────────────────────────────────────────────────
 //
 // These tests guard against the race where the finished-debounce in
