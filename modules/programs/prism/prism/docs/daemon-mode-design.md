@@ -134,6 +134,12 @@ sidecar observes them via SSE events but does not intercept them.
 In the new model, pi runs unsandboxed. If the daemon does not own tool
 dispatch, there is no layer at which to insert the per-call sandbox.
 
+A structural consequence of pi running unsandboxed on the host is that iris
+has no hostapi-equivalent surface — there is no sandbox boundary around the
+pi process that iris CLI invocations need to puncture in order to reach the
+daemon. See §5.1 for the three audit invariants that lock this property in
+writing.
+
 **Mechanism (post-D-1 pivot):** The D-1 audit (`pi-rpc-interface.md`)
 confirmed that pi 0.72.1 does *not* support daemon-delegated tool execution
 via the RPC channel — the `tool_result` stdin command assumed by the original
@@ -552,6 +558,12 @@ an open question (§11.3).
 
 ## 5. Tool inventory and per-tool sandbox decisions
 
+§5.1 below documents iris's structural immunity to the prism hostapi-class of
+failure and the three grep-verifiable invariants that preserve it. The table
+in this section is the positive description of which tools are sandboxed and
+how; §5.1 is the negative description — the IPC surface that iris
+deliberately does **not** expose into any sandbox.
+
 The following table enumerates the built-in tools pi exposes, sourced from the
 [pi README](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/README.md)
 (`--tools` flag documentation and the "Available built-in tools" list). The pi
@@ -628,6 +640,120 @@ than using `StandardSandboxMounts` wholesale — `StandardSandboxMounts` carries
 the full per-process mount set (pi's own credentials, fake home, etc.) that
 the iris model deliberately eliminates. Each tool's mount list is assembled
 from the subset described in the table above.
+
+### 5.1 Why iris has no hostapi-equivalent surface
+
+**Iris is structurally immune to the prism hostapi-class of failure because
+pi runs unsandboxed on the host; only individual tool subprocesses are
+sandboxed, and those subprocesses have no IPC path back to the iris daemon.**
+
+In prism, the entire pi session runs inside a sandbox (bwrap on Linux,
+sandbox-exec on Darwin, or a container). From inside that sandbox the agent
+can still invoke `prism spawn`, `prism prompt`, `prism cleanup`, etc. by
+proxying over a Unix socket that the sidecar bind-mounts into the sandbox.
+That is the prism host-API surface — and it is easy to forget to wire or
+break silently (PR #1647, `fix(feedback): proxy to host-API when invoked
+from inside a sandbox`, is a recent example of the failure class).
+
+Iris does not have an equivalent surface because the iris pi session is
+never wrapped in a sandbox in the first place (see §2 "the daemon must own
+tool dispatch to sandbox each call" and §9.2 "Pi writes to the host
+filesystem outside of tool calls" for the structural foundations). The pi
+process dials `~/.local/state/iris/iris.sock` directly as a host-resident
+process; only the per-tool subprocesses are sandboxed, and they have no
+business reaching the daemon.
+
+The three invariants below are grep-verifiable. An auditor running these
+commands should see the stated results; any deviation is a regression that
+reintroduces the hostapi-class failure surface into iris.
+
+**Invariant 1 — no iris CLI subcommand acquires an `IRIS_HOST_API`-style env
+var or proxy path.**
+
+```bash
+grep -r IRIS_ modules/programs/prism/prism/cmd/iris/ \
+              modules/programs/prism/prism/internal/iris/
+```
+
+Only two `IRIS_*` env vars should appear:
+
+- `IRIS_DAEMON_SOCK` — set by the supervisor on the **pi child process**
+  (`internal/iris/supervisor.go:377-378`) so the prism extension running
+  inside pi knows where to dial the per-session harness socket. This is a
+  pi-process env var, not a sandbox-process env var; it is never forwarded
+  into any tool sandbox.
+- `IRIS_PARITY_TEST_MODE` — the parity-test harness guard
+  (`internal/iris/iristest/iristest.go:54`,
+  `internal/iris/parity/parity_isolation_test.go`). Test-only.
+
+There is no `IRIS_HOST_API`, no `IRIS_CLI_PROXY`, and no analogue of prism's
+host-API socket path that a sandboxed subprocess could use to call back into
+the daemon.
+
+**Invariant 2 — `credential_broker.go::ResolveBash` does not forward
+`IRIS_DAEMON_SOCK` or any other `IRIS_*` env var into the bash sandbox.**
+
+The `ResolveBash` function (`internal/iris/credential_broker.go` lines
+~118-199, the env-allowlist body in particular) emits a closed list of
+environment entries: `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
+`TERM`, the four `GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}` vars, `NIX_CONFIG`,
+optionally `GITHUB_TOKEN`, and `AWS_CONFIG_FILE` /
+`AWS_SHARED_CREDENTIALS_FILE`. No `IRIS_*` entry appears, so the bash
+sandbox cannot inherit `IRIS_DAEMON_SOCK` from the pi parent process. Any
+`iris …` invocation from inside the bash sandbox would fail loudly (the
+daemon socket path env var is unset, and the socket itself is not mounted —
+see invariant 3) rather than silently succeed by proxy.
+
+Audit:
+
+```bash
+sed -n '118,205p' modules/programs/prism/prism/internal/iris/credential_broker.go \
+  | grep -n IRIS_
+```
+
+Expected: zero matches.
+
+**Invariant 3 — the bash and file sandbox mount sets do not include a
+`~/.local/state/iris/` entry.**
+
+```bash
+grep -r "local/state/iris" \
+  modules/programs/prism/prism/internal/iris/bash_sandbox_linux.go \
+  modules/programs/prism/prism/internal/iris/bash_sandbox_darwin.go \
+  modules/programs/prism/prism/internal/iris/file_sandbox_linux.go \
+  modules/programs/prism/prism/internal/iris/file_sandbox_darwin.go
+```
+
+Expected: zero matches. The mount-set builders to inspect are:
+
+- `internal/iris/bash_sandbox_linux.go::bashToolMountsLinux` (lines
+  ~99-245) — the Linux bwrap mount list for the bash tool.
+- `internal/iris/bash_sandbox_darwin.go::GenerateBashSBPLProfile` (lines
+  ~140-280) — the Darwin sandbox-exec profile for the bash tool.
+- `internal/iris/file_sandbox_linux.go` — the worktree-scoped Linux
+  mount set for `read`/`grep`/`find`/`ls`/`edit`/`write`.
+- `internal/iris/file_sandbox_darwin.go` — the Darwin counterpart.
+
+Neither the iris state directory (`~/.local/state/iris/`), nor the daemon
+socket (`~/.local/state/iris/iris.sock`), nor the iris DB
+(`~/.local/state/iris/iris.db`), nor any per-session harness socket under
+`~/.local/state/iris/run/<instance_id>/` is bind-mounted into any tool
+sandbox. The file sandboxes are scoped to the session worktree and have no
+IPC surface at all; the bash sandbox carries credentials and developer
+tooling paths but no iris-internal paths.
+
+**Contrast with prism's hostapi.** Prism's hostapi exists because prism
+wraps the entire pi session in a sandbox and then has to puncture that
+sandbox to let CLI invocations reach the daemon. Iris doesn't wrap the pi
+session at all — so there is nothing to puncture, and no surface to forget
+to wire.
+
+**Scope of this section.** This section documents the contract; it does not
+add automated enforcement. The three invariants are intended for manual
+grep audit during review. An automated lint check is a possible future
+addition but is out of scope here. If a future use case requires iris to
+support a pi-running-inside-a-broader-sandbox topology, this design
+decision should be reopened then; today there is no such use case.
 
 ---
 
