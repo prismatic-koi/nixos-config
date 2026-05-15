@@ -29,7 +29,7 @@ let
   #   agent — defensive fallback for bwrap cases where tmux reports the
   #              foregrounded descendant rather than bwrap itself, and for
   #              host-mode panes that run pi directly (Linux legacy /
-  #              Darwin). Opencode is only ever launched in agent panes by
+  #              Darwin). The agent (pi) is only ever launched in agent panes by
   #              prism, so matching it here does not affect plain shells,
   #              editors, or dashboard panes.
   #

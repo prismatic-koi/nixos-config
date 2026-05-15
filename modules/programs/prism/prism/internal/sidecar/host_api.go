@@ -763,7 +763,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// promptdelivery.DeliverToSession helper used by the review-complete
 		// monitor, coordinator notify, and merge-queue watcher (#1364).
 		// We still gate on the harness having a TransportSocketPipe shape
-		// so an opencode session — which uses HTTP-port delivery — does not
+		// so an HTTP-harness session — which uses HTTP-port delivery — does not
 		// silently route through this branch.
 		if req.Session == s.cfg.SessionName {
 			if shape, ok := harness.ShapeOf(s.cfg.HarnessName); ok && shape == harness.TransportSocketPipe {
@@ -869,7 +869,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /spawn
-	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","harness":"opencode"}
+	// Request:  {"branch":"my-feature","prompt":"...","agent":"worker","profile":"gemini-hybrid","harness":"pi"}
 	// The "repo" field is accepted but ignored — the sidecar always substitutes
 	// its own repo (derived from its session name) so that a client sending a
 	// mount-path name (e.g. "prism-git") still spawns into the correct repo

@@ -7,7 +7,7 @@ package session
 // arg handling.
 //
 // The tests below cover three slices, deliberately small because the same
-// machinery (BuildOpencodeCmd, WriteInitialPrompt, the size guard) is
+// machinery (BuildAgentCmd, WriteInitialPrompt, the size guard) is
 // orthogonal to the rest of the spawn pipeline:
 //
 //   1. The constructed launch command stays small regardless of prompt
@@ -148,13 +148,13 @@ func TestWriteInitialPrompt_OverwritesStaleFile(t *testing.T) {
 	}
 }
 
-// ── BuildOpencodeCmd: host mode + prompt file ──────────────────────────────
+// ── BuildAgentCmd: host mode + prompt file ──────────────────────────────
 
-// TestBuildOpencodeCmd_HostMode_PromptFile verifies that BuildOpencodeCmd in
+// TestBuildAgentCmd_HostMode_PromptFile verifies that BuildAgentCmd in
 // host mode with PromptFilePath set emits `--prompt "$(cat <quoted path>)"`
 // and does NOT inline the prompt body. This is the core change: the launch
 // command size becomes O(1) in prompt size. (AC-1, AC-10)
-func TestBuildOpencodeCmd_HostMode_PromptFile(t *testing.T) {
+func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
 	prompt := buildLargePrompt(32 * 1024)
 	opts := Opts{
 		IsolationMode:  "host",
@@ -164,7 +164,7 @@ func TestBuildOpencodeCmd_HostMode_PromptFile(t *testing.T) {
 		Prompt:         prompt,
 		PromptFilePath: "/var/state/prism/run/myrepo@feat/initial-prompt.txt",
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 
 	// The command must reference the file via $(cat …) — operators (and
 	// the size guard) rely on this contract so the launch command size
@@ -182,17 +182,17 @@ func TestBuildOpencodeCmd_HostMode_PromptFile(t *testing.T) {
 
 	// The constructed command must be small even though the prompt is 32 KB.
 	// 1 KB is a generous upper bound that comfortably accommodates the
-	// opencode invocation, env-var prefixes, and the cat-substitution.
+	// agent invocation, env-var prefixes, and the cat-substitution.
 	if len(cmd) > 1024 {
 		t.Errorf("host-mode cmd unexpectedly large (%d bytes) — expected O(1) in prompt size", len(cmd))
 	}
 }
 
-// TestBuildOpencodeCmd_HostMode_NoPromptFile verifies the legacy inline path
+// TestBuildAgentCmd_HostMode_NoPromptFile verifies the legacy inline path
 // (PromptFilePath empty) still works for small prompts. This covers the
 // no-regression AC-2: small prompts that worked before the fix continue to
 // work without the file plumbing.
-func TestBuildOpencodeCmd_HostMode_NoPromptFile(t *testing.T) {
+func TestBuildAgentCmd_HostMode_NoPromptFile(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "host",
 		Agent:         "worker",
@@ -200,7 +200,7 @@ func TestBuildOpencodeCmd_HostMode_NoPromptFile(t *testing.T) {
 		SessionName:   "myrepo@feat",
 		Prompt:        "small prompt",
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 
 	if strings.Contains(cmd, "$(cat") {
 		t.Errorf("host-mode cmd unexpectedly uses cat-substitution for inline prompt: %q", cmd)
@@ -210,13 +210,13 @@ func TestBuildOpencodeCmd_HostMode_NoPromptFile(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_HostMode_PromptFile_PathQuoted verifies that a path
+// TestBuildAgentCmd_HostMode_PromptFile_PathQuoted verifies that a path
 // containing single quotes is shell-quoted so the cat substitution does not
 // terminate early. This is a defence-in-depth check: per-session run dirs
 // derived from session names (e.g. "myrepo@branch") will not contain quotes
 // in normal use, but if a future caller ever passes a path with quotes the
 // surrounding $() must not get confused.
-func TestBuildOpencodeCmd_HostMode_PromptFile_PathQuoted(t *testing.T) {
+func TestBuildAgentCmd_HostMode_PromptFile_PathQuoted(t *testing.T) {
 	opts := Opts{
 		IsolationMode:  "host",
 		Agent:          "worker",
@@ -225,7 +225,7 @@ func TestBuildOpencodeCmd_HostMode_PromptFile_PathQuoted(t *testing.T) {
 		Prompt:         "x",
 		PromptFilePath: `/tmp/weird's-path/initial-prompt.txt`,
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 
 	// Single quote must be escaped with the standard '\'' sequence.
 	if !strings.Contains(cmd, `'/tmp/weird'\''s-path/initial-prompt.txt'`) {
@@ -233,10 +233,10 @@ func TestBuildOpencodeCmd_HostMode_PromptFile_PathQuoted(t *testing.T) {
 	}
 }
 
-// TestBuildOpencodeCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty verifies
+// TestBuildAgentCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty verifies
 // that PromptFilePath has no effect when Prompt is empty — the cat call
 // only fires when there is actually a prompt to deliver.
-func TestBuildOpencodeCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty(t *testing.T) {
+func TestBuildAgentCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty(t *testing.T) {
 	opts := Opts{
 		IsolationMode:  "host",
 		Agent:          "worker",
@@ -244,7 +244,7 @@ func TestBuildOpencodeCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty(t *testing.
 		SessionName:    "myrepo@feat",
 		PromptFilePath: "/tmp/initial-prompt.txt",
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 	if strings.Contains(cmd, "$(cat") {
 		t.Errorf("expected no cat-substitution when Prompt is empty, got: %q", cmd)
 	}
@@ -341,7 +341,7 @@ func TestSpawnSession_HostMode_RejectsOversizedLaunchCmd(t *testing.T) {
 // env-var prefixes — and must continue to work.
 //
 // We don't actually run a full spawn (that requires a real sidecar/tmux);
-// instead we drive the size guard directly through BuildOpencodeCmd and
+// instead we drive the size guard directly through BuildAgentCmd and
 // assert it would not trip. The DB-side path is covered by other spawn
 // tests; the size guard is the new behaviour.
 func TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd(t *testing.T) {
@@ -357,7 +357,7 @@ func TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd(t *testing.T) {
 			"GIT_EDITOR":      "true",
 		},
 	}
-	cmd := BuildOpencodeCmd(opts)
+	cmd := BuildAgentCmd(opts)
 	if len(cmd) > HostLaunchCmdSafeBound {
 		t.Errorf("realistic host-mode cmd (%d bytes) unexpectedly exceeds safe bound %d — guard would reject normal spawns. cmd=%q",
 			len(cmd), HostLaunchCmdSafeBound, cmd)

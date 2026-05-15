@@ -188,7 +188,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 
 // deliverViaSidecarHostAPI dials the per-session host-API Unix socket and
 // POSTs /prompt to deliver a prompt to a socket-pipe (e.g. PI) session. The
-// socket-pipe path bypasses the HTTP harness API used for opencode and
+// socket-pipe path bypasses the HTTP harness API (used for HTTP harnesses) and
 // instead routes through the sidecar's pipe-frame queue.
 //
 // deliverAs controls the delivery mode ("steer", "followUp", or "nextTurn").

@@ -187,7 +187,7 @@ var eventStateChangeCmd = &cobra.Command{
 
 // --- pane-died ---
 //
-// Called by the tmux pane-exited hook when the opencode pane exits. If the
+// Called by the tmux pane-exited hook when the agent pane exits. If the
 // session is currently in an active (non-terminal) state, this transitions it
 // to "interrupted". Sessions already in interrupted or deleted state are left
 // unchanged — this guards against stale hook fires after a clean exit.

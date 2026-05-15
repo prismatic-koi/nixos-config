@@ -376,8 +376,8 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// injection so the session is still recreated without it, rather than
 	// aborting the entire restore run.
 	//
-	// Host-mode sessions skip this entirely because they run opencode directly
-	// with the host's real ~/.config/opencode/opencode.json via xdg.configFile.
+	// Host-mode sessions skip this entirely because they run the agent directly
+	// with the host's real harness config via xdg.configFile.
 	if isoCaps.NeedsConfigBlob {
 		pf, pfErr := loadRestoreProfiles()
 		if pfErr != nil {
@@ -401,7 +401,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 			}
 		}
 
-		// For bwrap sessions, write the opencode.json config file to disk now
+		// For bwrap sessions, write the harness config file to disk now
 		// so it is present before the agent pane opens. prism agent-run
 		// reconstructs a container.Manager from DB state (which does not carry
 		// ConfigContent), so the file must be written here at restore time via
@@ -414,14 +414,14 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(s.SessionName),
-		// and Manager.opencodeConfigFilePath() calls HarnessConfigFilePath(m.name).
+		// and Manager.harnessConfigFilePath() calls HarnessConfigFilePath(m.name).
 		// Isolator.WriteHarnessConfigBlob translates the prism session name to
 		// the container name internally so this call site stays mode-agnostic
 		// (D3, issue #1133). Mirrors the pattern in spawn.go.
 		if isoCaps.NeedsConfigBlob && opts.ConfigContent != "" {
 			if err := writeHarnessConfigBlobFor(isoMode, s.SessionName, opts.ConfigContent, "restore"); err != nil {
 				// Non-fatal: log and continue with restore. The session will
-				// still be re-spawned; it just won't have the opencode.json
+				// still be re-spawned; it just won't have the harness config
 				// mounted. This matches the general "restore is best-effort"
 				// posture (profile load errors are also non-fatal above).
 				fmt.Fprintf(os.Stderr, "restore %q: write harness config: %v — session will spawn without config mounted\n", s.SessionName, err)
@@ -500,7 +500,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	}
 	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
 	// session is still created with the full layout; it just won't have an
-	// opencode serve port allocated.
+	// agent serve port allocated.
 
 	// Invoke the test hook (nil in production) with a snapshot of opts
 	// so tests can assert ConfigContent and other fields without intercepting

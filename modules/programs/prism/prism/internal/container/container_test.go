@@ -183,8 +183,8 @@ func TestCredentialEnvVars_AtlassianKeysNotForwarded(t *testing.T) {
 func TestCredentialEnvVars_SpeculativeKeysNotForwarded(t *testing.T) {
 	// These keys were removed from forwardKeys because they are speculative:
 	// not populated on the host and not consumed by any in-repo agent/skill/config.
-	//   OPENAI_API_KEY    — no OpenAI provider configured in opencode.nix.
-	//   GEMINI_API_KEY    — Google auth uses opencode-gemini-auth OAuth plugin.
+	//   OPENAI_API_KEY    — no OpenAI provider configured.
+	//   GEMINI_API_KEY    — Google auth uses Gemini OAuth plugin.
 	//   GOOGLE_API_KEY    — same rationale as GEMINI_API_KEY.
 	//   GITHUB_COPILOT_TOKEN — Copilot provider uses its own auth flow.
 	//   DEEPSEEK_API_KEY  — user-confirmed speculative; no consumer in-repo.
@@ -488,7 +488,7 @@ func TestWaitHealthy_ReturnsOnContextCancel(t *testing.T) {
 	}
 }
 
-// ── opencode config mount tests ──────────────────────────────────────────────
+// ── harness config mount tests ──────────────────────────────────────────────
 
 func TestCredentialEnvVars_NoGitIdentityEnvVars(t *testing.T) {
 	// AC-11: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME,
@@ -631,7 +631,7 @@ func TestPrepareVolumeDirs_BwrapSkipsSessionDir(t *testing.T) {
 }
 
 // TestPrepareVolumeDirs_CreatesSocketDirForBwrap verifies that when
-// HostAPISockPath is set and perSessionOpencode=false (bwrap path),
+// HostAPISockPath is set and perSessionState=false (bwrap path),
 // prepareVolumeDirs still creates the per-session socket directory so that
 // the sidecar can call net.Listen("unix", sockPath) before bwrap is exec'd.
 func TestPrepareVolumeDirs_CreatesSocketDirForBwrap(t *testing.T) {
@@ -654,10 +654,10 @@ func TestPrepareVolumeDirs_CreatesSocketDirForBwrap(t *testing.T) {
 		t.Errorf("expected per-session socket dir %q to exist for bwrap mode (err: %v)", sockDir, err)
 	}
 
-	// The per-session opencode dir must NOT exist (bwrap shares the host opencode dir directly).
+	// The per-session pi state dir must NOT exist (bwrap shares the host pi data dir directly).
 	perSession := filepath.Join(fakeHome, ".local", "share", "pi", "prism-sessions", m.Name())
 	if _, err := os.Stat(perSession); !os.IsNotExist(err) {
-		t.Errorf("per-session opencode dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
+		t.Errorf("per-session pi dir %q should not exist for bwrap mode (stat err: %v)", perSession, err)
 	}
 }
 

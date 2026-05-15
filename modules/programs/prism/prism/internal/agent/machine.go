@@ -10,7 +10,7 @@ import "fmt"
 //   - idle → active: the normal startup path (tmux-session-start sets idle, then
 //     session.created fires active in the plugin).
 //   - idle → interrupted: pane-died before the session was ever active (rare but
-//     possible if the opencode process crashes before session.created fires).
+//     possible if the agent process crashes before session.created fires).
 //   - idle → error: container startup failure (WaitHealthy timeout or CreateSession
 //     failure) before the session became active. The sidecar writes error directly
 //     to avoid relying on the pane-died tmux hook for state cleanup.
@@ -35,7 +35,7 @@ import "fmt"
 //   - finished → interrupted: explicitly allowed for the pane-died hook when the
 //     pane exits with a non-zero code — a crash overrides a cleanly-written
 //     "finished" (see UpsertStatusInterruptedOverrideFinished).
-//   - finished → active: the resumed-session path — opencode reopens a session
+//   - finished → active: the resumed-session path — the agent reopens a session
 //     that was previously closed cleanly (see session.updated in the plugin).
 //   - finished → idle: tmux-session-start resets a previously-finished session
 //     back to idle when the tmux session is recreated (e.g. prism restore or

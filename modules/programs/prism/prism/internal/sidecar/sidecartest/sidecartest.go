@@ -48,7 +48,7 @@ const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 // t.TempDir() so they can never interfere with host-side prism state.
 type Bus struct {
 	// HTTPServer is the httptest.Server that captures HTTP deliveries
-	// (the opencode prompt_async path).
+	// (the harness HTTP prompt_async path).
 	HTTPServer *httptest.Server
 
 	// SockPath is the Unix socket path for the socket-pipe delivery path.

@@ -17,7 +17,7 @@ import (
 )
 
 // maxScanTokenSize is the maximum size of a single SSE line. The default
-// bufio.MaxScanTokenSize (64 KiB) is too small: opencode streams full LLM
+// bufio.MaxScanTokenSize (64 KiB) is too small: the agent streams full LLM
 // response text inside message.part.updated data: fields, which can easily
 // exceed 64 KiB for long assistant responses. 10 MiB is generous but still
 // bounded.
@@ -91,7 +91,7 @@ func (c *Client) maxRetryDelay() time.Duration {
 // Connect starts consuming the SSE stream at url. It returns a channel of
 // parsed events. The channel is closed when ctx is cancelled.
 //
-// If the server is not yet ready (e.g. opencode is still starting up),
+// If the server is not yet ready (e.g. the agent is still starting up),
 // Connect retries the initial connection with the same exponential backoff
 // used for reconnection (InitialRetryDelay…MaxRetryDelay). It only returns
 // an error if ctx is cancelled before the first successful connection.
@@ -102,7 +102,7 @@ func (c *Client) Connect(ctx context.Context, url string) (<-chan Event, error) 
 	ch := make(chan Event, c.bufferSize())
 
 	// Retry the initial connection with backoff — the server may not be ready
-	// yet (e.g. opencode is still starting up from a tmux send-keys command).
+	// yet (e.g. the agent is still starting up from a tmux send-keys command).
 	connectStart := time.Now()
 	resp, attempt := c.connectWithRetry(ctx, url)
 	if resp == nil {

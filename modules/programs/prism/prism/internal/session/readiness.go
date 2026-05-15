@@ -3,22 +3,22 @@ package session
 // Agent readiness gate (#1051 Piece A).
 //
 // SpawnSession returns success as soon as it has created the tmux session and
-// kicked off the sidecar. That is "spawned", not "ready": opencode itself runs
+// kicked off the sidecar. That is "spawned", not "ready": the agent itself runs
 // inside the bwrap/podman/host process the tmux pane launches, several steps
 // further along, and may take seconds to bind its TCP port — or never bind at
 // all if startup fails silently.
 //
 // WaitForReady polls the prism DB for an explicit readiness signal: the
 // sidecar writes a `state_change` event to agent_events as soon as it has
-// successfully connected to opencode's SSE stream and processed the first
+// successfully connected to the agent's SSE stream and processed the first
 // event (see internal/sidecar/sidecar.go HandleEvent → writeStateChange). The
-// presence of any such event for the session means "opencode bound its port,
+// presence of any such event for the session means "the agent bound its port,
 // the sidecar connected, and we have a live SSE stream".
 //
-// Equivalent earlier signals fall through too: when opencode emits a
+// Equivalent earlier signals fall through too: when the agent emits a
 // session.created event the sidecar calls UpdateHarnessSessionID, which sets
 // agent_status.harness_session_id to a non-NULL value. Either signal is
-// sufficient evidence that opencode is up.
+// sufficient evidence that the agent is up.
 //
 // The default readiness window is 30 seconds — comfortably longer than the
 // healthy-startup latency observed on real-world hardware (sub-second to ~9s,
@@ -60,7 +60,7 @@ const readinessPollInterval = 250 * time.Millisecond
 // any readiness signal was observed for the session. Callers should treat this
 // as a "failed to start" outcome, not a transient error: the spawned sidecar
 // is still running and reporting `connection refused` to its own log, but
-// opencode itself never came up. The right response is to clean up the half-
+// the agent itself never came up. The right response is to clean up the half-
 // alive session (KillSidecar + cleanupAgentSession + tmux KillSession) and
 // surface the failure to the operator.
 type ReadinessTimeoutError struct {
@@ -128,8 +128,8 @@ type ReadinessOpts struct {
 	//
 	//   - a turn_start, msg_user, or msg_assistant event has been
 	//     written, OR
-	//   - harness_session_id is set (opencode session.created — implies
-	//     opencode received the prompt via --prompt CLI flag), OR
+	//   - harness_session_id is set (agent session.created — implies
+	//     the agent received the prompt via --prompt CLI flag), OR
 	//   - state_change observed a non-"active" terminal transition
 	//     ("finished", "interrupted", "error") — the agent ran to
 	//     completion or failed in a way that is now visible.
@@ -178,9 +178,9 @@ func WaitForReady(d *db.DB, sessionName string, timeout time.Duration) error {
 //   - a turn_start / msg_user / msg_assistant event (proves the agent has
 //     started processing the prompt), OR
 //   - a state_change to a non-"active" terminal state, OR
-//   - agent_status.harness_session_id is non-NULL — this fires when opencode
-//     emits session.created, which (for opencode in CLI-prompt mode) means
-//     opencode parsed --prompt and accepted the message.
+//   - agent_status.harness_session_id is non-NULL — this fires when the agent
+//     emits session.created, which (for the agent in CLI-prompt mode) means
+//     the agent parsed --prompt and accepted the message.
 //
 // On timeout returns *ReadinessTimeoutError. DB-error returns are transient.
 func WaitForReadyWithOpts(d *db.DB, sessionName string, opts ReadinessOpts) error {
@@ -229,7 +229,7 @@ func WaitForReadyWithOpts(d *db.DB, sessionName string, opts ReadinessOpts) erro
 // linear and easy to read.
 func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDelivered bool) bool {
 	// Secondary (and strict-condition) signal: harness_session_id non-NULL.
-	// opencode writes session.created → sidecar updates harness_session_id
+	// the agent writes session.created → sidecar updates harness_session_id
 	// when it parses --prompt and accepts the message; for the strict path
 	// this is enough proof the prompt landed. For the loose path it is
 	// belt-and-braces alongside state_change.

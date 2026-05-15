@@ -73,7 +73,7 @@ func TestSandboxExecProfile_StagingHomeWritable(t *testing.T) {
 // Mutation strategy: targeted single-line ReplaceAll on the indented
 // `  (subpath "<stagingHome>")\n` form. This leaves the rest of the
 // (allow file-read* file-write* ...) block intact (worktree, bare repo,
-// host-API socket dir, opencode shared dirs) so the profile remains
+// host-API socket dir, agent shared dirs) so the profile remains
 // syntactically valid SBPL — the only behaviour change is that the
 // staging-HOME path itself is no longer covered by the write allow,
 // which is exactly the rule we are testing. Removing the entire block

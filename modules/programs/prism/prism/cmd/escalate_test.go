@@ -13,7 +13,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/agent"
 )
 
-// startEscalateOpencodeStub spins up an httptest.Server that accepts the
+// startEscalateHTTPStub spins up an httptest.Server that accepts the
 // POST /session/<sid>/prompt_async call used by deliverViaHTTP. The handler
 // records the last received request for the test to assert on.
 type capturedPromptCall struct {
@@ -21,7 +21,7 @@ type capturedPromptCall struct {
 	url  string
 }
 
-func startEscalateOpencodeStub(t *testing.T) (*httptest.Server, *capturedPromptCall) {
+func startEscalateHTTPStub(t *testing.T) (*httptest.Server, *capturedPromptCall) {
 	t.Helper()
 	captured := &capturedPromptCall{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -43,7 +43,7 @@ func startEscalateOpencodeStub(t *testing.T) (*httptest.Server, *capturedPromptC
 func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, captured := startEscalateOpencodeStub(t)
+	srv, captured := startEscalateHTTPStub(t)
 	port := extractTestServerPort(t, srv.URL)
 
 	// Override httpClient to use a Unix-friendly net.Dialer (default is fine for httptest)
@@ -90,7 +90,7 @@ func TestEscalate_AutoDiscoversSingleCoordinator(t *testing.T) {
 func TestEscalate_StateTransitionEscalated(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateOpencodeStub(t)
+	srv, _ := startEscalateHTTPStub(t)
 	port := extractTestServerPort(t, srv.URL)
 
 	httpClient = &http.Client{Timeout: 2 * time.Second}
@@ -115,7 +115,7 @@ func TestEscalate_StateTransitionEscalated(t *testing.T) {
 func TestEscalate_BusEventDistinct(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateOpencodeStub(t)
+	srv, _ := startEscalateHTTPStub(t)
 	port := extractTestServerPort(t, srv.URL)
 	httpClient = &http.Client{Timeout: 2 * time.Second}
 
@@ -258,7 +258,7 @@ func TestEscalate_ExplicitToMissingSession(t *testing.T) {
 func TestEscalate_PromptEchoedToSelf(t *testing.T) {
 	d := openPromptTestDB(t)
 
-	srv, _ := startEscalateOpencodeStub(t)
+	srv, _ := startEscalateHTTPStub(t)
 	port := extractTestServerPort(t, srv.URL)
 	httpClient = &http.Client{Timeout: 2 * time.Second}
 

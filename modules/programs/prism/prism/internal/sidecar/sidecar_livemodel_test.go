@@ -321,7 +321,7 @@ func TestHostAPI_ApplyProfile_SessionScope(t *testing.T) {
 	_ = wait()
 }
 
-// TestHostAPI_ApplyProfile_SkipsOpencodeSessions verifies that opencode
+// TestHostAPI_ApplyProfile_SkipsHTTPHarnessSessions verifies that HTTP-harness
 // sessions in scope are skipped with status "skipped:opencode".
 // TestHostAPI_ApplyProfile_SkipsNoMatchingSlot verifies that sessions whose
 // role has no slot in the new profile get "skipped:no-matching-slot".
@@ -524,7 +524,7 @@ func TestHostAPI_ApplyProfile_FanOut(t *testing.T) {
 	repo := "myrepo"
 	coordSession := repo + "@main"
 
-	// Insert coordinator row (not a PI session — opencode harness).
+	// Insert coordinator row (not a PI session — HTTP harness).
 	_ = d.UpsertStatus(coordSession, repo, t.TempDir(), "active", nil, nil)
 	_ = d.UpsertStatusWithRootAgent(coordSession, repo, t.TempDir(), "active", nil, nil, strPtr("coordinator"), nil)
 

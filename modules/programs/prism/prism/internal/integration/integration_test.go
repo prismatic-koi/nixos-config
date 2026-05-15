@@ -643,7 +643,7 @@ func TestTmuxHarness_ThreeWindowLayout(t *testing.T) {
 	// `prism event tmux-session-start`. In test binaries that isn't available,
 	// so we exercise the window-creation path directly via lower-level tmux
 	// helpers, mirroring what setupFullLayout does (minus the event seeding and
-	// the opencode/nvim send-keys, which require a live binary and real processes).
+	// the pi/nvim send-keys, which require a live binary and real processes).
 	//
 	// We use session.Create with LayoutBare then manually verify the harness
 	// creates the session, then test the window setup logic separately below.
@@ -672,7 +672,7 @@ func TestTmuxHarness_ThreeWindowLayout(t *testing.T) {
 
 	// Now create a LayoutFull session directly via the tmux harness to verify
 	// the three-window layout. We bypass the prism binary call (tmux-session-start
-	// event + nvim/opencode send-keys) and just verify the window structure
+	// event + nvim/pi send-keys) and just verify the window structure
 	// that the real layout sets up.
 	const fullSession = "integ-test-full"
 

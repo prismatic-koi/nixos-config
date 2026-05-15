@@ -7,7 +7,6 @@
 {
   theme = lib.mkIf (config.nx.desktop.theme == "everforest") {
     name = "everforest";
-    opencodename = "everforest";
     type = "dark";
     foreground = "#d3c6aa";
     primary = "#a7c080";

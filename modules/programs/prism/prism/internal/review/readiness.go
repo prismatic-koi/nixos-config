@@ -120,7 +120,7 @@ func gateReviewAgents(
 				return
 			}
 			// Reset spawnTimes[i] to "ready" time so the polling phase
-			// reports elapsed durations relative to the moment opencode
+			// reports elapsed durations relative to the moment the agent
 			// became reachable (consistent with the pre-#1051 behaviour
 			// where the time was captured immediately after SpawnSession
 			// returned, which was effectively the same moment).

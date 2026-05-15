@@ -317,7 +317,7 @@ func writeSessionEscalatedEvent(database *db.DB, fromSession string, selfStatus 
 }
 
 // deliverEscalationPrompt routes the prompt to the target coordinator. It
-// reuses the same delivery machinery as `prism prompt`: HTTP for opencode
+// reuses the same delivery machinery as `prism prompt`: HTTP for HTTP harnesses
 // sessions, host-API socket for socket-pipe (PI) sessions.
 //
 // The audit row in bus_messages is written with delivered_at set on success.
@@ -350,7 +350,7 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 			return err
 		}
 	} else {
-		// Pre-migration row with no harness column. Fall back to opencode HTTP.
+		// Pre-migration row with no harness column. Fall back to HTTP delivery.
 		if err := deliverEscalationToTarget(target, promptText); err != nil {
 			if writeErr := database.WriteBusMessageFailed(msg); writeErr != nil {
 				fmt.Fprintf(os.Stderr, "prism escalate: write failed audit: %v\n", writeErr)

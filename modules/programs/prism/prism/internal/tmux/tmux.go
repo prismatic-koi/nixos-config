@@ -310,11 +310,11 @@ func Run(args ...string) (string, error) {
 
 // CaptureWidth is the fixed column width used when expanding a window for
 // screen capture. 220 columns is wider than most physical terminals, so the
-// full opencode layout is always visible.
+// full agent layout is always visible.
 const CaptureWidth = 220
 
 // DefaultCaptureHeight is the number of rows the window is expanded to for a
-// normal checkin. opencode renders a fixed TUI (alternate screen mode — no
+// normal checkin. pi renders a fixed TUI (alternate screen mode — no
 // scrollback), so a taller window = more conversation visible. This only takes
 // full effect when no client is attached.
 const DefaultCaptureHeight = 100
@@ -325,10 +325,10 @@ type CaptureResult struct {
 }
 
 // CapturePaneScreen captures the visible screen of the agent window in the
-// named session. opencode uses alternate screen mode (no scrollback), so the
+// named session. pi uses alternate screen mode (no scrollback), so the
 // only way to get more content is to make the window taller before capturing.
 //
-// The window is temporarily resized to CaptureWidth × height. opencode reflows
+// The window is temporarily resized to CaptureWidth × height. pi reflows
 // its TUI to fill the new dimensions, giving a richer capture. Use a larger
 // height value to see more conversation history. Original dimensions are
 // restored after capture.
@@ -352,7 +352,7 @@ func CapturePaneScreen(session string, height int) (CaptureResult, error) {
 	expanded := origW < CaptureWidth || origH < height
 	if expanded {
 		_, _ = run("resize-window", "-t", target, "-x", fmt.Sprintf("%d", CaptureWidth), "-y", fmt.Sprintf("%d", height))
-		// Give opencode time to reflow its TUI to fill the new dimensions.
+		// Give the agent time to reflow its TUI to fill the new dimensions.
 		time.Sleep(500 * time.Millisecond)
 	}
 
@@ -388,7 +388,7 @@ func cleanCaptureOutput(raw string) string {
 		if stripped == "" || strings.Trim(stripped, "█") == "" {
 			continue
 		}
-		// Strip leading ┃ border (opencode conversation pane left edge).
+		// Strip leading ┃ border (pi conversation pane left edge).
 		// ┃ is a 3-byte UTF-8 sequence; handle optional leading spaces.
 		if idx := strings.Index(line, "┃"); idx >= 0 && strings.TrimSpace(line[:idx]) == "" {
 			line = line[idx+len("┃"):]

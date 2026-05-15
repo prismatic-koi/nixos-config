@@ -3,7 +3,7 @@ package cmd
 // prompt_pi_test.go — tests for the PI socket-pipe routing in `prism prompt`
 // (P2.SPAWN, #1212).
 //
-// The host-side `prism prompt <pi-session>` CLI cannot use the opencode HTTP
+// The host-side `prism prompt <pi-session>` CLI cannot use the harness HTTP
 // API path (PI sessions have no harness_port). Instead it must dial the
 // per-session sidecar host-API Unix socket and route via /prompt, which the
 // sidecar then forwards to the harness pipe via DeliverPrompt.
@@ -23,8 +23,8 @@ import (
 )
 
 // setStatusHarness updates the harness column for an existing agent_status
-// row. The DB package's UpsertStatus* helpers hard-code harness='opencode',
-// so tests covering non-opencode harnesses use this raw UPDATE via the
+// row. The DB package's UpsertStatus* helpers hard-code harness='pi',
+// so tests covering non-default harnesses use this raw UPDATE via the
 // public QueryRow accessor (UPDATE … RETURNING is required because QueryRow
 // needs at least one row to scan).
 func setStatusHarness(t *testing.T, d *db.DB, sessionName, harness string) {
@@ -47,7 +47,7 @@ const maxSunPath = 104
 // the DB and starts a stub Unix-socket HTTP server at the per-session
 // host-api.sock path. It then runs `prism prompt <session>` and asserts that
 // the request reached the stub server with the correct body, that no HTTP
-// (opencode) call was made, and that the audit row was written.
+// (HTTP) call was made, and that the audit row was written.
 func TestRunPrompt_PISession_RoutesThroughSidecarHostAPI(t *testing.T) {
 	// Use a short XDG_STATE_HOME so the per-session socket path stays under
 	// the 104-char Unix sun_path limit on macOS. os.MkdirTemp with a short

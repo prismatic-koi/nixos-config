@@ -23,7 +23,7 @@ package session
 //
 // Pre-creating the directory at SpawnSession time means the file path is
 // always valid even if `prism agent-run` never reaches its own log-open call
-// (the failure mode #1051 reports — opencode never binds and the per-session
+// (the failure mode #1051 reports — the agent never binds and the per-session
 // run dir was never created at all).
 
 import (

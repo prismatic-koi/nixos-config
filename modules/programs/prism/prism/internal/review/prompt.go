@@ -168,9 +168,9 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) strin
 	sb.WriteString("---\n\n")
 
 	// ── Role-specific instructions ────────────────────────────────────────
-	// Splice the role definition file inline so that every harness (opencode,
+	// Splice the role definition file inline so that every harness (pi,
 	// PI, etc.) receives the full rubric without relying on an out-of-band
-	// system-prompt injection. The redundancy in opencode (which also loads
+	// system-prompt injection. The redundancy in pi (which also loads
 	// the file server-side) is harmless — same content, same agent.
 	sb.WriteString("## Your role-specific instructions\n\n")
 	sb.WriteString(resolveRoleDefinition(roleFile))
@@ -179,7 +179,7 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) strin
 }
 
 // resolveRoleDefinition reads the role definition file for the given agent
-// from the opencode agents directory ($XDG_CONFIG_HOME/prism/agents/).
+// from the agents directory ($XDG_CONFIG_HOME/prism/agents/).
 //
 // roleFile is the filename stem (without the .md extension), e.g. "review-goal".
 // It matches Agent.Name directly — the on-disk file is <roleFile>.md.

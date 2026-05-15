@@ -33,7 +33,7 @@ package cmd
 // selects the NewContainerMode harness adapter, and runs the full SSE loop.
 //
 // In host mode (--isolation-mode=host or no --container flag), the sidecar
-// connects to an already-running opencode process. No container or sandbox
+// connects to an already-running agent process. No container or sandbox
 // management is performed.
 //
 // Clean shutdown: SIGINT and SIGTERM write "interrupted" state and (in container
@@ -164,7 +164,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// sandbox-exec (NeedsHostAPISocket) all require the host-API Unix socket.
 	needsHostAPI := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
-	// useContainerHarness is true for modes where opencode is pre-created with
+	// useContainerHarness is true for modes where the agent is pre-created with
 	// --prompt at launch (podman, bwrap, sandbox-exec), so the harness uses
 	// GET /session to retrieve the existing session ID rather than POST /session.
 	useContainerHarness := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
@@ -209,7 +209,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.
 	// When modelsByRole contains an entry for agentRole, that takes precedence
-	// over the profile/opencode.json lookup (C.2 §6.3).
+	// over the profile harness-config lookup (C.2 §6.3).
 	var agentModel string
 	if m, ok := modelsByRole[agentRole]; ok && m != "" {
 		agentModel = m
@@ -310,7 +310,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	//
 	// In podman and bwrap mode, use NewContainer so that:
 	//   - CreateSession uses GET /session to retrieve the existing session ID
-	//     (opencode already created a session when the TUI started)
+	//     (the agent already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
 	//
 	// When modelsByRole is non-nil (C.2 --model-override), pass the full map
@@ -332,7 +332,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	// Inject harness-specific runtime env vars into the container config.
-	// This replaces the previously hard-coded OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS
+	// This replaces previously hard-coded harness-specific env vars
 	// in container.go and bwrap.go with values from the harness adapter.
 	if ctrCfg != nil {
 		ctrCfg.RuntimeEnv = h.RuntimeEnv()

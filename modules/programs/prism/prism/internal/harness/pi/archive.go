@@ -4,7 +4,7 @@ package pi
 //
 // PI stores session data as JSONL files on disk (RFC #606 "Session persistence":
 // "JSONL files with a tree structure (parent/child IDs for branching)").
-// Unlike opencode, PI has no SQLite database — it is a pure flat-file store.
+// Unlike some harnesses, PI has no SQLite database — it is a pure flat-file store.
 //
 // Source path layout (confirmed via PI_CODING_AGENT_SESSION_DIR env var and
 // PI's --help which shows "~/.pi/agent/sessions/" as the export example path):

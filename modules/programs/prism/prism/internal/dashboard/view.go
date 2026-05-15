@@ -124,7 +124,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const statWFull = 22    // "2 files +122 -14"
 	const statWCompact = 10 // "+122 -14"
 	const modelWFull = 22   // e.g. "claude-sonnet-4-6    "
-	const harnessW = 10     // "opencode  " or future harness names
+	const harnessW = 10     // width for harness column
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.

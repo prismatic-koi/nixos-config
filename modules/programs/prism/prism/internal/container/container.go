@@ -1,16 +1,15 @@
 // Package container manages the podman container lifecycle for prism sidecar.
 //
 // The sidecar (running on the host) creates a podman container running
-// "opencode --port 4096 --hostname 0.0.0.0" (combined TUI + HTTP mode),
-// health-checks it until the HTTP endpoint responds, and stops/removes the
-// container on shutdown. The tmux agent window attaches to the container's
-// PTY via "podman attach" so the opencode TUI is visible to the user.
+// the agent in combined TUI + HTTP mode, health-checks it until the HTTP
+// endpoint responds, and stops/removes the container on shutdown. The tmux
+// agent window attaches to the container's PTY via "podman attach" so the
+// agent TUI is visible to the user.
 //
 // Health check: we probe GET /global/health (not GET /) because the root URL
-// falls through to opencode's UIRoutes catch-all, which proxies to
-// https://app.opencode.ai/ when there is no embedded web UI — adding a 3–4 s
-// network round-trip on every container startup. /global/health is in
-// ControlPlaneRoutes and returns immediately with no external I/O.
+// may redirect to an external URL on some harnesses, adding network latency
+// on every container startup. /global/health is in ControlPlaneRoutes and
+// returns immediately with no external I/O.
 //
 // Design notes:
 //   - All podman operations use exec.Command("podman", ...) — no daemon or
@@ -18,7 +17,7 @@
 //   - The container name is derived from the prism session name so it is
 //     predictable and idempotent.
 //   - Credentials are injected as environment variables, never as mounted files.
-//   - The opencode serve container port (ContainerPort) is bound to 127.0.0.1
+//   - The agent serve container port (ContainerPort) is bound to 127.0.0.1
 //     only — not 0.0.0.0. The host-API TCP listener (Darwin only) intentionally
 //     binds 0.0.0.0 so the gvproxy bridge interface can reach it from the VM.
 package container
@@ -37,7 +36,7 @@ import (
 )
 
 const (
-	// ContainerPort is the port opencode serve listens on inside the container.
+	// ContainerPort is the port the agent harness listens on inside the container.
 	ContainerPort = 4096
 
 	// Image is the container image name used for all agent containers.
@@ -142,9 +141,9 @@ type Config struct {
 	AgentRole string
 
 	// AgentModel is the model identifier to use when delivering the initial
-	// prompt (e.g. "anthropic/claude-sonnet-4-6"). When empty, opencode's
+	// prompt (e.g. "anthropic/claude-sonnet-4-6"). When empty, the harness
 	// default model for the session is used (which may differ from the host
-	// opencode config and cause "model not supported" errors).
+	// harness config and cause "model not supported" errors).
 	AgentModel string
 
 	// ConfigContent is the JSON blob for the container's opencode.json config
@@ -251,8 +250,8 @@ type Config struct {
 	SshBin string
 
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
-	// When non-empty, it is appended to the opencode command as
-	// --agent <AgentRole> --prompt <text> so that opencode starts the session
+	// When non-empty, it is appended to the agent command as
+	// --agent <AgentRole> --prompt <text> so that the agent starts the session
 	// with the prompt already in flight, visible in the TUI from the start.
 	// This replaces the previous POST /session + prompt_async HTTP delivery
 	// which created a second session invisible to the TUI (RFC #691 Phase 1a).
@@ -273,8 +272,8 @@ type Config struct {
 	// When nil or empty, no profile env vars are injected.
 	AgentEnvVars map[string]string
 
-	// Harness is the harness name from the session DB row (e.g. "opencode",
-	// "pi"). When empty, "opencode" is assumed for back-compat. Used by
+	// Harness is the harness name from the session DB row (e.g. "pi").
+	// When empty, "pi" is assumed for back-compat. Used by
 	// BuildArgs to select the correct sandbox-terminator invocation.
 	Harness string
 
@@ -692,7 +691,7 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 // args is "sandbox-exec" itself (argv[0] under syscall.Exec).
 //
 // The env passed to syscall.Exec should set HOME=<staging_home> so that
-// opencode and its tools find credentials and config at their canonical paths
+// the agent and its tools find credentials and config at their canonical paths
 // inside the staging HOME. agent_run.go constructs that env after this call.
 //
 // Post A1.L4 (issue #1140): the body of this method moved into
@@ -715,11 +714,11 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 // directory is still absent when podman runs, podman will produce the real
 // error. Returns a non-nil error only when multiple dirs fail.
 //
-// perSessionOpencode controls whether the per-session pi state directory
-// (~/.local/share/opencode/prism-sessions/<name>/) is created. The podman path
+// perSessionState controls whether the per-session pi state directory
+// (~/.local/share/pi/prism-sessions/<name>/) is created. The podman path
 // requires it (Darwin virtiofs WAL-mode locking workaround); the bwrap path
-// shares ~/.local/share/opencode/ directly and does not need a per-session dir.
-func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
+// shares the host pi data dir directly and does not need a per-session dir.
+func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
@@ -728,7 +727,7 @@ func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 	var errs []string
 
 	// Per-session pi state directory (podman only).
-	if perSessionOpencode {
+	if perSessionState {
 		piSessionDir := filepath.Join(home, ".local", "share", "pi", "prism-sessions", m.name)
 		if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
 			log.Printf("container: failed to create per-session pi state dir %q: %v", piSessionDir, err)
@@ -736,7 +735,7 @@ func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 		}
 	}
 
-	// opencode plugin/model cache.
+	// Agent plugin/model cache.
 	piCacheDir := filepath.Join(home, ".cache", "pi")
 	if err := os.MkdirAll(piCacheDir, 0o755); err != nil {
 		log.Printf("container: failed to create pi cache dir %q: %v", piCacheDir, err)

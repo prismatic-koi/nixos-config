@@ -349,7 +349,7 @@ func renderSessionDetail(m *sessionMetrics) {
 	}
 }
 
-// renderSessionCompactTable renders a compact one-row-per-opencode-session table
+// renderSessionCompactTable renders a compact one-row-per-agent-session table
 // for tmux sessions that contain multiple harness sessions. If detail is true,
 // each session is rendered as a full block instead.
 func renderSessionCompactTable(sessionName string, metrics []*sessionMetrics, status *db.Status, detail bool) {

@@ -613,7 +613,7 @@ func TestWatcher_CLEANTransitionToMerged(t *testing.T) {
 	srv := newCapturingServer(t)
 	// Parse port from srv.URL.
 	port := parsePort(t, srv.URL)
-	sid := "opencode-sid-clean"
+	sid := "pi-sid-clean"
 	seedCoordinator(t, d, session, instanceID, port, sid)
 
 	// Enqueue PR 100.
@@ -696,7 +696,7 @@ func TestWatcher_DIRTYTransitionToFailed(t *testing.T) {
 
 	srv := newCapturingServer(t)
 	port := parsePort(t, srv.URL)
-	sid := "opencode-sid-dirty"
+	sid := "pi-sid-dirty"
 	seedCoordinator(t, d, session, instanceID, port, sid)
 
 	if _, err := d.EnqueueMerge(300, session, instanceID, nil); err != nil {
