@@ -26,6 +26,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/narrative"
 )
 
 // --- Layout constants ---
@@ -122,7 +123,7 @@ type Model struct {
 	subscribedTo string
 
 	// Event stream (right pane): rendered narrative lines, newest at bottom.
-	eventLines []NarrativeLine
+	eventLines []narrative.NarrativeLine
 	// seenRowIDs deduplicates replayed vs live events.
 	seenRowIDs map[int64]bool
 	// toolCallByMsgID indexes the line slice position for open tool_call lines
@@ -251,7 +252,7 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		}
 		m.seenRowIDs[e.RowID] = true
 
-		lines := RenderEvent(e.RowID, e.EventType, e.Payload)
+		lines := narrative.RenderEvent(e.RowID, e.EventType, e.Payload)
 		for _, line := range lines {
 			// For tool_result: find the matching tool_call and pair it.
 			if e.EventType == "tool_result" && line.MessageID != "" {
@@ -335,7 +336,7 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 	case iris.DaemonFrameError:
 		if msg.Error != nil {
 			// Show error as a narrative line in the event pane.
-			m.eventLines = append(m.eventLines, NarrativeLine{
+			m.eventLines = append(m.eventLines, narrative.NarrativeLine{
 				Text:      fmt.Sprintf("⚠ daemon error: %s", msg.Error.Message),
 				EventType: "error",
 			})
@@ -638,7 +639,7 @@ func (m Model) viewRightPane(width int) string {
 }
 
 // styleEventLine applies colour to a NarrativeLine.
-func styleEventLine(line NarrativeLine, width int) string {
+func styleEventLine(line narrative.NarrativeLine, width int) string {
 	text := truncate(line.Text, width)
 	switch line.EventType {
 	case "state_change":
