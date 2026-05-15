@@ -322,10 +322,19 @@ func (h *HarnessSocketServer) dispatchToolExec(ctx context.Context, w *jsonlWrit
 	h.writeEvent("tool_call", payloadBytes)
 
 	// Execute the tool.
+	//
+	// Derive tmpDir from the harness socket path:
+	//   sessionDir = filepath.Dir(sess.HarnessSockPath)
+	//   tmpDir     = filepath.Join(sessionDir, "tmp")
+	// This is the host-side backing directory for the in-sandbox /tmp mount
+	// (design doc §10.1: ~/.local/state/iris/run/<instance_id>/tmp/).
+	sessionDir := filepath.Dir(h.sess.HarnessSockPath)
+	tmpDir := filepath.Join(sessionDir, "tmp")
 	dispatcher := &toolDispatcher{
-		worktree: h.sess.Worktree,
-		writer:   w,
-		abortCh:  abortCh,
+		worktree:   h.sess.Worktree,
+		tmpDir:     tmpDir,
+		writer:     w,
+		abortCh:    abortCh,
 		toolExecID: frame.ID,
 	}
 	result := dispatcher.dispatch(ctx, frame)
