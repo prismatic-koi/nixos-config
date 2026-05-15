@@ -17,34 +17,19 @@ import (
 type Agent struct {
 	// Name is the agent identifier, e.g. "review-goal". Used for session
 	// names (~review-N-<Name>), root_agent_name in the DB, progress
-	// display, and as the AgentRole passed to the sidecar.
+	// display, as the AgentRole passed to the sidecar, and as the
+	// on-disk filename (<Name>.md) looked up by CheckAgentAvailability.
 	Name string
-	// OpencodeName is the opencode --agent flag value, e.g. "review-goal".
-	// This resolves to the primary agent definition declared in
-	// ~/.config/opencode/opencode.json.
-	OpencodeName string
-	// ValidationName is the bare role name whose <name>.md definition file
-	// the host-mode pre-flight check looks for under
-	// $XDG_CONFIG_HOME/opencode/agents/. The five review agents are
-	// declared as primaries in opencode.json (resolved via OpencodeName)
-	// but their on-disk markdown bodies live under "-subagent" filenames
-	// to avoid the name-collision regression described in #1231 — so
-	// validation must look at "<role>-subagent.md", not "<role>.md".
-	ValidationName string
 }
 
 // Agents returns the five-agent review set.
-// Each agent corresponds to a specialised opencode agent definition under
-// modules/programs/prism/opencode/agents/. The bare-name primaries are
-// declared in opencode.json; the on-disk markdown subagent bodies are
-// named "<role>-subagent.md" — see ValidationName.
 func Agents() []Agent {
 	return []Agent{
-		{Name: "review-goal", OpencodeName: "review-goal", ValidationName: "review-goal-subagent"},
-		{Name: "review-code", OpencodeName: "review-code", ValidationName: "review-code-subagent"},
-		{Name: "review-security", OpencodeName: "review-security", ValidationName: "review-security-subagent"},
-		{Name: "review-qa", OpencodeName: "review-qa", ValidationName: "review-qa-subagent"},
-		{Name: "review-context", OpencodeName: "review-context", ValidationName: "review-context-subagent"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
+		{Name: "review-security"},
+		{Name: "review-qa"},
+		{Name: "review-context"},
 	}
 }
 
@@ -60,10 +45,8 @@ type RoleValidator func(role string) error
 // the active harness adapter. Returns a descriptive error listing any
 // invalid agents; returns nil when all are valid.
 //
-// Validation is performed against ValidationName when set (i.e. the
-// "-subagent" form for review agents), falling back to Name when empty.
-// This decouples the on-disk filename from the role identifier — see the
-// Agent struct doc and #1231.
+// Validation is performed against Agent.Name, which matches the on-disk
+// filename (<Name>.md) directly.
 //
 // This is intentionally skipped in container mode because the check cannot
 // reliably inspect the container filesystem.
@@ -71,11 +54,7 @@ func CheckAgentAvailability(agents []Agent, validate RoleValidator) error {
 	var invalid []string
 	var firstErr error
 	for _, ag := range agents {
-		validationName := ag.ValidationName
-		if validationName == "" {
-			validationName = ag.Name
-		}
-		if err := validate(validationName); err != nil {
+		if err := validate(ag.Name); err != nil {
 			invalid = append(invalid, ag.Name)
 			if firstErr == nil {
 				firstErr = err

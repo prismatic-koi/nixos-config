@@ -1,7 +1,6 @@
 ---
-name: review-qa-subagent
-description: Functional validation subagent — verifies the change actually works by running project-appropriate tests and validation. Invoke in parallel with other review-* agents before merging.
-mode: subagent
+name: review-qa
+description: Functional validation reviewer — verifies the change actually works by running project-appropriate tests and validation. Invoke in parallel with other review-* agents before merging.
 hidden: true
 ---
 

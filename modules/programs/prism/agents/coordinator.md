@@ -1,7 +1,6 @@
 ---
 name: coordinator
 description: Repo coordinator — orchestrates agents, reviews PRs, and merges completed work.
-mode: primary
 hidden: false
 ---
 

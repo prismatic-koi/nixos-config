@@ -1,7 +1,6 @@
 ---
 name: investigate
 description: Read-only investigator agent — traces call chains, reproduces failures, and reports findings to the coordinator. Does not write code, open PRs, or spawn agents.
-mode: primary
 hidden: false
 ---
 

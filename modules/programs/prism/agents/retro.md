@@ -1,7 +1,6 @@
 ---
 name: retro
 description: Analyses agent sessions for quality patterns and improvement opportunities. Invoke for periodic retrospectives or to diagnose a specific session that went badly.
-mode: subagent
 hidden: true
 ---
 

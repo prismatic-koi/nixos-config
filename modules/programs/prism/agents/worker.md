@@ -1,7 +1,6 @@
 ---
 name: worker
 description: Default worker agent — implements features, fixes bugs, and opens PRs.
-mode: primary
 hidden: false
 ---
 
@@ -158,32 +157,6 @@ Prefer actioning observations that:
 
 Avoid cosmetic bikeshedding that invites another full review round for no
 substantive gain. When in doubt, ship the PR as-is — review rounds aren't free.
-
-### Fallback: Task-call subagents
-
-**This fallback is only applicable when the `task` tool is present in your active toolset (i.e. you are running under a non-pi harness). If you are running under the pi harness (the primary harness), the `task` tool is not available — `prism review` is the only supported review path. Pi harness agents must NOT attempt to invoke Task subagents.**
-
-If `prism review` is unavailable or the environment does not support it, invoke
-the five review subagents **in parallel** (in a single response with 5 Task tool
-calls) as a fallback:
-
-1. `@review-goal-subagent` — pass the original issue/ACs and the PR number
-2. `@review-code-subagent` — pass the PR number
-3. `@review-security-subagent` — pass the PR number
-4. `@review-qa-subagent` — pass the PR number
-5. `@review-context-subagent` — pass the PR number
-
-Wait for all 5 to complete. **ALL must return `<verdict>PASS</verdict>` for the
-review to pass.**
-
-If ANY agent returns `<verdict>FAIL</verdict>`:
-
-1. Read each agent's `<blocking_issues>` carefully
-2. Fix every blocking issue identified
-3. Commit and push your fixes
-4. Re-run all 5 review subagents in parallel — not just the ones that failed.
-   A fix in one area can create issues in another, so the full set must re-run
-   every cycle.
 
 ### Escalating to the coordinator — a first-class outcome
 

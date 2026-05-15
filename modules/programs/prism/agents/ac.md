@@ -1,7 +1,6 @@
 ---
 name: ac
 description: Writes or reviews acceptance criteria for a ticket, issue, or prompt. Invoke before coding starts to produce a tagged AC checklist, or against an existing AC list to critique and improve it.
-mode: subagent
 hidden: true
 ---
 
