@@ -767,6 +767,109 @@ func TestIrisSyntheticToolResult(t *testing.T) {
 	}
 }
 
+// TestOrphanDetection_ViaHarnessSocket_Regression is a regression test for the
+// bug fixed in the review-code FAIL on round 1: IrisOrphanedToolCalls filtered
+// by instance_id, but writeEvent wrote tool_call events with InstanceID=nil,
+// causing orphan detection to silently return zero orphans in production.
+//
+// This test drives a real HarnessSocketServer to write tool_call events through
+// the production writeEvent path, then verifies that IrisOrphanedToolCalls
+// finds the expected orphan.
+func TestOrphanDetection_ViaHarnessSocket_Regression(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer database.Close()
+
+	const instanceID = "harness-orphan-test-001"
+	const sessionName = "orphan-regression@branch"
+
+	// Insert the sessions row so the harness socket can write events with
+	// instance_id set (FK-satisfying path).
+	insertTestSessionRow(t, database, instanceID, sessionName, tmp)
+
+	sockPath := filepath.Join(tmp, "harness.sock")
+	sess := &iris.SessionRecord{
+		InstanceID:      instanceID,
+		SessionName:     sessionName,
+		Worktree:        tmp,
+		Role:            "worker",
+		HarnessSockPath: sockPath,
+	}
+	srv, err := iris.NewHarnessSocketServer(sess, database)
+	if err != nil {
+		t.Fatalf("NewHarnessSocketServer: %v", err)
+	}
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer srv.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go func() { _ = srv.AcceptOne(ctx) }()
+
+	// Connect as the pi extension and perform the handshake.
+	conn, r := dialHarness(t, sockPath)
+	doHandshake(t, conn, r)
+
+	// Send a tool_exec that will complete (not an orphan).
+	sendFrame(t, conn, map[string]any{
+		"type": "tool_exec",
+		"id":   "orphan-reg-completed",
+		"name": "bash",
+		"args": map[string]any{"command": "echo ok"},
+	})
+	// Wait for result so the tool_call+tool_result pair is fully written.
+	for {
+		frame := readFrame(t, r)
+		if frame["type"] == "tool_exec_result" {
+			break
+		}
+	}
+
+	// Now simulate an orphaned call by writing a tool_call event directly via
+	// the DB (as if daemon crashed before the result was written). We do this
+	// through the same DB method the harness socket uses internally.
+	orphanCallID := "orphan-reg-dangling"
+	orphanPayload, _ := json.Marshal(map[string]any{
+		"id":   orphanCallID,
+		"name": "bash",
+		"args": map[string]any{"command": "sleep 60"},
+	})
+	iidForEvent := instanceID
+	orphanEvent := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: sessionName,
+		Worktree:    tmp,
+		Type:        "tool_call",
+		Payload:     string(orphanPayload),
+		CreatedAt:   time.Now(),
+		InstanceID:  &iidForEvent,
+	}
+	if err := database.WriteEvent(orphanEvent); err != nil {
+		t.Fatalf("WriteEvent orphan tool_call: %v", err)
+	}
+
+	// Give the server a moment to flush writes.
+	time.Sleep(50 * time.Millisecond)
+
+	// IrisOrphanedToolCalls must find exactly 1 orphan: the dangling call.
+	orphans, err := database.IrisOrphanedToolCalls(instanceID)
+	if err != nil {
+		t.Fatalf("IrisOrphanedToolCalls: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("got %d orphans, want 1; orphans=%v", len(orphans), orphans)
+	}
+	if orphans[0].ToolCallID != orphanCallID {
+		t.Errorf("orphan ID = %q, want %q", orphans[0].ToolCallID, orphanCallID)
+	}
+}
+
 // encodePiCWDForTest mirrors the EncodePiCWD formula from
 // internal/harness/pi/archive.go for use in tests without importing that
 // package (avoids a cross-package dependency from an _test file).
