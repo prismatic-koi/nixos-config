@@ -323,57 +323,6 @@ func TestHostAPI_ApplyProfile_SessionScope(t *testing.T) {
 
 // TestHostAPI_ApplyProfile_SkipsOpencodeSessions verifies that opencode
 // sessions in scope are skipped with status "skipped:opencode".
-func TestHostAPI_ApplyProfile_SkipsOpencodeSessions(t *testing.T) {
-	d := openTestDB(t)
-	// Insert an opencode session in the same repo.
-	_ = d.UpsertStatus("testrepo@main", "testrepo", t.TempDir(), "active", nil, nil)
-	// harness defaults to "opencode" — no SetHarness call needed.
-
-	clk := newTestClock()
-	cfg := Config{
-		SessionName:           "testrepo@main",
-		Repo:                  "testrepo",
-		Worktree:              t.TempDir(),
-		DB:                    d,
-		Clock:                 clk,
-		AgentRole:             "coordinator",
-		HarnessName:           "opencode",
-		StartupConnectTimeout: 5 * time.Second,
-		Harness:               pih.New("", "", ""),
-	}
-	sc := New(cfg)
-
-	origLoader := hostAPILoadProfiles
-	hostAPILoadProfiles = func() (*config.ProfilesFile, error) {
-		return fakeProfilesFile(), nil
-	}
-	defer func() { hostAPILoadProfiles = origLoader }()
-
-	// Insert the coordinator's own row with harness=opencode.
-	_ = d.UpsertStatusFull(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil, nil, nil, nil, strPtrVal("opencode"))
-
-	handler := sc.hostAPIHandler()
-	rr := postJSON(t, handler, "/apply-profile", map[string]any{
-		"profile": "alt",
-		"scope":   "session",
-		"session": sc.cfg.SessionName,
-	})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("POST /apply-profile status %d, body: %s", rr.Code, rr.Body.String())
-	}
-
-	var result map[string]any
-	decodeJSON(t, rr, &result)
-	results, _ := result["results"].([]any)
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-	r0, _ := results[0].(map[string]any)
-	if r0["status"] != "skipped:opencode" {
-		t.Errorf("result[0].status = %v, want skipped:opencode", r0["status"])
-	}
-}
-
 // TestHostAPI_ApplyProfile_SkipsNoMatchingSlot verifies that sessions whose
 // role has no slot in the new profile get "skipped:no-matching-slot".
 func TestHostAPI_ApplyProfile_SkipsNoMatchingSlot(t *testing.T) {
@@ -394,7 +343,7 @@ func TestHostAPI_ApplyProfile_SkipsNoMatchingSlot(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
-		HarnessName: "opencode",
+		HarnessName: "pi",
 		Harness:     pih.New("", "", ""),
 	}
 	sc := New(cfg)
@@ -683,7 +632,7 @@ func TestHostAPI_ApplyProfile_FanOut(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
-		HarnessName: "opencode",
+		HarnessName: "pi",
 		Harness:     pih.New("", "", ""),
 	}
 	sc := New(cfg)

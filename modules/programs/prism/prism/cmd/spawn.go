@@ -8,15 +8,15 @@ package cmd
 //	--branch <name>              use a specific branch name instead of a timestamp
 //	--pr <number>                check out the branch for a given PR number
 //	--repo <name>                repo shorthand name or absolute path (default: inferred from current pane)
-//	--prompt <text>              pass an initial prompt to opencode on launch
+//	--prompt <text>              pass an initial prompt to the agent on launch
 //	--prompt-file <path>         read the initial prompt from a file
-//	--agent <name>               opencode agent to use (default: "coordinator" on main, "worker" otherwise)
+//	--agent <name>               agent to use (default: "coordinator" on main, "worker" otherwise)
 //	--profile <name>             model profile to use from ~/.config/prism/profiles.json
 //	--model <name>               model identifier override (overrides profile's primary model)
 //	--variant <name>             model variant override (overrides all agents' variant)
 //	--model-override role=model  per-role model override (repeatable); overrides --model for that role
 //	--isolation <mode>           isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
-//	--harness <name>             agent harness to use (default: "opencode"; only "opencode" is supported)
+//	--harness <name>             agent harness to use (default: "pi")
 
 import (
 	"crypto/rand"
@@ -37,7 +37,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/skills"
@@ -254,7 +253,7 @@ func init() {
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
-	spawnCmd.Flags().String("harness", "opencode", "Agent harness to use; valid values are determined by registered harnesses")
+	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
 	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
@@ -657,7 +656,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// IMPORTANT: the path key used here must match the one used by Manager
 	// internally. Manager.name = container.NameForSession(tmuxSessionName)
 	// (e.g. "prism-nixos-config-feat"), and Manager.opencodeConfigFilePath()
-	// calls OpencodeConfigFilePath(m.name). The Isolator.WriteHarnessConfigBlob
+	// calls HarnessConfigFilePath(m.name). The Isolator.WriteHarnessConfigBlob
 	// method translates the prism session name to the container name internally
 	// so this call site stays mode-agnostic (D3, issue #1133).
 	if isoCaps.NeedsConfigBlob && configContent != "" {
@@ -747,10 +746,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	defer d.Close()
 
 	// C4.SK: compute skills manifest hash before spawn so it is available for
-	// spawn_inputs. Read skills from XDG_CONFIG_HOME/opencode/skills/ (with the
+	// spawn_inputs. Read skills from XDG_CONFIG_HOME/prism/skills/ (with the
 	// standard ~/.config fallback). Errors are non-fatal: a missing or
 	// unreadable skills directory produces an empty hash (caller writes NULL).
-	skillsDir := opencodeSkillsDir()
+	skillsDir := prismSkillsDir()
 	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
 	if skillsHashErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
@@ -758,8 +757,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	// C4.AP: compute agent role file hash. The role file is resolved from
-	// XDG_CONFIG_HOME/opencode/agents/<role>.md. Errors are non-fatal.
-	agentRoleFilePath := opencodeAgentRolePath(agentRole)
+	// XDG_CONFIG_HOME/prism/agents/<role>.md. Errors are non-fatal.
+	agentRoleFilePath := prismAgentRolePath(agentRole)
 	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
 	if agentHashErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
@@ -811,20 +810,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	return session.Attach(sessionName)
 }
 
-// opencodeSkillsDir returns the path to the opencode skills directory,
+// prismSkillsDir returns the path to the prism skills directory,
 // respecting XDG_CONFIG_HOME with a ~/.config fallback.
-func opencodeSkillsDir() string {
+func prismSkillsDir() string {
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "opencode", "skills")
+	return filepath.Join(base, "prism", "skills")
 }
 
-// opencodeAgentRolePath returns the path to the opencode agent role file for
+// prismAgentRolePath returns the path to the prism agent role file for
 // the given role name, respecting XDG_CONFIG_HOME with a ~/.config fallback.
-func opencodeAgentRolePath(role string) string {
+func prismAgentRolePath(role string) string {
 	if role == "" {
 		return ""
 	}
@@ -833,7 +832,7 @@ func opencodeAgentRolePath(role string) string {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "opencode", "agents", role+".md")
+	return filepath.Join(base, "prism", "agents", role+".md")
 }
 
 // spawnInputsArgs bundles the flag values needed to build a db.SpawnInputs row.
@@ -1206,13 +1205,13 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	var wg sync.WaitGroup
 	var mu sync.Mutex // guards results slice writes from goroutines
 
-	skillsDir := opencodeSkillsDir()
+	skillsDir := prismSkillsDir()
 	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
 	if skillsHashErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
 		skillsManifestHash = ""
 	}
-	agentRoleFilePath := opencodeAgentRolePath(plannedRole)
+	agentRoleFilePath := prismAgentRolePath(plannedRole)
 	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
 	if agentHashErr != nil {
 		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)

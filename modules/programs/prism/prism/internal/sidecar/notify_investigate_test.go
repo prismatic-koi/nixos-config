@@ -10,8 +10,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/harness/opencode"
-)
+	)
 
 // seedSessionWithHarnessPort seeds an agent_status row for sessionName with a
 // harness_port and harness_session_id. Used to set up invoker sessions that
@@ -23,8 +22,10 @@ func seedSessionWithHarnessPort(t *testing.T, database *db.DB, sessionName, repo
 	if err := database.UpsertStatusWithAgent(sessionName, repo, "/tmp/test-worktree", "active", nil, &sid, &agentName, &modelID); err != nil {
 		t.Fatalf("seedSessionWithHarnessPort: UpsertStatusWithAgent(%q): %v", sessionName, err)
 	}
+	// Set harness to empty so promptdelivery uses the HTTP fallback path
+	// (these tests use httptest.Server, not a socket-pipe).
 	if err := database.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness_session_id = ? WHERE session_name = ? RETURNING session_name",
+		"UPDATE agent_status SET harness_port = ?, harness_session_id = ?, harness = '' WHERE session_name = ? RETURNING session_name",
 		port, sid, sessionName,
 	).Scan(new(string)); err != nil {
 		t.Fatalf("seedSessionWithHarnessPort: set port/sid for %q: %v", sessionName, err)
@@ -149,7 +150,7 @@ func TestNotifyInvestigatorCompletion_Delivery(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -233,7 +234,7 @@ func TestNotifyInvestigatorCompletion_EmptyText(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -306,7 +307,7 @@ func TestNotifyInvestigatorCompletion_ErrorState(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -365,7 +366,7 @@ func TestNotifyInvestigatorCompletion_InvokerEnded(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -401,7 +402,7 @@ func TestNotifyInvestigatorCompletion_NotInvestigateSession(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -449,7 +450,7 @@ func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 
@@ -512,7 +513,7 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	cfg2 := Config{
 		SessionName: investigator2,
@@ -521,7 +522,7 @@ func TestNotifyInvestigatorCompletion_ConcurrentDelivery(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s1 := New(cfg1)
 	s2 := New(cfg2)
@@ -617,7 +618,7 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
-		Harness:     opencode.New("http://localhost:0", srv.Client(), "", ""),
+		Harness:     newSSEHarness(),
 	}
 	s := New(cfg)
 

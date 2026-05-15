@@ -187,7 +187,7 @@ func TestHostAPI_Stats_Summary_HappyPath(t *testing.T) {
 		SessionName: "nixos-config@main",
 		Repo:        "nixos-config",
 		Worktree:    "/tmp/w",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("InsertSession: %v", err)
@@ -245,7 +245,7 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 		SessionName: "nixos-config@main",
 		Repo:        "nixos-config",
 		Worktree:    "/tmp/w",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}
 	if err := d.InsertSession(sess); err != nil {
 		t.Fatalf("InsertSession: %v", err)

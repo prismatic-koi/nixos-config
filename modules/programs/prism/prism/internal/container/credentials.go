@@ -33,7 +33,7 @@ func (m *Manager) writeClaudeCredentials() {
 	out, err := exec.CommandContext(ctx, "security", "find-generic-password",
 		"-l", "Claude Code-credentials", "-w").Output()
 	if err != nil {
-		log.Printf("container: could not extract Claude credentials from macOS Keychain: %v — opencode-claude-auth may fail to authenticate", err)
+		log.Printf("container: could not extract Claude credentials from macOS Keychain: %v — pi-anthropic-oauth may fail to authenticate", err)
 		return
 	}
 	creds := strings.TrimSpace(string(out))

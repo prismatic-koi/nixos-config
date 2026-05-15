@@ -36,7 +36,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"

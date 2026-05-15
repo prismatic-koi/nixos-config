@@ -73,8 +73,6 @@ type Opts struct {
 	Headless bool
 	// Fresh: if true, opencode skips any stored session ID and starts fresh.
 	Fresh bool
-	// OpencodeSession is the opencode session ID to resume; "" means fresh start.
-	OpencodeSession string
 	// Layout controls which window layout to set up on creation.
 	Layout Layout
 	// SessionName is the canonical prism session name. When set, it is passed
@@ -293,34 +291,27 @@ func BuildOpencodeCmd(opts Opts) string {
 }
 
 // harnessBinary returns the binary name to invoke for the given harness.
-// For "pi" the binary is pi; for "" or "opencode" it is opencode.
+// For "pi" (or empty) the binary is pi.
 func harnessBinary(harnessName string) string {
 	switch harnessName {
-	case "pi":
+	case "pi", "":
 		return "pi"
 	default:
-		return "opencode"
+		return harnessName
 	}
 }
 
 // buildDirectOpencodeCmd returns the direct-launch command for the session
-// harness (pre-container mode). For harness="" or "opencode" this is an
-// opencode invocation; for harness="pi" it is pi.
+// harness (pre-container mode). For harness="" or "pi" this is a pi
+// invocation.
 func buildDirectOpencodeCmd(opts Opts) string {
 	binary := harnessBinary(opts.HarnessName)
-	isOpencode := binary == "opencode"
 	agent := opts.Agent
 	var cmd string
-	if agent != "" && isOpencode {
+	if agent != "" {
 		cmd = binary + " --agent " + agent
 	} else {
 		cmd = binary
-	}
-	if isOpencode && opts.Port != 0 {
-		cmd += fmt.Sprintf(" --port %d --hostname 127.0.0.1", opts.Port)
-	}
-	if isOpencode && opts.OpencodeSession != "" && !opts.Fresh {
-		cmd += " -s " + opts.OpencodeSession
 	}
 	if opts.Prompt != "" {
 		// #1064: when PromptFilePath is supplied, route the prompt through
@@ -339,9 +330,9 @@ func buildDirectOpencodeCmd(opts Opts) string {
 			cmd += " --prompt " + shellQuote(opts.Prompt)
 		}
 	}
-	// Prepend config content env var before the opencode command when set.
-	// The env var name comes from the harness (e.g. "OPENCODE_CONFIG_CONTENT"
-	// for opencode). This overrides model and variant at runtime.
+	// Prepend config content env var before the harness command when set.
+	// The env var name comes from the harness adapter (ConfigEnvVar()).
+	// This overrides model and variant at runtime.
 	if opts.ConfigContent != "" && opts.ConfigEnvVarName != "" {
 		cmd = opts.ConfigEnvVarName + "=" + shellQuote(opts.ConfigContent) + " " + cmd
 	}

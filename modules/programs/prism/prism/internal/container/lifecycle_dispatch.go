@@ -97,7 +97,7 @@ func lookupAgentRunHandler(mode config.IsolationMode) AgentRunHandler {
 // Bwrap sessions do not own a container lifecycle — there is nothing to stop
 // or rm — so this method is a temp-file unlink only. Mirrors the per-session
 // list in cmd/cleanup.go:1055-1059 (the legacy 5-file cleanup; the
-// opencode-config file is intentionally excluded — see podmanIsolator.EnsureRemoved
+// harness-config file is intentionally excluded — see podmanIsolator.EnsureRemoved
 // for the rationale).
 func (b *bwrapIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(b.name)
@@ -139,8 +139,8 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 
 	// Write the opencode config file, if provided.
 	if m.cfg.ConfigContent != "" {
-		if err := os.WriteFile(m.opencodeConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
-			return nil, fmt.Errorf("container: bwrap: write opencode config: %w", err)
+		if err := os.WriteFile(m.harnessConfigFilePath(), []byte(m.cfg.ConfigContent), 0o644); err != nil {
+			return nil, fmt.Errorf("container: bwrap: write harness config: %w", err)
 		}
 	}
 
@@ -265,7 +265,7 @@ func (h *hostIsolator) Reset(ctx context.Context) error { return nil }
 // directly in the tmux pane via the BuildOpencodeCmd (DirectCmd) path.
 // Returns an error so callers route correctly.
 func (h *hostIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
-	return nil, fmt.Errorf("container: host does not use Prepare; opencode launches directly in the tmux pane")
+	return nil, fmt.Errorf("container: host does not use Prepare; pi launches directly in the tmux pane")
 }
 
 // Create is a no-op for host mode: opencode is launched directly by the
@@ -289,12 +289,12 @@ func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // 5-file list: gitdir, wt-gitdir, ssh-config, gitconfig, allowed-signers).
 // The removals are best-effort — missing files are silently ignored.
 //
-// The opencode-config, Claude credentials, and sandbox-exec staging files
+// The harness-config, Claude credentials, and sandbox-exec staging files
 // are deliberately NOT cleaned here: those are owned by the Manager-level
 // lifecycle (Manager.EnsureRemoved retains the full cleanup list). Tests
 // that exercise the cleanup.go shortcut path
 // (TestRestoreSession_PodmanMode_TempFileWritten) rely on the
-// opencode-config file surviving this cleanup.
+// harness-config file surviving this cleanup.
 func cleanupLegacyTempFiles(name string) {
 	_ = os.Remove(sessionTempPath("gitdir", "", name))
 	_ = os.Remove(sessionTempPath("wt-gitdir", "", name))

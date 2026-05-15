@@ -565,14 +565,14 @@ func TestFixtureThinkingBlocks(t *testing.T) {
 	for _, e := range entries {
 		if entryType(t, e) == "custom" {
 			var ct string
-			if err := json.Unmarshal(e["customType"], &ct); err == nil && ct == "opencode.snapshot.start" {
+			if err := json.Unmarshal(e["customType"], &ct); err == nil && ct == "prism.snapshot.start" {
 				hasSnapshot = true
 				break
 			}
 		}
 	}
 	if !hasSnapshot {
-		t.Error("no opencode.snapshot.start custom entry found")
+		t.Error("no prism.snapshot.start custom entry found")
 	}
 
 	// Verify system custom entry.
@@ -580,14 +580,14 @@ func TestFixtureThinkingBlocks(t *testing.T) {
 	for _, e := range entries {
 		if entryType(t, e) == "custom" {
 			var ct string
-			if err := json.Unmarshal(e["customType"], &ct); err == nil && ct == "opencode.system" {
+			if err := json.Unmarshal(e["customType"], &ct); err == nil && ct == "prism.system" {
 				hasSystem = true
 				break
 			}
 		}
 	}
 	if !hasSystem {
-		t.Error("no opencode.system custom entry found")
+		t.Error("no prism.system custom entry found")
 	}
 
 	// Verify stopReason is "stop" (mapped from "end_turn").

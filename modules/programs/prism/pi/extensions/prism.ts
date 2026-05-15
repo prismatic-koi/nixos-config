@@ -108,7 +108,7 @@ export const EXCLUDED_TOOLS = new Set(["read", "grep", "glob", "todowrite"])
  * Compute a normalised similarity key for a tool call.
  * Returns null for excluded tools (no detection).
  *
- * Ported from opencode's prism-hooks.ts — see that file for the full
+ * Ported from the prism-hooks.ts plugin — see that file for the full
  * commentary on similarity rules per tool.
  */
 export function similarityKey(tool: string, args: unknown): string | null {
@@ -560,8 +560,8 @@ export interface BlockedBashPattern {
  * Bash commands that the pi extension blocks before pi executes them.
  *
  * Add to this list only when a specific incident motivates a new entry.
- * The opencode permission block has ~50 entries because it is the primary
- * enforcement surface for opencode agents; the pi extension grows
+ * The permission block has ~50 entries because it is the primary
+ * enforcement surface for agents; the pi extension grows
  * incrementally as agent behaviour demands. Keep entries tightly scoped
  * — they are mandatory blocks with no per-session opt-out.
  *

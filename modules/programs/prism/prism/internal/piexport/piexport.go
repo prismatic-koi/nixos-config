@@ -4,7 +4,7 @@
 // # Input layout (archive raw/ subtree)
 //
 //	raw/
-//	  session.json                          — opencode session metadata
+//	  session.json                          — session metadata (opencode format)
 //	  messages/msg_*.json                   — per-message records
 //	  parts/msg_<id>/prt_*.json             — per-part records
 //	  tool-output/tool_*                    — truncated tool output sidecars
@@ -683,7 +683,7 @@ func buildSystemEntry(system []string, prevID *string, ts string) (piCustomEntry
 			ParentID:  prevID,
 			Timestamp: ts,
 		},
-		CustomType: "opencode.system",
+		CustomType: "prism.system",
 		Data:       data,
 	}, nil
 }
@@ -704,7 +704,7 @@ func buildSnapshotEntry(sha string, prevID *string, ts string) (piCustomEntry, e
 			ParentID:  prevID,
 			Timestamp: ts,
 		},
-		CustomType: "opencode.snapshot.start",
+		CustomType: "prism.snapshot.start",
 		Data:       data,
 	}, nil
 }

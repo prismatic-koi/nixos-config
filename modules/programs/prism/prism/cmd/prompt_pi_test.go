@@ -162,7 +162,7 @@ func TestRunPrompt_PISession_SocketMissingReturnsClearError(t *testing.T) {
 		t.Fatal("expected error when sidecar socket missing, got nil")
 	}
 	msg := execErr.Error()
-	if !strings.Contains(msg, "socket-pipe delivery failed") {
-		t.Errorf("error should mention socket-pipe delivery failure: got %q", msg)
+	if !strings.Contains(msg, "socket") && !strings.Contains(msg, "host-API") {
+		t.Errorf("error should mention socket delivery failure: got %q", msg)
 	}
 }

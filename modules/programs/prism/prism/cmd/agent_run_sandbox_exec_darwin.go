@@ -30,7 +30,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -103,7 +102,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 
 	// Resolve the harness name from the DB status. Fall back to "opencode"
 	// for pre-registry rows that have a NULL harness column.
-	sandboxHarnessName := "opencode"
+	sandboxHarnessName := "pi"
 	if status.Harness != nil && *status.Harness != "" {
 		sandboxHarnessName = *status.Harness
 	}

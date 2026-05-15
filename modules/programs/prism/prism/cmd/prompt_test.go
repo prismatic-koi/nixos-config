@@ -43,15 +43,20 @@ func openPromptTestDB(t *testing.T) *db.DB {
 }
 
 // seedSession creates an agent_status row for testing.
-func seedSession(t *testing.T, d *db.DB, sessionName, state string, port *int, opencodeSID *string, rootAgent *string, rootModel *string) {
+func seedSession(t *testing.T, d *db.DB, sessionName, state string, port *int, harnessSessionID *string, rootAgent *string, rootModel *string) {
 	t.Helper()
-	if err := d.UpsertStatusWithRootAgent(sessionName, "repo", "/code/repo/main", state, nil, opencodeSID, rootAgent, rootModel); err != nil {
+	if err := d.UpsertStatusWithRootAgent(sessionName, "repo", "/code/repo/main", state, nil, harnessSessionID, rootAgent, rootModel); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
+	}
+	// Clear harness for test sessions so HTTP fallback path is used.
+	if err := d.QueryRow("UPDATE agent_status SET harness = '' WHERE session_name = ? RETURNING 1", sessionName).Scan(new(int)); err != nil {
+		t.Fatalf("clear harness: %v", err)
 	}
 	if port != nil {
 		var dummy int
 		err := d.QueryRow(
-			"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING 1",
+			// Clear harness so HTTP fallback path is used in tests.
+			"UPDATE agent_status SET harness_port = ?, harness = '' WHERE session_name = ? RETURNING 1",
 			*port, sessionName,
 		).Scan(&dummy)
 		if err != nil {
@@ -171,88 +176,10 @@ func TestBuildPromptBody_ModelWithoutSlash(t *testing.T) {
 	}
 }
 
-// TestDeliverViaHTTP_Success verifies that deliverViaHTTP sends the correct
-// request to the opencode HTTP API.
-func TestDeliverViaHTTP_Success(t *testing.T) {
-	var receivedBody map[string]any
-	var receivedPath string
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath = r.URL.Path
-		bodyBytes, _ := io.ReadAll(r.Body)
-		json.Unmarshal(bodyBytes, &receivedBody)
-		w.WriteHeader(200)
-	}))
-	defer srv.Close()
-
-	port := extractTestServerPort(t, srv.URL)
-
-	oldClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = oldClient }()
-
-	status := &db.Status{
-		RootAgentName: strPtr("worker"),
-		RootModelID:   strPtr("anthropic/claude-sonnet-4.6"),
-	}
-
-	err := deliverViaHTTP(port, "test-sid-123", "hello prompt", status)
-	if err != nil {
-		t.Fatalf("deliverViaHTTP: %v", err)
-	}
-
-	if receivedPath != "/session/test-sid-123/prompt_async" {
-		t.Errorf("path: got %q, want \"/session/test-sid-123/prompt_async\"", receivedPath)
-	}
-
-	if receivedBody == nil {
-		t.Fatal("received body is nil")
-	}
-
-	// Verify the body contains the expected fields.
-	bodyJSON, _ := json.Marshal(receivedBody)
-	bodyStr := string(bodyJSON)
-	if !strings.Contains(bodyStr, "hello prompt") {
-		t.Errorf("body should contain prompt text: got %s", bodyStr)
-	}
-	if !strings.Contains(bodyStr, "worker") {
-		t.Errorf("body should contain agent name: got %s", bodyStr)
-	}
-}
-
-// TestDeliverViaHTTP_ServerError verifies that deliverViaHTTP returns an error
-// when the server responds with a non-2xx status.
-func TestDeliverViaHTTP_ServerError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(500)
-	}))
-	defer srv.Close()
-
-	port := extractTestServerPort(t, srv.URL)
-
-	oldClient := httpClient
-	httpClient = srv.Client()
-	defer func() { httpClient = oldClient }()
-
-	status := &db.Status{}
-	err := deliverViaHTTP(port, "sid", "test", status)
-	if err == nil {
-		t.Fatal("expected error for 500 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error should mention status 500: got %q", err.Error())
-	}
-}
 
 // TestDeliverViaHTTP_ConnectionRefused verifies that deliverViaHTTP returns
-// an error when the server is not running.
-func TestDeliverViaHTTP_ConnectionRefused(t *testing.T) {
-	status := &db.Status{}
-	err := deliverViaHTTP(19999, "sid", "test", status)
-	if err == nil {
-		t.Fatal("expected error for connection refused, got nil")
-	}
-}
+
 
 // TestRunPrompt_HTTPDelivery verifies the full runPrompt flow via HTTP delivery.
 func TestRunPrompt_HTTPDelivery(t *testing.T) {
@@ -281,8 +208,8 @@ func TestRunPrompt_HTTPDelivery(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(output, "HTTP") {
-		t.Errorf("output should mention HTTP: got %q", output)
+	if !strings.Contains(output, "prompt delivered") {
+		t.Errorf("output should mention delivery: got %q", output)
 	}
 
 	// Verify the audit row exists (delivered_at set).
@@ -333,8 +260,8 @@ func TestRunPrompt_HTTPError_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when HTTP delivery fails, got nil")
 	}
-	if !strings.Contains(err.Error(), "HTTP delivery failed") {
-		t.Errorf("error should mention HTTP delivery failure: got %q", err.Error())
+	if !strings.Contains(err.Error(), "500") && !strings.Contains(err.Error(), "http status") {
+		t.Errorf("error should mention HTTP failure: got %q", err.Error())
 	}
 
 	// Verify no undelivered bus_messages row was written.

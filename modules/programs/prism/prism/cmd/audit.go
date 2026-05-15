@@ -29,7 +29,7 @@ var auditCmd = &cobra.Command{
 
 High-impact commands (gh pr merge, git push, gh pr create, gh issue close,
 prism spawn, prism cleanup, prism prompt) are promoted from the ephemeral
-opencode DB to the persistent prism DB as 'audit' events, so they survive
+harness DB to the persistent prism DB as 'audit' events, so they survive
 worktree cleanup and remain attributable to a specific prism session.
 
 With no arguments, shows the last 20 audit events across all sessions.

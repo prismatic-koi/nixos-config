@@ -80,7 +80,7 @@ func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, ti
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pi', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
@@ -141,17 +141,17 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 		rootAgentNamePtr = &rootAgentName
 	}
 	// Resolve the harness name to write for a fresh INSERT. Default to
-	// "opencode" when empty so new rows always have a non-NULL harness column.
+	// "pi" when empty so new rows always have a non-NULL harness column.
 	// The UPDATE path is handled separately below.
 	insertHarness := harnessName
 	if insertHarness == "" {
-		insertHarness = "opencode"
+		insertHarness = "pi"
 	}
 	// For the ON CONFLICT UPDATE path, pass harnessName as a pointer so that
 	// the SQL can distinguish "empty (no override)" from "explicit value".
 	// When harnessNamePtr is NULL, CASE preserves the existing DB value; when
 	// non-NULL, it overwrites — allowing an explicit harness (e.g. "pi") to
-	// replace a stale value (e.g. "opencode") left in an ended DB row.
+	// replace a stale value (e.g. "pi") left in an ended DB row.
 	var harnessNamePtr *string
 	if harnessName != "" {
 		harnessNamePtr = &harnessName
@@ -191,7 +191,7 @@ func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string
 	now := time.Now().UnixMilli()
 	const q = `
 INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'opencode', ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pi', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
@@ -964,7 +964,7 @@ func (d *DB) SetHarnessRaw(sessionName, harness string) error {
 func (d *DB) UpsertStatusFull(sessionName, repo, worktree, state string, title, harnessSessionID, agentName, modelID, rootAgentName, harness *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusFull")
 	now := time.Now().UnixMilli()
-	harnessVal := "opencode"
+	harnessVal := "pi"
 	if harness != nil {
 		harnessVal = *harness
 	}

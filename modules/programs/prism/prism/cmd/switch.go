@@ -17,7 +17,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -66,7 +65,7 @@ func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Op
 //
 // content == "" is treated as a no-op so callers can call this unconditionally
 // after the NeedsConfigBlob gate; the gate / empty-content combination is
-// what each pre-refactor branch checked before calling WriteOpencodeConfig.
+// what each pre-refactor branch checked before calling WriteHarnessConfig.
 func writeHarnessConfigBlobFor(mode config.IsolationMode, sessionName, content, cmdName string) error {
 	if content == "" {
 		return nil
@@ -346,7 +345,7 @@ var switchCmd = &cobra.Command{
 		// When pf is nil (profiles.json missing or unloadable) or the profile
 		// has no worker slot, fall back to "opencode" so existing behaviour is
 		// preserved. A warning was already logged above in the pf==nil case.
-		switchHarnessName := "opencode"
+		switchHarnessName := "pi"
 		if pf != nil {
 			resolvedProfile, _, profErr := config.ResolveActiveProfile(pf, "")
 			if profErr != nil {
@@ -514,6 +513,6 @@ var switchCmd = &cobra.Command{
 
 func init() {
 	switchCmd.Flags().String("path", "", "Open a specific path directly (skip picker)")
-	switchCmd.Flags().Bool("fresh", false, "Start a fresh opencode session, ignoring any stored session ID")
+	switchCmd.Flags().Bool("fresh", false, "Start a fresh harness session, ignoring any stored session ID")
 	rootCmd.AddCommand(switchCmd)
 }

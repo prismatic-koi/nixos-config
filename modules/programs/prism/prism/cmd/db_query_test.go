@@ -155,7 +155,7 @@ func TestRunDBQueryLocal_RejectsWrite(t *testing.T) {
 	cmd := dbQueryCmd
 	cmd.SetContext(context.Background())
 	err := runDBQuery(cmd, []string{
-		"INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','opencode',1)",
+		"INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','pi',1)",
 	})
 	if err == nil {
 		t.Fatal("expected error on write attempt, got nil")

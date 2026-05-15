@@ -179,5 +179,5 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 
 	fmt.Println()
 	fmt.Println(styleDim.Render("Note: TTFT p50 = time to first token (request→first chunk); DUR p50 = full turn duration (request→complete response)."))
-	fmt.Println(styleDim.Render("      SESSIONS = distinct opencode sessions; AGENTS = dominant agent type (×N = N distinct agent types)."))
+	fmt.Println(styleDim.Render("      SESSIONS = distinct harness sessions; AGENTS = dominant agent type (×N = N distinct agent types)."))
 }

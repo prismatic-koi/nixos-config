@@ -50,13 +50,13 @@ and can be piped to grep for filtering:
   prism logs nixos-config@main | grep '[timing]'
 
 Use --agent-run to read the bwrap harness log instead (captures bwrap and
-opencode stdout/stderr for the lifetime of the session):
+agent stdout/stderr for the lifetime of the session):
 
   prism logs nixos-config@feat --agent-run
   prism logs nixos-config@feat --agent-run --follow
 
 Use --startup to read the spawn-time breadcrumb log (covers the window
-between "session created in DB" and "opencode reachable", written by
+between "session created in DB" and "harness reachable", written by
 session.SpawnSession before tmux send-keys):
 
   prism logs nixos-config@feat --startup
@@ -236,7 +236,7 @@ func runLogs(cmd *cobra.Command, args []string) error {
 	// or when no startup log exists for this session.
 	if !startup && !agentRun && sidecarLogIsStuckOnSSERetries(logPath) && session.AgentStartupLogExists(sessionName) {
 		fmt.Fprintf(os.Stderr,
-			"\nhint: this sidecar log contains only SSE-retry noise — opencode never bound its port.\n"+
+			"\nhint: this sidecar log contains only SSE-retry noise — harness never bound its port.\n"+
 				"      Spawn-time breadcrumbs (port, isolation mode, sidecar PID) are in the agent-startup log:\n"+
 				"        prism logs %s --startup\n"+
 				"      bwrap stderr (if it ran) is in the agent-run log:\n"+

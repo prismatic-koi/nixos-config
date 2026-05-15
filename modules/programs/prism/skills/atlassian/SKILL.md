@@ -141,7 +141,7 @@ updateConfluencePage(
 ## Output slimming
 
 The pi atlassian-mcp extension applies the same field-drop sets as the
-opencode MCP proxy, removing verbose metadata (`expand`, `self`, `iconUrl`,
+prism MCP proxy, removing verbose metadata (`expand`, `self`, `iconUrl`,
 `avatarUrls`, `renderedFields`, `operations`, etc.) so tool outputs are
 compact enough to fit in context.
 

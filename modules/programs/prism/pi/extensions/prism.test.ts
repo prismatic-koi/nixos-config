@@ -994,16 +994,12 @@ describe("#1512 — review-cycle injection has been removed from prism.ts", () =
     )
   })
 
-  it("prism-hooks.ts does NOT contain the LOOP-LIMIT injection text", () => {
-    // The opencode plugin previously had a duplicate of the same warning;
-    // #1512 deleted it. This pins the single-source-of-truth invariant.
+  it("prism.ts does NOT contain the LOOP-LIMIT injection text", () => {
+    // The prism extension must not duplicate the REVIEW LOOP LIMIT warning;
+    // #1512 established this invariant. The text lives in Go, not in the extension.
     const hooksPath = path.resolve(
       __dirname2,
-      "..",
-      "..",
-      "opencode",
-      "plugins",
-      "prism-hooks.ts",
+      "prism.ts",
     )
     const src = readFileSync(hooksPath, "utf8")
     assert.ok(

@@ -27,7 +27,7 @@ func writeGroupBySession(t *testing.T, d *db.DB, harness, profile, variant, mode
 		SessionName: sessName,
 		Repo:        "testrepo",
 		Worktree:    "/code/testrepo/main",
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   startedAt,
 		EndedAt:     &endedAt,
 		EndState:    &endState,
@@ -83,9 +83,9 @@ func writeGroupBySession(t *testing.T, d *db.DB, harness, profile, variant, mode
 func TestRunStatsGroupBy_Harness(t *testing.T) {
 	d := openStatsTestDB(t)
 
-	// Create two sessions under "opencode" harness and one under "pi".
-	writeGroupBySession(t, d, "opencode", "", "", "")
-	writeGroupBySession(t, d, "opencode", "", "", "")
+	// Create two sessions under "pi" harness and one under "pi".
+	writeGroupBySession(t, d, "pi", "", "", "")
+	writeGroupBySession(t, d, "pi", "", "", "")
 	writeGroupBySession(t, d, "pi", "", "", "")
 
 	out := captureStdout(t, func() {
@@ -94,8 +94,8 @@ func TestRunStatsGroupBy_Harness(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "opencode") {
-		t.Errorf("expected 'opencode' in output; got:\n%s", out)
+	if !strings.Contains(out, "pi") {
+		t.Errorf("expected 'pi' in output; got:\n%s", out)
 	}
 	if !strings.Contains(out, "pi") {
 		t.Errorf("expected 'pi' in output; got:\n%s", out)
@@ -207,7 +207,7 @@ func TestRunStatsGroupBy_WithDaysFilter(t *testing.T) {
 		SessionName: recentName,
 		Repo:        "testrepo",
 		Worktree:    "/code",
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   recentStart,
 		EndedAt:     &recentEnd2,
 		EndState:    &endState,
@@ -251,7 +251,7 @@ func TestRunStatsGroupBy_WithDaysFilter(t *testing.T) {
 		SessionName: oldName,
 		Repo:        "testrepo",
 		Worktree:    "/code",
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   oldStart,
 		EndedAt:     &oldEnd,
 		EndState:    &endState,

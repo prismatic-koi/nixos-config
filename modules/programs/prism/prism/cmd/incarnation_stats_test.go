@@ -114,7 +114,7 @@ func TestRunStatsIncarnations_OneRow(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
@@ -151,7 +151,7 @@ func TestRunStatsIncarnations_ActiveSession(t *testing.T) {
 
 	iid := uuid.New().String()
 	// No end time — live session.
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-30*time.Minute), time.Time{}, "", "")
 
 	out := captureStdout(t, func() {
@@ -172,7 +172,7 @@ func TestRunStatsIncarnations_TokensAndCost(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	// 100K input at $3/M = $0.30, 10K output at $15/M = $0.15 → ~$0.45
@@ -198,9 +198,9 @@ func TestRunStatsIncarnations_RepoFilter(t *testing.T) {
 
 	iid1 := uuid.New().String()
 	iid2 := uuid.New().String()
-	insertTestSession(t, d, iid1, "repo-a@main", "repo-a", "/code/repo-a/main", "opencode",
+	insertTestSession(t, d, iid1, "repo-a@main", "repo-a", "/code/repo-a/main", "pi",
 		base.Add(-2*time.Hour), base, "finished", "")
-	insertTestSession(t, d, iid2, "repo-b@main", "repo-b", "/code/repo-b/main", "opencode",
+	insertTestSession(t, d, iid2, "repo-b@main", "repo-b", "/code/repo-b/main", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
@@ -225,10 +225,10 @@ func TestRunStatsIncarnations_SinceFilter(t *testing.T) {
 	iidOld := uuid.New().String()
 	iidNew := uuid.New().String()
 	// Old session: started 30 days ago.
-	insertTestSession(t, d, iidOld, "repo@old", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iidOld, "repo@old", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-30*24*time.Hour), base.Add(-29*24*time.Hour), "finished", "")
 	// New session: started 1 hour ago.
-	insertTestSession(t, d, iidNew, "repo@new", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iidNew, "repo@new", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	// Filter to the last 7 days.
@@ -256,7 +256,7 @@ func TestRunStatsDetail_ByFullUUID(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code/testrepo/main", "pi",
 		base.Add(-1*time.Hour), base, "finished", "/archive/path")
 
 	out := captureStdout(t, func() {
@@ -284,9 +284,9 @@ func TestRunStatsDetail_BySessionName(t *testing.T) {
 	// Two incarnations of the same session name; most recent should be returned.
 	iid1 := uuid.New().String()
 	iid2 := uuid.New().String()
-	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-3*time.Hour), base.Add(-2*time.Hour), "finished", "")
-	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
@@ -307,7 +307,7 @@ func TestRunStatsDetail_ByUUIDPrefix(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := "aaaabbbb-cccc-dddd-eeee-ffffffffffff"
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
@@ -330,9 +330,9 @@ func TestRunStatsDetail_AmbiguousPrefix(t *testing.T) {
 	// Two instance IDs sharing the same first 8 chars.
 	iid1 := "aaaabbbb-0000-0000-0000-000000000001"
 	iid2 := "aaaabbbb-0000-0000-0000-000000000002"
-	insertTestSession(t, d, iid1, "s1@main", "r1", "/code/r1", "opencode",
+	insertTestSession(t, d, iid1, "s1@main", "r1", "/code/r1", "pi",
 		base.Add(-2*time.Hour), base, "finished", "")
-	insertTestSession(t, d, iid2, "s2@main", "r2", "/code/r2", "opencode",
+	insertTestSession(t, d, iid2, "s2@main", "r2", "/code/r2", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	err := runStatsDetail("aaaabbbb", false, false)
@@ -362,7 +362,7 @@ func TestRunStatsDetail_NotYetArchived(t *testing.T) {
 
 	iid := uuid.New().String()
 	// No archive path.
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {
@@ -459,7 +459,7 @@ func TestRunStatsIncarnations_NullInstanceIDExcluded(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	// Write an event with NULL instance_id (legacy — should NOT be counted).

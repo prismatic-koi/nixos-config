@@ -52,7 +52,7 @@ func TestRunHarnessEvents_NonPISession(t *testing.T) {
 	setUpHarnessFramesDB(t)
 
 	var buf bytes.Buffer
-	err := runHarnessEvents("opencode-session@main", "", "", false, deliverSink{kind: "stdout"}, &buf)
+	err := runHarnessEvents("pi-session@main", "", "", false, deliverSink{kind: "stdout"}, &buf)
 	if err == nil {
 		t.Fatal("expected error for non-PI session, got nil")
 	}

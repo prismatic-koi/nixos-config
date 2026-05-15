@@ -197,7 +197,7 @@ func TestInjectContainerConfig_OverlaysRuntimeActiveProfile(t *testing.T) {
 		},
 		// Pre-rendered blob carrying the anthropic-default model — exactly
 		// what Nix bakes from pf.Default at build time.
-		ContainerWorkerConfig: `{"$schema":"https://opencode.ai/opencode.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
+		ContainerWorkerConfig: `{"$schema":"https://prism.ai/harness-config.json","default_agent":"worker","model":"anthropic/claude-default-worker","agent":{"worker":{"model":"anthropic/claude-default-worker","variant":"none"}}}`,
 	}
 
 	root := makeBareRoot(t, "feature-branch")

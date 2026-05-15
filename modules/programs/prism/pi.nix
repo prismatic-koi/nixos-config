@@ -21,7 +21,7 @@
         session.
 
         This option controls only the pi-side extension and is independent of
-        the opencode atlasian MCP server configured in opencode.nix.
+        the Atlassian MCP server.
       '';
     };
   };
@@ -31,16 +31,14 @@
       envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
 
-      # System prompts sourced directly from the opencode agent files so there
+      # System prompts sourced directly from the agent files so there
       # is one authoritative copy — updates to those files flow through here
-      # automatically. The YAML frontmatter is opencode-specific metadata and
-      # is harmless when read as plain markdown by pi.
-      workerSystemPrompt = builtins.readFile ./opencode/agents/worker.md;
-      coordinatorSystemPrompt = builtins.readFile ./opencode/agents/coordinator.md;
+      # automatically.
+      workerSystemPrompt = builtins.readFile ./agents/worker.md;
+      coordinatorSystemPrompt = builtins.readFile ./agents/coordinator.md;
 
       # AWS skill with clipboard command substituted at eval time.
-      # Shared with opencode.nix — one file, no divergence.
-      awsSkillFile = pkgs.replaceVars ./opencode/skills/aws/SKILL.md {
+      awsSkillFile = pkgs.replaceVars ./skills/aws/SKILL.md {
         inherit clipboardCmd;
       };
 
@@ -50,14 +48,14 @@
       # nix-collect-garbage removes the store paths they pointed to.
       skillsDir = pkgs.runCommand "pi-skills" { } ''
         mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian
-        cp -r ${./opencode/skills/prism}/* $out/prism/
+        cp -r ${./skills/prism}/* $out/prism/
         ${lib.optionalString pkgs.stdenv.isLinux ''
-          cp -r ${./opencode/skills/playwright-cli} $out/playwright-cli
+          cp -r ${./skills/playwright-cli} $out/playwright-cli
         ''}
         cp ${awsSkillFile} $out/aws/SKILL.md
-        cp -r ${./opencode/skills/acceptance-criteria}/* $out/acceptance-criteria/
-        cp -r ${./opencode/skills/retro}/* $out/retro/
-        cp -r ${./opencode/skills/atlassian}/* $out/atlassian/
+        cp -r ${./skills/acceptance-criteria}/* $out/acceptance-criteria/
+        cp -r ${./skills/retro}/* $out/retro/
+        cp -r ${./skills/atlassian}/* $out/atlassian/
       '';
 
       # Vendored pi extensions directory — built as a single derivation so it
@@ -88,7 +86,7 @@
       # Pi agent settings.json content, defined once here so a future container
       # role can reference the same value without duplication.
       # Follow-up container support will add containerWorkerSettingsJson /
-      # containerCoordinatorSettingsJson options (analogous to the opencode.nix
+      # containerCoordinatorSettingsJson options (analogous to the container config
       # container config blobs at lines 29-73) and reference piSettings there.
       piSettings = {
         steeringMode = "one-at-a-time";
@@ -201,6 +199,15 @@
         programs.zsh.shellAliases = {
           pi = "PI_OFFLINE=1 ${envPrefix} pi";
         };
+
+        # Agent markdown files at ~/.config/prism/agents/ — consumed by
+        # prism spawn validation (prismAgentRolePath) and review pre-flight
+        # checks (CheckAgentAvailability). The directory is a single symlink
+        # into the nix store so GC cannot fragment it.
+        xdg.configFile."prism/agents".source = ./agents;
+        # Skills at ~/.config/prism/skills/ — consumed by the prism spawn
+        # skills manifest hash calculation (ComputeManifest).
+        xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;

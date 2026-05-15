@@ -71,7 +71,7 @@ func writeStatsEventWithSID(t *testing.T, d *db.DB, session, sid, typ, payload s
 }
 
 func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, cacheRead, cacheWrite int, durationMs int64, contextPct float64) string {
-	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":"opencode","model":"anthropic/claude-sonnet-4-6","inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d,"durationMs":%d,"contextWindowPct":%f}`,
+	return fmt.Sprintf(`{"messageId":%q,"text":%q,"agent":"pi","model":"anthropic/claude-sonnet-4-6","inputTokens":%d,"outputTokens":%d,"cacheReadTokens":%d,"cacheWriteTokens":%d,"durationMs":%d,"contextWindowPct":%f}`,
 		msgID, text, inputTokens, outputTokens, cacheRead, cacheWrite, durationMs, contextPct)
 }
 
@@ -1066,7 +1066,7 @@ func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 
 	// Old-format assistant event — no token fields.
 	writeStatsEvent(t, d, session, "msg_assistant",
-		`{"messageId":"msg-old","text":"old reply","agent":"opencode","model":"anthropic/claude-sonnet-4-20250514"}`,
+		`{"messageId":"msg-old","text":"old reply","agent":"pi","model":"anthropic/claude-sonnet-4-20250514"}`,
 		base)
 	writeStatsEvent(t, d, session, "tool_call",
 		`{"messageId":"msg-old","tool":"bash","args":"echo hi"}`,
@@ -1099,7 +1099,7 @@ func TestCollectMetrics_PreEnrichmentEvents(t *testing.T) {
 func assistantPayloadWithModel(model string, inputTokens, outputTokens int, durationMs int64) string {
 	// Use a UUID-like ID based on the model and token values to ensure uniqueness.
 	msgID := fmt.Sprintf("%s-%d-%d-%d", model, inputTokens, outputTokens, durationMs)
-	return fmt.Sprintf(`{"messageId":%q,"text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d}`,
+	return fmt.Sprintf(`{"messageId":%q,"text":"reply","agent":"pi","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d}`,
 		msgID, model, inputTokens, outputTokens, durationMs)
 }
 
@@ -1176,9 +1176,9 @@ func TestRunStatsModel_BasicOutput(t *testing.T) {
 // by harness_session_id (not session_name) so that multi-session tmux sessions are
 // counted correctly.
 func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
-	sid1 := "ses_opencode_aaa"
-	sid2 := "ses_opencode_bbb"
-	sid3 := "ses_opencode_ccc"
+	sid1 := "ses_pi_aaa"
+	sid2 := "ses_pi_bbb"
+	sid3 := "ses_pi_ccc"
 
 	// Three distinct opencode sessions all within the same tmux session "repo@main",
 	// all using the same model.
@@ -1202,7 +1202,7 @@ func TestRunStatsModel_SessionCountByHarnessSessionID(t *testing.T) {
 
 	// Should count 3 sessions (one per harness_session_id), NOT 1 (session_name).
 	if len(entry.Sessions) != 3 {
-		t.Errorf("expected 3 distinct opencode sessions, got %d", len(entry.Sessions))
+		t.Errorf("expected 3 distinct harness sessions, got %d", len(entry.Sessions))
 	}
 }
 
@@ -1606,17 +1606,17 @@ func TestRenderSessionCompactTable_SummaryExcludesLegacy(t *testing.T) {
 		}
 	})
 
-	// Summary should say "2 opencode sessions" (not "3").
-	if !strings.Contains(out, "2 opencode sessions") {
-		t.Errorf("summary should say '2 opencode sessions' (excluding legacy), got:\n%s", out)
+	// Summary should say "2 harness sessions" (not "3").
+	if !strings.Contains(out, "2 harness sessions") {
+		t.Errorf("summary should say '2 harness sessions' (excluding legacy), got:\n%s", out)
 	}
 	// Should also mention legacy events.
 	if !strings.Contains(out, "legacy events") {
 		t.Errorf("summary should mention '+ legacy events' when legacy data present\ngot:\n%s", out)
 	}
-	// Must NOT say "3 opencode sessions".
-	if strings.Contains(out, "3 opencode sessions") {
-		t.Errorf("summary must NOT count legacy sentinel as an opencode session\ngot:\n%s", out)
+	// Must NOT say "3 harness sessions".
+	if strings.Contains(out, "3 harness sessions") {
+		t.Errorf("summary must NOT count legacy sentinel as a harness session\ngot:\n%s", out)
 	}
 }
 
@@ -1695,7 +1695,7 @@ type fakeEvent struct {
 func fakeEventsToDBEvents(fakes []fakeEvent) []db.Event {
 	var events []db.Event
 	for i, f := range fakes {
-		payload := fmt.Sprintf(`{"messageId":"msg-%d","text":"reply","agent":"opencode","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d,"ttftMs":%d}`,
+		payload := fmt.Sprintf(`{"messageId":"msg-%d","text":"reply","agent":"pi","model":%q,"inputTokens":%d,"outputTokens":%d,"durationMs":%d,"ttftMs":%d}`,
 			i, f.model, f.inputTokens, f.outputTokens, f.durationMs, f.ttftMs)
 		events = append(events, db.Event{
 			ID:          fmt.Sprintf("id-%d", i),
@@ -1811,7 +1811,7 @@ func TestRunStatsModel_TtftAbsentInOldRows(t *testing.T) {
 			ID:          "id-0",
 			SessionName: "s1",
 			Type:        "msg_assistant",
-			Payload:     `{"messageId":"msg-0","text":"reply","agent":"opencode","model":"anthropic/claude-sonnet-4-6","inputTokens":1000,"outputTokens":500,"durationMs":10000}`,
+			Payload:     `{"messageId":"msg-0","text":"reply","agent":"pi","model":"anthropic/claude-sonnet-4-6","inputTokens":1000,"outputTokens":500,"durationMs":10000}`,
 			CreatedAt:   time.Now(),
 		},
 	}

@@ -2003,7 +2003,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// POST /set-model
 	// Request:  {"session":"<name>","provider":"...","model":"...","thinking":"..."}
-	// Response: {"session":"<name>","status":"applied"|"error:disconnected"|"skipped:opencode"} | {"error":"..."}
+	// Response: {"session":"<name>","status":"applied"|"error:disconnected"} | {"error":"..."}
 	//
 	// Swaps the model on a single live PI session.  The calling sidecar must
 	// own that session (same session name) OR be a coordinator in the same
@@ -2278,19 +2278,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		results := make([]sessionResult, 0, len(targets))
 		for _, targetSess := range targets {
-			// Opencode sessions cannot receive register_provider frames.
-			// For the calling session, use the in-process cfg rather than a DB
-			// lookup so that the check is accurate even when no DB row exists.
-			var harnessName string
-			if targetSess == s.cfg.SessionName {
-				harnessName = s.cfg.HarnessName
-			} else {
-				harnessName = harnessNameForSession(s, targetSess)
-			}
-			if harnessName != "pi" {
-				results = append(results, sessionResult{Session: targetSess, Status: "skipped:opencode"})
-				continue
-			}
 			deliveryStatus := liveRegisterProviderForSession(s, targetSess, req.Name, req.Config)
 			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
 		}
@@ -2324,10 +2311,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Name == "" {
 			writeError(w, http.StatusBadRequest, "name is required")
-			return
-		}
-		if s.cfg.HarnessName != "pi" {
-			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "skipped:opencode"})
 			return
 		}
 		if !isPipeConnected(s) {
@@ -2493,23 +2476,14 @@ func knownReviewAgentNames() []string {
 // When targetSess is a different session, the call is forwarded to that
 // session's own sidecar host-API socket via an HTTP POST to /set-model.
 //
-// Returns a status string: "applied", "skipped:opencode", or
-// "error:disconnected".
+// Returns a status string: "applied" or "error:disconnected".
 func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking string) string {
 	if targetSess == s.cfg.SessionName {
-		if s.cfg.HarnessName != "pi" {
-			return "skipped:opencode"
-		}
 		if !isPipeConnected(s) {
 			return "error:disconnected"
 		}
 		s.SetModel(provider, model, thinking)
 		return "applied"
-	}
-
-	// Different session: check harness from DB first.
-	if harnessNameForSession(s, targetSess) != "pi" {
-		return "skipped:opencode"
 	}
 
 	if err := forwardSetModel(targetSess, provider, model, thinking); err != nil {
@@ -2523,18 +2497,11 @@ func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking s
 // named session.  Same routing logic as liveModelSwapForSession.
 func liveRegisterProviderForSession(s *Sidecar, targetSess, name string, cfg map[string]any) string {
 	if targetSess == s.cfg.SessionName {
-		if s.cfg.HarnessName != "pi" {
-			return "skipped:opencode"
-		}
 		if !isPipeConnected(s) {
 			return "error:disconnected"
 		}
 		s.RegisterProvider(name, cfg)
 		return "applied"
-	}
-
-	if harnessNameForSession(s, targetSess) != "pi" {
-		return "skipped:opencode"
 	}
 
 	if err := forwardRegisterProvider(targetSess, name, cfg); err != nil {
@@ -2553,32 +2520,14 @@ func isPipeConnected(s *Sidecar) bool {
 	return ch != nil
 }
 
-// harnessNameForSession returns the harness name for a session by querying the
-// DB.  Returns "opencode" (default) when the row is absent or harness is unset.
-func harnessNameForSession(s *Sidecar, sessionName string) string {
-	if s.cfg.DB == nil {
-		return "opencode"
-	}
-	st, err := s.cfg.DB.CurrentStatus(sessionName)
-	if err != nil || st == nil {
-		return "opencode"
-	}
-	if st.Harness != nil && *st.Harness != "" {
-		return *st.Harness
-	}
-	return "opencode"
-}
+
 
 // resolveRoleForSession returns the root_agent_name (role) for targetSess, or
 // a non-empty skipStatus string when the session should be skipped.
 //
 // Returns (role, "") on success.
-// Returns ("", "skipped:opencode") for non-PI sessions.
 // Returns ("", "error:disconnected") when the session cannot be looked up.
 func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus string) {
-	if harnessNameForSession(s, targetSess) != "pi" {
-		return "", "skipped:opencode"
-	}
 	if s.cfg.DB == nil {
 		return "", "error:disconnected"
 	}

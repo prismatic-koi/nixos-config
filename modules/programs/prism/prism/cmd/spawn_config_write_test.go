@@ -8,7 +8,7 @@ package cmd
 //	if isolationMode == config.IsolationBwrap && configContent != "" {
 //	    tmuxSessionName := session.NameFor(worktreePath, bareRoot)
 //	    containerName := container.NameForSession(tmuxSessionName)
-//	    container.WriteOpencodeConfig(containerName, configContent)
+//	    container.WriteHarnessConfig(containerName, configContent)
 //	}
 //
 // The key insight: the path used at write time must match the path used at
@@ -35,9 +35,9 @@ import (
 
 // TestBwrapSpawn_WritePathMatchesManagerPath is the critical correctness test:
 // it asserts that the path used by spawn.go when writing the config file
-// (container.OpencodeConfigFilePath(container.NameForSession(tmuxSession)))
+// (container.HarnessConfigFilePath(container.NameForSession(tmuxSession)))
 // equals the path used by Manager.opencodeConfigFilePath() when reading it
-// (container.OpencodeConfigFilePath(m.name) where m.name=NameForSession(tmuxSession)).
+// (container.HarnessConfigFilePath(m.name) where m.name=NameForSession(tmuxSession)).
 //
 // This guards against the path mismatch where spawn.go passes the raw tmux
 // session name and Manager uses the transformed container name — which would
@@ -59,12 +59,12 @@ func TestBwrapSpawn_WritePathMatchesManagerPath(t *testing.T) {
 	containerName := container.NameForSession(tmuxSessionName)
 
 	// Step 3: path at write time (spawn.go's WriteOpencodeConfig argument).
-	writePath := container.OpencodeConfigFilePath(containerName)
+	writePath := container.HarnessConfigFilePath(containerName)
 
 	// Step 4: path at read time. Manager.opencodeConfigFilePath() calls
 	// OpencodeConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
 	// Since cfg.SessionName = tmuxSessionName, the read path is:
-	readPath := container.OpencodeConfigFilePath(container.NameForSession(tmuxSessionName))
+	readPath := container.HarnessConfigFilePath(container.NameForSession(tmuxSessionName))
 
 	if writePath != readPath {
 		t.Errorf("write path %q != read path %q — spawn.go will write to a path that agent-run's Manager can never find",
@@ -93,13 +93,13 @@ func TestBwrapSpawn_WriteAndReadConfigFile(t *testing.T) {
 	const configContent = `{"model":"test-worker-model","agents":[]}`
 
 	// Write as spawn.go does (using containerName, not tmuxSessionName).
-	if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+	if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
 		t.Fatalf("WriteOpencodeConfig: %v", err)
 	}
-	t.Cleanup(func() { _ = os.Remove(container.OpencodeConfigFilePath(containerName)) })
+	t.Cleanup(func() { _ = os.Remove(container.HarnessConfigFilePath(containerName)) })
 
 	// Read back as Manager.opencodeConfigFilePath() would resolve.
-	data, err := os.ReadFile(container.OpencodeConfigFilePath(containerName))
+	data, err := os.ReadFile(container.HarnessConfigFilePath(containerName))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -127,13 +127,13 @@ func TestBwrapSpawn_NoWriteWhenConfigContentEmpty(t *testing.T) {
 	// Simulate spawn.go's guard: configContent == "" → do not write.
 	configContent := ""
 	if configContent != "" {
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
 			t.Fatalf("WriteOpencodeConfig: %v", err)
 		}
 	}
 
 	// File must NOT exist.
-	path := container.OpencodeConfigFilePath(containerName)
+	path := container.HarnessConfigFilePath(containerName)
 	if _, err := os.Stat(path); err == nil {
 		t.Errorf("config temp file %q must not exist when configContent is empty, but it does", path)
 		_ = os.Remove(path)
@@ -159,7 +159,7 @@ func TestBwrapSpawn_ContainerNameTransformation(t *testing.T) {
 				t.Errorf("NameForSession(%q) = %q, want %q", tc.tmuxSession, got, tc.wantContainer)
 			}
 			// Verify write path uses container name, not raw tmux session name.
-			writePath := container.OpencodeConfigFilePath(got)
+			writePath := container.HarnessConfigFilePath(got)
 			if strings.Contains(writePath, "@") {
 				t.Errorf("write path %q contains '@' — spawn.go is using the raw tmux session name instead of the container name", writePath)
 			}

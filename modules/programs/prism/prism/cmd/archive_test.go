@@ -24,7 +24,7 @@ func TestRunArchive_ByInstanceID(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "/archive/testrepo/path")
 
 	out := captureStdout(t, func() {
@@ -47,9 +47,9 @@ func TestRunArchive_BySessionName(t *testing.T) {
 	// Two incarnations — most recent should win.
 	iid1 := uuid.New().String()
 	iid2 := uuid.New().String()
-	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-3*time.Hour), base.Add(-2*time.Hour), "finished", "/archive/old")
-	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "/archive/new")
 
 	out := captureStdout(t, func() {
@@ -73,7 +73,7 @@ func TestRunArchive_NullArchivePath(t *testing.T) {
 
 	iid := uuid.New().String()
 	// No archive path (empty string treated as unarchived).
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	err := printArchivePath(d, iid, true)
@@ -106,11 +106,11 @@ func TestRunArchive_AllFlag(t *testing.T) {
 	iid2 := uuid.New().String()
 	iid3 := uuid.New().String()
 	// Insert in chronological order; --all should return newest first.
-	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid1, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-3*time.Hour), base.Add(-2*time.Hour), "finished", "/archive/1")
-	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid2, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-2*time.Hour), base.Add(-1*time.Hour), "finished", "/archive/2")
-	insertTestSession(t, d, iid3, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid3, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "/archive/3")
 
 	out := captureStdout(t, func() {
@@ -142,7 +142,7 @@ func TestRunArchive_AllFlag_NotYetArchived(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "") // no archive path
 
 	out := captureStdout(t, func() {

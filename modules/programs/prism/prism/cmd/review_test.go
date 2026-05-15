@@ -7,20 +7,19 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // TestAgentsForHarness_ReturnsAllFive verifies that agentsForHarness always
 // returns the five-agent review set unconditionally.
 func TestAgentsForHarness_ReturnsAllFive(t *testing.T) {
-	agents := agentsForHarness("opencode")
+	agents := agentsForHarness("pi")
 	want := review.Agents()
 	if len(agents) != 5 {
-		t.Fatalf("agentsForHarness(opencode): got %d agents, want 5", len(agents))
+		t.Fatalf("agentsForHarness(pi): got %d agents, want 5", len(agents))
 	}
 	if len(agents) != len(want) {
-		t.Fatalf("agentsForHarness(opencode): got %d agents, want %d", len(agents), len(want))
+		t.Fatalf("agentsForHarness(pi): got %d agents, want %d", len(agents), len(want))
 	}
 	for i, a := range agents {
 		if a.Name != want[i].Name || a.OpencodeName != want[i].OpencodeName {
@@ -32,7 +31,7 @@ func TestAgentsForHarness_ReturnsAllFive(t *testing.T) {
 // TestAgentsForHarness_AgentNames verifies that agentsForHarness returns the
 // correct five agent names.
 func TestAgentsForHarness_AgentNames(t *testing.T) {
-	agents := agentsForHarness("opencode")
+	agents := agentsForHarness("pi")
 	expectedNames := []string{
 		"review-goal",
 		"review-code",
@@ -324,7 +323,7 @@ func TestSplitCSV_TrimsWhitespace(t *testing.T) {
 //
 // AC: "--only with an unknown name surfaces an error before any session is spawned"
 func TestOnlyFlag_UnknownAgentNameReturnsError(t *testing.T) {
-	allAgents := agentsForHarness("opencode")
+	allAgents := agentsForHarness("pi")
 
 	// A completely unknown name.
 	_, err := review.AgentsByName(allAgents, []string{"review-typo"})
@@ -345,7 +344,7 @@ func TestOnlyFlag_UnknownAgentNameReturnsError(t *testing.T) {
 // TestOnlyFlag_UnknownNameMixed verifies that a mix of known and unknown names
 // also returns an error naming the unrecognised agent.
 func TestOnlyFlag_UnknownNameMixed(t *testing.T) {
-	allAgents := agentsForHarness("opencode")
+	allAgents := agentsForHarness("pi")
 
 	_, err := review.AgentsByName(allAgents, []string{"review-code", "review-typo"})
 	if err == nil {
@@ -400,8 +399,7 @@ func TestCheckAgentAvailability_CalledWhenHostAPIUnset(t *testing.T) {
 	// The check must be performed unconditionally. We verify this by calling
 	// CheckAgentAvailability directly — as runReview now does — and confirming
 	// it returns an error naming the missing agents.
-	h := opencode.New("", nil, "", "")
-	err := review.CheckAgentAvailability(agents, h.ValidateAgentRole)
+	err := review.CheckAgentAvailability(agents, prismAgentRoleValidator)
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents when PRISM_HOST_API is unset, got nil — the pre-flight check must not be skipped")
 	}
@@ -422,7 +420,7 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
 
-	agentsDir := dir + "/opencode/agents"
+	agentsDir := dir + "/prism/agents"
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -438,15 +436,14 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 	}
 
 	// Verify the check passes — all files are present on the host filesystem.
-	h := opencode.New("", nil, "", "")
-	if err := review.CheckAgentAvailability(agents, h.ValidateAgentRole); err != nil {
+	if err := review.CheckAgentAvailability(agents, prismAgentRoleValidator); err != nil {
 		t.Errorf("CheckAgentAvailability: unexpected error when all agent files are present: %v", err)
 	}
 }
 
 // TestAgentNameStrings verifies the agentNameStrings helper extracts names correctly.
 func TestAgentNameStrings(t *testing.T) {
-	agents := agentsForHarness("opencode")
+	agents := agentsForHarness("pi")
 	names := agentNameStrings(agents)
 	if len(names) != len(agents) {
 		t.Fatalf("agentNameStrings: got %d names, want %d", len(names), len(agents))

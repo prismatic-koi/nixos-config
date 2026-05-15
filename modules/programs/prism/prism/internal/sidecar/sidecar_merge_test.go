@@ -13,8 +13,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	opencode "github.com/prismatic-koi/prism/internal/harness/opencode"
-)
+	)
 
 // newSidecarCoordinatorWithInstance builds a coordinator sidecar with a
 // non-empty InstanceID so the merge endpoints have an identity to enqueue
@@ -26,12 +25,12 @@ func newSidecarCoordinatorWithInstance(t *testing.T, sessionName, repo, instance
 		SessionName: sessionName,
 		Repo:        repo,
 		Worktree:    "/tmp/" + sessionName,
-		OpencodeURL: "http://localhost:14000",
+		HarnessURL: "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
 		InstanceID:  instanceID,
-		Harness:     opencode.New("http://localhost:14000", nil, "coordinator", ""),
+		Harness:     newSSEHarness(),
 	}
 	// Seed the DB so isCoordinatorSession() recognises this session as a
 	// coordinator (the merge handlers go through requireCoordinator).

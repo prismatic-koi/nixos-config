@@ -35,7 +35,7 @@ func insertMinimalSession(t *testing.T, d *db.DB, sessionName, iid, pairID, prof
 		SessionName: sessionName,
 		Repo:        "repo",
 		Worktree:    "/wt/" + sessionName,
-		Harness:     "opencode",
+		Harness:     "pi",
 		StartedAt:   startedAt,
 	}
 	if err := d.InsertSession(sess); err != nil {

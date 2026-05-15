@@ -6,33 +6,26 @@ package cmd
 // Flags:
 //
 //	--session <name>           prism session name (e.g. "nixos-config@main")
-//	--opencode-url <url>       base URL of the opencode HTTP server
+//	--harness-url <url>        base URL of the harness HTTP endpoint
 //	                           (e.g. "http://localhost:14000")
 //	--isolation-mode <mode>    isolation mode: "podman", "bwrap", or "host"
 //	                           (default: "host" for back-compat when absent)
 //	--container                enable container mode: create and manage a podman
-//	                           container running opencode serve before connecting.
+//	                           container before connecting.
 //	                           Deprecated: use --isolation-mode=podman instead.
 //	--agent-role <role>        "worker" or "coordinator" (used in container mode
 //	                           to select the correct GitHub token; when empty,
-//	                           the role is inferred from SSE events at runtime)
+//	                           the role is inferred from events at runtime)
 //	--port <n>                 allocated host port (required in container/bwrap mode)
-//	--plugin-path <path>       host path to the prism-hooks.ts plugin; mounted
+//	--plugin-path <path>       host path to the prism-hooks plugin; mounted
 //	                           read-only into the container (container mode only)
-//	--config-content <json>    JSON blob for the container's opencode.json;
+//	--config-content <json>    JSON blob for the container harness config;
 //	                           written to a temp file and mounted into the
 //	                           container (container mode only)
 //
-// The sidecar connects to <opencode-url>/event and maps opencode SSE events to
+// The sidecar connects to <harness-url>/event and maps harness events to
 // agent state transitions, writing them to prism.db. It handles idle debounce,
-// permission tracking, and dashboard sentinel updates — replacing the equivalent
-// logic in opencode/plugins/prism-hooks.ts.
-//
-// In podman mode (--isolation-mode=podman or legacy --container), the sidecar
-// creates a podman container running "opencode --port 4096 --hostname 0.0.0.0"
-// (combined TUI + HTTP mode), waits until the HTTP endpoint is healthy, then
-// writes a ready signal so that the tmux pane can run "podman attach" to bridge
-// the PTY (RFC #691, Phase 1a).
+// permission tracking, and dashboard sentinel updates.
 //
 // In bwrap mode (--isolation-mode=bwrap), the sidecar does NOT create a
 // container. The bwrap sandbox is launched and owned by the tmux pane via
@@ -61,7 +54,6 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
-	_ "github.com/prismatic-koi/prism/internal/harness/opencode"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
@@ -69,16 +61,16 @@ import (
 
 var sidecarCmd = &cobra.Command{
 	Use:   "sidecar",
-	Short: "SSE consumer sidecar for opencode event processing",
-	Long: `Connects to the opencode SSE event stream and maps events to agent
-state transitions in prism.db. Designed to be started alongside opencode
+	Short: "Harness event sidecar for agent session management",
+	Long: `Connects to the harness event stream and maps events to agent
+state transitions in prism.db. Designed to be started alongside the agent harness
 by prism spawn.
 
 The sidecar handles: state machine transitions, idle debounce (2s),
 permission tracking, event logging, and dashboard sentinel updates.
 
 In podman mode (--isolation-mode=podman or legacy --container), the sidecar
-also creates and manages the podman container running opencode in combined
+also creates and manages the podman container running the harness in combined
 TUI + HTTP mode, health-checks it until ready, then writes a readiness signal
 so the tmux pane can run podman attach to bridge the container PTY (RFC #691).
 
@@ -90,28 +82,28 @@ readiness signal. The bwrap sandbox is owned by the tmux pane.`,
 
 func init() {
 	sidecarCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
-	sidecarCmd.Flags().String("opencode-url", "", "Base URL of the opencode HTTP server")
+	sidecarCmd.Flags().String("harness-url", "", "Base URL of the harness HTTP server (used by HTTP-transport harnesses)")
 	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: derived from --container flag)")
 	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container) — deprecated, use --isolation-mode=podman")
 	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (used in container mode; inferred from SSE events when empty)")
 	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container/bwrap mode)")
 	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
 	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
-	sidecarCmd.Flags().String("config-content", "", "JSON blob for container opencode.json; written to temp file and mounted (container mode only)")
+	sidecarCmd.Flags().String("config-content", "", "JSON blob for container harness config; written to temp file and mounted (container mode only)")
 	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
-	sidecarCmd.Flags().String("harness", "opencode", "Agent harness to use (e.g. opencode)")
+	sidecarCmd.Flags().String("harness", "pi", "Agent harness to use")
 	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
 	sidecarCmd.Flags().String("bwrap-path", "", "Override path to the bwrap binary used to sandbox stdio-pipe harnesses (default: resolved via PATH)")
 	sidecarCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable; C.2)")
 	_ = sidecarCmd.MarkFlagRequired("session")
-	_ = sidecarCmd.MarkFlagRequired("opencode-url")
+	_ = sidecarCmd.MarkFlagRequired("harness-url")
 	rootCmd.AddCommand(sidecarCmd)
 }
 
 func runSidecar(cmd *cobra.Command, args []string) error {
 	sessionName, _ := cmd.Flags().GetString("session")
-	opencodeURL, _ := cmd.Flags().GetString("opencode-url")
+	harnessURL, _ := cmd.Flags().GetString("harness-url")
 	isolationModeFlag, _ := cmd.Flags().GetString("isolation-mode")
 	containerFlag, _ := cmd.Flags().GetBool("container")
 	agentRole, _ := cmd.Flags().GetString("agent-role")
@@ -129,7 +121,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	bwrapPath, _ := cmd.Flags().GetString("bwrap-path")
 	modelOverrideRaw, _ := cmd.Flags().GetStringArray("model-override")
 	if harnessName == "" {
-		harnessName = "opencode"
+		harnessName = "pi"
 	}
 	if _, ok := harness.Lookup(harnessName); !ok {
 		return fmt.Errorf("sidecar: unknown harness %q: valid harnesses: %s", harnessName, strings.Join(harness.Names(), ", "))
@@ -326,14 +318,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	var h harness.Harness
 	if len(modelsByRole) > 0 {
 		if useContainerHarness {
-			h, err = harness.NewContainerWithModelOverrides(harnessName, opencodeURL, nil, agentRole, modelsByRole)
+			h, err = harness.NewContainerWithModelOverrides(harnessName, harnessURL, nil, agentRole, modelsByRole)
 		} else {
-			h, err = harness.NewWithModelOverrides(harnessName, opencodeURL, nil, agentRole, modelsByRole)
+			h, err = harness.NewWithModelOverrides(harnessName, harnessURL, nil, agentRole, modelsByRole)
 		}
 	} else if useContainerHarness {
-		h, err = harness.NewContainer(harnessName, opencodeURL, nil, agentRole, agentModel)
+		h, err = harness.NewContainer(harnessName, harnessURL, nil, agentRole, agentModel)
 	} else {
-		h, err = harness.New(harnessName, opencodeURL, nil, agentRole, agentModel)
+		h, err = harness.New(harnessName, harnessURL, nil, agentRole, agentModel)
 	}
 	if err != nil {
 		return fmt.Errorf("sidecar: construct harness adapter: %w", err)
@@ -350,7 +342,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		SessionName:       sessionName,
 		Repo:              repo,
 		Worktree:          worktree,
-		OpencodeURL:       opencodeURL,
+		HarnessURL:        harnessURL,
 		DB:                d,
 		Clock:             sidecar.RealClock(),
 		AgentRole:         agentRole,
@@ -404,7 +396,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s isolation=%s\n",
-		sessionName, opencodeURL, isolationMode)
+		sessionName, harnessURL, isolationMode)
 
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("sidecar: %w", err)

@@ -34,7 +34,7 @@ func (s *Sidecar) currentDBState() agent.AgentState {
 	return agent.AgentState(st.State)
 }
 
-func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID *string) {
+func (s *Sidecar) upsertState(state agent.AgentState, title *string, harnessSessionID *string) {
 	// Track the most recently seen title for dashboard push events.
 	if title != nil && *title != "" {
 		s.lastTitle = *title
@@ -65,7 +65,7 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 			s.cfg.Worktree,
 			string(state),
 			title,
-			opencodeSID,
+			harnessSessionID,
 			&effectiveRole,
 			agentModel,
 		); err != nil {
@@ -79,7 +79,7 @@ func (s *Sidecar) upsertState(state agent.AgentState, title *string, opencodeSID
 		s.cfg.Worktree,
 		string(state),
 		title,
-		opencodeSID,
+		harnessSessionID,
 	); err != nil {
 		s.logger().Printf("sidecar: UpsertStatus failed: %v", err)
 	}
@@ -89,13 +89,13 @@ func (s *Sidecar) writeStateChange(state agent.AgentState) {
 	s.writeStateChangeWithSID(state, nil)
 }
 
-func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, opencodeSID *string) {
+func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, harnessSessionID *string) {
 	if state == s.lastState {
 		s.logger().Printf("sidecar: state dedup: %s (no change)", state)
 		return
 	}
 	s.logger().Printf("sidecar: state: %s -> %s", s.lastState, state)
-	s.writeEvent("state_change", map[string]string{"state": string(state)}, opencodeSID)
+	s.writeEvent("state_change", map[string]string{"state": string(state)}, harnessSessionID)
 	s.lastState = state
 	// Push to the persistent dashboard socket (fire-and-forget, non-blocking).
 	// Also touch the sentinel for the popup dashboard which still polls it.
@@ -106,16 +106,16 @@ func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, opencodeSID *s
 	touchDashboardSentinel()
 }
 
-func (s *Sidecar) writeEvent(eventType string, payload any, opencodeSID *string) {
+func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *string) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		s.logger().Printf("sidecar: marshal event payload: %v", err)
 		return
 	}
 
-	sid := opencodeSID
-	if sid == nil && s.opencodeSID != "" {
-		sid = &s.opencodeSID
+	sid := harnessSessionID
+	if sid == nil && s.harnessSessionID != "" {
+		sid = &s.harnessSessionID
 	}
 
 	var instanceIDPtr *string

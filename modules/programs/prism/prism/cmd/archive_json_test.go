@@ -19,9 +19,9 @@ func TestArchive_AllJSON_HappyPath(t *testing.T) {
 
 	iidArchived := uuid.New().String()
 	iidUnarchived := uuid.New().String()
-	insertTestSession(t, d, iidArchived, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iidArchived, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-2*time.Hour), base.Add(-1*time.Hour), "finished", "/archive/testrepo/1")
-	insertTestSession(t, d, iidUnarchived, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iidUnarchived, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	out := captureStdout(t, func() {

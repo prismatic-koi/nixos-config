@@ -212,7 +212,7 @@ func TestRunStatsProxy_Summary(t *testing.T) {
 			SessionName: "nixos-config@main",
 			Repo:        "nixos-config",
 			Worktree:    "/tmp/w",
-			Harness:     "opencode",
+			Harness:     "pi",
 			StartedAt:   time.Now().Add(-1 * time.Hour),
 		},
 	}
@@ -246,7 +246,7 @@ func TestRunStatsProxy_SummaryJSON(t *testing.T) {
 			SessionName: "nixos-config@feat",
 			Repo:        "nixos-config",
 			Worktree:    "/tmp/w",
-			Harness:     "opencode",
+			Harness:     "pi",
 			StartedAt:   time.Now().Add(-2 * time.Hour),
 		},
 	}

@@ -340,8 +340,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// Kept inline: the mount semantics differ from podman's per-session
 	// state dir (which lives at /root/.local/share/opencode under a
 	// per-container subdir), so no shared spec entry exists.
-	opencodeDataDir := filepath.Join(home, ".local", "share", "opencode")
-	args = append(args, "--bind", opencodeDataDir, opencodeDataDir)
+	piDataDir := filepath.Join(home, ".local", "share", "pi")
+	args = append(args, "--bind", piDataDir, piDataDir)
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
 	// Mount the parent directory, not the socket file directly (same pattern
@@ -437,67 +437,27 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	gitconfigPath := m.gitconfigFilePath()
 	args = append(args, "--ro-bind", gitconfigPath, filepath.Join(home, ".gitconfig"))
 
-	// ── opencode.json (read-only, conditional) ──────────────────────────────
-	// Remapped: generated temp file → sandbox $HOME/.config/opencode/opencode.json
-	// (the canonical path opencode reads for its configuration). This ensures
-	// the role-specific config (with correct model, agent identity, providers)
-	// is visible inside the sandbox at the path opencode expects.
-	//
-	// The check is file-existence-based (os.Stat) rather than string-based
-	// (cfg.ConfigContent != "") so that files written at spawn time by
-	// cmd/spawn.go (via container.WriteOpencodeConfig) are picked up even when
-	// this Manager instance was reconstructed by prism agent-run without
-	// ConfigContent in memory (see issue #900).
-	opencodeConfigPath := m.opencodeConfigFilePath()
-	if _, err := os.Stat(opencodeConfigPath); err == nil {
-		args = append(args, "--ro-bind", opencodeConfigPath, filepath.Join(home, ".config", "opencode", "opencode.json"))
+	// ── pi config allowlist (read-only, conditional) ───────────────────────
+	// Mount specific files from ~/.config/pi/ so agents and skills are
+	// available inside the sandbox.
+	// agents/ is role-conditional: excluded for review-* containers since
+	// those containers receive their role prompt inline via the system prompt
+	// rather than via the agents/ directory.
+	piConfigDir := filepath.Join(home, ".config", "pi")
+	piConfigAllowlist := []string{"settings.json", "skills", "AGENTS.md"}
+	if !strings.HasPrefix(cfg.AgentRole, "review-") {
+		piConfigAllowlist = append(piConfigAllowlist, "agents")
 	}
-
-	// ── opencode config allowlist (read-only, conditional) ──────────────────
-	// Mount specific files from ~/.config/opencode/ so agents, skills, and
-	// plugins defined in the Nix module are available inside the sandbox.
-	// opencode.json is NOT mounted from the host — the sandbox uses the temp
-	// file above (ConfigContent). Matching the podman buildRunArgs allowlist.
-	//
-	// agents/ is excluded for review containers: the host agents/ directory
-	// contains review-*.md files with "mode: subagent" front-matter that
-	// overrides the "mode: primary" declaration in the container's
-	// opencode.json, causing opencode to fall back to the wrong agent. Review
-	// containers embed their role prompt inline via opencode.json instead.
-	// For non-review containers (worker, coordinator, etc.) agents/ is mounted
-	// so that @review-* subagent invocation works and all agents are accessible.
-	opencodeConfigDir := filepath.Join(home, ".config", "opencode")
-	isReviewBwrap := strings.HasPrefix(cfg.AgentRole, "review-")
-	for _, entry := range StandardOpencodeConfigAllowlist(isReviewBwrap) {
-		p := filepath.Join(opencodeConfigDir, entry)
+	for _, entry := range piConfigAllowlist {
+		p := filepath.Join(piConfigDir, entry)
 		if _, err := os.Stat(p); err == nil {
 			args = append(args, "--ro-bind", p, p)
 		}
 	}
 
-	// ── opencode plugin cache (read-write, conditional) ─────────────────────
-	// Must be writable: opencode refreshes ~/.cache/opencode/models.json from
-	// models.dev on startup and writes back to disk. A read-only mount causes
-	// EROFS, which opencode swallows into a silent "Failed to start server"
-	// error (logged to ~/.local/share/opencode/log/*.log, NOT to stderr), so
-	// the sidecar loops on connection-refused and the pane stays blank. See
-	// the bwrap-spawn-hangs investigation for the full signature.
-	//
-	// Kept inline (not in StandardSandboxMounts): bwrap mounts this RW
-	// while podman mounts the same path RO. The audit (A2 §3.1) flagged
-	// these as podman-outliers; rather than thread a fourth per-mode flag
-	// through StandardSandboxMounts for one entry, the cache mounts stay
-	// per-mode-inline.
-	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
-	if _, err := os.Stat(opencodeCacheDir); err == nil {
-		args = append(args, "--bind", opencodeCacheDir, opencodeCacheDir)
-	}
-
 	// ── bun transpiler cache (read-write, conditional) ──────────────────────
-	// Must be writable alongside the opencode cache: bun writes transpile
-	// outputs and lockfile updates here on plugin load. Mirrors the opencode
-	// cache treatment above for the same reason — EROFS on write would also
-	// manifest as a silent startup hang.
+	// Must be writable: bun writes transpile outputs and lockfile updates
+	// here on plugin load.
 	bunCacheDir := filepath.Join(home, ".cache", "bun")
 	if _, err := os.Stat(bunCacheDir); err == nil {
 		args = append(args, "--bind", bunCacheDir, bunCacheDir)
@@ -685,11 +645,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// row); in normal operation cfg.AllocatedPort is always populated by
 	// agent-run from the DB's harness_port column.
 	args = append(args, "--")
-	if cfg.Harness == "pi" {
-		args = append(args, PIInvocation(cfg)...)
-	} else {
-		args = append(args, HarnessInvocation(cfg)...)
-	}
+	args = append(args, PIInvocation(cfg)...)
 
 	return args
 }

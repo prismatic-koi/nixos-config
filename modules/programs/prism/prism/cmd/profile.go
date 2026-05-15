@@ -87,7 +87,7 @@ var profileCmd = &cobra.Command{
 	Long: `Manage the active model profile.
 
 The active profile determines which model identifiers are rendered into
-opencode.json for newly spawned sessions. It is resolved in this order:
+harness config for newly spawned sessions. It is resolved in this order:
 
   1. The --profile flag passed to "prism spawn" (highest)
   2. The runtime state file at $XDG_STATE_HOME/prism/active-profile

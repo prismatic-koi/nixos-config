@@ -915,11 +915,13 @@ func extractPort(t *testing.T, rawURL string) int {
 // setHarnessInfo writes harness_port and harness_session_id directly via SQL,
 // bypassing AllocatePort's OS-level port availability check (not needed for
 // tests using httptest.Server which already owns the port).
+// Sets harness to empty string so promptdelivery falls back to the HTTP path
+// (used by these tests which spin up httptest.Server for delivery assertions).
 func setHarnessInfo(t *testing.T, d *db.DB, sessionName string, port int, sessionID string) error {
 	t.Helper()
 	var dummy int
 	err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ?, harness_session_id = ? WHERE session_name = ? RETURNING 1",
+		"UPDATE agent_status SET harness_port = ?, harness_session_id = ?, harness = '' WHERE session_name = ? RETURNING 1",
 		port, sessionID, sessionName,
 	).Scan(&dummy)
 	return err

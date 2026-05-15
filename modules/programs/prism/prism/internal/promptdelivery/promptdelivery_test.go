@@ -16,10 +16,10 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestDeliverToSession_OpencodePath verifies that DeliverToSession routes
-// sessions with harness="opencode" through the HTTP prompt_async endpoint,
-// leaving the host-API socket path unused.
-func TestDeliverToSession_OpencodePath(t *testing.T) {
+// TestDeliverToSession_HTTPFallbackPath verifies that DeliverToSession routes
+// sessions with an empty or unknown harness through the HTTP prompt_async
+// endpoint (legacy HTTP fallback path).
+func TestDeliverToSession_HTTPFallbackPath(t *testing.T) {
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -32,34 +32,36 @@ func TestDeliverToSession_OpencodePath(t *testing.T) {
 	addr := srv.Listener.Addr().(*net.TCPAddr)
 	port := addr.Port
 
-	harness := "opencode"
+	// Empty harness triggers HTTP fallback (no registered transport shape).
+	emptyHarness := ""
 	sid := "session-123"
 	status := &db.Status{
 		SessionName:      "myrepo@feature",
-		Harness:          &harness,
+		Harness:          &emptyHarness,
 		HarnessPort:      &port,
 		HarnessSessionID: &sid,
 	}
 
-	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello opencode", nil, "", "")
+	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello harness", nil, "", "")
 	if err != nil {
 		t.Fatalf("DeliverToSession: %v", err)
 	}
 
 	// Verify the body was sent to prompt_async.
-	if !strings.Contains(string(gotBody), "hello opencode") {
-		t.Errorf("expected body to contain 'hello opencode', got %q", gotBody)
+	if !strings.Contains(string(gotBody), "hello harness") {
+		t.Errorf("expected body to contain 'hello harness', got %q", gotBody)
 	}
 }
 
-// TestDeliverToSession_OpencodePath_NoPort verifies that DeliverToSession
-// returns an error for opencode sessions that have no harness port.
-func TestDeliverToSession_OpencodePath_NoPort(t *testing.T) {
-	harness := "opencode"
+// TestDeliverToSession_HTTPFallback_NoPort verifies that DeliverToSession
+// returns an error when the HTTP fallback path is used but no harness port
+// is set.
+func TestDeliverToSession_HTTPFallback_NoPort(t *testing.T) {
+	emptyHarness := ""
 	status := &db.Status{
 		SessionName: "myrepo@feature",
-		Harness:     &harness,
-		// HarnessPort is nil — cannot deliver.
+		Harness:     &emptyHarness,
+		// HarnessPort is nil — cannot deliver via HTTP fallback.
 	}
 
 	err := promptdelivery.DeliverToSession("myrepo@feature", status, "hello", nil, "", "")
@@ -124,7 +126,7 @@ func TestDeliverToSession_NilHarness(t *testing.T) {
 }
 
 // TestDeliverToSession_CustomBodyBuilder verifies that a custom buildHTTPBody
-// function is called for the opencode HTTP path and its output is used as the
+// function is called for the HTTP fallback path and its output is used as the
 // POST body.
 func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
 	var gotBody map[string]any
@@ -138,7 +140,7 @@ func TestDeliverToSession_CustomBodyBuilder(t *testing.T) {
 	addr := srv.Listener.Addr().(*net.TCPAddr)
 	port := addr.Port
 	sid := "session-789"
-	harness := "opencode"
+	harness := "" // empty = HTTP fallback path
 
 	status := &db.Status{
 		SessionName:      "myrepo@feature",

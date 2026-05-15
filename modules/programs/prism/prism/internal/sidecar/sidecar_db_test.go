@@ -178,7 +178,7 @@ func TestHostAPI_DBQuery_RejectsWrite(t *testing.T) {
 
 	rr := doHostAPI(t, sc, http.MethodGet,
 		"/db/query?sql="+queryEscape(
-			"INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','opencode',1)"),
+			"INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at) VALUES ('x','x','x','x','pi',1)"),
 		"")
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %q, want 400", rr.Code, rr.Body.String())

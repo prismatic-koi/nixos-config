@@ -471,7 +471,7 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	}
 
 	// The harness binary follows the profile path. We don't pin the exact
-	// string so future PRs can swap "opencode" for an absolute path without
+	// string so future PRs can swap "pi" for an absolute path without
 	// breaking this assertion, but it must be non-empty.
 	if args[3] == "" {
 		t.Errorf("args[3] (harness binary) is empty: %v", args)
@@ -514,102 +514,6 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 			mA.sandboxExecProfilePath(), mA.name)
 	}
 }
-
-// TestSandboxExecBuildArgs_OpencodePortFlag verifies that BuildArgs emits
-// --port <AllocatedPort> --hostname 127.0.0.1 in the harness arguments,
-// mirroring the bwrap path's invocation contract.
-func TestSandboxExecBuildArgs_OpencodePortFlag(t *testing.T) {
-	m := newSandboxExecManager(Config{
-		SessionName:   "repo@main",
-		AllocatedPort: 14111,
-	})
-	s := &sandboxExecIsolator{name: m.name}
-	args := s.BuildArgs(m)
-
-	if !sliceContainsPair(args, "--port", "14111") {
-		t.Errorf("expected --port 14111 in args: %v", args)
-	}
-	if !sliceContainsPair(args, "--hostname", "127.0.0.1") {
-		t.Errorf("expected --hostname 127.0.0.1 in args: %v", args)
-	}
-}
-
-// TestSandboxExecBuildArgs_PortFallback verifies that when AllocatedPort is
-// zero, BuildArgs falls back to ContainerPort. This mirrors bwrap.BuildArgs
-// and protects against malformed sessions.
-func TestSandboxExecBuildArgs_PortFallback(t *testing.T) {
-	m := newSandboxExecManager(Config{
-		SessionName:   "repo@main",
-		AllocatedPort: 0,
-	})
-	s := &sandboxExecIsolator{name: m.name}
-	args := s.BuildArgs(m)
-
-	wantPort := containerPortString()
-	if !sliceContainsPair(args, "--port", wantPort) {
-		t.Errorf("expected fallback --port %s in args: %v", wantPort, args)
-	}
-}
-
-// TestSandboxExecBuildArgs_AgentRolePassedThrough verifies that AgentRole
-// is appended as --agent <role> when non-empty, and omitted when empty —
-// matching the bwrap path.
-func TestSandboxExecBuildArgs_AgentRolePassedThrough(t *testing.T) {
-	for _, tc := range []struct {
-		role string
-		want bool
-	}{
-		{"worker", true},
-		{"coordinator", true},
-		{"review-code", true},
-		{"", false},
-	} {
-		t.Run("AgentRole="+tc.role, func(t *testing.T) {
-			m := newSandboxExecManager(Config{
-				SessionName:   "repo@main",
-				AllocatedPort: 14010,
-				AgentRole:     tc.role,
-			})
-			s := &sandboxExecIsolator{name: m.name}
-			args := s.BuildArgs(m)
-
-			has := sliceContainsPair(args, "--agent", tc.role)
-			if tc.want && !has {
-				t.Errorf("expected --agent %q in args (role non-empty): %v", tc.role, args)
-			}
-			if !tc.want && hasFlag(args, "--agent") {
-				t.Errorf("--agent must be absent when role is empty; got: %v", args)
-			}
-		})
-	}
-}
-
-// TestSandboxExecBuildArgs_InitialPromptPassedThrough verifies that
-// InitialPrompt becomes --prompt <text> when non-empty, and is omitted when
-// empty — matching the bwrap path.
-func TestSandboxExecBuildArgs_InitialPromptPassedThrough(t *testing.T) {
-	m := newSandboxExecManager(Config{
-		SessionName:   "repo@main",
-		AllocatedPort: 14010,
-		InitialPrompt: "do the thing",
-	})
-	s := &sandboxExecIsolator{name: m.name}
-	args := s.BuildArgs(m)
-	if !sliceContainsPair(args, "--prompt", "do the thing") {
-		t.Errorf("expected --prompt 'do the thing' in args: %v", args)
-	}
-
-	mEmpty := newSandboxExecManager(Config{
-		SessionName:   "repo@main",
-		AllocatedPort: 14010,
-	})
-	sEmpty := &sandboxExecIsolator{name: mEmpty.name}
-	argsEmpty := sEmpty.BuildArgs(mEmpty)
-	if hasFlag(argsEmpty, "--prompt") {
-		t.Errorf("--prompt must be absent when InitialPrompt is empty; got: %v", argsEmpty)
-	}
-}
-
 // TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile verifies that the
 // harness binary appears at args[3] — directly after "sandbox-exec -f
 // <profile>". This is the shape the AC requires.
@@ -627,8 +531,8 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 		t.Fatalf("expected leading sandbox-exec -f; got: %v", args)
 	}
 	// args[2] is the profile path; args[3] must be the harness binary.
-	if args[3] != "opencode" {
-		t.Errorf("expected args[3] to be the harness binary 'opencode'; got %q in %v", args[3], args)
+	if args[3] != "pi" {
+		t.Errorf("expected args[3] to be the harness binary 'pi'; got %q in %v", args[3], args)
 	}
 }
 
@@ -646,14 +550,13 @@ func newFakeHome(t *testing.T) string {
 		".ssh",
 		".aws",
 		".config/aws",
-		".config/opencode",
+		".config/pi",
 		".config/kube",
-		".cache/opencode",
 		".cache/bun",
 		".cache/nix",
 		".claude",
 		".mcp-auth",
-		".local/share/opencode",
+		".local/share/pi",
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o755); err != nil {
@@ -781,57 +684,13 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 		}
 	}
 }
-
-// TestPrepareSandboxExecHome_RegularFilesNotSymlinks verifies that .gitconfig,
-// .ssh/config, and .config/opencode/opencode.json are regular generated files
-// (not symlinks) in the staging HOME.
-func TestPrepareSandboxExecHome_RegularFilesNotSymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Write a fake opencode config so the builder copies it.
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName:   "repo@feat",
-		InstanceID:    "reg-file-test",
-		GitUserName:   "Test User",
-		GitUserEmail:  "test@example.com",
-	})
-	// Write the opencode config temp file.
-	_ = os.WriteFile(m.opencodeConfigFilePath(), []byte(`{"model":"test"}`), 0o644)
-	t.Cleanup(func() { _ = os.Remove(m.opencodeConfigFilePath()) })
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stagingHome)
-		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
-	})
-
-	regularFiles := []string{
-		filepath.Join(stagingHome, ".gitconfig"),
-		filepath.Join(stagingHome, ".ssh", "config"),
-		filepath.Join(stagingHome, ".config", "opencode", "opencode.json"),
-	}
-	for _, p := range regularFiles {
-		info, err := os.Lstat(p)
-		if err != nil {
-			t.Errorf("expected %s to exist: %v", p, err)
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			t.Errorf("%s must be a regular file, not a symlink", p)
-		}
-	}
-}
-
 // TestPrepareSandboxExecHome_AgentsIncludedForNonReview verifies that
-// .config/opencode/agents/ is present when AgentRole does NOT start with
+// .config/pi/agents/ is present when AgentRole does NOT start with
 // "review-". Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	// Create agents/ dir in the fake home's opencode config.
-	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
 	}
@@ -849,7 +708,7 @@ func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			agentsLink := filepath.Join(stagingHome, ".config", "pi", "agents")
 			if _, err := os.Lstat(agentsLink); err != nil {
 				t.Errorf("agents/ symlink must exist for role %q: %v", role, err)
 			}
@@ -858,12 +717,12 @@ func TestPrepareSandboxExecHome_AgentsIncludedForNonReview(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_AgentsExcludedForReview verifies that
-// .config/opencode/agents/ is NOT present when AgentRole starts with "review-".
+// .config/pi/agents/ is NOT present when AgentRole starts with "review-".
 // Mirrors bwrap.go:447-448.
 func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	// Create agents/ dir in the fake home's opencode config.
-	agentsDir := filepath.Join(fakeHome, ".config", "opencode", "agents")
+	agentsDir := filepath.Join(fakeHome, ".config", "pi", "agents")
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("create agents dir: %v", err)
 	}
@@ -881,7 +740,7 @@ func TestPrepareSandboxExecHome_AgentsExcludedForReview(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-			agentsLink := filepath.Join(stagingHome, ".config", "opencode", "agents")
+			agentsLink := filepath.Join(stagingHome, ".config", "pi", "agents")
 			if _, err := os.Lstat(agentsLink); err == nil {
 				t.Errorf("agents/ must NOT exist for review role %q", role)
 			}
@@ -1597,7 +1456,7 @@ func TestPrepareSandboxExecHome_PiOAuthNonPiHarnessNoOp(t *testing.T) {
 	fakeHome := newFakeHome(t)
 	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
 
-	for _, harness := range []string{"", "opencode"} {
+	for _, harness := range []string{"", "other-harness"} {
 		t.Run("harness="+harness, func(t *testing.T) {
 			m := newSandboxExecManagerWithInstance(Config{
 				SessionName: "repo@non-pi-" + harness,
@@ -1799,15 +1658,14 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 	profile := generateProfile(m)
 
 	// The profile must contain (allow file-read* for RO targets (e.g. SSH keys)
-	// and (allow file-read* file-write* for RW targets (e.g. .cache/opencode).
+	// and (allow file-read* file-write* for RW targets (e.g. .cache/bun).
 	if !strings.Contains(profile, "(allow file-read*") {
 		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
 	}
 
-	// .cache/opencode, .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
+	// .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
 	// profile must grant file-write* on their resolved targets.
 	rwPaths := []string{
-		filepath.Join(fakeHome, ".cache", "opencode"),
 		filepath.Join(fakeHome, ".cache", "bun"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 		filepath.Join(fakeHome, ".claude"),

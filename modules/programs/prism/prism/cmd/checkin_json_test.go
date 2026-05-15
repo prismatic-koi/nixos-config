@@ -38,7 +38,7 @@ func TestCheckin_JSONFlag_DirectPath(t *testing.T) {
 		SessionName: session,
 		Repo:        "nixos-config",
 		Worktree:    "/tmp/w",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}); err != nil {
 		t.Fatalf("InsertSession: %v", err)
 	}
@@ -203,7 +203,7 @@ func TestCheckin_HumanReadable_UnchangedByJSON(t *testing.T) {
 		SessionName: session,
 		Repo:        "nixos-config",
 		Worktree:    "/tmp/w",
-		Harness:     "opencode",
+		Harness:     "pi",
 	}); err != nil {
 		t.Fatalf("InsertSession: %v", err)
 	}

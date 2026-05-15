@@ -58,7 +58,7 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 		AgentRole:     "worker",
 		Layout:        LayoutFull,
 		IsolationMode: "host",
-		HarnessName:   "opencode",
+		HarnessName:   "pi",
 		// ReadinessTimeout=0: skip the readiness gate. We are testing the
 		// pre-spawn DB-state invariants, not the readiness path.
 	}
@@ -135,7 +135,7 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 		InstanceID:    preMinted,
 		Layout:        LayoutFull,
 		IsolationMode: "host",
-		HarnessName:   "opencode",
+		HarnessName:   "pi",
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -191,7 +191,7 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 				AgentRole:     "worker",
 				Layout:        LayoutFull,
 				IsolationMode: "host",
-				HarnessName:   "opencode",
+				HarnessName:   "pi",
 			}
 			errs[i] = SpawnSession(d, opts)
 		}()

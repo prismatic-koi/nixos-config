@@ -60,7 +60,7 @@ type MountSpec struct {
 
 	// OptionalIfMissing skips the mount silently when HostPath does not
 	// exist (os.Stat fails). Used for AWS / Kube / Claude / MCP-auth /
-	// opencode auth.json — artefacts that may be present on some hosts and
+	// auth.json — artefacts that may be present on some hosts and
 	// not others. Does not apply when EvalSymlinks is true (resolution
 	// failure already implies "missing").
 	OptionalIfMissing bool
@@ -156,7 +156,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	specs := []MountSpec{
 		// ── ~/.claude (RW) ───────────────────────────────────────────────
 		// Anthropic API credentials directory. Read-write so the
-		// opencode-claude-auth plugin can refresh OAuth tokens. Mounted
+		// pi-anthropic-oauth extension can refresh OAuth tokens. Mounted
 		// unconditionally — the agent fails gracefully when absent.
 		{
 			HostPath:    filepath.Join(hostHome, ".claude"),
@@ -243,29 +243,6 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	return specs
 }
 
-// StandardOpencodeConfigAllowlist returns the static list of entries in
-// ~/.config/opencode/ that should be mounted into the sandbox. Excluded:
-// opencode.json (mounted separately from a per-session temp file), package.json,
-// bun.lock, package-lock.json, node_modules/ (bun ecosystem files the sandbox
-// manages itself).
-//
-// agents/ is excluded for review-* agents (see container.go:1019-1025 for the
-// full rationale).
-func StandardOpencodeConfigAllowlist(isReview bool) []string {
-	allowlist := []string{
-		"AGENTS.md",
-		"plugins",
-		"skills",
-		"command",
-		"tui.json",
-		".gitignore",
-		"mcp-atlassian-slim-proxy.mjs",
-	}
-	if !isReview {
-		allowlist = append(allowlist, "agents")
-	}
-	return allowlist
-}
 
 // appendPodmanVolume appends a podman --volume argument pair for the given
 // MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via

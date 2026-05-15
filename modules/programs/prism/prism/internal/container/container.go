@@ -404,7 +404,7 @@ func (m *Manager) Name() string { return m.name }
 // stem identifies the artefact (e.g. "gitdir", "ssh-config"); suffix is ""
 // for most artefacts and ".sb" for the sandbox-exec SBPL profile.
 //
-// It is a free function so that exported helpers like OpencodeConfigFilePath
+// It is a free function so that exported helpers like HarnessConfigFilePath
 // can share the same path logic without requiring a Manager receiver.
 func sessionTempPath(stem, suffix, name string) string {
 	return filepath.Join(os.TempDir(), "prism-"+stem+"-"+name+suffix)
@@ -456,31 +456,31 @@ func (m *Manager) allowedSignersFilePath() string {
 	return m.tempPath("allowed-signers", "")
 }
 
-// opencodeConfigFilePath returns the host path for the temporary opencode.json
+// harnessConfigFilePath returns the host path for the temporary opencode.json
 // config file written before container start. The file is mounted read-only
 // at /root/.config/opencode/opencode.json inside the container so that plugin
 // paths (e.g. "./plugins/my-plugin") resolve correctly relative to the config
 // file location.
-func (m *Manager) opencodeConfigFilePath() string {
-	return OpencodeConfigFilePath(m.name)
+func (m *Manager) harnessConfigFilePath() string {
+	return HarnessConfigFilePath(m.name)
 }
 
-// OpencodeConfigFilePath returns the host path for the temporary opencode.json
+// HarnessConfigFilePath returns the host path for the temporary opencode.json
 // config file for the given session name. The path is deterministic and
 // derived from the session name, so callers outside the Manager (e.g.
 // cmd/spawn.go) can write the file before the Manager is constructed.
 // Delegates to sessionTempPath so all per-session paths share one naming rule.
-func OpencodeConfigFilePath(sessionName string) string {
-	return sessionTempPath("opencode-config", "", sessionName)
+func HarnessConfigFilePath(sessionName string) string {
+	return sessionTempPath("harness-config", "", sessionName)
 }
 
-// WriteOpencodeConfig writes content to the temp opencode.json file for the
+// WriteHarnessConfig writes content to the temp opencode.json file for the
 // given session name. It creates or overwrites the file with mode 0o644.
 // Returns a wrapped error on failure.
-func WriteOpencodeConfig(sessionName, content string) error {
-	path := OpencodeConfigFilePath(sessionName)
+func WriteHarnessConfig(sessionName, content string) error {
+	path := HarnessConfigFilePath(sessionName)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("container: write opencode config for session %q: %w", sessionName, err)
+		return fmt.Errorf("container: write harness config for session %q: %w", sessionName, err)
 	}
 	return nil
 }
@@ -715,7 +715,7 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 // directory is still absent when podman runs, podman will produce the real
 // error. Returns a non-nil error only when multiple dirs fail.
 //
-// perSessionOpencode controls whether the per-session opencode state directory
+// perSessionOpencode controls whether the per-session pi state directory
 // (~/.local/share/opencode/prism-sessions/<name>/) is created. The podman path
 // requires it (Darwin virtiofs WAL-mode locking workaround); the bwrap path
 // shares ~/.local/share/opencode/ directly and does not need a per-session dir.
@@ -727,19 +727,19 @@ func (m *Manager) prepareVolumeDirs(perSessionOpencode bool) error {
 
 	var errs []string
 
-	// Per-session opencode state directory (podman only).
+	// Per-session pi state directory (podman only).
 	if perSessionOpencode {
-		opencodeSessionDir := filepath.Join(home, ".local", "share", "opencode", "prism-sessions", m.name)
-		if err := os.MkdirAll(opencodeSessionDir, 0o755); err != nil {
-			log.Printf("container: failed to create per-session opencode state dir %q: %v", opencodeSessionDir, err)
+		piSessionDir := filepath.Join(home, ".local", "share", "pi", "prism-sessions", m.name)
+		if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
+			log.Printf("container: failed to create per-session pi state dir %q: %v", piSessionDir, err)
 			errs = append(errs, err.Error())
 		}
 	}
 
 	// opencode plugin/model cache.
-	opencodeCacheDir := filepath.Join(home, ".cache", "opencode")
-	if err := os.MkdirAll(opencodeCacheDir, 0o755); err != nil {
-		log.Printf("container: failed to create opencode cache dir %q: %v", opencodeCacheDir, err)
+	piCacheDir := filepath.Join(home, ".cache", "pi")
+	if err := os.MkdirAll(piCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create pi cache dir %q: %v", piCacheDir, err)
 		errs = append(errs, err.Error())
 	}
 

@@ -37,7 +37,7 @@ func TestRunSpawn_UnknownHarness_ReturnsErrorBeforeStateCreated(t *testing.T) {
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
 	cmd.Flags().Bool("attach", false, "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 
 	// Set an unknown harness.
@@ -84,10 +84,10 @@ func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
 	cmd.Flags().Bool("attach", false, "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 
-	_ = cmd.Flags().Set("harness", "opencode")
+	_ = cmd.Flags().Set("harness", "pi")
 
 	t.Setenv("PRISM_HOST_API", "")
 	// Set PRISM_SPAWN_PATH to a non-git temp dir so resolveBareRoot uses it
@@ -106,7 +106,7 @@ func TestRunSpawn_HarnessOpencode_Explicit_PassesValidation(t *testing.T) {
 	// We expect a non-nil error (no git repo), but it must not be a harness
 	// validation error.
 	if err != nil && strings.Contains(err.Error(), "unknown harness") {
-		t.Errorf("runSpawn with --harness opencode returned harness validation error: %v", err)
+		t.Errorf("runSpawn with --harness pi returned harness validation error: %v", err)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestRunSpawn_HarnessDefault_PassesValidation(t *testing.T) {
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
 	cmd.Flags().Bool("attach", false, "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 	// No --harness flag set — stays at default "opencode".
 
@@ -174,11 +174,11 @@ func TestProxySpawn_HarnessForwarded(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "test-harness")
-	_ = cmd.Flags().Set("harness", "opencode")
+	_ = cmd.Flags().Set("harness", "pi")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -189,8 +189,8 @@ func TestProxySpawn_HarnessForwarded(t *testing.T) {
 		if req.Branch != "test-harness" {
 			t.Errorf("branch = %q, want %q", req.Branch, "test-harness")
 		}
-		if req.Harness != "opencode" {
-			t.Errorf("harness = %q, want %q", req.Harness, "opencode")
+		if req.Harness != "pi" {
+			t.Errorf("harness = %q, want %q", req.Harness, "pi")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
@@ -220,7 +220,7 @@ func TestProxySpawn_HarnessAbsentWhenNotExplicit(t *testing.T) {
 	cmd.Flags().String("profile", "", "")
 	cmd.Flags().String("model", "", "")
 	cmd.Flags().String("variant", "", "")
-	cmd.Flags().String("harness", "opencode", "")
+	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "default-harness")

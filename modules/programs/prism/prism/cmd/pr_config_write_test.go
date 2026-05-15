@@ -7,7 +7,7 @@ package cmd
 //	1. The "sandboxed" gate (isoMode == IsolationBwrap)
 //	   correctly admits bwrap and rejects host.
 //	2. The WriteOpencodeConfig write path used by pr.go
-//	   (container.OpencodeConfigFilePath(container.NameForSession(tmuxSession)))
+//	   (container.HarnessConfigFilePath(container.NameForSession(tmuxSession)))
 //	   matches the Manager's read path, so prism agent-run's reconstructed
 //	   Manager can find the file at the path bwrap expects.
 //	3. The gate for calling WriteOpencodeConfig
@@ -64,18 +64,18 @@ func TestPrBwrapWritePathMatchesManagerPath(t *testing.T) {
 	// Simulate the path derivation in pr.go:
 	//   tmuxSessionName = session.NameFor(worktreePath, bareRoot)
 	//   containerName   = container.NameForSession(tmuxSessionName)
-	//   writePath       = container.OpencodeConfigFilePath(containerName)
+	//   writePath       = container.HarnessConfigFilePath(containerName)
 	const branchName = "pr-1234"
 	bareRoot := filepath.Join(t.TempDir(), "myrepo")
 	worktreePath := filepath.Join(bareRoot, branchName)
 	tmuxSessionName := session.NameFor(worktreePath, bareRoot)
 	containerName := container.NameForSession(tmuxSessionName)
 
-	writePath := container.OpencodeConfigFilePath(containerName)
+	writePath := container.HarnessConfigFilePath(containerName)
 
 	// Read path: Manager.opencodeConfigFilePath() calls
 	// OpencodeConfigFilePath(m.name) where m.name = NameForSession(cfg.SessionName).
-	readPath := container.OpencodeConfigFilePath(container.NameForSession(tmuxSessionName))
+	readPath := container.HarnessConfigFilePath(container.NameForSession(tmuxSessionName))
 
 	if writePath != readPath {
 		t.Errorf("write path %q != read path %q — pr.go will write to a path that agent-run's Manager can never find",
@@ -90,7 +90,7 @@ func TestPrBwrapWritePathMatchesManagerPath(t *testing.T) {
 // TestPrBwrapWritesConfigFileWhenContentPresent simulates the pr.go guard:
 //
 //	if isoMode == config.IsolationBwrap && configContent != "" {
-//	    container.WriteOpencodeConfig(containerName, configContent)
+//	    container.WriteHarnessConfig(containerName, configContent)
 //	}
 //
 // When the gate passes, the file must exist with the expected content.
@@ -112,13 +112,13 @@ func TestPrBwrapWritesConfigFileWhenContentPresent(t *testing.T) {
 	// Simulate the gate and the write.
 	isoMode := config.IsolationBwrap
 	if isoMode == config.IsolationBwrap && configContent != "" {
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
 			t.Fatalf("WriteOpencodeConfig: %v", err)
 		}
 	}
-	t.Cleanup(func() { _ = os.Remove(container.OpencodeConfigFilePath(containerName)) })
+	t.Cleanup(func() { _ = os.Remove(container.HarnessConfigFilePath(containerName)) })
 
-	data, err := os.ReadFile(container.OpencodeConfigFilePath(containerName))
+	data, err := os.ReadFile(container.HarnessConfigFilePath(containerName))
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -149,15 +149,15 @@ func TestPrBwrapNoWriteWhenConfigContentEmpty(t *testing.T) {
 
 	// Simulate the pr.go guard.
 	if isoMode == config.IsolationBwrap && configContent != "" {
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
 			t.Fatalf("WriteOpencodeConfig: %v", err)
 		}
 	}
 
 	// File must NOT exist.
-	path := container.OpencodeConfigFilePath(containerName)
+	path := container.HarnessConfigFilePath(containerName)
 	if _, err := os.Stat(path); err == nil {
-		t.Errorf("opencode temp file %q must not exist when configContent is empty, but it does", path)
+		t.Errorf("harness temp file %q must not exist when configContent is empty, but it does", path)
 		_ = os.Remove(path)
 	}
 }
@@ -184,14 +184,14 @@ func TestPrHostModeNoWrite(t *testing.T) {
 	// Simulate the pr.go guard. For host mode it must not fire regardless of
 	// whether configContent is populated.
 	if isoMode == config.IsolationBwrap && configContent != "" {
-		if err := container.WriteOpencodeConfig(containerName, configContent); err != nil {
+		if err := container.WriteHarnessConfig(containerName, configContent); err != nil {
 			t.Fatalf("WriteOpencodeConfig: %v", err)
 		}
 	}
 
-	path := container.OpencodeConfigFilePath(containerName)
+	path := container.HarnessConfigFilePath(containerName)
 	if _, err := os.Stat(path); err == nil {
-		t.Errorf("host-mode pr must not write opencode temp file %q, but it exists", path)
+		t.Errorf("host-mode pr must not write harness temp file %q, but it exists", path)
 		_ = os.Remove(path)
 	}
 }

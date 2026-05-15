@@ -37,7 +37,7 @@ func TestRunSessionsList_TabularOutput(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	sessions, err := d.AllSessions()
@@ -73,9 +73,9 @@ func TestRunSessionsList_RepoFilter(t *testing.T) {
 
 	iid1 := uuid.New().String()
 	iid2 := uuid.New().String()
-	insertTestSession(t, d, iid1, "repo-a@main", "repo-a", "/code/repo-a", "opencode",
+	insertTestSession(t, d, iid1, "repo-a@main", "repo-a", "/code/repo-a", "pi",
 		base.Add(-2*time.Hour), base, "finished", "")
-	insertTestSession(t, d, iid2, "repo-b@main", "repo-b", "/code/repo-b", "opencode",
+	insertTestSession(t, d, iid2, "repo-b@main", "repo-b", "/code/repo-b", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	sessions, err := d.SessionsForRepo("repo-a")
@@ -104,9 +104,9 @@ func TestRunSessionsList_SinceFilter(t *testing.T) {
 
 	iidOld := uuid.New().String()
 	iidNew := uuid.New().String()
-	insertTestSession(t, d, iidOld, "repo@old", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iidOld, "repo@old", "testrepo", "/code", "pi",
 		base.Add(-30*24*time.Hour), base.Add(-29*24*time.Hour), "finished", "")
-	insertTestSession(t, d, iidNew, "repo@new", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iidNew, "repo@new", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	sinceMs := base.Add(-7 * 24 * time.Hour).UnixMilli()
@@ -137,9 +137,9 @@ func TestRunSessionsList_JSONOutput(t *testing.T) {
 
 	iid1 := uuid.New().String()
 	iid2 := uuid.New().String()
-	insertTestSession(t, d, iid1, "repo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid1, "repo@main", "testrepo", "/code", "pi",
 		base.Add(-2*time.Hour), base.Add(-1*time.Hour), "finished", "/archive/1")
-	insertTestSession(t, d, iid2, "repo@feature", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid2, "repo@feature", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "")
 
 	sessions, err := d.AllSessions()
@@ -225,7 +225,7 @@ func TestRunSessionsList_JSONOutput_ArchivePath(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	iid := uuid.New().String()
-	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "opencode",
+	insertTestSession(t, d, iid, "testrepo@main", "testrepo", "/code", "pi",
 		base.Add(-1*time.Hour), base, "finished", "/some/archive/path")
 
 	sessions, err := d.AllSessions()

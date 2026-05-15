@@ -3,7 +3,7 @@ name: prism
 description: Spawn isolated agent sessions in their own git worktrees using the prism tool. Use when the user asks to spawn an agent, delegate work to another session, run something in parallel, or work on a PR or different repo.
 ---
 
-> **Note:** The prism source code and this skill file live in the `nixos-config` repository under `modules/programs/prism/`. Changes to prism itself — the Go CLI, tmux config, opencode agents, and skills — are made there.
+> **Note:** The prism source code and this skill file live in the `nixos-config` repository under `modules/programs/prism/`. Changes to prism itself — the Go CLI, tmux config, agents, and skills — are made there.
 
 ## Introspection layers
 
@@ -56,7 +56,7 @@ Flag `type` is one of: `bool`, `string`, `int`, `duration`, `stringArray`, `enum
 
 # Spawning Agents with prism
 
-`prism spawn` creates a new git worktree, starts a tmux session in it, and launches opencode. Use it when work should be isolated, long-running, or in a different repo — rather than a subagent, which shares the current session context.
+`prism spawn` creates a new git worktree, starts a tmux session in it, and launches the agent harness (pi). Use it when work should be isolated, long-running, or in a different repo — rather than a subagent, which shares the current session context.
 
 ## When to use prism spawn vs a subagent
 
@@ -144,7 +144,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 |---|---|
 | `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism sessions list` and the tmux picker without looking anything up. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
-| `--prompt <text>` | Instruction passed to opencode on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
+| `--prompt <text>` | Instruction passed to the agent on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Opencode agent to use (`worker` or `plan`). Defaults to `worker`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
@@ -154,7 +154,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 - **Headless by default**: the session is created in the background. The user can switch to it via the prism dashboard (`C-w`) or picker (`C-f`).
 - **`--attach`**: use when the user wants to be taken directly to the new session.
-- The prompt is sent to opencode automatically after startup — no manual input needed.
+- The prompt is sent to the agent automatically after startup — no manual input needed.
 - Each spawned session gets its own worktree, so changes are isolated from other branches.
 
 ## Delegating work to another repo
@@ -600,7 +600,7 @@ See [Debugging a running or stuck session](#debugging-a-running-or-stuck-session
 
 ## Sending a follow-up prompt to a running session
 
-Use `prism prompt <session> --prompt <text>` to send a follow-up message to the opencode agent in a session that is already running (or has finished and is waiting for input):
+Use `prism prompt <session> --prompt <text>` to send a follow-up message to the agent in a session that is already running (or has finished and is waiting for input):
 
 ```bash
 # Simple prompt — single quotes prevent shell interpolation
@@ -625,7 +625,7 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 |---|---|
 | `--prompt <text>` | Prompt text to send. Supports `-` to read from stdin. |
 | `--prompt-file <path>` | Read prompt from a file. Mutually exclusive with `--prompt`. |
-| `--deliver-as <mode>` | Delivery mode for socket-pipe (PI) sessions: `steer` (default), `followUp`, or `nextTurn`. Has no effect for opencode (HTTP) sessions. |
+| `--deliver-as <mode>` | Delivery mode for socket-pipe (PI) sessions: `steer` (default), `followUp`, or `nextTurn`. Has no effect for HTTP-transport sessions. |
 
 **Delivery modes** (relevant for PI / socket-pipe sessions):
 
@@ -637,7 +637,7 @@ see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
 
 The CLI validates the mode client-side before making any network call. An invalid value exits non-zero with a message listing the accepted values.
 
-The prompt is delivered directly via HTTP to the opencode session. The session must exist and have an active opencode port — use `prism sessions list` to check first.
+The prompt is delivered directly via HTTP to the session. The session must exist and have an active harness port — use `prism sessions list` to check first.
 
 ### Waiting state guard
 
@@ -803,11 +803,11 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **`exit status 125`** — the `podman container create` (or `podman run`) command failed at the OS level. The actual cause is on the preceding line(s) in the log — read upward from this line to find it.
 
-- **`container did not become ready within 120s`** — the container started but the sidecar never reached the ready state. Usual causes: a misconfigured `opencode.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the `podman run` command line and any JSON parse errors.
+- **`container did not become ready within 120s`** — the container started but the sidecar never reached the ready state. Usual causes: a misconfigured `harness-config.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the `podman run` command line and any JSON parse errors.
 
 - **Session rows present in `prism sessions list` but no events in `prism checkin`** — the container either never started or died immediately after creation. Run `prism logs <session>` to see the full podman command line and its stderr output.
 
-- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value passed to opencode is incorrect. Check the container's `opencode.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
+- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the container's `harness-config.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
 
 - **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to remove the stale row and any dangling port allocation.
 

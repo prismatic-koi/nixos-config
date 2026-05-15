@@ -61,7 +61,7 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents
 	if s.ModelID != nil {
 		modelID = *s.ModelID
 	}
-	harness := "opencode"
+	harness := "pi"
 	if s.Harness != nil && *s.Harness != "" {
 		harness = *s.Harness
 	}
