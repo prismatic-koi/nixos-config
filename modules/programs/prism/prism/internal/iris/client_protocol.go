@@ -144,18 +144,29 @@ type DaemonSessionEventFrame struct {
 //
 //	{"type": "session_state", "session_name": "...", "state": "active"}
 type DaemonSessionStateFrame struct {
-	Type        string `json:"type"`         // "session_state"
+	Type        string `json:"type"` // "session_state"
 	SessionName string `json:"session_name"`
 	State       string `json:"state"` // one of the SessionState constants
 }
 
-// DaemonSessionSpawnedFrame acknowledges a successful session_spawn.
+// DaemonSessionSpawnedFrame acknowledges a successful session_spawn and
+// carries a snapshot of the newly-spawned session so the requesting client
+// (and any future fan-out subscribers) can update its session list without
+// re-issuing a sessions_list request.
 //
-//	{"type": "session_spawned", "name": "...", "instance_id": "..."}
+// The Session field is optional for wire-format backwards compatibility:
+// older daemons may emit the frame with only Name and InstanceID, in which
+// case clients should treat the absence of Session as a signal to refresh
+// via sessions_list. New daemons populate Session unconditionally.
+//
+//	{"type": "session_spawned", "name": "...", "instance_id": "...",
+//	 "session": {"name": "...", "instance_id": "...", "state": "spawning",
+//	              "role": "worker", "worktree": "...", "started_at": "..."}}
 type DaemonSessionSpawnedFrame struct {
-	Type       string `json:"type"`        // "session_spawned"
-	Name       string `json:"name"`        // the new session's logical name
-	InstanceID string `json:"instance_id"` // the new session's instance UUID
+	Type       string           `json:"type"`              // "session_spawned"
+	Name       string           `json:"name"`              // the new session's logical name
+	InstanceID string           `json:"instance_id"`       // the new session's instance UUID
+	Session    *SessionSnapshot `json:"session,omitempty"` // full snapshot of the new session (optional for backwards compat)
 }
 
 // DaemonErrorFrame is an error response to a client request.
@@ -176,17 +187,17 @@ type DaemonPongFrame struct {
 
 // Client-socket frame type constants.
 const (
-	ClientFrameSessionsList        = "sessions_list"
-	ClientFrameSessionSubscribe    = "session_subscribe"
-	ClientFrameSessionUnsubscribe  = "session_unsubscribe"
-	ClientFrameSessionSpawn        = "session_spawn"
-	ClientFrameSessionKill         = "session_kill"
-	ClientFramePromptDeliver       = "prompt_deliver"
-	ClientFramePing                = "ping"
-	DaemonFrameSessionsSnapshot    = "sessions_snapshot"
-	DaemonFrameSessionEvent        = "session_event"
-	DaemonFrameSessionState        = "session_state"
-	DaemonFrameSessionSpawned      = "session_spawned"
-	DaemonFrameError               = "error"
-	DaemonFramePong                = "pong"
+	ClientFrameSessionsList       = "sessions_list"
+	ClientFrameSessionSubscribe   = "session_subscribe"
+	ClientFrameSessionUnsubscribe = "session_unsubscribe"
+	ClientFrameSessionSpawn       = "session_spawn"
+	ClientFrameSessionKill        = "session_kill"
+	ClientFramePromptDeliver      = "prompt_deliver"
+	ClientFramePing               = "ping"
+	DaemonFrameSessionsSnapshot   = "sessions_snapshot"
+	DaemonFrameSessionEvent       = "session_event"
+	DaemonFrameSessionState       = "session_state"
+	DaemonFrameSessionSpawned     = "session_spawned"
+	DaemonFrameError              = "error"
+	DaemonFramePong               = "pong"
 )

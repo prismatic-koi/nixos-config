@@ -520,10 +520,20 @@ func (cs *ClientSocket) handleSessionSpawn(ctx context.Context, w *jsonlWriter, 
 		return
 	}
 
+	rec := sup.SessionRecord()
+	snap := SessionSnapshot{
+		Name:       rec.SessionName,
+		InstanceID: sup.InstanceID(),
+		State:      string(rec.State),
+		Role:       rec.Role,
+		Worktree:   rec.Worktree,
+		StartedAt:  rec.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
+	}
 	_ = w.write(DaemonSessionSpawnedFrame{
 		Type:       DaemonFrameSessionSpawned,
-		Name:       sup.SessionRecord().SessionName,
-		InstanceID: sup.InstanceID(),
+		Name:       snap.Name,
+		InstanceID: snap.InstanceID,
+		Session:    &snap,
 	})
 }
 

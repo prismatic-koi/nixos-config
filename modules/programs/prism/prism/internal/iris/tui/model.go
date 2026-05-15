@@ -31,10 +31,10 @@ import (
 // --- Layout constants ---
 
 const (
-	leftPaneRatio  = 0.35  // fraction of total width for the session list
-	bottomBarHeight = 3     // prompt box height in lines
-	minLeftWidth   = 28
-	minRightWidth  = 20
+	leftPaneRatio   = 0.35 // fraction of total width for the session list
+	bottomBarHeight = 3    // prompt box height in lines
+	minLeftWidth    = 28
+	minRightWidth   = 20
 )
 
 // --- Colour scheme (gruvbox-dark inspired, same as prism dashboard) ---
@@ -266,6 +266,46 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+
+	case iris.DaemonFrameSessionSpawned:
+		// A new session has been spawned. Append it to the session list so
+		// the user sees it without restarting the TUI.
+		//
+		// Malformed frames (missing payload or empty name) are skipped:
+		// rendering an empty row would be worse than no-op, and a future
+		// sessions_snapshot will reconcile the list anyway.
+		if msg.Spawned == nil || msg.Spawned.Name == "" {
+			return m, nil
+		}
+		spawned := msg.Spawned
+		// Build a snapshot for the new row. Prefer the daemon-supplied
+		// Session record (which carries state/role/worktree/started_at); fall
+		// back to the minimal Name+InstanceID fields for forward compat with
+		// older daemons that don't populate Session.
+		var snap iris.SessionSnapshot
+		if spawned.Session != nil {
+			snap = *spawned.Session
+		} else {
+			snap = iris.SessionSnapshot{
+				Name:       spawned.Name,
+				InstanceID: spawned.InstanceID,
+			}
+		}
+		// Dedupe defensively: if the session is already in the list (e.g.
+		// the daemon emitted both a snapshot and a session_spawned for the
+		// same incarnation), treat the frame as an update rather than a
+		// duplicate-append.
+		for i, si := range m.sessions {
+			if si.snap.Name == snap.Name {
+				m.sessions[i].snap = snap
+				return m, nil
+			}
+		}
+		// Append. sessions_snapshot itself is unsorted (it iterates the
+		// supervisor map in cmd/iris/main.go), so appending is consistent
+		// with the existing ordering — the new row simply appears at the
+		// bottom of the list.
+		m.sessions = append(m.sessions, sessionItem{snap: snap})
 
 	case iris.DaemonFrameError:
 		if msg.Error != nil {
