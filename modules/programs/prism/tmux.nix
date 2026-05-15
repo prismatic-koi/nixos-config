@@ -10,6 +10,15 @@ let
   isDarwin = pkgs.stdenv.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
+  # iris binary path, used by the prefix+i context-switcher popup binding
+  # (issue #1671). The iris module's `pkgs.iris` is enabled per-host via
+  # nx.programs.iris.enable, but the tmux binding is wired unconditionally:
+  # hosts that do not enable iris simply get a popup that fails fast with
+  # "iris daemon not running" (or "command not found" if the binary is
+  # missing). That is acceptable for the coexistence window — the binding
+  # is opt-in via the prism prefix, so it never fires unless the user asks.
+  irisPkg = pkgs.callPackage ../../../pkgs/iris.nix { };
+  iris = "${irisPkg}/bin/iris";
 
   # Sandboxed-pane guard for tmux if-shell.
   #
@@ -192,6 +201,15 @@ in
 
               # context switcher popup (C-f)
               bind -n C-f display-popup -E -w 80% -h 80% -b single "${prism} switch"
+
+              # iris context-switcher popup (prefix+i, issue #1671).
+              # Mirrors the C-f popup geometry (80% x 80%, -b single, -E to
+              # close on child exit). C-f stays bound to `prism switch` for
+              # the iris coexistence window; the cutover to a shared key
+              # happens at D-11. -d "#{pane_current_path}" so `iris switch`'s
+              # "[+] spawn new" flow defaults its worktree prompt to the
+              # caller pane's directory.
+              bind i display-popup -E -d "#{pane_current_path}" -w 80% -h 80% -b single "${iris} switch"
 
               # C-w: run a fresh dashboard process directly in a popup.
               # Passes --caller-session so the "you are here" indicator works
