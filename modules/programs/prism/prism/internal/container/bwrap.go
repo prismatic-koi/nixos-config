@@ -328,20 +328,14 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = appendBwrapBind(args, spec)
 	}
 
-	// ── opencode shared state dir (read-write) ─────────────────────────────
-	// bwrap sessions share the host's ~/.local/share/opencode/ directly: a
-	// single SQLite DB across all sessions (host mode, bwrap mode, and the
-	// non-prism opencode CLI). The per-session isolation used by the podman
-	// path exists solely to work around a virtiofs WAL-mode locking issue on
-	// Darwin — that path doesn't apply here because bwrap is Linux-only and
-	// SQLite WAL works correctly across concurrent processes on a shared
-	// filesystem.
-	//
-	// Kept inline: the mount semantics differ from podman's per-session
-	// state dir (which lives at /root/.local/share/opencode under a
-	// per-container subdir), so no shared spec entry exists.
-	piDataDir := filepath.Join(home, ".local", "share", "pi")
-	args = append(args, "--bind", piDataDir, piDataDir)
+	// NOTE: An unconditional --bind of ~/.local/share/pi used to live here as
+	// part of the opencode→pi rename in #1609. PI does NOT use that XDG path —
+	// it lives at ~/.pi/agent/ (see internal/harness/pi/archive.go). The mount
+	// was dead and broke fresh installs where the source directory did not
+	// exist (bwrap aborts on missing --bind sources). Removed locally to
+	// unblock `nh switch`; proper cleanup of the sandbox_exec.go SBPL rules,
+	// container.go per-session subdir, and dispatch.go archiveSharedStorageRoot
+	// to follow in a PR.
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
 	// Mount the parent directory, not the socket file directly (same pattern
