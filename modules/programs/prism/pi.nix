@@ -24,6 +24,32 @@
         the Atlassian MCP server.
       '';
     };
+    nx.programs.prism.pi.atlassian.defaultCloudId = lib.mkOption {
+      type = lib.types.str;
+      default = "";
+      example = "08986a80-a6ed-4480-ae2d-4a439d50d71b";
+      description = ''
+        Default Atlassian cloud ID to use when the agent omits the cloudId
+        parameter in any Atlassian MCP tool call. When set, the value is
+        exposed to the pi Atlassian extension as the ATLASSIAN_DEFAULT_CLOUD_ID
+        environment variable, and every tool call that omits cloudId has the
+        default injected automatically before being forwarded upstream.
+
+        The tool descriptions surfaced to the agent (via tools/list) are also
+        updated to mark cloudId as optional and reference this default.
+
+        Defaults to "" (empty string), which preserves the current behaviour
+        where cloudId is required on every tool call.
+
+        Single-site setups: set this to the UUID of your Atlassian site (find
+        it via getAccessibleAtlassianResources or from your Atlassian admin).
+        For example, thankyoupayroll.atlassian.net uses
+        08986a80-a6ed-4480-ae2d-4a439d50d71b.
+
+        Multi-site setups: leave this empty and pass cloudId explicitly on
+        each tool call (current behaviour).
+      '';
+    };
   };
 
   config = lib.mkIf config.nx.programs.prism.pi.enable (
@@ -197,7 +223,13 @@
         ];
 
         programs.zsh.shellAliases = {
-          pi = "PI_OFFLINE=1 ${envPrefix} pi";
+          pi =
+            "PI_OFFLINE=1 ${envPrefix}"
+            + lib.optionalString (
+              config.nx.programs.prism.pi.atlassian.enable
+              && config.nx.programs.prism.pi.atlassian.defaultCloudId != ""
+            ) " ATLASSIAN_DEFAULT_CLOUD_ID=${config.nx.programs.prism.pi.atlassian.defaultCloudId}"
+            + " pi";
         };
 
         # Agent markdown files at ~/.config/prism/agents/ — consumed by

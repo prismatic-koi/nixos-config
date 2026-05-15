@@ -40,6 +40,39 @@ The `ATLASSIAN_SITE`, `ATLASSIAN_EMAIL`, and `ATLASSIAN_API_TOKEN` environment
 variables are **not used** by the pi MCP extension and are not forwarded into
 agent sandboxes.
 
+### cloudId — single-site vs multi-site setup
+
+Most Atlassian MCP tools require a `cloudId` parameter (UUID identifying your
+Atlassian site). How you handle this depends on how the host is configured:
+
+**Single-site setup (default cloud ID configured)**
+
+If `nx.programs.prism.pi.atlassian.defaultCloudId` is set in the NixOS config
+(exposed as `ATLASSIAN_DEFAULT_CLOUD_ID`), the extension automatically injects
+the default cloud ID into every tool call that omits it. In this setup:
+
+- **Do not pass `cloudId`** on tool calls — it is injected automatically.
+- **Do not call `getCloudId` or `getAccessibleAtlassianResources` first** —
+  those round-trips are unnecessary.
+- Tool descriptions will mark `cloudId` as optional and document the default.
+
+Example for `thankyoupayroll.atlassian.net` (cloudId `08986a80-a6ed-4480-ae2d-4a439d50d71b`):
+```
+getJiraIssue(issueIdOrKey: "PLAT-182")
+# cloudId is omitted — the default is injected automatically
+```
+
+**Multi-site setup (no default configured)**
+
+If no default is configured, `cloudId` is required on every call. Discover
+valid cloud IDs with:
+```
+getAccessibleAtlassianResources()
+# or
+getCloudId()  # if you have a site link or only an issue key
+```
+Then pass the UUID explicitly on each tool call.
+
 ### Available tools (31 tools via OAuth)
 
 The extension exposes the full Jira and Confluence CRUD surface:
@@ -54,8 +87,9 @@ The extension exposes the full Jira and Confluence CRUD surface:
 - `createJiraIssue` — file a new issue
 - `editJiraIssue` — update issue fields
 - `addCommentToJiraIssue` — comment on an issue
-- `getTransitionsForJiraIssue` — list available transitions
-- `transitionJiraIssue` — move an issue to a new status
+- `getTransitionsForJiraIssue` — list available transitions (falls back to REST API if upstream returns empty)
+- `transitionJiraIssue` — move an issue to a new status by transition ID
+- `transitionJiraIssueByName` — move an issue to a new status by transition name (preferred; resolves name to ID automatically)
 - `getJiraIssueRemoteIssueLinks` — remote links
 - `getVisibleJiraProjects` — list projects
 - `getJiraProjectIssueTypesMetadata` — issue type metadata for a project
@@ -114,10 +148,19 @@ createJiraIssue(
 # Comment
 addCommentToJiraIssue(issueKey: "FOO-123", comment: "Confirmed fixed in staging.")
 
-# List transitions, then transition
+# Transition by name (preferred — no need to look up transition IDs)
+transitionJiraIssueByName(issueIdOrKey: "FOO-123", transitionName: "In Progress")
+
+# Or: list transitions, then transition by ID
 getTransitionsForJiraIssue(issueKey: "FOO-123")
 transitionJiraIssue(issueKey: "FOO-123", transitionId: "31")
 ```
+
+The `transitionJiraIssueByName` tool resolves the transition name
+case-insensitively and calls through to `transitionJiraIssue` automatically.
+If the name matches no available transition, it returns an error listing the
+available names. `getJiraIssue` also returns a `transitions` array so you
+can see available transitions alongside the issue data.
 
 ### Confluence: fetch-edit-push
 
