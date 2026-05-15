@@ -6,6 +6,14 @@ accepted; open questions listed in §11 are explicitly deferred.
 **Author:** worker agent (prism session `daemon-mode-design`)
 **Date:** 2026-05-15
 
+**D-1 refresh (issue #1630, PR #1628):** §2, §3.2, §3.3, §3.4–§3.5 (new),
+§5, §6.1, §6.3, §7.1, §7.2, §8.2, §9.2, §10.1, §11 updated to reflect the
+D-1 audit findings (`pi-rpc-interface.md`). The headline change: the §2
+mechanism pivots from RPC-delegation (`tool_call`/`tool_result` interception)
+to `pi.registerTool()` override — the prism extension overrides the seven
+built-in tools with shims that forward to the iris daemon over the per-session
+harness socket.
+
 ---
 
 ## Table of contents
@@ -110,7 +118,7 @@ no tmux dependency on either side.
 The proposal has two components:
 
 1. **Daemon-supervised pi subprocesses** (pi runs as a daemon-managed child in
-   `--rpc` mode, not as a tmux-hosted process).
+   `--mode rpc` mode, not as a tmux-hosted process).
 2. **Per-tool sandboxing** (the sandbox boundary moves from "wrap the pi
    process" to "wrap each tool call").
 
@@ -124,20 +132,44 @@ or sandbox-exec and pi lives inside. Tool calls are pi's own business — the
 sidecar observes them via SSE events but does not intercept them.
 
 In the new model, pi runs unsandboxed. If the daemon does not own tool
-dispatch, there is no layer at which to insert the per-call sandbox. The
-daemon must be the intermediary between pi's tool call requests and the
-actual tool execution — it receives a tool call from pi via the RPC protocol,
-executes it in a restricted subprocess, and returns the result. This is only
-possible because pi runs in `--rpc` mode: the daemon is the transport layer
-that pi's tool calls flow through.
+dispatch, there is no layer at which to insert the per-call sandbox.
+
+**Mechanism (post-D-1 pivot):** The D-1 audit (`pi-rpc-interface.md`)
+confirmed that pi 0.72.1 does *not* support daemon-delegated tool execution
+via the RPC channel — the `tool_result` stdin command assumed by the original
+§3.3 does not exist, and extensions can only observe or block tool calls, not
+redirect them to an external executor. The mechanism is therefore:
+
+The **prism extension** (loaded into pi at session start) calls
+`pi.registerTool()` for each of pi's seven built-in tools (`read`, `bash`,
+`edit`, `write`, `grep`, `find`, `ls`), mirroring each built-in's full
+`ToolDefinition` (schema, label, description, prompt snippets) but replacing
+the `execute()` callback with a shim that:
+
+1. Forwards the tool call to the iris daemon over the **per-session harness
+   socket** (the existing `PRISM_HARNESS_PIPE` channel) as a `tool_exec`
+   request frame.
+2. Awaits a `tool_exec_result` response frame from the daemon.
+3. Returns the result to pi as the tool's output.
+
+Pi's tool registry uses last-registered-wins semantics
+(`agent-session.js:1830`), so the override takes effect immediately. The LLM
+sees the same tool surface as today. The daemon runs the actual subprocess
+inside a per-call sandbox and returns the result. Execution is daemon-mediated
+without any upstream pi change.
+
+This is the correct substitution for the original RPC-delegation premise: the
+daemon still owns tool dispatch and is the enforcement point for per-call
+sandboxing. The interception point is inside pi's extension runtime rather
+than on pi's stdin/stdout pipe.
 
 Conversely, the per-tool sandbox is only safe if the daemon owns the
 execution context. If pi ran unsandboxed inside tmux (without the daemon's
-RPC layer), model-generated tool calls would execute unrestricted on the host.
-The daemon is the enforcement point.
+extension overrides), model-generated tool calls would execute unrestricted on
+the host. The daemon is the enforcement point.
 
 The two ideas form a single coherent system: the daemon owns the loop
-(spawn, supervise, dispatch, sandbox, return), and the loop is what makes
+(spawn, supervise, override, sandbox, return), and the loop is what makes
 both the UX improvements and the tighter security boundary achievable.
 
 ---
@@ -153,13 +185,15 @@ both the UX improvements and the tighter security boundary achievable.
 │  ┌───────────────┐   ┌────────────────────────────────────────────┐ │
 │  │ session table │   │ per-session supervisor goroutine           │ │
 │  │  name → state │   │  ┌──────────────────────────────────────┐  │ │
-│  │               │   │  │ pi --rpc child process               │  │ │
+│  │               │   │  │ pi --mode rpc child process          │  │ │
 │  │               │   │  │  (JSON-lines in/out via stdin/stdout) │  │ │
+│  │               │   │  │  prism extension loaded:             │  │ │
+│  │               │   │  │   registerTool() overrides active    │  │ │
 │  │               │   │  └──────────────────────────────────────┘  │ │
-│  └───────────────┘   │  tool call dispatcher                      │ │
-│                      │   ├── read/edit/write/grep/find/ls → worktree │ │
+│  └───────────────┘   │  tool call dispatcher (via harness socket) │ │
+│                      │   ├── read/edit/write/grep/find/ls → worktree│ │
 │                      │   ├── bash → restricted subprocess          │ │
-│                      │   └── MCP → restricted subprocess           │ │
+│                      │   └── MCP → (separate; see §5)              │ │
 │                      └────────────────────────────────────────────┘ │
 │                                                                     │
 │  IPC socket: ~/.local/state/<codename>/<codename>.sock              │
@@ -174,14 +208,17 @@ both the UX improvements and the tighter security boundary achievable.
 The daemon spawns each pi instance as a child process:
 
 ```
-pi --rpc [--worktree <path>] [--agent <role>]
+pi --mode rpc [--session <path>] [--agent <role>]
 ```
 
-In `--rpc` mode, pi reads JSON-line frames from stdin and writes JSON-line
-frames to stdout. The daemon holds both ends of the pipe. The exact flag name
-and argument shape is subject to pi's own RPC protocol; the daemon must be
-compiled against a known pi version or discover the flags at startup. See
-§11 (Open questions) for the version-pinning question.
+In `--mode rpc`, pi reads JSON-line commands from stdin and writes JSON-line
+events to stdout. The daemon holds both ends of the pipe. The `--mode rpc`
+flag is confirmed in pi 0.72.1 (`pi-rpc-interface.md` §Q1).
+
+There is **no `--worktree` flag** in pi 0.72.1. Pi uses the process working
+directory (`cwd`) as its worktree. The daemon `chdir()`s to the session's
+worktree before calling `os.StartProcess` / `exec.Cmd` so that pi's file
+operations are automatically scoped to the correct directory.
 
 The spawn sequence is:
 
@@ -193,87 +230,232 @@ The spawn sequence is:
    `instance_id` (UUID) and a `state` of `spawning`.
 3. **Daemon resolves credentials** for the session (§7). Credentials are
    placed into the pi child's environment, not into a fake-home mount.
-4. **Daemon starts the pi child process** via `os.StartProcess` or
-   `exec.Cmd`. The child's stdin/stdout are connected to the daemon's
-   per-session pipe goroutines. stderr is captured to a log file.
-5. **Pi sends its first RPC frame** (a `hello` or session-ready signal,
-   per pi's RPC protocol). The daemon transitions the session to `active`
+4. **Daemon writes a per-session pi config** that loads the prism extension
+   (pointing at the extension file on disk). The host's
+   `~/.config/pi/settings.json` does **not** auto-load the prism extension;
+   iris writes a scoped config for each session so that the extension is
+   active only within iris-managed sessions. See §3.4 for the escape-hatch
+   policy.
+5. **Daemon starts the pi child process** via `os.StartProcess` or
+   `exec.Cmd`. The child's cwd is set to the session worktree. The child's
+   stdin/stdout are connected to the daemon's per-session pipe goroutines.
+   stderr is captured to a log file. The `IRIS_DAEMON_SOCK` env var is set
+   to the path of the per-session harness socket.
+6. **Pi loads the prism extension**; the extension dials the harness socket,
+   performs the `hello`/`hello_ack` handshake, and calls `pi.registerTool()`
+   for all seven built-ins (gated on `IRIS_DAEMON_SOCK` — see §3.4).
+7. **Extension calls `pi.getAllTools()` and asserts the tool surface** (§3.5).
+   Any fatal divergence aborts the session before any LLM turn runs.
+8. **Pi sends its first RPC events** on stdout. The daemon monitors these
+   for the `agent_start` event, then transitions the session to `active`
    and marks it ready.
-6. **Supervisor goroutine runs** for the lifetime of the child (§3.4).
+9. **Supervisor goroutine runs** for the lifetime of the child (§3.4 lifecycle
+   section, now renumbered as §3.6 below).
 
-### 3.3 The JSON-line RPC protocol surface
+### 3.3 Protocol surfaces
 
-The daemon consumes and produces JSON-line frames on the child's
-stdin/stdout. The pi RPC protocol is documented in the pi monorepo at
-`packages/coding-agent/docs/rpc.md`. The daemon is the *client* that sends
-prompts and receives events; pi is the *server* that processes them.
+D-1's audit (`pi-rpc-interface.md` §Q3) found that the design doc's original
+§3.3 frame table conflated two separate, distinct protocols. They are
+documented separately here.
 
-Key frame types the daemon consumes from pi (pi → daemon):
+#### 3.3.1 Pi RPC protocol (stdin/stdout of `pi --mode rpc`)
 
-| Frame type | Meaning |
+The pi RPC protocol is an **observation + steering** protocol, not a
+**delegation** protocol. The daemon sends commands (prompts, model switches,
+abort) and receives lifecycle events. Tool execution is **not** part of this
+protocol — it flows through the harness socket instead (§3.3.2).
+
+**Pi → daemon direction (events on stdout):**
+
+| RPC event | Meaning |
 |---|---|
-| `hello` | Pi is ready; carries pi version, session ID |
-| `state_change` | Agent lifecycle transition (active, waiting, finished, error) |
-| `tool_call` | Pi requests a tool invocation; `{id, name, args}` |
-| `msg_assistant` | Streaming assistant text fragment |
-| `turn_start` / `turn_end` | Turn boundary markers with token usage |
-| `session_shutdown` | Pi process is about to exit cleanly |
-| `provider_error` | LLM provider returned a non-OK response |
-| `auto_retry_start` / `auto_retry_end` | Provider retry lifecycle |
+| `agent_start` | Agent begins processing a prompt |
+| `agent_end` | Agent finishes; contains all messages for the run |
+| `turn_start` | Turn boundary: a new LLM turn begins |
+| `turn_end` | Turn boundary: turn complete; carries message and tool results |
+| `message_start` | Assistant message begins |
+| `message_update` | Streaming text/thinking/tool-call delta |
+| `message_end` | Assistant message complete |
+| `tool_execution_start` | Tool begins execution (observation only; execution is via §3.3.2) |
+| `tool_execution_update` | Streaming tool output delta |
+| `tool_execution_end` | Tool completes (observation only) |
+| `auto_retry_start` | Provider retry begins; fields: `attempt`, `maxAttempts`, `delayMs`, `errorMessage` (camelCase) |
+| `auto_retry_end` | Provider retry ends; fields: `success`, `attempt`, optional `finalError` |
+| `queue_update` | Pending steer/follow-up queue changed |
+| `compaction_start` / `compaction_end` | Context compaction lifecycle |
+| `extension_error` | Extension threw an error |
+| `extension_ui_request` | Extension requested user interaction |
+| `response` | Acknowledgement to any command; carries `success`, `command`, optional `data` or `error` |
 
-Key frame types the daemon sends to pi (daemon → pi):
+**Daemon → pi direction (commands on stdin):**
 
-| Frame type | Meaning |
+| RPC command | Meaning |
 |---|---|
-| `hello_ack` | Daemon acknowledges pi; carries session metadata |
-| `tool_result` | Result of a tool invocation the daemon executed |
-| `prompt` | Deliver a user message; `{text, deliver_as, images}` |
-| `set_model` | Switch pi's active model live |
-| `register_provider` | Configure a provider (API key, base URL) |
-| `set_active_tools` | Restrict the tool set the LLM can call |
+| `prompt` | Deliver a user message; fields: `message`, optional `images`, optional `streamingBehavior` |
+| `steer` | Queue a steering message; fields: `message`, optional `images` |
+| `follow_up` | Queue a follow-up message; fields: `message`, optional `images` |
+| `set_model` | Switch pi's active model; fields: `provider`, **`modelId`** (not `model`) |
 | `abort` | Trigger pi's abort handler |
+| `bash` | User-initiated shell command injected into LLM context; runs in pi's own process, **not** sandboxed by iris (see §6.1) |
+| `get_state` | Request current session state |
+| `compact` | Compact context; optional `customInstructions` |
 
-This frame catalogue is directly derived from the existing pi wire protocol
-specified in `docs/pi-wire-protocol.md`. The daemon-mode design reuses that
-protocol verbatim — the difference is that in daemon mode the daemon *is*
-the full intermediary, not just the sidecar observer.
+**Frames removed from the original design doc's table:**
+- `tool_call` / `tool_result` — these are **not** pi RPC frames (confirmed by
+  D-1's `RpcCommand` union type audit). `tool_call` / `tool_result` remain as
+  *harness socket* frames (§3.3.2 and `pi-wire-protocol.md` §5.3/§5.4).
+- `hello` / `hello_ack` — these are harness socket handshake frames (§4 of
+  `pi-wire-protocol.md`). No handshake exists in the pi RPC stdin/stdout
+  protocol.
+- `session_shutdown` — pi exits on stdin EOF; no RPC event is emitted. The
+  prism extension emits `session_shutdown` to the sidecar over the harness
+  socket on pi's `session_shutdown` hook.
+- `state_change` — not a direct RPC event. The prism extension emits
+  `state_change` to the sidecar over the harness socket, translated from
+  pi's `agent_start`/`agent_end` RPC events.
+- `register_provider` / `set_active_tools` — these exist on the harness socket
+  only (§6.4/§6.5 of `pi-wire-protocol.md`). They are not pi RPC stdin
+  commands.
 
-The one substantive addition is the `tool_result` frame: today pi executes
-tools itself and the sidecar only observes. In daemon mode, pi emits a
-`tool_call` frame and **waits** for a `tool_result` frame from the daemon
-before proceeding. The daemon is responsible for executing the tool (possibly
-sandboxed) and returning the result. This is the core of the per-tool sandbox
-mechanism.
+#### 3.3.2 Iris harness-socket protocol (per-session Unix socket)
 
-### 3.4 Supervised lifecycle
+The prism extension running inside pi communicates with the iris daemon over
+the existing per-session harness socket (`PRISM_HARNESS_PIPE`). This is the
+same socket used by the current prism sidecar (`pi-wire-protocol.md`). In
+daemon mode, iris is the server rather than the sidecar.
+
+The existing frame catalogue (`pi-wire-protocol.md` §5 and §6) is inherited
+unchanged. The following frame types are **added** in daemon mode to support
+the `registerTool()` override mechanism:
+
+**Extension → daemon (new frames):**
+
+| Frame type | Meaning |
+|---|---|
+| `tool_exec` | Tool invocation forwarded from the overridden built-in shim; fields: `id` (tool-call ID), `name` (tool name), `args` (tool arguments object) |
+
+**Daemon → extension (new frames):**
+
+| Frame type | Meaning |
+|---|---|
+| `tool_exec_result` | Result of a tool invocation executed by the daemon in a sandbox; fields: `id` (matching `tool_exec.id`), `success` (boolean), `output` (string) |
+
+The extension's overridden tool shim:
+1. Sends a `tool_exec` frame to the iris daemon.
+2. Awaits the matching `tool_exec_result` frame.
+3. Returns `output` to pi as the tool result (or surfaces an error if
+   `success=false`).
+
+The existing `tool_call` and `tool_result` frames (`pi-wire-protocol.md`
+§5.3/§5.4) continue to be emitted by the extension to the daemon for DB
+logging — they are observation frames that record tool activity in
+`agent_events`, independent of the `tool_exec`/`tool_exec_result` dispatch
+channel.
+
+> **TODO:** Add the `tool_exec` / `tool_exec_result` frame schemas as a new
+> section in `pi-wire-protocol.md` (follow-up to this PR; the frames are
+> normatively defined here for D-3 implementers).
+
+### 3.4 Extension load policy and escape hatch
+
+The iris daemon controls the prism extension load policy. Specifically:
+
+- **The daemon writes a per-session pi config** that loads the prism extension.
+  The host's `~/.config/pi/settings.json` is not modified. Extension loading
+  is scoped to iris-managed sessions only.
+
+- **The extension's `registerTool()` calls are gated on `IRIS_DAEMON_SOCK`.**
+  When the env var is set (i.e. pi was spawned by iris), the extension's
+  `session_start` handler connects to the harness socket and overrides all
+  seven built-in tools with the iris dispatch shims. When the env var is
+  absent, the `session_start` handler is a no-op: no tools are overridden, the
+  harness socket is not contacted, and pi runs with vanilla built-in tool
+  implementations.
+
+- **Emergency escape hatch:** a user can always run plain `pi` outside iris
+  control by ensuring `IRIS_DAEMON_SOCK` is not set in their environment.
+  This is useful for:
+  - Debugging iris itself without interference from the extension.
+  - Recovering from a broken daemon (pi continues to function with full
+    built-in tools).
+  - Auditing pi's vanilla behaviour independent of iris.
+
+  Because the extension is a no-op without the env var, the escape hatch
+  does not require any extension removal or config change — clearing the
+  env var is sufficient.
+
+### 3.5 Tool surface check at session start
+
+After the prism extension's own `registerTool()` calls complete, and before
+any LLM turn runs, iris calls `pi.getAllTools()` and asserts that the
+LLM-facing tool surface is exactly as expected. This check is the primary
+defence against unauthorised tool access.
+
+**Three fatal conditions:**
+
+1. **Unknown built-in:** a tool with `sourceInfo.source === "builtin"` has a
+   name that is not in the canonical seven (`read`, `bash`, `edit`, `write`,
+   `grep`, `find`, `ls`). An unknown built-in means pi has added a new tool
+   that iris has not reviewed or sandboxed — it would execute unsandboxed.
+
+2. **Unauthorised extension-registered tool:** a tool with
+   `sourceInfo.source === "extension"` was registered by an extension whose
+   name is not on the iris allowlist. The initial allowlist is:
+   `prism`, `atlassian`, `anthropic-oauth`. Any tool from an extension
+   outside this list is fatal — iris cannot sandbox or validate it. Updating
+   the allowlist is a config change, not a code change.
+
+3. **Failed override of a canonical built-in:** one of the seven canonical
+   tools, after `registerTool()` calls have run, still resolves to the
+   original built-in implementation rather than the iris override shim. This
+   means the sandboxing mechanism silently failed for that tool.
+
+**On any fatal condition:**
+
+The extension surfaces a clear user-facing message identifying the failing
+tool and the resolution:
+- *Unknown built-in* → update iris's tool allowlist or upgrade iris to
+  support the new tool.
+- *Unauthorised extension tool* → add the extension to the iris allowlist
+  or remove the extension.
+- *Failed override* → indicates an iris bug or a pi API change; unset
+  `IRIS_DAEMON_SOCK` to use vanilla pi while the issue is resolved.
+
+The session is aborted before any LLM turn runs. **There is no
+degraded-operation mode.** The session either runs with the full per-tool
+sandbox or does not run at all. A partial sandbox (some tools overridden,
+some not) is worse than no sandbox because it gives a false sense of
+security.
+
+### 3.6 Supervised lifecycle
 
 Each pi child has a **supervisor goroutine** that:
 
-- Reads stdout frames and dispatches them (tool calls go to the tool
-  dispatcher; state frames go to DB writes; message frames go to the
+- Reads stdout frames and dispatches them (tool-execution observation frames
+  go to DB writes; state frames go to DB writes; message frames go to the
   event fan-out).
-- Writes stdin frames (prompt deliveries, tool results, model switches).
+- Writes stdin frames (prompt deliveries, model switches).
 - Monitors `cmd.Wait()` for the child process to exit.
-- Applies a **restart policy** (§3.4.1) when the child exits unexpectedly.
+- Applies a **restart policy** (§3.6.1) when the child exits unexpectedly.
 
-#### 3.4.1 Restart policy
+#### 3.6.1 Restart policy
 
 | Exit condition | Action |
 |---|---|
-| Clean `session_shutdown` frame + exit 0 | Transition to `finished`. No restart. |
+| Clean `session_shutdown` (harness socket) + exit 0 | Transition to `finished`. No restart. |
 | Exit 0 without `session_shutdown` | Log anomaly. Transition to `finished`. No restart. |
 | Non-zero exit, restart count < N | Transition to `error`, wait `backoff(N)`, restart child. |
 | Non-zero exit, restart count ≥ N (circuit breaker) | Transition to `error`. No further restarts. Notify coordinator if applicable. |
-| Context cancelled (daemon shutdown) | Send `abort` to pi, wait up to `shutdownTimeout`, then SIGTERM/SIGKILL. |
+| Context cancelled (daemon shutdown) | Send `abort` to pi via RPC stdin, wait up to `shutdownTimeout`, then SIGTERM/SIGKILL. |
 
 The restart count threshold `N` and the backoff schedule are configurable
 in the daemon's config file (open question: §11.2). The current prism
 `DefaultSidecarCircuitBreakerThreshold = 3` is the precedent.
 
-#### 3.4.2 In-flight tool calls at restart
+#### 3.6.2 In-flight tool calls at restart
 
-When the child exits with an in-flight tool call (a `tool_call` frame was
-received but no `tool_result` has been sent back):
+When the child exits with an in-flight tool call (a `tool_exec` frame was
+received on the harness socket but no `tool_exec_result` has been sent back):
 
 - If the tool subprocess is still running, the daemon sends SIGTERM to it
   and waits for `toolSubprocessKillTimeout` (default: 5 s).
@@ -376,66 +558,76 @@ The following table enumerates the built-in tools pi exposes, sourced from the
 tool set must not be conflated with opencode's tool set — they differ
 substantially. Notably, pi explicitly ships without sub-agents (`task`), without
 a todo tool (`todowrite`), and without `glob` or `webfetch`.
-Extensions registered via `pi.registerTool()` can add more, but the
-prism-hooks extension does not register additional tools today.
-Atlassian MCP is available as a separate MCP-bridge extension (see below),
-not as a built-in tool.
 
 The seven pi built-in tools are: `read`, `bash`, `edit`, `write`, `grep`,
 `find`, `ls`.
 
 **MCP-bridge tools.** In addition to the seven built-in tools, the Atlassian
 MCP extension (added in #1587, gated on `m4mac` hardware via #1588) is a
-separate category of tooling that reaches pi via an MCP bridge rather than
-being registered as a pi built-in. MCP-bridge tools are not listed in the
-table below — they are a distinct integration layer. When executed in daemon
-mode, an MCP-bridge tool call would run in a network-permitted sandbox profile
-similar to `bash`, because Atlassian API calls require outbound HTTPS. The
-exact sandbox profile for MCP-bridge tools is deferred to a future child issue.
+**separate category** of tooling from the seven canonical built-ins. MCP-bridge
+tools are registered through `pi.registerTool()` by the atlassian extension
+itself — they route their own HTTP traffic directly to the Atlassian API and
+do not pass through the iris daemon's per-tool sandbox dispatch. The atlassian
+extension is on the iris allowlist (`prism`, `atlassian`, `anthropic-oauth`;
+see §3.5), so its tools pass the tool surface check. The exact sandbox profile
+for MCP-bridge tool execution is deferred to a future child issue.
+
+**anthropic-oauth tool-name obfuscation.** The `anthropic-oauth` extension
+obfuscates tool names as `t_<md5>` in outbound Anthropic API requests and
+reverses the mapping on inbound response streams. This obfuscation is
+implemented at the Anthropic provider's wire layer
+(`anthropic-oauth/index.ts:117`, `transforms.ts`). Pi's internal tool
+registry, `pi.getAllTools()`, and the iris override mechanism all operate on
+the original (pre-obfuscation) tool names. The MD5 obfuscation is transparent
+to iris's override mechanism — iris registers tools under their original names
+and the obfuscation layer operates beneath iris's visibility. No iris
+workaround is required.
+
+**Explicitly excluded from every per-tool mount set** (pi-process concerns;
+pi reads these directly from the host in the iris model):
+
+- `~/.claude`, `~/.mcp-auth`, `~/.pi/agent/*`, `~/.cache/bun`, `~/.config/pi/*`
+- `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`
+
+These paths and env vars are pi's own credential surface. In the iris model pi
+runs unsandboxed on the host and reads them directly — there is no need to
+mount them into any per-tool sandbox, and doing so would re-introduce the
+fake-home complexity this design is specifically eliminating.
 
 **Sandbox decision key:**
 
 - **Worktree-scoped subprocess** — executed in a subprocess with its working
-  directory and filesystem view restricted to the session's worktree; no access
-  to paths outside that tree.
+  directory and filesystem view restricted to the session's worktree.
 - **Restricted subprocess** — executed in a subprocess with explicit capability
-  restrictions (bwrap on Linux, sandbox-exec on macOS); the exact profile is
-  described in the Notes column.
-- **Daemon-internal** — implemented entirely inside the daemon process, no
-  subprocess spawned.
+  restrictions (bwrap on Linux, sandbox-exec on macOS).
 
-| Tool | Sandbox decision | Mounts / network | Credential plan | Notes |
+**Network access: permitted for all tools.** The per-tool sandbox does not
+restrict outbound network access. The security boundary enforced by the
+per-tool sandbox is **what data is reachable for exfiltration** (filesystem
+isolation), not whether data can leave the machine. Restricting network at
+the tool subprocess level would break legitimate tool operations (`git push`,
+`gh`, `aws`, Nix fetches) without providing a meaningful security gain, since
+the LLM already has unrestricted network access through pi's own process.
+
+| Tool | Sandbox type | Mounts | Credentials | Network |
 |---|---|---|---|---|
-| `read` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Path traversal enforcement: the path argument is normalised and validated against the worktree root before execution. Absolute paths outside the worktree are rejected. |
-| `edit` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | Same path enforcement as `read`. The subprocess may write only within the worktree. |
-| `write` | Worktree-scoped subprocess | Read-write bind of worktree directory only. No network. | None required. | Same as `edit`. `write` creates new files; path enforcement is identical. |
-| `grep` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Pattern search across files. Read-only bind suffices. |
-| `find` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | File discovery by name/type. Read-only bind suffices. |
-| `ls` | Worktree-scoped subprocess | Read-only bind of worktree directory only. No network. | None required. | Directory listing. Read-only bind suffices. |
-| `bash` | Restricted subprocess (bwrap on Linux, sandbox-exec on macOS) | Worktree directory (RW) + git config + SSH agent socket (conditional) + outbound network. See Notes. | GitHub token (role-scoped, 4-PAT architecture). LLM API keys are **not** injected — bash subprocesses must not make LLM calls. AWS credentials injected conditionally when the session role requires them (see §11 open questions). | `bash` has the widest attack surface of any pi tool. The sandbox profile is the same bwrap/sandbox-exec restriction set used today, but applied per-call rather than once at session start. Commands that require outbound network (e.g. `git push`, `gh`, `aws`) are permitted; inbound connections are blocked. |
+| `read` | Worktree-scoped subprocess | Worktree: **RO** bind; per-session `/tmp`: RW tmpfs; `/nix/store`: RO; `/etc`: RO (with `/etc/wireguard`, `/etc/wpa_supplicant`, `/etc/ssh` shadowed by tmpfs); `/bin`: RO; `/run/current-system`: RO; `~/.nix-profile`: RO | None | Permitted |
+| `grep` | Worktree-scoped subprocess | Same as `read` (worktree RO) | None | Permitted |
+| `find` | Worktree-scoped subprocess | Same as `read` (worktree RO) | None | Permitted |
+| `ls` | Worktree-scoped subprocess | Same as `read` (worktree RO) | None | Permitted |
+| `edit` | Worktree-scoped subprocess | Same as `read` but worktree: **RW** bind | None | Permitted |
+| `write` | Worktree-scoped subprocess | Same as `edit` (worktree RW) | None | Permitted |
+| `bash` | Restricted subprocess (bwrap on Linux, sandbox-exec on macOS) | All of the above (worktree RW) **plus:** `~/.cache/nix` (RW); `/nix/var/nix/daemon-socket` (RW); synthesised `~/.gitconfig` (RO); `~/.ssh/access-key`, `~/.ssh/signing-key`, `~/.ssh/signing-key.pub`, `~/.ssh/allowed_signers`, `~/.ssh/known_hosts` (all five, RO, same remap as current bwrap); synthesised `~/.ssh/config` (RO); `~/.aws/{config,credentials,sso,cli}` (mixed RO/RW per current rules in `internal/container/mounts.go`); `~/.kube/config` (RO) | Role-scoped `GITHUB_TOKEN` (from 4-PAT architecture). AWS credentials injected conditionally when the session role requires them. **LLM API keys are not injected.** | Permitted |
 
-**Notes on `bash` sandbox profile (bwrap, Linux):**
-
-The current `internal/container/mounts.go:StandardSandboxMounts` defines the
-canonical mount set for a pi session. In daemon mode this set is applied
-*per bash tool call* rather than once at session start. The mounts for a
-bash call are:
-
-- Worktree directory (RW bind).
-- `~/.gitconfig` and the synthesised per-session `.git` pointer (RO bind).
-- SSH agent socket, if the command requires git push (conditional).
-- GitHub token via env var (role-scoped, §7).
-- LLM API keys are **not** needed for bash calls — they are injected into
-  pi's process environment directly (§7) and bash subprocesses do not
-  need them.
-- AWS credentials (`~/.aws/config` RO, `~/.aws/sso` RW, `~/.aws/cli` RW)
-  — conditional, present only when the session role requires AWS access.
-
-The full set is derived from the same `StandardSandboxMounts` logic,
-narrowed to what the command actually needs. Fine-grained per-command
-credential injection (giving a `git push` command only a GitHub token and
-nothing else) is an aspirational improvement; v1 of daemon mode uses the
-same per-role mount set as today.
+**Implementation note — reusing `internal/container/mounts.go` plumbing.**
+The iris implementation reuses the `MountSpec` emission machinery from
+`internal/container/mounts.go`: the `MountSpec` struct, `appendBwrapBind`,
+`EvalSymlinks`/`OptionalIfMissing` semantics, and the sensitive-`/etc` tmpfs
+shadowing pattern. However, the iris mount list is **rebuilt per-tool** rather
+than using `StandardSandboxMounts` wholesale — `StandardSandboxMounts` carries
+the full per-process mount set (pi's own credentials, fake home, etc.) that
+the iris model deliberately eliminates. Each tool's mount list is assembled
+from the subset described in the table above.
 
 ---
 
@@ -463,6 +655,17 @@ The threat model does **not** include:
   socket).
 - Kernel-level exploits or container escapes (mitigated by OS patching,
   not by this architecture).
+
+**Note on user-initiated `bash` via the pi RPC command.** Pi's RPC protocol
+includes a `bash` command (Appendix A of `pi-rpc-interface.md`) that executes
+a shell command and injects the output into the LLM's context. This is a
+**user-initiated** action routed through the daemon → pi RPC channel — it is
+not a model-generated tool call. The `bash` RPC command runs in pi's own
+process on the host, unsandboxed by iris. This is intentional: the threat
+model targets *model-generated* tool calls, not commands explicitly sent by
+the daemon or user to pi's RPC channel. User-initiated `bash` via the RPC
+command is semantically equivalent to the user running a shell command
+themselves.
 
 ### 6.2 Current model: per-process sandbox
 
@@ -501,14 +704,21 @@ call.
 | Model reads credentials outside worktree via `read`/`edit`/`write`/`grep`/`find`/`ls` | These tools run in a worktree-scoped subprocess with no access to `~` or any other path. Path traversal is enforced before execution. |
 | Model accumulates credentials via early tool calls for later exfiltration | Credentials are injected per-call, not per-session. A `bash` call that reads a GitHub token gets only that token for that call; it cannot access LLM API keys it was not explicitly given. |
 | Model reads pi's own in-memory API keys via filesystem | Pi's environment is not accessible via any tool call (the tool subprocess is a separate process with a different environment). |
-| Model establishes persistent sidecar via `bash` | Bash subprocess lives only for the duration of the tool call. The daemon waits for subprocess exit before returning `tool_result`. Detached processes (background `&`) are killed when the subprocess group is reaped. |
+| Model establishes persistent sidecar via `bash` | Bash subprocess lives only for the duration of the tool call. The daemon waits for subprocess exit before returning `tool_exec_result`. Detached processes (background `&`) are killed when the subprocess group is reaped. |
+| Model registers an unauthorised tool via a hostile extension | Defended by the tool surface check at session start (§3.5): any tool from an extension not on the iris allowlist aborts the session before any LLM turn runs. |
+| Model exploits an unreviewed new built-in tool | Defended by the tool surface check at session start (§3.5): any unknown built-in (not in the canonical seven) aborts the session. |
+
+**Network access is permitted.** The per-tool sandbox does not restrict
+outbound network for tool subprocesses. The sandbox boundary is filesystem
+isolation (what data is reachable), not network isolation. See §5 for
+rationale.
 
 **Attack classes that become WEAKER under the new model compared to the
 current model:**
 
 | Attack class | Why it is weaker | Mitigation |
 |---|---|---|
-| **Pi itself is a direct attack surface on the host** | Pi runs unsandboxed. A compromised pi binary can read `~/.ssh`, `~/.aws`, `~/.claude`, etc. directly without any tool call — it has the full host environment. In the current model, pi is sandboxed and sees only the fake home. | Pi is a first-party binary (or a pinned version of a trusted dependency). The daemon enforces `tool_result` boundaries even when pi is compromised in a behavioural (not binary) sense — i.e., prompt injection that controls pi's *actions* is still sandboxed at the tool level. Binary compromise of pi is a supply-chain risk mitigated by version pinning and checksum verification. |
+| **Pi itself is a direct attack surface on the host** | Pi runs unsandboxed. A compromised pi binary can read `~/.ssh`, `~/.aws`, `~/.claude`, etc. directly without any tool call — it has the full host environment. In the current model, pi is sandboxed and sees only the fake home. | Pi is a first-party binary (or a pinned version of a trusted dependency). The daemon enforces `tool_exec_result` boundaries even when pi is compromised in a behavioural (not binary) sense — i.e., prompt injection that controls pi's *actions* is still sandboxed at the tool level. Binary compromise of pi is a supply-chain risk mitigated by version pinning and checksum verification. |
 | **Pi reads LLM credentials from `~/.pi/agent/` with no sandbox boundary** | In the current model, `~/.pi/agent/` is bind-mounted into the sandbox (contained). In the new model, pi runs on the host and reads `~/.pi/agent/` directly — no different from today's bind-mount in terms of what pi can access, but there is no sandbox boundary around pi itself. A compromised pi binary has the same access. | Pi is a first-party trusted binary. The attack surface is model-generated tool calls, not pi's own credential reads. This is the same trade-off named in §6.3. |
 | **Outbound network from pi is unrestricted** | Pi runs on the host with full network access. In the current model, the bwrap/sandbox-exec network restriction also limits pi's own outbound calls. | Pi's own network calls are LLM API calls to known providers. Restricting pi's outbound network is at odds with pi functioning at all. This is an accepted trade-off in the daemon model. |
 | **Model can influence pi's own file I/O** | If a future version of pi does direct filesystem I/O outside of tool calls (e.g. logging, caching, telemetry), that I/O is unrestricted on the host. The current model's fake-home limits this to the mounted artefacts. | See §9.2 for how this case is handled architecturally. |
@@ -524,6 +734,7 @@ current model:**
 | Pi supply-chain risk | ✅ Lower (pi is contained) | ❌ Higher (pi is on host) |
 | LLM API key exposure | ⚠️ Available in pi's env (in fake home) | ⚠️ Available in pi's env (on host) |
 | Fake-home credential bugs | ❌ Chronic source of bugs | ✅ Eliminated |
+| Unauthorised tool registration | ❌ No check | ✅ Tool surface check at session start |
 
 The new model is a net improvement for the primary threat (model-generated
 tool calls that abuse the agent's execution context) at the cost of
@@ -553,19 +764,12 @@ PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
 based on the repo's GitHub account (derived from the git remote URL) and
 the session role, and injected as `GITHUB_TOKEN` into the sandbox.
 
-The pi provider and model are passed as CLI flags (`--provider`, `--model`,
-`--thinking`) rather than env vars (see `internal/container/pi_invocation.go`).
-LLM API keys with real in-repo consumers are forwarded into the pi sandbox
-via `credentialEnvVars()` in `internal/container/credentials.go`. As of
-#1605, only two keys are forwarded: `ANTHROPIC_API_KEY` and
-`OPENROUTER_API_KEY`. Five speculative keys (`OPENAI_API_KEY`,
-`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GITHUB_COPILOT_TOKEN`,
-`DEEPSEEK_API_KEY`) were pruned in #1605 — they were not populated on the
-host and had no in-repo consumers. Pi also reads credentials from its own
-config directory (`~/.pi/agent/`), which is bind-mounted into the sandbox.
-
-The profile `agent_env_vars` (`KUBECONFIG`, `AWS_CONFIG_FILE`, `GIT_EDITOR`)
-are injected as additional `--setenv` pairs for all session types.
+In the iris model, `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` are read by
+pi directly from the host environment at startup. They are **not** propagated
+into any tool subprocess — bash subprocesses must not make LLM calls, and the
+file tools have no need for them. Pi also reads credentials from its own
+config directory (`~/.pi/agent/`), accessible directly from the host without
+any bind-mount.
 
 ### 7.2 Per-tool credential plan in daemon mode
 
@@ -575,27 +779,26 @@ receives only the credentials it needs:
 
 | Tool | Credentials injected at call time |
 |---|---|
-| `read`, `edit`, `write`, `grep`, `find`, `ls` | None. These tools do not need credentials. |
-| `bash` | GitHub token (role-scoped, from 4-PAT architecture). LLM API keys are **not** injected — bash subprocesses should not make LLM calls. AWS credentials (optional, injected if the session role requires them). |
+| `read`, `edit`, `write`, `grep`, `find`, `ls` | **None.** These tools do not need credentials. |
+| `bash` | Role-scoped `GITHUB_TOKEN` (from 4-PAT architecture). AWS credentials (from `~/.aws/{config,credentials,sso,cli}`) injected conditionally when the session role requires them. `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` are **not** injected — bash subprocesses must not make LLM calls. |
 
 ### 7.3 Pi's own credentials
 
 In the current architecture, pi reads LLM credentials from its own config
 directory (`~/.pi/agent/`) — either subscription tokens stored there by
 `/login`, or API keys written into pi's settings. The sandbox bind-mounts
-`~/.pi/agent/` so pi can read its own credentials directly. Additionally,
-`~/.pi/agent/atlassian-mcp-oauth.json` is bind-mounted read-write so that
-Atlassian OAuth tokens written by `/login-atlassian` inside the sandbox
-persist to the host path.
+`~/.pi/agent/` so pi can read its own credentials directly.
 
 In daemon mode, pi runs unsandboxed and has direct access to `~/.pi/agent/`
-without any bind-mount. The provider and model are configured via `--provider`
-and `--model` CLI flags at spawn time. No separate credential injection is
+without any bind-mount. Pi reads its own credentials (`~/.pi/agent/auth.json`,
+`~/.pi/agent/settings.json`, `~/.pi/agent/atlassian-mcp-oauth.json`) directly
+from the host. The provider and model are configured via `--provider` and
+`--model` CLI flags at spawn time. No separate credential injection is
 required for the basic daemon-mode design.
 
-A `register_provider` RPC frame approach (§11.5) remains an option for dynamic
-provider configuration or live credential rotation, but is not a prerequisite
-for the core daemon design.
+This is the §1.3 "fake-home pain" elimination: pi's credentials are pi's
+business, and the daemon does not mediate them. The `PI_CODING_AGENT_DIR`
+override remains available for advanced configuration.
 
 ### 7.4 Credential scoping summary
 
@@ -604,13 +807,14 @@ The key improvement over the current model:
 - **GitHub token** is injected into bash subprocesses on demand, not into
   pi's process environment for the entire session. A model that uses `bash`
   to exfiltrate the GitHub token cannot access it in any other tool call context.
-- **LLM API keys** remain in pi's process environment in v1 (necessary for pi
-  to make provider calls). This is the primary remaining credential exposure
-  in the new model and is called out explicitly in the threat model (§6.3).
+- **LLM API keys** (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`) remain in pi's
+  process environment (necessary for pi to make provider calls). They are not
+  propagated into any tool subprocess. This is the primary remaining credential
+  exposure in the new model and is called out explicitly in the threat model
+  (§6.3).
 - **Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`)
-  are part of pi's on-disk credential surface in the current architecture.
-  In daemon mode, pi runs unsandboxed and reads this file directly without
-  a bind-mount.
+  are part of pi's on-disk credential surface. In daemon mode, pi runs
+  unsandboxed and reads this file directly without a bind-mount.
 
 ---
 
@@ -651,10 +855,15 @@ When the daemon restarts (crash, upgrade, user `systemctl restart`):
    The daemon attempts to re-spawn each with the same worktree and role.
    This mirrors the current `prism restore` command (`cmd/restore.go`).
    The new pi child starts a fresh session, but picks up conversation
-   history from the DB via pi's own session-continuation mechanism
-   (open question: §11.6 — does pi's `--rpc` mode support session
-   continuation from a DB-supplied event log?).
-4. **Clients that were connected** receive a connection reset. Reconnecting
+   history from the DB via pi's session-continuation mechanism:
+   `pi --mode rpc --session <full-jsonl-path>` (confirmed by D-1 §Q5).
+4. **The daemon must store the full JSONL file path** in the DB at session
+   creation time — not just the session UUID. The actual pi session path
+   is `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`
+   (D-1 §Q5 correction; see also §9.2). The `harness_session_id` column
+   in the `sessions` table must store this full path to enable restart
+   continuation.
+5. **Clients that were connected** receive a connection reset. Reconnecting
    clients receive a `sessions_snapshot` with the current state.
 
 ### 8.3 What happens across machine reboot
@@ -697,29 +906,30 @@ If the daemon crashes while a tool subprocess is running:
   The tool result from the orphaned subprocess is lost — it will never be
   delivered to the new pi child, which has no memory of the original tool
   call.
-- The DB records the `tool_call` event (written when the call arrived) but
-  no corresponding `tool_result`. This is a detectable orphan state. The
-  daemon's restore path should write a synthetic `tool_result` with
-  `success=false` and `output="daemon restarted mid-call"` for any
-  `tool_call` event without a matching `tool_result` in the last session
-  incarnation.
+- The DB records the `tool_call` event (written when the `tool_exec` frame
+  arrived on the harness socket) but no corresponding `tool_result`. This
+  is a detectable orphan state. The daemon's restore path should write a
+  synthetic `tool_result` with `success=false` and
+  `output="daemon restarted mid-call"` for any `tool_call` event without a
+  matching `tool_result` in the last session incarnation.
 
 ### 9.2 Pi writes to the host filesystem outside of tool calls
 
 In the new model, pi runs unsandboxed on the host. Pi may — intentionally
 or via a future feature addition — perform direct filesystem I/O outside of
-the tool call mechanism:
+the tool call mechanism.
 
-**Examples of current known pi I/O:**
-- pi writes conversation history to `~/.pi/agent/sessions/<session_id>/`
-  (the `harness_session_id` captured in the DB's `sessions` table).
-- pi may write logs to its own log directory.
-- pi may write cache files under `~/.cache/pi/` or similar.
-
-**Examples of hypothetical future pi I/O:**
-- A future pi version might implement a scratchpad feature with direct file
-  writes.
-- A future pi version might write telemetry to disk.
+**Confirmed pi write paths (D-1 §Q6):**
+- `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl` — the
+  actual session JSONL path (D-1 correction; not `~/.pi/agent/sessions/<session_id>/`
+  as the original design doc claimed). The `<encoded-cwd>` is
+  `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`. Pi writes
+  every message, tool call, and turn to this append-only file.
+- `~/.pi/agent/auth.json`, `~/.pi/agent/settings.json`,
+  `~/.pi/agent/atlassian-mcp-oauth.json` — pi's own config and credential
+  files. Written by pi on login, settings changes, and OAuth token refresh.
+- `/tmp/pi-bash-<id>.log` — full bash command output when output exceeds
+  pi's in-memory truncation threshold.
 
 **Architectural position:**
 
@@ -738,22 +948,14 @@ to the DB. Any file writes that do not correspond to a logged `tool_call`
 event are attributable to pi itself. This provides an audit trail even
 without enforcement.
 
-**Prevention boundary:** If pi is later found to be a vector for adversarial
-direct writes (e.g. a prompt injection that exploits a pi feature that does
-direct I/O), the mitigation is a namespace wrapper around the pi process
-that grants write access only to pi's own state directories, not to the
-worktree. This wrapper would be lighter-weight than the current whole-sandbox
-approach and would not require a fake-home dance. This is deferred to a
-future issue and not part of the v1 daemon mode design.
-
 ---
 
 ## 10. Coexistence strategy
 
 ### 10.1 Codename
 
-The new system ships under the codename **`iris`** (placeholder — final
-name TBD, see §11.7). All runtime artefacts use distinct paths to avoid
+The new system ships under the codename **`iris`** (confirmed in the D-2
+tracker, §11.7 resolved). All runtime artefacts use distinct paths to avoid
 colliding with the existing prism system:
 
 | Artefact | Current prism path | Codename (`iris`) path |
@@ -762,9 +964,15 @@ colliding with the existing prism system:
 | DB | `~/.local/state/prism/prism.db` | `~/.local/state/iris/iris.db` |
 | Daemon socket | (does not exist today) | `~/.local/state/iris/iris.sock` |
 | Run directory | `~/.local/state/prism/run/` | `~/.local/state/iris/run/` |
+| Per-session tmpdir | (N/A — whole-pi sandbox) | `~/.local/state/iris/run/<instance_id>/tmp/` |
 | Config file | `~/.config/prism/config.json` | `~/.config/iris/config.json` |
 | Log files | `~/.local/state/prism/logs/` | `~/.local/state/iris/logs/` |
 | Archive root | `~/code/archives/prism/` | `~/code/archives/iris/` |
+
+The per-session tmpdir (`~/.local/state/iris/run/<instance_id>/tmp/`) is the
+host-side backing store for the in-sandbox `/tmp` mount. Each tool subprocess
+sees a fresh `/tmp` backed by this directory; the directory is created at
+session start and deleted at session teardown.
 
 ### 10.2 Parallel operation
 
@@ -807,6 +1015,11 @@ Once parity is reached:
 The rename is a single atomic PR. The codename exists only to allow parallel
 operation during development; it is not a long-lived fork.
 
+D-11 is user-gated: the parity checklist (D-10) is necessary but not
+sufficient. D-11 sits as a deliberate manual decision after iris has been
+battle-tested in real coordinator use. The coordinator (`@prismatic-koi`) is
+the sole arbiter of when "battle-tested" is satisfied.
+
 ---
 
 ## 11. Open questions
@@ -832,15 +1045,10 @@ after the initial draft of this document:
   `internal/container/credentials.go`.
 
 **11.1 Pi `--rpc` mode: does it exist, and what is the exact interface?**
-This design assumes pi supports a `--rpc` (or equivalent) mode where it
-reads prompts from stdin and writes events and tool call requests to stdout.
-The PI wire protocol doc (`docs/pi-wire-protocol.md`) describes the
-extension-to-sidecar protocol, but the daemon-mode design requires the
-daemon to *be* the sidecar — meaning pi's `--rpc` mode must support the
-daemon being the tool executor. Whether this mode exists in the current pi
-binary, what the exact flag is, and whether tool execution can be
-delegated back to the caller are open questions that must be resolved
-before the PoC can begin.
+**Resolved by `pi-rpc-interface.md` (D-1, PR #1628).** The flag is `--mode rpc`.
+Pi does not support daemon-delegated tool execution via the RPC channel;
+the override mechanism via `pi.registerTool()` replaces the original
+RPC-delegation premise. §3.2 and §3.3 are updated accordingly.
 
 **11.2 Restart policy parameters: N and backoff schedule.**
 The circuit-breaker threshold `N` and the backoff schedule for session
@@ -863,31 +1071,37 @@ MCP-bridge sandbox support. This question number is reserved to avoid
 renumbering downstream references.
 
 **11.5 `register_provider` RPC for dynamic provider configuration.**
-Pi currently reads its credentials from `~/.pi/agent/` directly. If a future
-use case requires the daemon to configure providers dynamically (live model
-switching, per-session key isolation), `register_provider` RPC frames are the
-natural mechanism. Whether pi's `--rpc` mode supports `register_provider`
-before the first `prompt` frame, and whether it supersedes the file-based
-credential store, are open questions dependent on pi's RPC protocol (see §11.1).
+**Resolved by `pi-rpc-interface.md` (D-1, PR #1628).** `register_provider`
+exists as a harness socket frame handled by the prism extension (§6.4 of
+`pi-wire-protocol.md`), which proxies it to `pi.registerProvider()` at
+runtime. It is not a pi RPC stdin command. The daemon sends
+`register_provider` on the harness socket; the existing architecture handles
+this without any new pi feature.
 
 **11.6 Session continuation after daemon restart.**
-When a session is re-spawned after a daemon crash, can the new pi child
-pick up the conversation where the old one left off? This requires pi to
-accept a session continuation argument (e.g. a path to its own session
-state directory) so it can replay conversation history. Whether pi's
-`--rpc` mode supports this is an open question.
+**Resolved by `pi-rpc-interface.md` (D-1, PR #1628).** Pi supports session
+continuation via `pi --mode rpc --session <full-jsonl-path>`. The daemon
+must store the full JSONL file path (not just the session UUID) in the DB at
+session creation time. See §8.2.
 
 **11.7 Codename selection.**
-The codename `iris` is a placeholder used in this document. The actual
-codename should be chosen before the PoC begins to avoid confusion in the
-codebase. The codename must not collide with any existing prism subcommand
-or package name.
+**Resolved: codename is `iris`** (confirmed in the D-2 tracker, #1625).
+All paths, binary names, and artefacts in this document use `iris`. This
+design doc refresh (PR #1630) is the resolving artifact.
 
 **11.8 Daemon process privilege and multi-user.**
 This design assumes a single-user daemon (one daemon instance per user,
 owned by that user). Multi-user support (a system-level daemon serving
 multiple users) is explicitly out of scope, but the socket path and DB
 path choices should not preclude it if the requirement arises later.
+
+**11.9 Iris extension allowlist: update policy.**
+The initial iris extension allowlist is `prism`, `atlassian`, `anthropic-oauth`
+(§3.5). Adding a new extension requires updating the allowlist. The update
+is a config change, not a code change — the allowlist is read from the iris
+config file at daemon startup. The policy for *who* may authorise an addition
+(daemon owner vs. code review vs. automatic) is deferred to the D-2 config
+design.
 
 ---
 
@@ -899,9 +1113,9 @@ issue may not be started until all its dependencies are merged.
 | Issue | Title | Depends on | Closure policy |
 |---|---|---|---|
 | **D-0** | **This design doc** (issue #1599) | — | Merged once coordinator review passes. |
-| **D-1** | Pi `--rpc` mode audit and interface contract | D-0 | Closed when a written interface spec exists for how pi supports daemon-delegated tool execution. May result in upstream pi changes if the mode does not yet exist. |
+| **D-1** | Pi `--mode rpc` audit and interface contract | D-0 | Closed. `pi-rpc-interface.md` delivered (PR #1628). The audit found tool delegation via RPC is not supported; §2/§3.3 updated to the `pi.registerTool()` override mechanism. |
 | **D-2** | Codename selection and directory skeleton | D-0 | Closed when the codename is chosen and the `iris/` package skeleton (binary entrypoint, config loading, DB open) builds and passes `go test ./...`. |
-| **D-3** | Daemon core: spawn, supervise, JSON-RPC loop | D-1, D-2 | Closed when the daemon can spawn a pi `--rpc` child, receive `tool_call` frames, execute the tool, and return `tool_result`. No sandbox, no IPC socket — bare RPC loop only. |
+| **D-3** | Daemon core: spawn, supervise, harness-socket tool dispatch loop | D-1, D-2 | Closed when the daemon can spawn a pi `--mode rpc` child with the prism extension loaded, receive `tool_exec` frames on the harness socket, execute the tool, and return `tool_exec_result`. No sandbox, no client IPC socket — bare dispatch loop only. |
 | **D-4** | Per-tool sandbox: worktree-scoped subprocesses for read/edit/write/grep/find/ls | D-3 | Closed when these six tools execute in a worktree-scoped subprocess with path traversal enforcement, and a test demonstrates that a path traversal attempt is rejected. |
 | **D-5** | Per-tool sandbox: bash restricted subprocess (bwrap on Linux, sandbox-exec on macOS) | D-4 | Closed when bash tool calls execute in a restricted subprocess with the mount set from §5, and the sandbox-exec testing convention (see `docs/sandbox-exec-testing.md`) is followed on Darwin. |
 | **D-6** | Daemon IPC socket: client connect/subscribe/fan-out | D-3 | Closed when a CLI client can connect to the daemon socket, subscribe to a session, and receive live `session_event` frames. |
@@ -909,11 +1123,8 @@ issue may not be started until all its dependencies are merged.
 | **D-8** | Bubbletea TUI: session list + subscribe + prompt deliver | D-6 | Closed when a TUI connects to the daemon, shows a session list, allows selection, and shows live output without tmux. |
 | **D-9** | Restore after daemon restart: orphan detection + re-spawn | D-3 | Closed when a daemon restart re-spawns sessions that were `active` in the DB, and orphaned `tool_call` events without `tool_result` receive synthetic failure results. |
 | **D-10** | Parity gate: feature checklist from §10.3 | D-3 through D-9 | Closed when all items in the §10.3 parity checklist pass end-to-end tests. Signals readiness for rename. |
-| **D-11** | Migration and rename: `iris` → `prism`, remove legacy code | D-10 | Closed when the binary is named `prism`, paths are updated, and the legacy `internal/container/`, `internal/sidecar/`, `internal/session/session.go` codepaths are deleted. |
+| **D-11** | Migration and rename: `iris` → `prism`, remove legacy code | D-10 **AND** explicit user authorisation | Closed when the binary is named `prism`, paths are updated, and the legacy `internal/container/`, `internal/sidecar/`, `internal/session/session.go` codepaths are deleted. |
 
 Issues D-3 through D-9 can be worked in parallel after their immediate
 dependencies land. D-10 and D-11 are strictly sequential — D-10 gates D-11.
-
-D-1 is on the **critical path**: if pi does not support daemon-delegated
-tool execution, the entire design changes. D-1 should be the first issue
-actioned after this design doc is accepted.
+D-11 is additionally user-gated (§10.4).
