@@ -91,8 +91,6 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	dirs := []string{
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
-		// Shared opencode data dir — bound directly into the bwrap sandbox.
-		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
 	for _, d := range dirs {
@@ -402,12 +400,12 @@ func TestBwrapBuildArgs_McpAuthBound(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_OpencodeSharedDirBound(t *testing.T) {
-	// bwrap mode binds the shared host opencode data dir
-	// (~/.local/share/pi/) directly into the sandbox so all sessions
-	// share a single SQLite DB. The per-session prism-sessions/<name>/
-	// isolation used by the podman path is not needed on Linux (no virtiofs
-	// WAL-mode locking issue) and is intentionally omitted here.
+func TestBwrapBuildArgs_PiXDGDirNotBound(t *testing.T) {
+	// ~/.local/share/pi is NOT bound into the bwrap sandbox. PI does not use
+	// that XDG path (it lives at ~/.pi/agent/); the old unconditional --bind
+	// was a dead mount from the opencode→pi rename that broke fresh installs
+	// where the source directory did not exist (bwrap aborts on missing
+	// --bind sources). Removed in #1622.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -418,16 +416,9 @@ func TestBwrapBuildArgs_OpencodeSharedDirBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	sharedDir := filepath.Join(fakeHome, ".local", "share", "pi")
-	if !hasBind(args, sharedDir) {
-		t.Errorf("opencode shared data dir %q not found as --bind SRC SRC in args: %v", sharedDir, args)
-	}
-
-	// Confirm the per-session prism-sessions path is NOT bound — bwrap
-	// must use the shared dir, not the per-session one.
-	perSessionDir := filepath.Join(fakeHome, ".local", "share", "pi", "prism-sessions", m.name)
-	if hasBind(args, perSessionDir) {
-		t.Errorf("per-session opencode dir %q should NOT be bound in bwrap mode, but was: %v", perSessionDir, args)
+	xdgDir := filepath.Join(fakeHome, ".local", "share", "pi")
+	if hasBind(args, xdgDir) {
+		t.Errorf("~/.local/share/pi %q should NOT be bound in bwrap args (dead mount removed in #1622), but was: %v", xdgDir, args)
 	}
 }
 
