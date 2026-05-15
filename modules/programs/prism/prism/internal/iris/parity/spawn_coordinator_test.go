@@ -57,6 +57,14 @@ func makeBareWorktreeLayout(t *testing.T, root, featBranch string) (mainDir, fea
 
 // TestParitySpawnCoordinator_DefaultAgentAndBashPerm covers (a), (b), (c).
 func TestParitySpawnCoordinator_DefaultAgentAndBashPerm(t *testing.T) {
+	// The coordinator-permitted branch (b) of this test dispatches
+	// `prism merge --help` through the D-5 bash sandbox — the permission
+	// gate ALLOWS coordinator, so the subprocess actually runs. That path
+	// requires bwrap with unprivileged user namespaces. Skip cleanly when
+	// bwrap cannot operate on the host (plain GitHub Actions runner); the
+	// nix-build-prism-checked CI job exercises the same path inside the
+	// Nix sandbox where bwrap functions.
+	requireBwrap(t)
 	iso := iristest.NewIsolated(t)
 
 	// Create a prism-style bare+worktree layout under iso.Root so the
@@ -158,6 +166,10 @@ func TestParitySpawnCoordinator_DefaultAgentAndBashPerm(t *testing.T) {
 // roles. This is the negative case ensuring the permission gate is not
 // over-broad: any other command must be permitted regardless of role.
 func TestParitySpawnCoordinator_NonGitedBashIsAllowed(t *testing.T) {
+	// Dispatches a bash echo through the D-5 sandbox — requires bwrap
+	// with unprivileged user namespaces (see TestParitySpawnWorker for
+	// the full rationale; checked build covers this path in CI).
+	requireBwrap(t)
 	iso := iristest.NewIsolated(t)
 	worker := newFakeSession(t, iso, fakeSessionOptions{Role: "worker"})
 	result, _ := worker.runDispatchedToolExec(t, map[string]any{

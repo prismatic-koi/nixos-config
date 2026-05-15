@@ -36,6 +36,14 @@ import (
 )
 
 func TestParitySpawnWorker(t *testing.T) {
+	// This test dispatches a bash tool_exec through the D-5 sandbox to
+	// prove the tool-override pipeline is wired end-to-end. The sandbox
+	// requires unprivileged user namespaces on Linux — unavailable on the
+	// plain GitHub Actions runner but functional inside the Nix build
+	// sandbox (nix-build-prism-checked CI job). Skip cleanly when bwrap
+	// cannot operate; the homeless-shelter checked build still exercises
+	// the parity contract end-to-end.
+	requireBwrap(t)
 	iso := iristest.NewIsolated(t)
 
 	fs := newFakeSession(t, iso, fakeSessionOptions{
