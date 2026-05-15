@@ -30,6 +30,7 @@ import {
   similarityKey,
   processDoomLoop,
   isGitPush,
+  EXCLUDED_BASH_BASES,
   // Pre-tool-call bash deny list (#1528)
   BLOCKED_BASH_PATTERNS,
   checkBlockedBash,
@@ -769,6 +770,49 @@ describe("similarityKey — bash cd-prefix stripping", () => {
   })
 })
 
+describe("similarityKey — EXCLUDED_BASH_BASES", () => {
+  it("grep returns null", () => {
+    assert.equal(similarityKey("bash", { command: "grep foo file1" }), null)
+  })
+
+  it("rg returns null", () => {
+    assert.equal(similarityKey("bash", { command: "rg foo path/to/file" }), null)
+  })
+
+  it("find returns null", () => {
+    assert.equal(similarityKey("bash", { command: "find . -name foo" }), null)
+  })
+
+  it("cat returns null", () => {
+    assert.equal(similarityKey("bash", { command: "cat file" }), null)
+  })
+
+  it("EXCLUDED_BASH_BASES is exported and contains expected members", () => {
+    assert.ok(EXCLUDED_BASH_BASES.has("grep"))
+    assert.ok(EXCLUDED_BASH_BASES.has("rg"))
+    assert.ok(EXCLUDED_BASH_BASES.has("find"))
+    assert.ok(EXCLUDED_BASH_BASES.has("cat"))
+    assert.ok(EXCLUDED_BASH_BASES.has("ag"))
+    assert.ok(EXCLUDED_BASH_BASES.has("fd"))
+  })
+
+  it("grep with leading flags (-r) is still excluded", () => {
+    // baseIdx flag-skipping correctly identifies grep as the base
+    assert.equal(similarityKey("bash", { command: "grep -r \"pat\" dir" }), null)
+  })
+
+  it("cd /foo && grep strips prefix then excludes", () => {
+    // cd-prefix stripping runs before EXCLUDED_BASH_BASES check; effective base = grep
+    assert.equal(similarityKey("bash", { command: "cd /foo && grep \"pat\" file" }), null)
+  })
+
+  it("git is NOT in EXCLUDED_BASH_BASES and produces a non-null key", () => {
+    const key = similarityKey("bash", { command: "git push origin main" })
+    assert.ok(key !== null)
+    assert.ok(key.startsWith("bash:git"))
+  })
+})
+
 describe("similarityKey — edit/write/webfetch", () => {
   it("edit same file produces the same key", () => {
     const a = similarityKey("edit", { filePath: "/foo.go", newString: "a" })
@@ -865,6 +909,77 @@ describe("processDoomLoop — per-session isolation", () => {
     const msgB = processDoomLoop(stateB, "bash", { command: "go test ./..." })
     assert.ok(msgA !== null)
     assert.equal(msgB, null)
+  })
+})
+
+describe("processDoomLoop — EXCLUDED_BASH_BASES exclusion", () => {
+  it("5 grep calls over varying files all return null and do not fire", () => {
+    const state = newDoomLoopState()
+    const files = ["file1.nix", "file2.nix", "file3.nix", "file4.nix", "file5.nix"]
+    for (const f of files) {
+      const result = processDoomLoop(state, "bash", { command: `grep opencode ${f}` })
+      assert.equal(result, null, `expected null for grep on ${f}`)
+    }
+  })
+
+  it("5 grep calls over the same file all return null and do not fire", () => {
+    // grep is in EXCLUDED_BASH_BASES regardless of args — intentional trade-off
+    const state = newDoomLoopState()
+    for (let i = 0; i < 5; i++) {
+      const result = processDoomLoop(state, "bash", { command: "grep opencode same-file.nix" })
+      assert.equal(result, null)
+    }
+  })
+
+  it("edit, grep, edit, grep, edit does NOT fire on the third edit", () => {
+    const state = newDoomLoopState()
+    // edit 1
+    processDoomLoop(state, "edit", { filePath: "foo.go" })
+    // grep — should reset the run
+    processDoomLoop(state, "bash", { command: "grep opencode modules/foo.nix" })
+    // edit 2 — starts a fresh run (count=1)
+    processDoomLoop(state, "edit", { filePath: "foo.go" })
+    // grep again — resets again
+    processDoomLoop(state, "bash", { command: "grep opencode modules/bar.nix" })
+    // edit 3 — fresh run (count=1), should NOT fire
+    const result = processDoomLoop(state, "edit", { filePath: "foo.go" })
+    assert.equal(result, null)
+    assert.ok(state.consecutiveCount < 5)
+  })
+
+  it("grep resets doom-loop state (currentKey, consecutiveCount, fired)", () => {
+    const state = newDoomLoopState()
+    // Build up 4 edits.
+    for (let i = 0; i < 4; i++) {
+      processDoomLoop(state, "edit", { filePath: "foo.go" })
+    }
+    assert.equal(state.consecutiveCount, 4)
+    // Intervening grep must reset.
+    processDoomLoop(state, "bash", { command: "grep opencode modules/foo.nix" })
+    assert.equal(state.currentKey, null)
+    assert.equal(state.consecutiveCount, 0)
+    assert.equal(state.fired, false)
+  })
+
+  it("5 identical edit calls (no intervening tool) still fire at count 5", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "edit", { filePath: "foo.go" })
+    }
+    assert.ok(msg !== null, "expected doom-loop to fire")
+    assert.ok(msg.includes("PRISM DOOM-LOOP"))
+  })
+
+  it("5 identical bash:git push calls still fire at count 5", () => {
+    // git is in SUBCOMMAND_CLIS, not EXCLUDED_BASH_BASES — must still detect
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "bash", { command: "git push origin main" })
+    }
+    assert.ok(msg !== null, "expected doom-loop to fire for git push")
+    assert.ok(msg.includes("PRISM DOOM-LOOP"))
   })
 })
 
