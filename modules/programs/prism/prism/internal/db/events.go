@@ -465,3 +465,105 @@ LIMIT ?`
 	}
 	return count, nil
 }
+
+// QuerySessionEventsSinceRowID returns all events for sessionName with
+// rowid > sinceRowID, ordered by rowid ASC (monotonic DB insertion order).
+// This is the backing query for the client IPC socket's since_event_id replay
+// (§4.3 of daemon-mode-design.md). Each returned EventRow carries the rowid so
+// the client can use it in a subsequent since_event_id field.
+func (d *DB) QuerySessionEventsSinceRowID(sessionName string, sinceRowID int64) ([]EventRow, error) {
+	const q = `
+SELECT rowid, id, session_name, repo, worktree, harness_session_id,
+       type, payload, created_at, instance_id
+  FROM agent_events
+ WHERE session_name = ? AND rowid > ?
+ ORDER BY rowid ASC`
+	rows, err := d.conn.Query(q, sessionName, sinceRowID)
+	if err != nil {
+		return nil, fmt.Errorf("db: query session events since rowid: %w", err)
+	}
+	defer rows.Close()
+
+	var result []EventRow
+	for rows.Next() {
+		var er EventRow
+		var createdAt int64
+		if err := rows.Scan(
+			&er.RowID, &er.Event.ID, &er.Event.SessionName, &er.Event.Repo,
+			&er.Event.Worktree, &er.Event.HarnessSessionID,
+			&er.Event.Type, &er.Event.Payload, &createdAt, &er.Event.InstanceID,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan event row: %w", err)
+		}
+		er.Event.CreatedAt = time.UnixMilli(createdAt)
+		result = append(result, er)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate session events since rowid: %w", err)
+	}
+	return result, nil
+}
+
+// MaxSessionEventRowID returns the maximum rowid in agent_events for the
+// given sessionName, or 0 if no events exist. Used by the client IPC socket to
+// snapshot the high-water mark before a replay query so that events arriving
+// during replay can be deduplicated (§4.3 design doc — the since_event_id race
+// avoidance strategy).
+func (d *DB) MaxSessionEventRowID(sessionName string) (int64, error) {
+	const q = `SELECT COALESCE(MAX(rowid), 0) FROM agent_events WHERE session_name = ?`
+	var max int64
+	if err := d.conn.QueryRow(q, sessionName).Scan(&max); err != nil {
+		return 0, fmt.Errorf("db: max session event rowid: %w", err)
+	}
+	return max, nil
+}
+
+// EventRow wraps an Event together with its SQLite rowid. The rowid is a
+// monotonically increasing integer that clients use as since_event_id for
+// replay requests.
+type EventRow struct {
+	RowID int64
+	Event Event
+}
+
+// WriteEventReturningRowID is identical to WriteEvent but also returns the
+// SQLite rowid of the newly inserted agent_events row. The rowid is used by
+// the client IPC socket (D-6) as the monotonic event_id for since_event_id
+// replay and fan-out ordering.
+func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
+	if e.CreatedAt.IsZero() {
+		e.CreatedAt = time.Now()
+	}
+	createdAt := e.CreatedAt.UnixMilli()
+
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("db: write event: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	const insertQ = `
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	result, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID)
+	if err != nil {
+		return 0, fmt.Errorf("db: write event: insert: %w", err)
+	}
+	rowID, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("db: write event: last insert id: %w", err)
+	}
+
+	const updateQ = `
+UPDATE agent_status
+   SET last_seen = MAX(last_seen, ?)
+ WHERE session_name = ?`
+	if _, err := tx.Exec(updateQ, createdAt, e.SessionName); err != nil {
+		return 0, fmt.Errorf("db: write event: update last_seen: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("db: write event: commit: %w", err)
+	}
+	return rowID, nil
+}
