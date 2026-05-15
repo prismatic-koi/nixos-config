@@ -27,7 +27,7 @@
     };
     programs = {
       prism = {
-        profile.default = "anthropic-opus";
+        profile.default = "anthropic";
         agent.isolation.default = "bwrap";
 
         bwrapConcurrencyCap = 50;
