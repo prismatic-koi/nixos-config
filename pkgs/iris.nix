@@ -14,7 +14,7 @@
 
 buildGoModule {
   pname = "iris";
-  version = "0.1.0-d2";
+  version = "0.1.0-d3";
 
   src = ../modules/programs/prism/prism;
 
@@ -31,7 +31,7 @@ buildGoModule {
   nativeCheckInputs = [ git ];
 
   meta = {
-    description = "Iris — daemon-mode successor to prism (codename, D-2+)";
+    description = "Iris — daemon-mode successor to prism (codename, D-3+)";
     mainProgram = "iris";
     license = lib.licenses.mit;
   };

@@ -1073,3 +1073,136 @@ B.3 §"Position 3" of the
   permission-protected (mode 0o600 on a directory mode 0o700) and lives
   inside the user's home directory on a single-user system. No
   cryptographic protocol layer is added.
+
+---
+
+## 10. Iris daemon-mode tool dispatch frames (D-3)
+
+Added in D-3 (`d3-iris-daemon-core`). These four frame types extend the
+existing harness socket protocol to support the `registerTool()` override
+mechanism described in `docs/daemon-mode-design.md §3.3.2`.
+
+When pi is spawned by the iris daemon, the prism extension detects the
+`IRIS_DAEMON_SOCK` environment variable (§3.4 of the design doc) and
+overrides all seven canonical built-in tools with iris dispatch shims. Each
+shim's `execute()` callback communicates with the iris daemon over the same
+per-session harness socket used for the existing handshake and observation
+frames.
+
+The daemon is the server; the extension is the client. The daemon dispatches
+tool calls to host subprocesses (D-3: unsandboxed; D-4/D-5: sandboxed) and
+streams results back.
+
+Wire format is JSON-line (one JSON object per `\n`-terminated line), identical
+to the existing framing rules in §3. All field names use `snake_case`.
+
+### 10.1 `tool_exec` (extension → daemon)
+
+The iris override's `execute()` callback sends this frame to the iris daemon
+when the pi LLM emits a tool call.
+
+```json
+{"type":"tool_exec","id":"call_abc123","name":"bash","args":{"command":"echo hello"}}
+```
+
+- `type` (string, required) — literal `"tool_exec"`.
+- `id` (string, required) — the pi-supplied tool call ID (`toolCallId` in
+  pi's `execute()` callback). Used for response correlation. Multiple
+  `tool_exec` frames may be in flight simultaneously on a single connection;
+  `id` is the only correlation key.
+- `name` (string, required) — the tool name. One of the seven canonical
+  built-ins: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
+- `args` (object, required) — the tool arguments as passed to `execute()`.
+  The schema matches pi's built-in tool parameter schema for the named tool.
+
+The daemon begins executing the tool immediately upon receiving this frame.
+
+### 10.2 `tool_exec_update` (daemon → extension)
+
+Sent by the iris daemon to stream partial tool output during long-running
+tool calls, especially `bash`. Zero or more update frames may precede the
+terminal `tool_exec_result` frame.
+
+```json
+{"type":"tool_exec_update","id":"call_abc123","content":"partial output chunk"}
+```
+
+- `type` (string, required) — literal `"tool_exec_update"`.
+- `id` (string, required) — matches the in-flight `tool_exec.id`.
+- `content` (string, required) — a partial stdout/stderr chunk from the
+  tool subprocess.
+
+The extension forwards these as `onUpdate` callbacks to pi, which streams
+the partial output to the LLM context.
+
+### 10.3 `tool_exec_result` (daemon → extension)
+
+Terminates a tool call. Sent after all `tool_exec_update` frames (if any).
+No further frames for the same `id` will be sent after this frame.
+
+```json
+{
+  "type": "tool_exec_result",
+  "id": "call_abc123",
+  "success": true,
+  "is_error": false,
+  "output": "hello\n"
+}
+```
+
+- `type` (string, required) — literal `"tool_exec_result"`.
+- `id` (string, required) — matches the originating `tool_exec.id`.
+- `success` (boolean, required) — `true` when the tool subprocess exited
+  with code 0 and no error occurred; `false` otherwise.
+- `is_error` (boolean, required) — `true` when the result should be
+  surfaced as a tool error to the LLM (mirrors pi's `isError` convention
+  for tool results). Always `true` when `success` is `false`.
+- `output` (string, required) — combined stdout+stderr from the tool
+  subprocess, or `"aborted"` when the call was terminated by a
+  `tool_abort` frame.
+- `details` (object, optional) — structured metadata about the result
+  (e.g. exit code, signal). Absent on most calls.
+
+The extension returns `output` to pi as the tool result, surfacing it to
+the LLM as if the built-in had executed.
+
+### 10.4 `tool_abort` (extension → daemon)
+
+Sent by the iris override's `execute()` when the `AbortSignal` fires during
+a long-running tool call. The daemon kills the tool subprocess (and all
+descendants in its process group) and returns a `tool_exec_result` frame with
+`success: false, is_error: true, output: "aborted"`.
+
+```json
+{"type":"tool_abort","id":"call_abc123"}
+```
+
+- `type` (string, required) — literal `"tool_abort"`.
+- `id` (string, required) — the `id` of the in-flight `tool_exec` to abort.
+  If no matching in-flight call exists, the frame is silently ignored.
+
+### 10.5 Concurrency model
+
+Multiple `tool_exec` frames may be in flight simultaneously on a single
+connection. Pi's `executionMode: "parallel"` for overridden tools allows
+concurrent dispatch. The daemon spawns one goroutine per `tool_exec` and
+correlates responses by `id`. There is no ordering guarantee between results
+for different `id` values.
+
+The `tool_abort` frame targets a specific `id`; it does not abort all
+in-flight calls.
+
+### 10.6 Interaction with existing observation frames
+
+The `tool_exec` / `tool_exec_result` frames are the **dispatch** channel —
+they drive actual tool execution. They coexist with (but are orthogonal to)
+the existing `tool_call` / `tool_result` observation frames (§5.3 / §5.4)
+which the prism extension continues to emit to the sidecar for DB logging.
+
+In iris daemon mode the sidecar role is taken by the iris daemon, which:
+- Writes a `tool_call` event to `agent_events` when it receives `tool_exec`.
+- Writes a `tool_result` event to `agent_events` when it sends
+  `tool_exec_result`.
+
+These DB writes satisfy the AC requirement that every tool dispatch is
+recorded for auditability and D-9 orphan detection.
