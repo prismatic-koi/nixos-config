@@ -127,6 +127,7 @@ func startup() error {
 			ExtensionPath:    extensionPath,
 			RestartThreshold: cfg.RestartThreshold,
 			RunDir:           p.RunDir,
+			LogDir:           p.LogDir,
 			Database:         db,
 		},
 	}
@@ -284,6 +285,7 @@ func runDaemon() error {
 			ExtensionPath:    extPath,
 			RestartThreshold: cfg.RestartThreshold,
 			RunDir:           p.RunDir,
+			LogDir:           p.LogDir,
 			Database:         database,
 			// Wire the client socket as the harness publisher so that every
 			// harness event is fanned out to all subscribed clients in real time.
