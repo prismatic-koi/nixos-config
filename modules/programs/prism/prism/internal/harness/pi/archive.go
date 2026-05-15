@@ -141,16 +141,25 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // Archive copies PI's JSONL session file from srcPath into rawDir/session.jsonl.
 //
 // srcPath is expected to be a single file (the session JSONL), as returned by
-// SourcePath. If the file does not exist (PI never started or produced no
-// output), Archive returns nil and rawDir is left empty.
+// SourcePath. If the path does not exist or is a directory (the latter occurs
+// when HarnessSessionID was empty and SourcePath returned the sessions root),
+// Archive returns nil and rawDir is left empty — preserving the no-op contract
+// for sessions where PI never started.
 //
 // The destination is always named "session.jsonl" so that Export's expectation
 // is met regardless of the timestamp prefix in the source filename.
 func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, rawDir string, _ harnessarchive.SourceParams) error {
-	if _, err := os.Stat(srcPath); os.IsNotExist(err) {
+	fi, err := os.Stat(srcPath)
+	if os.IsNotExist(err) {
 		return nil
-	} else if err != nil {
+	}
+	if err != nil {
 		return fmt.Errorf("pi archive: stat %q: %w", srcPath, err)
+	}
+	if fi.IsDir() {
+		// SourcePath returned a directory (e.g. sessions root when
+		// HarnessSessionID is empty). Nothing to copy — no-op.
+		return nil
 	}
 
 	dst := filepath.Join(rawDir, "session.jsonl")

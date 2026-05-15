@@ -11,18 +11,6 @@ import (
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
 
-// sandboxExecStagingHome returns the expected staging HOME path for a given
-// instanceID, mirroring container.SandboxExecStagingHomePath without importing
-// the container package (avoids circular imports in tests).
-func sandboxExecStagingHome(t *testing.T, instanceID string) string {
-	t.Helper()
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	return filepath.Join(home, ".local", "state", "prism", "sessions", instanceID, "home")
-}
-
 // encodePiCWDForTest mirrors the encodePiCWD logic in archive.go for use in
 // test assertions without exporting the function.
 func encodePiCWDForTest(cwd string) string {
@@ -54,7 +42,12 @@ func TestEncodePiCWD(t *testing.T) {
 // TestArchiveAdapter_SourcePath_HostMode verifies that SourcePath resolves to
 // the correct file inside the encoded-cwd directory for a host-mode session.
 func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
-	home, _ := os.UserHomeDir()
+	// Redirect $HOME to a temp dir so this test does not write to the real
+	// home directory (or /homeless-shelter in the Nix sandbox CI build).
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	home := fakeHome
+
 	const worktree = "/tmp/test-my-repo"
 	const sessionID = "d13cc856-f919-4ce9-b733-cf0e25493e62"
 
@@ -64,7 +57,6 @@ func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(sessDir) })
 
 	fileName := "2026-04-13T09-58-35-623Z_" + sessionID + ".jsonl"
 	filePath := filepath.Join(sessDir, fileName)
@@ -161,6 +153,22 @@ func TestArchiveAdapter_SourcePath_NoCWDDir(t *testing.T) {
 	entries, _ := os.ReadDir(rawDir)
 	if len(entries) != 0 {
 		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+	}
+}
+
+// TestArchiveAdapter_Archive_Directory_NoOp verifies that when srcPath is a
+// directory (the AC4 case: HarnessSessionID empty → SourcePath returns sessionsRoot),
+// Archive returns nil without attempting to copy and leaves rawDir empty.
+func TestArchiveAdapter_Archive_Directory_NoOp(t *testing.T) {
+	srcDir := t.TempDir() // a real, existing directory
+	rawDir := t.TempDir()
+	a := pi.NewArchiveAdapter()
+	if err := a.Archive(context.Background(), srcDir, rawDir, harnessarchive.SourceParams{}); err != nil {
+		t.Fatalf("Archive with directory srcPath: expected nil error, got %v", err)
+	}
+	entries, _ := os.ReadDir(rawDir)
+	if len(entries) != 0 {
+		t.Errorf("rawDir must be empty after directory no-op; got %d entry/entries", len(entries))
 	}
 }
 
@@ -261,19 +269,27 @@ func TestArchiveAdapter_Export_NoRawSessionJSONL_NoError(t *testing.T) {
 // mounts the worktree at its native path (only $HOME is remapped to the staging
 // HOME inside the sandbox).
 func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
+	// Redirect $HOME to a temp dir so that SandboxExecStagingHomePath (which
+	// calls os.UserHomeDir internally) writes into a temp dir rather than the
+	// real home directory or /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
 	const instanceID = "test-instance-uuid-1234"
 	const sessionID = "d13cc856-f919-4ce9-b733-cf0e25493e62"
 	const worktree = "/tmp/test-sandbox-worktree"
 
+	// Compute where SandboxExecStagingHomePath will resolve, now that $HOME
+	// points at fakeHome.
+	stagingHome := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
+
 	// Create the encoded-cwd directory inside the staging HOME and plant a
 	// matching session file so SourcePath can find it.
-	stagingHome := sandboxExecStagingHome(t, instanceID)
 	encodedDir := encodePiCWDForTest(worktree) // --tmp-test-sandbox-worktree--
 	sessDir := filepath.Join(stagingHome, ".pi", "agent", "sessions", encodedDir)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(stagingHome) })
 
 	fileName := "2026-05-01T12-00-00-000Z_" + sessionID + ".jsonl"
 	filePath := filepath.Join(sessDir, fileName)
@@ -296,9 +312,9 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 		t.Errorf("SourcePath (sandbox-exec): got %q, want %q", got, filePath)
 	}
 
-	// Must NOT point into the real home .pi directory.
-	home, _ := os.UserHomeDir()
-	if strings.HasPrefix(got, filepath.Join(home, ".pi")) {
+	// Must NOT point into the real (fakeHome) .pi directory (only the staging
+	// home inside fakeHome is acceptable).
+	if strings.HasPrefix(got, filepath.Join(fakeHome, ".pi")) {
 		t.Errorf("SourcePath (sandbox-exec) returned real home path %q; expected staging home", got)
 	}
 }
@@ -365,7 +381,12 @@ func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
 // exercises the full Archive → Export pipeline with a realistic pi session
 // file (encoded-cwd layout with <ts>_<uuid>.jsonl filename).
 func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
-	home, _ := os.UserHomeDir()
+	// Redirect $HOME to a temp dir to avoid writing to the real home
+	// directory or /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	home := fakeHome
+
 	const worktree = "/tmp/prism-e2e-test-worktree"
 	const sessionID = "ffffffff-aaaa-bbbb-cccc-dddddddddddd"
 
@@ -375,7 +396,6 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	t.Cleanup(func() { os.RemoveAll(sessDir) })
 
 	sessionContent := `{"type":"session","version":3,"id":"` + sessionID + `"}` + "\n" +
 		`{"type":"msg_user","content":"hello"}` + "\n"
