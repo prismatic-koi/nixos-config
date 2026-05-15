@@ -1,7 +1,6 @@
 ---
-name: review-context-subagent
-description: Context and completeness subagent — investigates whether the implementation missed context from git history, GitHub issues, or related code. Invoke in parallel with other review-* agents before merging.
-mode: subagent
+name: review-context
+description: Context and completeness reviewer — investigates whether the implementation missed context from git history, GitHub issues, or related code. Invoke in parallel with other review-* agents before merging.
 hidden: true
 ---
 

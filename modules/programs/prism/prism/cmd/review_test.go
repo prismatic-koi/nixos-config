@@ -22,8 +22,8 @@ func TestAgentsForHarness_ReturnsAllFive(t *testing.T) {
 		t.Fatalf("agentsForHarness(pi): got %d agents, want %d", len(agents), len(want))
 	}
 	for i, a := range agents {
-		if a.Name != want[i].Name || a.OpencodeName != want[i].OpencodeName {
-			t.Errorf("agent[%d]: got {%q, %q}, want {%q, %q}", i, a.Name, a.OpencodeName, want[i].Name, want[i].OpencodeName)
+		if a.Name != want[i].Name {
+			t.Errorf("agent[%d]: got %q, want %q", i, a.Name, want[i].Name)
 		}
 	}
 }
@@ -46,9 +46,7 @@ func TestAgentsForHarness_AgentNames(t *testing.T) {
 		if agents[i].Name != name {
 			t.Errorf("agents[%d].Name = %q, want %q", i, agents[i].Name, name)
 		}
-		if agents[i].OpencodeName != name {
-			t.Errorf("agents[%d].OpencodeName = %q, want %q", i, agents[i].OpencodeName, name)
-		}
+
 	}
 }
 
@@ -427,9 +425,7 @@ func TestCheckAgentAvailability_PassesWhenAllFilesPresent(t *testing.T) {
 
 	agents := review.Agents()
 	for _, ag := range agents {
-		// Pre-flight checks <ValidationName>.md (i.e. "review-goal-subagent.md"),
-		// not <Name>.md — see #1231.
-		path := agentsDir + "/" + ag.ValidationName + ".md"
+		path := agentsDir + "/" + ag.Name + ".md"
 		if err := os.WriteFile(path, []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile %s: %v", path, err)
 		}

@@ -25,8 +25,7 @@ import (
 // that agents read full context first and role directives second.
 //
 // roleFile is the filename stem for the agent's definition file under
-// $XDG_CONFIG_HOME/prism/agents/ (e.g. "review-goal-subagent", which
-// is Agent.ValidationName). The file contents are spliced into the prompt
+// $XDG_CONFIG_HOME/prism/agents/ (e.g. "review-goal"). The file contents are spliced into the prompt
 // in place of the former "Your role-specific instructions follow below."
 // trailer so that every harness (including PI) receives the full role rubric
 // inline.
@@ -182,10 +181,8 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) strin
 // resolveRoleDefinition reads the role definition file for the given agent
 // from the opencode agents directory ($XDG_CONFIG_HOME/prism/agents/).
 //
-// roleFile is the filename stem (without the .md extension). For the five
-// standard review agents this is Agent.ValidationName — the "-subagent"
-// form (e.g. "review-goal-subagent"), because the on-disk files are named
-// after the subagent declaration, not the primary agent name (#1231).
+// roleFile is the filename stem (without the .md extension), e.g. "review-goal".
+// It matches Agent.Name directly — the on-disk file is <roleFile>.md.
 //
 // When the file is present and non-empty its contents are returned verbatim.
 // When the file is missing or empty a clearly-marked notice is returned instead

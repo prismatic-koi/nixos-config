@@ -77,7 +77,7 @@ func TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted(t *testing.T) {
 	// "error". Drive the same code path here by running the gate with a
 	// short timeout and no readiness signal for sessFailed.
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-goal"},
 	}
 	sessions := []string{sessFailed}
 	spawnErr := make([]error, 1)

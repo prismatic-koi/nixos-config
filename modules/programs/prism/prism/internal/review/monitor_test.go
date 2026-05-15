@@ -37,8 +37,8 @@ func TestMonitorFunc_DetectsCompletionAndDelivers(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@monitor-test"
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
 	}
 
 	// Register a group.
@@ -141,7 +141,7 @@ func TestMonitorFunc_FlipsReviewingToActiveBeforeDelivery(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@monitor-flip-test"
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-goal"},
 	}
 
 	groupID, err := d.RegisterGroup(parent)
@@ -225,7 +225,7 @@ func TestMonitorFunc_DeliveryFailure_WritesFallbackFile(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@delivery-fail-test"
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-goal"},
 	}
 
 	groupID, err := d.RegisterGroup(parent)
@@ -294,8 +294,8 @@ func TestMonitorFunc_MissingSession(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@missing-session-test"
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
 	}
 
 	groupID, err := d.RegisterGroup(parent)
@@ -789,8 +789,8 @@ func TestLoadMonitorOptsFromFile_RoundTrip(t *testing.T) {
 		PRNumber:      "864",
 		Round:         2,
 		Agents: []review.Agent{
-			{Name: "review-goal", OpencodeName: "review-goal"},
-			{Name: "review-code", OpencodeName: "review-code"},
+			{Name: "review-goal"},
+			{Name: "review-code"},
 		},
 		AgentSessions: []string{
 			"nixos-config@test~review-2-review-goal",

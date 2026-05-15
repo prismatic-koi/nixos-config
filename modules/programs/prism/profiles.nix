@@ -55,18 +55,8 @@
           ];
 
           # Map a role name to its agent prompt file (sans .md extension).
-          roleToAgentFile = {
-            coordinator = "coordinator";
-            worker = "worker";
-            ac = "ac";
-            retro = "retro";
-            investigate = "investigate";
-            "review-goal" = "review-goal-subagent";
-            "review-code" = "review-code-subagent";
-            "review-security" = "review-security-subagent";
-            "review-qa" = "review-qa-subagent";
-            "review-context" = "review-context-subagent";
-          };
+          # Since filenames now match role names directly, this is an identity map.
+          roleToAgentFile = lib.genAttrs piRoles (role: role);
 
           # Convenience: build a slot with a systemPromptPath derived from
           # the role's agent file. `thinking` defaults to "off" (the PI

@@ -676,13 +676,7 @@ func TestAgents_AgentNames(t *testing.T) {
 		if agents[i].Name != name {
 			t.Errorf("agents[%d].Name = %q, want %q", i, agents[i].Name, name)
 		}
-		if agents[i].OpencodeName != name {
-			t.Errorf("agents[%d].OpencodeName = %q, want %q", i, agents[i].OpencodeName, name)
-		}
-		wantValidation := name + "-subagent"
-		if agents[i].ValidationName != wantValidation {
-			t.Errorf("agents[%d].ValidationName = %q, want %q", i, agents[i].ValidationName, wantValidation)
-		}
+
 	}
 }
 
@@ -711,9 +705,7 @@ func TestCheckAgentAvailability_AllPresent(t *testing.T) {
 
 	agents := review.Agents()
 	for _, ag := range agents {
-		// Pre-flight checks <ValidationName>.md (i.e. "review-goal-subagent.md"),
-		// not <Name>.md — see #1231.
-		if err := os.WriteFile(agentsDir+"/"+ag.ValidationName+".md", []byte("# "+ag.Name), 0o644); err != nil {
+		if err := os.WriteFile(agentsDir+"/"+ag.Name+".md", []byte("# "+ag.Name), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
 	}
@@ -733,10 +725,8 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 
-	// Only create review-goal-subagent.md; the other 4 are missing.
-	// Pre-flight checks <ValidationName>.md (i.e. the "-subagent" form),
-	// not <Name>.md — see #1231.
-	if err := os.WriteFile(agentsDir+"/review-goal-subagent.md", []byte("# review-goal"), 0o644); err != nil {
+	// Only create review-goal.md; the other 4 are missing.
+	if err := os.WriteFile(agentsDir+"/review-goal.md", []byte("# review-goal"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -745,7 +735,7 @@ func TestCheckAgentAvailability_SomeMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("CheckAgentAvailability: expected error for missing agents, got nil")
 	}
-	// Error should mention the missing agents (by Name, not ValidationName).
+	// Error should mention the missing agents by Name.
 	for _, ag := range agents[1:] {
 		if !findSubstring(err.Error(), ag.Name) {
 			t.Errorf("CheckAgentAvailability error does not mention missing agent %q: %v", ag.Name, err)
@@ -1413,8 +1403,8 @@ func TestPollAgents_ProgressCallback_HappyPath(t *testing.T) {
 	d := openTestDB(t)
 
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
 	}
 	sessions := []string{
 		"test@parent~review-1-review-goal",
@@ -1479,8 +1469,8 @@ func TestPollAgents_ProgressCallback_OnlySubset(t *testing.T) {
 
 	// Only 2 agents (simulating --only review-code,review-qa).
 	agents := []review.Agent{
-		{Name: "review-code", OpencodeName: "review-code"},
-		{Name: "review-qa", OpencodeName: "review-qa"},
+		{Name: "review-code"},
+		{Name: "review-qa"},
 	}
 	sessions := []string{
 		"test@parent~review-1-review-code",
@@ -1540,8 +1530,8 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 	d := openTestDB(t)
 
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
 	}
 	sessions := []string{
 		"test@parent~review-5-review-goal",
@@ -1599,7 +1589,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 
 	// Single agent to keep the test focused.
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
+		{Name: "review-goal"},
 	}
 
 	// podman mode with nil ProfilesFile: with the RequireSlot gate (#1224),
@@ -1723,11 +1713,11 @@ func TestPollAgents_SidecarPIDFilesNotRemovedAfterCompletion(t *testing.T) {
 	d := openTestDB(t)
 
 	agents := []review.Agent{
-		{Name: "review-goal", OpencodeName: "review-goal"},
-		{Name: "review-code", OpencodeName: "review-code"},
-		{Name: "review-security", OpencodeName: "review-security"},
-		{Name: "review-qa", OpencodeName: "review-qa"},
-		{Name: "review-context", OpencodeName: "review-context"},
+		{Name: "review-goal"},
+		{Name: "review-code"},
+		{Name: "review-security"},
+		{Name: "review-qa"},
+		{Name: "review-context"},
 	}
 	sessions := []string{
 		"test@parent~review-1-review-goal",
@@ -1950,13 +1940,12 @@ func TestBuildReviewPrompt_ContextBeforeRoleSection(t *testing.T) {
 	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// Files on disk use the "-subagent" suffix (Agent.ValidationName form, #1231).
 	roleDef := "# Test role rubric\n\nReview carefully."
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal-subagent.md"), []byte(roleDef), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal.md"), []byte(roleDef), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal-subagent")
+	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal")
 
 	contextHeaderIdx := findLineIndex(prompt, "## Context for your review")
 	separatorIdx := findLineIndex(prompt, "---")

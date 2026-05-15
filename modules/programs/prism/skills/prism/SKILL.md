@@ -196,7 +196,7 @@ prism spawn \
 
 ## Running code review
 
-> **Scope:** `prism review` and the Task-call fallback below are for **worker
+> **Scope:** `prism review` is for **worker
 > agents and spawned sessions only**. Coordinator agents must never call
 > `prism review` directly. When a user asks a coordinator to review a PR, the
 > coordinator should use `prism pr <number> --prompt 'review this PR'` to spawn
@@ -311,25 +311,6 @@ If no review-complete prompt arrives within 30 minutes, check progress with:
 ```bash
 prism checkin <session>~review-<N>-review-goal
 ```
-
-### Fallback: Task-call subagents
-
-> **Scope:** This fallback is for **worker and spawned sessions only** — not for
-> coordinators. Coordinator agents must use `prism pr` as described above.
-
-If `prism review` is unavailable, invoke the five subagents **in parallel** —
-all five as Task tool calls in a single response:
-
-1. `@review-goal-subagent` — pass the original issue/ACs and the PR number
-2. `@review-code-subagent` — pass the PR number
-3. `@review-security-subagent` — pass the PR number
-4. `@review-qa-subagent` — pass the PR number
-5. `@review-context-subagent` — pass the PR number
-
-Wait for all 5 to complete. ALL must return `<verdict>PASS</verdict>` for the
-review to pass. If ANY returns `<verdict>FAIL</verdict>`, fix all blocking
-issues, push, and re-run all five. After 3 full cycles without convergence,
-stop and escalate — do not run a 4th cycle.
 
 ## Investigator agents
 
