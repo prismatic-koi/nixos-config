@@ -150,6 +150,11 @@
         # `nix-build-prism-checked` CI job, which builds prism with
         # `runChecks = true` (see pkgs/prism.nix).
         prism = pkgs.callPackage ./pkgs/prism.nix { };
+
+        # Default iris build — no Go test execution. Parallels the prism
+        # package layout: fast local builds via `nix build .#iris`, with
+        # test execution delegated to `go test ./...` in CI.
+        iris = pkgs.callPackage ./pkgs/iris.nix { };
       });
 
       devShells = forEachSystem (pkgs: {
