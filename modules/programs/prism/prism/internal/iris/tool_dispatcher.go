@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // toolResult is the result of executing a tool call.
@@ -158,13 +159,24 @@ func (d *toolDispatcher) runSubprocess(ctx context.Context, cwd string, env []st
 		waitErr = <-waitDone
 
 	case <-d.abortCh:
-		// AbortSignal fired — kill the process group.
+		// AbortSignal fired — SIGTERM the process group, then SIGKILL after grace.
 		log.Printf("[iris] tool_abort received for id=%s (pid=%d) — killing process group", d.toolExecID, pid)
 		killProcessGroup(pid)
-		// Drain the read goroutine.
+		// Drain stdout and wait for exit, but bound by a SIGKILL escalation timer
+		// so a SIGTERM-resistant subprocess cannot block this goroutine forever.
+		killTimer := time.NewTimer(killGracePeriod)
+		defer killTimer.Stop()
 		select {
 		case readErr = <-readDone:
+		case <-killTimer.C:
+			sigkillProcessGroup(pid)
 		case <-ctx.Done():
+			sigkillProcessGroup(pid)
+		}
+		// Drain any remaining goroutines; killTimer ensures Wait unblocks.
+		select {
+		case <-readDone:
+		default:
 		}
 		<-waitDone
 		return toolResult{
@@ -174,9 +186,19 @@ func (d *toolDispatcher) runSubprocess(ctx context.Context, cwd string, env []st
 		}
 
 	case <-ctx.Done():
-		// Daemon shutdown — kill the process group.
+		// Daemon shutdown — SIGTERM then SIGKILL after grace.
 		killProcessGroup(pid)
-		<-readDone
+		killTimer := time.NewTimer(killGracePeriod)
+		defer killTimer.Stop()
+		select {
+		case <-readDone:
+		case <-killTimer.C:
+			sigkillProcessGroup(pid)
+		}
+		select {
+		case <-readDone:
+		default:
+		}
 		<-waitDone
 		return toolResult{
 			Success: false,
@@ -197,10 +219,20 @@ func (d *toolDispatcher) runSubprocess(ctx context.Context, cwd string, env []st
 	}
 }
 
-// killProcessGroup sends SIGTERM to the process group, waits 5s, then SIGKILL.
+// killGracePeriod is the time between SIGTERM and SIGKILL when aborting a
+// tool subprocess. 5 s matches the design doc's toolSubprocessKillTimeout.
+const killGracePeriod = 5 * time.Second
+
+// killProcessGroup sends SIGTERM to the entire process group of pid.
 func killProcessGroup(pid int) {
-	pgid := -pid // negative pid → whole process group
+	pgid := -pid
 	_ = syscall.Kill(pgid, syscall.SIGTERM)
+}
+
+// sigkillProcessGroup sends SIGKILL to the entire process group of pid.
+func sigkillProcessGroup(pid int) {
+	pgid := -pid
+	_ = syscall.Kill(pgid, syscall.SIGKILL)
 }
 
 // --- Tool executors (D-3: host-mode, no sandbox) ---

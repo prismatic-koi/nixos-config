@@ -1401,6 +1401,8 @@ async function registerIrisOverrides(
 export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
   const tools = pi.getAllTools()
   const canonicalSet = new Set<string>(IRIS_CANONICAL_TOOLS)
+  // Track canonical tools that are confirmed overridden (source !== "builtin").
+  const overriddenCanonicals = new Set<string>()
 
   for (const t of tools) {
     const source = t.sourceInfo.source
@@ -1437,6 +1439,26 @@ export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
         console.error(msg)
         throw new Error(msg)
       }
+      // Track canonical tools that have been successfully overridden.
+      if (canonicalSet.has(t.name)) {
+        overriddenCanonicals.add(t.name)
+      }
+    }
+  }
+
+  // Condition 3 (absence variant): a canonical tool whose registerTool() call
+  // was silently dropped entirely — not present in getAllTools() at all, or
+  // present only as "builtin" (caught above). Any canonical name absent from
+  // overriddenCanonicals after the loop means the iris shim is not in effect.
+  for (const name of IRIS_CANONICAL_TOOLS) {
+    if (!overriddenCanonicals.has(name)) {
+      const msg =
+        `[iris-extension] fatal: canonical built-in "${name}" was not ` +
+        `overridden by iris (missing from overridden tool registry). This ` +
+        `indicates an iris bug or a pi API change. ` +
+        `Unset IRIS_DAEMON_SOCK to use vanilla pi while the issue is resolved.`
+      console.error(msg)
+      throw new Error(msg)
     }
   }
 }

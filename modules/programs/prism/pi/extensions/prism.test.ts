@@ -2870,6 +2870,27 @@ describe("iris surface check (runIrisSurfaceCheck)", () => {
       },
     )
   })
+
+  it("throws when a canonical built-in is absent from getAllTools() entirely (silent no-op registerTool)", () => {
+    // 'write' is simply absent — registerTool() was silently dropped.
+    const tools = IRIS_CANONICAL_TOOLS.filter((n) => n !== "write").map((name) => ({
+      name,
+      source: "extension",
+      sourcePath: "/etc/prism/pi-extensions/prism.ts",
+    }))
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("write"),
+          `expected message to mention "write", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
 })
 
 // ---------------------------------------------------------------------------
