@@ -3,6 +3,7 @@
 // D-3 adds: spawn, harness-socket dispatch, tool override registration.
 // D-6 adds: client IPC socket (iris.sock), session fan-out, subscribe/replay.
 // D-8 adds: bubbletea TUI (iris tui) — session list + live event stream + prompt delivery.
+// Issue #1668: `iris spawn` routes through the running daemon (no in-process supervisor).
 // See docs/daemon-mode-design.md §3 and §4 for the architecture.
 //
 // Usage:
@@ -10,7 +11,7 @@
 //	iris --version                              — print version string and exit 0
 //	iris version                                — same, as a subcommand
 //	iris daemon                                 — start the full daemon (client socket + sessions)
-//	iris spawn --worktree <path> [--role <role>] — spawn a pi session (no client socket)
+//	iris spawn --worktree <path> [--role <role>] — ask the running daemon to spawn a pi session
 //	iris tui [--socket <path>]                  — open the bubbletea TUI
 package main
 
@@ -67,20 +68,11 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(spawnCmd)
+	// spawnCmd is registered in cmd/iris/spawn.go's init() so the spawn
+	// subcommand and its flags live together in one file.
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(tuiCmd)
-	spawnCmd.Flags().StringVar(&spawnWorktree, "worktree", "", "Absolute path to the git worktree (required)")
-	spawnCmd.Flags().StringVar(&spawnRole, "role", "worker", "Agent role (worker, coordinator, etc.)")
-	spawnCmd.Flags().StringVar(&spawnExtension, "extension", "", "Path to the prism.ts extension file (overrides config)")
-	_ = spawnCmd.MarkFlagRequired("worktree")
 }
-
-var (
-	spawnWorktree  string
-	spawnRole      string
-	spawnExtension string
-)
 
 // versionCmd provides `iris version` as an explicit subcommand in addition to
 // the --version flag (cobra wires --version automatically from rootCmd.Version).
@@ -149,85 +141,6 @@ func startup() error {
 	}
 
 	fmt.Println("iris daemon initialised (D-9). Use 'iris daemon' to start the full daemon, or 'iris spawn --worktree <path>' to test a session.")
-	<-ctx.Done()
-	return nil
-}
-
-// spawnCmd spawns a single pi session and blocks until it completes.
-// This provides a CLI entry point for testing D-3 without a full daemon.
-var spawnCmd = &cobra.Command{
-	Use:   "spawn",
-	Short: "Spawn a pi session and run until it completes",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return spawnSession()
-	},
-}
-
-func spawnSession() error {
-	p := iris.ResolvePaths()
-
-	cfg, err := iris.LoadConfig(p.ConfigFile)
-	if err != nil {
-		return fmt.Errorf("iris: load config: %w", err)
-	}
-
-	db, err := iris.OpenDB(p.DB)
-	if err != nil {
-		return fmt.Errorf("iris: open db: %w", err)
-	}
-	defer db.Close()
-
-	// Ensure the run directory exists.
-	if err := os.MkdirAll(p.RunDir, 0o700); err != nil {
-		return fmt.Errorf("iris: create run dir: %w", err)
-	}
-
-	extensionPath := spawnExtension
-	if extensionPath == "" {
-		extensionPath = cfg.PIExtensionPath
-	}
-
-	// Derive the bare repo root from the worktree path for the 4-PAT
-	// GITHUB_TOKEN selection in the bash sandbox (D-5).
-	spawnBareRoot := git.BareRoot(spawnWorktree)
-
-	// Resolve the agent role. If --role was given explicitly (the cobra flag
-	// default is "worker"), the explicit value wins; when the caller sets
-	// --role="" we apply the bare+worktree default-agent heuristic. Callers
-	// using the default "worker" still get the explicit-wins path, matching
-	// prism's session.DefaultAgent contract.
-	resolvedRole := iris.ResolveAgent(spawnWorktree, spawnRole)
-	if resolvedRole == "" {
-		resolvedRole = "worker"
-	}
-
-	superCfg := iris.SupervisorConfig{
-		SessionName:      fmt.Sprintf("iris@%s", resolvedRole),
-		Worktree:         spawnWorktree,
-		Role:             resolvedRole,
-		BareRoot:         spawnBareRoot,
-		PIBinaryPath:     cfg.PIBinaryPath,
-		ExtensionPath:    extensionPath,
-		RestartThreshold: cfg.RestartThreshold,
-		RunDir:           p.RunDir,
-		Database:         db,
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	fmt.Printf("[iris] spawning session (worktree=%s, role=%s)\n", spawnWorktree, spawnRole)
-
-	sup, err := iris.SpawnSession(ctx, superCfg)
-	if err != nil {
-		return fmt.Errorf("iris: spawn: %w", err)
-	}
-
-	fmt.Printf("[iris] session %s running (socket: %s)\n",
-		sup.InstanceID(), sup.SessionRecord().HarnessSockPath)
-
-	// Block until the session terminates (supervisor's Start goroutine exits)
-	// or context is cancelled.
 	<-ctx.Done()
 	return nil
 }
