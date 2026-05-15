@@ -23,12 +23,39 @@ type Paths struct {
 	Sock string
 	// RunDir is ~/.local/state/iris/run/ (reserved; not used in D-2)
 	RunDir string
-	// LogDir is ~/.local/state/iris/logs/ (reserved; not used in D-2)
+	// LogDir is ~/.local/state/iris/logs/. The daemon writes one log file
+	// per session at <LogDir>/<session-name>.log. See SessionLogPath.
 	LogDir string
 	// ConfigFile is ~/.config/iris/config.json
 	ConfigFile string
 	// ArchiveRoot is ~/code/archives/iris/ (reserved; not used in D-2)
 	ArchiveRoot string
+}
+
+// SessionLogPath returns the per-session log file path for the given session
+// name. The path is <LogDir>/<sanitised-name>.log. Session names already use
+// the form "<repo>@<branch>" — both halves are filesystem-safe except for
+// path separators which we replace with '_'. The sanitisation is intentionally
+// permissive: callers that pass a malicious name only see their own log file.
+func (p Paths) SessionLogPath(sessionName string) string {
+	return filepath.Join(p.LogDir, sanitiseSessionFileName(sessionName)+".log")
+}
+
+// sanitiseSessionFileName replaces path separators in a session name so the
+// result is safe to use as a filename. Other characters are left as-is —
+// session names are user-controlled but iris itself is single-user, so the
+// only risk is a user accidentally embedding a '/'.
+func sanitiseSessionFileName(name string) string {
+	out := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if c == '/' || c == '\\' || c == 0 {
+			out = append(out, '_')
+			continue
+		}
+		out = append(out, c)
+	}
+	return string(out)
 }
 
 // ResolvePaths resolves the iris path layout from environment variables,

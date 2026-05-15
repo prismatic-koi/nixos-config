@@ -62,6 +62,7 @@ func runCleanup(sessionName string) error {
 	res, err := iris.CleanupSession(context.Background(), iris.CleanupConfig{
 		Database:       database,
 		RunDir:         p.RunDir,
+		LogDir:         p.LogDir,
 		ArchiveRoot:    p.ArchiveRoot,
 		PIAgentDir:     cleanupPIAgentDir,
 		RemoveWorktree: cleanupRemoveWorktree,
@@ -77,6 +78,7 @@ func runCleanup(sessionName string) error {
 		fmt.Printf("  archive:        (skipped — no pi JSONL found)\n")
 	}
 	fmt.Printf("  run dir:        removed=%v\n", res.RunDirRemoved)
+	fmt.Printf("  log file:       removed=%v\n", res.LogFileRemoved)
 	fmt.Printf("  session row:    ended=%v\n", res.SessionRowRemoved)
 	fmt.Printf("  worktree:       removed=%v\n", res.WorktreeRemoved)
 	fmt.Printf("  branch:         removed=%v\n", res.BranchRemoved)
