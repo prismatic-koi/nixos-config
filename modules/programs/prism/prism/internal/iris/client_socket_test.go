@@ -885,6 +885,9 @@ func TestHarnessToClientFanOut(t *testing.T) {
 	defer csCancel()
 	go cs.Serve(csCtx)
 
+	// Insert sessions row so FK on agent_events.instance_id is satisfied.
+	insertTestSessionRow(t, database, "iid-hf", sessionName, tmp)
+
 	// --- Set up the HarnessSocketServer with the ClientSocket as publisher ---
 	harnessSockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
@@ -999,6 +1002,10 @@ func TestSupervisorPublisherConfig(t *testing.T) {
 	// Set up a HarnessSocketServer with the publisher wired via SupervisorConfig.Publisher.
 	// (We don't spawn a real supervisor — we test the harness server directly to
 	// validate the wiring path that NewSupervisor follows.)
+
+	// Insert sessions row so FK on agent_events.instance_id is satisfied.
+	insertTestSessionRow(t, database, "iid-sp", sessionName, tmp)
+
 	harnessSockPath := filepath.Join(tmp, "harness.sock")
 	sess := &iris.SessionRecord{
 		InstanceID:      "iid-sp",

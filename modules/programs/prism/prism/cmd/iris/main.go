@@ -93,12 +93,12 @@ var versionCmd = &cobra.Command{
 }
 
 // startup runs the iris initialisation sequence: resolve paths, load config,
-// and open the DB. This is the D-3 startup contract.
+// open the DB, run the D-9 restore sequence, then enter the daemon loop.
 func startup() error {
 	p := iris.ResolvePaths()
 
 	// Load config — absent file returns defaults, not an error.
-	_, err := iris.LoadConfig(p.ConfigFile)
+	cfg, err := iris.LoadConfig(p.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("iris: load config: %w", err)
 	}
@@ -110,7 +110,45 @@ func startup() error {
 	}
 	defer db.Close()
 
-	fmt.Println("iris daemon initialised (D-6). Use 'iris daemon' to start the full daemon, or 'iris spawn --worktree <path>' to test a session.")
+	// Ensure the run directory exists before attempting restore.
+	if err := os.MkdirAll(p.RunDir, 0o700); err != nil {
+		return fmt.Errorf("iris: create run dir: %w", err)
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// D-9: run the daemon-restart restore sequence. This detects orphaned
+	// tool calls (writing synthetic tool_results), reconciles sessions that
+	// were in spawning state (marking them error), and re-spawns sessions
+	// that were active when the daemon died.
+	extensionPath := cfg.PIExtensionPath
+	restoreCfg := iris.RestoreConfig{
+		Database: db,
+		RunDir:   p.RunDir,
+		SupervisorTemplate: iris.SupervisorConfig{
+			PIBinaryPath:     cfg.PIBinaryPath,
+			ExtensionPath:    extensionPath,
+			RestartThreshold: cfg.RestartThreshold,
+			RunDir:           p.RunDir,
+			Database:         db,
+		},
+	}
+	restoreResult, err := iris.RunRestore(ctx, restoreCfg)
+	if err != nil {
+		// Non-fatal: log and continue.
+		fmt.Fprintf(os.Stderr, "[iris] restore: %v\n", err)
+	} else {
+		fmt.Printf("[iris] restore complete: spawning_errors=%d orphans=%d restored=%d skipped=%d\n",
+			restoreResult.SpawningMarkError,
+			restoreResult.OrphansWritten,
+			restoreResult.SessionsRestored,
+			restoreResult.SessionsSkipped,
+		)
+	}
+
+	fmt.Println("iris daemon initialised (D-9). Use 'iris daemon' to start the full daemon, or 'iris spawn --worktree <path>' to test a session.")
+	<-ctx.Done()
 	return nil
 }
 

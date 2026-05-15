@@ -11,7 +11,7 @@ package pi
 //	~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 //
 // The <encoded-cwd> directory name is derived from the session's working
-// directory (p.Worktree) via encodePiCWD. The formula mirrors pi's own JS:
+// directory (p.Worktree) via EncodePiCWD. The formula mirrors pi's own JS:
 //
 //	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--
 //
@@ -65,7 +65,7 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 //
 //	~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 //
-// where <encoded-cwd> is derived from p.Worktree via encodePiCWD, and <uuid>
+// where <encoded-cwd> is derived from p.Worktree via EncodePiCWD, and <uuid>
 // matches p.HarnessSessionID. The adapter scans the encoded-cwd directory for
 // a file whose name ends in "_<HarnessSessionID>.jsonl" and returns its path.
 // If no match is found, a sentinel path inside the encoded-cwd dir is returned;
@@ -112,7 +112,7 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 	}
 
 	// Compute the encoded-cwd directory name from the worktree path.
-	encodedCWD := encodePiCWD(p.Worktree)
+	encodedCWD := EncodePiCWD(p.Worktree)
 	cwdDir := filepath.Join(sessionsRoot, encodedCWD)
 
 	// Scan the encoded-cwd directory for a file matching *_<HarnessSessionID>.jsonl.
@@ -204,7 +204,7 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// encodePiCWD encodes an absolute directory path to the directory name pi uses
+// EncodePiCWD encodes an absolute directory path to the directory name pi uses
 // for its session storage. The formula mirrors pi 0.72.1
 // dist/core/session-manager.js line 213:
 //
@@ -212,7 +212,10 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 //
 // In Go terms: strip the leading '/' or '\', replace every occurrence of '/',
 // '\', and ':' with '-', then wrap in "--…--".
-func encodePiCWD(cwd string) string {
+//
+// Exported so that internal/iris can reuse the same encoding when constructing
+// the pi JSONL session file path at daemon-restart time (D-9, #1640).
+func EncodePiCWD(cwd string) string {
 	// Strip leading slash or backslash.
 	stripped := strings.TrimLeft(cwd, "/\\")
 	// Replace path separators and Windows drive colons with dashes.
