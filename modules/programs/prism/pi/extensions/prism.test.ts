@@ -51,6 +51,11 @@ import {
   // Frame writer
   makeFrameWriter,
   type FrameWriter,
+  // Iris surface check helpers
+  runIrisSurfaceCheck,
+  extractExtensionName,
+  IRIS_CANONICAL_TOOLS,
+  IRIS_EXTENSION_ALLOWLIST,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -2686,6 +2691,230 @@ describe("#1472: post-resume state_change{finished} emitted on second task", () 
         done(err)
       })
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Iris surface check (§3.5 of daemon-mode-design.md)
+// ---------------------------------------------------------------------------
+//
+// The surface check has three fatal conditions:
+//   1. Unknown built-in: a tool with source="builtin" not in the canonical seven.
+//   2. Unauthorised extension tool: a tool from an extension not on the allowlist.
+//   3. Failed override: a canonical tool still resolves to source="builtin".
+//
+// These are tested via negative tests that mock pi.getAllTools() to produce
+// each violation.
+
+describe("iris surface check (runIrisSurfaceCheck)", () => {
+  /**
+   * Build a minimal mock ExtensionAPI whose getAllTools() returns the given
+   * tool list. No other methods are needed for the surface check.
+   */
+  function mockPI(
+    tools: Array<{ name: string; source: string; sourcePath?: string; description?: string; parameters?: unknown }>,
+  ): Parameters<typeof runIrisSurfaceCheck>[0] {
+    return {
+      getAllTools: () =>
+        tools.map((t) => ({
+          name: t.name,
+          description: t.description ?? "",
+          parameters: t.parameters ?? {},
+          sourceInfo: {
+            source: t.source,
+            path: t.sourcePath ?? `/extensions/${t.source}.ts`,
+            scope: "user" as const,
+            origin: "top-level" as const,
+          },
+        })),
+    } as Parameters<typeof runIrisSurfaceCheck>[0]
+  }
+
+  /**
+   * All seven canonical built-ins overridden (source="extension" from prism).
+   * Represents the expected post-registerTool() state.
+   */
+  const overriddenCanonicals = IRIS_CANONICAL_TOOLS.map((name) => ({
+    name,
+    source: "extension",
+    sourcePath: "/etc/prism/pi-extensions/prism.ts",
+  }))
+
+  it("passes when all canonical tools are overridden and no unknown tools exist", () => {
+    const pi = mockPI(overriddenCanonicals)
+    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
+  })
+
+  it("passes when allowlisted extension tools are present alongside overridden canonicals", () => {
+    const tools = [
+      ...overriddenCanonicals,
+      { name: "jira_search", source: "extension", sourcePath: "/path/to/atlassian.ts" },
+      { name: "oauth_login", source: "extension", sourcePath: "/path/to/anthropic-oauth.ts" },
+    ]
+    const pi = mockPI(tools)
+    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
+  })
+
+  // ---- Fatal condition 1: unknown built-in --------------------------------
+
+  it("throws on unknown built-in (pi reports an 8th built-in)", () => {
+    // Simulate pi 0.73 adding a new built-in tool that iris has not reviewed.
+    const tools = [
+      ...overriddenCanonicals,
+      { name: "web_fetch", source: "builtin", sourcePath: "" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("web_fetch"),
+          `expected message to mention tool name "web_fetch", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+
+  it("throws on unknown built-in (name is in canonical set but source is still builtin)", () => {
+    // Condition 3: canonical tool not overridden.
+    const tools = [
+      // Six overridden, one still builtin.
+      ...IRIS_CANONICAL_TOOLS.slice(1).map((name) => ({
+        name,
+        source: "extension",
+        sourcePath: "/etc/prism/pi-extensions/prism.ts",
+      })),
+      { name: "read", source: "builtin", sourcePath: "" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("read"),
+          `expected message to mention "read", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+
+  // ---- Fatal condition 2: unauthorised extension tool ----------------------
+
+  it("throws on unauthorised extension tool (extension not on allowlist)", () => {
+    const tools = [
+      ...overriddenCanonicals,
+      // Tool from a hypothetical extension not on the allowlist.
+      { name: "some_mcp_tool", source: "extension", sourcePath: "/path/to/evil-extension.ts" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("evil-extension"),
+          `expected message to mention extension name, got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+
+  it("throws on unauthorised extension even if tool name is canonical", () => {
+    // A rogue extension that registers a tool with a canonical name.
+    const tools = [
+      ...overriddenCanonicals,
+      // Duplicate "bash" from a non-allowlisted extension.
+      { name: "bash", source: "extension", sourcePath: "/path/to/rogue.ts" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("rogue"),
+          `expected message to mention "rogue", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+
+  // ---- Fatal condition 3: canonical built-in that failed to override ------
+
+  it("throws when a canonical built-in was not overridden (source still builtin)", () => {
+    // All but 'edit' are overridden; 'edit' still resolves to builtin.
+    const tools = [
+      ...IRIS_CANONICAL_TOOLS.filter((n) => n !== "edit").map((name) => ({
+        name,
+        source: "extension",
+        sourcePath: "/etc/prism/pi-extensions/prism.ts",
+      })),
+      { name: "edit", source: "builtin", sourcePath: "" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("edit"),
+          `expected message to mention "edit", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// extractExtensionName helper
+// ---------------------------------------------------------------------------
+
+describe("extractExtensionName", () => {
+  it("extracts 'prism' from /etc/prism/pi-extensions/prism.ts", () => {
+    assert.equal(extractExtensionName("/etc/prism/pi-extensions/prism.ts"), "prism")
+  })
+  it("extracts 'atlassian' from /path/to/atlassian.js", () => {
+    assert.equal(extractExtensionName("/path/to/atlassian.js"), "atlassian")
+  })
+  it("extracts 'anthropic-oauth' from anthropic-oauth/index.ts", () => {
+    assert.equal(extractExtensionName("anthropic-oauth/index.ts"), "index")
+  })
+  it("handles Windows-style backslash paths", () => {
+    assert.equal(extractExtensionName("C:\\path\\to\\prism.ts"), "prism")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// IRIS_CANONICAL_TOOLS and IRIS_EXTENSION_ALLOWLIST exports
+// ---------------------------------------------------------------------------
+
+describe("iris constants", () => {
+  it("IRIS_CANONICAL_TOOLS has exactly 7 entries", () => {
+    assert.equal(IRIS_CANONICAL_TOOLS.length, 7)
+  })
+  it("IRIS_CANONICAL_TOOLS contains the expected names", () => {
+    const expected = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+    for (const name of expected) {
+      assert.ok(
+        (IRIS_CANONICAL_TOOLS as readonly string[]).includes(name),
+        `expected ${name} in IRIS_CANONICAL_TOOLS`,
+      )
+    }
+  })
+  it("IRIS_EXTENSION_ALLOWLIST includes prism, atlassian, anthropic-oauth", () => {
+    for (const name of ["prism", "atlassian", "anthropic-oauth"]) {
+      assert.ok(
+        IRIS_EXTENSION_ALLOWLIST.includes(name),
+        `expected ${name} in IRIS_EXTENSION_ALLOWLIST`,
+      )
+    }
   })
 })
 

@@ -8,27 +8,42 @@ import (
 // Config holds the iris runtime configuration loaded from
 // ~/.config/iris/config.json (§10.1 path table). All fields are optional;
 // absent fields fall back to compiled-in defaults.
-//
-// D-2 scope: only the fields needed to satisfy the config-load AC are defined
-// here. Additional fields will be added in D-3 and later issues as the daemon
-// requires them.
 type Config struct {
 	// LogLevel controls the verbosity of iris daemon log output.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".
 	LogLevel string `json:"log_level"`
 
-	// AllowedExtensions is the initial extension allowlist (§11.9 of the
-	// daemon-mode design doc). An empty slice means all extensions are allowed
-	// (permissive default for D-2; D-3 will enforce the list).
+	// AllowedExtensions is the extension allowlist (§11.9 of the
+	// daemon-mode design doc). The default list is
+	// ["prism", "atlassian", "anthropic-oauth"] per §3.5 of the design doc.
+	// An empty slice in the config file means use the compiled-in defaults.
 	AllowedExtensions []string `json:"allowed_extensions"`
+
+	// RestartThreshold is the maximum number of consecutive non-zero exits
+	// before the supervisor's circuit breaker opens (§11.2, §3.6.1). Default: 3.
+	RestartThreshold int `json:"restart_threshold"`
+
+	// PIBinaryPath is the absolute path to the pi binary. When empty, iris
+	// resolves pi via $PATH.
+	PIBinaryPath string `json:"pi_binary_path"`
+
+	// PIExtensionPath is the absolute path to the prism.ts extension file
+	// that iris loads into each pi child via --extension.
+	PIExtensionPath string `json:"pi_extension_path"`
 }
+
+// DefaultAllowedExtensions is the initial extension allowlist per §3.5 of the
+// daemon-mode design doc. Add an extension to this list only after it has been
+// reviewed for iris compatibility.
+var DefaultAllowedExtensions = []string{"prism", "atlassian", "anthropic-oauth"}
 
 // defaults returns a Config with compiled-in defaults. These are used when
 // the config file is absent or when a field is missing from the JSON.
 func defaults() Config {
 	return Config{
 		LogLevel:          "info",
-		AllowedExtensions: []string{},
+		AllowedExtensions: DefaultAllowedExtensions,
+		RestartThreshold:  DefaultRestartThreshold,
 	}
 }
 
@@ -62,6 +77,15 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if len(parsed.AllowedExtensions) > 0 {
 		cfg.AllowedExtensions = parsed.AllowedExtensions
+	}
+	if parsed.RestartThreshold > 0 {
+		cfg.RestartThreshold = parsed.RestartThreshold
+	}
+	if parsed.PIBinaryPath != "" {
+		cfg.PIBinaryPath = parsed.PIBinaryPath
+	}
+	if parsed.PIExtensionPath != "" {
+		cfg.PIExtensionPath = parsed.PIExtensionPath
 	}
 
 	return cfg, nil

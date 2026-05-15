@@ -1296,6 +1296,285 @@ export function shouldAttemptConnect(
 // Extension entry point.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Iris daemon-mode integration (§3.3.2, §3.4, §3.5 of daemon-mode-design.md)
+// ---------------------------------------------------------------------------
+//
+// The seven canonical pi built-in tool names. Any deviation from this set
+// detected by the tool surface check (§3.5) aborts the session.
+export const IRIS_CANONICAL_TOOLS = [
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+] as const
+
+// The iris extension allowlist (§3.5). Extension-registered tools from
+// extensions NOT in this list abort the session before any LLM turn runs.
+export const IRIS_EXTENSION_ALLOWLIST = ["prism", "atlassian", "anthropic-oauth"]
+
+/**
+ * registerIrisOverrides — called from session_start when IRIS_DAEMON_SOCK is
+ * set. Performs three steps:
+ *
+ * 1. Derives override ToolDefinitions from pi.getAllTools() filtered to
+ *    sourceInfo.source === "builtin" for the seven canonical tools.
+ * 2. Calls pi.registerTool() for each override, swapping execute() with a
+ *    function that sends tool_exec to the daemon over IRIS_DAEMON_SOCK and
+ *    returns the tool_exec_result.
+ * 3. Runs the §3.5 tool surface check: asserts canonical seven are now
+ *    iris-owned (source !== "builtin"), no unknown builtins exist, no
+ *    unauthorised extension tools exist. Fatal on any violation.
+ */
+async function registerIrisOverrides(
+  pi: ExtensionAPI,
+  sockPath: string,
+): Promise<void> {
+  // Step 1: capture the canonical built-in ToolDefinitions.
+  const allToolsBefore = pi.getAllTools()
+  const builtins = allToolsBefore.filter(
+    (t) => t.sourceInfo.source === "builtin",
+  )
+
+  // For each canonical tool, register an override that forwards to the daemon.
+  for (const toolInfo of builtins) {
+    const name = toolInfo.name
+
+    // Build the override ToolDefinition, copying all fields verbatim and
+    // replacing only execute() (§3.3.2 of the design doc).
+    const override = {
+      // Verbatim copies from the built-in ToolInfo.
+      name: toolInfo.name,
+      label: (toolInfo as Record<string, unknown>).label as string ?? toolInfo.name,
+      description: toolInfo.description ?? "",
+      parameters: toolInfo.parameters,
+      // Optional fields: copy if present on the original.
+      ...(toolInfo as Record<string, unknown>).promptSnippet !== undefined
+        ? { promptSnippet: (toolInfo as Record<string, unknown>).promptSnippet as string }
+        : {},
+      ...(toolInfo as Record<string, unknown>).promptGuidelines !== undefined
+        ? { promptGuidelines: (toolInfo as Record<string, unknown>).promptGuidelines as string[] }
+        : {},
+      ...(toolInfo as Record<string, unknown>).renderShell !== undefined
+        ? { renderShell: (toolInfo as Record<string, unknown>).renderShell as "default" | "self" }
+        : {},
+      ...(toolInfo as Record<string, unknown>).prepareArguments !== undefined
+        ? { prepareArguments: (toolInfo as Record<string, unknown>).prepareArguments as (args: unknown) => unknown }
+        : {},
+      // Use parallel execution mode so the daemon can dispatch concurrent calls.
+      executionMode: "parallel" as const,
+
+      // Replaced execute(): forward to the iris daemon.
+      execute: async (
+        toolCallId: string,
+        params: unknown,
+        signal: AbortSignal | undefined,
+        onUpdate: ((partial: unknown) => void) | undefined,
+        _ctx: unknown,
+      ): Promise<{ content: Array<{ type: string; text: string }>; details: unknown }> => {
+        return irisExecute(sockPath, name, toolCallId, params, signal, onUpdate)
+      },
+    }
+
+    // Register the override (replaces the builtin for this session).
+    pi.registerTool(override as Parameters<ExtensionAPI["registerTool"]>[0])
+  }
+
+  // Step 3: tool surface check (§3.5). Run AFTER registerTool calls.
+  runIrisSurfaceCheck(pi)
+}
+
+/**
+ * runIrisSurfaceCheck — §3.5 surface assertion.
+ *
+ * Fatal conditions (any one throws):
+ *  1. Unknown built-in: a tool with sourceInfo.source === "builtin" whose
+ *     name is not in the canonical seven.
+ *  2. Unauthorised extension tool: a tool with sourceInfo.source === "extension"
+ *     whose sourceInfo.path resolves to an extension not on the allowlist.
+ *  3. Failed override: a canonical tool still resolves to "builtin" (the
+ *     registerTool call was silently ignored).
+ */
+export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
+  const tools = pi.getAllTools()
+  const canonicalSet = new Set<string>(IRIS_CANONICAL_TOOLS)
+
+  for (const t of tools) {
+    const source = t.sourceInfo.source
+    if (source === "builtin") {
+      // Condition 1: unknown built-in.
+      if (!canonicalSet.has(t.name)) {
+        const msg =
+          `[iris-extension] fatal: unknown built-in tool "${t.name}" ` +
+          `(not in canonical seven). Update iris's tool allowlist or ` +
+          `upgrade iris to support this new tool. ` +
+          `Unset IRIS_DAEMON_SOCK to use vanilla pi while the issue is resolved.`
+        console.error(msg)
+        throw new Error(msg)
+      }
+      // Condition 3: canonical built-in that was NOT overridden.
+      if (canonicalSet.has(t.name)) {
+        const msg =
+          `[iris-extension] fatal: canonical built-in "${t.name}" was not ` +
+          `overridden by iris (still resolves to "builtin"). This indicates ` +
+          `an iris bug or a pi API change. ` +
+          `Unset IRIS_DAEMON_SOCK to use vanilla pi while the issue is resolved.`
+        console.error(msg)
+        throw new Error(msg)
+      }
+    } else if (source === "extension") {
+      // Condition 2: unauthorised extension tool.
+      const extName = extractExtensionName(t.sourceInfo.path)
+      if (!IRIS_EXTENSION_ALLOWLIST.includes(extName)) {
+        const msg =
+          `[iris-extension] fatal: tool "${t.name}" is registered by ` +
+          `extension "${extName}" which is not on the iris allowlist ` +
+          `(${IRIS_EXTENSION_ALLOWLIST.join(", ")}). ` +
+          `Add the extension to the iris allowlist or remove it.`
+        console.error(msg)
+        throw new Error(msg)
+      }
+    }
+  }
+}
+
+/**
+ * extractExtensionName extracts the extension identifier from a sourceInfo
+ * path. The path is typically the absolute path to the extension .ts/.js file.
+ * We use the basename without extension as the name (e.g. "prism" from
+ * "/etc/prism/pi-extensions/prism.ts").
+ *
+ * Exported for testing.
+ */
+export function extractExtensionName(path: string): string {
+  // Use the last component, strip .ts / .js
+  const parts = path.replace(/\\/g, "/").split("/")
+  const basename = parts[parts.length - 1] ?? path
+  return basename.replace(/\.(ts|js|mjs|cjs)$/, "")
+}
+
+/**
+ * irisExecute — the replacement execute() for overridden built-in tools.
+ *
+ * Opens a fresh Unix socket connection to the iris daemon, sends a tool_exec
+ * frame, streams tool_exec_update frames as onUpdate callbacks, awaits the
+ * matching tool_exec_result, then closes the connection.
+ *
+ * On AbortSignal fire: sends tool_abort and closes the connection.
+ * Returns a tool_exec_result with success=false, isError=true, output="aborted".
+ */
+async function irisExecute(
+  sockPath: string,
+  toolName: string,
+  toolCallId: string,
+  params: unknown,
+  signal: AbortSignal | undefined,
+  onUpdate: ((partial: unknown) => void) | undefined,
+): Promise<{ content: Array<{ type: string; text: string }>; details: unknown }> {
+  return new Promise((resolve, reject) => {
+    const sock = require("node:net").createConnection(sockPath) as import("node:net").Socket
+    let settled = false
+    let buffer = ""
+
+    const settle = (result: { content: Array<{ type: string; text: string }>; details: unknown }) => {
+      if (settled) return
+      settled = true
+      sock.destroy()
+      resolve(result)
+    }
+    const fail = (err: Error) => {
+      if (settled) return
+      settled = true
+      sock.destroy()
+      reject(err)
+    }
+
+    // Handle abort signal.
+    const abortHandler = () => {
+      if (settled) return
+      try {
+        const abortFrame = JSON.stringify({ type: "tool_abort", id: toolCallId }) + "\n"
+        sock.write(abortFrame)
+      } catch {}
+      settle({
+        content: [{ type: "text", text: "aborted" }],
+        details: { isError: true, success: false },
+      })
+    }
+    if (signal) {
+      signal.addEventListener("abort", abortHandler, { once: true })
+    }
+
+    sock.on("error", (err: Error) => fail(err))
+
+    sock.on("connect", () => {
+      // Send tool_exec frame.
+      const frame = JSON.stringify({
+        type: "tool_exec",
+        id: toolCallId,
+        name: toolName,
+        args: params,
+      }) + "\n"
+      sock.write(frame)
+    })
+
+    sock.on("data", (chunk: Buffer) => {
+      buffer += chunk.toString()
+      let nl: number
+      while ((nl = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, nl)
+        buffer = buffer.slice(nl + 1)
+        if (!line.trim()) continue
+        let parsed: Record<string, unknown>
+        try {
+          parsed = JSON.parse(line) as Record<string, unknown>
+        } catch {
+          continue
+        }
+        if (parsed.id !== toolCallId) continue
+
+        switch (parsed.type) {
+          case "tool_exec_update": {
+            const content = typeof parsed.content === "string" ? parsed.content : ""
+            if (onUpdate && content) {
+              try {
+                onUpdate({
+                  content: [{ type: "text", text: content }],
+                  details: {},
+                })
+              } catch {}
+            }
+            break
+          }
+          case "tool_exec_result": {
+            const success = parsed.success === true
+            const isError = parsed.is_error === true || !success
+            const output = typeof parsed.output === "string" ? parsed.output : ""
+            settle({
+              content: [{ type: "text", text: output }],
+              details: {
+                success,
+                isError,
+                ...(parsed.details && typeof parsed.details === "object" ? parsed.details : {}),
+              },
+            })
+            break
+          }
+        }
+      }
+    })
+
+    sock.on("close", () => {
+      if (!settled) {
+        fail(new Error(`[iris-extension] connection closed before tool_exec_result for id=${toolCallId}`))
+      }
+    })
+  })
+}
+
 export default function prismExtension(pi: ExtensionAPI): void {
   // Activation guard. When PI runs outside prism, leave it untouched.
   if (!shouldActivate()) {
@@ -1675,6 +1954,24 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("session_start", async (_event, ctx) => {
     lastCtx = ctx
+
+    // ── Iris daemon-mode override registration (§3.4 escape hatch) ────────
+    //
+    // When IRIS_DAEMON_SOCK is set, the iris daemon has spawned this pi child.
+    // Override the seven canonical built-in tools with iris dispatch shims.
+    // When IRIS_DAEMON_SOCK is unset, skip entirely — vanilla pi behaviour.
+    const irisSockPath = process.env.IRIS_DAEMON_SOCK
+    if (irisSockPath) {
+      try {
+        await registerIrisOverrides(pi, irisSockPath)
+      } catch (err) {
+        // Fatal: abort before any LLM turn runs (§3.5 — no degraded mode).
+        console.error("[iris-extension] fatal: override registration failed:", err)
+        throw err
+      }
+    }
+    // ── End iris override registration ────────────────────────────────────
+
     // Connect on session_start. The wire spec requires the extension to dial
     // out; the sidecar has already bound the listener.
     //
