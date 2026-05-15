@@ -295,21 +295,49 @@ func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 		return
 	}
 
-	// Check for branch-moved race: GitHub returns a message containing
-	// "already merged" or similar when the head SHA moved between our
-	// view and the merge call. Treat as transient — leave watching.
+	// First: reconcile by checking the PR's actual state. Some "errors" are
+	// races where the PR did merge — trusting the observed state is more
+	// reliable than pattern-matching error strings.
+	if state := w.checkPRMergedState(ctx, head.PR); state == "MERGED" {
+		log.Printf("[mergequeue] PR #%d merge mutation errored but PR is MERGED — reconciling as success", head.PR)
+		w.succeedAndNotify(ctx, head)
+		return
+	}
+
+	// Second: existing branch-moved-race keyword check (transient races
+	// where the PR didn't merge but will likely merge on retry).
 	combinedOutput := strings.ToLower(string(out) + err.Error())
 	if isBranchMovedRace(combinedOutput) {
 		log.Printf("[mergequeue] PR #%d branch-moved race detected — leaving watching for next tick", head.PR)
 		return
 	}
 
+	// Third: genuine failure.
 	errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
 	if len(errMsg) > 500 {
 		errMsg = errMsg[:500]
 	}
 	log.Printf("[mergequeue] PR #%d merge failed: %v", head.PR, errMsg)
 	w.failAndNotify(head, errMsg)
+}
+
+// checkPRMergedState queries the PR's current state from GitHub and returns
+// the state string (e.g. "MERGED", "OPEN", "CLOSED"). Returns "" if the
+// query fails or the response cannot be parsed. This is called on the error
+// path of tryMerge to reconcile cases where the mutation errored but the PR
+// actually merged (e.g. "Merge already in progress" races).
+func (w *Watcher) checkPRMergedState(ctx context.Context, pr int) string {
+	out, err := w.runGH(ctx, "pr", "view", fmt.Sprintf("%d", pr), "--json", "state")
+	if err != nil {
+		return "" // unknown — fall through to existing paths
+	}
+	var v struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal(out, &v); err != nil {
+		return ""
+	}
+	return v.State
 }
 
 // succeedAndNotify transitions head to merged and notifies the coordinator.
