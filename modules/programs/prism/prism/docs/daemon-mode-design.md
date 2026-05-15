@@ -823,7 +823,7 @@ after the initial draft of this document:
 - **Opencode removal** — #1609 removed the opencode runtime and harness
   wiring; #1617 removed the opencode archive/export plumbing. Pi has been
   the exclusive agent harness since those PRs merged.
-- **Atlassian-CLI retirement** — #1604 removed the standalone `atlassian`
+- **Atlassian-CLI retirement** — #1602/#1604 removed the standalone `atlassian`
   CLI in favour of the pi atlassian-mcp MCP extension; #1606 removed the
   associated SOPS secrets.
 - **Speculative env-var audit** — #1605 pruned five speculative keys
