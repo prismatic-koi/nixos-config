@@ -61,6 +61,12 @@ type HarnessSocketServer struct {
 	// Nil when no client socket is configured (e.g. in harness-only tests).
 	publisher EventPublisher
 
+	// sessionStatusHandler is invoked when a session_status frame delivers a
+	// non-empty session_id, immediately after the DB write. Wired by the
+	// Supervisor so it can update its in-memory SessionRecord.PiSessionPath
+	// under the supervisor's lock (issue #1682). Nil in harness-only tests.
+	sessionStatusHandler func(sessionID string)
+
 	// sessionShutdownReceived is set to true when the session_shutdown
 	// frame arrives — used by the supervisor to detect clean exits.
 	sessionShutdownReceived bool
@@ -89,6 +95,16 @@ func NewHarnessSocketServer(sess *SessionRecord, database *db.DB) (*HarnessSocke
 func (h *HarnessSocketServer) SetPublisher(p EventPublisher) {
 	h.mu.Lock()
 	h.publisher = p
+	h.mu.Unlock()
+}
+
+// SetSessionStatusHandler wires a callback invoked when the session_status
+// frame arrives with a non-empty session_id. The callback runs synchronously
+// after the DB write so the in-memory SessionRecord and the DB row stay in
+// lock-step. Wired by the Supervisor; nil in harness-only tests.
+func (h *HarnessSocketServer) SetSessionStatusHandler(fn func(sessionID string)) {
+	h.mu.Lock()
+	h.sessionStatusHandler = fn
 	h.mu.Unlock()
 }
 
@@ -287,13 +303,28 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 		case "session_status":
 			// Extract session_id (pi's JSONL session UUID) and persist it in
 			// sessions.harness_session_id so the D-9 restore path can locate
-			// the JSONL file at daemon restart.
+			// the JSONL file at daemon restart. After the DB write, invoke
+			// the session-status handler (wired by the Supervisor) so the
+			// in-memory SessionRecord.PiSessionPath is updated too — without
+			// this, daemonState.activeSessions() would report an empty
+			// harness_session_id for every live session (issue #1682).
 			var statusFrame map[string]any
 			if err := json.Unmarshal(line, &statusFrame); err == nil {
 				if sessionID, ok := statusFrame["session_id"].(string); ok && sessionID != "" {
 					if err := h.database.IrisUpdateHarnessSessionID(h.sess.InstanceID, sessionID); err != nil {
 						log.Printf("[iris] harness: failed to persist session_id %q for instance %s: %v",
 							sessionID, h.sess.InstanceID, err)
+					}
+					// Ordering invariant (PR #1657): the agent_events row for
+					// session_status is written by writeObservationEvent below;
+					// the DB harness_session_id row is set above. The in-memory
+					// mutation here mirrors the DB write — same ordering, same
+					// place.
+					h.mu.Lock()
+					handler := h.sessionStatusHandler
+					h.mu.Unlock()
+					if handler != nil {
+						handler(sessionID)
 					}
 				}
 			}

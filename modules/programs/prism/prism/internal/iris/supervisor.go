@@ -28,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/db"
+	piharness "github.com/prismatic-koi/prism/internal/harness/pi"
 )
 
 // SupervisorConfig holds the spawn parameters for one pi session.
@@ -141,19 +142,99 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		log.Printf("[iris] supervisor: failed to set initial iris_state: %v", err)
 	}
 
-	return &Supervisor{
+	sup := &Supervisor{
 		cfg:     cfg,
 		sess:    sess,
 		harness: harness,
 		state:   StateSpawning,
-	}, nil
+	}
+	// Wire the session_status handler so the harness socket can update the
+	// in-memory SessionRecord.PiSessionPath as soon as pi delivers its
+	// session UUID (issue #1682). Without this, the in-memory record would
+	// stay empty for the entire lifetime of every live session even though
+	// the DB row is correct.
+	harness.SetSessionStatusHandler(sup.handleSessionStatus)
+	return sup, nil
 }
 
-// InstanceID returns the session instance ID.
+// handleSessionStatus is the callback the HarnessSocketServer invokes when
+// a session_status frame delivers pi's session UUID. It resolves the JSONL
+// file path the same way the D-9 restore path does and stores it on the
+// in-memory SessionRecord under the supervisor's lock.
+//
+// If the JSONL file cannot be located (a transient condition at the moment
+// session_status arrives — pi may not yet have flushed the first chunk),
+// the UUID itself is stored as the path. This keeps harness_session_id
+// non-empty for the live-session AC; the next daemon-restart restore will
+// upgrade it to a full path via findPiSessionJSONL.
+func (s *Supervisor) handleSessionStatus(sessionID string) {
+	if sessionID == "" {
+		return
+	}
+	path := s.resolvePiSessionPath(sessionID)
+	s.SetPiSessionPath(s.sess.InstanceID, path)
+}
+
+// resolvePiSessionPath finds the pi JSONL file for the given session UUID by
+// scanning the per-cwd pi sessions directory. Mirrors findPiSessionJSONL
+// (used by the restore path) so live and restored sessions converge on the
+// same path format.
+func (s *Supervisor) resolvePiSessionPath(sessionID string) string {
+	piAgentDir := s.cfg.PIAgentDir
+	if piAgentDir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Cannot resolve — fall back to the bare UUID so clients still
+			// see a non-empty harness_session_id.
+			return sessionID
+		}
+		piAgentDir = filepath.Join(home, ".pi", "agent")
+	}
+	encodedCWD := piharness.EncodePiCWD(s.sess.Worktree)
+	cwdDir := filepath.Join(piAgentDir, "sessions", encodedCWD)
+	entries, err := os.ReadDir(cwdDir)
+	if err != nil {
+		return sessionID
+	}
+	suffix := "_" + sessionID + ".jsonl"
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			return filepath.Join(cwdDir, e.Name())
+		}
+	}
+	return sessionID
+}
+
+// InstanceID returns the session instance ID. The instance ID is immutable
+// after NewSupervisor returns so this is safe without holding the lock.
 func (s *Supervisor) InstanceID() string { return s.sess.InstanceID }
 
-// SessionRecord returns a copy of the session record.
-func (s *Supervisor) SessionRecord() SessionRecord { return s.sess }
+// SessionRecord returns a copy of the session record under the supervisor's
+// lock so callers see a consistent snapshot of fields that may be mutated
+// concurrently (State, PiSessionPath, RestartCount).
+func (s *Supervisor) SessionRecord() SessionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sess
+}
+
+// SetPiSessionPath updates the in-memory SessionRecord's PiSessionPath field
+// under the supervisor's lock. Called by the harness socket session_status
+// handler immediately after the DB write so that daemonState.activeSessions()
+// (which reads from the in-memory record, not the DB) reports the correct
+// harness_session_id for live sessions.
+//
+// The instanceID argument is checked against this supervisor's instance ID;
+// a mismatch is a no-op (defensive — the caller should already be scoped
+// to this supervisor's session).
+func (s *Supervisor) SetPiSessionPath(instanceID, path string) {
+	if instanceID != s.sess.InstanceID {
+		return
+	}
+	s.mu.Lock()
+	s.sess.PiSessionPath = path
+	s.mu.Unlock()
+}
 
 // SetPublisher wires an EventPublisher to this supervisor's harness socket.
 // It may be called at any time after NewSupervisor returns and before or

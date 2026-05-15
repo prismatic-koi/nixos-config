@@ -120,8 +120,14 @@ type SessionSnapshot struct {
 	StartedAt string `json:"started_at"`
 	// HarnessSessionID is the harness-side session identifier — for the pi
 	// harness this is the full path to the pi JSONL session file (a stable
-	// identifier suitable for cross-referencing pi-side logs). May be empty
-	// before the harness handshake has completed.
+	// identifier suitable for cross-referencing pi-side logs). Populated
+	// within milliseconds of session start, once the pi child emits its
+	// first session_status frame (handled by the iris harness socket and
+	// mirrored into the in-memory SessionRecord under the supervisor's
+	// lock). The transient window between session_start and that first
+	// frame is the only time this field is empty for a live session;
+	// restored sessions have it populated from the DB before any client
+	// can observe them.
 	HarnessSessionID string `json:"harness_session_id,omitempty"`
 }
 
