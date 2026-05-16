@@ -67,6 +67,15 @@ type HarnessSocketServer struct {
 	// under the supervisor's lock (issue #1682). Nil in harness-only tests.
 	sessionStatusHandler func(sessionID string)
 
+	// stateChangeHandler is invoked when a state_change frame arrives from
+	// the extension, immediately after the agent_events row is written.
+	// Wired by the Supervisor so it can drive the in-memory session state
+	// machine, update sessions.iris_state, and notify subscribers via
+	// PublishState. Per PR #1657 the event row is written *before* the
+	// status row — callers must preserve that ordering (issue #1701). Nil
+	// in harness-only tests; in that case the frame is logged only.
+	stateChangeHandler func(state string)
+
 	// sessionShutdownReceived is set to true when the session_shutdown
 	// frame arrives — used by the supervisor to detect clean exits.
 	sessionShutdownReceived bool
@@ -105,6 +114,18 @@ func (h *HarnessSocketServer) SetPublisher(p EventPublisher) {
 func (h *HarnessSocketServer) SetSessionStatusHandler(fn func(sessionID string)) {
 	h.mu.Lock()
 	h.sessionStatusHandler = fn
+	h.mu.Unlock()
+}
+
+// SetStateChangeHandler wires a callback invoked when a state_change frame
+// arrives from the extension. The callback runs synchronously after the
+// agent_events row is written (PR #1657 ordering: event row first, then
+// the status row inside the supervisor's setState). The callback is
+// expected to drive setState under the supervisor's lock so PublishState
+// fires for every transition (issue #1701).
+func (h *HarnessSocketServer) SetStateChangeHandler(fn func(state string)) {
+	h.mu.Lock()
+	h.stateChangeHandler = fn
 	h.mu.Unlock()
 }
 
@@ -338,6 +359,32 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 		case "tool_result":
 			// Observation frame — write to DB for logging.
 			h.writeObservationEvent("tool_result", line)
+
+		case "state_change":
+			// State transition from the extension (e.g. waiting, active,
+			// finished, interrupted). Write the agent_events row FIRST per
+			// PR #1657 ordering, then dispatch to the supervisor so the
+			// sessions.iris_state row, the in-memory SessionRecord, and the
+			// PublishState fan-out all happen under the supervisor's lock
+			// (issue #1701).
+			h.writeObservationEvent("state_change", line)
+			var stateFrame struct {
+				State string `json:"state"`
+			}
+			if err := json.Unmarshal(line, &stateFrame); err != nil || stateFrame.State == "" {
+				if err != nil {
+					log.Printf("[iris] harness: bad state_change frame: %v", err)
+				} else {
+					log.Printf("[iris] harness: state_change frame missing state field")
+				}
+				continue
+			}
+			h.mu.Lock()
+			handler := h.stateChangeHandler
+			h.mu.Unlock()
+			if handler != nil {
+				handler(stateFrame.State)
+			}
 
 		default:
 			// Unknown or other observation frames — write to DB generically.

@@ -21,12 +21,19 @@ type IrisSessionRow struct {
 }
 
 // IrisSessionsToRestore returns all sessions in the iris DB that were in
-// "spawning" or "active" state when the daemon died (i.e. sessions that have
-// an iris_state of "spawning" or "active"). These are the candidates for
-// orphan detection and re-spawn.
+// "spawning", "active", or "waiting" state when the daemon died (i.e. sessions
+// that have a non-terminal iris_state). These are the candidates for orphan
+// detection and re-spawn.
 //
 // The harness column is used to restrict to iris-managed sessions (harness='pi').
 // Sessions with end_state IS NOT NULL (finished/error) are excluded.
+//
+// Sessions in "waiting" state (paused for user input at crash time, issue
+// #1701) are restored via the same path as "active": pi is re-spawned with
+// the previous JSONL session file. Restored sessions transition through
+// StateSpawning → StateActive on re-handshake; if pi is still paused for
+// input, the extension will emit state_change="waiting" again on the next
+// pause and the session converges back to waiting.
 func (d *DB) IrisSessionsToRestore() ([]IrisSessionRow, error) {
 	const q = `
 SELECT instance_id, session_name, COALESCE(worktree, ''), COALESCE(agent_role, ''),
@@ -34,7 +41,7 @@ SELECT instance_id, session_name, COALESCE(worktree, ''), COALESCE(agent_role, '
   FROM sessions
  WHERE harness = 'pi'
    AND end_state IS NULL
-   AND iris_state IN ('spawning', 'active')
+   AND iris_state IN ('spawning', 'active', 'waiting')
  ORDER BY started_at ASC`
 	rows, err := d.conn.Query(q)
 	if err != nil {

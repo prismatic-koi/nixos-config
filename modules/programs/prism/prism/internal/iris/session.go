@@ -18,6 +18,15 @@ const (
 	// handshake has completed.
 	StateActive SessionState = "active"
 
+	// StateWaiting means the pi child has paused for user input — typically
+	// when an assistant turn has finished and the next user message has not
+	// arrived. Emitted by the pi extension as a state_change frame on the
+	// harness socket and surfaced so coordinators (e.g. `iris prompt`'s
+	// waiting-state guard, #1689) can distinguish an idle-but-attentive
+	// session from one that is still working. Use the literal lowercase
+	// string "waiting" — matches prism's agent.StateWaiting; do not drift.
+	StateWaiting SessionState = "waiting"
+
 	// StateFinished means the session ended cleanly (session_shutdown frame
 	// received and pi exited with code 0).
 	StateFinished SessionState = "finished"
