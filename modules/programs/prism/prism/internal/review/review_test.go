@@ -2078,6 +2078,13 @@ func reviewProfilesFileMissingOneSlot() *config.ProfilesFile {
 // review-agent slots, and that no progress lines are emitted (i.e. no agent
 // spawn was attempted). This is the all-or-nothing AC from #1224.
 func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
+	// Redirect sidecar state dir so any sidecar pid/log files created by
+	// review.Run's host-mode spawn path land in a tempdir, not the real
+	// $HOME/.local/state/prism/run/ (#1709 follow-up — defence in depth
+	// against test-isolation breaches that surfaced via cross-package
+	// timing changes after #1690 landed on main).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 
 	pf := reviewProfilesFileMissingOneSlot()
@@ -2125,6 +2132,14 @@ func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 // the active profile. In host mode with no real agent, SpawnSession will
 // fail for other reasons — but the RequireSlot gate must not be the cause.
 func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
+	// Redirect sidecar state dir so any sidecar pid/log files created by
+	// review.Run's host-mode spawn path land in a tempdir, not the real
+	// $HOME/.local/state/prism/run/. Without this, the pid files leak to
+	// host state and TestNotifyInvestigatorCompletion_NoHostBusLeak in the
+	// sidecar package observes them disappear when this test cleans up,
+	// flaking under parallel `go test ./...` scheduling (#1709 follow-up).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 
 	pf := reviewProfilesFileWithAllSlots()
@@ -2154,6 +2169,11 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 // review.RunAsync also aborts the fan-out when the active profile is missing
 // a review slot (#1224 — both sync and async paths are gated).
 func TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
+	// Redirect sidecar state dir so any sidecar pid/log files created by
+	// review.RunAsync's host-mode spawn path land in a tempdir, not the
+	// real $HOME/.local/state/prism/run/ (#1709 follow-up).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 	d, err := db.Open(dbPath)
 	if err != nil {

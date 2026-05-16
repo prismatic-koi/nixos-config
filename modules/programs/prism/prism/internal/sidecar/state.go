@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 
@@ -24,6 +25,93 @@ func (s *Sidecar) cancelRecoveryTimer() {
 		s.recoveryTimer.Stop()
 		s.recoveryTimer = nil
 	}
+}
+
+// cancelActivityTimer cancels the inactivity watchdog (#1709). Must be called
+// with s.mu held.
+func (s *Sidecar) cancelActivityTimer() {
+	if s.activityTimer != nil {
+		s.activityTimer.Stop()
+		s.activityTimer = nil
+	}
+}
+
+// touchActivity resets the inactivity watchdog (#1709). Called on every
+// inbound frame from the PI extension (handlePipeFrame) and the SSE harness
+// (HandleEvent) so that any sign of life from the agent restarts the
+// countdown. A no-op when cfg.ActivityTimeout is zero (watchdog disabled)
+// or when the session has already been shut down. Must be called with s.mu
+// held.
+//
+// When the timer fires (no inbound frame for the full window), the closure
+// invokes handleActivityTimeout, which force-transitions the session to
+// StateError with note="inactivity timeout". The transition is
+// state-idempotent: it is a no-op if the session has already reached a
+// terminal state through a normal path.
+func (s *Sidecar) touchActivity() {
+	if s.cfg.ActivityTimeout <= 0 {
+		return
+	}
+	if s.shuttingDown {
+		return
+	}
+	if s.activityTimer != nil {
+		s.activityTimer.Stop()
+		s.activityTimer = nil
+	}
+	timeout := s.cfg.ActivityTimeout
+	s.activityTimer = s.cfg.Clock.AfterFunc(timeout, func() {
+		s.handleActivityTimeout(timeout)
+	})
+}
+
+// handleActivityTimeout is the inactivity-watchdog fire callback (#1709). It
+// runs on the Clock's timer goroutine without s.mu held. Acquires s.mu,
+// checks that the session is still in a non-terminal state, writes a
+// state_change{error} event with note="inactivity timeout", and notifies the
+// parent worker via the existing review-agent startup-failure delivery path
+// so a stalled review agent surfaces a real signal to its worker rather than
+// hanging silently.
+func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
+	s.mu.Lock()
+	s.activityTimer = nil
+
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return
+	}
+
+	// Re-check current state under the lock. If the session has already
+	// reached a terminal state via a normal path (state_change{finished},
+	// session_shutdown, etc.), the watchdog is a no-op.
+	current := s.currentDBState()
+	if current == agent.StateFinished || current == agent.StateError ||
+		current == agent.StateInterrupted {
+		s.logger().Printf("sidecar: inactivity watchdog fired but session already terminal (state=%s) — no-op", current)
+		s.mu.Unlock()
+		return
+	}
+
+	s.logger().Printf("sidecar: inactivity watchdog fired after %v — transition -> error (cause=inactivity_timeout)", timeout)
+	s.cancelIdleTimer()
+	s.cancelRecoveryTimer()
+	s.upsertState(agent.StateError, nil, nil)
+	s.writeStateChange(agent.StateError)
+	s.writeEvent("state_change", map[string]string{
+		"state": string(agent.StateError),
+		"note":  fmt.Sprintf("inactivity timeout after %v", timeout),
+	}, nil)
+	s.lastState = agent.StateError
+	s.lastErrorAt = s.cfg.Clock.Now()
+	s.mu.Unlock()
+
+	// Notify the parent worker on the same channel used for startup
+	// failures so review agents that stall mid-turn surface a real signal
+	// rather than disappearing into the GroupCompleted timeout. The helper
+	// no-ops for non-review-agent session names, so workers and
+	// coordinators that opt into ActivityTimeout do not generate spurious
+	// parent notifications.
+	go s.notifyParentWorkerOnStartupFailure(fmt.Errorf("inactivity timeout: no inbound frame for %v", timeout))
 }
 
 func (s *Sidecar) currentDBState() agent.AgentState {

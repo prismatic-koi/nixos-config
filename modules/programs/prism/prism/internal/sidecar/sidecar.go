@@ -91,6 +91,25 @@ const ReconnectRecoveryDelay = 60 * time.Second
 // would see a spurious "finished" notification.
 const ErrorResumeDebounce = 5 * time.Second
 
+// DefaultReviewAgentInactivityTimeout is the default per-session inactivity
+// watchdog window for review-agent sessions (#1709). When no inbound frame
+// arrives from the PI extension (turn_start, turn_end, msg_assistant,
+// state_change, tool_call, tool_result, etc.) for this duration, the sidecar
+// force-transitions the session to StateError with a "inactivity timeout"
+// note so the review group can complete and a follow-up `prism review` can
+// proceed.
+//
+// Set to 15 minutes by default: long enough to comfortably accommodate any
+// tool call a review agent legitimately runs (build, vet, `go test ./...`,
+// `nix build`), short enough to keep the recovery window inside the review
+// monitor's 20-minute safety timeout (2× per-agent timeout of 10m).
+//
+// Only applied to sessions whose AgentRole is a known review-agent role; for
+// all other sessions Config.ActivityTimeout remains 0 (disabled). Workers and
+// coordinators have legitimate long-idle windows (waiting on a coordinator
+// reply, waiting on a human prompt) and must not be force-transitioned.
+const DefaultReviewAgentInactivityTimeout = 15 * time.Minute
+
 // Clock abstracts time and timer operations for testing.
 type Clock interface {
 	Now() time.Time
@@ -217,6 +236,15 @@ type Config struct {
 	// to pipeDisconnectTimeout (30s) when zero. Set to a small value in tests
 	// to avoid real wall-clock waits on the reconnect path.
 	PipeReconnectTimeout time.Duration
+	// ActivityTimeout is the duration of inbound-frame silence after which the
+	// sidecar force-transitions the session to StateError with note="inactivity
+	// timeout" (#1709). The watchdog is reset on every inbound frame received
+	// from the PI extension or SSE harness. Zero disables the watchdog
+	// (default for workers, coordinators, and other non-review sessions). For
+	// review-agent sessions, New() defaults this to
+	// DefaultReviewAgentInactivityTimeout when zero. Set to a small value in
+	// tests to exercise the timeout path deterministically.
+	ActivityTimeout time.Duration
 	// HarnessBinaryPath is the path to the harness binary used by
 	// runStartupStdio for TransportStdioPipe harnesses. The binary is launched
 	// inside a bwrap sandbox (when bwrap is available); the sidecar reads its
@@ -415,6 +443,15 @@ type Sidecar struct {
 	//
 	// Protected by s.mu.
 	reviewingInFlight bool
+
+	// activityTimer is the per-session inactivity watchdog (#1709). It is
+	// (re-)armed by touchActivity() on every inbound frame from the PI
+	// extension (handlePipeFrame) or the SSE harness (HandleEvent). If it
+	// fires — i.e. cfg.ActivityTimeout has elapsed with no inbound frame — the
+	// session is force-transitioned to StateError with note="inactivity
+	// timeout". nil when the watchdog is disabled (cfg.ActivityTimeout == 0).
+	// Protected by s.mu.
+	activityTimer Timer
 }
 
 // New creates a Sidecar with the given configuration.
@@ -449,6 +486,16 @@ func New(cfg Config) *Sidecar {
 	// empty (#555).
 	if cfg.AgentRole != "" {
 		s.rootAgent = cfg.AgentRole
+	}
+	// Default the inactivity watchdog for review-agent sessions (#1709). The
+	// watchdog is opt-in for every other role: workers, coordinators, and
+	// investigate agents may legitimately sit idle awaiting human or peer
+	// input, so force-transitioning them on a silence window would corrupt
+	// normal flow. Review agents, by contrast, have no human-in-the-loop
+	// branch and a stuck review-agent row blocks the whole review group's
+	// completion path — hence the default rescue here.
+	if s.cfg.ActivityTimeout == 0 && reviewAgentAllowlist[cfg.AgentRole] {
+		s.cfg.ActivityTimeout = DefaultReviewAgentInactivityTimeout
 	}
 	return s
 }
@@ -936,6 +983,7 @@ func (s *Sidecar) Shutdown() {
 
 	s.cancelIdleTimer()
 	s.cancelRecoveryTimer()
+	s.cancelActivityTimer()
 
 	if s.lastState != agent.StateFinished &&
 		s.lastState != agent.StateDeleted &&
@@ -1769,6 +1817,11 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			s.mu.Lock()
 			if !s.shuttingDown {
 				s.writeStateChange(agent.StateActive)
+				// Arm the inactivity watchdog once the session is active
+				// (#1709). Subsequent inbound frames reset the timer via
+				// touchActivity(); if the very first inbound frame never
+				// arrives the watchdog still fires after the full window.
+				s.touchActivity()
 			}
 			if s.cfg.OnReady != nil && !s.shuttingDown {
 				go s.cfg.OnReady()
@@ -1874,6 +1927,11 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Reset the inactivity watchdog (#1709): any inbound frame counts as
+	// activity, so the watchdog only fires after a full silence window.
+	// No-op when cfg.ActivityTimeout is zero (disabled for non-review roles).
+	s.touchActivity()
 
 	switch frame.Type {
 	case "state_change":
