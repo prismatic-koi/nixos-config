@@ -26,8 +26,14 @@ import (
 // Returns the sidecar and the testClock so callers can drive the timer
 // manually. Named to avoid colliding with newReviewAgentSidecar in
 // sidecar_test.go (different signature, different purpose).
+//
+// Host-state isolation: redirects $XDG_STATE_HOME to a tempdir so any
+// path lookup performed by the sidecar (e.g. notifyParentWorker on
+// watchdog fire) cannot reach the real prism state directory (#1709,
+// issue #1608 defence in depth).
 func newReviewAgentSidecarWithActivityTimeout(t *testing.T, sockPath string, activityTimeout time.Duration) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
