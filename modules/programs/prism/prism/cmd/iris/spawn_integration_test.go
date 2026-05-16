@@ -75,7 +75,7 @@ func TestSpawn_EndToEndAgainstRealClientSocket(t *testing.T) {
 		GetActiveSessions: func() []iris.SessionSnapshot {
 			return nil
 		},
-		SpawnSession: func(ctx context.Context, worktree, role string, _ map[string]any) (*iris.Supervisor, error) {
+		SpawnSession: func(ctx context.Context, worktree, role, _parent string, _ map[string]any) (*iris.Supervisor, error) {
 			recMu.Lock()
 			gotWtree = worktree
 			gotRole = role
@@ -143,5 +143,156 @@ func TestSpawn_EndToEndAgainstRealClientSocket(t *testing.T) {
 	}
 	if !strings.Contains(output, runDir) {
 		t.Errorf("expected harness socket path (under %q) in output; got %q", runDir, output)
+	}
+}
+
+// TestSpawn_ForwardsIRISSessionNameAsParent asserts that when `iris spawn`
+// is invoked with $IRIS_SESSION_NAME set (the env variable that
+// Supervisor.buildEnv injects into every iris-managed pi child), the
+// daemon's spawnFn receives that value via the Parent argument. This is
+// the wire half of issue #1700: the CLI must forward the calling session
+// identity through the session_spawn frame so the daemon can record it on
+// sessions.parent_session.
+func TestSpawn_ForwardsIRISSessionNameAsParent(t *testing.T) {
+	shortPrefix, err := os.MkdirTemp("", "iris-spawn-parent-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortPrefix) })
+
+	dbPath := filepath.Join(shortPrefix, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	sockPath := filepath.Join(shortPrefix, "iris.sock")
+	runDir := filepath.Join(shortPrefix, "run")
+
+	var (
+		recMu     sync.Mutex
+		gotParent string
+	)
+	cs := iris.NewClientSocket(iris.ClientSocketConfig{
+		SockPath:          sockPath,
+		Database:          database,
+		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
+		SpawnSession: func(ctx context.Context, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
+			recMu.Lock()
+			gotParent = parent
+			recMu.Unlock()
+			return iris.NewSupervisor(iris.SupervisorConfig{
+				SessionName:   "iris-" + role + "@parent-test",
+				Worktree:      worktree,
+				Role:          role,
+				ParentSession: parent,
+				PIBinaryPath:  "/bin/true",
+				RunDir:        runDir,
+				Database:      database,
+			})
+		},
+	})
+	if err := cs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	t.Cleanup(srvCancel)
+	go cs.Serve(srvCtx)
+
+	// Set IRIS_SESSION_NAME so runSpawnAt picks it up the same way an
+	// iris-managed pi child would (Supervisor.buildEnv injects it).
+	t.Setenv("IRIS_SESSION_NAME", "iris-coordinator@upstream")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	if err := runSpawnAt(ctx, sockPath, runDir, "/abs/path/to/my-worktree", "worker", &out); err != nil {
+		t.Fatalf("runSpawnAt: %v", err)
+	}
+
+	recMu.Lock()
+	defer recMu.Unlock()
+	if gotParent != "iris-coordinator@upstream" {
+		t.Errorf("daemon spawnFn parent = %q, want %q", gotParent, "iris-coordinator@upstream")
+	}
+}
+
+// TestSpawn_EmptyIRISSessionNameYieldsEmptyParent asserts that when
+// $IRIS_SESSION_NAME is unset (the top-level-spawn case — user typed
+// `iris spawn` from a fresh terminal), the daemon receives parent="" and
+// will store NULL on sessions.parent_session. No notification will fire on
+// terminal state, which is correct for top-level spawns.
+func TestSpawn_EmptyIRISSessionNameYieldsEmptyParent(t *testing.T) {
+	shortPrefix, err := os.MkdirTemp("", "iris-spawn-noparent-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(shortPrefix) })
+
+	dbPath := filepath.Join(shortPrefix, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	sockPath := filepath.Join(shortPrefix, "iris.sock")
+	runDir := filepath.Join(shortPrefix, "run")
+
+	var (
+		recMu     sync.Mutex
+		gotParent string
+		called    bool
+	)
+	cs := iris.NewClientSocket(iris.ClientSocketConfig{
+		SockPath:          sockPath,
+		Database:          database,
+		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
+		SpawnSession: func(ctx context.Context, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
+			recMu.Lock()
+			gotParent = parent
+			called = true
+			recMu.Unlock()
+			return iris.NewSupervisor(iris.SupervisorConfig{
+				SessionName:  "iris-" + role + "@no-parent",
+				Worktree:     worktree,
+				Role:         role,
+				PIBinaryPath: "/bin/true",
+				RunDir:       runDir,
+				Database:     database,
+			})
+		},
+	})
+	if err := cs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	srvCtx, srvCancel := context.WithCancel(context.Background())
+	t.Cleanup(srvCancel)
+	go cs.Serve(srvCtx)
+
+	// Explicitly unset IRIS_SESSION_NAME in case the test runner has it set.
+	t.Setenv("IRIS_SESSION_NAME", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var out bytes.Buffer
+	if err := runSpawnAt(ctx, sockPath, runDir, "/abs/path/to/my-worktree", "worker", &out); err != nil {
+		t.Fatalf("runSpawnAt: %v", err)
+	}
+
+	recMu.Lock()
+	defer recMu.Unlock()
+	if !called {
+		t.Fatal("daemon spawnFn was not invoked")
+	}
+	if gotParent != "" {
+		t.Errorf("daemon spawnFn parent = %q, want empty string (top-level spawn)", gotParent)
 	}
 }

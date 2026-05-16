@@ -363,7 +363,11 @@ func runPRAt(ctx context.Context, opts prOptions, out io.Writer) error {
 	}
 	defer conn.Close()
 
-	if err := sendSpawnFrame(conn, worktree, prRole); err != nil {
+	// IRIS_SESSION_NAME forwarded as the parent (#1700): when `iris pr` is
+	// invoked from inside an iris-managed session, the spawned PR-checkout
+	// session inherits that parent and will notify it on terminal state.
+	parent := os.Getenv("IRIS_SESSION_NAME")
+	if err := sendSpawnFrame(conn, worktree, prRole, parent); err != nil {
 		return fmt.Errorf("iris pr: send spawn frame: %w", err)
 	}
 	sessionName, instanceID, err := readSpawnAck(ctx, conn)

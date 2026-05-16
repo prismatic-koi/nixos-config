@@ -45,6 +45,13 @@ type SupervisorConfig struct {
 	// bash sandbox to select the role-scoped GITHUB_TOKEN via the 4-PAT
 	// architecture.  May be empty; falls back to host GITHUB_TOKEN.
 	BareRoot string
+	// ParentSession is the logical session_name of the iris session that
+	// invoked `iris spawn` to create this one. Populated by the daemon from
+	// the session_spawn frame's Parent field (which the CLI reads from
+	// IRIS_SESSION_NAME). Empty means "no parent" (top-level spawn). Used by
+	// the terminal-state notification path (#1700) to deliver an
+	// "Agent <name> has finished" prompt back to the spawning session.
+	ParentSession string
 	// PIBinaryPath is the path to the pi binary. Falls back to "pi" on PATH.
 	PIBinaryPath string
 	// ExtensionPath is the absolute path to prism.ts.
@@ -80,6 +87,19 @@ type SupervisorConfig struct {
 	// the pi child resumes conversation history from this file. Set by the
 	// D-9 restore path when re-spawning after daemon restart.
 	SessionContinuePath string
+	// NotifyParent, when non-nil, is invoked from setState on a terminal
+	// transition (StateFinished / StateError) when ParentSession is non-empty.
+	// The callback is responsible for delivering an "Agent <name> has finished"
+	// (or "has errored") prompt to the parent session via the daemon's
+	// existing prompt-delivery path. Wired by the daemon at SupervisorConfig
+	// construction so the supervisor does not need a direct reference to the
+	// supervisor map. deliveryID is a freshly minted UUID per call (#1695
+	// exactly-once-with-replay-marker contract). state is the supervisor's
+	// terminal SessionState (StateFinished or StateError).
+	//
+	// NotifyParent is called from a goroutine — the supervisor lock is NOT
+	// held when it runs (#1687).
+	NotifyParent func(child, parent string, state SessionState, deliveryID string)
 }
 
 // Supervisor manages a single pi child process.
@@ -121,6 +141,15 @@ type Supervisor struct {
 	// the session_end event emitted on terminal state. Set by Kill() to
 	// "killed_sigterm" or "killed_sigkill". Guarded by mu.
 	killReason string
+	// parentNotified is true once the parent-notification trigger has fired
+	// for this supervisor. Defence-in-depth (#1700): the existing setState
+	// dedup catches Finished→Finished and Error→Error sequences but not
+	// Finished→Error transitions. If a future kill-path or restart-policy
+	// change ever drives two terminal transitions in sequence with different
+	// states (currently impossible by inspection — see the comment in
+	// setState near this guard), the second notification must still not
+	// fire. Guarded by mu.
+	parentNotified bool
 }
 
 // stateNotifier is implemented by publishers that want to receive
@@ -188,6 +217,7 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 		Worktree:         cfg.Worktree,
 		Role:             cfg.Role,
 		BareRoot:         cfg.BareRoot,
+		ParentSession:    cfg.ParentSession,
 		State:            StateSpawning,
 		HarnessSockPath:  harnessSockPath,
 		RestartCount:     0,
@@ -804,6 +834,44 @@ func (s *Supervisor) setState(newState SessionState) {
 			n.PublishState(s.sess.SessionName, string(newState))
 		}
 	}
+
+	// Issue #1700: deliver a body-bearing prompt to the parent session on
+	// terminal state. The notification fires AFTER the event row, the status
+	// update, and the PublishState fan-out — it is a downstream effect of
+	// the transition, not part of it. We invoke the callback in a goroutine
+	// so a blocking socket dial in the prompt-delivery path does not stall
+	// the supervisor loop (#1687: external I/O must not run with s.mu held;
+	// we are outside the lock here but the goroutine also defends against a
+	// future caller that holds an unrelated lock around setState).
+	//
+	// ParentSession is read from the in-memory SessionRecord which is
+	// populated at spawn time from cfg.ParentSession. NULL/empty means
+	// top-level spawn — no parent to notify, no-op.
+	//
+	// parentNotified is a once-per-supervisor latch. The existing setState
+	// dedup at the top of this method already suppresses Finished→Finished
+	// and Error→Error, and by inspection of Kill / the supervisor loop no
+	// Finished→Error or Error→Finished cross-terminal sequence can fire
+	// today (Kill returns at <-s.done before its final setState(StateError)
+	// on the SIGTERM-clean path, and the SIGKILL path's loop setState is
+	// suppressed by the killReason guard). The latch is defence-in-depth
+	// against future regressions of those invariants.
+	if s.cfg.NotifyParent != nil && s.sess.ParentSession != "" &&
+		(newState == StateFinished || newState == StateError) {
+		s.mu.Lock()
+		alreadyNotified := s.parentNotified
+		if !alreadyNotified {
+			s.parentNotified = true
+		}
+		s.mu.Unlock()
+		if !alreadyNotified {
+			parent := s.sess.ParentSession
+			child := s.sess.SessionName
+			deliveryID := uuid.New().String()
+			notifier := s.cfg.NotifyParent
+			go notifier(child, parent, newState, deliveryID)
+		}
+	}
 }
 
 // writeSessionEndEvent writes a session_end row into agent_events with the
@@ -862,6 +930,10 @@ func insertSessionRecord(database *db.DB, sess SessionRecord) error {
 		Worktree:    sess.Worktree,
 		Harness:     "pi",
 		StartedAt:   sess.StartedAt,
+	}
+	if sess.ParentSession != "" {
+		ps := sess.ParentSession
+		dbSess.ParentSession = &ps
 	}
 	return database.InsertSession(dbSess)
 }

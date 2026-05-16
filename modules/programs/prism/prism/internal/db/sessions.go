@@ -20,11 +20,12 @@ func scanSession(s scanner) (*Session, error) {
 	var endState sql.NullString
 	var archivePath sql.NullString
 	var prismVersion sql.NullString
+	var parentSession sql.NullString
 
 	err := s.Scan(
 		&sess.InstanceID, &sess.SessionName, &agentRole, &rootAgentName,
 		&sess.Repo, &sess.Worktree, &sess.Harness, &harnessSessionID, &groupID,
-		&startedAt, &endedAt, &endState, &archivePath, &prismVersion,
+		&startedAt, &endedAt, &endState, &archivePath, &prismVersion, &parentSession,
 	)
 	if err != nil {
 		return nil, err
@@ -55,13 +56,16 @@ func scanSession(s scanner) (*Session, error) {
 	if prismVersion.Valid {
 		sess.PrismVersion = &prismVersion.String
 	}
+	if parentSession.Valid {
+		sess.ParentSession = &parentSession.String
+	}
 	return &sess, nil
 }
 
 const sessionsSelectCols = `
 SELECT instance_id, session_name, agent_role, root_agent_name,
        repo, worktree, harness, harness_session_id, group_id,
-       started_at, ended_at, end_state, archive_path, prism_version
+       started_at, ended_at, end_state, archive_path, prism_version, parent_session
   FROM sessions`
 
 // querySessions is a helper that runs a SELECT on sessions and scans rows.
@@ -104,12 +108,12 @@ func (d *DB) InsertSession(s Session) error {
 	const q = `
 INSERT OR IGNORE INTO sessions
   (instance_id, session_name, agent_role, root_agent_name, repo, worktree,
-   harness, harness_session_id, group_id, started_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+   harness, harness_session_id, group_id, started_at, parent_session)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := d.conn.Exec(q,
 		s.InstanceID, s.SessionName, s.AgentRole, s.RootAgentName,
 		s.Repo, s.Worktree, s.Harness, s.HarnessSessionID, s.GroupID,
-		startedAt,
+		startedAt, s.ParentSession,
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert session: %w", err)

@@ -711,6 +711,33 @@ This contract supersedes the pre-fix behaviour where `prism escalate` could deli
 - Re-escalation timeouts.
 - Dashboard panel for `escalated` sessions — surfaced via `prism sessions list` and the bus only.
 
+## Worker terminal-state notifications
+
+When a worker session reaches a terminal state, the coordinator that spawned it receives a body-bearing prompt notification. This is the signal the coordinator uses to know that a delegated task has finished and is ready for review / cleanup / merge.
+
+### Wording (verbatim)
+
+| Terminal state | Notification body |
+|---|---|
+| `finished` (clean exit) | `Agent <name> has finished its current task` |
+| `error` (crash / restart-exhausted) | `Agent <name> has errored its current task` |
+
+The wording is fixed and identical across both runtimes (prism and iris) so coordinators can pattern-match on either string without runtime-specific branching.
+
+### Delivery contract
+
+- **Exactly-once with replay marker (issue #1695).** Each notification carries a `delivery_id` (UUID minted by the sender). The receiving sidecar dedups repeats by ID before they reach the harness pipe. Retried deliveries with the same ID see `{"replayed":true}` in the response so retries are observable, not silent.
+- **Delivery mode is `followUp`.** The notification queues behind any in-flight turn on the coordinator side so it doesn't interleave with an active assistant turn.
+- **Suppressed while escalated.** A worker in the `escalated` state has already informed the coordinator via `session.escalated`; a subsequent "has finished" notification would be a false signal (the worker is paused awaiting guidance, not done). The state clears on any incoming turn_start, after which a normal finish notifies as usual.
+
+### Iris workers produce the same notifications
+
+Workers spawned via `iris spawn` (the daemon-mode successor to `prism spawn`) emit the **same** terminal-state notifications to their parent session — same body wording byte-for-byte, same exactly-once contract via `delivery_id`, same `followUp` delivery mode. The parent session is captured at spawn time from the calling pi child's `IRIS_SESSION_NAME` env var, forwarded through the `session_spawn` wire frame, and stored on the new session's `sessions.parent_session` column. When the child reaches `finished` or `error`, the iris daemon delivers the prompt to the parent's pi process via the same in-daemon path that `iris prompt` uses, and writes a `session.parent_notified` audit row to `agent_events`.
+
+Top-level iris spawns (`iris spawn` invoked from a shell where `IRIS_SESSION_NAME` is unset) store `parent_session = NULL` and produce **no** notification — there is no parent to notify. This is correct; nothing to chase.
+
+For coordinators acting on these notifications, no runtime-specific handling is needed: the wire shape and the prompt body are identical whether the worker ran under prism or iris.
+
 ## Debugging a running or stuck session
 
 Use this decision tree when a session appears stuck, produces no output, or fails unexpectedly.

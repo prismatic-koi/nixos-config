@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   end_state           TEXT,
   archive_path        TEXT,
   prism_version       TEXT,
-  iris_state          TEXT
+  iris_state          TEXT,
+  parent_session      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC);
@@ -536,6 +537,9 @@ func runMigrations(conn *sql.DB) error {
 		return err
 	}
 	if err := migrateV28ToV29(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV29ToV30(conn, &version); err != nil {
 		return err
 	}
 	return nil
@@ -1720,6 +1724,47 @@ func migrateV28ToV29(conn *sql.DB, version *int) error {
 		}
 	}
 	*version = 29
+	return nil
+}
+
+// migrateV29ToV30 adds the parent_session TEXT column to the sessions table
+// (issue #1700, iris notifyParentWorker analogue). The iris supervisor writes
+// this column at session-spawn time from the spawning session's identity
+// (IRIS_SESSION_NAME on the calling pi child, forwarded through the
+// session_spawn wire frame). The terminal-state notification path reads this
+// column to locate the parent session that should receive the
+// "Agent <name> has finished" prompt.
+//
+// The column is nullable TEXT; NULL means the session has no parent
+// (top-level coordinator spawned outside a session, or pre-migration rows).
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration
+// is idempotent on fresh databases where the base schema already includes
+// the column.
+func migrateV29ToV30(conn *sql.DB, version *int) error {
+	if *version >= 30 {
+		return nil
+	}
+	var colExists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session'`,
+	).Scan(&colExists); err != nil {
+		return fmt.Errorf("db: migration v29\u2192v30: check parent_session column: %w", err)
+	}
+	if colExists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE sessions ADD COLUMN parent_session TEXT`); err != nil {
+			return fmt.Errorf("db: migration v29\u2192v30: add parent_session column: %w", err)
+		}
+	}
+	steps := []string{
+		`CREATE INDEX IF NOT EXISTS idx_sessions_parent_session ON sessions(parent_session) WHERE parent_session IS NOT NULL`,
+		`UPDATE schema_version SET version = 30`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v29\u2192v30: %w", err)
+		}
+	}
+	*version = 30
 	return nil
 }
 
