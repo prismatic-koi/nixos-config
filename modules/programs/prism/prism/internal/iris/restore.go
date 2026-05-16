@@ -69,6 +69,18 @@ type RestoreResult struct {
 	// SessionsSkipped is the number of active sessions that could not be restored
 	// (missing JSONL, missing worktree, etc.).
 	SessionsSkipped int
+	// Supervisors is the list of supervisor instances that RunRestore started
+	// goroutines for (one per SessionsRestored increment). Callers that own
+	// the supervisor lifecycle — the daemon's process loop, or tests that
+	// must wait for shutdown before tearing down tempdirs / closing the DB —
+	// should cancel the supervisor context and then wait on <-sup.Done() for
+	// each entry to guarantee no late writes against torn-down state.
+	//
+	// This was added to fix issue #1705: supervisor goroutines spawned by
+	// RunRestore outlived test t.Cleanup, racing against tempdir removal and
+	// DB close under -race. Tests should use iristest.RunRestoreForTest which
+	// wires up the shutdown wait automatically.
+	Supervisors []*Supervisor
 }
 
 // RunRestore executes the daemon-restart restore sequence. It is called once
@@ -136,10 +148,13 @@ func RunRestore(ctx context.Context, cfg RestoreConfig) (*RestoreResult, error) 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			restored := restoreActiveSession(ctx, cfg, sess)
+			sup, restored := restoreActiveSession(ctx, cfg, sess)
 			mu.Lock()
 			if restored {
 				result.SessionsRestored++
+				if sup != nil {
+					result.Supervisors = append(result.Supervisors, sup)
+				}
 			} else {
 				result.SessionsSkipped++
 			}
@@ -186,8 +201,11 @@ func detectAndWriteOrphans(database *db.DB, pub EventPublisher, instanceID, sess
 }
 
 // restoreActiveSession attempts to re-spawn a single active session. Returns
-// true if a Supervisor was started, false otherwise.
-func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSessionRow) bool {
+// the started Supervisor and true when a Supervisor was started, or (nil,
+// false) otherwise. The returned supervisor is owned by the caller — its
+// goroutine runs asynchronously and the caller is responsible for waiting
+// on <-sup.Done() before tearing down any shared state (tempdir, DB).
+func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSessionRow) (*Supervisor, bool) {
 	// Check whether the worktree still exists.
 	if _, err := os.Stat(sess.Worktree); os.IsNotExist(err) {
 		log.Printf("[iris] restore: worktree %q for session %s no longer exists — marking error",
@@ -195,7 +213,7 @@ func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSe
 		if merr := markSessionErrorWithReason(cfg.Database, sess.InstanceID, "worktree missing"); merr != nil {
 			log.Printf("[iris] restore: failed to mark session %s error: %v", sess.InstanceID, merr)
 		}
-		return false
+		return nil, false
 	}
 
 	// Locate the pi JSONL session file.
@@ -206,7 +224,7 @@ func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSe
 		if merr := markSessionErrorWithReason(cfg.Database, sess.InstanceID, "session file missing"); merr != nil {
 			log.Printf("[iris] restore: failed to mark session %s error: %v", sess.InstanceID, merr)
 		}
-		return false
+		return nil, false
 	}
 
 	log.Printf("[iris] restore: re-spawning session %s (%s) with JSONL %q",
@@ -232,11 +250,11 @@ func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSe
 		if merr := markSessionErrorWithReason(cfg.Database, sess.InstanceID, "supervisor creation failed"); merr != nil {
 			log.Printf("[iris] restore: failed to mark session %s error: %v", sess.InstanceID, merr)
 		}
-		return false
+		return nil, false
 	}
 
 	go sup.Start(ctx)
-	return true
+	return sup, true
 }
 
 // findPiSessionJSONL locates the pi JSONL session file for the given session
