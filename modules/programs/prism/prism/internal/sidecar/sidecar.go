@@ -755,6 +755,35 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			startupErr := fmt.Errorf("bwrap harness for %s never bound to %s within %v",
 				s.cfg.SessionName, url, startupTimeout)
 			s.logger().Printf("sidecar: startup-connect timeout fired: %v", startupErr)
+
+			// Write-ordering invariant (#1690, mirrors #1657): perform ALL startup-
+			// failure writes (DB state transition + startup_error event + parent/
+			// coordinator notification) BEFORE emitting the `[timing] harness
+			// listening: ... (timed out)` log marker. The marker must be the LAST
+			// log line written by this goroutine so that any reader (test, operator
+			// tailing logs) that observes the marker is guaranteed not to race with
+			// further concurrent writes from the startup-error path.
+			//
+			// We use writeStartupErrorSync (not writeStartupError) so that
+			// notifyParentWorkerOnStartupFailure runs inline rather than on a
+			// background goroutine — otherwise the notify goroutine could outlive
+			// this one and continue writing to s.cfg.Logger after Run() returns,
+			// triggering a data race on test loggers that share a strings.Builder.
+			s.writeStartupErrorSync(startupErr)
+			// For non-review-agent (worker) sessions, also notify the coordinator so
+			// the coordinator learns the worker is dead — symmetric to the finished
+			// notification path (notifyCoordinator is suppressed for review agents
+			// and self-notifications internally). This satisfies the routing requirement
+			// from #1022: "worker agents notify the coordinator."
+			//
+			// Called synchronously (not `go s.notifyCoordinator()`) so its log
+			// writes complete before the `[timing]` marker is emitted below — part
+			// of the same write-ordering invariant. notifyCoordinator() acquires no
+			// locks held by this goroutine, so running it inline is safe.
+			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
+				s.notifyCoordinator()
+			}
+
 			// Emit a `[timing] harness listening` line recording the timeout
 			// duration so the grep-the-log workflow yields a coherent timeline
 			// even on the failure path (#1052 AC: "When the harness never reaches
@@ -762,18 +791,13 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// emitted records the timeout duration, not silence."). The
 			// "(timed out)" suffix distinguishes failure from a real listening
 			// marker without changing the leading prefix that grep targets.
+			//
+			// EMITTED LAST (#1690 invariant): see the comment block above. Any
+			// reader that sees this marker is guaranteed that the DB row already
+			// shows StateError, the startup_error event has been written, and any
+			// parent/coordinator notification work has finished.
 			s.logger().Printf("[timing] harness listening: %s from start (timed out)",
 				time.Since(s.spawnTime).Round(time.Millisecond))
-			s.writeStartupError(startupErr)
-			// writeStartupError notifies the parent worker for review-agent sessions.
-			// For non-review-agent (worker) sessions, also notify the coordinator so
-			// the coordinator learns the worker is dead — symmetric to the finished
-			// notification path (notifyCoordinator is suppressed for review agents
-			// and self-notifications internally). This satisfies the routing requirement
-			// from #1022: "worker agents notify the coordinator."
-			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
-				go s.notifyCoordinator()
-			}
 			sseCancel()
 		}()
 	}
