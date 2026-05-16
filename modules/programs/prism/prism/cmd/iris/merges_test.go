@@ -517,8 +517,12 @@ func TestIrisMergesList_InvalidSession(t *testing.T) {
 	t.Setenv("IRIS_SESSION_NAME", "")
 	t.Setenv("PRISM_SESSION_NAME", "")
 	// Defensively clear tmux env so lookupIrisParentSession doesn't pick up
-	// the host tmux session inside CI.
+	// the host tmux session inside CI. Clearing $TMUX alone is insufficient
+	// — `tmux display-message` still walks its socket directory and finds a
+	// running server (#1733) — so we also redirect tmux.TmuxBin to a
+	// non-existent path via isolateHostTmux.
 	t.Setenv("TMUX", "")
+	isolateHostTmux(t)
 
 	_, listCmd, _ := newMergesTestCmds(t)
 	var buf bytes.Buffer
