@@ -329,7 +329,11 @@ func runDaemon() error {
 	// spawnFn is called by the client socket when a session_spawn frame arrives.
 	// It must be defined after clientSock so it can capture clientSock and wire
 	// the harness publisher (D-6 fan-out: harness events → client subscribers).
-	spawnFn := func(spawnCtx context.Context, worktree, role, parent string, configOverrides map[string]any) (*iris.Supervisor, error) {
+	//
+	// sessionName, when non-empty, fixes the new session's logical name
+	// (overriding GenerateSessionName). Used by `iris investigate` so the
+	// session name carries the `<parent>~investigate-<slug>` convention.
+	spawnFn := func(spawnCtx context.Context, sessionName, worktree, role, parent string, configOverrides map[string]any) (*iris.Supervisor, error) {
 		extPath := cfg.PIExtensionPath
 		// Derive the bare repo root from the worktree for 4-PAT GITHUB_TOKEN
 		// selection in the bash sandbox (D-5).
@@ -341,8 +345,12 @@ func runDaemon() error {
 		if resolvedRole == "" {
 			resolvedRole = "worker"
 		}
+		resolvedName := sessionName
+		if resolvedName == "" {
+			resolvedName = iris.GenerateSessionName(worktree, resolvedRole)
+		}
 		superCfg := iris.SupervisorConfig{
-			SessionName:      iris.GenerateSessionName(worktree, resolvedRole),
+			SessionName:      resolvedName,
 			Worktree:         worktree,
 			Role:             resolvedRole,
 			BareRoot:         bareRoot,

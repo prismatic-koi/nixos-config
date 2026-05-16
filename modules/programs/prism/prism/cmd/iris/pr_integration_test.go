@@ -157,7 +157,7 @@ func newPRTestEnv(t *testing.T) *prTestEnv {
 			}
 			return out
 		},
-		SpawnSession: func(ctx context.Context, worktree, role, _parent string, _ map[string]any) (*iris.Supervisor, error) {
+		SpawnSession: func(ctx context.Context, _sessionName, worktree, role, _parent string, _ map[string]any) (*iris.Supervisor, error) {
 			mu.Lock()
 			*spawnCalls++
 			*spawnArgs = append(*spawnArgs, spawnCall{worktree: worktree, role: role})

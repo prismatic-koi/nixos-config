@@ -75,7 +75,7 @@ func TestSpawn_EndToEndAgainstRealClientSocket(t *testing.T) {
 		GetActiveSessions: func() []iris.SessionSnapshot {
 			return nil
 		},
-		SpawnSession: func(ctx context.Context, worktree, role, _parent string, _ map[string]any) (*iris.Supervisor, error) {
+		SpawnSession: func(ctx context.Context, _sessionName, worktree, role, _parent string, _ map[string]any) (*iris.Supervisor, error) {
 			recMu.Lock()
 			gotWtree = worktree
 			gotRole = role
@@ -178,7 +178,7 @@ func TestSpawn_ForwardsIRISSessionNameAsParent(t *testing.T) {
 		SockPath:          sockPath,
 		Database:          database,
 		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
-		SpawnSession: func(ctx context.Context, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
+		SpawnSession: func(ctx context.Context, _sessionName, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
 			recMu.Lock()
 			gotParent = parent
 			recMu.Unlock()
@@ -252,7 +252,7 @@ func TestSpawn_EmptyIRISSessionNameYieldsEmptyParent(t *testing.T) {
 		SockPath:          sockPath,
 		Database:          database,
 		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
-		SpawnSession: func(ctx context.Context, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
+		SpawnSession: func(ctx context.Context, _sessionName, worktree, role, parent string, _ map[string]any) (*iris.Supervisor, error) {
 			recMu.Lock()
 			gotParent = parent
 			called = true

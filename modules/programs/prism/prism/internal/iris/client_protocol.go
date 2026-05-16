@@ -57,6 +57,7 @@ type ClientSessionUnsubscribeFrame struct {
 //	{"type": "session_spawn", "worktree": "/abs/path", "role": "worker"}
 //	{"type": "session_spawn", "worktree": "...", "role": "coordinator", "config_overrides": {...}}
 //	{"type": "session_spawn", "worktree": "...", "role": "worker", "parent": "nixos-config@main"}
+//	{"type": "session_spawn", "worktree": "...", "role": "investigate", "parent": "...", "session_name": "<parent>~investigate-<slug>"}
 //
 // Parent, when non-empty, names the session that is invoking `iris spawn`.
 // The daemon records it on the new session's row (sessions.parent_session)
@@ -64,11 +65,20 @@ type ClientSessionUnsubscribeFrame struct {
 // "Agent <name> has finished" prompt back to the parent. Empty means "no
 // parent" (top-level spawn from a non-iris shell): no notification will be
 // delivered when the child terminates.
+//
+// SessionName, when non-empty, fixes the new session's logical name instead
+// of letting the daemon derive one via GenerateSessionName(worktree, role).
+// This is used by `iris investigate` and `iris review`, which both need a
+// caller-controlled `<parent>~<kind>-<slug>` shape so downstream code can
+// pattern-match on the name (e.g. notify.go's investigateAgentInvokerSession).
+// The daemon validates that an explicit name is not currently in use by an
+// active session before spawning.
 type ClientSessionSpawnFrame struct {
 	Type            string         `json:"type"` // "session_spawn"
 	Worktree        string         `json:"worktree"`
 	Role            string         `json:"role"`
 	Parent          string         `json:"parent,omitempty"`
+	SessionName     string         `json:"session_name,omitempty"`
 	ConfigOverrides map[string]any `json:"config_overrides,omitempty"`
 }
 
