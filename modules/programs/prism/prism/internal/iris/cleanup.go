@@ -49,8 +49,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
-	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
-	piharness "github.com/prismatic-koi/prism/internal/harness/pi"
 )
 
 // CleanupConfig holds the parameters needed to run cleanup for a single
@@ -134,8 +132,14 @@ func CleanupSession(ctx context.Context, cfg CleanupConfig, sessionName string) 
 
 	res := &CleanupResult{}
 
-	// Step 2: archive the pi JSONL.
-	archivePath, archErr := archivePiJSONL(ctx, cfg, sess)
+	// Step 2: archive the pi JSONL. Delegates to the shared helper used by
+	// the standalone `iris archive` subcommand (#1697) so cleanup-archived
+	// and standalone-archived sessions land at the same path.
+	archivePath, _, archErr := archiveSessionJSONL(ctx, ArchiveConfig{
+		Database:    cfg.Database,
+		ArchiveRoot: cfg.ArchiveRoot,
+		PIAgentDir:  cfg.PIAgentDir,
+	}, sess)
 	if archErr != nil {
 		log.Printf("[iris] cleanup: archive %q: %v", sessionName, archErr)
 		res.Errors = append(res.Errors, fmt.Errorf("archive: %w", archErr))
@@ -200,62 +204,6 @@ func CleanupSession(ctx context.Context, cfg CleanupConfig, sessionName string) 
 	}
 
 	return res, nil
-}
-
-// archivePiJSONL locates the pi JSONL file for the session and copies it to
-// <ArchiveRoot>/<session>/<instance_id>/raw/session.jsonl. Returns the
-// destination path on success, "" when there was nothing to archive.
-func archivePiJSONL(ctx context.Context, cfg CleanupConfig, sess *db.Session) (string, error) {
-	if sess.HarnessSessionID == nil || *sess.HarnessSessionID == "" || sess.Worktree == "" {
-		// No harness session to archive (pi never started, or session was
-		// constructed without a worktree). Treat as a no-op — not an error.
-		return "", nil
-	}
-
-	piAgentDir := cfg.PIAgentDir
-	if piAgentDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home: %w", err)
-		}
-		piAgentDir = filepath.Join(home, ".pi", "agent")
-	}
-
-	// Use the shared pi archive adapter so the source-path encoding stays
-	// in lock-step with the rest of the codebase (single source of truth).
-	// Locate the JSONL file ourselves (the adapter's SourcePath resolves ~
-	// via os.UserHomeDir() — we honour the test-friendly PIAgentDir override
-	// by scanning the encoded-cwd dir directly).
-	adapter := piharness.NewArchiveAdapter()
-	encodedCWD := piharness.EncodePiCWD(sess.Worktree)
-	cwdDir := filepath.Join(piAgentDir, "sessions", encodedCWD)
-	srcPath := scanForJSONL(cwdDir, *sess.HarnessSessionID)
-	if srcPath == "" {
-		// Nothing on disk — pi never wrote a JSONL file. Not an error.
-		return "", nil
-	}
-
-	rawDir := filepath.Join(cfg.ArchiveRoot, sess.SessionName, sess.InstanceID, "raw")
-	if err := os.MkdirAll(rawDir, 0o700); err != nil {
-		return "", fmt.Errorf("mkdir archive raw dir: %w", err)
-	}
-	p := harnessarchive.SourceParams{
-		SessionName:      sess.SessionName,
-		InstanceID:       sess.InstanceID,
-		HarnessSessionID: *sess.HarnessSessionID,
-		IsolationMode:    "host",
-		Worktree:         sess.Worktree,
-	}
-	if err := adapter.Archive(ctx, srcPath, rawDir, p); err != nil {
-		return "", fmt.Errorf("archive: %w", err)
-	}
-	dst := filepath.Join(rawDir, "session.jsonl")
-	if _, err := os.Stat(dst); err != nil {
-		// Adapter ran but the destination is missing — surface as an error so
-		// callers know the archive step did not produce the documented file.
-		return "", fmt.Errorf("archive produced no session.jsonl at %q: %w", dst, err)
-	}
-	return dst, nil
 }
 
 // scanForJSONL scans cwdDir for a file matching "*_<sessionID>.jsonl" and
