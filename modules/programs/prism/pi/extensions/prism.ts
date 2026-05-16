@@ -1009,6 +1009,18 @@ export async function dispatchInboundFrame(
           deliverAsRaw === "nextTurn"
             ? deliverAsRaw
             : "steer"
+        // Replay marker (issue #1685 AC #5/#7): when the sidecar buffers a
+        // /prompt that arrived during a PI disconnect, the replayed frame
+        // sets replay=true so we can log it as a resumed (not fresh)
+        // delivery. The sidecar guarantees exactly-once for a given
+        // delivery_id, so the body is still delivered to the agent
+        // unconditionally; the flag is informational.
+        const isReplay = frame.replay === true
+        if (isReplay) {
+          console.error(
+            `[prism-extension] prompt replay (deliver_as=${deliverAs}): post-reconnect resume of a buffered escalation/follow-up`,
+          )
+        }
         const images = Array.isArray(frame.images) ? frame.images : []
 
         // Translate wire `images` (snake_case mime_type) into PI's ImageContent

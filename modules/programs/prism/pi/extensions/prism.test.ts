@@ -526,6 +526,35 @@ describe("dispatchInboundFrame: prompt", () => {
     assert.equal(src.mediaType, "image/png")
     assert.equal(src.data, "BASE64HERE")
   })
+
+  it("replay=true is delivered to the agent (no drop) and logged", async () => {
+    // Issue #1685 AC #5/#7: replayed frames carry replay=true so the sidecar
+    // can identify resumed deliveries post-reconnect. The extension must
+    // still forward the body to the agent (exactly-once is the bus's job;
+    // the agent receives the message regardless of the marker).
+    const { api, calls, emit } = makeMockApi()
+    const originalErr = console.error
+    const logged: string[] = []
+    console.error = (...args: unknown[]) => {
+      logged.push(args.map((a) => String(a)).join(" "))
+    }
+    try {
+      await dispatchInboundFrame(
+        { type: "prompt", text: "escalation", deliver_as: "followUp", replay: true },
+        api,
+        emit,
+      )
+    } finally {
+      console.error = originalErr
+    }
+    assert.equal(calls.sendUserMessage.length, 1, "replay=true must still deliver the prompt")
+    assert.equal(calls.sendUserMessage[0].content, "escalation")
+    assert.deepEqual(calls.sendUserMessage[0].options, { deliverAs: "followUp" })
+    assert.ok(
+      logged.some((line) => line.includes("prompt replay")),
+      `expected a replay log line, got: ${JSON.stringify(logged)}`,
+    )
+  })
 })
 
 describe("dispatchInboundFrame: set_model", () => {

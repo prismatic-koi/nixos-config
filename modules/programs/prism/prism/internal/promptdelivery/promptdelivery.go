@@ -47,6 +47,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -82,15 +84,32 @@ import (
 // "nextTurn" (current behaviour, for backward-compatible callers).
 // For HTTP harness sessions the parameter is ignored (they use prompt_async).
 func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+	// Mint a delivery_id per call so the receiving sidecar can dedup
+	// repeats at the bus boundary (issue #1685). Callers do not need to
+	// supply one; legacy callers that want to preserve a specific ID
+	// across deliveries (e.g. retries that should be deduped) should use
+	// DeliverToSessionWithID instead.
+	return DeliverToSessionWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, uuid.NewString())
+}
+
+// DeliverToSessionWithID is the explicit-ID variant of DeliverToSession.
+// The deliveryID is forwarded as the `delivery_id` JSON field on /prompt
+// requests so the receiving sidecar can dedup retries. Pass "" to skip
+// dedup (legacy behaviour) — the receiving sidecar will then deliver the
+// frame unconditionally. Issue #1685.
+func DeliverToSessionWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) error {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
 		shape, ok := harness.ShapeOf(*status.Harness)
 		if ok && shape == harness.TransportSocketPipe {
-			return deliverViaSidecarSocket(sessionName, text, source, deliverAs)
+			return deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID)
 		}
 	}
 
-	// Default: HTTP delivery path.
+	// Default: HTTP delivery path. The HTTP fallback (harness HTTP API)
+	// does not currently honour delivery_id — the harness has its own
+	// queue and is treated as a thin pass-through. If duplication is
+	// observed there in future, plumb deliveryID into buildHTTPBody.
 	return deliverViaHTTP(status, text, buildHTTPBody)
 }
 
@@ -118,7 +137,7 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 // socket paths outside the current XDG_STATE_HOME — see package-level comment.
 const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 
-func deliverViaSidecarSocket(sessionName, text, source, deliverAs string) error {
+func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID string) error {
 	sockPath, err := session.SidecarHostAPIPath(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
@@ -155,6 +174,9 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs string) error 
 	}
 	if deliverAs != "" {
 		bodyMap["deliver_as"] = deliverAs
+	}
+	if deliveryID != "" {
+		bodyMap["delivery_id"] = deliveryID
 	}
 	body, err := json.Marshal(bodyMap)
 	if err != nil {

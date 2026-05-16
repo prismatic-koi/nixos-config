@@ -374,6 +374,25 @@ type Sidecar struct {
 	// Protected by s.mu.
 	lastInvestigatorText string
 
+	// promptDedup is the bounded in-memory dedup set for /prompt deliveries.
+	// Each /prompt request carries a delivery_id (UUID minted by the sender);
+	// repeats whose ID has been seen recently are dropped before they reach
+	// DeliverPrompt. Sized at deliveryDedupCapacity (256) — see
+	// delivery_dedup.go for rationale. Issue #1685.
+	//
+	// Safe for concurrent use; protected internally — does not require s.mu.
+	promptDedup *deliveryDedup
+
+	// pendingReplayDeliveries holds prompt frames that arrived while the PI
+	// extension was disconnected. On the next successful handshake (after
+	// hello_ack), the reconnect loop flushes them to PI in arrival order with
+	// the prompt frame's `replay` field set to true so the receiving agent
+	// (and any human reading the audit trail) can identify them as resumed
+	// deliveries rather than fresh signals. Capacity is bounded by
+	// pendingReplayCapacity (16) — older entries are dropped FIFO. Issue #1685
+	// AC #7. Protected by s.mu.
+	pendingReplayDeliveries []pendingReplayDelivery
+
 	// reviewingInFlight is set to true when the /review handler successfully
 	// writes the reviewing state to the DB, and cleared when the monitor
 	// delivers the review-complete prompt via /prompt (same-session,
@@ -411,6 +430,7 @@ func New(cfg Config) *Sidecar {
 		msgCreatedAtMs:  make(map[string]float64),
 		ttftByMessage:   make(map[string]int64),
 		seenUnknown:     make(map[string]bool),
+		promptDedup:     newDeliveryDedup(deliveryDedupCapacity),
 	}
 	// Pre-set rootAgent from the configured agent role so that subagent user
 	// messages (which have a non-empty agent field in SSE events) do not
@@ -1723,6 +1743,12 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			onReadyFired = true
 		}
 
+		// Flush any prompts that were buffered while the PI extension was
+		// disconnected (issue #1685 AC #7). Replayed frames carry replay=true
+		// so the receiver can identify them as resumed deliveries. Done in a
+		// goroutine so a slow drain cannot block the reader loop.
+		go s.flushPendingReplay()
+
 		// --- Inbound frame loop -------------------------------------------
 		cleanShutdown := false
 		for {
@@ -2118,6 +2144,64 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 	_ = conn.Close()
 }
 
+// bufferPendingReplay appends a pending delivery to the per-sidecar replay
+// buffer, evicting the oldest entry when at capacity. Called by the /prompt
+// handler when DeliverPrompt fails because the PI extension is disconnected.
+// The buffer is drained by flushPendingReplay on the next successful
+// handshake. Issue #1685 AC #7.
+//
+// Concurrency: acquires s.mu internally; do NOT call with s.mu held.
+func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.pendingReplayDeliveries) >= pendingReplayCapacity {
+		// Drop the oldest. Log so a partition that produces > 16 backlogged
+		// deliveries is visible in the audit trail.
+		dropped := s.pendingReplayDeliveries[0]
+		s.pendingReplayDeliveries = s.pendingReplayDeliveries[1:]
+		s.logger().Printf("sidecar: pending-replay buffer at capacity (%d), evicting oldest delivery_id=%s", pendingReplayCapacity, dropped.DeliveryID)
+	}
+	s.pendingReplayDeliveries = append(s.pendingReplayDeliveries, d)
+}
+
+// flushPendingReplay drains the pending-replay buffer to the PI extension,
+// enqueuing each entry as a prompt frame with the `replay` field set to
+// true so the receiver can identify replayed deliveries. Called from
+// runStartupSocketPipe after a successful handshake. Entries that fail to
+// enqueue (because the connection dropped again before the writer ran)
+// remain in the buffer for the next reconnect attempt. Issue #1685 AC #7.
+//
+// Concurrency: acquires s.mu internally; do NOT call with s.mu held.
+func (s *Sidecar) flushPendingReplay() {
+	s.mu.Lock()
+	pending := s.pendingReplayDeliveries
+	s.pendingReplayDeliveries = nil
+	s.mu.Unlock()
+
+	if len(pending) == 0 {
+		return
+	}
+	s.logger().Printf("sidecar: flushing %d pending-replay delivery(ies) after handshake", len(pending))
+	var requeue []pendingReplayDelivery
+	for _, d := range pending {
+		if !s.deliverPromptFrame(d.Text, d.DeliverAs, true) {
+			// Outbound channel not yet live or another disconnect raced us.
+			// Re-buffer so the next handshake picks it up.
+			requeue = append(requeue, d)
+		}
+	}
+	if len(requeue) > 0 {
+		s.mu.Lock()
+		// Prepend the failed entries so they are drained first next time.
+		s.pendingReplayDeliveries = append(requeue, s.pendingReplayDeliveries...)
+		if len(s.pendingReplayDeliveries) > pendingReplayCapacity {
+			s.pendingReplayDeliveries = s.pendingReplayDeliveries[:pendingReplayCapacity]
+		}
+		s.mu.Unlock()
+		s.logger().Printf("sidecar: %d pending-replay delivery(ies) failed to flush, re-buffered", len(requeue))
+	}
+}
+
 // enqueueHarnessPipeFrame enqueues a JSONL frame for delivery to the PI
 // extension via the outbound writer goroutine. The frame must already be
 // terminated with '\n'. Returns false if no active pipe connection is open.
@@ -2149,6 +2233,15 @@ func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
 //
 // Empty deliverAs defaults to "nextTurn".
 func (s *Sidecar) DeliverPrompt(text, deliverAs string) bool {
+	return s.deliverPromptFrame(text, deliverAs, false)
+}
+
+// deliverPromptFrame is the internal variant of DeliverPrompt that accepts
+// a `replay` flag. The flag is propagated to the receiving PI extension via
+// the prompt frame's `replay` field so replayed deliveries (those that
+// arrived while the extension was disconnected and were flushed on
+// reconnect) can be identified by the receiver. Issue #1685 AC #5/#7.
+func (s *Sidecar) deliverPromptFrame(text, deliverAs string, replay bool) bool {
 	if deliverAs == "" {
 		deliverAs = "nextTurn"
 	}
@@ -2156,10 +2249,12 @@ func (s *Sidecar) DeliverPrompt(text, deliverAs string) bool {
 		Type      string `json:"type"`
 		Text      string `json:"text"`
 		DeliverAs string `json:"deliver_as"`
+		Replay    bool   `json:"replay,omitempty"`
 	}{
 		Type:      "prompt",
 		Text:      text,
 		DeliverAs: deliverAs,
+		Replay:    replay,
 	}
 	b, err := json.Marshal(frame)
 	if err != nil {
