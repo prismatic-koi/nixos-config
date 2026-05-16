@@ -28,6 +28,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/iristest"
 )
 
 // ---------------------------------------------------------------------------
@@ -222,6 +223,22 @@ func TestClientFrameRoundTrip(t *testing.T) {
 
 // newTestClientSocket creates a ClientSocket backed by a test DB with an in-memory
 // session list. Returns the socket and a publish function.
+//
+// Cleanup ordering (load-bearing, per issue #1705): t.Cleanup runs in LIFO
+// order. The cleanups below are registered in this order:
+//
+//  1. database.Close   — runs LAST among these.
+//  2. cs.Close         — closes the listener so Accept errors out.
+//  3. cancel           — cancels the Serve context so handleConn /
+//                        runSubscription / handle*Frame goroutines exit.
+//  4. cs.Wait drain    — runs FIRST: blocks until every spawned
+//                        ClientSocket goroutine returns, so no late
+//                        write races against Close / database.Close /
+//                        tempdir removal.
+//
+// t.TempDir()'s implicit cleanup is registered before any of ours, so it
+// runs last — after the drain has guaranteed no goroutine is still
+// writing to the tempdir.
 func newTestClientSocket(t *testing.T, sessions []iris.SessionSnapshot) (*iris.ClientSocket, func(iris.EventPublication)) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -249,8 +266,35 @@ func newTestClientSocket(t *testing.T, sessions []iris.SessionSnapshot) (*iris.C
 	t.Cleanup(cancel)
 	go cs.Serve(ctx)
 
+	// Drain in-flight ClientSocket goroutines before any earlier cleanup
+	// closes the DB or removes the tempdir (issue #1705). Registered LAST
+	// so LIFO order runs it FIRST.
+	t.Cleanup(func() {
+		cancel()
+		cs.Close()
+		waitClientSocketOrFail(t, cs)
+	})
+
 	return cs, func(pub iris.EventPublication) {
 		cs.Publish(pub)
+	}
+}
+
+// waitClientSocketOrFail bounds the cs.Wait() call so a wedged goroutine
+// cannot hang the test process. The bound is generous — a healthy drain
+// completes in milliseconds. A wedge is a real bug and we surface it
+// loudly via t.Errorf so it cannot hide as a flake.
+func waitClientSocketOrFail(t *testing.T, cs *iris.ClientSocket) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		cs.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Errorf("newTestClientSocket: ClientSocket did not drain within 10s after cancel+Close — wedged goroutine")
 	}
 }
 
@@ -855,63 +899,21 @@ func TestClientSocketSockPath(t *testing.T) {
 // review-goal identified as broken: SetPublisher wired through the
 // SupervisorConfig.Publisher field and called in NewSupervisor.
 func TestHarnessToClientFanOut(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "iris.db")
-	database, err := iris.OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer database.Close()
-
-	sessionName := "harness-fanout@test"
-
-	// --- Set up the ClientSocket ---
-	sockPath := filepath.Join(tmp, "iris.sock")
-	cs := iris.NewClientSocket(iris.ClientSocketConfig{
-		SockPath: sockPath,
-		Database: database,
-		GetActiveSessions: func() []iris.SessionSnapshot {
-			return []iris.SessionSnapshot{
-				{Name: sessionName, InstanceID: "iid-hf", State: "active", Role: "worker"},
-			}
-		},
+	// Use iristest.NewSocketScaffold so every goroutine the ClientSocket
+	// or HarnessSocketServer spawns (Serve, handleConn, runSubscription,
+	// dispatchToolExec, etc.) is drained before the per-test DB and
+	// tempdir are torn down. See issue #1705 and PR #1715 — the same
+	// cleanup-ordering race that affected the restore tests affects this
+	// fanout test under a different scaffold; the helper extends the
+	// supervisor-Done discipline to the client/harness-socket pair.
+	scaffold := iristest.NewSocketScaffold(t, iristest.SocketScaffoldOptions{
+		SessionName: "harness-fanout@test",
+		InstanceID:  "iid-hf",
+		Role:        "worker",
 	})
-	if err := cs.Listen(); err != nil {
-		t.Fatalf("ClientSocket.Listen: %v", err)
-	}
-	defer cs.Close()
-
-	csCtx, csCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer csCancel()
-	go cs.Serve(csCtx)
-
-	// Insert sessions row so FK on agent_events.instance_id is satisfied.
-	insertTestSessionRow(t, database, "iid-hf", sessionName, tmp)
-
-	// --- Set up the HarnessSocketServer with the ClientSocket as publisher ---
-	harnessSockPath := filepath.Join(tmp, "harness.sock")
-	sess := &iris.SessionRecord{
-		InstanceID:      "iid-hf",
-		SessionName:     sessionName,
-		Worktree:        tmp,
-		Role:            "worker",
-		HarnessSockPath: harnessSockPath,
-	}
-	harness, err := iris.NewHarnessSocketServer(sess, database)
-	if err != nil {
-		t.Fatalf("NewHarnessSocketServer: %v", err)
-	}
-	// KEY: wire the client socket as the harness publisher.
-	harness.SetPublisher(cs)
-
-	if err := harness.Listen(); err != nil {
-		t.Fatalf("HarnessSocketServer.Listen: %v", err)
-	}
-	defer harness.Close()
-
-	harnessCtx, harnessCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer harnessCancel()
-	go func() { _ = harness.AcceptOne(harnessCtx) }()
+	sessionName := scaffold.SessionName
+	sockPath := scaffold.ClientSocket.SockPath()
+	harnessSockPath := scaffold.HarnessSocketServer.SockPath()
 
 	// --- Connect a client to the ClientSocket and subscribe ---
 	clientConn, clientReader := dialClientSocket(t, sockPath)
@@ -977,14 +979,6 @@ func TestHarnessToClientFanOut(t *testing.T) {
 // This is a unit test of the SupervisorConfig.Publisher → SetPublisher path
 // without actually spawning a pi child.
 func TestSupervisorPublisherConfig(t *testing.T) {
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "iris.db")
-	database, err := iris.OpenDB(dbPath)
-	if err != nil {
-		t.Fatalf("OpenDB: %v", err)
-	}
-	defer database.Close()
-
 	// A minimal EventPublisher implementation that records publications.
 	type testPublisher struct {
 		mu   sync.Mutex
@@ -997,37 +991,18 @@ func TestSupervisorPublisherConfig(t *testing.T) {
 		tp.pubs = append(tp.pubs, pub)
 	})
 
-	sessionName := "sup-publisher@test"
-
-	// Set up a HarnessSocketServer with the publisher wired via SupervisorConfig.Publisher.
-	// (We don't spawn a real supervisor — we test the harness server directly to
-	// validate the wiring path that NewSupervisor follows.)
-
-	// Insert sessions row so FK on agent_events.instance_id is satisfied.
-	insertTestSessionRow(t, database, "iid-sp", sessionName, tmp)
-
-	harnessSockPath := filepath.Join(tmp, "harness.sock")
-	sess := &iris.SessionRecord{
-		InstanceID:      "iid-sp",
-		SessionName:     sessionName,
-		Worktree:        tmp,
-		Role:            "worker",
-		HarnessSockPath: harnessSockPath,
-	}
-	harness, err := iris.NewHarnessSocketServer(sess, database)
-	if err != nil {
-		t.Fatalf("NewHarnessSocketServer: %v", err)
-	}
-	// This is the same call that NewSupervisor makes when cfg.Publisher != nil.
-	harness.SetPublisher(publishFn)
-	if err := harness.Listen(); err != nil {
-		t.Fatalf("Listen: %v", err)
-	}
-	defer harness.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	go func() { _ = harness.AcceptOne(ctx) }()
+	// Use iristest.NewSocketScaffold to inherit the #1705 cleanup
+	// discipline (drain in-flight goroutines before DB / tempdir
+	// teardown). The scaffold's default publisher is the ClientSocket;
+	// here we override it with the test's recording publishFn to exercise
+	// the SupervisorConfig.Publisher → SetPublisher path.
+	scaffold := iristest.NewSocketScaffold(t, iristest.SocketScaffoldOptions{
+		SessionName: "sup-publisher@test",
+		InstanceID:  "iid-sp",
+		Role:        "worker",
+		Publisher:   publishFn,
+	})
+	harnessSockPath := scaffold.HarnessSocketServer.SockPath()
 
 	// Connect as the extension, do handshake, send a tool_exec.
 	hConn, hReader := dialHarness(t, harnessSockPath)

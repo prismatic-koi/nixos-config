@@ -121,6 +121,22 @@ func doHandshake(t *testing.T, conn net.Conn, r *bufio.Reader) map[string]any {
 // startServer starts a HarnessSocketServer in a background goroutine and
 // returns it. A sessions row is inserted so FK constraints on agent_events
 // are satisfied when events are written with instance_id set.
+//
+// Cleanup ordering (load-bearing, per issue #1705): t.Cleanup runs in LIFO
+// order. The cleanups below are registered in this order:
+//
+//  1. database.Close   — runs LAST among these.
+//  2. srv.Close        — closes the listener so AcceptOne errors out.
+//  3. cancel           — cancels the AcceptOne context so any in-flight
+//                        dispatchToolExec subprocess is signalled to abort.
+//  4. srv.Wait drain   — runs FIRST: blocks until every dispatchToolExec
+//                        goroutine and the AcceptOne goroutine return, so
+//                        no late write races against Close /
+//                        database.Close / tempdir removal.
+//
+// t.TempDir()'s implicit cleanup is registered before any of ours, so it
+// runs last — after the drain has guaranteed no goroutine is still
+// writing to the tempdir.
 func startServer(t *testing.T) *iris.HarnessSocketServer {
 	t.Helper()
 	tmp := t.TempDir()
@@ -155,7 +171,35 @@ func startServer(t *testing.T) *iris.HarnessSocketServer {
 	t.Cleanup(cancel)
 	go func() { _ = srv.AcceptOne(ctx) }()
 
+	// Drain in-flight HarnessSocketServer goroutines (AcceptOne /
+	// dispatchToolExec) before any earlier cleanup closes the DB or
+	// removes the tempdir (issue #1705). Registered LAST so LIFO order
+	// runs it FIRST.
+	t.Cleanup(func() {
+		cancel()
+		srv.Close()
+		waitHarnessSocketOrFail(t, srv)
+	})
+
 	return srv
+}
+
+// waitHarnessSocketOrFail bounds the srv.Wait() call so a wedged dispatch
+// (e.g. a hung bash subprocess) cannot hang the test process. A healthy
+// drain completes in milliseconds; the 10s bound is generous. A wedge is
+// a real bug surfaced loudly via t.Errorf, never hidden as a flake.
+func waitHarnessSocketOrFail(t *testing.T, srv *iris.HarnessSocketServer) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		srv.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Errorf("startServer: HarnessSocketServer did not drain within 10s after cancel+Close — wedged goroutine")
+	}
 }
 
 // TestHandshake verifies hello/hello_ack round-trip.
