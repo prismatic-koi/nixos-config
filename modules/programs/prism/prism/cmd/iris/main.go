@@ -31,6 +31,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/iris"
 )
@@ -282,7 +283,8 @@ func runDaemon() error {
 		SockPath:          p.Sock,
 		Database:          database,
 		GetActiveSessions: state.activeSessions,
-		// SpawnSession is assigned below after spawnFn is defined.
+		// SpawnSession and SpawnReviewGroup are assigned below after spawnFn
+		// (and the review-spawn dependencies) are defined.
 		DeliverPrompt: deliverFn,
 		KillSession:   killFn,
 	})
@@ -343,6 +345,33 @@ func runDaemon() error {
 	}
 	// Wire the spawn function now that it is defined.
 	clientSock.SetSpawnSession(spawnFn)
+
+	// Wire the review-spawn orchestrator. The orchestrator reuses spawnFn
+	// (so review-agent sessions go through exactly the same daemon path
+	// as `iris spawn`) but with a caller-supplied session name (the
+	// canonical `<parent>~review-N-<agent>` shape). reviewSpawnFn below
+	// adapts spawnFn for that contract: spawnFn assigns the session name
+	// from worktree+role via GenerateSessionName, so we wrap it to inject
+	// our pre-computed name through a per-call override.
+	reviewSpawnFn := func(rsCtx context.Context, sessionName, worktree, role string) (*iris.Supervisor, error) {
+		return spawnReviewAgent(rsCtx, ctx, cfg, p, database, clientSock, state, sessionName, worktree, role)
+	}
+	reviewHandler := iris.NewReviewSpawnHandler(iris.ReviewSpawnDeps{
+		Database:      database,
+		SpawnSession:  reviewSpawnFn,
+		DeliverPrompt: deliverFn,
+		ParentWorktree: func(parent string) (string, error) {
+			state.mu.Lock()
+			defer state.mu.Unlock()
+			sup, ok := state.supervisors[parent]
+			if !ok {
+				return "", fmt.Errorf("parent session %q is not active", parent)
+			}
+			return sup.SessionRecord().Worktree, nil
+		},
+	})
+	clientSock.SetSpawnReviewGroup(reviewHandler)
+
 	if err := clientSock.Listen(); err != nil {
 		return fmt.Errorf("iris: client socket: %w", err)
 	}
@@ -356,6 +385,62 @@ func runDaemon() error {
 	<-ctx.Done()
 	log.Println("[iris] daemon shutting down")
 	return nil
+}
+
+// spawnReviewAgent spawns a single review-agent session under the daemon,
+// using a caller-supplied session name (the canonical
+// `<parent>~review-N-<agent>` shape rather than the default
+// GenerateSessionName scheme).
+//
+// This is the equivalent of the inline `spawnFn` for `iris spawn`, but
+// with the session name plumbed in explicitly. It is called from
+// reviewHandler (constructed in runDaemon) once per review agent.
+func spawnReviewAgent(
+	spawnCtx context.Context,
+	daemonCtx context.Context,
+	cfg iris.Config,
+	p iris.Paths,
+	database *db.DB,
+	clientSock *iris.ClientSocket,
+	state *daemonState,
+	sessionName, worktree, role string,
+) (*iris.Supervisor, error) {
+	extPath := cfg.PIExtensionPath
+	bareRoot := git.BareRoot(worktree)
+	superCfg := iris.SupervisorConfig{
+		SessionName:      sessionName,
+		Worktree:         worktree,
+		Role:             role,
+		BareRoot:         bareRoot,
+		PIBinaryPath:     cfg.PIBinaryPath,
+		ExtensionPath:    extPath,
+		RestartThreshold: cfg.RestartThreshold,
+		RunDir:           p.RunDir,
+		LogDir:           p.LogDir,
+		Database:         database,
+		Publisher:        clientSock,
+	}
+	sup, err := iris.SpawnSession(daemonCtx, superCfg)
+	if err != nil {
+		return nil, err
+	}
+	state.addSupervisor(sessionName, sup)
+	go func() {
+		for {
+			rec := sup.SessionRecord()
+			if rec.State == iris.StateFinished || rec.State == iris.StateError {
+				state.removeSupervisor(sessionName)
+				return
+			}
+			select {
+			case <-daemonCtx.Done():
+				return
+			case <-waitMillis(500):
+			}
+		}
+	}()
+	_ = spawnCtx
+	return sup, nil
 }
 
 // waitMillis returns a channel that closes after n milliseconds.

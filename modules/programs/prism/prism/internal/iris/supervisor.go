@@ -611,6 +611,11 @@ func (s *Supervisor) buildEnv(piConfigDir string) []string {
 	// Set IRIS_DAEMON_SOCK so the prism extension knows to register overrides.
 	env = append(env, "IRIS_DAEMON_SOCK="+s.sess.HarnessSockPath)
 
+	// Set IRIS_SESSION_NAME so in-session CLIs (`iris review`, `iris
+	// escalate`, etc.) can identify their calling session without a tmux
+	// lookup. Mirrors PRISM_SESSION_NAME in the prism harness. (#1694)
+	env = append(env, "IRIS_SESSION_NAME="+s.cfg.SessionName)
+
 	// Set PI_CODING_AGENT_DIR to the per-session config dir so pi loads
 	// the prism extension and any APPEND_SYSTEM.md we write there.
 	if piConfigDir != "" {
