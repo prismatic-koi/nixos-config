@@ -89,6 +89,37 @@ type ClientPingFrame struct {
 	Type string `json:"type"` // "ping"
 }
 
+// ClientReviewSpawnFrame requests the daemon to spawn a review group for
+// the named parent session. The daemon spawns one session per agent in
+// AgentNames (one of the canonical iris.ReviewAgentNames), registers them
+// under a shared group_id in session_groups, and begins watching the group
+// for completion. When all members reach a terminal state the daemon
+// delivers a single review-complete prompt to the parent session via the
+// existing prompt_deliver path (issue #1694).
+//
+//	{"type":"review_spawn","parent":"...","pr_number":"...","agents":["review-goal",...],"timeout":"10m","delivery_id":"<uuid>"}
+type ClientReviewSpawnFrame struct {
+	Type string `json:"type"` // "review_spawn"
+	// Parent is the session that invoked `iris review`. The review-complete
+	// prompt is delivered here when the group completes.
+	Parent string `json:"parent"`
+	// PRNumber is the GitHub PR being reviewed. Recorded for observability;
+	// the daemon does not use it for routing.
+	PRNumber string `json:"pr_number"`
+	// AgentNames is the subset of canonical review agents to spawn. Empty
+	// means "all" (default 5). Names not in iris.ReviewAgentNames are
+	// rejected with a daemon-side error frame.
+	AgentNames []string `json:"agents,omitempty"`
+	// Timeout is the per-agent timeout encoded as a Go duration string
+	// (e.g. "10m"). Empty means "daemon default" (10m).
+	Timeout string `json:"timeout,omitempty"`
+	// DeliveryID is a UUID minted by the calling CLI. The daemon forwards
+	// it on the review-complete delivery so a defensive double-fire from
+	// the watcher is deduplicated at the receiving sidecar (issue #1695).
+	// May be empty for ad-hoc callers; the daemon mints one in that case.
+	DeliveryID string `json:"delivery_id,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // Daemon → client response frames
 // ---------------------------------------------------------------------------
@@ -206,6 +237,26 @@ type DaemonPongFrame struct {
 	Type string `json:"type"` // "pong"
 }
 
+// DaemonReviewSpawnedFrame acknowledges a successful review_spawn request.
+// It carries the group_id, the round number (1-indexed, derived from the
+// parent's prior `~review-N-<agent>` rows), and the per-agent session
+// names so the caller can print a deterministic acknowledgement.
+//
+//	{"type":"review_spawned","group_id":"<uuid>","parent":"...","round":1,"members":[{"agent":"review-goal","session":"..."},...]}
+type DaemonReviewSpawnedFrame struct {
+	Type    string                    `json:"type"` // "review_spawned"
+	GroupID string                    `json:"group_id"`
+	Parent  string                    `json:"parent"`
+	Round   int                       `json:"round"`
+	Members []DaemonReviewGroupMember `json:"members"`
+}
+
+// DaemonReviewGroupMember is one entry in DaemonReviewSpawnedFrame.Members.
+type DaemonReviewGroupMember struct {
+	Agent       string `json:"agent"`        // role name, e.g. "review-goal"
+	SessionName string `json:"session_name"` // full session name spawned for this agent
+}
+
 // Client-socket frame type constants.
 const (
 	ClientFrameSessionsList       = "sessions_list"
@@ -214,12 +265,14 @@ const (
 	ClientFrameSessionSpawn       = "session_spawn"
 	ClientFrameSessionKill        = "session_kill"
 	ClientFramePromptDeliver      = "prompt_deliver"
+	ClientFrameReviewSpawn        = "review_spawn"
 	ClientFramePing               = "ping"
 	DaemonFrameSessionsSnapshot   = "sessions_snapshot"
 	DaemonFrameSessionEvent       = "session_event"
 	DaemonFrameSessionState       = "session_state"
 	DaemonFrameSessionSpawned     = "session_spawned"
 	DaemonFrameSessionKilled      = "session_killed"
+	DaemonFrameReviewSpawned      = "review_spawned"
 	DaemonFrameError              = "error"
 	DaemonFramePong               = "pong"
 )
