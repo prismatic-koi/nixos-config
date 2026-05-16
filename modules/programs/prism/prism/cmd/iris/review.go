@@ -44,6 +44,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -91,11 +92,24 @@ watcher's sync.Once guard.
 Do NOT commit, merge, or announce completion until the review-complete
 prompt arrives.
 
+# Pre-flight ancestor gate (#1518 parity)
+
+Before spawning any agents, 'iris review' runs a one-shot strict-ancestor
+check: 'git merge-base --is-ancestor origin/main HEAD'. If origin/main is
+not an ancestor of HEAD the command refuses, exits non-zero, and prints
+the number of commits behind plus the recommended fix. No agents spawn
+and the round counter is unaffected on a gate refusal.
+
+  --rebase performs fetch + rebase + force-push inline as the opt-in fix.
+  On rebase conflict the rebase is aborted, HEAD is restored, and the
+  command exits non-zero — the worktree is never left mid-rebase.
+
 # Flags
 
   --timeout <dur>    per-agent timeout (default 10m)
   --only <csv>       run only the named agents (e.g. review-goal,review-code)
-  --rebase           fetch origin/main, rebase HEAD onto it, force-push before review
+  --rebase           fetch origin/main, rebase HEAD onto it, force-push inline
+                     before running the review (opt-in fix for the gate)
   --socket <path>    iris daemon socket (default ~/.local/state/iris/iris.sock)
 
 # Exit codes
@@ -126,39 +140,59 @@ func runReviewCmd(cmd *cobra.Command, args []string) error {
 	rebaseFlag, _ := cmd.Flags().GetBool("rebase")
 	sockPath := resolveSocketPath(cmd)
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("iris review: resolve cwd: %w", err)
+	}
+
 	opts := reviewRunOpts{
-		PRNumber:    prNumber,
-		Timeout:     timeoutFlag,
-		Only:        onlyFlag,
-		Rebase:      rebaseFlag,
-		SockPath:    sockPath,
-		Parent:      lookupIrisParentSession(),
-		PRVerifier:  ghPRVerifier,
-		RebaseRunner: defaultRebaseRunner,
-		Out:         os.Stdout,
+		PRNumber:        prNumber,
+		Timeout:         timeoutFlag,
+		Only:            onlyFlag,
+		Rebase:          rebaseFlag,
+		SockPath:        sockPath,
+		Parent:          lookupIrisParentSession(),
+		Worktree:        cwd,
+		PRVerifier:      ghPRVerifier,
+		PreflightRunner: defaultPreflightRunner,
+		Out:             os.Stdout,
 	}
 	return runReviewAt(cmd.Context(), opts)
 }
 
 // reviewRunOpts bundles the validated CLI inputs and the swappable
-// host-side effects (PR verifier, rebase runner) so the wire layer can be
-// driven from a test without forking gh / git.
+// host-side effects (PR verifier, preflight runner) so the wire layer can
+// be driven from a test without forking gh / git.
 type reviewRunOpts struct {
-	PRNumber     string
-	Timeout      time.Duration
-	Only         string
-	Rebase       bool
-	SockPath     string
-	Parent       string
-	PRVerifier   func(prNumber string) error
-	RebaseRunner func(out io.Writer) error
-	Out          io.Writer
+	PRNumber  string
+	Timeout   time.Duration
+	Only      string
+	Rebase    bool
+	SockPath  string
+	Parent    string
+	// Worktree is the absolute path of the calling worktree, used by the
+	// preflight ancestor gate. Defaults to the CLI's cwd.
+	Worktree   string
+	PRVerifier func(prNumber string) error
+	// PreflightRunner implements the pre-flight ancestor / rebase gate.
+	// Injectable so tests can drive runReviewAt without a real git repo.
+	PreflightRunner func(opts preflightInput) error
+	Out             io.Writer
+}
+
+// preflightInput is the test-seam input for the preflight runner. It
+// mirrors the subset of review.PreflightOpts iris callers need.
+type preflightInput struct {
+	Worktree string
+	Rebase   bool
+	OnProgress func(line string)
 }
 
 // runReviewAt is the testable core. It performs:
 //   1. Local validation (parent resolution, --only parsing).
 //   2. PR existence check via the injected verifier.
-//   3. Optional --rebase via the injected runner.
+//   3. Pre-flight ancestor gate: refuse if behind origin/main, with
+//      --rebase the opt-in inline fix (#1518 parity).
 //   4. Dial + send review_spawn + read review_spawned (or error).
 func runReviewAt(ctx context.Context, opts reviewRunOpts) error {
 	if opts.PRNumber == "" {
@@ -187,15 +221,30 @@ func runReviewAt(ctx context.Context, opts reviewRunOpts) error {
 		return err
 	}
 
-	// --rebase: runs in the calling cwd (the worker's worktree). If any
-	// step fails the CLI exits non-zero before the daemon is contacted.
-	if opts.Rebase {
-		if opts.RebaseRunner == nil {
-			opts.RebaseRunner = defaultRebaseRunner
-		}
-		if err := opts.RebaseRunner(opts.Out); err != nil {
-			return fmt.Errorf("iris review: --rebase: %w", err)
-		}
+	// Pre-flight ancestor / rebase gate (#1518 parity).
+	//
+	// Refuse if origin/main is not an ancestor of HEAD; --rebase performs
+	// fetch + rebase + force-push inline as the opt-in fix. Runs BEFORE
+	// the daemon is contacted so a gate failure does not register a
+	// review group or increment the round counter (the round number is
+	// derived from per-agent session rows, which only get written by the
+	// daemon after a successful review_spawn).
+	//
+	// On rebase conflict the gate aborts the rebase and restores HEAD
+	// before returning a non-zero error — never leaves the worktree
+	// mid-rebase. See internal/review/preflight.go for the contract.
+	if opts.PreflightRunner == nil {
+		opts.PreflightRunner = defaultPreflightRunner
+	}
+	if opts.Worktree == "" {
+		return errors.New("iris review: preflight: worktree path is required (set cwd to the calling worktree)")
+	}
+	if err := opts.PreflightRunner(preflightInput{
+		Worktree:   opts.Worktree,
+		Rebase:     opts.Rebase,
+		OnProgress: func(line string) { fmt.Fprintln(opts.Out, line) },
+	}); err != nil {
+		return err
 	}
 
 	// Mint a delivery_id per run (#1695 contract: exactly-once delivery).
@@ -301,40 +350,59 @@ func ghPRVerifier(prNumber string) error {
 	)
 }
 
-// defaultRebaseRunner implements --rebase: fetch origin, rebase HEAD onto
-// origin/main, force-with-lease push. Each step's output is streamed to
-// out so the user sees progress. Any non-zero exit aborts the chain and
-// surfaces the underlying git error.
+// defaultPreflightRunner delegates to the shared review.Preflight helper
+// (issue #1518). It performs the strict-ancestor check against origin/main
+// and, when in.Rebase is true, runs fetch + rebase + force-push inline.
 //
-// This is intentionally a thin wrapper rather than using a higher-level
-// rebase helper — `iris review --rebase` is documented (in the issue) as
-// matching prism's behaviour, which is "the CLI runs git fetch && git
-// rebase && git push in that worktree's cwd before sending the spawn
-// request". We do exactly that.
-func defaultRebaseRunner(out io.Writer) error {
-	steps := []struct {
-		label string
-		args  []string
-	}{
-		{"git fetch origin", []string{"fetch", "origin"}},
-		{"git rebase origin/main", []string{"rebase", "origin/main"}},
-		{"git push --force-with-lease", []string{"push", "--force-with-lease"}},
+// Refusal (branch behind main) is surfaced as a *review.PreflightError
+// with .Refused=true; we re-wrap the message under the "iris review:"
+// prefix so the user-facing wording matches prism review's gate but
+// names the iris CLI as the source.
+//
+// We intentionally reuse the prism review helper rather than
+// reimplementing the gate: the strict-ancestor check, fetch-failure
+// handling, rebase abort + HEAD restore, and force-with-lease push are
+// all subtle to get right (PR #1518 establishes the canonical contract).
+// Duplicating them in iris would invite drift. The helper does not touch
+// the iris DB or any prism-internal state; it is purely a git wrapper.
+func defaultPreflightRunner(in preflightInput) error {
+	err := review.Preflight(review.PreflightOpts{
+		Worktree:   in.Worktree,
+		Rebase:     in.Rebase,
+		OnProgress: in.OnProgress,
+	})
+	if err == nil {
+		return nil
 	}
-	for _, s := range steps {
-		fmt.Fprintf(out, "[iris review] %s\n", s.label)
-		cmd := exec.Command("git", s.args...)
-		cmd.Stdout = out
-		cmd.Stderr = out
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("%s failed: %w", s.label, err)
+	// The prism helper prefixes its messages with "prism review:". Replace
+	// the leading prefix with "iris review:" so users see the CLI they
+	// invoked named in the error. The body wording (rebase hints, etc.) is
+	// otherwise identical and matches the documented prism behaviour.
+	var pe *review.PreflightError
+	if errors.As(err, &pe) {
+		msg := strings.TrimPrefix(pe.Msg, "prism review:")
+		if msg == pe.Msg {
+			msg = pe.Msg
 		}
+		return fmt.Errorf("iris review:%s", msg)
 	}
-	return nil
+	return fmt.Errorf("iris review: preflight: %w", err)
 }
 
 // sendReviewSpawn dials the daemon, writes the review_spawn frame, and
 // reads frames until either a review_spawned ack or an error frame
 // arrives (or the read deadline expires).
+//
+// Read-deadline contract: we set ONE read deadline at reviewAckTimeout
+// after sending the request frame and do NOT refresh it across iterations
+// of the read loop. The daemon's handleReviewSpawn writes exactly one
+// response frame per request (review_spawned on success, error otherwise);
+// the loop only iterates when the daemon sends an unknown / malformed /
+// non-matching frame, which is not part of today's wire contract. If a
+// future protocol revision adds pre-ack progress frames here, refresh the
+// deadline inside the loop or switch to a per-iteration budget — until
+// then the one-shot deadline is intentional and bounds total wait
+// regardless of how many spurious frames a misbehaving daemon emits.
 func sendReviewSpawn(ctx context.Context, sockPath string, frame iris.ClientReviewSpawnFrame) (*iris.DaemonReviewSpawnedFrame, error) {
 	// Daemon-down detection: stat first so we can give the canonical
 	// "systemctl --user start iris" error rather than a raw dial error.

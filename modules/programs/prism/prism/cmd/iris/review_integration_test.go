@@ -165,18 +165,20 @@ func TestReview_FullCycle(t *testing.T) {
 	go cs.Serve(ctx)
 
 	// Drive the CLI core. We bypass the cobra layer and call runReviewAt
-	// directly with deterministic fakes for PRVerifier and the rebase
-	// runner (the latter is irrelevant — Rebase=false).
+	// directly with deterministic fakes for PRVerifier and the preflight
+	// runner (the latter is a no-op — we are not exercising the git gate
+	// here; that surface has its own dedicated test below).
 	opts := reviewRunOpts{
-		PRNumber:     prNumber,
-		Timeout:      10 * time.Second,
-		Only:         "",
-		Rebase:       false,
-		SockPath:     iso.Paths.Sock,
-		Parent:       parent,
-		PRVerifier:   func(string) error { return nil },
-		RebaseRunner: func(io.Writer) error { return nil },
-		Out:          io.Discard,
+		PRNumber:        prNumber,
+		Timeout:         10 * time.Second,
+		Only:            "",
+		Rebase:          false,
+		SockPath:        iso.Paths.Sock,
+		Parent:          parent,
+		Worktree:        iso.Root,
+		PRVerifier:      func(string) error { return nil },
+		PreflightRunner: noopPreflightRunner,
+		Out:             io.Discard,
 	}
 
 	runCtx, runCancel := context.WithTimeout(ctx, 10*time.Second)
@@ -326,8 +328,10 @@ func TestReview_OnlyFilter(t *testing.T) {
 	opts := reviewRunOpts{
 		PRNumber: "9", Timeout: time.Second, Only: "review-goal,review-code",
 		SockPath: iso.Paths.Sock, Parent: parent,
-		PRVerifier: func(string) error { return nil },
-		Out:        io.Discard,
+		Worktree:        iso.Root,
+		PRVerifier:      func(string) error { return nil },
+		PreflightRunner: noopPreflightRunner,
+		Out:             io.Discard,
 	}
 	if err := runReviewAt(ctx, opts); err != nil {
 		t.Fatalf("runReviewAt: %v", err)
@@ -359,8 +363,13 @@ func TestReview_UnknownOnlyAgent(t *testing.T) {
 	opts := reviewRunOpts{
 		PRNumber: "1", Timeout: time.Second, Only: "review-goal,not-a-real-agent",
 		SockPath: "/nonexistent/iris.sock", Parent: parent,
+		Worktree: iso.Root,
 		PRVerifier: func(string) error {
 			t.Errorf("PRVerifier called before --only validation")
+			return nil
+		},
+		PreflightRunner: func(preflightInput) error {
+			t.Errorf("PreflightRunner called before --only validation")
 			return nil
 		},
 		Out: io.Discard,
@@ -384,8 +393,10 @@ func TestReview_DaemonDown(t *testing.T) {
 		PRNumber: "1", Timeout: time.Second,
 		SockPath: iso.Paths.Sock + ".missing", // never created
 		Parent:   parent,
-		PRVerifier: func(string) error { return nil },
-		Out:        io.Discard,
+		Worktree:        iso.Root,
+		PRVerifier:      func(string) error { return nil },
+		PreflightRunner: noopPreflightRunner,
+		Out:             io.Discard,
 	}
 	err := runReviewAt(context.Background(), opts)
 	if err == nil {
@@ -407,8 +418,13 @@ func TestReview_NonExistentPR(t *testing.T) {
 		PRNumber: "999999", Timeout: time.Second,
 		SockPath: "/should/never/be/dialled",
 		Parent:   parent,
+		Worktree: iso.Root,
 		PRVerifier: func(pr string) error {
 			return fmt.Errorf("iris review: PR #%s not found", pr)
+		},
+		PreflightRunner: func(preflightInput) error {
+			t.Errorf("PreflightRunner called after PRVerifier failed")
+			return nil
 		},
 		Out: io.Discard,
 	}
@@ -483,8 +499,10 @@ func TestReview_InProgressGroup(t *testing.T) {
 	opts := reviewRunOpts{
 		PRNumber: "1", Timeout: time.Second,
 		SockPath: iso.Paths.Sock, Parent: parent,
-		PRVerifier: func(string) error { return nil },
-		Out:        io.Discard,
+		Worktree:        iso.Root,
+		PRVerifier:      func(string) error { return nil },
+		PreflightRunner: noopPreflightRunner,
+		Out:             io.Discard,
 	}
 	err = runReviewAt(ctx, opts)
 	if err == nil {
@@ -501,6 +519,97 @@ func TestReview_InProgressGroup(t *testing.T) {
 // a tagged value carrier.
 func makeFakeSupervisor(sessionName, worktree, role string) *iris.Supervisor {
 	return iris.NewFakeSupervisorForTest(sessionName, worktree, role)
+}
+
+// noopPreflightRunner is the default PreflightRunner for tests that do
+// not need to exercise the gate. It returns nil unconditionally so
+// runReviewAt proceeds to the wire layer.
+func noopPreflightRunner(preflightInput) error { return nil }
+
+// TestReview_PreflightRefusal verifies the #1518 parity gate: when the
+// preflight runner reports the branch is behind origin/main, the CLI
+// exits non-zero with the rebase-guidance error AND does NOT dial the
+// daemon. This is the gate's whole point — fail fast, before any
+// review-group state is created daemon-side.
+func TestReview_PreflightRefusal(t *testing.T) {
+	iso := iristest.NewIsolated(t)
+	parent := iristest.SessionName("review-preflight-refused")
+	if err := iso.DB.UpsertStatusWithAgent(parent, "iris-parity", iso.Root, "active", nil, nil, nil, nil); err != nil {
+		t.Fatalf("UpsertStatusWithAgent: %v", err)
+	}
+
+	// Preflight returns the canonical refusal error. The sock path is
+	// deliberately bogus — if the CLI ever tries to dial it the test
+	// fails with a connection-refused error rather than the expected
+	// preflight refusal.
+	refuseMsg := "iris review: branch is 3 commits behind origin/main\n\nmain has advanced since this branch was cut. Reviewers will see drift…"
+	opts := reviewRunOpts{
+		PRNumber:   "1",
+		Timeout:    time.Second,
+		SockPath:   "/should/never/be/dialled",
+		Parent:     parent,
+		Worktree:   iso.Root,
+		PRVerifier: func(string) error { return nil },
+		PreflightRunner: func(in preflightInput) error {
+			if in.Worktree != iso.Root {
+				t.Errorf("PreflightRunner Worktree = %q, want %q", in.Worktree, iso.Root)
+			}
+			return fmt.Errorf("%s", refuseMsg)
+		},
+		Out: io.Discard,
+	}
+	err := runReviewAt(context.Background(), opts)
+	if err == nil {
+		t.Fatalf("runReviewAt(preflight refused): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "behind origin/main") {
+		t.Errorf("error = %v, want substring 'behind origin/main'", err)
+	}
+}
+
+// TestReview_PreflightRebaseFlagPropagates verifies that --rebase is
+// threaded through to the preflight runner (so a real preflight does
+// the fetch + rebase + force-push inline). This is a structural test on
+// the wire-up; the actual git work is tested in internal/review/preflight_test.go.
+func TestReview_PreflightRebaseFlagPropagates(t *testing.T) {
+	iso := iristest.NewIsolated(t)
+	parent := iristest.SessionName("review-preflight-rebase")
+	if err := iso.DB.UpsertStatusWithAgent(parent, "iris-parity", iso.Root, "active", nil, nil, nil, nil); err != nil {
+		t.Fatalf("UpsertStatusWithAgent: %v", err)
+	}
+
+	var (
+		calls      int
+		sawRebase  bool
+		sawWorktree string
+	)
+	opts := reviewRunOpts{
+		PRNumber:   "1",
+		Timeout:    time.Second,
+		Rebase:     true,
+		SockPath:   "/should/never/be/dialled",
+		Parent:     parent,
+		Worktree:   iso.Root,
+		PRVerifier: func(string) error { return nil },
+		PreflightRunner: func(in preflightInput) error {
+			calls++
+			sawRebase = in.Rebase
+			sawWorktree = in.Worktree
+			// Return a sentinel error so the CLI exits before dialling.
+			return fmt.Errorf("preflight sentinel")
+		},
+		Out: io.Discard,
+	}
+	_ = runReviewAt(context.Background(), opts)
+	if calls != 1 {
+		t.Errorf("PreflightRunner calls = %d, want 1", calls)
+	}
+	if !sawRebase {
+		t.Errorf("PreflightRunner Rebase = false, want true (--rebase set on opts)")
+	}
+	if sawWorktree != iso.Root {
+		t.Errorf("PreflightRunner Worktree = %q, want %q", sawWorktree, iso.Root)
+	}
 }
 
 // Ensure db.Status remains referenced — defensive against an over-zealous
