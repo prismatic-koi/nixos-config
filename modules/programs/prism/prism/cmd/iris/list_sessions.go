@@ -122,11 +122,16 @@ func renderSessionsListJSON(w io.Writer, sessions []iris.SessionSnapshot, now ti
 // renderSessionsListTable writes the human-readable table to w.
 //
 // Column widths are fixed so the output is grep-able. The SESSION column
-// shows a 12-char truncation of the UUID (mirrors git short-hash convention,
-// per the spec). WORKTREE shows the basename — the full path is in --json.
+// shows the logical session name (e.g. `hass-config/main`) — this is the
+// disambiguating identifier across worktrees and the value users pass to
+// `iris prompt`, `iris kill`, etc. The instance UUID remains available in
+// the --json output (`id` field). WORKTREE shows the worktree basename;
+// the full path is in --json. See issue #1738 for the SESSION-column
+// rationale: the previous UUID-prefix display was opaque and gave users
+// no way to map a row back to a worktree at a glance.
 func renderSessionsListTable(w io.Writer, sessions []iris.SessionSnapshot, now time.Time) error {
 	const (
-		wSession  = 12
+		wSession  = 32
 		wState    = 10
 		wRole     = 12
 		wWorktree = 24
@@ -152,10 +157,7 @@ func renderSessionsListTable(w io.Writer, sessions []iris.SessionSnapshot, now t
 
 	stateStyle := lipgloss.NewStyle().Foreground(lipgloss.Color(cliColPrimary))
 	for _, s := range sessions {
-		shortID := s.InstanceID
-		if len(shortID) > wSession {
-			shortID = shortID[:wSession]
-		}
+		name := truncateForColumn(s.Name, wSession)
 		state := truncateForColumn(s.State, wState)
 		role := truncateForColumn(s.Role, wRole)
 		worktreeBase := filepath.Base(s.Worktree)
@@ -167,7 +169,7 @@ func renderSessionsListTable(w io.Writer, sessions []iris.SessionSnapshot, now t
 		uptime := formatUptime(s.StartedAt, now)
 
 		_, err := fmt.Fprintf(w, "%-*s  %s  %-*s  %-*s  %-*s\n",
-			wSession, shortID,
+			wSession, name,
 			stateStyle.Render(fmt.Sprintf("%-*s", wState, state)),
 			wRole, role,
 			wWorktree, worktree,
