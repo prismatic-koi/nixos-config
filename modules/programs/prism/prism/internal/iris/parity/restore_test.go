@@ -28,7 +28,6 @@ package parity_test
 //     checking the spawned harness socket exists.
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -127,10 +126,11 @@ func TestParityRestore_OrphanedToolCallAndRespawn(t *testing.T) {
 		t.Fatalf("write fake-pi: %v", err)
 	}
 
-	// 5. Run RunRestore as if the daemon just restarted.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	result, err := iris.RunRestore(ctx, iris.RestoreConfig{
+	// 5. Run RunRestore as if the daemon just restarted. Use the iristest
+	// helper so the spawned supervisor goroutine is cancelled and drained
+	// before t.Cleanup tears down iso.DB and iso.Root — fixing the
+	// supervisor-outlives-cleanup race tracked in issue #1705.
+	result, err := iristest.RunRestoreForTest(t, iris.RestoreConfig{
 		Database:   iso.DB,
 		RunDir:     iso.Paths.RunDir,
 		PIAgentDir: iso.PIAgentDir,
