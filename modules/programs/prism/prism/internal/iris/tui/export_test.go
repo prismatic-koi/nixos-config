@@ -34,3 +34,34 @@ func ModelSubscribedTo(m Model) string {
 func ModelCursor(m Model) int {
 	return m.cursor
 }
+
+// Overlay kind constants re-exported for tests. See overlay.go for the
+// canonical names — these mirror them 1:1.
+const (
+	OverlayNone          = int(overlayNone)
+	OverlayPicker        = int(overlayPicker)
+	OverlaySpawnWorktree = int(overlaySpawnWorktree)
+	OverlaySpawnRole     = int(overlaySpawnRole)
+	OverlayDashboard     = int(overlayDashboard)
+	OverlayHelp          = int(overlayHelp)
+)
+
+// ModelOverlay returns the current overlay kind as an int, matching one of
+// the Overlay* constants above. Used by tests to assert overlay state
+// transitions without exposing the internal overlayKind type.
+func ModelOverlay(m Model) int { return int(m.overlay) }
+
+// ModelPickerRowCount returns the number of rows currently in the picker
+// overlay (the spawn row + one row per known session). Used by tests to
+// assert the picker was populated from the session list.
+func ModelPickerRowCount(m Model) int { return len(m.picker.rows) }
+
+// ModelPickerFilter returns the picker's current filter string.
+func ModelPickerFilter(m Model) string { return m.picker.filter }
+
+// ModelSpawnWorktree returns the worktree-input buffer contents during the
+// spawn flow. Empty when no spawn overlay is active.
+func ModelSpawnWorktree(m Model) string { return string(m.spawn.worktree) }
+
+// ModelSpawnRole returns the role-input buffer contents during the spawn flow.
+func ModelSpawnRole(m Model) string { return string(m.spawn.role) }
