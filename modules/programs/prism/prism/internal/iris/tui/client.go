@@ -241,3 +241,16 @@ func (c *DaemonClient) SendPromptDeliver(name, text string) error {
 		Text: text,
 	})
 }
+
+// SendSessionSpawn requests the daemon to spawn a new pi session with the
+// given worktree and role. Used by the in-TUI picker overlay's `[+] spawn
+// new` flow (issue #1737). The daemon replies asynchronously with either a
+// session_spawned frame (success) or an error frame (rejection); both are
+// surfaced to the Model via the normal DaemonFrame delivery path.
+func (c *DaemonClient) SendSessionSpawn(worktree, role string) error {
+	return c.writeFrame(iris.ClientSessionSpawnFrame{
+		Type:     iris.ClientFrameSessionSpawn,
+		Worktree: worktree,
+		Role:     role,
+	})
+}

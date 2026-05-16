@@ -1007,6 +1007,427 @@ func TestModelFocused_PreSelectsSession(t *testing.T) {
 	// the primary signal that NewModelFocused was wired correctly.
 }
 
+// ---------------------------------------------------------------------------
+// In-TUI overlay tests (issue #1737)
+// ---------------------------------------------------------------------------
+//
+// These tests drive the bubbletea Model directly to assert the new overlay
+// keybindings (C-f picker, C-w dashboard, ? help, Escape closes, Tab
+// rotates focus, C-r refresh, C-l redraw) added for standalone (non-tmux)
+// iris use.
+
+// keyFromString returns a tea.KeyMsg that, when String()'d, matches the
+// bubbletea canonical form expected by handleKey. We use this rather than
+// hand-crafting tea.KeyMsg{Type: tea.KeyCtrlF} because the model's switch
+// arms key off msg.String(), not msg.Type.
+func keyFromString(s string) tea.KeyMsg {
+	switch s {
+	case "ctrl+f":
+		return tea.KeyMsg{Type: tea.KeyCtrlF}
+	case "ctrl+w":
+		return tea.KeyMsg{Type: tea.KeyCtrlW}
+	case "ctrl+r":
+		return tea.KeyMsg{Type: tea.KeyCtrlR}
+	case "ctrl+l":
+		return tea.KeyMsg{Type: tea.KeyCtrlL}
+	case "esc":
+		return tea.KeyMsg{Type: tea.KeyEsc}
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "?":
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}}
+	}
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
+// modelWithSessions returns a connected model pre-populated with the given
+// session names. State and role are filled with reasonable defaults so the
+// picker overlay's row rendering does not need to special-case missing fields.
+func modelWithSessions(t *testing.T, names ...string) tui.Model {
+	t.Helper()
+	m := newConnectedModel()
+	snaps := make([]iris.SessionSnapshot, len(names))
+	for i, n := range names {
+		snaps[i] = iris.SessionSnapshot{
+			Name: n, InstanceID: "iid-" + n, State: "active", Role: "worker", Worktree: "/repo/" + n,
+		}
+	}
+	snap := iris.DaemonSessionsSnapshotFrame{Type: iris.DaemonFrameSessionsSnapshot, Sessions: snaps}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	return m2.(tui.Model)
+}
+
+// TestPickerOverlay_OpenAndDismiss asserts that C-f opens the picker
+// overlay, the model reports overlayPicker active, and Escape dismisses
+// the overlay back to overlayNone without quitting the TUI.
+//
+// This is the integration test required by the issue: "simulates `C-f` key
+// press, asserts the picker overlay is active in the model state,
+// dismisses with Escape, asserts overlay closed."
+func TestPickerOverlay_OpenAndDismiss(t *testing.T) {
+	m := modelWithSessions(t, "session-a", "session-b")
+
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Fatalf("baseline overlay = %d, want OverlayNone (%d)", got, tui.OverlayNone)
+	}
+
+	// Press Ctrl+F — the picker should open.
+	m2, _ := m.Update(keyFromString("ctrl+f"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayPicker {
+		t.Fatalf("after C-f: overlay = %d, want OverlayPicker (%d)", got, tui.OverlayPicker)
+	}
+	// Picker should have populated 1 spawn row + 2 session rows = 3 rows.
+	if got := tui.ModelPickerRowCount(m); got != 3 {
+		t.Errorf("picker rows = %d, want 3 (1 spawn + 2 sessions)", got)
+	}
+	// The rendered view should mention the picker title and both session names.
+	view := m.View()
+	if !strings.Contains(view, "iris picker") {
+		t.Errorf("picker title not in view; excerpt:\n%s", excerpt(view, 400))
+	}
+	if !strings.Contains(view, "[+] spawn new session") {
+		t.Errorf("spawn row not in view; excerpt:\n%s", excerpt(view, 400))
+	}
+	if !strings.Contains(view, "session-a") || !strings.Contains(view, "session-b") {
+		t.Errorf("session rows not in picker view; excerpt:\n%s", excerpt(view, 600))
+	}
+
+	// Press Escape — the overlay should close. Crucially, the model must
+	// NOT be a tea.QuitMsg; Escape is not a quit binding.
+	m2, cmd := m.Update(keyFromString("esc"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Fatalf("after Escape: overlay = %d, want OverlayNone (%d)", got, tui.OverlayNone)
+	}
+	if cmd != nil {
+		// If a Cmd was returned, it must not be a quit Cmd. Execute it and
+		// inspect.
+		msg := cmd()
+		if _, isQuit := msg.(tea.QuitMsg); isQuit {
+			t.Fatalf("Escape produced a QuitMsg — must not quit the TUI")
+		}
+	}
+}
+
+// TestPickerOverlay_QuitKeysStillWork asserts that q and Ctrl+C continue
+// to quit the TUI (no regression from the overlay work).
+func TestPickerOverlay_QuitKeysStillWork(t *testing.T) {
+	m := modelWithSessions(t, "s1")
+
+	// Plain `q` should quit when no prompt content is present and no
+	// overlay is active.
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatalf("`q` returned nil cmd — expected tea.Quit")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Errorf("`q` cmd did not produce QuitMsg")
+	}
+
+	// Ctrl+C should also quit.
+	_, cmd = m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatalf("Ctrl+C returned nil cmd")
+	}
+	if _, isQuit := cmd().(tea.QuitMsg); !isQuit {
+		t.Errorf("Ctrl+C cmd did not produce QuitMsg")
+	}
+}
+
+// TestDashboardOverlay_OpenAndDismiss asserts C-w opens the dashboard
+// overlay and q/esc dismisses it.
+func TestDashboardOverlay_OpenAndDismiss(t *testing.T) {
+	m := modelWithSessions(t, "a", "b")
+
+	m2, _ := m.Update(keyFromString("ctrl+w"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayDashboard {
+		t.Fatalf("after C-w: overlay = %d, want OverlayDashboard (%d)", got, tui.OverlayDashboard)
+	}
+	view := m.View()
+	if !strings.Contains(view, "iris dashboard") {
+		t.Errorf("dashboard title not in view; excerpt:\n%s", excerpt(view, 400))
+	}
+
+	// Escape closes.
+	m2, _ = m.Update(keyFromString("esc"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Errorf("after Escape: overlay = %d, want OverlayNone", got)
+	}
+}
+
+// TestHelpOverlay_OpenAndDismiss asserts `?` opens the help overlay (when
+// the prompt is empty) and any key dismisses it.
+func TestHelpOverlay_OpenAndDismiss(t *testing.T) {
+	m := modelWithSessions(t, "a")
+
+	m2, _ := m.Update(keyFromString("?"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayHelp {
+		t.Fatalf("after ?: overlay = %d, want OverlayHelp (%d)", got, tui.OverlayHelp)
+	}
+	view := m.View()
+	if !strings.Contains(view, "keybindings") {
+		t.Errorf("help title not in view; excerpt:\n%s", excerpt(view, 400))
+	}
+	// Help should list both the new bindings and the legacy ones.
+	for _, kw := range []string{"C-f", "C-w", "Escape", "Tab", "C-r", "C-l"} {
+		if !strings.Contains(view, kw) {
+			t.Errorf("help overlay missing keybinding %q; excerpt:\n%s", kw, excerpt(view, 800))
+		}
+	}
+
+	m2, _ = m.Update(keyFromString("esc"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Errorf("after Escape: overlay = %d, want OverlayNone", got)
+	}
+}
+
+// TestEscape_NoOverlay_IsNoop asserts that Escape with no overlay open
+// does not quit the TUI — the issue is explicit that only q/Ctrl-c quit.
+func TestEscape_NoOverlay_IsNoop(t *testing.T) {
+	m := modelWithSessions(t, "a")
+	_, cmd := m.Update(keyFromString("esc"))
+	if cmd != nil {
+		msg := cmd()
+		if _, isQuit := msg.(tea.QuitMsg); isQuit {
+			t.Fatalf("Escape with no overlay produced QuitMsg — must be a no-op")
+		}
+	}
+}
+
+// TestFooterMentionsOverlayBindings asserts the prompt footer now includes
+// the new C-f / ? hints alongside the existing ones.
+func TestFooterMentionsOverlayBindings(t *testing.T) {
+	m := modelWithSessions(t, "a")
+	view := m.View()
+	for _, hint := range []string{"C-f", "?", "q quit"} {
+		if !strings.Contains(view, hint) {
+			t.Errorf("footer hint missing %q; excerpt:\n%s", hint, excerpt(view, 800))
+		}
+	}
+}
+
+// TestPickerOverlay_SelectExistingSwitchesSubscription asserts that picking
+// an existing session in the overlay closes the overlay and sends the
+// expected unsubscribe/subscribe pair to the daemon (via a real socket
+// mock). This is the AC: "Selecting an existing session in the picker
+// switches the TUI's subscribed session."
+func TestPickerOverlay_SelectExistingSwitchesSubscription(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "iris-picker.sock")
+	received := make(chan map[string]any, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go fakeDaemon(ctx, ln, received)
+
+	client := tui.NewDaemonClient(sockPath)
+	msgs := make(chan tea.Msg, 128)
+	client.SetSink(func(msg tea.Msg) { msgs <- msg })
+	go client.Connect()
+	waitForMsg[tui.ConnectedMsg](t, ctx, msgs, 5*time.Second)
+	waitFor(t, ctx, received, "sessions_list", 3*time.Second)
+
+	// Build the model with two sessions; subscribe to the first (default).
+	m := tui.NewModel(client)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.ConnectedMsg{})
+	m = m2.(tui.Model)
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: "session-a", InstanceID: "iid-a", State: "active", Role: "worker"},
+			{Name: "session-b", InstanceID: "iid-b", State: "active", Role: "worker"},
+		},
+	}
+	var cmd tea.Cmd
+	m2, cmd = m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+	if cmd != nil {
+		cmd()
+	}
+	waitFor(t, ctx, received, "session_subscribe", 3*time.Second) // initial: session-a
+
+	// Open the picker.
+	m2, _ = m.Update(keyFromString("ctrl+f"))
+	m = m2.(tui.Model)
+	// Picker cursor starts at row 0 ([+] spawn). Move down twice to land on session-b.
+	m2, _ = m.Update(keyFromString("down"))
+	m = m2.(tui.Model)
+	m2, _ = m.Update(keyFromString("down"))
+	m = m2.(tui.Model)
+	// Press Enter.
+	m2, cmd = m.Update(keyFromString("enter"))
+	m = m2.(tui.Model)
+	if cmd != nil {
+		cmd()
+	}
+
+	// Expect unsubscribe(session-a) then subscribe(session-b).
+	unsub := waitFor(t, ctx, received, "session_unsubscribe", 3*time.Second)
+	if unsub["name"] != "session-a" {
+		t.Errorf("unsubscribe name = %v, want session-a", unsub["name"])
+	}
+	sub := waitFor(t, ctx, received, "session_subscribe", 3*time.Second)
+	if sub["name"] != "session-b" {
+		t.Errorf("subscribe name = %v, want session-b", sub["name"])
+	}
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Errorf("after Enter: overlay = %d, want OverlayNone", got)
+	}
+}
+
+// TestPickerOverlay_SpawnFlowSendsSpawnFrame asserts that picking `[+]
+// spawn new`, typing a worktree, advancing, typing a role, and pressing
+// Enter sends a session_spawn frame to the daemon with the right values.
+func TestPickerOverlay_SpawnFlowSendsSpawnFrame(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "iris-spawn.sock")
+	received := make(chan map[string]any, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go fakeDaemon(ctx, ln, received)
+
+	client := tui.NewDaemonClient(sockPath)
+	msgs := make(chan tea.Msg, 128)
+	client.SetSink(func(msg tea.Msg) { msgs <- msg })
+	go client.Connect()
+	waitForMsg[tui.ConnectedMsg](t, ctx, msgs, 5*time.Second)
+	waitFor(t, ctx, received, "sessions_list", 3*time.Second)
+
+	m := tui.NewModel(client)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.ConnectedMsg{})
+	m = m2.(tui.Model)
+
+	// Open picker with no sessions — only the [+] spawn row.
+	snap := iris.DaemonSessionsSnapshotFrame{Type: iris.DaemonFrameSessionsSnapshot, Sessions: nil}
+	m2, _ = m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(keyFromString("ctrl+f"))
+	m = m2.(tui.Model)
+
+	// Press Enter on the spawn row (cursor starts at 0).
+	m2, _ = m.Update(keyFromString("enter"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlaySpawnWorktree {
+		t.Fatalf("after spawn-Enter: overlay = %d, want OverlaySpawnWorktree (%d)", got, tui.OverlaySpawnWorktree)
+	}
+
+	// Type a worktree path.
+	for _, r := range "/tmp/wt" {
+		m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(tui.Model)
+	}
+	if got := tui.ModelSpawnWorktree(m); got != "/tmp/wt" {
+		t.Errorf("worktree buffer = %q, want /tmp/wt", got)
+	}
+	// Enter advances to role step.
+	m2, _ = m.Update(keyFromString("enter"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlaySpawnRole {
+		t.Fatalf("after worktree-Enter: overlay = %d, want OverlaySpawnRole (%d)", got, tui.OverlaySpawnRole)
+	}
+
+	// Clear the default role and type a custom one. Backspace whatever was
+	// pre-populated by ResolveAgent (likely empty for /tmp/wt, but be safe).
+	cur := tui.ModelSpawnRole(m)
+	for i := 0; i < len(cur); i++ {
+		m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+		m = m2.(tui.Model)
+	}
+	for _, r := range "investigator" {
+		m2, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(tui.Model)
+	}
+	var cmd tea.Cmd
+	m2, cmd = m.Update(keyFromString("enter"))
+	m = m2.(tui.Model)
+	if cmd != nil {
+		cmd()
+	}
+
+	spawn := waitFor(t, ctx, received, "session_spawn", 3*time.Second)
+	if spawn["worktree"] != "/tmp/wt" {
+		t.Errorf("spawn worktree = %v, want /tmp/wt", spawn["worktree"])
+	}
+	if spawn["role"] != "investigator" {
+		t.Errorf("spawn role = %v, want investigator", spawn["role"])
+	}
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Errorf("after spawn-submit: overlay = %d, want OverlayNone", got)
+	}
+}
+
+// TestCtrlR_SendsSessionsList asserts C-r force-refreshes by sending a
+// fresh sessions_list frame to the daemon.
+func TestCtrlR_SendsSessionsList(t *testing.T) {
+	sockPath := filepath.Join(t.TempDir(), "iris-refresh.sock")
+	received := make(chan map[string]any, 128)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	go fakeDaemon(ctx, ln, received)
+
+	client := tui.NewDaemonClient(sockPath)
+	msgs := make(chan tea.Msg, 128)
+	client.SetSink(func(msg tea.Msg) { msgs <- msg })
+	go client.Connect()
+	waitForMsg[tui.ConnectedMsg](t, ctx, msgs, 5*time.Second)
+	waitFor(t, ctx, received, "sessions_list", 3*time.Second) // initial on connect
+
+	m := tui.NewModel(client)
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = m2.(tui.Model)
+	m2, _ = m.Update(tui.ConnectedMsg{})
+	m = m2.(tui.Model)
+
+	// Press C-r — should trigger a fresh sessions_list.
+	_, cmd := m.Update(keyFromString("ctrl+r"))
+	if cmd == nil {
+		t.Fatal("C-r returned nil cmd — expected sessions_list send")
+	}
+	cmd()
+	waitFor(t, ctx, received, "sessions_list", 3*time.Second)
+}
+
+// TestCtrlL_ReturnsClearScreenCmd asserts C-l returns a non-nil Cmd that
+// is the bubbletea clear-screen command (we don't introspect its type —
+// just confirm it's wired so the screen redraws).
+func TestCtrlL_ReturnsClearScreenCmd(t *testing.T) {
+	m := modelWithSessions(t, "a")
+	_, cmd := m.Update(keyFromString("ctrl+l"))
+	if cmd == nil {
+		t.Fatal("C-l returned nil cmd — expected tea.ClearScreen")
+	}
+}
+
 // TestModelFocused_UnknownSessionFallsBackToFirst asserts that when the
 // initialSession does not match any row in the snapshot, the cursor
 // defaults to row 0 rather than leaving the picker in a weird state.

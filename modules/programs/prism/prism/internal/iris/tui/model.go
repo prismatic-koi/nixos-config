@@ -102,6 +102,33 @@ type sessionItem struct {
 	snap iris.SessionSnapshot
 }
 
+// focusArea identifies the currently focused interactive region. Tab
+// rotates between the session list (left pane), the event stream (right
+// pane, for scrolling), and the prompt (bottom). The prompt is the
+// implicit default — pre-#1737 the prompt always swallowed typed runes.
+// Now we surface focus explicitly so Tab can rotate it.
+type focusArea int
+
+const (
+	focusPrompt   focusArea = iota // default: typing into the prompt
+	focusSessions                  // navigation focused on the session list
+	focusEvents                    // navigation focused on the event stream
+)
+
+// overlayKind enumerates which (if any) modal overlay is currently active.
+// Only one overlay can be active at a time. overlayNone means the normal
+// session-list + events + prompt layout is rendered.
+type overlayKind int
+
+const (
+	overlayNone          overlayKind = iota
+	overlayPicker                    // Ctrl+F: session picker / spawn-new
+	overlaySpawnWorktree             // step 2 of spawn flow: typing the worktree path
+	overlaySpawnRole                 // step 3 of spawn flow: typing the role
+	overlayDashboard                 // Ctrl+W: multi-session dashboard view
+	overlayHelp                      // ?: keybindings help
+)
+
 // Model is the top-level bubbletea model for the iris TUI.
 type Model struct {
 	client *DaemonClient
@@ -143,6 +170,23 @@ type Model struct {
 	// Prompt input (bottom).
 	promptRunes  []rune
 	promptCursor int // rune insert position
+
+	// In-TUI overlay state (issue #1737). overlay == overlayNone means no
+	// overlay is active; all other values render a full-screen modal on top
+	// of the normal view.
+	overlay overlayKind
+	// picker state — populated when overlay == overlayPicker.
+	picker pickerState
+	// spawn state — populated when overlay == overlaySpawnWorktree or
+	// overlaySpawnRole. Carries the worktree typed in step 2 so step 3 can
+	// recall it when the user confirms the role.
+	spawn spawnState
+	// errorMsg is a transient one-line error rendered in the picker overlay
+	// (e.g. after a failed spawn attempt). Cleared on overlay dismissal.
+	errorMsg string
+
+	// focus is the currently focused interactive region (Tab rotates it).
+	focus focusArea
 }
 
 // NewModel creates the iris TUI model.
@@ -373,9 +417,70 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Overlay routing: if an overlay is active it gets first refusal at
+	// every keystroke. Quit (ctrl+c) still works because the overlay
+	// handlers delegate it back to the main switch.
+	if m.overlay != overlayNone {
+		return m.handleOverlayKey(msg)
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
+
+	// --- in-TUI overlay openers (issue #1737) ---
+	//
+	// These bindings only fire when no overlay is active. When iris runs
+	// under tmux, the tmux popup bindings on C-f/C-w intercept the
+	// keystroke before bubbletea ever sees it, so the two paths coexist
+	// without conflict (per the issue's coexistence AC).
+	case "ctrl+f":
+		m.openPicker()
+		return m, nil
+
+	case "ctrl+w":
+		m.overlay = overlayDashboard
+		return m, nil
+
+	case "?":
+		// Only treat `?` as the help binding when the prompt is empty —
+		// otherwise the user might want to type a literal question mark
+		// into a prompt body. Empty-prompt heuristic keeps both UX paths
+		// reachable without a modifier.
+		if len(m.promptRunes) == 0 {
+			m.overlay = overlayHelp
+			return m, nil
+		}
+
+	case "esc":
+		// No overlay open: Escape is a no-op. The issue spec is explicit
+		// that Escape must NOT quit — only `q` and `ctrl+c` quit.
+		return m, nil
+
+	case "tab":
+		// Rotate focus prompt → sessions → events → prompt.
+		switch m.focus {
+		case focusPrompt:
+			m.focus = focusSessions
+		case focusSessions:
+			m.focus = focusEvents
+		default:
+			m.focus = focusPrompt
+		}
+		return m, nil
+
+	case "ctrl+r":
+		// Force-refresh: re-request the sessions snapshot from the daemon.
+		return m, func() tea.Msg {
+			_ = m.client.SendSessionsList()
+			return nil
+		}
+
+	case "ctrl+l":
+		// Clear-and-redraw. bubbletea repaints the full View() on every
+		// Update, so issuing tea.ClearScreen here triggers a fresh paint
+		// without losing model state.
+		return m, tea.ClearScreen
 
 	case "up", "ctrl+p", "k":
 		if m.cursor > 0 {
@@ -422,7 +527,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.promptCursor--
 		}
 
-	case "right", "ctrl+f":
+	case "right":
+		// Note: ctrl+f is now the picker-overlay binding (handled above),
+		// no longer an alias for right-arrow in the prompt. Plain `right`
+		// still moves the prompt cursor; users who need a single-rune
+		// right-step can use the arrow key.
 		if m.promptCursor < len(m.promptRunes) {
 			m.promptCursor++
 		}
@@ -494,6 +603,13 @@ func (m Model) View() string {
 	// Disconnected overlay.
 	if !m.connected {
 		return m.viewDisconnected()
+	}
+
+	// Modal overlay: when one is active it replaces the entire view. The
+	// underlying session-list / event-stream / prompt remains in the model
+	// state — Escape restores it instantly.
+	if m.overlay != overlayNone {
+		return m.viewOverlay()
 	}
 
 	leftW, rightW := m.paneWidths()
@@ -723,7 +839,7 @@ func (m Model) viewPrompt(width int) string {
 
 	inputLine := labelRendered + before + caretStr + after
 
-	help := styleDim.Render("  ↑/↓ select session  enter send  pgup/pgdn scroll events  q quit")
+	help := styleDim.Render("  ↑/↓ session  enter send  pgup/pgdn scroll  C-f picker  C-w dash  ? help  q quit")
 
 	return stylePromptBox.Width(innerW).Render(inputLine + "\n" + help)
 }
