@@ -706,9 +706,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	// POST /prompt
-	// Request:  {"session":"<target>", "prompt":"<text>", "deliver_as":"<mode>"}
+	// Request:  {"session":"<target>", "prompt":"<text>", "deliver_as":"<mode>", "delivery_id":"<uuid>"}
 	// Permission: worker → own coordinator (@main) only;
 	//             coordinator → own repo any session, cross-repo coordinator only.
+	//
+	// Idempotency: each request carries an optional delivery_id (UUID minted
+	// by the sender). The receiving sidecar tracks recent IDs in a bounded
+	// LRU set; repeats are dropped before any frame is enqueued and the
+	// response carries {"replayed":true} so the sender can log/observe. When
+	// delivery_id is empty the request is treated as legacy and dedup is
+	// skipped (the frame is delivered unconditionally). Issue #1685.
 	mux.HandleFunc("/prompt", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
 			return
@@ -731,6 +738,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// compatible with callers that do not set this field). Unknown values
 			// are rejected with HTTP 400 before any frame is enqueued.
 			DeliverAs string `json:"deliver_as,omitempty"`
+			// DeliveryID is the sender-minted UUID used for idempotency. When
+			// non-empty, the receiving sidecar dedups against its in-memory set
+			// and drops repeats. When empty, dedup is skipped (legacy callers).
+			// Issue #1685.
+			DeliveryID string `json:"delivery_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -779,6 +791,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 						return
 					}
 				}
+
+				// Idempotency check: if the sender supplied a delivery_id and we
+				// have seen it recently, this is a repeat — drop it and respond
+				// 200 with {"replayed":true} so the sender can observe. The
+				// dedup set is bounded (LRU, capacity 256) and per-sidecar.
+				// See delivery_dedup.go and issue #1685.
+				if req.DeliveryID != "" && s.promptDedup != nil {
+					if s.promptDedup.markSeen(req.DeliveryID) {
+						s.logger().Printf("sidecar: host-API /prompt: dedup hit, dropping repeat delivery_id=%s (session=%s)", req.DeliveryID, req.Session)
+						writeJSON(w, http.StatusOK, map[string]bool{"replayed": true})
+						return
+					}
+				}
+
 				// Clear reviewingInFlight only when this is the monitor's
 				// review-complete delivery (source == "review-complete"). This
 				// ensures the turn_start that immediately follows the delivered
@@ -795,7 +821,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				}
 				s.logger().Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
 				if !s.DeliverPrompt(req.Prompt, deliverAs) {
-					writeError(w, http.StatusServiceUnavailable, "socket-pipe not connected — prompt not delivered")
+					// PI extension is disconnected. Buffer the delivery so it
+					// will be flushed on next handshake with replay=true, then
+					// respond 200 — the delivery is accepted but deferred.
+					// Pre-#1685 behaviour returned 503; the new contract is that
+					// a single /prompt call delivers exactly once (after
+					// reconnect, marked replay) rather than failing the call.
+					// Issue #1685 AC #7.
+					s.bufferPendingReplay(pendingReplayDelivery{
+						DeliveryID: req.DeliveryID,
+						Text:       req.Prompt,
+						DeliverAs:  deliverAs,
+					})
+					s.logger().Printf("sidecar: host-API /prompt: PI disconnected, buffered for replay (session=%s deliver_as=%s delivery_id=%s)", req.Session, deliverAs, req.DeliveryID)
+					writeJSON(w, http.StatusOK, map[string]bool{"buffered": true})
 					return
 				}
 				writeJSON(w, http.StatusOK, map[string]string{})

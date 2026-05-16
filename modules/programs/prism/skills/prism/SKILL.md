@@ -689,6 +689,16 @@ A same-repo coordinator candidate is any active (ended_at IS NULL) row in the sa
 - Payload carries: `source` (calling worker), `target` (coordinator session, empty when none), `prompt` (body), `pr_numbers` (open PRs whose head matches the worker's branch), `branch`, `head_sha`, `verdicts` (last review-cycle verdicts when discoverable), `occurred_at` (RFC3339).
 - The same payload is also written into the calling session's own event log as type `escalation` so `prism checkin <self>` shows the escalation context inline.
 
+### Delivery guarantee — exactly-once with optional replay marker
+
+The escalation prompt is delivered to the coordinator's harness **exactly once** per `prism escalate` invocation. The sidecar's `/prompt` handler is idempotent: each delivery carries a `delivery_id` (UUID minted by the sender), and repeats whose ID has been seen recently are dropped before they reach the harness pipe — the dedup set is bounded (LRU, capacity 256, in-memory per sidecar). Senders that retry with the same `delivery_id` see `{"replayed":true}` in the response so the retry is observable, not silent.
+
+The one path that produces a second copy is the reconnect-replay case for AC #7: if the coordinator's PI extension is disconnected from its sidecar when an escalation arrives, the sidecar buffers the delivery and flushes it on the next successful handshake. The replayed prompt frame carries `replay: true` so the coordinator can distinguish it from a fresh signal. The buffer is bounded (capacity 16); under a long partition the oldest entries are dropped FIFO with a log line.
+
+**Coordinator-side handling.** Coordinators receiving `prism prompt`-style frames do not need to deduplicate — the sidecar guarantees exactly-once for the same delivery_id. If you see `replay: true` on a prompt frame (visible in the assistant-side prompt body once the PI runtime exposes it; for now, observable only in raw frame archives), the delivery is a buffered resume of a partition-window escalation. Treat it informationally: the original was already accepted, this is the post-reconnect notification of that earlier acceptance.
+
+This contract supersedes the pre-fix behaviour where `prism escalate` could deliver the same prompt body multiple times under load (issue #1685).
+
 ### When to use `prism escalate` vs `prism prompt`
 
 - **`prism escalate`** — you are a worker handing a question or decision to the coordinator and pausing your turn until you hear back. Use this whenever you would have otherwise stopped after sending a hand-crafted `prism prompt`.

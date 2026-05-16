@@ -130,8 +130,11 @@ func TestHostAPI_Prompt_PiSession_ActiveState_ConnectedPipe(t *testing.T) {
 }
 
 // TestHostAPI_Prompt_PiSession_NotConnected verifies that /prompt returns
-// 503 Service Unavailable when the pi harness pipe is not connected (no active
-// extension connection).
+// 200 with {"buffered":true} when the pi harness pipe is not connected.
+// Pre-#1685 this returned 503 Service Unavailable; the new contract is that
+// the delivery is buffered for replay on the next handshake (with
+// replay=true on the resumed frame) so a transient disconnect during an
+// escalation cannot lose the prompt. Issue #1685 AC #7.
 func TestHostAPI_Prompt_PiSession_NotConnected(t *testing.T) {
 	d := openTestDB(t)
 
@@ -147,9 +150,20 @@ func TestHostAPI_Prompt_PiSession_NotConnected(t *testing.T) {
 	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
 		`{"session":"myrepo@piworker","prompt":"hello pi disconnected"}`)
 
-	// Expect 503 Service Unavailable (pipe not connected).
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503 (pipe not connected), body=%s", rr.Code, rr.Body.String())
+	// Expect 200 OK and the delivery is buffered for replay.
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (buffered for replay), body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"buffered":true`) {
+		t.Errorf("body = %q, want it to contain \"buffered\":true", rr.Body.String())
+	}
+
+	// Buffer must contain the delivery.
+	sc.mu.Lock()
+	n := len(sc.pendingReplayDeliveries)
+	sc.mu.Unlock()
+	if n != 1 {
+		t.Errorf("pendingReplayDeliveries length = %d, want 1", n)
 	}
 }
 
