@@ -33,11 +33,13 @@
 package iristest
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/iris"
@@ -219,6 +221,82 @@ func checkUnderShort(t *testing.T, name, path, short string) {
 	if !strings.HasPrefix(path, short) {
 		t.Fatalf("iristest: isolation broken: %s=%q does not start with short tempdir %q", name, path, short)
 	}
+}
+
+// RunRestoreForTest is the test-only wrapper around iris.RunRestore that
+// guarantees the supervisor goroutines spawned by restore do not outlive
+// the test — fixing the lifecycle race tracked in issue #1705.
+//
+// # The race
+//
+// iris.RunRestore spawns one supervisor goroutine per active session via
+// `go sup.Start(ctx)` and returns immediately. Those goroutines keep
+// writing to the DB and the per-session run directory until either ctx is
+// cancelled or the (fake) pi child's circuit breaker opens. Under -race,
+// any of these scenarios is enough to fail the test:
+//
+//   - The supervisor's setState writes an event row after t.Cleanup has
+//     closed the DB → "sql: database is closed".
+//   - The supervisor writes a per-session log entry under the tempdir
+//     after t.Cleanup has begun removing it → "unlinkat .../001:
+//     directory not empty".
+//
+// # The fix
+//
+// RunRestoreForTest registers a t.Cleanup that:
+//  1. Cancels the supervisor context (so Start returns at the next select).
+//  2. Waits on <-sup.Done() for every supervisor in the result.
+//
+// # Cleanup-ordering invariant (load-bearing)
+//
+// t.Cleanup callbacks run in LIFO order. The cleanups registered by
+// NewIsolated (DB close, tempdir removal, short-prefix removal) and by
+// t.TempDir() are all registered before RunRestoreForTest is called from
+// the test body, so the cleanup registered here runs FIRST — which is
+// exactly what we need: the supervisor goroutines must be fully drained
+// before the DB closes and before tempdirs are removed.
+//
+// Calling this helper before NewIsolated (or before any t.TempDir() the
+// supervisor writes into) would invert the ordering and re-introduce the
+// race. Do not do that.
+//
+// # Why a helper, not a fix on iris.RunRestore
+//
+// Production callers (the iris daemon) own the supervisor lifecycle for
+// the lifetime of the process — they intentionally let those goroutines
+// run until the daemon's signal context fires. Forcing a synchronous
+// shutdown inside RunRestore would either deadlock the daemon or require
+// reworking the daemon's main loop. Keeping the wait in the test helper
+// targets the actual failure mode (test teardown) without changing
+// production semantics.
+func RunRestoreForTest(t *testing.T, cfg iris.RestoreConfig) (*iris.RestoreResult, error) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	result, err := iris.RunRestore(ctx, cfg)
+	// Register cleanup AFTER calling RunRestore so the result.Supervisors
+	// slice is fully populated by the time the cleanup closure captures it.
+	var sups []*iris.Supervisor
+	if result != nil {
+		sups = result.Supervisors
+	}
+	t.Cleanup(func() {
+		cancel()
+		for _, sup := range sups {
+			if sup == nil {
+				continue
+			}
+			select {
+			case <-sup.Done():
+			case <-time.After(10 * time.Second):
+				// A wedged supervisor is a real bug — surface it loudly so
+				// it cannot hide as a flake. We use t.Errorf rather than
+				// t.Fatalf because we're inside a cleanup and want every
+				// supervisor reported, not just the first.
+				t.Errorf("iristest: RunRestoreForTest: supervisor %s did not shut down within 10s after ctx cancel", sup.InstanceID())
+			}
+		}
+	})
+	return result, err
 }
 
 // sanitiseForSessionName replaces characters that are awkward in iris

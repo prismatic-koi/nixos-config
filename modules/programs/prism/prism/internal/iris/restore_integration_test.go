@@ -20,7 +20,6 @@ package iris_test
 // The test is Linux-only (uses /bin/sh) but otherwise self-contained.
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -29,6 +28,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/iristest"
 )
 
 // TestRestoreIntegration_EndToEnd exercises the full restore path:
@@ -103,9 +103,6 @@ func TestRestoreIntegration_EndToEnd(t *testing.T) {
 		t.Fatalf("WriteFile fake-pi: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	cfg := iris.RestoreConfig{
 		Database:   database,
 		RunDir:     runDir,
@@ -117,7 +114,10 @@ func TestRestoreIntegration_EndToEnd(t *testing.T) {
 		},
 	}
 
-	result, err := iris.RunRestore(ctx, cfg)
+	// Use the iristest helper so the spawned supervisor goroutines are
+	// cancelled and drained before t.Cleanup tears down runDir, tmp, and
+	// the DB (issue #1705).
+	result, err := iristest.RunRestoreForTest(t, cfg)
 	if err != nil {
 		t.Fatalf("RunRestore: %v", err)
 	}
@@ -233,9 +233,6 @@ func TestRestoreIntegration_MultipleActiveSessions(t *testing.T) {
 		t.Fatalf("WriteFile fake-pi: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	cfg := iris.RestoreConfig{
 		Database:   database,
 		RunDir:     runDir,
@@ -247,7 +244,10 @@ func TestRestoreIntegration_MultipleActiveSessions(t *testing.T) {
 		},
 	}
 
-	result, err := iris.RunRestore(ctx, cfg)
+	// Use the iristest helper so all spawned supervisor goroutines are
+	// cancelled and drained before t.Cleanup tears down runDir, tmp, and
+	// the DB (issue #1705).
+	result, err := iristest.RunRestoreForTest(t, cfg)
 	if err != nil {
 		t.Fatalf("RunRestore: %v", err)
 	}

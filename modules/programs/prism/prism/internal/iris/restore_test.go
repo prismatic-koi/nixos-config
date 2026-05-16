@@ -26,6 +26,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/iristest"
 )
 
 // --- Helpers ---
@@ -557,7 +558,10 @@ func TestRestoreSession_WithJSONL(t *testing.T) {
 		},
 	}
 
-	result, err := iris.RunRestore(context.Background(), cfg)
+	// Use iristest.RunRestoreForTest so the spawned supervisor goroutine is
+	// cancelled and drained before the t.TempDir / database t.Cleanup run —
+	// fixing the supervisor-outlives-cleanup race tracked in issue #1705.
+	result, err := iristest.RunRestoreForTest(t, cfg)
 	if err != nil {
 		t.Fatalf("RunRestore: %v", err)
 	}
@@ -622,7 +626,10 @@ func TestRestoreSession_Concurrent(t *testing.T) {
 		},
 	}
 
-	result, err := iris.RunRestore(context.Background(), cfg)
+	// Same reasoning as TestRestoreSession_WithJSONL: use the iristest
+	// helper so every supervisor goroutine is drained before tempdir/DB
+	// teardown (issue #1705).
+	result, err := iristest.RunRestoreForTest(t, cfg)
 	if err != nil {
 		t.Fatalf("RunRestore: %v", err)
 	}
