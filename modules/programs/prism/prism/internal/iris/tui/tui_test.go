@@ -341,6 +341,136 @@ func TestTUISessionSpawnedBackcompat(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// TestTUISessionSpawnedAutoSubscribeFromEmpty — session_spawned auto-subscribes
+// when the list transitions from empty to non-empty (issue #1736).
+// ---------------------------------------------------------------------------
+
+// TestTUISessionSpawnedAutoSubscribeFromEmpty covers the core AC: with an
+// empty list and no current subscription, a session_spawned frame must set
+// subscribedTo to the spawned session so prompt-send becomes functional.
+func TestTUISessionSpawnedAutoSubscribeFromEmpty(t *testing.T) {
+	m := newConnectedModel()
+
+	// Empty snapshot — the case where the user opens iris tui before any
+	// session exists.
+	emptySnap := iris.DaemonSessionsSnapshotFrame{
+		Type:     iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &emptySnap})
+	m = m2.(tui.Model)
+
+	if sub := tui.ModelSubscribedTo(m); sub != "" {
+		t.Fatalf("precondition: subscribedTo = %q, want empty", sub)
+	}
+
+	// Now spawn a session out-of-band.
+	newSnap := iris.SessionSnapshot{
+		Name:       "nixos-config@spawned",
+		InstanceID: "iid-new",
+		State:      "spawning",
+		Role:       "worker",
+		Worktree:   "/repo/new",
+	}
+	m2, cmd := m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       newSnap.Name,
+			InstanceID: newSnap.InstanceID,
+			Session:    &newSnap,
+		},
+	})
+	m = m2.(tui.Model)
+
+	if sub := tui.ModelSubscribedTo(m); sub != "nixos-config@spawned" {
+		t.Errorf("subscribedTo = %q after session_spawned from empty list, want %q", sub, "nixos-config@spawned")
+	}
+	if c := tui.ModelCursor(m); c != 0 {
+		t.Errorf("cursor = %d, want 0 (only row)", c)
+	}
+	// The model should have returned a command to actually send the
+	// SUBSCRIBE frame (mirroring sessions_snapshot auto-subscribe).
+	if cmd == nil {
+		t.Errorf("expected non-nil tea.Cmd to dispatch SUBSCRIBE; got nil")
+	}
+}
+
+// TestTUISessionSpawnedDoesNotStealSubscription covers the edge-case AC:
+// when the user is already subscribed to a session, a later session_spawned
+// must NOT steal the subscription / cursor.
+func TestTUISessionSpawnedDoesNotStealSubscription(t *testing.T) {
+	m := newConnectedModel()
+
+	// Snapshot with one session — auto-subscribe should pick it.
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: "first", InstanceID: "iid-1", State: "active", Role: "worker"},
+		},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	if sub := tui.ModelSubscribedTo(m); sub != "first" {
+		t.Fatalf("precondition: subscribedTo = %q, want %q", sub, "first")
+	}
+
+	// A second session spawns. We must NOT switch to it.
+	newSnap := iris.SessionSnapshot{
+		Name: "second", InstanceID: "iid-2", State: "spawning", Role: "worker",
+	}
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       newSnap.Name,
+			InstanceID: newSnap.InstanceID,
+			Session:    &newSnap,
+		},
+	})
+	m = m2.(tui.Model)
+
+	if sub := tui.ModelSubscribedTo(m); sub != "first" {
+		t.Errorf("subscribedTo = %q after sibling spawn, want %q (must not steal)", sub, "first")
+	}
+	if c := tui.ModelCursor(m); c != 0 {
+		t.Errorf("cursor = %d after sibling spawn, want 0 (must not move)", c)
+	}
+	if got := tui.ModelSessionCount(m); got != 2 {
+		t.Errorf("session count = %d, want 2 (new row appended)", got)
+	}
+}
+
+// TestTUISessionSpawnedBackcompatAutoSubscribe — even when the daemon
+// emits a legacy frame (no Session payload) into an empty list, the TUI
+// auto-subscribes using the Name field.
+func TestTUISessionSpawnedBackcompatAutoSubscribe(t *testing.T) {
+	m := newConnectedModel()
+
+	emptySnap := iris.DaemonSessionsSnapshotFrame{
+		Type:     iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &emptySnap})
+	m = m2.(tui.Model)
+
+	m2, _ = m.Update(tui.DaemonFrame{
+		RawType: iris.DaemonFrameSessionSpawned,
+		Spawned: &iris.DaemonSessionSpawnedFrame{
+			Type:       iris.DaemonFrameSessionSpawned,
+			Name:       "legacy@only",
+			InstanceID: "iid-legacy",
+		},
+	})
+	m = m2.(tui.Model)
+
+	if sub := tui.ModelSubscribedTo(m); sub != "legacy@only" {
+		t.Errorf("subscribedTo = %q, want %q", sub, "legacy@only")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // TestTUIEventStream — session_event frames render in the right pane
 // ---------------------------------------------------------------------------
 

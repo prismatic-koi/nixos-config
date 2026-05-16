@@ -20,3 +20,17 @@ func ModelSessionAt(m Model, i int) (name, state, role string) {
 	s := m.sessions[i].snap
 	return s.Name, s.State, s.Role
 }
+
+// ModelSubscribedTo returns the session name the model is currently
+// subscribed to (the gate that prompt-send is conditioned on). Used by
+// tui_test.go to assert the auto-subscribe behaviour on session_spawned
+// when the list transitions from empty to non-empty.
+func ModelSubscribedTo(m Model) string {
+	return m.subscribedTo
+}
+
+// ModelCursor returns the cursor index. Used by tui_test.go to assert
+// cursor invariants after navigation / auto-subscribe.
+func ModelCursor(m Model) int {
+	return m.cursor
+}

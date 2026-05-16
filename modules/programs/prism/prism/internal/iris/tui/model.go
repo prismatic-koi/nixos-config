@@ -338,7 +338,26 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		// supervisor map in cmd/iris/main.go), so appending is consistent
 		// with the existing ordering — the new row simply appears at the
 		// bottom of the list.
+		wasEmpty := len(m.sessions) == 0
 		m.sessions = append(m.sessions, sessionItem{snap: snap})
+		// Auto-subscribe when the list transitions from empty to non-empty
+		// and there is no existing subscription. This mirrors the
+		// sessions_snapshot auto-subscribe path so a session spawned while
+		// the TUI is open with an empty list becomes immediately usable
+		// (prompt send is gated on subscribedTo != ""). We deliberately do
+		// NOT switch subscription when the list was already non-empty —
+		// that would steal focus from a session the user is actively
+		// watching whenever a sibling spawns.
+		if wasEmpty && m.subscribedTo == "" {
+			m.cursor = 0
+			name := snap.Name
+			m.subscribedTo = name
+			m.resetEventPane()
+			return m, func() tea.Msg {
+				_ = m.client.SendSessionSubscribe(name, 0)
+				return nil
+			}
+		}
 
 	case iris.DaemonFrameError:
 		if msg.Error != nil {
