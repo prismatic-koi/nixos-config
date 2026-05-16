@@ -102,6 +102,12 @@ type ClientSocket struct {
 	// reached ("finished", "error", "already_terminal") on success. Set by
 	// the daemon at construction.
 	killSession func(ctx context.Context, name string, timeout time.Duration) (string, error)
+	// spawnReviewGroup orchestrates a `iris review` request: spawns the
+	// review agents, registers the group, and starts the completion
+	// watcher. Set by the daemon at construction (or via SetSpawnReviewGroup
+	// when the daemon needs to capture a reference to the ClientSocket).
+	// Returns the ack frame ready to be written to the calling client.
+	spawnReviewGroup func(ctx context.Context, req ClientReviewSpawnFrame) (*DaemonReviewSpawnedFrame, error)
 
 	listener net.Listener
 
@@ -141,6 +147,9 @@ type ClientSocketConfig struct {
 	// KillSession terminates a named session. Returns the terminal state
 	// ("finished" / "error" / "already_terminal") on success.
 	KillSession func(ctx context.Context, name string, timeout time.Duration) (string, error)
+	// SpawnReviewGroup orchestrates an `iris review` request. Set by the
+	// daemon; the implementation lives in review_handler.go.
+	SpawnReviewGroup func(ctx context.Context, req ClientReviewSpawnFrame) (*DaemonReviewSpawnedFrame, error)
 }
 
 // NewClientSocket creates a ClientSocket. Call Listen() to bind the socket,
@@ -153,6 +162,7 @@ func NewClientSocket(cfg ClientSocketConfig) *ClientSocket {
 		spawnSession:      cfg.SpawnSession,
 		deliverPrompt:     cfg.DeliverPrompt,
 		killSession:       cfg.KillSession,
+		spawnReviewGroup:  cfg.SpawnReviewGroup,
 		subscribers:       make(map[string][]subscriberChan),
 	}
 }
@@ -227,6 +237,18 @@ func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, r
 func (cs *ClientSocket) SetKillSession(fn func(ctx context.Context, name string, timeout time.Duration) (string, error)) {
 	cs.killSession = fn
 }
+
+// SetSpawnReviewGroup wires the review-spawn orchestrator after construction.
+// Symmetric with SetSpawnSession; call before Serve() when the daemon's
+// review orchestrator captures references that depend on the ClientSocket.
+func (cs *ClientSocket) SetSpawnReviewGroup(fn func(ctx context.Context, req ClientReviewSpawnFrame) (*DaemonReviewSpawnedFrame, error)) {
+	cs.spawnReviewGroup = fn
+}
+
+// Database returns the underlying *db.DB. Exposed for the review-handler
+// orchestrator, which is constructed by the daemon and needs to thread the
+// same DB handle that the client socket uses for sessions_list, etc.
+func (cs *ClientSocket) Database() *db.DB { return cs.database }
 
 // Close closes the listener and removes the socket file.
 func (cs *ClientSocket) Close() {
@@ -416,6 +438,14 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				continue
 			}
 			go cs.handlePromptDeliver(connCtx, w, frame)
+
+		case ClientFrameReviewSpawn:
+			var frame ClientReviewSpawnFrame
+			if err := json.Unmarshal(line, &frame); err != nil {
+				sendError(w, ClientFrameReviewSpawn, "invalid frame: "+err.Error())
+				continue
+			}
+			go cs.handleReviewSpawn(connCtx, w, frame)
 
 		case ClientFramePing:
 			_ = w.write(DaemonPongFrame{Type: DaemonFramePong})
@@ -662,6 +692,41 @@ func (cs *ClientSocket) handlePromptDeliver(ctx context.Context, w *jsonlWriter,
 	}
 	// No explicit ack frame for prompt_deliver — the client will see the
 	// resulting events via their subscription (if subscribed).
+}
+
+// handleReviewSpawn handles a review_spawn frame: validates the request,
+// invokes the daemon-provided review orchestrator, and writes a
+// review_spawned ack (or an error frame) back to the calling client.
+//
+// The orchestrator (cs.spawnReviewGroup) is responsible for the heavy work:
+// registering the group, spawning the per-agent sessions via the daemon's
+// session-spawn machinery, and launching the completion watcher. This
+// handler only validates the wire frame and translates orchestrator
+// errors into DaemonErrorFrame messages.
+func (cs *ClientSocket) handleReviewSpawn(ctx context.Context, w *jsonlWriter, frame ClientReviewSpawnFrame) {
+	if cs.spawnReviewGroup == nil {
+		sendError(w, ClientFrameReviewSpawn, "review spawn not configured on this daemon instance")
+		return
+	}
+	if frame.Parent == "" {
+		sendError(w, ClientFrameReviewSpawn, "parent is required")
+		return
+	}
+	if frame.PRNumber == "" {
+		sendError(w, ClientFrameReviewSpawn, "pr_number is required")
+		return
+	}
+	if !cs.sessionExists(frame.Parent) {
+		sendError(w, ClientFrameReviewSpawn,
+			fmt.Sprintf("not a registered iris session: %q (run `iris sessions list` to verify)", frame.Parent))
+		return
+	}
+	ack, err := cs.spawnReviewGroup(ctx, frame)
+	if err != nil {
+		sendError(w, ClientFrameReviewSpawn, err.Error())
+		return
+	}
+	_ = w.write(ack)
 }
 
 // --- Subscriber set management ---
