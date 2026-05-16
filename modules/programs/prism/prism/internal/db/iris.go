@@ -18,6 +18,12 @@ type IrisSessionRow struct {
 	HarnessSessionID string // pi session UUID, used to find the JSONL file
 	IrisState        string // "spawning" or "active"
 	StartedAt        time.Time
+	// ParentSession is the logical session_name of the iris session that
+	// spawned this one (issue #1700). Empty when there was no parent
+	// (top-level spawn) or for pre-#1700 rows. Restored sessions inherit
+	// this value so a terminal transition post-restart still notifies the
+	// correct parent.
+	ParentSession string
 }
 
 // IrisSessionsToRestore returns all sessions in the iris DB that were in
@@ -37,7 +43,8 @@ type IrisSessionRow struct {
 func (d *DB) IrisSessionsToRestore() ([]IrisSessionRow, error) {
 	const q = `
 SELECT instance_id, session_name, COALESCE(worktree, ''), COALESCE(agent_role, ''),
-       COALESCE(harness_session_id, ''), COALESCE(iris_state, ''), started_at
+       COALESCE(harness_session_id, ''), COALESCE(iris_state, ''), started_at,
+       COALESCE(parent_session, '')
   FROM sessions
  WHERE harness = 'pi'
    AND end_state IS NULL
@@ -54,7 +61,8 @@ SELECT instance_id, session_name, COALESCE(worktree, ''), COALESCE(agent_role, '
 		var r IrisSessionRow
 		var startedAtMs int64
 		if scanErr := rows.Scan(&r.InstanceID, &r.SessionName, &r.Worktree,
-			&r.Role, &r.HarnessSessionID, &r.IrisState, &startedAtMs); scanErr != nil {
+			&r.Role, &r.HarnessSessionID, &r.IrisState, &startedAtMs,
+			&r.ParentSession); scanErr != nil {
 			return nil, fmt.Errorf("db: iris sessions to restore: scan: %w", scanErr)
 		}
 		r.StartedAt = time.UnixMilli(startedAtMs)

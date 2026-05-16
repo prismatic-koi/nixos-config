@@ -255,6 +255,47 @@ func TestSupervisorSetState_NotifyParent_IdempotentTerminalNoRefire(t *testing.T
 	}
 }
 
+// TestSupervisorSetState_NotifyParent_CrossTerminalLatch asserts the
+// defence-in-depth latch on the notification trigger: even if a
+// hypothetical future change to Kill or the supervisor loop drove a
+// Finished→Error (or Error→Finished) sequence through setState, the
+// notification must still fire exactly once.
+//
+// The existing setState dedup at the top of the method only suppresses
+// identical-terminal transitions (Finished→Finished, Error→Error).
+// Cross-terminal sequences pass the dedup and would deliver a second
+// notification with the wrong wording (e.g. "has finished" then
+// "has errored" for one logical termination). The s.parentNotified
+// latch guards against that.
+//
+// Today no code path produces this sequence — the kill path returns
+// before its final setState(StateError) on SIGTERM-clean and the loop's
+// intermediate Finished is suppressed by the killReason guard on the
+// SIGKILL path. This test pins the invariant against a future
+// regression in either of those paths.
+func TestSupervisorSetState_NotifyParent_CrossTerminalLatch(t *testing.T) {
+	sup, spy := newNotifyParentTestSupervisor(t, "iris-test@parent")
+
+	sup.setState(StateActive)
+	sup.setState(StateFinished)
+	// Cross-terminal: Finished → Error. The existing setState dedup does
+	// not cover this (state == Finished, newState == Error: different).
+	// The parentNotified latch must stop the second notification.
+	sup.setState(StateError)
+
+	time.Sleep(100 * time.Millisecond)
+	calls := spy.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("NotifyParent fired %d times across Finished\u2192Error; want 1 (the latch must suppress the second fire)", len(calls))
+	}
+	// The single call must carry the FIRST terminal (Finished) — the latch
+	// closes after the first fire so the second is dropped, not
+	// replaced.
+	if calls[0].State != StateFinished {
+		t.Errorf("first (and only) notification state = %s, want %s", calls[0].State, StateFinished)
+	}
+}
+
 // waitForNotifyCalls polls spy.snapshot() until the count matches want or
 // the deadline expires. Used to bridge the goroutine-dispatched callback
 // without flaky sleeps.

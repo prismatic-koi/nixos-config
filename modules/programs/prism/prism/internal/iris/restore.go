@@ -242,6 +242,11 @@ func restoreActiveSession(ctx context.Context, cfg RestoreConfig, sess db.IrisSe
 	superCfg.SessionContinuePath = jsonlPath
 	superCfg.Database = cfg.Database
 	superCfg.RunDir = cfg.RunDir
+	// ParentSession round-trips through the DB (#1700): a session that was
+	// spawned with a parent and survived a daemon restart must still notify
+	// that parent on terminal state. The DB column is the source of truth;
+	// the in-memory record below is populated from it.
+	superCfg.ParentSession = sess.ParentSession
 
 	// Create a Supervisor that reuses the existing instance ID.
 	sup, err := newRestoreSupervisor(superCfg, sess)
@@ -346,6 +351,11 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		// back to host GITHUB_TOKEN — a silent credential downgrade. Mirrors
 		// the spawn and daemon paths in cmd/iris/main.go.
 		BareRoot: cfg.BareRoot,
+		// ParentSession is restored from the DB row so a terminal transition
+		// post-restart still notifies the correct parent (#1700). The
+		// supervisor.setState gate reads s.sess.ParentSession; without this
+		// the notification would silently drop for every restored session.
+		ParentSession: cfg.ParentSession,
 	}
 
 	// Create session run directory (may already exist from previous incarnation).

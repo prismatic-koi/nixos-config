@@ -141,6 +141,15 @@ type Supervisor struct {
 	// the session_end event emitted on terminal state. Set by Kill() to
 	// "killed_sigterm" or "killed_sigkill". Guarded by mu.
 	killReason string
+	// parentNotified is true once the parent-notification trigger has fired
+	// for this supervisor. Defence-in-depth (#1700): the existing setState
+	// dedup catches Finished→Finished and Error→Error sequences but not
+	// Finished→Error transitions. If a future kill-path or restart-policy
+	// change ever drives two terminal transitions in sequence with different
+	// states (currently impossible by inspection — see the comment in
+	// setState near this guard), the second notification must still not
+	// fire. Guarded by mu.
+	parentNotified bool
 }
 
 // stateNotifier is implemented by publishers that want to receive
@@ -838,13 +847,30 @@ func (s *Supervisor) setState(newState SessionState) {
 	// ParentSession is read from the in-memory SessionRecord which is
 	// populated at spawn time from cfg.ParentSession. NULL/empty means
 	// top-level spawn — no parent to notify, no-op.
+	//
+	// parentNotified is a once-per-supervisor latch. The existing setState
+	// dedup at the top of this method already suppresses Finished→Finished
+	// and Error→Error, and by inspection of Kill / the supervisor loop no
+	// Finished→Error or Error→Finished cross-terminal sequence can fire
+	// today (Kill returns at <-s.done before its final setState(StateError)
+	// on the SIGTERM-clean path, and the SIGKILL path's loop setState is
+	// suppressed by the killReason guard). The latch is defence-in-depth
+	// against future regressions of those invariants.
 	if s.cfg.NotifyParent != nil && s.sess.ParentSession != "" &&
 		(newState == StateFinished || newState == StateError) {
-		parent := s.sess.ParentSession
-		child := s.sess.SessionName
-		deliveryID := uuid.New().String()
-		notifier := s.cfg.NotifyParent
-		go notifier(child, parent, newState, deliveryID)
+		s.mu.Lock()
+		alreadyNotified := s.parentNotified
+		if !alreadyNotified {
+			s.parentNotified = true
+		}
+		s.mu.Unlock()
+		if !alreadyNotified {
+			parent := s.sess.ParentSession
+			child := s.sess.SessionName
+			deliveryID := uuid.New().String()
+			notifier := s.cfg.NotifyParent
+			go notifier(child, parent, newState, deliveryID)
+		}
 	}
 }
 
