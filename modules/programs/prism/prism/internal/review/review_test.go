@@ -2140,6 +2140,20 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	// flaking under parallel `go test ./...` scheduling (#1709 follow-up).
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
+	// Redirect tmux.TmuxBin to a no-op shell-script stub so review.Run's
+	// host-mode spawn loop does not create real tmux sessions on the user's
+	// default tmux server. Without this, SpawnSession's tmux-new-session
+	// call lands on the live tmux server and the post-readiness-gate
+	// cleanup (`tmux.KillSession`, best-effort) can leak the 5 review-agent
+	// sessions under parallel `go test ./...` scheduling — picked up by the
+	// cmd/-package TestMain leak guard as `nixos-config@require-slot-ok~
+	// review-1-review-{role}` (#1732, regression introduced by #1728).
+	//
+	// Uses spawnSpyTmuxBin from spawn_prompt_file_test.go — the canonical
+	// tmux-isolation pattern in this package. Must NOT call t.Parallel:
+	// the helper rewrites the package-global tmux.TmuxBin.
+	_ = spawnSpyTmuxBin(t)
+
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 
 	pf := reviewProfilesFileWithAllSlots()
