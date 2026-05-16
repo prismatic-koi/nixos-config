@@ -116,9 +116,11 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 
 	// Poll loop: check GroupCompleted every pollInterval.
+	timedOut := false
 	for {
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			fmt.Fprintf(os.Stderr, "[prism monitor-review] timeout reached for group %s — delivering partial results\n", opts.GroupID)
+			timedOut = true
 			break
 		}
 
@@ -131,6 +133,18 @@ func MonitorFunc(opts MonitorOpts) error {
 		}
 
 		time.Sleep(pollInterval)
+	}
+
+	// If the outer safety timeout fired, force-terminate any remaining
+	// non-terminal members (#1709). Without this, agent rows stay in
+	// `active` indefinitely, GroupCompleted keeps returning false on the
+	// next call, and a subsequent `prism review` for the same parent
+	// refuses with "round N already in progress". The per-session sidecar
+	// inactivity watchdog should normally cover this case, but the monitor
+	// adds a belt-and-braces sweep for sessions whose sidecar died,
+	// crashed, or was misconfigured with ActivityTimeout=0.
+	if timedOut {
+		forceTerminateStuckMembers(d, opts.AgentSessions, opts.Timeout)
 	}
 
 	// Aggregate results.
@@ -217,6 +231,48 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	fmt.Fprintf(os.Stderr, "[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
 	return nil
+}
+
+// forceTerminateStuckMembers walks the given session names and transitions any
+// row still in a non-terminal state to `error` so the monitor's safety-timeout
+// path leaves the review group genuinely terminal (#1709).
+//
+// Without this sweep, a row stuck at state="active" past the safety deadline
+// keeps GroupCompleted returning false, blocks ActiveReviewGroupForParent
+// from clearing, and forces the worker into manual `prism cleanup` recovery.
+// The per-session sidecar inactivity watchdog should normally rescue these
+// rows long before the monitor's outer timeout fires; this is the belt-and-
+// braces fallback for the case where the sidecar itself is unreachable
+// (crashed, killed without cleanup, etc.).
+//
+// All failures are logged but non-fatal: a stuck DB row is recoverable via
+// `prism cleanup`, but a hard error here would also block the partial
+// review-results delivery the monitor has already promised the worker.
+func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeout time.Duration) {
+	for _, sess := range agentSessions {
+		if sess == "" {
+			continue
+		}
+		status, err := d.CurrentStatus(sess)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: CurrentStatus(%s) during force-terminate sweep: %v\n", sess, err)
+			continue
+		}
+		if status == nil {
+			continue
+		}
+		if status.EndedAt != nil {
+			continue
+		}
+		if isTerminalAgentState(status.State) {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "[prism monitor-review] force-terminating stuck member %s (state=%q, per-agent timeout=%v)\n",
+			sess, status.State, perAgentTimeout)
+		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
+		}
+	}
 }
 
 // buildMonitorResults constructs AgentResult entries from GroupResults data,

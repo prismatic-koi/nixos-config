@@ -103,3 +103,9 @@ func BuildLoopLimitFooterForTest(cycles int, prNumber string) string {
 func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResult) bool {
 	return currentCycleProducedVerdicts(groupData)
 }
+
+// ForceTerminateStuckMembersForTest is an exported wrapper around
+// forceTerminateStuckMembers for use in external test packages (#1709).
+func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, perAgentTimeout time.Duration) {
+	forceTerminateStuckMembers(d, agentSessions, perAgentTimeout)
+}
