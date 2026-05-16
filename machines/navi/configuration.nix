@@ -230,7 +230,7 @@
   swapDevices = [
     {
       device = "/persist/swapfile";
-      size = 16384; # 16 GiB
+      size = 36864; # 36 GiB
     }
   ];
 
