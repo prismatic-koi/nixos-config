@@ -384,6 +384,15 @@ func (d *toolDispatcher) runRead(ctx context.Context, frame ToolExecFrame) toolR
 
 // runEdit executes the edit tool in a sandboxed subprocess (worktree RW).
 func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolResult {
+	// Investigator read-only gate: edit must fail for investigate sessions
+	// with a clear "read-only" message before any path validation runs.
+	// Mirrors the worktree-RO mount prism uses (cmd/investigate.go's
+	// WorktreeReadOnly: true), enforced at the tool-dispatch layer because
+	// iris does not use a container per session.
+	if d.role == "investigate" {
+		return toolResult{Success: false, IsError: true, Output: "iris: investigator is read-only — `edit` is not available in investigate sessions"}
+	}
+
 	filePath := stringArg(frame.Args, "file_path")
 	if filePath == "" {
 		filePath = stringArg(frame.Args, "path")
@@ -449,6 +458,12 @@ func (d *toolDispatcher) runEdit(ctx context.Context, frame ToolExecFrame) toolR
 
 // runWrite executes the write tool in a sandboxed subprocess (worktree RW).
 func (d *toolDispatcher) runWrite(ctx context.Context, frame ToolExecFrame) toolResult {
+	// Investigator read-only gate: write must fail for investigate sessions
+	// with a clear "read-only" message before any path validation runs.
+	if d.role == "investigate" {
+		return toolResult{Success: false, IsError: true, Output: "iris: investigator is read-only — `write` is not available in investigate sessions"}
+	}
+
 	filePath := stringArg(frame.Args, "file_path")
 	if filePath == "" {
 		filePath = stringArg(frame.Args, "path")

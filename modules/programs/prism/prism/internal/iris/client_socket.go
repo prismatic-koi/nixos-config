@@ -97,7 +97,10 @@ type ClientSocket struct {
 	// spawnSession spawns a new session. Set by the daemon at construction.
 	// parent is the spawning session's logical name (from the session_spawn
 	// frame's Parent field; empty for top-level spawns). See #1700.
-	spawnSession func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
+	// sessionName, when non-empty, fixes the new session's logical name
+	// (overriding the daemon's GenerateSessionName default). Used by
+	// `iris investigate` to enforce the `<parent>~investigate-<slug>` shape.
+	spawnSession func(ctx context.Context, sessionName, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
 	// deliverPrompt delivers a prompt to a named session. Set by the daemon.
 	deliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
 	// killSession terminates a named session. Returns the terminal state
@@ -162,8 +165,11 @@ type ClientSocketConfig struct {
 	// SpawnSession spawns a new session and returns the supervisor.
 	// parent is the spawning session's logical name (issue #1700, forwarded
 	// from the session_spawn frame's Parent field). Empty for top-level
-	// spawns invoked from outside an iris session.
-	SpawnSession func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
+	// spawns invoked from outside an iris session. sessionName, when
+	// non-empty, fixes the new session's logical name (overriding the
+	// daemon's GenerateSessionName default); used by `iris investigate`
+	// to enforce the `<parent>~investigate-<slug>` shape.
+	SpawnSession func(ctx context.Context, sessionName, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
 	// DeliverPrompt delivers a prompt to a named session.
 	DeliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
 	// KillSession terminates a named session. Returns the terminal state
@@ -265,7 +271,7 @@ func (cs *ClientSocket) SockPath() string { return cs.sockPath }
 // by the daemon when it needs to capture a reference to the ClientSocket
 // inside the spawn function (circular dependency: spawnFn needs clientSock,
 // clientSock needs spawnFn). Call before Serve().
-func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)) {
+func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, sessionName, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)) {
 	cs.spawnSession = fn
 }
 
@@ -657,7 +663,18 @@ func (cs *ClientSocket) handleSessionSpawn(ctx context.Context, w *jsonlWriter, 
 		role = "worker"
 	}
 
-	sup, err := cs.spawnSession(ctx, frame.Worktree, role, frame.Parent, frame.ConfigOverrides)
+	// If the caller supplied an explicit session name, reject if a session
+	// with that name is already active. This is the equivalent of prism's
+	// `session already exists` guard at SpawnSession's tmux check; we run
+	// it at the daemon boundary so the CLI returns a clear error instead
+	// of a low-level conflict from the supervisor map.
+	if frame.SessionName != "" && cs.sessionExists(frame.SessionName) {
+		sendError(w, ClientFrameSessionSpawn,
+			fmt.Sprintf("session %q is already active", frame.SessionName))
+		return
+	}
+
+	sup, err := cs.spawnSession(ctx, frame.SessionName, frame.Worktree, role, frame.Parent, frame.ConfigOverrides)
 	if err != nil {
 		sendError(w, ClientFrameSessionSpawn, fmt.Sprintf("spawn failed: %v", err))
 		return
