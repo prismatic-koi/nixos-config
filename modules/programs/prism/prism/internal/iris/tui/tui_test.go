@@ -1428,6 +1428,96 @@ func TestCtrlL_ReturnsClearScreenCmd(t *testing.T) {
 	}
 }
 
+// TestQuestionMark_InsertedWhenPromptNonEmpty is the regression test for
+// the review-code [MAJOR] finding: when the prompt is non-empty, typing
+// `?` must insert a literal `?` rune into the prompt buffer rather than
+// being silently swallowed by the help-overlay binding. The empty-prompt
+// case (which opens the help overlay) is covered by TestHelpOverlay_*.
+func TestQuestionMark_InsertedWhenPromptNonEmpty(t *testing.T) {
+	m := modelWithSessions(t, "a")
+
+	// Type some text into the prompt first so it is non-empty.
+	for _, r := range "hello" {
+		m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = m2.(tui.Model)
+	}
+
+	// Type `?` — must NOT open the help overlay; must append to prompt.
+	m2, _ := m.Update(keyFromString("?"))
+	m = m2.(tui.Model)
+	if got := tui.ModelOverlay(m); got != tui.OverlayNone {
+		t.Fatalf("? with non-empty prompt opened overlay %d, want OverlayNone", got)
+	}
+	view := m.View()
+	if !strings.Contains(view, "hello?") {
+		t.Errorf("prompt should contain literal 'hello?' after typing ?; view excerpt:\n%s", excerpt(view, 600))
+	}
+
+	// Type one more `?` to confirm repeat-presses also splice.
+	m2, _ = m.Update(keyFromString("?"))
+	m = m2.(tui.Model)
+	view = m.View()
+	if !strings.Contains(view, "hello??") {
+		t.Errorf("prompt should contain 'hello??' after typing two ?'s; view excerpt:\n%s", excerpt(view, 600))
+	}
+}
+
+// TestTab_RotatesFocusAndIsObservable asserts that Tab rotates focus
+// AND that the rotation has a visible effect in the rendered View().
+// Without the observable-rendering side this would be a silent state
+// rotation — the review-context [INCOMPLETE] finding from cycle 1.
+//
+// The visible signal is the leading focus marker ("▸") rendered on
+// whichever pane currently holds focus. We assert the marker moves from
+// the prompt label → sessions header → events header → prompt label as
+// Tab is pressed.
+func TestTab_RotatesFocusAndIsObservable(t *testing.T) {
+	m := modelWithSessions(t, "a", "b")
+
+	// Initial focus is focusPrompt (zero value). Prompt label should
+	// carry the marker; the session/events headers should not.
+	v := m.View()
+	if !strings.Contains(v, "▸ prompt") {
+		t.Fatalf("initial focus marker missing from prompt label; view excerpt:\n%s", excerpt(v, 800))
+	}
+	if strings.Contains(v, "▸ Sessions") || strings.Contains(v, "▸ Events") {
+		t.Errorf("initial focus marker should only be on prompt; view excerpt:\n%s", excerpt(v, 800))
+	}
+
+	// Tab → focusSessions.
+	m2, _ := m.Update(keyFromString("tab"))
+	m = m2.(tui.Model)
+	v = m.View()
+	if !strings.Contains(v, "▸ Sessions") {
+		t.Errorf("after 1 Tab: Sessions header should carry focus marker; view excerpt:\n%s", excerpt(v, 800))
+	}
+	if strings.Contains(v, "▸ prompt") {
+		t.Errorf("after 1 Tab: prompt label should not carry focus marker; view excerpt:\n%s", excerpt(v, 800))
+	}
+
+	// Tab → focusEvents.
+	m2, _ = m.Update(keyFromString("tab"))
+	m = m2.(tui.Model)
+	v = m.View()
+	if !strings.Contains(v, "▸ Events") {
+		t.Errorf("after 2 Tabs: Events header should carry focus marker; view excerpt:\n%s", excerpt(v, 800))
+	}
+	if strings.Contains(v, "▸ Sessions") {
+		t.Errorf("after 2 Tabs: Sessions header should no longer carry marker; view excerpt:\n%s", excerpt(v, 800))
+	}
+
+	// Tab → wraps back to focusPrompt.
+	m2, _ = m.Update(keyFromString("tab"))
+	m = m2.(tui.Model)
+	v = m.View()
+	if !strings.Contains(v, "▸ prompt") {
+		t.Errorf("after 3 Tabs: focus should wrap back to prompt; view excerpt:\n%s", excerpt(v, 800))
+	}
+	if strings.Contains(v, "▸ Events") {
+		t.Errorf("after 3 Tabs: Events header should no longer carry marker; view excerpt:\n%s", excerpt(v, 800))
+	}
+}
+
 // TestModelFocused_UnknownSessionFallsBackToFirst asserts that when the
 // initialSession does not match any row in the snapshot, the cursor
 // defaults to row 0 rather than leaving the picker in a weird state.

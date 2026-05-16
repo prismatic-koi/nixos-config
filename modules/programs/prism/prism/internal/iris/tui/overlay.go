@@ -20,10 +20,15 @@ package tui
 // # Coexistence with tmux popup bindings
 //
 // When iris runs under tmux, the popup bindings on `C-f` and `C-w` (see
-// modules/programs/prism/tmux.nix) intercept those keystrokes at the tmux
-// layer and the in-TUI handlers never fire. When iris runs standalone, the
-// tmux bindings are inert and the in-TUI overlays take over. No conflict
-// arises because tmux is the outer event source.
+// modules/programs/prism/tmux.nix:212 and :229) intercept those keystrokes
+// at the tmux layer and the in-TUI handlers never fire. Note that those
+// two specific popups are owned by prism (`prism switch` and `prism
+// dashboard`), not iris — the dedicated iris tmux popups during the
+// coexistence window are on `prefix+i` (iris switch), `C-q` (iris
+// dashboard popup), and `prefix+I` (persistent iris-dashboard). Either
+// way, when iris runs standalone the tmux bindings are inert and the
+// in-TUI overlays take over. No conflict arises because tmux is the
+// outer event source whichever runtime owns the popup.
 //
 // # Why not import internal/iris/dashboard?
 //

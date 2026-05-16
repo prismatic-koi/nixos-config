@@ -435,22 +435,44 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// keystroke before bubbletea ever sees it, so the two paths coexist
 	// without conflict (per the issue's coexistence AC).
 	case "ctrl+f":
+		// When iris is hosted inside tmux, this keystroke is intercepted by
+		// the tmux popup binding on C-f (which runs `prism switch` — a
+		// prism, not iris, surface; see modules/programs/prism/tmux.nix:212)
+		// and bubbletea never sees it. Standalone, the in-TUI picker opens.
+		// The two paths coexist because tmux is the outer event source.
 		m.openPicker()
 		return m, nil
 
 	case "ctrl+w":
+		// Coexistence note mirrors C-f: under tmux, the C-w popup binding
+		// runs `prism dashboard` (a prism surface; tmux.nix:229) and the
+		// in-TUI overlay never fires. The dedicated iris tmux popups are on
+		// `prefix+i` (iris switch), `C-q` (iris dashboard popup), and
+		// `prefix+I` (persistent iris-dashboard).
 		m.overlay = overlayDashboard
 		return m, nil
 
 	case "?":
 		// Only treat `?` as the help binding when the prompt is empty —
 		// otherwise the user might want to type a literal question mark
-		// into a prompt body. Empty-prompt heuristic keeps both UX paths
-		// reachable without a modifier.
+		// into a prompt body. When the prompt is non-empty we must NOT
+		// silently swallow the keystroke: we insert it as a literal rune,
+		// matching the behaviour of every other printable character (the
+		// `default` arm at the bottom of this switch). A previous version
+		// of this code fell out of the case without inserting, dropping
+		// the `?` — fixed here with an inline splice.
 		if len(m.promptRunes) == 0 {
 			m.overlay = overlayHelp
 			return m, nil
 		}
+		ins := []rune{'?'}
+		newRunes := make([]rune, len(m.promptRunes)+len(ins))
+		copy(newRunes, m.promptRunes[:m.promptCursor])
+		copy(newRunes[m.promptCursor:], ins)
+		copy(newRunes[m.promptCursor+len(ins):], m.promptRunes[m.promptCursor:])
+		m.promptRunes = newRunes
+		m.promptCursor += len(ins)
+		return m, nil
 
 	case "esc":
 		// No overlay open: Escape is a no-op. The issue spec is explicit
@@ -623,6 +645,24 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, body, prompt)
 }
 
+// focusedBorderStyle returns a border style tinted with the primary accent
+// colour when this pane currently holds focus, and the default dim border
+// otherwise. Threaded through viewLeftPane / viewRightPane / viewPrompt so
+// Tab's focus rotation has an observable rendered effect (issue #1737 AC:
+// "switch focus between session list and event-stream / prompt areas").
+// Without this, m.focus would rotate silently and the AC would only be
+// satisfied at the variable level. Input routing still goes to the prompt
+// for typing and to the cursor/scroll keys regardless of focus — the
+// border tint is the UX signal that Tab did something visible.
+func (m Model) focusedBorderStyle(area focusArea) lipgloss.Style {
+	if m.focus == area {
+		return lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color(colPrimary))
+	}
+	return styleBorder
+}
+
 func (m Model) viewDisconnected() string {
 	var sb strings.Builder
 	sb.WriteString("\n\n")
@@ -674,8 +714,14 @@ func (m Model) viewLeftPane(width int) string {
 
 	var rows []string
 
-	// Header.
-	header := styleHeader.Render(padRight("Sessions", innerW))
+	// Header. The title gets a focus marker ("▸") when this pane holds
+	// focus so the rotation is readable on terminals that don't render
+	// border-colour changes well (e.g. low-contrast themes).
+	title := "Sessions"
+	if m.focus == focusSessions {
+		title = "▸ Sessions"
+	}
+	header := styleHeader.Render(padRight(title, innerW))
 	rows = append(rows, header)
 	rows = append(rows, styleDim.Render(strings.Repeat("─", innerW)))
 
@@ -713,7 +759,7 @@ func (m Model) viewLeftPane(width int) string {
 	rows = rows[:paneH]
 
 	content := strings.Join(rows, "\n")
-	return styleBorder.Width(innerW).Height(paneH).Render(content)
+	return m.focusedBorderStyle(focusSessions).Width(innerW).Height(paneH).Render(content)
 }
 
 // viewRightPane renders the event stream for the subscribed session.
@@ -723,10 +769,13 @@ func (m Model) viewRightPane(width int) string {
 
 	var rows []string
 
-	// Header.
+	// Header. Same focus marker rule as the left pane.
 	title := "Events"
 	if m.subscribedTo != "" {
 		title = "Events: " + m.subscribedTo
+	}
+	if m.focus == focusEvents {
+		title = "▸ " + title
 	}
 	rows = append(rows, styleHeader.Render(padRight(truncate(title, innerW), innerW)))
 	rows = append(rows, styleDim.Render(strings.Repeat("─", innerW)))
@@ -777,7 +826,7 @@ func (m Model) viewRightPane(width int) string {
 	rows = rows[:paneH]
 
 	content := strings.Join(rows, "\n")
-	return styleBorder.Width(innerW).Height(paneH).Render(content)
+	return m.focusedBorderStyle(focusEvents).Width(innerW).Height(paneH).Render(content)
 }
 
 // styleEventLine applies colour to a NarrativeLine.
@@ -818,6 +867,9 @@ func (m Model) viewPrompt(width int) string {
 	} else {
 		label = "prompt: "
 	}
+	if m.focus == focusPrompt {
+		label = "▸ " + label
+	}
 
 	labelStyle := styleHeader
 	labelRendered := labelStyle.Render(label)
@@ -841,7 +893,14 @@ func (m Model) viewPrompt(width int) string {
 
 	help := styleDim.Render("  ↑/↓ session  enter send  pgup/pgdn scroll  C-f picker  C-w dash  ? help  q quit")
 
-	return stylePromptBox.Width(innerW).Render(inputLine + "\n" + help)
+	// Prompt box also gets a focus tint when Tab has parked focus on it.
+	box := stylePromptBox
+	if m.focus == focusPrompt {
+		box = lipgloss.NewStyle().
+			Border(lipgloss.NormalBorder()).
+			BorderForeground(lipgloss.Color(colPrimary))
+	}
+	return box.Width(innerW).Render(inputLine + "\n" + help)
 }
 
 // --- Utilities ---
