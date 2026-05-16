@@ -250,6 +250,31 @@ func runDaemon() error {
 		})
 	}
 
+	// killFn is called by the client socket when a session_kill frame arrives.
+	// It looks up the supervisor by name and invokes Supervisor.Kill which
+	// cancels the per-session context (SIGTERM via exec.CommandContext) and
+	// escalates to SIGKILL on timeout.
+	killFn := func(killCtx context.Context, name string, timeout time.Duration) (string, error) {
+		state.mu.Lock()
+		sup, ok := state.supervisors[name]
+		state.mu.Unlock()
+		if !ok {
+			return "", fmt.Errorf("session %q not found", name)
+		}
+		priorState := sup.State()
+		terminal, err := sup.Kill(killCtx, timeout)
+		if err != nil {
+			return "", err
+		}
+		// If the session was already terminal before Kill ran, surface that
+		// as "already_terminal" so the client can distinguish idempotent
+		// no-ops from real kill outcomes.
+		if priorState == iris.StateFinished || priorState == iris.StateError {
+			return "already_terminal", nil
+		}
+		return string(terminal), nil
+	}
+
 	// Create the client IPC socket first so spawnFn can capture it and wire
 	// each new harness as a publisher (D-6 fan-out). spawnFn is passed to
 	// NewClientSocket as ClientSocketConfig.SpawnSession.
@@ -259,6 +284,7 @@ func runDaemon() error {
 		GetActiveSessions: state.activeSessions,
 		// SpawnSession is assigned below after spawnFn is defined.
 		DeliverPrompt: deliverFn,
+		KillSession:   killFn,
 	})
 
 	// spawnFn is called by the client socket when a session_spawn frame arrives.

@@ -175,6 +175,21 @@ type DaemonSessionSpawnedFrame struct {
 	Session    *SessionSnapshot `json:"session,omitempty"` // full snapshot of the new session (optional for backwards compat)
 }
 
+// DaemonSessionKilledFrame acknowledges a successful session_kill. The
+// State field reports the terminal state the session settled into — one of
+// "finished" (clean SIGTERM exit), "error" (SIGKILL escalation), or
+// "already_terminal" (the session was already in a terminal state and the
+// kill was a no-op). Clients receive this frame whether the kill cancelled
+// a live pi child or completed idempotently against an already-finished
+// session.
+//
+//	{"type": "session_killed", "name": "...", "state": "finished"}
+type DaemonSessionKilledFrame struct {
+	Type  string `json:"type"`  // "session_killed"
+	Name  string `json:"name"`  // session name from the request frame
+	State string `json:"state"` // "finished" | "error" | "already_terminal"
+}
+
 // DaemonErrorFrame is an error response to a client request.
 //
 //	{"type": "error", "request_type": "session_subscribe", "message": "session not found"}
@@ -204,6 +219,7 @@ const (
 	DaemonFrameSessionEvent       = "session_event"
 	DaemonFrameSessionState       = "session_state"
 	DaemonFrameSessionSpawned     = "session_spawned"
+	DaemonFrameSessionKilled      = "session_killed"
 	DaemonFrameError              = "error"
 	DaemonFramePong               = "pong"
 )

@@ -349,7 +349,6 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		log.Printf("[iris] restore: failed to reset iris_state to spawning for %s: %v", sess.InstanceID, err)
 	}
 
-
 	logFile, logErr := openSessionLogFile(cfg.LogDir, cfg.SessionName)
 	if logErr != nil {
 		log.Printf("[iris] restore: open per-session log: %v (continuing without per-session log)", logErr)
@@ -363,5 +362,6 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		state:          StateSpawning,
 		sessionLog:     sessionLog,
 		sessionLogFile: logFile,
+		done:           make(chan struct{}),
 	}, nil
 }

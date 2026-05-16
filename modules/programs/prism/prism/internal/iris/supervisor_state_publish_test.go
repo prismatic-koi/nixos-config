@@ -101,8 +101,15 @@ func TestSupervisorSetState_PublishesState(t *testing.T) {
 
 // TestSupervisorSetState_PlainEventPublisherIsNotNotified asserts that a
 // publisher which only implements Publish (no PublishState) is not invoked
-// for state transitions — the supervisor must type-assert defensively so
-// existing test fixtures keep compiling.
+// for *state transitions* via PublishState — the supervisor must type-assert
+// defensively so existing test fixtures keep compiling.
+//
+// Issue #1674 added a session_end event write on terminal transitions; that
+// event flows through the regular Publish path (it is a real agent_events
+// row, not a state notification) so plain publishers DO receive exactly one
+// session_end Publish call per terminal transition. This test pins both
+// behaviours: no PublishState invocations on a plain publisher, and exactly
+// one Publish call carrying the session_end event.
 func TestSupervisorSetState_PlainEventPublisherIsNotNotified(t *testing.T) {
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "iris.db")
@@ -113,8 +120,13 @@ func TestSupervisorSetState_PlainEventPublisherIsNotNotified(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	// PublisherFunc satisfies EventPublisher but NOT stateNotifier.
-	called := 0
-	pub := PublisherFunc(func(_ EventPublication) { called++ })
+	var pubMu sync.Mutex
+	var publishedTypes []string
+	pub := PublisherFunc(func(p EventPublication) {
+		pubMu.Lock()
+		defer pubMu.Unlock()
+		publishedTypes = append(publishedTypes, p.EventType)
+	})
 
 	runDir, err := os.MkdirTemp("", "iris-sst-")
 	if err != nil {
@@ -131,6 +143,8 @@ func TestSupervisorSetState_PlainEventPublisherIsNotNotified(t *testing.T) {
 		Database:    database,
 		Publisher:   pub,
 	}
+	// Insert a sessions row so the FK on agent_events.instance_id is
+	// satisfied when writeSessionEndEvent runs on terminal transitions.
 	sup, err := NewSupervisor(cfg)
 	if err != nil {
 		t.Fatalf("NewSupervisor: %v", err)
@@ -140,8 +154,12 @@ func TestSupervisorSetState_PlainEventPublisherIsNotNotified(t *testing.T) {
 	sup.setState(StateActive)
 	sup.setState(StateFinished)
 
-	if called != 0 {
-		t.Errorf("plain EventPublisher.Publish should not be called for state transitions, called=%d", called)
+	pubMu.Lock()
+	got := append([]string(nil), publishedTypes...)
+	pubMu.Unlock()
+
+	if len(got) != 1 || got[0] != "session_end" {
+		t.Errorf("expected exactly one session_end Publish call, got %v", got)
 	}
 }
 
