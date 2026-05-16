@@ -67,7 +67,7 @@ type ClientSessionUnsubscribeFrame struct {
 // delivered when the child terminates.
 //
 // SessionName, when non-empty, fixes the new session's logical name instead
-// of letting the daemon derive one via GenerateSessionName(worktree, role).
+// of letting the daemon derive one via GenerateSessionName(worktree).
 // This is used by `iris investigate` and `iris review`, which both need a
 // caller-controlled `<parent>~<kind>-<slug>` shape so downstream code can
 // pattern-match on the name (e.g. notify.go's investigateAgentInvokerSession).

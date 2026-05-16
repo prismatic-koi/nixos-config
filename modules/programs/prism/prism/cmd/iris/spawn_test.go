@@ -94,8 +94,9 @@ func (m *mockDaemon) serve(t *testing.T) {
 	switch m.reply {
 	case replySuccess:
 		writeMockFrame(conn, iris.DaemonSessionSpawnedFrame{
-			Type:       iris.DaemonFrameSessionSpawned,
-			Name:       "iris-worker@" + filepath.Base(frame.Worktree),
+			Type: iris.DaemonFrameSessionSpawned,
+			// New <repo>/<branch> format per issue #1738.
+			Name:       "test-repo/" + filepath.Base(frame.Worktree),
 			InstanceID: "fake-instance-uuid-0000",
 		})
 	case replyError:
@@ -111,8 +112,9 @@ func (m *mockDaemon) serve(t *testing.T) {
 	case replyUnknown:
 		writeMockFrame(conn, map[string]any{"type": "some_future_frame", "data": 42})
 		writeMockFrame(conn, iris.DaemonSessionSpawnedFrame{
-			Type:       iris.DaemonFrameSessionSpawned,
-			Name:       "iris-worker@" + filepath.Base(frame.Worktree),
+			Type: iris.DaemonFrameSessionSpawned,
+			// New <repo>/<branch> format per issue #1738.
+			Name:       "test-repo/" + filepath.Base(frame.Worktree),
 			InstanceID: "fake-instance-uuid-0001",
 		})
 	}
