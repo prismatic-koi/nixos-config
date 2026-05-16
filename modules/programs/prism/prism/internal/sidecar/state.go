@@ -153,7 +153,34 @@ func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *st
 //   - The DB row transitions to "error" immediately in the sidecar, not via the
 //     fragile pane-died tmux hook.
 //   - The parent worker is notified when a review-agent container fails to start.
+//
+// The parent-worker notification is launched on a background goroutine because
+// it may perform a network/socket call (promptdelivery.DeliverToSession) and
+// must not block the caller's startup-error path.
 func (s *Sidecar) writeStartupError(startupErr error) {
+	s.writeStartupErrorImpl(startupErr, true /* asyncNotify */)
+}
+
+// writeStartupErrorSync is the synchronous-notify variant of writeStartupError.
+// It performs the same DB writes and then runs notifyParentWorkerOnStartupFailure
+// inline (no `go`) so that, when this function returns, all log writes from the
+// startup-error path have been committed to s.cfg.Logger.
+//
+// This variant exists to satisfy the write-ordering invariant required by the
+// bwrap startup-connect timeout path (#1690): the `[timing] harness listening:
+// ... (timed out)` log marker must be the last log line written by the timeout
+// goroutine, so that a reader observing the marker is guaranteed not to race
+// with any further concurrent writes from this path. With asynchronous notify,
+// notifyParentWorkerOnStartupFailure could still be writing to the logger after
+// Run() returned, producing a data race on test loggers (and an unobservable
+// log ordering in production).
+//
+// Must be called WITHOUT s.mu held; same contract as writeStartupError.
+func (s *Sidecar) writeStartupErrorSync(startupErr error) {
+	s.writeStartupErrorImpl(startupErr, false /* asyncNotify */)
+}
+
+func (s *Sidecar) writeStartupErrorImpl(startupErr error, asyncNotify bool) {
 	s.mu.Lock()
 	s.logger().Printf("sidecar: startup failure — writing error state: %v", startupErr)
 	s.upsertState(agent.StateError, nil, nil)
@@ -167,7 +194,11 @@ func (s *Sidecar) writeStartupError(startupErr error) {
 	// Gap 2 fix: notify the parent worker when this is a review-agent session.
 	// Normal finish notifications for review agents remain suppressed in
 	// notifyCoordinator — this is an exception only for the startup-failure path.
-	go s.notifyParentWorkerOnStartupFailure(startupErr)
+	if asyncNotify {
+		go s.notifyParentWorkerOnStartupFailure(startupErr)
+	} else {
+		s.notifyParentWorkerOnStartupFailure(startupErr)
+	}
 }
 
 

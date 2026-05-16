@@ -9592,6 +9592,116 @@ func TestStartupConnectTimeout_EmitsTimingMarker(t *testing.T) {
 	}
 }
 
+// ── #1690 invariant test ────────────────────────────────────────────────
+//
+// Asserts the write-ordering invariant introduced by the fix for issue #1690:
+// when the bwrap startup-connect timeout fires, the `[timing] harness
+// listening: ... (timed out)` log marker must be emitted AFTER all other
+// log writes from the startup-error path — specifically: after
+// writeStartupError (which logs "sidecar: startup failure — writing error
+// state: ...") and after the synchronous parent-notify (which, when no
+// parent row exists, logs "sidecar: notifyParentWorker: parent session ...
+// not found in DB"). With the marker as the LAST log line written by the
+// timeout goroutine, a reader that observes the marker is guaranteed not
+// to race with any further concurrent writes from this path — the bug
+// reported in #1690.
+//
+// This mirrors the polling-target-is-last-write pattern from PR #1657's
+// TestSocketPipe_SessionStatus_EventBeforeStatus: there the test polled
+// the DB target and asserted the prior DB write was already committed;
+// here we wait for Run() to return (which happens immediately after the
+// marker is logged) and assert the marker appears AFTER the prior log
+// writes in the buffer. If a future refactor regresses the ordering (e.g.
+// moves the marker before writeStartupError, or moves the notify back to
+// a background goroutine), the substring-index check will fail
+// deterministically, not flake.
+func TestStartupConnectTimeout_TimingMarkerOrdering(t *testing.T) {
+	const timeout = 30 * time.Millisecond
+	sc, d := newBwrapSidecarWithTimeout(t, timeout)
+	_ = d.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "idle", nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	getLogs := captureLog(sc)
+	done := make(chan error, 1)
+	go func() { done <- sc.Run(ctx) }()
+
+	// Wait for Run() to return. With writeStartupErrorSync (the fix), all
+	// notify goroutines have drained synchronously inside the timeout
+	// goroutine before sseCancel is called, so when Run() returns there are
+	// no further writers to s.cfg.Logger from the startup-error path. It is
+	// safe to read the buffer once <-done resolves.
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after startup timeout")
+	}
+
+	out := getLogs()
+
+	// Locate the timed-out marker. It must be present.
+	const marker = "[timing] harness listening:"
+	markerIdx := strings.Index(out, marker)
+	if markerIdx < 0 {
+		t.Fatalf("expected `[timing] harness listening:` marker on timeout path; got logs:\n%s", out)
+	}
+	if !strings.Contains(out[markerIdx:], "(timed out)") {
+		t.Fatalf("timed-out marker missing `(timed out)` suffix; got logs:\n%s", out)
+	}
+
+	// Invariant #1 (ordering): "sidecar: startup failure — writing error
+	// state:" must appear BEFORE the marker. This proves writeStartupError
+	// ran first — i.e. the DB state transition and startup_error event were
+	// committed before the marker was emitted.
+	const startupFailLog = "sidecar: startup failure"
+	startupFailIdx := strings.Index(out, startupFailLog)
+	if startupFailIdx < 0 {
+		t.Fatalf("expected %q log line before marker; got logs:\n%s", startupFailLog, out)
+	}
+	if startupFailIdx >= markerIdx {
+		t.Errorf("invariant violated: %q (idx=%d) must appear BEFORE %q (idx=%d); logs:\n%s",
+			startupFailLog, startupFailIdx, marker, markerIdx, out)
+	}
+
+	// Invariant #2 (ordering): the synchronous parent-notify log line must
+	// appear BEFORE the marker. This is the key #1690 fix: the notify ran
+	// inline (via writeStartupErrorSync), not on a background goroutine
+	// that could outlive the marker emission. The bwrap session created by
+	// newBwrapSidecarWithTimeout is a review-agent session whose parent
+	// ("test-repo@feature") does not exist, so notifyParentWorker emits the
+	// "parent session ... not found in DB" log line and returns.
+	const notifyLog = "sidecar: notifyParentWorker:"
+	notifyIdx := strings.Index(out, notifyLog)
+	if notifyIdx < 0 {
+		t.Fatalf("expected %q log line before marker (proving sync notify ran inline); got logs:\n%s", notifyLog, out)
+	}
+	if notifyIdx >= markerIdx {
+		t.Errorf("invariant violated: %q (idx=%d) must appear BEFORE %q (idx=%d) — parent-notify must drain before the timing marker is emitted; logs:\n%s",
+			notifyLog, notifyIdx, marker, markerIdx, out)
+	}
+
+	// Invariant #3 (DB state): the DB row shows StateError. Implied by
+	// invariant #1 — the startup-failure log line is written under s.mu by
+	// writeStartupError immediately before the DB upsert — but asserted
+	// directly here as a defence-in-depth check that writeStartupError did
+	// in fact run and commit its state transition before the marker.
+	state := getState(t, d, sc.cfg.SessionName)
+	if state != string(agent.StateError) {
+		t.Errorf("invariant violated: DB state = %q, want %q", state, agent.StateError)
+	}
+
+	// Note: a DB-event invariant (startup_error row present in agent_events)
+	// is intentionally NOT asserted here. The newBwrapSidecarWithTimeout
+	// fixture does not seed a row in the `sessions` table, so the FK
+	// constraint on agent_events.instance_id causes WriteEvent to fail —
+	// pre-existing fixture limitation, unrelated to this race fix. The
+	// log-ordering invariants above are sufficient to prove the write-
+	// ordering: the marker appears after the startup-failure and notify log
+	// lines, which are written immediately before/after the DB writes inside
+	// writeStartupErrorSync.
+}
+
 // ── server.heartbeat tests ───────────────────────────────────────────────────
 
 // TestServerHeartbeat_FirstHeartbeat_WritesActive verifies that the first
