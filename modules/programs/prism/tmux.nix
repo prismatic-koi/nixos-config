@@ -234,6 +234,29 @@ in
               bind-key D run-shell \
                 'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "${prism} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
 
+              # --- Iris dashboard keybindings (issue #1703) ---
+              #
+              # C-q: ephemeral iris dashboard popup. Mirrors the prism C-w
+              # popup geometry (80% x 60%, -b single, -E to close on child
+              # exit). Different leader key from C-w so both surfaces remain
+              # usable side by side during the iris coexistence window. The
+              # --caller-session flag receives the current tmux session name
+              # via display-message so the "you are here" ◆ indicator works
+              # without any additional plumbing.
+              bind -n C-q display-popup -E -w 80% -h 60% -b single \
+                "${iris} dashboard --popup --caller-session \"$(${pkgs.tmux}/bin/tmux display-message -p '#S')\""
+
+              # prefix+I: toggle the persistent iris-dashboard session.
+              # Iris uses 'I' (uppercase) here because prism already binds
+              # the uppercase 'D' to its own persistent dashboard and iris
+              # already binds the lowercase 'i' to the context switcher
+              # (#1684). The recipe mirrors the prism D binding: if already
+              # in the iris-dashboard session, switch-client -l returns the
+              # client to its previous location; otherwise ensure the
+              # session exists and switch to it.
+              bind-key I run-shell \
+                'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "iris-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t iris-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds iris-dashboard -n dashboard "${iris} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t iris-dashboard; fi'
+
               # toggle to/from term window (C-Space)
               unbind C-Space
               bind -n C-Space run-shell 'idx=$(${pkgs.tmux}/bin/tmux list-windows -F "##I:##W" | grep ":term$" | head -1 | cut -d: -f1); cur=$(${pkgs.tmux}/bin/tmux display-message -p "#{window_name}"); if [ -z "$idx" ]; then ${pkgs.tmux}/bin/tmux new-window -n term; elif [ "$cur" = "term" ]; then ${pkgs.tmux}/bin/tmux select-window -t agent; else ${pkgs.tmux}/bin/tmux select-window -t "$idx"; fi'
