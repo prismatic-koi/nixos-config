@@ -611,10 +611,17 @@ func (s *Supervisor) buildEnv(piConfigDir string) []string {
 	// Set IRIS_DAEMON_SOCK so the prism extension knows to register overrides.
 	env = append(env, "IRIS_DAEMON_SOCK="+s.sess.HarnessSockPath)
 
-	// Set IRIS_SESSION_NAME so in-session CLIs (`iris review`, `iris
-	// escalate`, etc.) can identify their calling session without a tmux
-	// lookup. Mirrors PRISM_SESSION_NAME in the prism harness. (#1694)
-	env = append(env, "IRIS_SESSION_NAME="+s.cfg.SessionName)
+	// Set IRIS_SESSION_NAME so in-session CLIs (`iris review` #1694,
+	// `iris escalate` #1693, future `iris prompt` from within a session,
+	// etc.) can identify their calling session without a CWD walk or tmux
+	// lookup. This is the iris analogue of PRISM_SESSION_NAME in prism's
+	// worker environment. Guarded against an empty session name so
+	// downstream emptiness checks in the worker CLIs ("set but empty" vs
+	// "unset") don't fire spuriously — pinned by
+	// TestSupervisor_BuildEnv_EmptySessionNameOmitsVar.
+	if s.sess.SessionName != "" {
+		env = append(env, "IRIS_SESSION_NAME="+s.sess.SessionName)
+	}
 
 	// Set PI_CODING_AGENT_DIR to the per-session config dir so pi loads
 	// the prism extension and any APPEND_SYSTEM.md we write there.
@@ -939,6 +946,52 @@ func (s *Supervisor) Kill(ctx context.Context, timeout time.Duration) (SessionSt
 	// did is safe.
 	s.setState(StateError)
 	return StateError, nil
+}
+
+// Escalate transitions the session from StateActive to StateEscalated.
+//
+// Issue #1693: this is the worker-side of `iris escalate` — the daemon
+// records that the worker has handed a question to the coordinator and is
+// pausing until guidance arrives. The pi child is NOT stopped; only the
+// surrounding state machine flips. Any subsequent prompt_deliver (from any
+// source) calls Resume() to flip back to StateActive.
+//
+// Returns an error when the current state is not StateActive — escalating
+// from spawning, finished, error, or already-escalated is a no-op for the
+// already-escalated case and an error for the terminal/spawning cases. The
+// already-escalated branch is idempotent so concurrent escalate calls don't
+// produce spurious DB writes.
+func (s *Supervisor) Escalate() error {
+	s.mu.Lock()
+	current := s.state
+	s.mu.Unlock()
+	switch current {
+	case StateEscalated:
+		return nil // idempotent — already escalated
+	case StateActive:
+		// proceed below
+	default:
+		return fmt.Errorf("iris escalate: session %q is in state %q; escalate requires active", s.sess.SessionName, current)
+	}
+	s.setState(StateEscalated)
+	return nil
+}
+
+// Resume transitions the session from StateEscalated back to StateActive.
+//
+// Called by the client socket's prompt_deliver handler so the worker resumes
+// as soon as ANY prompt arrives — from the coordinator's reply, a human
+// typing via `iris prompt`, or any other source. Idempotent when the session
+// is already in StateActive. No-op for terminal or spawning states (the
+// session is past the point where escalated-resume makes sense).
+func (s *Supervisor) Resume() {
+	s.mu.Lock()
+	current := s.state
+	s.mu.Unlock()
+	if current != StateEscalated {
+		return
+	}
+	s.setState(StateActive)
 }
 
 // StopGracefully sends abort to pi, waits up to shutdownTimeout for it to exit.
