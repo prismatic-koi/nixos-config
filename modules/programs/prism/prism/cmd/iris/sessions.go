@@ -55,8 +55,9 @@ var sessionsListCmd = &cobra.Command{
 	Short: "List daemon-tracked sessions",
 	Long: `Print a table of sessions the iris daemon is currently tracking.
 
-Columns: SESSION (12-char UUID prefix), STATE, ROLE, WORKTREE (basename), UPTIME.
-The full UUID and full worktree path are available via --json.
+Columns: SESSION (logical name, e.g. <repo>/<branch>), STATE, ROLE,
+WORKTREE (basename), UPTIME. The instance UUID and full worktree path
+are available via --json.
 
 When no sessions are present, only the header row is printed (exit 0). This
 keeps the output trivially grep-able.`,

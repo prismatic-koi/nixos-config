@@ -1188,19 +1188,57 @@ func PiSessionPathFromSessionID(piAgentDir, encodedCwd, sessionID string) (strin
 	return "", fmt.Errorf("iris: pi session %q not found under %q", sessionID, sessionsDir)
 }
 
-// GenerateSessionName generates a default session name from a worktree path
-// and role. The format is "iris-<role>@<basename>" where basename is the
-// last path component of the worktree. This is used by the daemon when a
-// client sends a session_spawn frame without specifying a session name.
+// GenerateSessionName generates a default session name from a worktree path.
+// The format is "<repo>/<branch>" where:
+//
+//   - <branch> is the final path component of the worktree (in the standard
+//     bare+worktree layout, the worktree directory is named after the branch);
+//   - <repo>   is the parent directory's name (the repo's bare/worktree
+//     container).
+//
+// This is used by the daemon when a client sends a session_spawn frame
+// without specifying a session name. Including the repo in the default
+// name prevents collisions across repos that share a branch name
+// (e.g. `main` in `nixos-config` and `main` in `hass-config`) — see
+// issue #1738.
+//
+// The role parameter is intentionally not part of the name: role is
+// already a separate field on SessionSnapshot and surfaced in its own
+// column. The historical "iris-<role>@" prefix was a tmux-coexistence
+// holdover from when iris and prism shared a tmux server; iris no longer
+// runs under tmux, so the prefix has been dropped.
+//
+// Slash in the returned name: callers that derive filesystem paths from
+// the session name must decide how to handle the embedded '/'. iris
+// currently makes two choices:
+//
+//   - Per-session log files (Paths.SessionLogPath) sanitise '/' to '_'
+//     so the log file is flat (`<repo>_<branch>.log`).
+//   - The archive layout accepts the slash as a real subdirectory, so
+//     archives are naturally grouped by repo on disk
+//     (`<archive-root>/<repo>/<branch>/<instance>/raw/session.jsonl`).
 //
 // Examples:
 //
-//	GenerateSessionName("/home/user/code/my-project", "worker")
-//	  → "iris-worker@my-project"
-func GenerateSessionName(worktree, role string) string {
-	base := filepath.Base(worktree)
-	if base == "" || base == "." || base == "/" {
-		base = "session"
+//	GenerateSessionName("/home/user/code/my-project/main")
+//	  → "my-project/main"
+//	GenerateSessionName("/home/user/code/hass-config/test")
+//	  → "hass-config/test"
+//	GenerateSessionName("/foo")
+//	  → "session/foo"   (no parent directory; safe fallback)
+func GenerateSessionName(worktree string) string {
+	abs, err := filepath.Abs(worktree)
+	if err != nil || abs == "" {
+		abs = worktree
 	}
-	return fmt.Sprintf("iris-%s@%s", role, base)
+	branch := filepath.Base(abs)
+	if branch == "" || branch == "." || branch == "/" {
+		branch = "default"
+	}
+	parent := filepath.Dir(abs)
+	repo := filepath.Base(parent)
+	if repo == "" || repo == "." || repo == "/" {
+		repo = "session"
+	}
+	return fmt.Sprintf("%s/%s", repo, branch)
 }

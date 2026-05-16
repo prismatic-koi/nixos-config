@@ -163,20 +163,59 @@ var daemonCmd = &cobra.Command{
 
 // daemonState holds the in-memory runtime state of the iris daemon.
 type daemonState struct {
-	mu          sync.Mutex
-	supervisors map[string]*iris.Supervisor // session name → supervisor
+	mu sync.Mutex
+	// supervisors is the live session-name → supervisor map. Only
+	// fully-spawned sessions appear here.
+	supervisors map[string]*iris.Supervisor
+	// reservedNames is the set of session names whose spawn is in flight.
+	// It is consulted alongside `supervisors` when enforcing
+	// session-name uniqueness so that two concurrent spawns targeting
+	// the same name cannot both pass the check before either calls
+	// addSupervisor. See reserveSupervisorName and issue #1738.
+	reservedNames map[string]struct{}
 }
 
 func (ds *daemonState) addSupervisor(name string, sup *iris.Supervisor) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 	ds.supervisors[name] = sup
+	// Spawn completed — release the reservation slot so this name behaves
+	// like any other live session for subsequent uniqueness checks.
+	delete(ds.reservedNames, name)
+}
+
+// reserveSupervisorName atomically checks that name is not already in use
+// (neither live nor reserved by an in-flight spawn) and, if free, marks
+// it as reserved. Returns true on success; the caller must subsequently
+// either call addSupervisor (on spawn success) or removeSupervisor (on
+// spawn failure), both of which release the reservation. Returns false
+// when the name collides — the caller should surface that as an error
+// to the client rather than proceeding.
+//
+// This is the race-free check-and-set used by the daemon spawn path to
+// prevent two concurrent spawns from silently overwriting the same
+// supervisor-map entry — see issue #1738.
+func (ds *daemonState) reserveSupervisorName(name string) bool {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	if _, exists := ds.supervisors[name]; exists {
+		return false
+	}
+	if _, reserved := ds.reservedNames[name]; reserved {
+		return false
+	}
+	ds.reservedNames[name] = struct{}{}
+	return true
 }
 
 func (ds *daemonState) removeSupervisor(name string) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 	delete(ds.supervisors, name)
+	// Also drop any in-flight reservation: the only caller that uses
+	// removeSupervisor as a spawn-failure rollback (spawnFn) needs the
+	// name freed so the user can retry.
+	delete(ds.reservedNames, name)
 }
 
 func (ds *daemonState) activeSessions() []iris.SessionSnapshot {
@@ -228,7 +267,8 @@ func runDaemon() error {
 	defer cancel()
 
 	state := &daemonState{
-		supervisors: make(map[string]*iris.Supervisor),
+		supervisors:   make(map[string]*iris.Supervisor),
+		reservedNames: make(map[string]struct{}),
 	}
 
 	// deliverFn is called by the client socket when a prompt_deliver frame arrives.
@@ -347,7 +387,22 @@ func runDaemon() error {
 		}
 		resolvedName := sessionName
 		if resolvedName == "" {
-			resolvedName = iris.GenerateSessionName(worktree, resolvedRole)
+			resolvedName = iris.GenerateSessionName(worktree)
+		}
+		// Uniqueness: reject the spawn if a session with this logical name
+		// is already active. The same guard runs at the client-socket
+		// boundary when the client supplies an explicit session name
+		// (handleSessionSpawn), but the daemon-derived path (empty
+		// sessionName → GenerateSessionName) needs its own check so the
+		// supervisor map cannot be silently overwritten — see issue #1738.
+		//
+		// We intentionally reject rather than uniquify (e.g.
+		// `repo/branch-2`): a clear error gives the user an actionable
+		// signal (`iris cleanup` the stale one, or pick a different
+		// worktree) rather than quietly producing a second session that
+		// the user will struggle to associate with the right worktree.
+		if !state.reserveSupervisorName(resolvedName) {
+			return nil, fmt.Errorf("session %q is already active (same worktree+repo would overwrite it)", resolvedName)
 		}
 		superCfg := iris.SupervisorConfig{
 			SessionName:      resolvedName,
@@ -372,6 +427,9 @@ func runDaemon() error {
 		}
 		sup, err := iris.SpawnSession(ctx, superCfg)
 		if err != nil {
+			// Spawn failed — release the reservation so the name can be
+			// retried after the user fixes the underlying problem.
+			state.removeSupervisor(resolvedName)
 			return nil, err
 		}
 		state.addSupervisor(superCfg.SessionName, sup)
@@ -402,7 +460,7 @@ func runDaemon() error {
 	// as `iris spawn`) but with a caller-supplied session name (the
 	// canonical `<parent>~review-N-<agent>` shape). reviewSpawnFn below
 	// adapts spawnFn for that contract: spawnFn assigns the session name
-	// from worktree+role via GenerateSessionName, so we wrap it to inject
+	// from worktree via GenerateSessionName, so we wrap it to inject
 	// our pre-computed name through a per-call override.
 	reviewSpawnFn := func(rsCtx context.Context, sessionName, worktree, role string) (*iris.Supervisor, error) {
 		return spawnReviewAgent(rsCtx, ctx, cfg, p, database, clientSock, state, sessionName, worktree, role)
@@ -471,8 +529,15 @@ func spawnReviewAgent(
 		Database:         database,
 		Publisher:        clientSock,
 	}
+	// Reserve the session name before spawning so a concurrent spawn for
+	// the same review-agent name cannot silently overwrite the supervisor
+	// map. Same rationale as the spawnFn check; see issue #1738.
+	if !state.reserveSupervisorName(sessionName) {
+		return nil, fmt.Errorf("session %q is already active (review-agent name collision)", sessionName)
+	}
 	sup, err := iris.SpawnSession(daemonCtx, superCfg)
 	if err != nil {
+		state.removeSupervisor(sessionName)
 		return nil, err
 	}
 	state.addSupervisor(sessionName, sup)

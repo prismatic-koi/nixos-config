@@ -37,9 +37,10 @@ func fixedNow(t *testing.T) time.Time {
 // in "active" and one worker in "waiting". Both have RFC3339 StartedAt
 // stamps that produce stable uptimes against fixedNow().
 func fixtureSessions() []iris.SessionSnapshot {
+	// New session-name format per issue #1738: <repo>/<branch>.
 	return []iris.SessionSnapshot{
 		{
-			Name:             "iris-test@main",
+			Name:             "iris-test/main",
 			InstanceID:       "11111111-2222-3333-4444-555555555555",
 			State:            "active",
 			Role:             "coordinator",
@@ -48,7 +49,7 @@ func fixtureSessions() []iris.SessionSnapshot {
 			HarnessSessionID: "/home/user/.pi/agent/sessions/aaaaaaaa.jsonl",
 		},
 		{
-			Name:             "iris-test@feature-x",
+			Name:             "iris-test/feature-x",
 			InstanceID:       "66666666-7777-8888-9999-aaaaaaaaaaaa",
 			State:            "waiting",
 			Role:             "worker",
@@ -82,8 +83,8 @@ func TestRenderSessionsListTable_Empty(t *testing.T) {
 }
 
 // TestRenderSessionsListTable_Populated asserts the populated table shows
-// the truncated 12-char UUID, the worktree basename (not the full path),
-// and a non-empty uptime.
+// the logical session name (issue #1738 — was 12-char UUID prefix), the
+// worktree basename (not the full path), and a non-empty uptime.
 func TestRenderSessionsListTable_Populated(t *testing.T) {
 	var buf bytes.Buffer
 	if err := renderSessionsListTable(&buf, fixtureSessions(), fixedNow(t)); err != nil {
@@ -91,12 +92,20 @@ func TestRenderSessionsListTable_Populated(t *testing.T) {
 	}
 	out := buf.String()
 
-	// 12-char UUID prefix for each session, no full UUID.
-	if !strings.Contains(out, "11111111-222") {
-		t.Errorf("expected 12-char UUID prefix for first session:\n%s", out)
+	// SESSION column now shows the logical name (issue #1738) so that two
+	// sessions with the same WORKTREE basename in different repos are
+	// visually distinguishable. The instance UUID stays available via --json.
+	if !strings.Contains(out, "iris-test/main") {
+		t.Errorf("expected logical name 'iris-test/main' in SESSION column:\n%s", out)
+	}
+	if !strings.Contains(out, "iris-test/feature-x") {
+		t.Errorf("expected logical name 'iris-test/feature-x' in SESSION column:\n%s", out)
 	}
 	if strings.Contains(out, "11111111-2222-3333-4444-555555555555") {
 		t.Errorf("full UUID must not appear in human-readable table:\n%s", out)
+	}
+	if strings.Contains(out, "11111111-222") {
+		t.Errorf("UUID prefix must no longer appear in human-readable table (use --json for instance id):\n%s", out)
 	}
 
 	// Worktree basename, not full path.
