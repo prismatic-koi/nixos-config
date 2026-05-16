@@ -80,6 +80,18 @@ type HarnessSocketServer struct {
 	// frame arrives — used by the supervisor to detect clean exits.
 	sessionShutdownReceived bool
 	shutdownMu              sync.Mutex
+
+	// wg tracks goroutines spawned by this server that may write to the DB
+	// or the session run directory: every `go h.dispatchToolExec(...)` and
+	// the AcceptOne accept loop register an Add(1) before they start and a
+	// Done() before they return. Wait() blocks until all of them complete
+	// and is the canonical drain point for test cleanup ordering
+	// (issue #1705) — callers that own shared state (tempdir, DB) must
+	// invoke Wait before tearing that state down, otherwise a late write
+	// from dispatchToolExec → writeEvent races against tempdir removal and
+	// DB close, surfacing as 'unlinkat ... directory not empty' or
+	// 'sql: database is closed'.
+	wg sync.WaitGroup
 }
 
 // SockPath returns the path of the harness socket.
@@ -158,6 +170,14 @@ func (h *HarnessSocketServer) Listen() error {
 // socket. The listener is only closed (and the socket file removed) by an
 // explicit call to Close().
 func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
+	// Track this call in the WaitGroup so test scaffolding can Wait() for
+	// the AcceptOne → handleConn path to finish before tearing down the
+	// per-session tempdir / DB (issue #1705). Production callers Wait()
+	// implicitly via the daemon's normal shutdown sequence; the WaitGroup
+	// is otherwise free of cost.
+	h.wg.Add(1)
+	defer h.wg.Done()
+
 	// Ensure any prior deadline is cleared before we start waiting.
 	if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
 		_ = dl.SetDeadline(time.Time{})
@@ -190,6 +210,24 @@ func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
 		}
 		return h.handleConn(ctx, res.conn)
 	}
+}
+
+// Wait blocks until every goroutine spawned by this HarnessSocketServer
+// has returned: the AcceptOne / handleConn loop and every in-flight
+// dispatchToolExec. It is the canonical drain point for test cleanup
+// (issue #1705) — callers that own the per-session tempdir or the DB
+// must Wait() before closing those resources, otherwise a late write
+// from a dispatch goroutine races against teardown.
+//
+// Wait does NOT cancel anything itself. Callers must first cancel the
+// context passed to AcceptOne (and any other context driving dispatch)
+// so the goroutines actually exit; Wait only blocks until they do.
+//
+// Production callers in the iris daemon do not need to call Wait — the
+// daemon's process lifetime owns these goroutines and they exit when
+// the daemon does. Wait exists for test scaffolding.
+func (h *HarnessSocketServer) Wait() {
+	h.wg.Wait()
 }
 
 // Close closes the listener and removes the socket file.
@@ -303,7 +341,14 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 				log.Printf("[iris] harness: bad tool_exec frame: %v", err)
 				continue
 			}
-			go h.dispatchToolExec(ctx, w, frame)
+			// Track the dispatch in h.wg so Wait() drains in-flight tool
+			// executions before test cleanup tears down the tempdir / DB
+			// (issue #1705).
+			h.wg.Add(1)
+			go func(frame ToolExecFrame) {
+				defer h.wg.Done()
+				h.dispatchToolExec(ctx, w, frame)
+			}(frame)
 
 		case FrameTypeToolAbort:
 			var frame ToolAbortFrame

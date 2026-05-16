@@ -137,6 +137,16 @@ type ClientSocket struct {
 	// The mutex guards both the map and the slices inside it.
 	subMu       sync.Mutex
 	subscribers map[string][]subscriberChan
+
+	// wg tracks every goroutine the ClientSocket spawns: Serve, each
+	// per-connection handleConn, each runSubscription, and the per-frame
+	// handlers (handleSessionSpawn / handleSessionKill / handlePromptDeliver
+	// / handleReviewSpawn / handleEscalationDeliver). Wait() blocks until
+	// all of them return and is the canonical drain point for test cleanup
+	// (issue #1705) — callers that own the DB or tempdir must Wait before
+	// closing those resources, otherwise late writes from runSubscription
+	// or a frame handler race against teardown.
+	wg sync.WaitGroup
 }
 
 // subscriberChan wraps a channel together with a unique ID so that
@@ -244,7 +254,14 @@ func (cs *ClientSocket) Listen() error {
 // Serve accepts client connections in a loop until ctx is cancelled. Each
 // accepted connection is handled in its own goroutine. Serve is intended to
 // be called in its own goroutine.
+//
+// Serve itself, every spawned handleConn, and every goroutine those handlers
+// spawn (runSubscription, handle*Frame) are tracked in cs.wg so test
+// scaffolding can Wait() for all of them to drain before tearing down the
+// DB / tempdir (issue #1705).
 func (cs *ClientSocket) Serve(ctx context.Context) {
+	cs.wg.Add(1)
+	defer cs.wg.Done()
 	for {
 		conn, err := cs.listener.Accept()
 		if err != nil {
@@ -260,8 +277,29 @@ func (cs *ClientSocket) Serve(ctx context.Context) {
 			}
 			continue
 		}
-		go cs.handleConn(ctx, conn)
+		cs.wg.Add(1)
+		go func(conn net.Conn) {
+			defer cs.wg.Done()
+			cs.handleConn(ctx, conn)
+		}(conn)
 	}
+}
+
+// Wait blocks until every goroutine spawned by this ClientSocket has
+// returned: the Serve accept loop, every per-connection handleConn, every
+// runSubscription, and every per-frame handler. It is the canonical drain
+// point for test cleanup (issue #1705) — callers that own the DB or the
+// tempdir backing the iris paths must Wait before closing those resources.
+//
+// Wait does NOT cancel anything itself. Callers must first cancel the
+// context passed to Serve and Close() the listener so the goroutines
+// actually exit; Wait only blocks until they do.
+//
+// Production callers in the iris daemon do not need to call Wait — the
+// daemon's process lifetime owns these goroutines and they exit when the
+// daemon does. Wait exists for test scaffolding.
+func (cs *ClientSocket) Wait() {
+	cs.wg.Wait()
 }
 
 // SockPath returns the filesystem path of the client IPC socket.
@@ -432,18 +470,22 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 			activeSubs[frame.Name] = subEntry{id: subID, cancel: subCancel}
 			subMu.Unlock()
 
-			go cs.runSubscription(subCtx, w, frame, subID, func() {
-				// Called by the subscription goroutine when done (client
-				// disconnect or ctx cancel). Remove from the local map and
-				// the global subscriber set.
-				subMu.Lock()
-				if e, ok := activeSubs[frame.Name]; ok && e.id == subID {
-					delete(activeSubs, frame.Name)
-				}
-				subMu.Unlock()
-				cs.removeSubscriber(frame.Name, subID)
-				subCancel()
-			})
+			cs.wg.Add(1)
+			go func() {
+				defer cs.wg.Done()
+				cs.runSubscription(subCtx, w, frame, subID, func() {
+					// Called by the subscription goroutine when done (client
+					// disconnect or ctx cancel). Remove from the local map and
+					// the global subscriber set.
+					subMu.Lock()
+					if e, ok := activeSubs[frame.Name]; ok && e.id == subID {
+						delete(activeSubs, frame.Name)
+					}
+					subMu.Unlock()
+					cs.removeSubscriber(frame.Name, subID)
+					subCancel()
+				})
+			}()
 
 		case ClientFrameSessionUnsubscribe:
 			var frame ClientSessionUnsubscribeFrame
@@ -465,7 +507,11 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFrameSessionSpawn, "invalid frame: "+err.Error())
 				continue
 			}
-			go cs.handleSessionSpawn(connCtx, w, frame)
+			cs.wg.Add(1)
+			go func(frame ClientSessionSpawnFrame) {
+				defer cs.wg.Done()
+				cs.handleSessionSpawn(connCtx, w, frame)
+			}(frame)
 
 		case ClientFrameSessionKill:
 			var frame ClientSessionKillFrame
@@ -473,7 +519,11 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFrameSessionKill, "invalid frame: "+err.Error())
 				continue
 			}
-			go cs.handleSessionKill(connCtx, w, frame)
+			cs.wg.Add(1)
+			go func(frame ClientSessionKillFrame) {
+				defer cs.wg.Done()
+				cs.handleSessionKill(connCtx, w, frame)
+			}(frame)
 
 		case ClientFramePromptDeliver:
 			var frame ClientPromptDeliverFrame
@@ -481,7 +531,11 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFramePromptDeliver, "invalid frame: "+err.Error())
 				continue
 			}
-			go cs.handlePromptDeliver(connCtx, w, frame)
+			cs.wg.Add(1)
+			go func(frame ClientPromptDeliverFrame) {
+				defer cs.wg.Done()
+				cs.handlePromptDeliver(connCtx, w, frame)
+			}(frame)
 
 		case ClientFrameReviewSpawn:
 			var frame ClientReviewSpawnFrame
@@ -489,7 +543,11 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFrameReviewSpawn, "invalid frame: "+err.Error())
 				continue
 			}
-			go cs.handleReviewSpawn(connCtx, w, frame)
+			cs.wg.Add(1)
+			go func(frame ClientReviewSpawnFrame) {
+				defer cs.wg.Done()
+				cs.handleReviewSpawn(connCtx, w, frame)
+			}(frame)
 
 		case ClientFrameEscalationDeliver:
 			var frame ClientEscalationDeliverFrame
@@ -497,7 +555,11 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 				sendError(w, ClientFrameEscalationDeliver, "invalid frame: "+err.Error())
 				continue
 			}
-			go cs.handleEscalationDeliver(connCtx, w, frame)
+			cs.wg.Add(1)
+			go func(frame ClientEscalationDeliverFrame) {
+				defer cs.wg.Done()
+				cs.handleEscalationDeliver(connCtx, w, frame)
+			}(frame)
 
 		case ClientFramePing:
 			_ = w.write(DaemonPongFrame{Type: DaemonFramePong})
