@@ -34,6 +34,14 @@ const (
 	// StateError means the session ended uncleanly (non-zero exit that
 	// exhausted the restart policy, or unrecoverable protocol error).
 	StateError SessionState = "error"
+
+	// StateEscalated is a non-terminal state entered by a worker session
+	// after `iris escalate` delivers a question to the coordinator. The pi
+	// child is still running — only the surrounding state machine treats
+	// the worker as paused-waiting-for-guidance. Any subsequent prompt_deliver
+	// (from any source) transitions back to StateActive. Mirrors prism's
+	// agent.StateEscalated (#1693).
+	StateEscalated SessionState = "escalated"
 )
 
 // DefaultRestartThreshold is the maximum number of consecutive non-zero exits

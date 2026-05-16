@@ -12,12 +12,13 @@ package iris
 // Client → daemon frames:
 //
 //	sessions_list, session_subscribe, session_unsubscribe,
-//	session_spawn, session_kill, prompt_deliver, ping
+//	session_spawn, session_kill, prompt_deliver, review_spawn,
+//	escalation_deliver, ping
 //
 // Daemon → client frames:
 //
 //	sessions_snapshot, session_event, session_state, session_spawned,
-//	error, pong
+//	session_killed, review_spawned, escalation_delivered, error, pong
 
 // ---------------------------------------------------------------------------
 // Client → daemon request frames
@@ -80,6 +81,34 @@ type ClientPromptDeliverFrame struct {
 	Text      string   `json:"text"`
 	DeliverAs string   `json:"deliver_as,omitempty"` // "prompt", "steer", "follow_up"; default "prompt"
 	Images    []string `json:"images,omitempty"`
+}
+
+// ClientEscalationDeliverFrame is the worker-side wire frame for
+// `iris escalate` (#1693). The worker sends this frame to the daemon; the
+// daemon validates the calling session, resolves the coordinator target
+// (auto-discovery or explicit --to), delivers the prompt body to the
+// coordinator using the same path as prompt_deliver, and transitions the
+// worker session to the "escalated" state.
+//
+//	{"type": "escalation_deliver", "from": "<worker>", "prompt": "..."}
+//	{"type": "escalation_deliver", "from": "<worker>", "to": "<coord>", "prompt": "..."}
+//
+// When To is empty the daemon auto-discovers the coordinator by scanning
+// in-memory active sessions for Role == "coordinator". Zero coordinators
+// still transitions the worker to escalated (a self-marker is written; no
+// prompt is delivered — the issue body documents this is the
+// human-picks-up-via-tmux path). Multiple coordinators with no To set is
+// rejected with an error listing the candidates.
+//
+// DeliveryID, when non-empty, is forwarded to the underlying prompt path
+// so the coordinator's harness can dedup retries. The daemon mints one
+// per call when the field is empty (#1695).
+type ClientEscalationDeliverFrame struct {
+	Type       string `json:"type"` // "escalation_deliver"
+	From       string `json:"from"`
+	To         string `json:"to,omitempty"`
+	Prompt     string `json:"prompt"`
+	DeliveryID string `json:"delivery_id,omitempty"`
 }
 
 // ClientPingFrame is a keepalive probe. The daemon responds with pong.
@@ -206,6 +235,24 @@ type DaemonSessionSpawnedFrame struct {
 	Session    *SessionSnapshot `json:"session,omitempty"` // full snapshot of the new session (optional for backwards compat)
 }
 
+// DaemonEscalationDeliveredFrame acknowledges a successful
+// escalation_deliver. The frame carries the resolved coordinator name
+// (empty when no coordinator was found and the worker entered escalated
+// state without delivery) and the delivery_id used at the prompt path so
+// callers can correlate audit rows.
+//
+//	{"type": "escalation_delivered", "from": "<worker>", "to": "<coord>",
+//	 "delivery_id": "...", "delivered": true}
+//	{"type": "escalation_delivered", "from": "<worker>", "to": "",
+//	 "delivery_id": "", "delivered": false}    // zero-coordinator branch
+type DaemonEscalationDeliveredFrame struct {
+	Type       string `json:"type"` // "escalation_delivered"
+	From       string `json:"from"`
+	To         string `json:"to,omitempty"`
+	DeliveryID string `json:"delivery_id,omitempty"`
+	Delivered  bool   `json:"delivered"`
+}
+
 // DaemonSessionKilledFrame acknowledges a successful session_kill. The
 // State field reports the terminal state the session settled into — one of
 // "finished" (clean SIGTERM exit), "error" (SIGKILL escalation), or
@@ -264,15 +311,17 @@ const (
 	ClientFrameSessionUnsubscribe = "session_unsubscribe"
 	ClientFrameSessionSpawn       = "session_spawn"
 	ClientFrameSessionKill        = "session_kill"
-	ClientFramePromptDeliver      = "prompt_deliver"
-	ClientFrameReviewSpawn        = "review_spawn"
-	ClientFramePing               = "ping"
-	DaemonFrameSessionsSnapshot   = "sessions_snapshot"
-	DaemonFrameSessionEvent       = "session_event"
-	DaemonFrameSessionState       = "session_state"
-	DaemonFrameSessionSpawned     = "session_spawned"
-	DaemonFrameSessionKilled      = "session_killed"
-	DaemonFrameReviewSpawned      = "review_spawned"
-	DaemonFrameError              = "error"
-	DaemonFramePong               = "pong"
+	ClientFramePromptDeliver       = "prompt_deliver"
+	ClientFrameReviewSpawn         = "review_spawn"
+	ClientFrameEscalationDeliver   = "escalation_deliver"
+	ClientFramePing                = "ping"
+	DaemonFrameSessionsSnapshot    = "sessions_snapshot"
+	DaemonFrameSessionEvent        = "session_event"
+	DaemonFrameSessionState        = "session_state"
+	DaemonFrameSessionSpawned      = "session_spawned"
+	DaemonFrameSessionKilled       = "session_killed"
+	DaemonFrameReviewSpawned       = "review_spawned"
+	DaemonFrameEscalationDelivered = "escalation_delivered"
+	DaemonFrameError               = "error"
+	DaemonFramePong                = "pong"
 )

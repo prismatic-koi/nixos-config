@@ -276,6 +276,40 @@ func runDaemon() error {
 		return string(terminal), nil
 	}
 
+	// escalateFn is called by the client socket when an escalation_deliver
+	// frame arrives (issue #1693). It looks up the worker supervisor by name
+	// and flips its state to escalated. Resume on prompt_deliver is wired
+	// via resumeFn below — the symmetric path.
+	escalateFn := func(name string) error {
+		state.mu.Lock()
+		sup, ok := state.supervisors[name]
+		state.mu.Unlock()
+		if !ok {
+			return fmt.Errorf("session %q not found", name)
+		}
+		return sup.Escalate()
+	}
+
+	resumeFn := func(name string) {
+		state.mu.Lock()
+		sup, ok := state.supervisors[name]
+		state.mu.Unlock()
+		if !ok {
+			return
+		}
+		sup.Resume()
+	}
+
+	roleOfFn := func(name string) string {
+		state.mu.Lock()
+		sup, ok := state.supervisors[name]
+		state.mu.Unlock()
+		if !ok {
+			return ""
+		}
+		return sup.SessionRecord().Role
+	}
+
 	// Create the client IPC socket first so spawnFn can capture it and wire
 	// each new harness as a publisher (D-6 fan-out). spawnFn is passed to
 	// NewClientSocket as ClientSocketConfig.SpawnSession.
@@ -285,8 +319,11 @@ func runDaemon() error {
 		GetActiveSessions: state.activeSessions,
 		// SpawnSession and SpawnReviewGroup are assigned below after spawnFn
 		// (and the review-spawn dependencies) are defined.
-		DeliverPrompt: deliverFn,
-		KillSession:   killFn,
+		DeliverPrompt:   deliverFn,
+		KillSession:     killFn,
+		EscalateSession: escalateFn,
+		ResumeSession:   resumeFn,
+		RoleOf:          roleOfFn,
 	})
 
 	// spawnFn is called by the client socket when a session_spawn frame arrives.

@@ -203,6 +203,8 @@ func TestCountStates(t *testing.T) {
 		{State: "error"},
 		{State: "spawning"},
 		{State: "idle"},
+		{State: "escalated"},
+		{State: "escalated"},
 		{State: "totally-made-up"}, // unknown → idle bucket
 	}
 	c := countStates(in)
@@ -221,6 +223,9 @@ func TestCountStates(t *testing.T) {
 	if c.Spawning != 1 {
 		t.Errorf("Spawning = %d, want 1", c.Spawning)
 	}
+	if c.Escalated != 2 {
+		t.Errorf("Escalated = %d, want 2", c.Escalated)
+	}
 	if c.Idle != 2 {
 		// one explicit "idle" + one unknown bucketed into idle
 		t.Errorf("Idle = %d, want 2 (explicit + unknown bucket)", c.Idle)
@@ -234,7 +239,7 @@ func TestRenderStatusLine(t *testing.T) {
 		t.Fatalf("renderStatusLine: %v", err)
 	}
 	out := strings.TrimSpace(buf.String())
-	want := "active: 2  waiting: 0  idle: 0  finished: 1  error: 0"
+	want := "active: 2  waiting: 0  escalated: 0  idle: 0  finished: 1  error: 0"
 	if out != want {
 		t.Errorf("status line mismatch:\n got: %q\nwant: %q", out, want)
 	}
@@ -266,7 +271,7 @@ func TestRenderStatusJSON(t *testing.T) {
 	}
 
 	// Canonical keys are always present.
-	for _, k := range []string{"active", "waiting", "idle", "finished", "error"} {
+	for _, k := range []string{"active", "waiting", "idle", "finished", "error", "escalated"} {
 		v, ok := obj[k]
 		if !ok {
 			t.Errorf("missing canonical key %q in JSON: %s", k, buf.String())
@@ -378,6 +383,100 @@ func TestRenderStatusTmux_FullFoldsSpawningIntoActive(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "3 active") {
 		t.Errorf("expected '3 active' (1 active + 2 spawning), got %q", buf.String())
+	}
+}
+
+// TestRenderStatusLine_EscalatedSurfaced asserts that escalated sessions
+// (#1693) appear as their own bucket in the human line — they must not be
+// silently folded into idle as they were before the explicit case was
+// added to countStates.
+func TestRenderStatusLine_EscalatedSurfaced(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusLine(&buf, sessionStateCounts{Active: 1, Escalated: 2, Idle: 3}); err != nil {
+		t.Fatalf("renderStatusLine: %v", err)
+	}
+	out := strings.TrimSpace(buf.String())
+	if !strings.Contains(out, "escalated: 2") {
+		t.Errorf("expected 'escalated: 2' in human line, got %q", out)
+	}
+	// And the Idle column must NOT have absorbed the two escalated sessions:
+	if !strings.Contains(out, "idle: 3") {
+		t.Errorf("escalated leaked into idle bucket (got %q); want idle: 3", out)
+	}
+}
+
+// TestRenderStatusJSON_EscalatedKeyAlwaysPresent asserts the JSON shape
+// always carries the `escalated` key (even when zero) so scripts can rely
+// on its presence in the canonical set.
+func TestRenderStatusJSON_EscalatedKeyAlwaysPresent(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusJSON(&buf, sessionStateCounts{Active: 1}); err != nil {
+		t.Fatalf("renderStatusJSON: %v", err)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, buf.String())
+	}
+	v, ok := obj["escalated"]
+	if !ok {
+		t.Fatalf("missing escalated key in JSON: %s", buf.String())
+	}
+	if n, _ := v.(float64); n != 0 {
+		t.Errorf("escalated = %v, want 0", v)
+	}
+
+	// And non-zero escalated is reflected accurately.
+	buf.Reset()
+	if err := renderStatusJSON(&buf, sessionStateCounts{Escalated: 4}); err != nil {
+		t.Fatalf("renderStatusJSON: %v", err)
+	}
+	if err := json.Unmarshal(buf.Bytes(), &obj); err != nil {
+		t.Fatalf("unmarshal: %v: %s", err, buf.String())
+	}
+	if n, _ := obj["escalated"].(float64); n != 4 {
+		t.Errorf("escalated = %v, want 4", obj["escalated"])
+	}
+}
+
+// TestRenderStatusTmux_EscalatedFoldsIntoWaiting asserts the documented
+// semantic: escalated sessions count as "needs attention" alongside waiting
+// in the tmux status segment. An escalated-only state should produce the
+// same kind of waiting pip a waiting-only state produces, so the operator's
+// glance at the status bar surfaces both attention-needing categories.
+func TestRenderStatusTmux_EscalatedFoldsIntoWaiting(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusTmux(&buf, sessionStateCounts{Escalated: 2}, true); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "2 waiting") {
+		t.Errorf("escalated did not fold into the waiting pip (got %q); want '2 waiting'", out)
+	}
+
+	// And mixed waiting+escalated sums in the pip.
+	buf.Reset()
+	if err := renderStatusTmux(&buf, sessionStateCounts{Waiting: 1, Escalated: 2}, true); err != nil {
+		t.Fatalf("renderStatusTmux: %v", err)
+	}
+	if !strings.Contains(buf.String(), "3 waiting") {
+		t.Errorf("expected '3 waiting' from 1 waiting + 2 escalated, got %q", buf.String())
+	}
+}
+
+// TestRenderStatusWaitingPlain_EscalatedExcluded asserts that the
+// plain (--waiting, no --tmux-format) renderer reports the literal Waiting
+// count and does NOT roll escalated into it. The plain mode is consumed by
+// scripts that may want to alert specifically on the waiting-for-input
+// state; rolling escalated in there would change semantics in a way that
+// breaks pre-#1693 callers. The tmux fold-in is a presentation choice,
+// not a count-change.
+func TestRenderStatusWaitingPlain_EscalatedExcluded(t *testing.T) {
+	var buf bytes.Buffer
+	if err := renderStatusWaitingPlain(&buf, sessionStateCounts{Waiting: 2, Escalated: 5}); err != nil {
+		t.Fatalf("renderStatusWaitingPlain: %v", err)
+	}
+	if got := buf.String(); got != "2\n" {
+		t.Errorf("got %q, want %q (escalated must not leak into --waiting plain output)", got, "2\n")
 	}
 }
 

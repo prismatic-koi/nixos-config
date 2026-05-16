@@ -108,6 +108,23 @@ type ClientSocket struct {
 	// when the daemon needs to capture a reference to the ClientSocket).
 	// Returns the ack frame ready to be written to the calling client.
 	spawnReviewGroup func(ctx context.Context, req ClientReviewSpawnFrame) (*DaemonReviewSpawnedFrame, error)
+	// escalateSession transitions the named session from active to
+	// escalated. Set by the daemon at construction — wraps
+	// Supervisor.Escalate so the client socket does not need a direct
+	// reference to the supervisor map. Used by handleEscalationDeliver
+	// (issue #1693).
+	escalateSession func(name string) error
+	// resumeSession transitions the named session from escalated back to
+	// active. Called by handlePromptDeliver immediately after a successful
+	// deliver so that ANY incoming prompt (coordinator, human via
+	// `iris prompt`, future TUI) clears the escalated state — mirrors
+	// prism's escalated→active rule on any turn_start (#1693).
+	resumeSession func(name string)
+	// roleOf returns the agent role ("worker", "coordinator", ...) of the
+	// named session, or "" when the session is unknown. Set by the daemon
+	// at construction. Used by handleEscalationDeliver to validate that
+	// --to targets a coordinator session.
+	roleOf func(name string) string
 
 	listener net.Listener
 
@@ -150,6 +167,19 @@ type ClientSocketConfig struct {
 	// SpawnReviewGroup orchestrates an `iris review` request. Set by the
 	// daemon; the implementation lives in review_handler.go.
 	SpawnReviewGroup func(ctx context.Context, req ClientReviewSpawnFrame) (*DaemonReviewSpawnedFrame, error)
+	// EscalateSession transitions the named session from active to
+	// escalated (issue #1693). Optional: when nil, escalation_deliver is
+	// rejected with "not configured". The daemon wires this to a closure
+	// over the supervisor map.
+	EscalateSession func(name string) error
+	// ResumeSession transitions the named session from escalated back to
+	// active. Called by handlePromptDeliver immediately after a successful
+	// deliver so that any incoming prompt resumes a paused worker. Safe
+	// no-op when the session is not in escalated state.
+	ResumeSession func(name string)
+	// RoleOf returns the agent role of the named session, or "" when
+	// unknown. Used by handleEscalationDeliver to validate --to targets.
+	RoleOf func(name string) string
 }
 
 // NewClientSocket creates a ClientSocket. Call Listen() to bind the socket,
@@ -163,6 +193,9 @@ func NewClientSocket(cfg ClientSocketConfig) *ClientSocket {
 		deliverPrompt:     cfg.DeliverPrompt,
 		killSession:       cfg.KillSession,
 		spawnReviewGroup:  cfg.SpawnReviewGroup,
+		escalateSession:   cfg.EscalateSession,
+		resumeSession:     cfg.ResumeSession,
+		roleOf:            cfg.RoleOf,
 		subscribers:       make(map[string][]subscriberChan),
 	}
 }
@@ -447,6 +480,14 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 			}
 			go cs.handleReviewSpawn(connCtx, w, frame)
 
+		case ClientFrameEscalationDeliver:
+			var frame ClientEscalationDeliverFrame
+			if err := json.Unmarshal(line, &frame); err != nil {
+				sendError(w, ClientFrameEscalationDeliver, "invalid frame: "+err.Error())
+				continue
+			}
+			go cs.handleEscalationDeliver(connCtx, w, frame)
+
 		case ClientFramePing:
 			_ = w.write(DaemonPongFrame{Type: DaemonFramePong})
 
@@ -690,6 +731,14 @@ func (cs *ClientSocket) handlePromptDeliver(ctx context.Context, w *jsonlWriter,
 		sendError(w, ClientFramePromptDeliver, fmt.Sprintf("deliver failed: %v", err))
 		return
 	}
+	// Issue #1693: any prompt_deliver to a session resumes it from
+	// escalated→active. This fires regardless of source (coordinator's
+	// reply, a human via `iris prompt`, or any other path) — mirroring
+	// prism's escalated→active rule on any turn_start. Resume is a safe
+	// no-op when the session is not currently escalated.
+	if cs.resumeSession != nil {
+		cs.resumeSession(frame.Name)
+	}
 	// No explicit ack frame for prompt_deliver — the client will see the
 	// resulting events via their subscription (if subscribed).
 }
@@ -727,6 +776,201 @@ func (cs *ClientSocket) handleReviewSpawn(ctx context.Context, w *jsonlWriter, f
 		return
 	}
 	_ = w.write(ack)
+}
+
+// handleEscalationDeliver implements the worker-side of `iris escalate`
+// (issue #1693). The frame's From field names the calling worker session;
+// To, when set, names an explicit coordinator target. When To is empty the
+// daemon auto-discovers the coordinator by scanning in-memory active
+// sessions for Role == "coordinator".
+//
+// Discovery rules (match prism's `prism escalate` byte-for-byte):
+//
+//   - exactly one coordinator candidate → deliver to it.
+//   - multiple candidates without To  → reject with --to-required error
+//     listing candidates. The worker stays in active state.
+//   - zero candidates without To       → transition worker to escalated
+//     and write a self-marker event; no prompt is delivered. Returns the
+//     escalation_delivered ack with delivered=false. A human is expected
+//     to pick up the worker via tmux.
+//
+// Delivery uses the same path as prompt_deliver (deliverPrompt) so the
+// coordinator's existing event stream receives the body. A delivery_id is
+// minted per call (issue #1695 exactly-once-with-replay-marker contract) so
+// if the path ever grows a retry mechanism the underlying harness can
+// dedup. The wire ack carries the delivery_id so callers can correlate.
+func (cs *ClientSocket) handleEscalationDeliver(ctx context.Context, w *jsonlWriter, frame ClientEscalationDeliverFrame) {
+	if frame.From == "" {
+		sendError(w, ClientFrameEscalationDeliver, "from is required")
+		return
+	}
+	if frame.Prompt == "" {
+		sendError(w, ClientFrameEscalationDeliver, "prompt is required")
+		return
+	}
+	if !cs.sessionExists(frame.From) {
+		sendError(w, ClientFrameEscalationDeliver,
+			fmt.Sprintf("not a registered iris session: %q has no active supervisor", frame.From))
+		return
+	}
+	if cs.escalateSession == nil {
+		sendError(w, ClientFrameEscalationDeliver, "escalation not configured on this daemon instance")
+		return
+	}
+
+	deliveryID := frame.DeliveryID
+	if deliveryID == "" {
+		deliveryID = uuid.New().String()
+	}
+
+	// Resolve the target.
+	target, derr := cs.resolveEscalationTarget(frame.From, frame.To)
+	if derr != nil {
+		// Discovery error: do NOT transition state — the worker stays in
+		// active state per the AC for multiple-candidates and bad --to.
+		sendError(w, ClientFrameEscalationDeliver, derr.Error())
+		return
+	}
+
+	// Transition the worker to escalated BEFORE attempting delivery so the
+	// state change is observable even if the coordinator-side delivery
+	// fails. Mirrors prism's ordering in cmd/escalate.go.
+	if err := cs.escalateSession(frame.From); err != nil {
+		sendError(w, ClientFrameEscalationDeliver, fmt.Sprintf("transition to escalated: %v", err))
+		return
+	}
+
+	// Write the session.escalated bus event into agent_events for the
+	// calling worker. Subscribed clients see this on the worker's event
+	// stream; the bus event is the notification (mirrors the prism behaviour
+	// of session.escalated suppressing the regular session.finished ping).
+	cs.writeSessionEscalatedEvent(frame.From, target, frame.Prompt, deliveryID)
+
+	if target == "" {
+		// Zero-coordinator branch: the worker is paused; no delivery happens.
+		// A human is expected to attend via tmux + `iris prompt`.
+		_ = w.write(DaemonEscalationDeliveredFrame{
+			Type:       DaemonFrameEscalationDelivered,
+			From:       frame.From,
+			To:         "",
+			DeliveryID: "",
+			Delivered:  false,
+		})
+		return
+	}
+
+	// Deliver to the coordinator using the same dispatch path as
+	// prompt_deliver. The daemon's deliverPrompt is naturally exactly-once
+	// (one call → one SendRPC at the supervisor); we still mint a
+	// delivery_id for the audit trail and surface it in the ack frame so
+	// any future cross-daemon retry layer can dedup.
+	if cs.deliverPrompt == nil {
+		sendError(w, ClientFrameEscalationDeliver, "prompt delivery not configured on this daemon instance")
+		return
+	}
+	if err := cs.deliverPrompt(ctx, target, frame.Prompt, "followUp", nil); err != nil {
+		sendError(w, ClientFrameEscalationDeliver,
+			fmt.Sprintf("deliver to coordinator %q failed: %v", target, err))
+		return
+	}
+
+	_ = w.write(DaemonEscalationDeliveredFrame{
+		Type:       DaemonFrameEscalationDelivered,
+		From:       frame.From,
+		To:         target,
+		DeliveryID: deliveryID,
+		Delivered:  true,
+	})
+}
+
+// resolveEscalationTarget applies the discovery rules. Returns:
+//
+//   - ("<name>", nil)        — explicit --to or single auto-discovered coord.
+//   - ("", nil)              — zero coordinators (the caller should still
+//                              transition to escalated and ack with delivered=false).
+//   - ("", err)              — multiple candidates without --to, or --to
+//                              names a session that is not a coordinator,
+//                              or --to names a session that does not exist.
+func (cs *ClientSocket) resolveEscalationTarget(from, explicitTo string) (string, error) {
+	if explicitTo != "" {
+		if explicitTo == from {
+			return "", fmt.Errorf("--to %q refers to the calling session; escalate cannot target self", explicitTo)
+		}
+		if !cs.sessionExists(explicitTo) {
+			return "", fmt.Errorf("--to session %q is not a registered iris session (run `iris sessions list` to verify)", explicitTo)
+		}
+		role := ""
+		if cs.roleOf != nil {
+			role = cs.roleOf(explicitTo)
+		}
+		if role != "coordinator" {
+			return "", fmt.Errorf("--to session %q is not a coordinator (role=%q); escalate must target a coordinator session", explicitTo, role)
+		}
+		return explicitTo, nil
+	}
+
+	// Auto-discovery: scan in-memory active sessions for coordinators.
+	var candidates []string
+	for _, s := range cs.getActiveSessions() {
+		if s.Name == from {
+			continue
+		}
+		if s.Role == "coordinator" {
+			candidates = append(candidates, s.Name)
+		}
+	}
+	switch len(candidates) {
+	case 0:
+		return "", nil
+	case 1:
+		return candidates[0], nil
+	default:
+		return "", fmt.Errorf("multiple coordinator candidates found; pass --to to choose one: %v", candidates)
+	}
+}
+
+// writeSessionEscalatedEvent writes a `session.escalated` row into
+// agent_events for the calling worker. This is the iris analogue of prism's
+// session.escalated bus event — the notification that an escalation occurred
+// (distinct from `session_end` / `session.finished`).
+//
+// Failures are logged but never propagated: the wire-level success path
+// depends on the prompt delivery, not on whether the audit row landed. The
+// worker is already in escalated state by the time this runs.
+func (cs *ClientSocket) writeSessionEscalatedEvent(from, to, prompt, deliveryID string) {
+	if cs.database == nil {
+		return
+	}
+	payload, err := json.Marshal(map[string]any{
+		"source":      from,
+		"target":      to,
+		"prompt":      prompt,
+		"delivery_id": deliveryID,
+	})
+	if err != nil {
+		log.Printf("[iris] client socket: marshal session.escalated payload: %v", err)
+		return
+	}
+	ev := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: from,
+		Type:        "session.escalated",
+		Payload:     string(payload),
+		CreatedAt:   time.Now(),
+	}
+	rowID, err := cs.database.WriteEventReturningRowID(ev)
+	if err != nil {
+		log.Printf("[iris] client socket: write session.escalated event: %v", err)
+		return
+	}
+	// Fan out to subscribers so live consumers see the bus event in real
+	// time without needing a separate notification path.
+	cs.Publish(EventPublication{
+		SessionName: from,
+		RowID:       rowID,
+		EventType:   "session.escalated",
+		Payload:     string(payload),
+	})
 }
 
 // --- Subscriber set management ---
