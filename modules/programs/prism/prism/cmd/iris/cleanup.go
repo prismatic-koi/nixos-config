@@ -79,21 +79,23 @@ func init() {
 func runCleanup(sessionName string) error {
 	p := iris.ResolvePaths()
 
-	// Step 0 (issue #1674): kill the running pi child via the daemon before
-	// archiving. Skipped explicitly with --skip-kill or implicitly when the
-	// daemon socket is not reachable (the kill is a best-effort prelude to
-	// the DB-only cleanup steps below; a dead daemon already means no live
-	// pi child to kill).
-	killSummary := "skipped (--skip-kill)"
-	if !cleanupSkipKill {
-		killSummary = killSessionViaDaemon(p.Sock, sessionName)
-	}
-
 	database, err := iris.OpenDB(p.DB)
 	if err != nil {
 		return fmt.Errorf("iris cleanup: open db: %w", err)
 	}
 	defer database.Close()
+
+	// KillFn (issue #1699): the cleanup library invokes this once per
+	// session being cleaned up (parent + each review-group child) BEFORE
+	// the archive step, so kill-then-archive (#1692) holds at every
+	// recursion level. --skip-kill propagates by leaving KillFn nil.
+	var killFn func(string) string
+	if !cleanupSkipKill {
+		sockPath := p.Sock
+		killFn = func(name string) string {
+			return killSessionViaDaemon(sockPath, name)
+		}
+	}
 
 	res, err := iris.CleanupSession(context.Background(), iris.CleanupConfig{
 		Database:       database,
@@ -102,30 +104,60 @@ func runCleanup(sessionName string) error {
 		ArchiveRoot:    p.ArchiveRoot,
 		PIAgentDir:     cleanupPIAgentDir,
 		RemoveWorktree: cleanupRemoveWorktree,
+		KillFn:         killFn,
 	}, sessionName)
 	if err != nil {
 		return fmt.Errorf("iris cleanup: %w", err)
 	}
 
-	fmt.Printf("iris cleanup: %s\n", sessionName)
-	fmt.Printf("  kill:           %s\n", killSummary)
-	if res.ArchivePath != "" {
-		fmt.Printf("  archive:        %s\n", res.ArchivePath)
-	} else {
-		fmt.Printf("  archive:        (skipped — no pi JSONL found)\n")
-	}
-	fmt.Printf("  run dir:        removed=%v\n", res.RunDirRemoved)
-	fmt.Printf("  log file:       removed=%v\n", res.LogFileRemoved)
-	fmt.Printf("  session row:    ended=%v\n", res.SessionRowRemoved)
-	fmt.Printf("  worktree:       removed=%v\n", res.WorktreeRemoved)
-	fmt.Printf("  branch:         removed=%v\n", res.BranchRemoved)
-	if len(res.Errors) > 0 {
-		fmt.Println("  errors:")
-		for _, e := range res.Errors {
-			fmt.Printf("    - %v\n", e)
+	printCleanupResult(os.Stdout, res, cleanupSkipKill)
+	return nil
+}
+
+// printCleanupResult renders a single cleanup result (parent + recursive
+// children, if any) to out. Pulled out as a free function so it can be
+// reused by future bulk-cleanup paths and unit-tested without going
+// through the cobra command.
+func printCleanupResult(out io.Writer, res *iris.CleanupResult, skipKill bool) {
+	fmt.Fprintf(out, "iris cleanup: %s\n", res.SessionName)
+	printCleanupBody(out, res, skipKill, "  ")
+	if len(res.Children) > 0 {
+		fmt.Fprintf(out, "  children:       %d cleaned up\n", len(res.Children))
+		for _, child := range res.Children {
+			fmt.Fprintf(out, "    - %s\n", child.SessionName)
+			printCleanupBody(out, child, skipKill, "        ")
 		}
 	}
-	return nil
+}
+
+// printCleanupBody renders the per-session lines (kill, archive, run dir,
+// etc.) at the given indent. Used for both the parent and each child.
+func printCleanupBody(out io.Writer, res *iris.CleanupResult, skipKill bool, indent string) {
+	kill := res.KillSummary
+	if kill == "" {
+		if skipKill {
+			kill = "skipped (--skip-kill)"
+		} else {
+			kill = "skipped (no KillFn)"
+		}
+	}
+	fmt.Fprintf(out, "%skill:           %s\n", indent, kill)
+	if res.ArchivePath != "" {
+		fmt.Fprintf(out, "%sarchive:        %s\n", indent, res.ArchivePath)
+	} else {
+		fmt.Fprintf(out, "%sarchive:        (skipped — no pi JSONL found)\n", indent)
+	}
+	fmt.Fprintf(out, "%srun dir:        removed=%v\n", indent, res.RunDirRemoved)
+	fmt.Fprintf(out, "%slog file:       removed=%v\n", indent, res.LogFileRemoved)
+	fmt.Fprintf(out, "%ssession row:    ended=%v\n", indent, res.SessionRowRemoved)
+	fmt.Fprintf(out, "%sworktree:       removed=%v\n", indent, res.WorktreeRemoved)
+	fmt.Fprintf(out, "%sbranch:         removed=%v\n", indent, res.BranchRemoved)
+	if len(res.Errors) > 0 {
+		fmt.Fprintf(out, "%serrors:\n", indent)
+		for _, e := range res.Errors {
+			fmt.Fprintf(out, "%s  - %v\n", indent, e)
+		}
+	}
 }
 
 // killSessionViaDaemon dials the iris daemon socket and sends a session_kill
