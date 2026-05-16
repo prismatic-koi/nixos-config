@@ -7647,10 +7647,22 @@ func TestSessionError_MessageAbortedError_PathUnchanged(t *testing.T) {
 // Because each sidecar owns its logger, parallel test runs can never
 // contaminate each other's buffers, and background goroutines spawned by the
 // sidecar write to the same isolated buffer for the lifetime of that sidecar.
+//
+// The returned read function calls sc.WaitNotifies() before reading the
+// buffer so that any in-flight notify goroutines launched from a synchronous
+// transition path (HandleEvent / testTimer.Fire) have committed their log
+// writes before the test inspects the buffer. This closes the race class
+// reported in #1713 and #1716 — production notify goroutines outliving the
+// test entrypoint and racing the test's buf.String() read. Without this,
+// the strings.Builder Write/String pair is observable under -race and the
+// test flakes intermittently.
 func captureLog(sc *Sidecar) func() string {
 	var buf strings.Builder
 	sc.cfg.Logger = log.New(&buf, "", 0)
-	return func() string { return buf.String() }
+	return func() string {
+		sc.WaitNotifies()
+		return buf.String()
+	}
 }
 
 // TestTransitionCause_IdleDebounce verifies that transitioning to finished via
