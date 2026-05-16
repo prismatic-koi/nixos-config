@@ -1330,15 +1330,36 @@ export function resolveTurnEndSignal(
 
 /**
  * Returns true when the extension should activate (i.e., we are running
- * under prism). The sole signal is the presence of PRISM_SESSION_NAME in the
- * environment — prism's agent-pane launcher always sets this before exec'ing
- * PI inside the sandbox.
+ * under prism OR under iris). prism's agent-pane launcher sets
+ * PRISM_SESSION_NAME before exec'ing PI inside the sandbox; iris's
+ * supervisor sets IRIS_DAEMON_SOCK before exec'ing PI in --mode rpc. Either
+ * signal activates the extension so the wire-protocol producer (state_change,
+ * tool_call observations, session_status, etc.) runs in both code paths
+ * (issue #1701).
  *
  * Exposed as a function (not a captured boolean) so tests can manipulate
  * process.env between calls.
  */
 export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
-  return typeof env.PRISM_SESSION_NAME === "string" && env.PRISM_SESSION_NAME.length > 0
+  if (typeof env.PRISM_SESSION_NAME === "string" && env.PRISM_SESSION_NAME.length > 0) {
+    return true
+  }
+  if (typeof env.IRIS_DAEMON_SOCK === "string" && env.IRIS_DAEMON_SOCK.length > 0) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Returns true when the extension is running under iris (the iris daemon
+ * has spawned this pi child). Used to switch the turn_end paused-emission
+ * from state_change="finished" (prism semantics: turn over, sidecar may go
+ * idle) to state_change="waiting" (iris semantics: pi is paused awaiting
+ * the next user prompt and must be visible to coordinators as such, per
+ * issue #1701).
+ */
+export function isIrisMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return typeof env.IRIS_DAEMON_SOCK === "string" && env.IRIS_DAEMON_SOCK.length > 0
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,10 +1708,23 @@ export default function prismExtension(pi: ExtensionAPI): void {
     return
   }
 
-  const endpointEnv = process.env.PRISM_HARNESS_PIPE
+  // Endpoint derivation (issue #1701):
+  //   - prism path: PRISM_HARNESS_PIPE points at the sidecar's listener.
+  //   - iris path:  IRIS_DAEMON_SOCK is the per-session harness socket
+  //                 (always a Unix domain socket). Synthesise a unix://
+  //                 endpoint so the same connect/handshake code path runs.
+  // PRISM_HARNESS_PIPE takes precedence so an explicit override during
+  // debugging works in either mode.
+  let endpointEnv = process.env.PRISM_HARNESS_PIPE
+  if (!endpointEnv) {
+    const irisSock = process.env.IRIS_DAEMON_SOCK
+    if (irisSock && irisSock.length > 0) {
+      endpointEnv = "unix://" + irisSock
+    }
+  }
   if (!endpointEnv) {
     console.error(
-      "[prism-extension] PRISM_SESSION_NAME is set but PRISM_HARNESS_PIPE is not — extension is a no-op",
+      "[prism-extension] neither PRISM_HARNESS_PIPE nor IRIS_DAEMON_SOCK is set — extension is a no-op",
     )
     return
   }
@@ -1702,6 +1736,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
     console.error("[prism-extension] parseEndpoint failed:", err)
     return
   }
+
+  // Iris-mode flag captured once at activation. Drives the turn_end
+  // paused-emission switch (state_change "waiting" vs "finished") and any
+  // future iris-only branches. Same string contract as the iris daemon
+  // (modules/programs/prism/prism/internal/iris/session.go: StateWaiting).
+  const irisMode = isIrisMode()
 
   // ── Behavioural guard state ───────────────────────────────────────────
   //
@@ -2235,7 +2275,20 @@ export default function prismExtension(pi: ExtensionAPI): void {
           hasPending,
           pendingReviewCall,
         )
-        if (signal === "interrupted") {
+        if (irisMode) {
+          // Iris semantics (issue #1701): pi is paused for the next user
+          // prompt, not "finished". Both stopReason=stop and stopReason=
+          // aborted leave pi alive and waiting on the harness socket — the
+          // session is persistent, so the canonical state is "waiting".
+          // The iris harness handler maps state_change="waiting" →
+          // StateWaiting and fires PublishState so subscribers (TUI, `iris
+          // sessions list`, `iris prompt`'s guard) see the transition
+          // within ~100 ms. A signal of "none" still suppresses emission
+          // (toolUse, error, length — the turn is not really paused).
+          if (signal === "interrupted" || signal === "finished") {
+            writer.write({ type: "state_change", state: "waiting" })
+          }
+        } else if (signal === "interrupted") {
           writer.write({ type: "state_change", state: "interrupted" })
         } else if (signal === "finished") {
           writer.write({ type: "state_change", state: "finished" })

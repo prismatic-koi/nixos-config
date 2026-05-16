@@ -121,12 +121,16 @@ func RunRestore(ctx context.Context, cfg RestoreConfig) (*RestoreResult, error) 
 		result.SpawningMarkError++
 	}
 
-	// Step 2: Restore active sessions concurrently.
+	// Step 2: Restore active and waiting sessions concurrently. "waiting" is
+	// treated the same as "active" for restore purposes (issue #1701): pi is
+	// re-spawned with the previous JSONL session file, and the extension's
+	// next state_change frame (whether "waiting" or "active") re-asserts the
+	// correct state on the restored supervisor.
 	var wg sync.WaitGroup
 	var mu sync.Mutex // guards result counters
 
 	for _, sess := range sessions {
-		if sess.IrisState != string(StateActive) {
+		if sess.IrisState != string(StateActive) && sess.IrisState != string(StateWaiting) {
 			continue
 		}
 		sess := sess // capture for goroutine
@@ -373,7 +377,7 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 	}
 	sessionLog := newSessionLogger(logFile, cfg.SessionName)
 
-	return &Supervisor{
+	sup := &Supervisor{
 		cfg:            cfg,
 		sess:           record,
 		harness:        harness,
@@ -381,5 +385,13 @@ func newRestoreSupervisor(cfg SupervisorConfig, sess db.IrisSessionRow) (*Superv
 		sessionLog:     sessionLog,
 		sessionLogFile: logFile,
 		done:           make(chan struct{}),
-	}, nil
+	}
+	// Wire harness → supervisor callbacks so restored sessions get the same
+	// in-memory updates as freshly-spawned ones. Without this, a restored
+	// session's pi child could deliver session_status or state_change frames
+	// that update the DB but leave the in-memory SessionRecord stale
+	// (issues #1682 and #1701).
+	harness.SetSessionStatusHandler(sup.handleSessionStatus)
+	harness.SetStateChangeHandler(sup.handleStateChange)
+	return sup, nil
 }

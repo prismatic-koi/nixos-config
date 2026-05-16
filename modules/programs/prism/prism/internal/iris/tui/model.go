@@ -83,6 +83,13 @@ var (
 	styleBlue = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colBlue))
 
+	// styleYellow highlights sessions in `waiting` state — paused for the
+	// next user prompt. Distinct from `active` (green) and `finished`
+	// (dim) so operators can spot attention-needed sessions at a glance.
+	styleYellow = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colPrimary)).
+			Bold(true)
+
 	stylePromptBox = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color(colBlue))
@@ -742,6 +749,8 @@ func stateLabel(state string) string {
 	switch state {
 	case "active":
 		return styleGreen.Render("active  ")
+	case "waiting":
+		return styleYellow.Render("waiting ")
 	case "spawning":
 		return styleBlue.Render("spawning")
 	case "finished":
