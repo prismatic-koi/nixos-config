@@ -329,7 +329,7 @@ func runDaemon() error {
 	// spawnFn is called by the client socket when a session_spawn frame arrives.
 	// It must be defined after clientSock so it can capture clientSock and wire
 	// the harness publisher (D-6 fan-out: harness events → client subscribers).
-	spawnFn := func(spawnCtx context.Context, worktree, role string, configOverrides map[string]any) (*iris.Supervisor, error) {
+	spawnFn := func(spawnCtx context.Context, worktree, role, parent string, configOverrides map[string]any) (*iris.Supervisor, error) {
 		extPath := cfg.PIExtensionPath
 		// Derive the bare repo root from the worktree for 4-PAT GITHUB_TOKEN
 		// selection in the bash sandbox (D-5).
@@ -346,6 +346,7 @@ func runDaemon() error {
 			Worktree:         worktree,
 			Role:             resolvedRole,
 			BareRoot:         bareRoot,
+			ParentSession:    parent,
 			PIBinaryPath:     cfg.PIBinaryPath,
 			ExtensionPath:    extPath,
 			RestartThreshold: cfg.RestartThreshold,
@@ -355,6 +356,11 @@ func runDaemon() error {
 			// Wire the client socket as the harness publisher so that every
 			// harness event is fanned out to all subscribed clients in real time.
 			Publisher: clientSock,
+			// Issue #1700: on terminal state, deliver an "Agent <name> has
+			// finished" prompt to the parent session via the same path as
+			// `iris prompt`. The callback runs in a goroutine after setState
+			// completes — see Supervisor.setState in internal/iris/supervisor.go.
+			NotifyParent: makeNotifyParent(ctx, state, deliverFn, database),
 		}
 		sup, err := iris.SpawnSession(ctx, superCfg)
 		if err != nil {
