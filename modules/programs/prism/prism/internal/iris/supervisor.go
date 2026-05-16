@@ -84,9 +84,9 @@ type SupervisorConfig struct {
 
 // Supervisor manages a single pi child process.
 type Supervisor struct {
-	cfg      SupervisorConfig
-	sess     SessionRecord
-	harness  *HarnessSocketServer
+	cfg     SupervisorConfig
+	sess    SessionRecord
+	harness *HarnessSocketServer
 
 	// stdinPipe is the write end of pi's stdin (for sending RPC commands).
 	stdinPipe io.WriteCloser
@@ -377,10 +377,16 @@ func (s *Supervisor) Start(ctx context.Context) {
 	// here too: close the harness listener (which removes the Unix socket
 	// inode on Linux per the D-5 cycle-4 fix) so the kill path and the
 	// natural exit path leave the same observable filesystem state.
-	defer s.closeSessionLogFile()
-	defer s.harness.Close()
-	// Signal completion to anyone waiting on Kill().
+	//
+	// Defer ordering is LIFO and load-bearing: `close(s.done)` is the
+	// completion signal Kill() blocks on, and it MUST fire last so the
+	// harness listener (and therefore the Unix socket inode) is fully torn
+	// down before Kill returns to the caller. Reversing these defers makes
+	// TestSupervisorKill_RemovesHarnessSocketFile flake on CI — the kill
+	// path observes s.done closed before harness.Close has run.
 	defer close(s.done)
+	defer s.harness.Close()
+	defer s.closeSessionLogFile()
 
 	for {
 		exitCode := s.spawnAndRun(ctx)
@@ -836,17 +842,17 @@ func (s *Supervisor) Done() <-chan struct{} { return s.done }
 
 // Kill terminates the pi child managed by this supervisor.
 //
-//   1. If the session is already terminal (finished/error) the call is a
-//      no-op and returns (state, nil). This is the idempotent path — callers
-//      that re-kill an already-dead session see success.
-//   2. Otherwise the per-session context is cancelled; exec.CommandContext
-//      delivers SIGTERM to pi. Kill then waits up to timeout (or
-//      DefaultKillTimeout when timeout is 0) for the Start goroutine to
-//      finish.
-//   3. If pi has not exited by the deadline, Kill sends SIGKILL directly to
-//      the recorded process handle and waits a further 2 seconds for the
-//      goroutine to converge. The terminal state in that case is
-//      StateError; the clean SIGTERM path produces StateFinished.
+//  1. If the session is already terminal (finished/error) the call is a
+//     no-op and returns (state, nil). This is the idempotent path — callers
+//     that re-kill an already-dead session see success.
+//  2. Otherwise the per-session context is cancelled; exec.CommandContext
+//     delivers SIGTERM to pi. Kill then waits up to timeout (or
+//     DefaultKillTimeout when timeout is 0) for the Start goroutine to
+//     finish.
+//  3. If pi has not exited by the deadline, Kill sends SIGKILL directly to
+//     the recorded process handle and waits a further 2 seconds for the
+//     goroutine to converge. The terminal state in that case is
+//     StateError; the clean SIGTERM path produces StateFinished.
 //
 // Kill is safe to call concurrently from multiple goroutines; the lock
 // protects the cancel/process handles and the Done channel disambiguates
