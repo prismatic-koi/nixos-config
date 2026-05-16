@@ -56,10 +56,19 @@ type ClientSessionUnsubscribeFrame struct {
 //
 //	{"type": "session_spawn", "worktree": "/abs/path", "role": "worker"}
 //	{"type": "session_spawn", "worktree": "...", "role": "coordinator", "config_overrides": {...}}
+//	{"type": "session_spawn", "worktree": "...", "role": "worker", "parent": "nixos-config@main"}
+//
+// Parent, when non-empty, names the session that is invoking `iris spawn`.
+// The daemon records it on the new session's row (sessions.parent_session)
+// so that the terminal-state notification path (issue #1700) can deliver a
+// "Agent <name> has finished" prompt back to the parent. Empty means "no
+// parent" (top-level spawn from a non-iris shell): no notification will be
+// delivered when the child terminates.
 type ClientSessionSpawnFrame struct {
 	Type            string         `json:"type"` // "session_spawn"
 	Worktree        string         `json:"worktree"`
 	Role            string         `json:"role"`
+	Parent          string         `json:"parent,omitempty"`
 	ConfigOverrides map[string]any `json:"config_overrides,omitempty"`
 }
 

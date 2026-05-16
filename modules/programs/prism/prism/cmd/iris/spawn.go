@@ -114,7 +114,16 @@ func runSpawnAt(ctx context.Context, sockPath, runDir, worktree, role string, ou
 	}
 	defer conn.Close()
 
-	if err := sendSpawnFrame(conn, worktree, role); err != nil {
+	// IRIS_SESSION_NAME is set by Supervisor.buildEnv on every iris-spawned
+	// pi child (#1706). When the user runs `iris spawn` from inside such a
+	// session, that variable identifies the calling session — the parent.
+	// When `iris spawn` is invoked from a non-iris shell (a fresh terminal),
+	// the variable is empty: this is the top-level spawn case, and the
+	// daemon stores parent_session = NULL so the terminal-state notification
+	// (issue #1700) is suppressed.
+	parent := os.Getenv("IRIS_SESSION_NAME")
+
+	if err := sendSpawnFrame(conn, worktree, role, parent); err != nil {
 		return fmt.Errorf("iris spawn: send spawn frame: %w", err)
 	}
 
@@ -155,11 +164,18 @@ func daemonNotRunningError(sockPath string, cause error) error {
 // sendSpawnFrame writes a ClientSessionSpawnFrame to the daemon connection.
 // The frame format is the D-6 wire protocol (internal/iris/client_protocol.go);
 // this function MUST NOT add fields not defined there.
-func sendSpawnFrame(conn net.Conn, worktree, role string) error {
+//
+// parent, when non-empty, names the calling session (read from
+// IRIS_SESSION_NAME by the caller). The daemon stores it on the child's
+// sessions row so the terminal-state notification path (#1700) knows where
+// to deliver the "finished" prompt. Empty means top-level spawn; the daemon
+// stores parent_session = NULL.
+func sendSpawnFrame(conn net.Conn, worktree, role, parent string) error {
 	frame := iris.ClientSessionSpawnFrame{
 		Type:     iris.ClientFrameSessionSpawn,
 		Worktree: worktree,
 		Role:     role,
+		Parent:   parent,
 	}
 	data, err := json.Marshal(frame)
 	if err != nil {

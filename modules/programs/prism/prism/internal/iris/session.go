@@ -94,6 +94,12 @@ type SessionRecord struct {
 	// when the worktree is not associated with a known bare repo — in that
 	// case the bash sandbox falls back to the host GITHUB_TOKEN.
 	BareRoot string
+	// ParentSession is the logical session_name of the session that invoked
+	// `iris spawn` to create this one. Read from IRIS_SESSION_NAME on the
+	// calling pi child and forwarded through the session_spawn wire frame
+	// (#1700). Empty when this session is a top-level spawn (no parent to
+	// notify on terminal state).
+	ParentSession string
 	// cleanExit is set to true when a session_shutdown frame is received
 	// before the pi child exits — used by the supervisor to distinguish clean
 	// from unclean exits.

@@ -1006,7 +1006,8 @@ func (d *DB) SessionsByAbtestPairID(pairID string) ([]Session, error) {
 	const q = `
 SELECT s.instance_id, s.session_name, s.agent_role, s.root_agent_name,
        s.repo, s.worktree, s.harness, s.harness_session_id, s.group_id,
-       s.started_at, s.ended_at, s.end_state, s.archive_path, s.prism_version
+       s.started_at, s.ended_at, s.end_state, s.archive_path, s.prism_version,
+       s.parent_session
   FROM sessions s
 INNER JOIN spawn_inputs si ON si.instance_id = s.instance_id
 WHERE si.abtest_pair_id = ?

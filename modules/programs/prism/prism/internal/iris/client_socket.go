@@ -95,7 +95,9 @@ type ClientSocket struct {
 	// set by the daemon to a function that reads the Supervisor map.
 	getActiveSessions func() []SessionSnapshot
 	// spawnSession spawns a new session. Set by the daemon at construction.
-	spawnSession func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)
+	// parent is the spawning session's logical name (from the session_spawn
+	// frame's Parent field; empty for top-level spawns). See #1700.
+	spawnSession func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
 	// deliverPrompt delivers a prompt to a named session. Set by the daemon.
 	deliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
 	// killSession terminates a named session. Returns the terminal state
@@ -158,7 +160,10 @@ type ClientSocketConfig struct {
 	// GetActiveSessions returns the current in-memory session list.
 	GetActiveSessions func() []SessionSnapshot
 	// SpawnSession spawns a new session and returns the supervisor.
-	SpawnSession func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)
+	// parent is the spawning session's logical name (issue #1700, forwarded
+	// from the session_spawn frame's Parent field). Empty for top-level
+	// spawns invoked from outside an iris session.
+	SpawnSession func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)
 	// DeliverPrompt delivers a prompt to a named session.
 	DeliverPrompt func(ctx context.Context, name, text, deliverAs string, images []string) error
 	// KillSession terminates a named session. Returns the terminal state
@@ -260,7 +265,7 @@ func (cs *ClientSocket) SockPath() string { return cs.sockPath }
 // by the daemon when it needs to capture a reference to the ClientSocket
 // inside the spawn function (circular dependency: spawnFn needs clientSock,
 // clientSock needs spawnFn). Call before Serve().
-func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, role string, configOverrides map[string]any) (*Supervisor, error)) {
+func (cs *ClientSocket) SetSpawnSession(fn func(ctx context.Context, worktree, role, parent string, configOverrides map[string]any) (*Supervisor, error)) {
 	cs.spawnSession = fn
 }
 
@@ -652,7 +657,7 @@ func (cs *ClientSocket) handleSessionSpawn(ctx context.Context, w *jsonlWriter, 
 		role = "worker"
 	}
 
-	sup, err := cs.spawnSession(ctx, frame.Worktree, role, frame.ConfigOverrides)
+	sup, err := cs.spawnSession(ctx, frame.Worktree, role, frame.Parent, frame.ConfigOverrides)
 	if err != nil {
 		sendError(w, ClientFrameSessionSpawn, fmt.Sprintf("spawn failed: %v", err))
 		return
