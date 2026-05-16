@@ -283,7 +283,7 @@ func (s *Sidecar) writeStartupErrorImpl(startupErr error, asyncNotify bool) {
 	// Normal finish notifications for review agents remain suppressed in
 	// notifyCoordinator — this is an exception only for the startup-failure path.
 	if asyncNotify {
-		go s.notifyParentWorkerOnStartupFailure(startupErr)
+		s.goNotify(func() { s.notifyParentWorkerOnStartupFailure(startupErr) })
 	} else {
 		s.notifyParentWorkerOnStartupFailure(startupErr)
 	}

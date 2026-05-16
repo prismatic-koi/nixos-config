@@ -284,6 +284,16 @@ type Sidecar struct {
 	cfg     Config
 	harness harness.Harness // agent runtime adapter; injected via Config.Harness
 
+	// notifyWG tracks every goroutine spawned via goNotify — the family of
+	// finish/error notifications (notifyCoordinator,
+	// notifyInvestigatorCompletion, notifyParentWorkerOnStartupFailure) that
+	// are dispatched from synchronous state-transition paths but write to
+	// s.cfg.Logger and other test-observable state asynchronously. Production
+	// code does not call Wait; the wg exists so tests can drain in-flight
+	// notifies via WaitNotifies() before reading captureLog output. See
+	// issues #1713 and #1716 for the race class this closes.
+	notifyWG sync.WaitGroup
+
 	mu              sync.Mutex
 	lastState       agent.AgentState
 	idleTimer       Timer
@@ -2145,7 +2155,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		s.lastState = agent.StateFinished
-		go s.notifyCoordinator()
+		s.goNotify(s.notifyCoordinator)
 		return true
 
 	default:

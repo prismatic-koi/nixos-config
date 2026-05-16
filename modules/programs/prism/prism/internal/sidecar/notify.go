@@ -355,3 +355,35 @@ func buildNotifyPromptBody(text string, status *db.Status) map[string]any {
 
 	return body
 }
+
+// goNotify launches fn on a new goroutine while tracking it in s.notifyWG.
+// All call sites that previously used `go s.notify*` should use this helper
+// instead so that tests can drain in-flight notify goroutines via
+// WaitNotifies before reading test-observable state (logs, DB rows). The
+// fire-and-forget production semantics are preserved — callers do not
+// observe completion.
+//
+// This is the canonical site of the fix for the test-race class that
+// includes #1713 (testTimer.Fire vs state-machine write) and #1716
+// (captureLog strings.Builder Write/Read race). See those issues for the
+// race-class context.
+func (s *Sidecar) goNotify(fn func()) {
+	s.notifyWG.Add(1)
+	go func() {
+		defer s.notifyWG.Done()
+		fn()
+	}()
+}
+
+// WaitNotifies blocks until every goroutine launched via goNotify has
+// returned. It is safe to call from any goroutine and is a no-op when no
+// notify goroutines are in flight.
+//
+// Intended use is in tests that exercise sidecar event handling and read
+// log output afterwards: call WaitNotifies between the synchronous event
+// dispatch (HandleEvent / testTimer.Fire) and the log-read (captureLog's
+// getLogs()) so that any notify goroutine writing to the captured logger
+// has completed before the test inspects the buffer.
+func (s *Sidecar) WaitNotifies() {
+	s.notifyWG.Wait()
+}
