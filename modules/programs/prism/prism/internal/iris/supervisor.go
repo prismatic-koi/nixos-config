@@ -247,7 +247,58 @@ func NewSupervisor(cfg SupervisorConfig) (*Supervisor, error) {
 	// stay empty for the entire lifetime of every live session even though
 	// the DB row is correct.
 	harness.SetSessionStatusHandler(sup.handleSessionStatus)
+	// Wire the state_change handler so the harness socket can drive the
+	// in-memory session state machine when the extension emits a
+	// state_change frame (issue #1701). The handler runs *after* the
+	// agent_events row has been written by writeObservationEvent, preserving
+	// the PR #1657 event-row-before-status-row ordering.
+	harness.SetStateChangeHandler(sup.handleStateChange)
 	return sup, nil
+}
+
+// handleStateChange is the callback the HarnessSocketServer invokes when a
+// state_change frame arrives from the extension. It maps the wire state
+// string to a SessionState and drives setState under the supervisor's lock
+// (PR #1687 pattern). Unknown wire states are logged and ignored — the
+// extension is forward-compatible per the wire spec.
+//
+// Issue #1701: this is the production path that lands a session in
+// StateWaiting. Without it the iris prompt waiting-state guard (#1689) is
+// unreachable.
+func (s *Supervisor) handleStateChange(state string) {
+	// Terminal states are owned by the supervisor lifecycle (clean exit,
+	// non-zero exit, kill). Don't let the extension drive us out of a
+	// terminal state — once finished/error, the supervisor goroutine has
+	// already returned or is about to, and re-asserting active/waiting here
+	// would publish a misleading transition.
+	s.mu.Lock()
+	current := s.state
+	killing := s.killReason != ""
+	s.mu.Unlock()
+	if current == StateFinished || current == StateError || killing {
+		s.logf("supervisor: ignoring state_change=%q while terminal/killing (current=%s)", state, current)
+		return
+	}
+
+	var next SessionState
+	switch state {
+	case "waiting":
+		next = StateWaiting
+	case "active":
+		next = StateActive
+	default:
+		// Other wire states (finished, interrupted, etc.) are not driven
+		// through this path — terminal transitions are owned by the
+		// supervisor loop. Log and ignore so future wire-protocol additions
+		// are forward-compatible.
+		s.logf("supervisor: state_change=%q ignored (not driven from harness)", state)
+		return
+	}
+
+	if current == next {
+		return
+	}
+	s.setState(next)
 }
 
 // handleSessionStatus is the callback the HarnessSocketServer invokes when

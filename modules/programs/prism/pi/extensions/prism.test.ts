@@ -18,6 +18,7 @@ import {
   attachJsonlReader,
   coerceToolOutput,
   dispatchInboundFrame,
+  isIrisMode,
   parseEndpoint,
   redactLine,
   shouldActivate,
@@ -65,11 +66,11 @@ import prismExtension from "./prism.ts"
 // ---------------------------------------------------------------------------
 
 describe("shouldActivate", () => {
-  it("returns false when PRISM_SESSION_NAME is missing", () => {
+  it("returns false when neither PRISM_SESSION_NAME nor IRIS_DAEMON_SOCK is set", () => {
     assert.equal(shouldActivate({}), false)
   })
 
-  it("returns false when PRISM_SESSION_NAME is empty", () => {
+  it("returns false when PRISM_SESSION_NAME is empty and IRIS_DAEMON_SOCK is absent", () => {
     assert.equal(shouldActivate({ PRISM_SESSION_NAME: "" }), false)
   })
 
@@ -77,6 +78,48 @@ describe("shouldActivate", () => {
     assert.equal(
       shouldActivate({ PRISM_SESSION_NAME: "nixos-config@main" }),
       true,
+    )
+  })
+
+  // Issue #1701: the extension must also activate under iris so the
+  // state_change="waiting" emission path (turn_end paused) can fire.
+  it("returns true when IRIS_DAEMON_SOCK is set (iris mode)", () => {
+    assert.equal(
+      shouldActivate({ IRIS_DAEMON_SOCK: "/run/user/1000/iris/foo/harness.sock" }),
+      true,
+    )
+  })
+
+  it("returns false when IRIS_DAEMON_SOCK is set but empty", () => {
+    assert.equal(shouldActivate({ IRIS_DAEMON_SOCK: "" }), false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// isIrisMode (iris-mode flag for turn_end paused emission)
+// ---------------------------------------------------------------------------
+
+describe("isIrisMode", () => {
+  it("returns false when IRIS_DAEMON_SOCK is absent", () => {
+    assert.equal(isIrisMode({}), false)
+  })
+
+  it("returns false when IRIS_DAEMON_SOCK is empty", () => {
+    assert.equal(isIrisMode({ IRIS_DAEMON_SOCK: "" }), false)
+  })
+
+  it("returns true when IRIS_DAEMON_SOCK is set", () => {
+    assert.equal(
+      isIrisMode({ IRIS_DAEMON_SOCK: "/tmp/iris/abc/harness.sock" }),
+      true,
+    )
+  })
+
+  it("does NOT activate iris-mode when only PRISM_SESSION_NAME is set", () => {
+    // prism-mode session: must not switch turn_end paused to "waiting".
+    assert.equal(
+      isIrisMode({ PRISM_SESSION_NAME: "nixos-config@main" }),
+      false,
     )
   })
 })
