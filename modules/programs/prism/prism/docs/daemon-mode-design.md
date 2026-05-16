@@ -675,13 +675,20 @@ grep -r IRIS_ modules/programs/prism/prism/cmd/iris/ \
               modules/programs/prism/prism/internal/iris/
 ```
 
-Only two `IRIS_*` env vars should appear:
+Only three `IRIS_*` env vars should appear:
 
 - `IRIS_DAEMON_SOCK` — set by the supervisor on the **pi child process**
-  (`internal/iris/supervisor.go:377-378`) so the prism extension running
+  (`internal/iris/supervisor.go::buildEnv`) so the prism extension running
   inside pi knows where to dial the per-session harness socket. This is a
   pi-process env var, not a sandbox-process env var; it is never forwarded
   into any tool sandbox.
+- `IRIS_SESSION_NAME` — set by the supervisor on the **pi child process**
+  (`internal/iris/supervisor.go::buildEnv`, issues #1693 / #1704) so
+  worker-side CLIs (`iris escalate`, future `iris prompt` from within a
+  session) can identify their calling session without an extra RPC. This
+  is the iris analogue of prism's `PRISM_SESSION_NAME`. Like
+  `IRIS_DAEMON_SOCK`, it is a pi-process env var only — it is never
+  forwarded into any tool sandbox (invariant 2 pins this structurally).
 - `IRIS_PARITY_TEST_MODE` — the parity-test harness guard
   (`internal/iris/iristest/iristest.go:54`,
   `internal/iris/parity/parity_isolation_test.go`). Test-only.
@@ -691,7 +698,8 @@ host-API socket path that a sandboxed subprocess could use to call back into
 the daemon.
 
 **Invariant 2 — `credential_broker.go::ResolveBash` does not forward
-`IRIS_DAEMON_SOCK` or any other `IRIS_*` env var into the bash sandbox.**
+`IRIS_DAEMON_SOCK`, `IRIS_SESSION_NAME`, or any other `IRIS_*` env var into
+the bash sandbox.**
 
 The `ResolveBash` function (`internal/iris/credential_broker.go` lines
 ~118-199, the env-allowlist body in particular) emits a closed list of
@@ -699,10 +707,21 @@ environment entries: `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL`,
 `TERM`, the four `GIT_{AUTHOR,COMMITTER}_{NAME,EMAIL}` vars, `NIX_CONFIG`,
 optionally `GITHUB_TOKEN`, and `AWS_CONFIG_FILE` /
 `AWS_SHARED_CREDENTIALS_FILE`. No `IRIS_*` entry appears, so the bash
-sandbox cannot inherit `IRIS_DAEMON_SOCK` from the pi parent process. Any
-`iris …` invocation from inside the bash sandbox would fail loudly (the
-daemon socket path env var is unset, and the socket itself is not mounted —
-see invariant 3) rather than silently succeed by proxy.
+sandbox cannot inherit `IRIS_DAEMON_SOCK` or `IRIS_SESSION_NAME` from the
+pi parent process. Any `iris …` invocation from inside the bash sandbox
+would fail loudly (the daemon socket path env var is unset, and the socket
+itself is not mounted — see invariant 3) rather than silently succeed by
+proxy.
+
+The immunity is structural — `ResolveBash` builds the env from a fixed
+allowlist, not a block-list — so adding a new `IRIS_*` env var to the
+pi-child environment (as #1693 did for `IRIS_SESSION_NAME`) cannot silently
+widen the bash-sandbox env surface. A regression in the allowlist would
+show up immediately under the grep audit below, and
+`credential_broker_iris_env_test.go::TestCredentialBroker_IRISEnvNeverLeaks`
+pins the same property as a structural Go test (including a forward-
+looking synthetic `IRIS_FUTURE_VAR` so future iris env additions inherit
+the guarantee).
 
 Audit:
 

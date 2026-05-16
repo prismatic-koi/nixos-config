@@ -23,7 +23,7 @@ package main
 //
 // The canonical state set we report on is:
 //
-//	active, waiting, idle, finished, error
+//	active, waiting, idle, finished, error, escalated
 //
 // Sessions whose `state` field doesn't match any canonical name are bucketed
 // into `idle` (defensive — should not happen in normal operation; matches
@@ -32,6 +32,13 @@ package main
 // perspective "the session is starting up" is closer to active than to idle —
 // the JSON form preserves it as its own key only if a session is actually in
 // that state at the time of the snapshot.
+//
+// `escalated` (issue #1693) is the "needs attention" twin of `waiting`: a
+// worker has handed a question to the coordinator and is paused. For the
+// tmux status segment it is folded into the Waiting bucket so a single
+// glance at the status bar surfaces both attention-needing states; the
+// human line and JSON output preserve it as its own bucket so operators
+// can distinguish at the CLI.
 
 import (
 	"context"
@@ -58,8 +65,14 @@ type sessionStateCounts struct {
 	Idle     int `json:"idle"`
 	Finished int `json:"finished"`
 	Error    int `json:"error"`
+	// Escalated (issue #1693) is the worker-paused-awaiting-coordinator
+	// state. Always emitted (even when zero) so scripts can rely on the
+	// key being present alongside the other canonical buckets. Folded
+	// into Waiting for the tmux segment — both states mean "needs
+	// attention" — but kept distinct in the human line and JSON.
+	Escalated int `json:"escalated"`
 	// Spawning is iris-specific (pre-handshake). Emitted only when >0 so
-	// scripts that key off the canonical five aren't surprised by an
+	// scripts that key off the canonical buckets aren't surprised by an
 	// extra always-zero field; bucketed into Active in the human form.
 	Spawning int `json:"spawning,omitempty"`
 }
@@ -125,6 +138,8 @@ func countStates(sessions []iris.SessionSnapshot) sessionStateCounts {
 			c.Finished++
 		case "error":
 			c.Error++
+		case "escalated":
+			c.Escalated++
 		case "spawning":
 			c.Spawning++
 		default:
@@ -159,8 +174,8 @@ func renderStatusLine(w io.Writer, c sessionStateCounts) error {
 	// operators care about "is a session in flight" more than the
 	// micro-distinction between spawning and active.
 	active := c.Active + c.Spawning
-	line := fmt.Sprintf("active: %d  waiting: %d  idle: %d  finished: %d  error: %d",
-		active, c.Waiting, c.Idle, c.Finished, c.Error)
+	line := fmt.Sprintf("active: %d  waiting: %d  escalated: %d  idle: %d  finished: %d  error: %d",
+		active, c.Waiting, c.Escalated, c.Idle, c.Finished, c.Error)
 	if _, err := fmt.Fprintln(w, line); err != nil {
 		return err
 	}
@@ -187,9 +202,13 @@ func renderStatusWaitingPlain(w io.Writer, c sessionStateCounts) error {
 // because the operator-visible distinction is "is something in flight" vs
 // "is something waiting on me".
 func renderStatusTmux(w io.Writer, c sessionStateCounts, waitingOnly bool) error {
+	// Fold Escalated into Waiting for the tmux segment: both states mean
+	// "needs attention" and the status bar's waiting pip is the operator
+	// signal for that category. The human-line and JSON forms keep them
+	// distinct so the CLI surfaces the difference when asked.
 	tc := tmuxstatus.Counts{
 		Active:   c.Active + c.Spawning,
-		Waiting:  c.Waiting,
+		Waiting:  c.Waiting + c.Escalated,
 		Idle:     c.Idle,
 		Finished: c.Finished,
 		Error:    c.Error,
