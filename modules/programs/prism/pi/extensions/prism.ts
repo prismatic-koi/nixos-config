@@ -122,6 +122,69 @@ export const EXCLUDED_BASH_BASES = new Set([
 ])
 
 /**
+ * Quote-aware tokeniser for a bash command string.
+ *
+ * Splits the input on whitespace, but treats matched single-quoted (`'...'`)
+ * and double-quoted (`"..."`) regions as part of a single token. The quote
+ * characters themselves are stripped from the resulting token. Adjacent
+ * quoted and unquoted segments concatenate (e.g. `foo"bar baz"` → one token
+ * `foobar baz`).
+ *
+ * This is intentionally simple — it does not handle backslash escapes,
+ * `$'...'` ANSI-C quoting, or `$"..."` localised quoting. The goal is
+ * normalisation for doom-loop similarity, not a full POSIX shell parser:
+ * for that purpose, treating `bash -c "ls -la"` and `bash -c 'ls -la'` as
+ * the same token sequence is the desired and sufficient outcome (#1683).
+ *
+ * Unmatched trailing quotes are tolerated: the rest of the string is
+ * consumed as a single token with the opening quote stripped, which keeps
+ * the function total (never throws) for arbitrary input.
+ *
+ * Exported for unit testing.
+ */
+export function tokenizeBashCommand(cmd: string): string[] {
+  const tokens: string[] = []
+  let current = ""
+  let inToken = false
+  let quote: '"' | "'" | null = null
+
+  const flush = () => {
+    if (inToken) {
+      tokens.push(current)
+      current = ""
+      inToken = false
+    }
+  }
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (quote !== null) {
+      if (ch === quote) {
+        // Closing quote — drop it, stay in the same token.
+        quote = null
+      } else {
+        current += ch
+      }
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      // Opening quote — start (or continue) a token, drop the quote char.
+      quote = ch
+      inToken = true
+      continue
+    }
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      flush()
+      continue
+    }
+    current += ch
+    inToken = true
+  }
+  flush()
+  return tokens
+}
+
+/**
  * Compute a normalised similarity key for a tool call.
  * Returns null for excluded tools (no detection).
  *
@@ -144,8 +207,14 @@ export function similarityKey(tool: string, args: unknown): string | null {
       // `git push origin` rather than `cd`. Bare `cd /foo` (no following
       // command) is NOT stripped — it remains `bash:cd` as a legitimate op.
       const stripped = cmd.trim().replace(/^(cd\s+\S+\s*(?:&&|;)\s*)+/, "")
-      const tokens = stripped.split(/\s+/)
-      const meaningful = tokens.filter((t) => t.length > 0)
+
+      // Quote-aware tokenisation. Splits on whitespace outside matched single
+      // or double quotes, then strips the surrounding quote characters from
+      // each token. This normalises whitespace and quoting so that
+      // `bash -c "ls -la"` and `bash -c 'ls -la'` produce the same token
+      // sequence (`bash`, `-c`, `ls -la`) — see #1683.
+      const meaningful = tokenizeBashCommand(stripped)
+
       let baseIdx = 0
       while (baseIdx < meaningful.length && meaningful[baseIdx].startsWith("-")) {
         baseIdx++
@@ -156,26 +225,15 @@ export function similarityKey(tool: string, args: unknown): string | null {
         return null
       }
 
-      const SUBCOMMAND_CLIS = new Set(["gh", "git", "kubectl", "helm", "docker", "podman"])
-      if (SUBCOMMAND_CLIS.has(base)) {
-        const positionals: string[] = []
-        for (let i = baseIdx + 1; i < meaningful.length; i++) {
-          if (!meaningful[i].startsWith("-")) {
-            positionals.push(meaningful[i])
-          }
-        }
-        const parts = [base, ...positionals.slice(0, 3)]
-        return `bash:${parts.join(" ")}`.trimEnd()
-      }
-
-      let firstPos = ""
-      for (let i = baseIdx + 1; i < meaningful.length; i++) {
-        if (!meaningful[i].startsWith("-")) {
-          firstPos = meaningful[i]
-          break
-        }
-      }
-      return `bash:${base} ${firstPos}`.trimEnd()
+      // Identity key is the full normalised argv (base + every following
+      // token, preserving order). Including flags and trailing positionals
+      // ensures different invocations of the same base command (e.g.
+      // `prism checkin <s> --last 50` vs `--last 100`) produce different
+      // keys — the previous "base + firstPositional" formula collapsed
+      // legitimate diagnostic refinement into a doom-loop false positive
+      // (#1683).
+      const parts = meaningful.slice(baseIdx)
+      return `bash:${parts.join(" ")}`.trimEnd()
     }
 
     case "edit":

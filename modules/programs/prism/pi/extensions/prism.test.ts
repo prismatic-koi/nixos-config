@@ -28,6 +28,7 @@ import {
   type InboundDispatchAPI,
   // Behavioural guards
   similarityKey,
+  tokenizeBashCommand,
   processDoomLoop,
   isGitPush,
   EXCLUDED_BASH_BASES,
@@ -722,7 +723,7 @@ describe("similarityKey — excluded tools", () => {
   })
 })
 
-describe("similarityKey — bash subcommand-driven CLIs", () => {
+describe("similarityKey — bash full-argv keying (#1683)", () => {
   it("gh issue view with different numbers produces different keys", () => {
     const keys = [1, 2, 3, 4, 5].map((n) =>
       similarityKey("bash", { command: `gh issue view ${n}` }),
@@ -730,16 +731,151 @@ describe("similarityKey — bash subcommand-driven CLIs", () => {
     assert.equal(new Set(keys).size, 5)
   })
 
-  it("git log with different flags produces the same key", () => {
+  it("git log with different flag values produces different keys (#1683)", () => {
+    // Post-#1683: flags are part of the key. `git log -1` and `git log -3`
+    // are different argv, so they hash differently. This intentionally
+    // overrides the pre-fix collapsing heuristic — doom-loop detection is
+    // about exact argv repetition, not semantic equivalence.
     const a = similarityKey("bash", { command: "git log -1" })
     const b = similarityKey("bash", { command: "git log -3" })
-    assert.equal(a, b)
+    assert.notEqual(a, b)
   })
 
   it("go test and go build produce different keys", () => {
     const a = similarityKey("bash", { command: "go test ./..." })
     const b = similarityKey("bash", { command: "go build ./..." })
     assert.notEqual(a, b)
+  })
+})
+
+// Issue #1683: doom-loop detector false positives on different-argv bash calls.
+// The detector used to key on `base + firstPositional`, collapsing
+// `prism checkin <s> --last 50`, `--last 100`, `--verbose`, etc. to the same
+// key and tripping the 5-in-a-row counter on legitimate iterative diagnosis.
+// The fix includes the full normalised argv in the key.
+describe("similarityKey — #1683 false-positive cases", () => {
+  it("5 prism-checkin calls with different --last/--types/--verbose flags produce 5 distinct keys", () => {
+    const session = "nixos-config@iris-tui-session-spawned"
+    const cmds = [
+      `prism checkin ${session} --types audit --last 50`,
+      `prism checkin ${session} --last 40 --verbose`,
+      `prism checkin ${session} --last 40 --verbose --types audit`,
+      `prism checkin ${session} --last 60 --verbose`,
+      `prism checkin ${session} --last 100`,
+    ]
+    const keys = cmds.map((command) => similarityKey("bash", { command }))
+    assert.equal(new Set(keys).size, 5)
+  })
+
+  it("5 prism-checkin calls with different first positional (session) produce 5 distinct keys", () => {
+    const cmds = [
+      "prism checkin nixos-config@worker-a --last 50",
+      "prism checkin nixos-config@worker-b --last 50",
+      "prism checkin nixos-config@worker-c --last 50",
+      "prism checkin nixos-config@worker-d --last 50",
+      "prism checkin nixos-config@worker-e --last 50",
+    ]
+    const keys = cmds.map((command) => similarityKey("bash", { command }))
+    assert.equal(new Set(keys).size, 5)
+  })
+
+  it("alternating prism-checkin between two sessions produces 2 distinct keys", () => {
+    const cmds = [
+      "prism checkin nixos-config@worker-a",
+      "prism checkin nixos-config@worker-b",
+      "prism checkin nixos-config@worker-a",
+      "prism checkin nixos-config@worker-b",
+      "prism checkin nixos-config@worker-a",
+    ]
+    const keys = cmds.map((command) => similarityKey("bash", { command }))
+    assert.equal(new Set(keys).size, 2)
+  })
+})
+
+describe("similarityKey — #1683 true-positive cases", () => {
+  it("5 identical prism-checkin commands produce 1 key", () => {
+    const cmd = "prism checkin nixos-config@worker-a --last 50"
+    const keys = [1, 2, 3, 4, 5].map(() => similarityKey("bash", { command: cmd }))
+    assert.equal(new Set(keys).size, 1)
+  })
+
+  it("5 identical non-bash commands still produce 1 key (edit on the same file)", () => {
+    const keys = [1, 2, 3, 4, 5].map(() =>
+      similarityKey("edit", { filePath: "/foo.go", newString: "x" }),
+    )
+    assert.equal(new Set(keys).size, 1)
+  })
+})
+
+describe("similarityKey — #1683 whitespace and quoting normalisation", () => {
+  it("double-quoted and single-quoted -c arg produce the same key", () => {
+    const a = similarityKey("bash", { command: `bash -c "ls -la"` })
+    const b = similarityKey("bash", { command: `bash -c 'ls -la'` })
+    assert.equal(a, b)
+  })
+
+  it("runs of internal whitespace are collapsed", () => {
+    const a = similarityKey("bash", { command: "go   test     ./..." })
+    const b = similarityKey("bash", { command: "go test ./..." })
+    assert.equal(a, b)
+  })
+
+  it("leading/trailing whitespace does not change the key", () => {
+    const a = similarityKey("bash", { command: "  go test ./...  " })
+    const b = similarityKey("bash", { command: "go test ./..." })
+    assert.equal(a, b)
+  })
+
+  it("tabs and spaces are equivalent token separators", () => {
+    const a = similarityKey("bash", { command: "go\ttest\t./..." })
+    const b = similarityKey("bash", { command: "go test ./..." })
+    assert.equal(a, b)
+  })
+})
+
+// Direct unit tests for the tokeniser helper.
+describe("tokenizeBashCommand", () => {
+  it("splits on whitespace", () => {
+    assert.deepEqual(tokenizeBashCommand("a b c"), ["a", "b", "c"])
+  })
+
+  it("collapses runs of whitespace", () => {
+    assert.deepEqual(tokenizeBashCommand("a   b \t c"), ["a", "b", "c"])
+  })
+
+  it("trims leading/trailing whitespace", () => {
+    assert.deepEqual(tokenizeBashCommand("  a b  "), ["a", "b"])
+  })
+
+  it("keeps a double-quoted region with whitespace as one token, stripping the quotes", () => {
+    assert.deepEqual(tokenizeBashCommand(`bash -c "ls -la"`), ["bash", "-c", "ls -la"])
+  })
+
+  it("keeps a single-quoted region with whitespace as one token, stripping the quotes", () => {
+    assert.deepEqual(tokenizeBashCommand(`bash -c 'ls -la'`), ["bash", "-c", "ls -la"])
+  })
+
+  it("double- and single-quoted forms of the same content tokenise identically", () => {
+    assert.deepEqual(
+      tokenizeBashCommand(`bash -c "ls -la"`),
+      tokenizeBashCommand(`bash -c 'ls -la'`),
+    )
+  })
+
+  it("concatenates adjacent quoted and unquoted segments into a single token", () => {
+    assert.deepEqual(tokenizeBashCommand(`foo"bar baz"qux`), ["foobar bazqux"])
+  })
+
+  it("returns an empty array for empty/whitespace-only input", () => {
+    assert.deepEqual(tokenizeBashCommand(""), [])
+    assert.deepEqual(tokenizeBashCommand("   \t  "), [])
+  })
+
+  it("tolerates an unmatched trailing quote (does not throw, consumes remainder)", () => {
+    // The opening quote starts a token; everything after is part of that
+    // token (with the quote char itself dropped). The result is deliberate:
+    // a total function, never an exception, for arbitrary agent input.
+    assert.deepEqual(tokenizeBashCommand(`a "b c`), ["a", "b c"])
   })
 })
 
@@ -751,17 +887,16 @@ describe("similarityKey — bash cd-prefix stripping", () => {
 
   it("strips a single 'cd /path &&' prefix (gh command)", () => {
     const key = similarityKey("bash", { command: "cd /foo && gh pr create --title foo" })
-    // gh is a subcommand CLI; positionals are pr, create, foo (--title is a flag, foo is its value
-    // but the algorithm doesn't parse flag arity — foo appears as a positional).
-    assert.equal(key, "bash:gh pr create foo")
+    // Post-#1683: full argv is included in the key.
+    assert.equal(key, "bash:gh pr create --title foo")
     // Crucially, it must NOT be bash:cd.
     assert.notEqual(key, "bash:cd")
   })
 
   it("strips a single 'cd /path &&' prefix (nix command)", () => {
     const key = similarityKey("bash", { command: "cd /foo/bar && nix eval .#foo" })
-    // nix is not in SUBCOMMAND_CLIS, so base=nix, firstPos=eval.
-    assert.equal(key, "bash:nix eval")
+    // Post-#1683: full argv is included in the key.
+    assert.equal(key, "bash:nix eval .#foo")
     // Crucially, it must NOT be bash:cd.
     assert.notEqual(key, "bash:cd")
   })
@@ -773,9 +908,11 @@ describe("similarityKey — bash cd-prefix stripping", () => {
 
   it("does NOT strip a bare 'cd /foo' (no following command)", () => {
     const key = similarityKey("bash", { command: "cd /foo" })
-    // Bare cd is not stripped; base=cd, firstPos=/foo.
+    // Bare cd is not stripped; base=cd, positional=/foo.
     // The key contains 'cd' as the base command, confirming the bare cd is treated as-is.
     assert.ok(key !== null && key.startsWith("bash:cd"), `expected key starting with bash:cd, got ${key}`)
+    // Post-#1683: positional is also in the key.
+    assert.equal(key, "bash:cd /foo")
   })
 
   it("strips 'cd /path;' (semicolon separator) prefix", () => {
