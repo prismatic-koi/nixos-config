@@ -30,11 +30,13 @@ package main
 // canonical shape this command follows.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
@@ -81,9 +83,13 @@ Two surfaces:
                             without any additional plumbing.
 
 The iris daemon must be running ('iris daemon' or 'systemctl --user start
-iris') for the dashboard to populate. When the daemon is unreachable, the
-dashboard renders a clear "iris daemon not connected" overlay with a
-'systemctl --user start iris' hint and remains responsive to q/esc.`,
+iris') for the dashboard to populate. If the daemon is not reachable at
+startup the command exits non-zero with a clear 'systemctl --user start
+iris' hint (matching 'iris sessions list' / 'iris prompt'). If the
+daemon disappears mid-session (e.g. the user restarts iris while the
+dashboard is open) the bubbletea program renders a "daemon not
+connected" overlay and reconnects automatically when the socket
+returns.`,
 	RunE:          runDashboard,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -105,6 +111,10 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 	sockPath := dashboardSocketPath
 	if sockPath == "" {
 		sockPath = iris.ResolvePaths().Sock
+	}
+
+	if err := dashboardPreflightProbe(cmd.Context(), sockPath); err != nil {
+		return err
 	}
 
 	if dashboardPopup {
@@ -136,6 +146,38 @@ func runDashboard(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	return syscallExecTmuxAttach(dashboard.DashSession)
+}
+
+// dashboardPreflightProbe synchronously verifies the iris daemon is
+// reachable before the cobra RunE hands control to bubbletea. AC #8 of
+// issue #1703 requires that `iris dashboard` exit non-zero with the
+// canonical `systemctl --user start iris` hint when the daemon is not
+// running. The bubbletea program by itself would only surface a
+// DisconnectedMsg into the model (rendering an overlay) and the
+// user-driven quit path returns exit 0 — contradicting the literal AC
+// and diverging from `iris sessions list` / `iris prompt`.
+//
+// We reuse fetchSessionsSnapshot (the same helper backing `iris sessions
+// list`) so the hint shape is locked to a single source of truth across
+// the iris CLI. Probing applies to popup mode too: a daemon-down popup
+// would otherwise render an opaque overlay inside `tmux display-popup
+// -E` with no readable error code for shell callers; a synchronous probe
+// lets the popup close immediately with the error visible on the
+// invoking pane's stderr.
+//
+// The DisconnectedMsg overlay still applies for mid-session reconnects
+// (daemon restarts while the dashboard is open) — the DaemonClient's
+// retry loop keeps running and the overlay narrates the outage. Only the
+// daemon-down-at-startup case maps to exit non-zero.
+//
+// Factored into its own function (rather than inlined into runDashboard)
+// so dashboard_test.go can assert the exit-non-zero + hint-shape
+// contract without driving the cobra command.
+func dashboardPreflightProbe(ctx context.Context, sockPath string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := fetchSessionsSnapshot(probeCtx, sockPath)
+	return err
 }
 
 // runDashboardProgram runs the bubbletea program for the given mode against
