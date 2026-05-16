@@ -675,7 +675,7 @@ grep -r IRIS_ modules/programs/prism/prism/cmd/iris/ \
               modules/programs/prism/prism/internal/iris/
 ```
 
-Only three `IRIS_*` env vars should appear:
+Only four `IRIS_*` env vars should appear:
 
 - `IRIS_DAEMON_SOCK` — set by the supervisor on the **pi child process**
   (`internal/iris/supervisor.go::buildEnv`) so the prism extension running
@@ -692,6 +692,16 @@ Only three `IRIS_*` env vars should appear:
 - `IRIS_PARITY_TEST_MODE` — the parity-test harness guard
   (`internal/iris/iristest/iristest.go:54`,
   `internal/iris/parity/parity_isolation_test.go`). Test-only.
+- `IRIS_FEEDBACK_ENDPOINT` — host-side opt-in upstream POST target for
+  `iris feedback` (`cmd/iris/feedback.go`, issue #1721). Read directly via
+  `os.Getenv` from the user's interactive shell when `iris feedback`
+  records an entry; if set, the entry is POSTed to the named URL after the
+  local-first JSONL write succeeds. This is **not** a daemon-proxy path:
+  the supervisor never sets it on the pi child, the credential broker
+  never forwards it into any tool sandbox (invariant 2's allowlist is
+  closed), and a sandboxed subprocess cannot use it to call back into the
+  daemon. It is a configuration knob for the operator's own shell, in the
+  same shape as `PRISM_FEEDBACK_ENDPOINT` for prism.
 
 There is no `IRIS_HOST_API`, no `IRIS_CLI_PROXY`, and no analogue of prism's
 host-API socket path that a sandboxed subprocess could use to call back into
