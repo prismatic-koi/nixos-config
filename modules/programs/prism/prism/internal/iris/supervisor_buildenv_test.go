@@ -54,7 +54,7 @@ func TestSupervisor_BuildEnv_InjectsIRISSessionName(t *testing.T) {
 	}
 	t.Cleanup(sup.closeSessionLogFile)
 
-	env := sup.buildEnv("/tmp/fake-pi-config")
+	env := sup.buildEnv()
 
 	wantSession := "IRIS_SESSION_NAME=iris-worker@example-branch"
 	wantSock := "IRIS_DAEMON_SOCK="
@@ -107,7 +107,7 @@ func TestSupervisor_BuildEnv_EmptySessionNameOmitsVar(t *testing.T) {
 	}
 	t.Cleanup(sup.closeSessionLogFile)
 
-	env := sup.buildEnv("/tmp/fake-pi-config")
+	env := sup.buildEnv()
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "IRIS_SESSION_NAME=") {
 			t.Errorf("buildEnv emitted IRIS_SESSION_NAME with empty SessionName: %q", kv)
