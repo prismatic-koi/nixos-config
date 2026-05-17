@@ -290,11 +290,29 @@ func runCheckinNarrative(w io.Writer, d *db.DB, session string, last int, before
 	childTypes := []string{"tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
 	children, _ := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
-	// Bucket children by messageId for fast lookup at render time.
+	// Bucket children by parent-assistant messageId for fast lookup at
+	// render time. tool_call/tool_result expose the link as
+	// `parentMessageId` (#1787); permission_* and thinking continue to
+	// expose it as `messageId`. ExtractParentMessageID prefers the new
+	// field and falls back to the legacy field.
+	//
+	// Children whose parent assistant turn is not in this window are
+	// collected as orphans and rendered after the timeline so the
+	// information isn't silently dropped (#1787 edge-case AC).
+	assistantMsgIDs := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		assistantMsgIDs[id] = struct{}{}
+	}
 	childrenByMsgID := make(map[string][]childItem, len(messageIDs))
+	var orphanChildren []childItem
 	for _, e := range children {
-		mid := narrative.ExtractMessageID(e.Payload)
+		mid := narrative.ExtractParentMessageID(e.Payload)
 		if mid == "" {
+			orphanChildren = append(orphanChildren, childItem{eventType: e.Type, payload: e.Payload})
+			continue
+		}
+		if _, ok := assistantMsgIDs[mid]; !ok {
+			orphanChildren = append(orphanChildren, childItem{eventType: e.Type, payload: e.Payload})
 			continue
 		}
 		childrenByMsgID[mid] = append(childrenByMsgID[mid], childItem{eventType: e.Type, payload: e.Payload})
@@ -404,6 +422,16 @@ func runCheckinNarrative(w io.Writer, d *db.DB, session string, last int, before
 			renderChildEvents(w, childrenByMsgID[mid], verbose)
 			fmt.Fprintln(w)
 		}
+	}
+
+	// Surface orphan child events (parent assistant turn outside the
+	// queried window) so they aren't silently dropped — #1787 edge
+	// case. renderChildEvents already handles the "result without a
+	// matching call" path so we can reuse it directly.
+	if len(orphanChildren) > 0 {
+		fmt.Fprintln(w, "orphan tool events (parent turn outside window):")
+		renderChildEvents(w, orphanChildren, verbose)
+		fmt.Fprintln(w)
 	}
 
 	fmt.Fprintln(w, "── end of event log ──")

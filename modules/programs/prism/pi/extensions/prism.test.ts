@@ -3867,3 +3867,249 @@ describe("#1761: TOOL_HEARTBEAT_INTERVAL_MS — env override", () => {
     }
   })
 })
+
+// ---------------------------------------------------------------------------
+// #1787: tool_call / tool_result frames carry parentMessageId
+// ---------------------------------------------------------------------------
+//
+// The pi extension stamps `parentMessageId` (the in-flight assistant message
+// id observed via `message_start`) onto every `tool_call` and `tool_result`
+// frame it writes. This is the field the consumer's secondary-query SQL
+// pushdown (`db.QueryEventsByMessageIDs`) joins on to pair child tool events
+// back to their parent assistant turn for the `iris checkin` / `prism checkin
+// --turns` narrative views.
+//
+// Pre-#1787 the extension did not stamp any parent-message linkage on the
+// wire — the `id` it emitted was the tool-call id (per-invocation UUID), NOT
+// the parent assistant messageId. The DB pushdown silently dropped every
+// production tool_call/tool_result because no row carried `$.messageId`.
+//
+// Regression coverage: a real handshake-completed extension, fed an
+// assistant `message_start` and then `tool_execution_start` /
+// `tool_execution_end`, must produce wire frames where:
+//   - `parentMessageId` is present and non-empty on tool_call,
+//   - `parentMessageId` is present and non-empty on tool_result,
+//   - both values equal the `message.id` from the preceding message_start.
+
+describe("#1787: tool_call/tool_result emit parentMessageId from message_start", () => {
+  it("stamps the assistant message id onto tool_call and tool_result frames", () => {
+    return new Promise<void>((resolve, reject) => {
+      const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-1787-"))
+      const sockPath = path.join(sockDir, "pipe.sock")
+
+      const savedName = process.env.PRISM_SESSION_NAME
+      const savedPipe = process.env.PRISM_HARNESS_PIPE
+      process.env.PRISM_SESSION_NAME = "test@main"
+      process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+      const cleanup = () => {
+        process.env.PRISM_SESSION_NAME = savedName
+        process.env.PRISM_HARNESS_PIPE = savedPipe
+        try { fs.rmSync(sockDir, { recursive: true, force: true }) } catch {}
+      }
+
+      const ASSISTANT_MSG_ID = "msg_assistant_abc123"
+      const TOOL_CALL_ID = "tool_call_uuid_xyz"
+
+      // Sidecar responder: completes the hello/hello_ack handshake then
+      // records every frame the extension writes. After we've seen both the
+      // tool_call and tool_result frames, verify their shape.
+      const receivedLines: string[] = []
+      const server = net.createServer((conn) => {
+        attachJsonlReader(conn, (line) => {
+          if (line.length === 0) return
+          receivedLines.push(line)
+          let f: Record<string, unknown>
+          try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+          if (f.type === "hello") {
+            conn.write(
+              JSON.stringify({
+                type: "hello_ack",
+                protocol_version: 2,
+                session_name: "test@main",
+                session_role: "worker",
+                isolation_mode: "host",
+              }) + "\n",
+            )
+          }
+        })
+      })
+
+      const { pi, trigger } = makeMockPI1554()
+      prismExtension(pi as never)
+
+      server.listen(sockPath, () => {
+        void trigger("session_start", {}, {}).then(async () => {
+          // Wait a tick for the handshake to round-trip.
+          await new Promise((r) => setTimeout(r, 50))
+
+          // Drive the lifecycle: assistant message_start (provides the
+          // parent message id) → tool_execution_start → tool_execution_end.
+          // The mock pi needs an appendEntry no-op for the doom-loop
+          // snapshot path that tool_execution_start calls into.
+          ;(pi as unknown as { appendEntry: () => void }).appendEntry = () => {}
+          await trigger("message_start", {
+            message: { id: ASSISTANT_MSG_ID, role: "assistant" },
+          })
+          await trigger("tool_execution_start", {
+            toolCallId: TOOL_CALL_ID,
+            toolName: "bash",
+            args: { command: "echo hi" },
+          })
+          await trigger("tool_execution_end", {
+            toolCallId: TOOL_CALL_ID,
+            isError: false,
+            result: { content: "hi\n" },
+          })
+
+          // Wait for the frames to flush across the socket.
+          await new Promise((r) => setTimeout(r, 50))
+
+          try {
+            const frames = receivedLines.map((l) => {
+              try { return JSON.parse(l) as Record<string, unknown> } catch { return {} }
+            })
+            const toolCalls = frames.filter((f) => f.type === "tool_call")
+            const toolResults = frames.filter((f) => f.type === "tool_result")
+
+            assert.equal(
+              toolCalls.length, 1,
+              `expected exactly 1 tool_call frame, got ${toolCalls.length}: ${JSON.stringify(frames)}`,
+            )
+            assert.equal(
+              toolResults.length, 1,
+              `expected exactly 1 tool_result frame, got ${toolResults.length}: ${JSON.stringify(frames)}`,
+            )
+
+            // Core AC: parentMessageId is present and non-empty.
+            assert.equal(
+              toolCalls[0].parentMessageId, ASSISTANT_MSG_ID,
+              `tool_call must carry parentMessageId=${ASSISTANT_MSG_ID}, got: ${JSON.stringify(toolCalls[0])}`,
+            )
+            assert.equal(
+              toolResults[0].parentMessageId, ASSISTANT_MSG_ID,
+              `tool_result must carry parentMessageId=${ASSISTANT_MSG_ID}, got: ${JSON.stringify(toolResults[0])}`,
+            )
+
+            // Sanity: id (tool-call id) is still the per-invocation UUID,
+            // distinct from parentMessageId, so the two pairing keys remain
+            // independent on the wire.
+            assert.equal(
+              toolCalls[0].id, TOOL_CALL_ID,
+              "tool_call id must remain the per-invocation tool-call uuid",
+            )
+            assert.equal(
+              toolResults[0].id, TOOL_CALL_ID,
+              "tool_result id must remain the per-invocation tool-call uuid",
+            )
+
+            cleanup()
+            server.close()
+            resolve()
+          } catch (err) {
+            cleanup()
+            server.close()
+            reject(err as Error)
+          }
+        })
+      })
+
+      // Safety timeout in case the handshake or trigger chain stalls.
+      setTimeout(() => {
+        cleanup()
+        server.close()
+        reject(new Error(
+          `timeout: never saw both tool_call and tool_result frames; received: ${JSON.stringify(receivedLines)}`,
+        ))
+      }, 1000).unref()
+    })
+  })
+
+  it("omits parentMessageId entirely when no assistant message_start has been observed", () => {
+    return new Promise<void>((resolve, reject) => {
+      const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-1787-orphan-"))
+      const sockPath = path.join(sockDir, "pipe.sock")
+
+      const savedName = process.env.PRISM_SESSION_NAME
+      const savedPipe = process.env.PRISM_HARNESS_PIPE
+      process.env.PRISM_SESSION_NAME = "test@main"
+      process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+      const cleanup = () => {
+        process.env.PRISM_SESSION_NAME = savedName
+        process.env.PRISM_HARNESS_PIPE = savedPipe
+        try { fs.rmSync(sockDir, { recursive: true, force: true }) } catch {}
+      }
+
+      const receivedLines: string[] = []
+      const server = net.createServer((conn) => {
+        attachJsonlReader(conn, (line) => {
+          if (line.length === 0) return
+          receivedLines.push(line)
+          let f: Record<string, unknown>
+          try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+          if (f.type === "hello") {
+            conn.write(
+              JSON.stringify({
+                type: "hello_ack",
+                protocol_version: 2,
+                session_name: "test@main",
+                session_role: "worker",
+                isolation_mode: "host",
+              }) + "\n",
+            )
+          }
+        })
+      })
+
+      const { pi, trigger } = makeMockPI1554()
+      prismExtension(pi as never)
+
+      server.listen(sockPath, () => {
+        void trigger("session_start", {}, {}).then(async () => {
+          await new Promise((r) => setTimeout(r, 50))
+
+          // Deliberately skip message_start — simulates an extension that
+          // restarted mid-turn or a tool call fired before any assistant
+          // message_start was observed. The mock pi needs an appendEntry
+          // no-op for the doom-loop snapshot path.
+          ;(pi as unknown as { appendEntry: () => void }).appendEntry = () => {}
+          await trigger("tool_execution_start", {
+            toolCallId: "orphan-tool",
+            toolName: "bash",
+            args: { command: "true" },
+          })
+
+          await new Promise((r) => setTimeout(r, 50))
+
+          try {
+            const frames = receivedLines
+              .map((l) => { try { return JSON.parse(l) as Record<string, unknown> } catch { return {} } })
+              .filter((f) => f.type === "tool_call")
+            assert.equal(frames.length, 1, `expected 1 tool_call frame, got ${frames.length}`)
+            // The field must be entirely absent, not present as an empty
+            // string — consumers distinguish "orphan" from "" by absence.
+            assert.equal(
+              Object.prototype.hasOwnProperty.call(frames[0], "parentMessageId"),
+              false,
+              `parentMessageId must be omitted when no assistant message_start was observed; got: ${JSON.stringify(frames[0])}`,
+            )
+            cleanup()
+            server.close()
+            resolve()
+          } catch (err) {
+            cleanup()
+            server.close()
+            reject(err as Error)
+          }
+        })
+      })
+
+      setTimeout(() => {
+        cleanup()
+        server.close()
+        reject(new Error("timeout"))
+      }, 1000).unref()
+    })
+  })
+})

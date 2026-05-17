@@ -89,21 +89,19 @@ func userPayload(msgID, text string) string {
 	return fmt.Sprintf(`{"messageId":%q,"text":%q}`, msgID, text)
 }
 
-// toolCallPayload returns a tool_call JSON payload combining the
-// post-#1783 pi-extension wire shape ({name, id, args}) with a
-// synthetic `messageId` field carrying the same id.
+// toolCallPayload returns a tool_call JSON payload in the post-#1787
+// pi-extension wire shape: {name, id, parentMessageId, args}.
 //
-// Why the synthetic messageId: `internal/db/events.go::QueryEventsByMessageIDs`
-// uses `JSON_EXTRACT(payload, '$.messageId')` to fetch child events
-// (tool_call/tool_result) for an assistant turn. The pi prism
-// extension does NOT emit a parent-message linkage on its
-// tool_call/tool_result frames — the per-call `id` it emits is the
-// toolCallId, NOT the parent assistant messageId. That mismatch is a
-// pre-existing bug separate from #1783's field-rename scope (see
-// coordinator escalation 2026-05-17). For tests we inject the
-// synthetic field so the SQL pushdown can still locate children;
-// production output is unchanged from its pre-#1783 broken state
-// until the secondary-query path is reworked.
+// `id` is the tool-call id (the per-invocation UUID the pi extension
+// emits, used to pair this tool_call with its tool_result). For
+// fixture simplicity we use the same string for both `id` and
+// `parentMessageId` — the per-test value of msgID stands in for
+// both the assistant-turn id (the pairing key consumed by
+// `db.QueryEventsByMessageIDs`) and the tool-call id (the pairing
+// key consumed by the tui renderer's tool_call ↔ tool_result merge).
+// Real pi sessions have two distinct ids; the test fixtures don't
+// exercise the distinction because the SQL pushdown only cares about
+// `parentMessageId`.
 //
 // The args input is loose — it may be:
 //   - empty ("") — emitted as JSON null;
@@ -124,7 +122,7 @@ func toolCallPayload(msgID, tool, args string) string {
 		b, _ := json.Marshal(args)
 		argsJSON = string(b)
 	}
-	return fmt.Sprintf(`{"name":%q,"id":%q,"messageId":%q,"args":%s}`, tool, msgID, msgID, argsJSON)
+	return fmt.Sprintf(`{"name":%q,"id":%q,"parentMessageId":%q,"args":%s}`, tool, msgID, msgID, argsJSON)
 }
 
 // isJSONValueLiteral returns true when s looks like a JSON value
@@ -149,15 +147,15 @@ func isJSONValueLiteral(s string) bool {
 	return false
 }
 
-// toolResultPayload returns a tool_result JSON payload combining the
-// post-#1783 pi-extension wire shape ({id, success, output}) with a
-// synthetic `messageId` field carrying the same id. See
-// toolCallPayload for the rationale on the synthetic field.
+// toolResultPayload returns a tool_result JSON payload in the
+// post-#1787 pi-extension wire shape: {id, parentMessageId,
+// success, output}. See `toolCallPayload` for the rationale on
+// the shared msgID stand-in.
 // `tool` is accepted for backward-compat with existing call sites
 // but is no longer part of the wire format; it is silently dropped.
 func toolResultPayload(msgID, tool, result string) string {
 	_ = tool
-	return fmt.Sprintf(`{"id":%q,"messageId":%q,"success":true,"output":%q}`, msgID, msgID, result)
+	return fmt.Sprintf(`{"id":%q,"parentMessageId":%q,"success":true,"output":%q}`, msgID, msgID, result)
 }
 
 // permAskPayload returns a minimal permission_ask JSON payload.

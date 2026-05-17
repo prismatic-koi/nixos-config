@@ -93,45 +93,47 @@ func seedAssistantTurn(t *testing.T, iso *iristest.Isolated, sessionName, text, 
 	} else {
 		tcArgs = json.RawMessage(args)
 	}
-	// Inject a synthetic `messageId` alongside the post-#1783 wire
-	// shape so the cmd/iris/checkin secondary-query path
-	// (QueryEventsByMessageIDs) can still locate this child event
-	// during tests. The pi extension does NOT emit messageId on
-	// tool_call — see coordinator escalation 2026-05-17 and the
-	// commentary on toolCallPayload in cmd/checkin_test.go.
+	// Post-#1787: payload.ToolCall now carries ParentMessageID, the
+	// assistant-turn id stamped by the pi prism extension. The
+	// secondary-query SQL pushdown
+	// (`db.QueryEventsByMessageIDs`) matches on `$.parentMessageId`
+	// so this is the canonical pairing field. Fixture uses the
+	// same msgID value for ParentMessageID (the per-turn assistant
+	// id) and ID (the per-call tool-call id) for simplicity — see
+	// commentary on `toolCallPayload` in cmd/checkin_test.go.
 	tcMarshalled, _ := json.Marshal(payload.ToolCall{
-		Name: tool,
-		Args: tcArgs,
-		ID:   msgID,
+		Name:            tool,
+		Args:            tcArgs,
+		ID:              msgID,
+		ParentMessageID: msgID,
 	})
-	tcp := injectSyntheticMessageID(tcMarshalled, msgID)
 	if err := iso.DB.WriteEvent(db.Event{
 		ID:          uuid.NewString(),
 		SessionName: sessionName,
 		Repo:        "iris-test",
 		Worktree:    iso.Root + "/worktree",
 		Type:        "tool_call",
-		Payload:     string(tcp),
+		Payload:     string(tcMarshalled),
 		CreatedAt:   createdAt.Add(1 * time.Millisecond),
 	}); err != nil {
 		t.Fatalf("seedAssistantTurn: write tool_call: %v", err)
 	}
 
-	// Same synthetic-messageId rationale for tool_result, per
-	// `cmd/checkin_test.go::toolResultPayload`'s commentary.
+	// Same #1787 rationale for tool_result: ParentMessageID is the
+	// pairing field consumed by `db.QueryEventsByMessageIDs`.
 	trMarshalled, _ := json.Marshal(payload.ToolResult{
-		ID:      msgID,
-		Success: true,
-		Output:  result,
+		ID:              msgID,
+		ParentMessageID: msgID,
+		Success:         true,
+		Output:          result,
 	})
-	trp := injectSyntheticMessageID(trMarshalled, msgID)
 	if err := iso.DB.WriteEvent(db.Event{
 		ID:          uuid.NewString(),
 		SessionName: sessionName,
 		Repo:        "iris-test",
 		Worktree:    iso.Root + "/worktree",
 		Type:        "tool_result",
-		Payload:     string(trp),
+		Payload:     string(trMarshalled),
 		CreatedAt:   createdAt.Add(2 * time.Millisecond),
 	}); err != nil {
 		t.Fatalf("seedAssistantTurn: write tool_result: %v", err)
@@ -503,32 +505,4 @@ func TestCheckinEndToEnd_ViaCobra(t *testing.T) {
 	}
 }
 
-// injectSyntheticMessageID rewrites a marshalled payload.ToolCall or
-// payload.ToolResult to add a `messageId` field alongside the new
-// `id` field. The pi prism extension does NOT emit messageId on
-// tool_call/tool_result; the field is synthetic-for-tests so the
-// secondary-query SQL pushdown in db.QueryEventsByMessageIDs (which
-// matches on $.messageId) can still locate these child events. See
-// coordinator escalation 2026-05-17 and the matching helper in
-// cmd/checkin_test.go for the full rationale.
-//
-// The rewrite is a simple JSON-object surgery: drops the leading "{"
-// and inserts the synthetic field at the start of the object body.
-// Returns the original input unchanged if the input doesn't parse as
-// a JSON object (defensive — never panics).
-func injectSyntheticMessageID(in []byte, msgID string) []byte {
-	if len(in) < 2 || in[0] != '{' {
-		return in
-	}
-	// Special case: an empty object literal "{}". Replace with
-	// `{"messageId":"..."}`.
-	if len(in) == 2 && in[1] == '}' {
-		return []byte(fmt.Sprintf(`{"messageId":%q}`, msgID))
-	}
-	// Insert `"messageId":"...",` after the opening "{".
-	prefix := fmt.Sprintf(`{"messageId":%q,`, msgID)
-	out := make([]byte, 0, len(prefix)+len(in)-1)
-	out = append(out, prefix...)
-	out = append(out, in[1:]...)
-	return out
-}
+

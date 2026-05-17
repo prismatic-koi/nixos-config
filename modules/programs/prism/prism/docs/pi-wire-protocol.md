@@ -365,11 +365,12 @@ transitions.
 ### 5.3 `tool_call`
 
 ```json
-{"type":"tool_call","id":"call_abc123","name":"bash","args":{"command":"ls -la"}}
+{"type":"tool_call","id":"call_abc123","name":"bash","args":{"command":"ls -la"},"parentMessageId":"msg_assistant_xyz789"}
 ```
 
 - `id` (string, required) — PI's tool-call ID (corresponds to
-  `toolCallId` in PI's `tool_execution_*` events).
+  `toolCallId` in PI's `tool_execution_*` events). Used to pair this
+  `tool_call` with its `tool_result` (see §5.4).
 - `name` (string, required) — the tool name (`bash`, `read`, `edit`, …).
 - `args` (object, required) — the tool arguments. **Truncation:** the
   extension truncates large arg fields per existing prism conventions —
@@ -379,6 +380,18 @@ transitions.
   truncated string fields are replaced with the first 8 KiB followed by
   the literal sentinel `"…[truncated]"`. The sidecar accepts whatever
   arrives without further truncation.
+- `parentMessageId` (string, optional) — the `messageId` of the assistant
+  turn that issued this tool call. Stamped by the extension from the
+  most recent `message_start` event observed with `role="assistant"`.
+  Omitted (field absent, not empty-string) when the extension has not
+  yet observed an assistant `message_start` in this session — e.g. an
+  extension that restarted mid-turn. Issue #1787 added this field so the
+  consumer-side secondary-query SQL pushdown
+  (`db.QueryEventsByMessageIDs`, used by `iris checkin` and
+  `prism checkin --turns`) can pair tool events back to their parent
+  assistant turn. The previous `messageId` field expected by the older
+  Go consumer was never emitted by this extension; renderers therefore
+  silently dropped every production tool_call until the field was added.
 
 The frame maps directly into a `tool_call` row in `agent_events` (existing
 schema). No translation required on the sidecar side beyond promoting
@@ -387,7 +400,7 @@ schema). No translation required on the sidecar side beyond promoting
 ### 5.4 `tool_result`
 
 ```json
-{"type":"tool_result","id":"call_abc123","success":true,"output":"total 48\ndrwxr-xr-x ..."}
+{"type":"tool_result","id":"call_abc123","success":true,"output":"total 48\ndrwxr-xr-x ...","parentMessageId":"msg_assistant_xyz789"}
 ```
 
 - `id` (string, required) — matches the corresponding `tool_call.id`.
@@ -399,6 +412,12 @@ schema). No translation required on the sidecar side beyond promoting
   exceed the cap remain available to PI in full (PI writes them to its
   own `fullOutputPath` if applicable, see PI RPC docs §"bash"); only the
   wire copy delivered to prism is truncated.
+- `parentMessageId` (string, optional) — mirrors the field on `tool_call`
+  (§5.3). Carries the assistant `messageId` of the turn that issued the
+  matching tool call. Stamped by the extension; same omission semantics
+  as on `tool_call`. Both frames carry the same value, so the consumer's
+  secondary-query pushdown can locate both rows under the same
+  assistant-turn join key. Issue #1787.
 
 The frame maps directly into a `tool_result` row in `agent_events`.
 

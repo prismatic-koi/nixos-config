@@ -74,12 +74,29 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 	childTypes := []string{"tool_call", "tool_result", "permission_ask", "permission_denied", "thinking"}
 	secondary, serr := d.QueryEventsByMessageIDs(session, messageIDs, childTypes)
 
-	// Organise children by messageId.
+	// Organise children by parent-assistant messageId. tool_call /
+	// tool_result frames emit `parentMessageId` (#1787); permission_* /
+	// thinking frames emit `messageId`. `extractParentMessageID` picks
+	// the right field for each event type.
+	//
+	// Orphans — child events whose parent assistant turn is not in the
+	// queried window — are collected in a separate slice and rendered
+	// as standalone lines after the timeline (#1787 edge-case AC).
 	childrenByMsgID := make(map[string][]childEventItem)
+	assistantMsgIDs := make(map[string]struct{}, len(messageIDs))
+	for _, id := range messageIDs {
+		assistantMsgIDs[id] = struct{}{}
+	}
+	var orphans []childEventItem
 	if serr == nil {
 		for _, e := range secondary {
-			msgID := extractMessageID(e.Payload)
+			msgID := extractParentMessageID(e.Payload)
 			if msgID == "" {
+				orphans = append(orphans, childEventItem{e.Type, e.Payload})
+				continue
+			}
+			if _, ok := assistantMsgIDs[msgID]; !ok {
+				orphans = append(orphans, childEventItem{e.Type, e.Payload})
 				continue
 			}
 			childrenByMsgID[msgID] = append(childrenByMsgID[msgID], childEventItem{e.Type, e.Payload})
@@ -318,6 +335,24 @@ func renderCheckinTurns(session string, d *db.DB, assistantEvents []db.Event, ve
 		}
 		fmt.Println()
 		i++
+	}
+
+	// Orphan child events (no parent assistant turn in the queried
+	// window) are surfaced as standalone summary lines after the
+	// timeline so they aren't silently dropped — #1787 edge-case AC.
+	// In default mode tool_call/tool_result orphans share the same
+	// renderer as the paired path so the visual shape is consistent;
+	// other child types fall back to their verbose form.
+	if len(orphans) > 0 {
+		fmt.Println("orphan tool events (parent turn outside window):")
+		if verbose {
+			for _, child := range orphans {
+				renderChildEventVerbose(child.eventType, child.payload, "")
+			}
+		} else {
+			renderChildEventsDefault(orphans, "")
+		}
+		fmt.Println()
 	}
 
 	fmt.Println("── end of event log ──")
