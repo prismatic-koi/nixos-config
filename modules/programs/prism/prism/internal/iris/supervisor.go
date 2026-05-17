@@ -527,26 +527,23 @@ func (s *Supervisor) spawnAndRun(ctx context.Context) int {
 		}
 	}
 
-	// Write a per-session pi config that loads the prism extension.
-	piConfigDir, err := s.writePerSessionPIConfig()
+	// Isolate pi's session JSONL storage to a per-instance directory so
+	// two concurrent iris sessions cannot write to the same JSONL file.
+	// We pass --session-dir <path> rather than setting PI_CODING_AGENT_DIR
+	// (which would shadow ~/.pi/agent/ and break auth/settings/extensions —
+	// see issue #1778). Pi inherits ~/.pi/agent/ for everything else.
+	sessionStoreDir, err := s.ensurePISessionDir()
 	if err != nil {
-		s.logf("supervisor: write pi config: %v", err)
+		s.logf("supervisor: create pi session dir: %v", err)
 		return 1
 	}
 
 	// Build the pi command.
-	args := []string{"--mode", "rpc"}
-	if s.cfg.ExtensionPath != "" {
-		args = append(args, "--extension", s.cfg.ExtensionPath)
-	}
-	// Pass --session <path> when resuming a previous conversation (D-9 restore).
-	if s.cfg.SessionContinuePath != "" {
-		args = append(args, "--session", s.cfg.SessionContinuePath)
-	}
+	args := s.buildPiArgs(sessionStoreDir)
 
 	cmd := exec.CommandContext(ctx, piBin, args...)
 	cmd.Dir = s.cfg.Worktree
-	cmd.Env = s.buildEnv(piConfigDir)
+	cmd.Env = s.buildEnv()
 	// Override the default SIGKILL-on-cancel behaviour with SIGTERM so the
 	// kill ladder (issue #1674) runs SIGTERM → 5s grace → SIGKILL. WaitDelay
 	// is intentionally NOT set: Kill() owns the SIGKILL escalation via the
@@ -755,7 +752,15 @@ func (s *Supervisor) Abort() error {
 }
 
 // buildEnv constructs the environment for the pi child.
-func (s *Supervisor) buildEnv(piConfigDir string) []string {
+//
+// We intentionally do NOT set PI_CODING_AGENT_DIR here. That env var
+// relocates pi's entire agent dir (auth.json, settings.json, models.json,
+// extensions/, themes/, skills/, prompts/, sessions/) — not just session
+// storage. Setting it shadows the user's ~/.pi/agent/ and breaks
+// authentication to anthropic/openai/etc. (see issue #1778). Per-session
+// session JSONL isolation is achieved via the --session-dir command-line
+// flag built in buildPiArgs instead, which is the narrower contract.
+func (s *Supervisor) buildEnv() []string {
 	// Start from the current process environment so pi has access to
 	// ANTHROPIC_API_KEY etc. (pi reads LLM credentials from its own config
 	// dir and env vars, not from iris injections).
@@ -776,47 +781,42 @@ func (s *Supervisor) buildEnv(piConfigDir string) []string {
 		env = append(env, "IRIS_SESSION_NAME="+s.sess.SessionName)
 	}
 
-	// Set PI_CODING_AGENT_DIR to the per-session config dir so pi loads
-	// the prism extension and any APPEND_SYSTEM.md we write there.
-	if piConfigDir != "" {
-		env = append(env, "PI_CODING_AGENT_DIR="+piConfigDir)
-	}
-
 	return env
 }
 
-// writePerSessionPIConfig writes a minimal pi agent config directory for this
-// session. The key file is a pi config/settings that auto-loads the prism
-// extension pointing to s.cfg.ExtensionPath.
-//
-// In D-3 this simply creates the directory; the extension is loaded via the
-// --extension flag on the pi command line instead of via the agent config.
-// A full per-session settings.json injection (for provider overrides etc.)
-// is a later concern.
-func (s *Supervisor) writePerSessionPIConfig() (string, error) {
-	if s.cfg.ExtensionPath == "" {
-		return "", nil
+// buildPiArgs constructs the pi command-line arguments for this session.
+// Split out from spawnAndRun so the args contract (issue #1778: must
+// include --session-dir) can be pinned by a regression test without
+// spawning a pi process. sessionStoreDir is the per-instance directory
+// under which pi writes its session JSONL files (see ensurePISessionDir).
+func (s *Supervisor) buildPiArgs(sessionStoreDir string) []string {
+	args := []string{"--mode", "rpc"}
+	if s.cfg.ExtensionPath != "" {
+		args = append(args, "--extension", s.cfg.ExtensionPath)
 	}
-
-	// The config dir lives inside the session run dir.
-	sessionDir := filepath.Join(s.cfg.RunDir, s.sess.InstanceID)
-	configDir := filepath.Join(sessionDir, "pi-agent")
-	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return "", fmt.Errorf("iris: create pi config dir: %w", err)
+	// Isolate session JSONL storage per iris instance (issue #1778 / AC-2).
+	// This is the narrow alternative to PI_CODING_AGENT_DIR — it only
+	// overrides where pi writes session files, not auth/settings/extensions.
+	if sessionStoreDir != "" {
+		args = append(args, "--session-dir", sessionStoreDir)
 	}
-
-	// In D-3 the extension is passed via --extension; the config dir just needs
-	// to exist so PI_CODING_AGENT_DIR can be set without error.
-	// We write a minimal settings.json so pi doesn't prompt for model config.
-	settingsPath := filepath.Join(configDir, "settings.json")
-	if _, err := os.Stat(settingsPath); os.IsNotExist(err) {
-		settings := `{"model": "claude-sonnet-4-20250514", "provider": "anthropic"}`
-		if err := os.WriteFile(settingsPath, []byte(settings+"\n"), 0o600); err != nil {
-			return "", fmt.Errorf("iris: write pi settings: %w", err)
-		}
+	// Pass --session <path> when resuming a previous conversation (D-9 restore).
+	if s.cfg.SessionContinuePath != "" {
+		args = append(args, "--session", s.cfg.SessionContinuePath)
 	}
+	return args
+}
 
-	return configDir, nil
+// ensurePISessionDir creates and returns the per-instance directory where
+// pi writes its session JSONL files, passed to pi via --session-dir. This
+// replaces the old writePerSessionPIConfig that used PI_CODING_AGENT_DIR
+// and accidentally shadowed ~/.pi/agent/ (issue #1778).
+func (s *Supervisor) ensurePISessionDir() (string, error) {
+	sessionDir := filepath.Join(s.cfg.RunDir, s.sess.InstanceID, "pi-sessions")
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return "", fmt.Errorf("iris: create pi session dir: %w", err)
+	}
+	return sessionDir, nil
 }
 
 // openLogFile opens (or creates) the stderr log file for this session.
