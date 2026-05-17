@@ -56,6 +56,16 @@ type SupervisorConfig struct {
 	PIBinaryPath string
 	// ExtensionPath is the absolute path to prism.ts.
 	ExtensionPath string
+	// PIProvider, when non-empty, is passed to pi as `--provider <value>`.
+	// When empty, the flag is omitted and pi falls back to its own
+	// defaults. See issue #1777.
+	PIProvider string
+	// PIModel, when non-empty, is passed to pi as `--model <value>`. When
+	// empty, the flag is omitted.
+	PIModel string
+	// PIThinking, when non-empty, is passed to pi as `--thinking <value>`.
+	// When empty, the flag is omitted.
+	PIThinking string
 	// RestartThreshold is the max consecutive failures before the circuit
 	// breaker opens. 0 means use DefaultRestartThreshold.
 	RestartThreshold int
@@ -799,6 +809,18 @@ func (s *Supervisor) buildPiArgs(sessionStoreDir string) []string {
 	// overrides where pi writes session files, not auth/settings/extensions.
 	if sessionStoreDir != "" {
 		args = append(args, "--session-dir", sessionStoreDir)
+	}
+	// LLM routing flags (issue #1777). Each is gated by its own non-empty
+	// check so callers without an opinion fall back to pi's own defaults
+	// (the defensive contract — see SupervisorConfig field doc comments).
+	if s.cfg.PIProvider != "" {
+		args = append(args, "--provider", s.cfg.PIProvider)
+	}
+	if s.cfg.PIModel != "" {
+		args = append(args, "--model", s.cfg.PIModel)
+	}
+	if s.cfg.PIThinking != "" {
+		args = append(args, "--thinking", s.cfg.PIThinking)
 	}
 	// Pass --session <path> when resuming a previous conversation (D-9 restore).
 	if s.cfg.SessionContinuePath != "" {
