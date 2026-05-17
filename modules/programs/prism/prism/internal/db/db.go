@@ -78,7 +78,13 @@ CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, s
 CREATE TABLE IF NOT EXISTS session_groups (
   group_id       TEXT PRIMARY KEY,
   parent_session TEXT NOT NULL,
-  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- pr_number and round are populated by RegisterGroupWithPR (#1709 reopen)
+  -- so the worker-sidecar recovery watcher can format a usable review-complete
+  -- prompt when the detached monitor subprocess dies. Both nullable for
+  -- back-compat with the legacy RegisterGroup helper.
+  pr_number      TEXT,
+  round          INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS agent_status (
@@ -542,6 +548,51 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV29ToV30(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV30ToV31(conn, &version); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateV30ToV31 adds pr_number and round columns to session_groups so the
+// worker sidecar's review-completion recovery watcher (#1709 reopen) can
+// reconstruct enough context to format and deliver the review-complete prompt
+// when the detached monitor subprocess dies. Both columns are nullable for
+// back-compat with rows registered prior to this migration; the recovery
+// watcher tolerates NULL by emitting a degraded but still actionable header.
+//
+// The ALTER TABLE statements are guarded by pragma_table_info so the migration
+// is idempotent on fresh databases.
+func migrateV30ToV31(conn *sql.DB, version *int) error {
+	if *version >= 31 {
+		return nil
+	}
+	addColIfMissing := func(table, column, def string) error {
+		var exists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`,
+			table, column,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("db: migration v30\u2192v31: check %s.%s column: %w", table, column, err)
+		}
+		if exists == 0 {
+			stmt := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, def)
+			if _, err := conn.Exec(stmt); err != nil {
+				return fmt.Errorf("db: migration v30\u2192v31: add %s.%s: %w", table, column, err)
+			}
+		}
+		return nil
+	}
+	if err := addColIfMissing("session_groups", "pr_number", "TEXT"); err != nil {
+		return err
+	}
+	if err := addColIfMissing("session_groups", "round", "INTEGER"); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 31`); err != nil {
+		return fmt.Errorf("db: migration v30\u2192v31: %w", err)
+	}
+	*version = 31
 	return nil
 }
 

@@ -45,13 +45,105 @@ func isTerminalState(state string) bool {
 // RegisterGroup inserts a new row into session_groups and returns the generated
 // group_id. parent_session identifies the session that owns this group (e.g.
 // the worker running `prism review`).
+//
+// Use RegisterGroupWithPR when you have the PR number and round; the
+// worker-sidecar recovery watcher (#1709 reopen) reads those columns to
+// reconstruct enough context to deliver the review-complete prompt when the
+// detached monitor subprocess dies. RegisterGroup remains the back-compat
+// entry point for callers that do not have the PR/round (legacy iris paths
+// and unit-test setup).
 func (d *DB) RegisterGroup(parentSession string) (string, error) {
+	return d.RegisterGroupWithPR(parentSession, "", 0)
+}
+
+// RegisterGroupWithPR is RegisterGroup with PR and round metadata. Both
+// arguments are stored as-is; an empty prNumber or zero round is written as
+// SQL NULL. The recovery watcher tolerates NULLs by emitting a degraded
+// (but still actionable) review-complete header.
+func (d *DB) RegisterGroupWithPR(parentSession, prNumber string, round int) (string, error) {
 	groupID := uuid.New().String()
-	const q = `INSERT INTO session_groups (group_id, parent_session) VALUES (?, ?)`
-	if _, err := d.conn.Exec(q, groupID, parentSession); err != nil {
+	const q = `INSERT INTO session_groups (group_id, parent_session, pr_number, round) VALUES (?, ?, ?, ?)`
+	var pr any
+	if prNumber != "" {
+		pr = prNumber
+	}
+	var rnd any
+	if round > 0 {
+		rnd = round
+	}
+	if _, err := d.conn.Exec(q, groupID, parentSession, pr, rnd); err != nil {
 		return "", fmt.Errorf("db: register group: %w", err)
 	}
 	return groupID, nil
+}
+
+// GroupInfo captures the session_groups metadata used by the worker-sidecar
+// recovery watcher (#1709 reopen). PRNumber and Round are empty/zero for
+// groups registered via the legacy RegisterGroup helper.
+type GroupInfo struct {
+	GroupID       string
+	ParentSession string
+	PRNumber      string
+	Round         int
+	CreatedAt     time.Time
+}
+
+// LatestGroupForParent returns the most recently created session_groups row
+// whose parent_session matches parentSession, or (nil, nil) when no group
+// exists for the parent. Used by the worker-sidecar recovery watcher
+// (#1709 reopen) to identify the in-flight review group while
+// reviewingInFlight is set; ActiveReviewGroupForParent's "has any
+// non-terminal member" criterion is the wrong question here, because the
+// stuck-but-complete case the watcher exists to handle has ZERO non-terminal
+// members by definition.
+func (d *DB) LatestGroupForParent(parentSession string) (*GroupInfo, error) {
+	const q = `SELECT group_id, parent_session, pr_number, round, created_at
+	            FROM session_groups
+	            WHERE parent_session = ?
+	            ORDER BY created_at DESC, group_id DESC
+	            LIMIT 1`
+	row := d.conn.QueryRow(q, parentSession)
+	var gi GroupInfo
+	var prNumber sql.NullString
+	var round sql.NullInt64
+	if err := row.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("db: latest group for parent %q: %w", parentSession, err)
+	}
+	if prNumber.Valid {
+		gi.PRNumber = prNumber.String
+	}
+	if round.Valid {
+		gi.Round = int(round.Int64)
+	}
+	return &gi, nil
+}
+
+// GetGroup returns the session_groups metadata for groupID, or (nil, nil) if
+// the row does not exist. Used by the worker-sidecar recovery watcher to
+// reconstruct the review-complete delivery message when the detached monitor
+// subprocess dies.
+func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
+	const q = `SELECT group_id, parent_session, pr_number, round, created_at FROM session_groups WHERE group_id = ?`
+	row := d.conn.QueryRow(q, groupID)
+	var gi GroupInfo
+	var prNumber sql.NullString
+	var round sql.NullInt64
+	if err := row.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("db: get group %q: %w", groupID, err)
+	}
+	if prNumber.Valid {
+		gi.PRNumber = prNumber.String
+	}
+	if round.Valid {
+		gi.Round = int(round.Int64)
+	}
+	return &gi, nil
 }
 
 // GroupCompleted reports whether every agent_status row with this group_id has
