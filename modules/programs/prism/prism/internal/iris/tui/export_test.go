@@ -161,3 +161,85 @@ func SetModelFocus(m Model, focus int) Model {
 	m.focus = focusArea(focus)
 	return m
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1770 child 5 — viewport / scroll / lazy-load accessors.
+// ---------------------------------------------------------------------------
+
+// ModelViewportFollowing returns true when the conversation pane
+// viewport is in auto-tail mode (sticking to the bottom of the
+// buffer). False when the operator has scrolled up to read history.
+func ModelViewportFollowing(m Model) bool {
+	return m.viewport.Following()
+}
+
+// ModelViewportOffset returns the index of the topmost visible line
+// in the conversation pane's line buffer. Zero means "at the top".
+func ModelViewportOffset(m Model) int {
+	return m.viewport.Offset()
+}
+
+// ModelViewportAtBottom returns true when the conversation pane is
+// currently showing the tail of the buffer.
+func ModelViewportAtBottom(m Model) bool {
+	return m.viewport.AtBottom(len(m.eventLines))
+}
+
+// ModelViewportAtTop returns true when the conversation pane is
+// currently showing the head of the buffer.
+func ModelViewportAtTop(m Model) bool {
+	return m.viewport.AtTop()
+}
+
+// ModelPendingNewCount returns the number of new events that have
+// arrived while the viewport was scrolled up. Drives the "↓ N new"
+// status-line indicator.
+func ModelPendingNewCount(m Model) int {
+	return m.pendingNewCount
+}
+
+// ModelHistoryExhausted returns true once the TUI knows the head of
+// the subscribed session's history has been reached.
+func ModelHistoryExhausted(m Model) bool {
+	return m.historyExhausted
+}
+
+// ModelHistoryOldestRowID returns the smallest agent_events.rowid the
+// TUI has observed for the subscribed session. Used as the
+// `before_row_id` of the next session_history request.
+func ModelHistoryOldestRowID(m Model) int64 {
+	return m.historyOldestRowID
+}
+
+// ModelHistoryRequestInFlight returns true while a session_history
+// request is outstanding. Prevents duplicate concurrent requests.
+func ModelHistoryRequestInFlight(m Model) bool {
+	return m.historyRequestInFlight
+}
+
+// SetModelHistoryPageSize overrides the session_history page size on
+// the model. Tests use a small page size so the lazy-load behaviour
+// can be exercised without seeding hundreds of fixture events.
+func SetModelHistoryPageSize(m Model, n int) Model {
+	m.historyPageSize = n
+	return m
+}
+
+// SetModelViewportHeight forces the viewport's content height. Tests
+// use this to drive PgUp/PgDn page-size arithmetic without going
+// through a full render. The model's rightPaneHeight() depends on
+// the WindowSizeMsg-supplied width/height; this helper bypasses the
+// frame size for unit-test predictability.
+func SetModelViewportHeight(m Model, h int) Model {
+	m.viewport.height = h
+	m.viewport.Update(len(m.eventLines), h)
+	return m
+}
+
+// ModelEventPaneEmptyPlaceholder returns the literal string the
+// conversation pane uses for the empty-state row (no events yet).
+// Test-only so the matching assertion does not have to track the
+// exact placeholder text across PRs.
+func ModelEventPaneEmptyPlaceholder() string {
+	return "no events yet"
+}

@@ -7509,3 +7509,112 @@ func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 		t.Errorf("harness = %q after empty-harness upsert; want %q", got, "pi")
 	}
 }
+
+// TestQuerySessionEventsBeforeRowID covers the paged-history query that
+// backs the iris TUI's lazy-load scrollback (issue #1770 child 5). The
+// query must:
+//
+//   - return up to `limit` rows in ASC rowid order
+//   - filter by session_name
+//   - use rowid < beforeRowID when beforeRowID > 0
+//   - return the most recent `limit` rows when beforeRowID == 0
+//   - return an empty slice (not an error) when no rows match
+func TestQuerySessionEventsBeforeRowID(t *testing.T) {
+	d := openTestDB(t)
+
+	// Write 10 events for two different sessions interleaved, so the
+	// per-session filter has to actually do work.
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		e := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: "repo@main",
+			Repo:        "repo",
+			Worktree:    "/wt/main",
+			Type:        "state_change",
+			Payload:     `{"i":` + fmt.Sprintf("%d", i) + `}`,
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+		}
+		if _, err := d.WriteEventReturningRowID(e); err != nil {
+			t.Fatalf("WriteEventReturningRowID main[%d]: %v", i, err)
+		}
+		// Intersperse other-session rows that the query must ignore.
+		other := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: "repo@other",
+			Repo:        "repo",
+			Worktree:    "/wt/other",
+			Type:        "state_change",
+			Payload:     `{"other":` + fmt.Sprintf("%d", i) + `}`,
+			CreatedAt:   now.Add(time.Duration(i) * time.Second),
+		}
+		if _, err := d.WriteEventReturningRowID(other); err != nil {
+			t.Fatalf("WriteEventReturningRowID other[%d]: %v", i, err)
+		}
+	}
+
+	// beforeRowID == 0 should return the most recent `limit` rows.
+	tail, err := d.QuerySessionEventsBeforeRowID("repo@main", 0, 3)
+	if err != nil {
+		t.Fatalf("QuerySessionEventsBeforeRowID(tail): %v", err)
+	}
+	if len(tail) != 3 {
+		t.Fatalf("tail len = %d, want 3", len(tail))
+	}
+	// ASC ordering by rowid; payload encodes the original insertion index.
+	wantPayloads := []string{`{"i":7}`, `{"i":8}`, `{"i":9}`}
+	for i, er := range tail {
+		if er.Event.Payload != wantPayloads[i] {
+			t.Errorf("tail[%d].Payload = %q, want %q", i, er.Event.Payload, wantPayloads[i])
+		}
+		if er.Event.SessionName != "repo@main" {
+			t.Errorf("tail[%d].SessionName = %q, want repo@main (cross-session leak?)", i, er.Event.SessionName)
+		}
+	}
+
+	// Now page backwards: take the rowid of the first row in `tail`
+	// and ask for everything strictly before it.
+	beforeRowID := tail[0].RowID
+	older, err := d.QuerySessionEventsBeforeRowID("repo@main", beforeRowID, 100)
+	if err != nil {
+		t.Fatalf("QuerySessionEventsBeforeRowID(older): %v", err)
+	}
+	if len(older) != 7 {
+		t.Fatalf("older len = %d, want 7 (10 total minus 3 in tail)", len(older))
+	}
+	// ASC ordering; payloads i=0..6.
+	for i, er := range older {
+		want := `{"i":` + fmt.Sprintf("%d", i) + `}`
+		if er.Event.Payload != want {
+			t.Errorf("older[%d].Payload = %q, want %q", i, er.Event.Payload, want)
+		}
+	}
+
+	// Paging past the head: ask for everything before the very first row.
+	headRowID := older[0].RowID
+	none, err := d.QuerySessionEventsBeforeRowID("repo@main", headRowID, 10)
+	if err != nil {
+		t.Fatalf("QuerySessionEventsBeforeRowID(none): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("none len = %d, want 0 (paged past head of history)", len(none))
+	}
+
+	// limit == 0 short-circuits to an empty result.
+	zero, err := d.QuerySessionEventsBeforeRowID("repo@main", 0, 0)
+	if err != nil {
+		t.Fatalf("QuerySessionEventsBeforeRowID(zero limit): %v", err)
+	}
+	if len(zero) != 0 {
+		t.Errorf("zero-limit result len = %d, want 0", len(zero))
+	}
+
+	// Unknown session returns an empty result, not an error.
+	missing, err := d.QuerySessionEventsBeforeRowID("repo@nope", 0, 10)
+	if err != nil {
+		t.Fatalf("QuerySessionEventsBeforeRowID(missing): %v", err)
+	}
+	if len(missing) != 0 {
+		t.Errorf("missing-session result len = %d, want 0", len(missing))
+	}
+}

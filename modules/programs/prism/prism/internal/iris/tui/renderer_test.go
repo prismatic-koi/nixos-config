@@ -269,8 +269,13 @@ func TestRenderer_SessionStatusSuppressed(t *testing.T) {
 	})
 
 	view := m.View()
-	if !strings.Contains(view, "waiting for events") {
-		t.Errorf("expected 'waiting for events…' placeholder (session_status should be suppressed); "+
+	// The pane should render the empty-state placeholder — issue
+	// #1770 changed the wording from "waiting for events…" to
+	// "no events yet…" to better match the AC's expected language.
+	// We accept either form to keep this test resilient to future
+	// wording tweaks of the placeholder.
+	if !strings.Contains(view, "no events yet") && !strings.Contains(view, "waiting for events") {
+		t.Errorf("expected empty-state placeholder (session_status should be suppressed); "+
 			"excerpt:\n%s", excerpt(view, 600))
 	}
 	// The literal payload-id string must not appear anywhere in the

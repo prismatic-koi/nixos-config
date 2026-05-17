@@ -12,13 +12,14 @@ package iris
 // Client → daemon frames:
 //
 //	sessions_list, session_subscribe, session_unsubscribe,
-//	session_spawn, session_kill, prompt_deliver, review_spawn,
-//	escalation_deliver, ping
+//	session_history, session_spawn, session_kill, prompt_deliver,
+//	review_spawn, escalation_deliver, ping
 //
 // Daemon → client frames:
 //
-//	sessions_snapshot, session_event, session_state, session_spawned,
-//	session_killed, review_spawned, escalation_delivered, error, pong
+//	sessions_snapshot, session_event, session_history, session_state,
+//	session_spawned, session_killed, review_spawned,
+//	escalation_delivered, error, pong
 
 // ---------------------------------------------------------------------------
 // Client → daemon request frames
@@ -50,6 +51,37 @@ type ClientSessionSubscribeFrame struct {
 type ClientSessionUnsubscribeFrame struct {
 	Type string `json:"type"` // "session_unsubscribe"
 	Name string `json:"name"`
+}
+
+// ClientSessionHistoryFrame requests a page of older agent_events for the
+// named session. Used by the iris TUI's lazy-load scrollback (issue #1770
+// child 5) when the operator scrolls past the top of the in-memory window.
+//
+// Semantics:
+//
+//   - BeforeRowID > 0: return the last `Limit` rows with rowid < BeforeRowID,
+//     ordered ASC by rowid. This is the canonical "page backwards" call.
+//   - BeforeRowID == 0: return the most recent `Limit` rows for the session
+//     (tail of history). Useful when the TUI wants to seed the scrollback
+//     before any live event has been observed.
+//   - RequestID: an opaque client-chosen string echoed verbatim on the
+//     matching DaemonSessionHistoryFrame so the TUI can correlate a
+//     response with the request that triggered it. Optional; the daemon
+//     does not interpret it.
+//
+// The response is one DaemonSessionHistoryFrame carrying the page of
+// events plus a Done flag the TUI uses to suppress further requests when
+// the head of history has been reached. The daemon does NOT change any
+// subscription state — session_history is a one-shot read.
+//
+//	{"type": "session_history", "name": "<session>", "before_row_id": 42, "limit": 100}
+//	{"type": "session_history", "name": "<session>", "limit": 100, "request_id": "abc"}
+type ClientSessionHistoryFrame struct {
+	Type        string `json:"type"` // "session_history"
+	Name        string `json:"name"`
+	BeforeRowID int64  `json:"before_row_id,omitempty"` // 0 means "tail of history"
+	Limit       int    `json:"limit"`                   // max events to return; daemon may cap further
+	RequestID   string `json:"request_id,omitempty"`    // opaque echo for client-side correlation
 }
 
 // ClientSessionSpawnFrame requests the daemon to spawn a new pi session.
@@ -224,6 +256,31 @@ type DaemonSessionEventFrame struct {
 	Payload     string `json:"payload"`      // verbatim agent_events.payload JSON
 }
 
+// DaemonSessionHistoryFrame is the response to ClientSessionHistoryFrame.
+// Events is the requested page, ordered ASC by RowID (oldest first) so the
+// TUI can prepend it to its in-memory buffer without re-sorting. The flag
+// `Done` is true when the daemon's query returned fewer rows than the
+// client's `Limit` AND the page's first event was the head of history
+// (no rows exist with smaller rowid for the session) — in practice, the
+// daemon sets Done == true whenever the query returns fewer than `Limit`
+// rows, which is sufficient for the TUI to suppress further requests.
+//
+// RequestID is the verbatim echo of ClientSessionHistoryFrame.RequestID.
+// Empty when the request did not carry one.
+//
+// The frame is one-shot: the daemon writes it once per request and does
+// not change subscription state. Concurrent session_event frames continue
+// to flow on any active subscription.
+//
+//	{"type": "session_history", "name": "<session>", "events": [...], "done": true, "request_id": "abc"}
+type DaemonSessionHistoryFrame struct {
+	Type        string                    `json:"type"` // "session_history"
+	SessionName string                    `json:"session_name"`
+	Events      []DaemonSessionEventFrame `json:"events"`
+	Done        bool                      `json:"done"`
+	RequestID   string                    `json:"request_id,omitempty"`
+}
+
 // DaemonSessionStateFrame notifies the client of a state transition for a
 // subscribed session.
 //
@@ -325,17 +382,19 @@ type DaemonReviewGroupMember struct {
 
 // Client-socket frame type constants.
 const (
-	ClientFrameSessionsList       = "sessions_list"
-	ClientFrameSessionSubscribe   = "session_subscribe"
-	ClientFrameSessionUnsubscribe = "session_unsubscribe"
-	ClientFrameSessionSpawn       = "session_spawn"
-	ClientFrameSessionKill        = "session_kill"
+	ClientFrameSessionsList        = "sessions_list"
+	ClientFrameSessionSubscribe    = "session_subscribe"
+	ClientFrameSessionUnsubscribe  = "session_unsubscribe"
+	ClientFrameSessionHistory      = "session_history"
+	ClientFrameSessionSpawn        = "session_spawn"
+	ClientFrameSessionKill         = "session_kill"
 	ClientFramePromptDeliver       = "prompt_deliver"
 	ClientFrameReviewSpawn         = "review_spawn"
 	ClientFrameEscalationDeliver   = "escalation_deliver"
 	ClientFramePing                = "ping"
 	DaemonFrameSessionsSnapshot    = "sessions_snapshot"
 	DaemonFrameSessionEvent        = "session_event"
+	DaemonFrameSessionHistory      = "session_history"
 	DaemonFrameSessionState        = "session_state"
 	DaemonFrameSessionSpawned      = "session_spawned"
 	DaemonFrameSessionKilled       = "session_killed"

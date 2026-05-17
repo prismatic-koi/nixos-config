@@ -230,11 +230,11 @@ func TestClientFrameRoundTrip(t *testing.T) {
 //  1. database.Close   — runs LAST among these.
 //  2. cs.Close         — closes the listener so Accept errors out.
 //  3. cancel           — cancels the Serve context so handleConn /
-//                        runSubscription / handle*Frame goroutines exit.
+//     runSubscription / handle*Frame goroutines exit.
 //  4. cs.Wait drain    — runs FIRST: blocks until every spawned
-//                        ClientSocket goroutine returns, so no late
-//                        write races against Close / database.Close /
-//                        tempdir removal.
+//     ClientSocket goroutine returns, so no late
+//     write races against Close / database.Close /
+//     tempdir removal.
 //
 // t.TempDir()'s implicit cleanup is registered before any of ours, so it
 // runs last — after the drain has guaranteed no goroutine is still
@@ -689,6 +689,221 @@ func TestSinceEventIDReplay(t *testing.T) {
 		if rid != expected {
 			t.Errorf("replayed event[%d] rowID = %.0f, want %.0f", i, rid, expected)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// session_history — paged lazy-load (issue #1770 child 5)
+// ---------------------------------------------------------------------------
+
+// TestSessionHistoryFrame writes a known set of events to the DB and
+// verifies that a `session_history` request returns exactly the
+// requested page in ASC rowid order, with the `done` flag set when
+// the page is shorter than the limit.
+func TestSessionHistoryFrame(t *testing.T) {
+	sessionName := "hist@test"
+
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer database.Close()
+
+	// Seed 7 events for the target session and a couple of decoys for
+	// a different session that must NOT be returned.
+	var rowIDs []int64
+	for i := 1; i <= 7; i++ {
+		ev := db.Event{
+			ID:          fmt.Sprintf("ev-%d", i),
+			SessionName: sessionName,
+			Worktree:    tmp,
+			Type:        "msg_user",
+			Payload:     fmt.Sprintf(`{"n":%d}`, i),
+		}
+		r, err := database.WriteEventReturningRowID(ev)
+		if err != nil {
+			t.Fatalf("WriteEventReturningRowID[%d]: %v", i, err)
+		}
+		rowIDs = append(rowIDs, r)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := database.WriteEventReturningRowID(db.Event{
+			ID:          fmt.Sprintf("decoy-%d", i),
+			SessionName: "other@session",
+			Worktree:    tmp,
+			Type:        "msg_user",
+			Payload:     `{"decoy":true}`,
+		}); err != nil {
+			t.Fatalf("WriteEventReturningRowID decoy: %v", err)
+		}
+	}
+
+	sessions := []iris.SessionSnapshot{
+		{Name: sessionName, InstanceID: "iid-hist", State: "active", Role: "worker"},
+	}
+	sockPath := filepath.Join(tmp, "iris.sock")
+	cs := iris.NewClientSocket(iris.ClientSocketConfig{
+		SockPath: sockPath,
+		Database: database,
+		GetActiveSessions: func() []iris.SessionSnapshot {
+			return sessions
+		},
+	})
+	if err := cs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer cs.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	go cs.Serve(ctx)
+
+	conn, r := dialClientSocket(t, sockPath)
+
+	// ---- Page 1: tail (before_row_id == 0), limit 3.
+	sendClientFrame(t, conn, map[string]any{
+		"type":       "session_history",
+		"name":       sessionName,
+		"limit":      3,
+		"request_id": "page-1",
+	})
+	frame, ok := readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+	if !ok {
+		t.Fatalf("timed out waiting for session_history page 1")
+	}
+	if frame["type"] != "session_history" {
+		t.Fatalf("page 1: type = %v, want session_history", frame["type"])
+	}
+	if frame["session_name"] != sessionName {
+		t.Errorf("page 1: session_name = %v, want %s", frame["session_name"], sessionName)
+	}
+	if frame["request_id"] != "page-1" {
+		t.Errorf("page 1: request_id = %v, want page-1", frame["request_id"])
+	}
+	events, _ := frame["events"].([]any)
+	if len(events) != 3 {
+		t.Fatalf("page 1: len(events) = %d, want 3", len(events))
+	}
+	// Page returns the last 3 rows for the session, ASC by rowid:
+	// events 5, 6, 7 — rowIDs[4], [5], [6].
+	wantRowIDs := []int64{rowIDs[4], rowIDs[5], rowIDs[6]}
+	for i, raw := range events {
+		ev, _ := raw.(map[string]any)
+		rid, _ := ev["row_id"].(float64)
+		if int64(rid) != wantRowIDs[i] {
+			t.Errorf("page 1 event[%d].row_id = %.0f, want %d", i, rid, wantRowIDs[i])
+		}
+		if name, _ := ev["session_name"].(string); name != sessionName {
+			t.Errorf("page 1 event[%d].session_name = %q, want %q (cross-session leak?)", i, name, sessionName)
+		}
+	}
+	// done == false because there are more rows older than this page.
+	if done, _ := frame["done"].(bool); done {
+		t.Errorf("page 1: done = true; want false (more rows older than this page)")
+	}
+
+	// ---- Page 2: before_row_id = rowIDs[4] (top of page 1), limit 3.
+	sendClientFrame(t, conn, map[string]any{
+		"type":          "session_history",
+		"name":          sessionName,
+		"before_row_id": rowIDs[4],
+		"limit":         3,
+	})
+	frame, ok = readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+	if !ok {
+		t.Fatalf("timed out waiting for session_history page 2")
+	}
+	events, _ = frame["events"].([]any)
+	if len(events) != 3 {
+		t.Fatalf("page 2: len(events) = %d, want 3", len(events))
+	}
+	wantRowIDs = []int64{rowIDs[1], rowIDs[2], rowIDs[3]}
+	for i, raw := range events {
+		ev, _ := raw.(map[string]any)
+		rid, _ := ev["row_id"].(float64)
+		if int64(rid) != wantRowIDs[i] {
+			t.Errorf("page 2 event[%d].row_id = %.0f, want %d", i, rid, wantRowIDs[i])
+		}
+	}
+
+	// ---- Page 3: before_row_id = rowIDs[1], limit 10. Only one row left.
+	sendClientFrame(t, conn, map[string]any{
+		"type":          "session_history",
+		"name":          sessionName,
+		"before_row_id": rowIDs[1],
+		"limit":         10,
+	})
+	frame, ok = readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+	if !ok {
+		t.Fatalf("timed out waiting for session_history page 3")
+	}
+	events, _ = frame["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("page 3: len(events) = %d, want 1 (only rowIDs[0] remains)", len(events))
+	}
+	if !frame["done"].(bool) {
+		t.Errorf("page 3: done = false; want true (less than limit returned)")
+	}
+
+	// ---- Page 4: before_row_id = rowIDs[0]. Empty page.
+	sendClientFrame(t, conn, map[string]any{
+		"type":          "session_history",
+		"name":          sessionName,
+		"before_row_id": rowIDs[0],
+		"limit":         10,
+	})
+	frame, ok = readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+	if !ok {
+		t.Fatalf("timed out waiting for session_history page 4")
+	}
+	events, _ = frame["events"].([]any)
+	if len(events) != 0 {
+		t.Errorf("page 4 (past head): len(events) = %d, want 0", len(events))
+	}
+	if !frame["done"].(bool) {
+		t.Errorf("page 4 (past head): done = false; want true")
+	}
+}
+
+// TestSessionHistoryFrame_MissingName verifies the daemon answers a
+// missing-name session_history request with an error frame, not a
+// silent empty response (which could hide a TUI bug).
+func TestSessionHistoryFrame_MissingName(t *testing.T) {
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+	defer database.Close()
+	sockPath := filepath.Join(tmp, "iris.sock")
+	cs := iris.NewClientSocket(iris.ClientSocketConfig{
+		SockPath: sockPath,
+		Database: database,
+		GetActiveSessions: func() []iris.SessionSnapshot {
+			return nil
+		},
+	})
+	if err := cs.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer cs.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go cs.Serve(ctx)
+
+	conn, r := dialClientSocket(t, sockPath)
+	sendClientFrame(t, conn, map[string]any{
+		"type":  "session_history",
+		"limit": 10,
+	})
+	frame, ok := readClientFrameWithTimeout(t, conn, r, 3*time.Second)
+	if !ok {
+		t.Fatalf("timed out waiting for error frame")
+	}
+	if frame["type"] != "error" {
+		t.Errorf("missing-name response type = %v, want error", frame["type"])
 	}
 }
 

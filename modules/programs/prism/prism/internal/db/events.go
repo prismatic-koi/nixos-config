@@ -518,6 +518,89 @@ func (d *DB) MaxSessionEventRowID(sessionName string) (int64, error) {
 	return max, nil
 }
 
+// QuerySessionEventsBeforeRowID returns up to `limit` events for sessionName
+// with rowid < beforeRowID, ordered by rowid ASC. When beforeRowID == 0 the
+// query returns the most recent `limit` events for the session — i.e. the
+// tail of history — which is useful when the caller has not yet seen any
+// event for the session and wants a starting window.
+//
+// This is the backing query for the iris client IPC socket's paged-history
+// frame (issue #1770 child 5): when the TUI's operator scrolls past the top
+// of the in-memory window, the TUI requests another page of older events
+// using the rowid of the previously-top event as `beforeRowID`. The result
+// is returned in ASC order so the caller can prepend it directly without
+// re-sorting; the caller is responsible for detecting head-of-history
+// (zero rows returned) and suppressing further requests.
+func (d *DB) QuerySessionEventsBeforeRowID(sessionName string, beforeRowID int64, limit int) ([]EventRow, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	// Two-step query: select the last `limit` rows in DESC order using the
+	// `<` predicate, then re-order ASC in the outer select. SQLite's query
+	// planner uses the implicit rowid index for both the WHERE filter and
+	// the ORDER BY so this is O(limit) on a session of any size.
+	//
+	// When beforeRowID == 0 the inner WHERE collapses to `session_name = ?`
+	// alone and we get the tail of history — same `limit`/ORDER semantics.
+	const qWithBefore = `
+SELECT rowid, id, session_name, repo, worktree, harness_session_id,
+       type, payload, created_at, instance_id
+  FROM (
+    SELECT rowid, id, session_name, repo, worktree, harness_session_id,
+           type, payload, created_at, instance_id
+      FROM agent_events
+     WHERE session_name = ? AND rowid < ?
+     ORDER BY rowid DESC
+     LIMIT ?
+  )
+ ORDER BY rowid ASC`
+	const qNoBefore = `
+SELECT rowid, id, session_name, repo, worktree, harness_session_id,
+       type, payload, created_at, instance_id
+  FROM (
+    SELECT rowid, id, session_name, repo, worktree, harness_session_id,
+           type, payload, created_at, instance_id
+      FROM agent_events
+     WHERE session_name = ?
+     ORDER BY rowid DESC
+     LIMIT ?
+  )
+ ORDER BY rowid ASC`
+
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if beforeRowID > 0 {
+		rows, err = d.conn.Query(qWithBefore, sessionName, beforeRowID, limit)
+	} else {
+		rows, err = d.conn.Query(qNoBefore, sessionName, limit)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: query session events before rowid: %w", err)
+	}
+	defer rows.Close()
+
+	var result []EventRow
+	for rows.Next() {
+		var er EventRow
+		var createdAt int64
+		if err := rows.Scan(
+			&er.RowID, &er.Event.ID, &er.Event.SessionName, &er.Event.Repo,
+			&er.Event.Worktree, &er.Event.HarnessSessionID,
+			&er.Event.Type, &er.Event.Payload, &createdAt, &er.Event.InstanceID,
+		); err != nil {
+			return nil, fmt.Errorf("db: scan event row: %w", err)
+		}
+		er.Event.CreatedAt = time.UnixMilli(createdAt)
+		result = append(result, er)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: iterate session events before rowid: %w", err)
+	}
+	return result, nil
+}
+
 // EventRow wraps an Event together with its SQLite rowid. The rowid is a
 // monotonically increasing integer that clients use as since_event_id for
 // replay requests.
