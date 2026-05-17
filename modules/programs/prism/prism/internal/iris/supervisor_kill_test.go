@@ -93,14 +93,33 @@ func killTestSupervisor(t *testing.T, piBin string) (*Supervisor, *db.DB) {
 // writeShellScript writes a shell script to a tempfile, marks it executable,
 // and returns its path. The script ignores its arguments — the supervisor
 // passes `--mode rpc [--extension ...]` and our test scripts don't care.
-func writeShellScript(t *testing.T, body string) string {
+//
+// If readyPath is non-empty, the literal substring "@READY@" in body is
+// replaced with a shell command that touches readyPath. Callers that
+// install a `trap '' TERM` (or any other startup-time side effect that
+// the test then relies on) should put the trap before the @READY@ marker
+// and the long-lived command after it, then call waitForReady() before
+// signalling the process to get a deterministic handshake.
+//
+// See issue #1739 / #1743 — without this handshake, Supervisor.setState
+// can advance to StateActive before /bin/sh has finished parsing the
+// script, and a test that fires Kill immediately on StateActive races
+// the trap installation: bash exits 143 cleanly within the SIGTERM
+// grace and the test sees terminal state = finished instead of error.
+func writeShellScript(t *testing.T, body, readyPath string) string {
 	t.Helper()
 	f, err := os.CreateTemp("", "iris-kill-script-*.sh")
 	if err != nil {
 		t.Fatalf("CreateTemp: %v", err)
 	}
 	header := "#!/bin/sh\n"
-	if _, err := f.WriteString(header + body); err != nil {
+	var full string
+	if readyPath != "" {
+		full = header + strings.ReplaceAll(body, "@READY@", "touch "+shellSingleQuote(readyPath))
+	} else {
+		full = header + body
+	}
+	if _, err := f.WriteString(full); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
 	if err := f.Close(); err != nil {
@@ -111,6 +130,39 @@ func writeShellScript(t *testing.T, body string) string {
 	}
 	t.Cleanup(func() { _ = os.Remove(f.Name()) })
 	return f.Name()
+}
+
+// shellSingleQuote returns a single-quoted POSIX-shell-safe rendering of s.
+// Used by writeShellScript to embed readyPath into a generated script
+// without worrying about spaces or shell metacharacters in t.TempDir().
+// Named to avoid collision with the production shellQuote in
+// tool_dispatcher.go.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// waitForReady blocks until readyPath exists on disk or the deadline
+// elapses. Used by the SIGTERM-trap escalation tests (#1739, #1743) to
+// synchronise with the shell having actually installed its trap before
+// the test calls Kill.
+func waitForReady(t *testing.T, readyPath string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(readyPath); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out after %s waiting for ready sentinel at %s", timeout, readyPath)
+}
+
+// newReadyPath returns a path inside a test-scoped tempdir suitable for
+// passing to writeShellScript's readyPath argument. The directory is
+// cleaned up automatically when the test ends.
+func newReadyPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "ready")
 }
 
 // TestSupervisorKill_NoStartContext asserts that Kill on a supervisor whose
@@ -161,7 +213,7 @@ func TestSupervisorKill_NoStartContext(t *testing.T) {
 func TestSupervisorKill_CleanSIGTERM(t *testing.T) {
 	// /bin/sleep with no arguments fails — use a wrapper that sleeps long
 	// enough that natural exit doesn't race the kill.
-	script := writeShellScript(t, "exec sleep 60\n")
+	script := writeShellScript(t, "exec sleep 60\n", "")
 	sup, database := killTestSupervisor(t, script)
 
 	start := time.Now()
@@ -191,8 +243,19 @@ func TestSupervisorKill_EscalatesToSIGKILL(t *testing.T) {
 	}
 	// trap '' TERM disables the default SIGTERM handler. The shell still
 	// reaps SIGKILL because SIGKILL cannot be trapped.
-	script := writeShellScript(t, "trap '' TERM\nsleep 60\n")
+	//
+	// The @READY@ marker is replaced with `touch <readyPath>` by
+	// writeShellScript, and we waitForReady() before calling Kill, so the
+	// trap is guaranteed to be armed before the supervisor signals the
+	// shell. Without this handshake the test was ~10% flaky under -race
+	// (#1743): on a fast scheduler Supervisor.setState(StateActive) fires
+	// while bash is still parsing the script, the test fires Kill, bash
+	// exits 143 cleanly within the SIGTERM grace and terminal state ends
+	// up StateFinished instead of StateError.
+	readyPath := newReadyPath(t)
+	script := writeShellScript(t, "trap '' TERM\n@READY@\nsleep 60\n", readyPath)
 	sup, database := killTestSupervisor(t, script)
+	waitForReady(t, readyPath, 5*time.Second)
 
 	start := time.Now()
 	// Pass a short 1-second SIGTERM timeout so the test doesn't spend the
@@ -220,7 +283,7 @@ func TestSupervisorKill_EscalatesToSIGKILL(t *testing.T) {
 // succession returns success both times and does not write a second
 // session_end event.
 func TestSupervisorKill_Idempotent(t *testing.T) {
-	script := writeShellScript(t, "exec sleep 60\n")
+	script := writeShellScript(t, "exec sleep 60\n", "")
 	sup, database := killTestSupervisor(t, script)
 
 	if _, err := sup.Kill(context.Background(), 5*time.Second); err != nil {
@@ -246,7 +309,7 @@ func TestSupervisorKill_Idempotent(t *testing.T) {
 // on Linux. The kill path runs the same defer block as the natural
 // session-end path, so the socket file must be gone after Kill returns.
 func TestSupervisorKill_RemovesHarnessSocketFile(t *testing.T) {
-	script := writeShellScript(t, "exec sleep 60\n")
+	script := writeShellScript(t, "exec sleep 60\n", "")
 	sup, _ := killTestSupervisor(t, script)
 
 	sockPath := sup.harness.SockPath()

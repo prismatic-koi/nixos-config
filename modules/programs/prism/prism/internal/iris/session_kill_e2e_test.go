@@ -45,7 +45,7 @@ func TestSessionKill_E2E_KillsRealProcess(t *testing.T) {
 	t.Cleanup(func() { _ = database.Close() })
 
 	// Build a script that just sleeps — enough to stand in for pi.
-	script := writeShellScript(t, "exec sleep 60\n")
+	script := writeShellScript(t, "exec sleep 60\n", "")
 
 	// Spawn the supervisor.
 	cfg := SupervisorConfig{
