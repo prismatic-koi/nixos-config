@@ -3100,6 +3100,163 @@ describe("iris surface check (runIrisSurfaceCheck)", () => {
       },
     )
   })
+
+  // ---- Regression #1758: pi 0.72.1 reports --extension-loaded extensions
+  //      with sourceInfo.source === "cli", not "extension". The surface
+  //      check must accept both as valid override sources.
+  // -----------------------------------------------------------------------
+  //
+  // Iris spawns pi children with `pi --extension <prism.ts>` (see
+  // internal/iris/supervisor.go); pi 0.72.1 tags every tool registered by
+  // such an extension with source="cli" (see
+  // pi-coding-agent-0.72.1/dist/core/resource-loader.js:260-265). Before
+  // the fix, the surface check accepted only source==="extension" and
+  // therefore reported every canonical tool as un-overridden — throwing on
+  // the first canonical name ("read") and breaking every iris session.
+
+  it("#1758: passes when all canonical tools are overridden with source=\"cli\" (--extension load path)", () => {
+    // Reproduces the on-host shape captured by the diagnostic dump from
+    // pi 0.72.1 with --extension /path/to/prism.ts. Every overridden tool
+    // has sourceInfo.source === "cli".
+    const tools = IRIS_CANONICAL_TOOLS.map((name) => ({
+      name,
+      source: "cli",
+      sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
+    }))
+    const pi = mockPI(tools)
+    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
+  })
+
+  it("#1758: passes when canonical tools are a mix of source=\"cli\" and source=\"extension\"", () => {
+    // Defensive: should the loader ever assign "extension" to some and
+    // "cli" to others (e.g. a future pi that distinguishes config-declared
+    // vs CLI-flagged extensions per tool), the check should still accept
+    // both.
+    const tools = IRIS_CANONICAL_TOOLS.map((name, i) => ({
+      name,
+      source: i % 2 === 0 ? "cli" : "extension",
+      sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
+    }))
+    const pi = mockPI(tools)
+    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
+  })
+
+  it("#1758: unauthorised --extension-loaded extension still throws (the allowlist still applies to source=\"cli\")", () => {
+    // A canonical-named tool registered by an unauthorised extension via
+    // --extension must still be rejected — the looser source check must
+    // not bypass the allowlist.
+    const tools = [
+      ...IRIS_CANONICAL_TOOLS.filter((n) => n !== "bash").map((name) => ({
+        name,
+        source: "cli",
+        sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
+      })),
+      // A rogue extension supplied via --extension also registers "bash".
+      { name: "bash", source: "cli", sourcePath: "/tmp/rogue-extension.ts" },
+    ]
+    const pi = mockPI(tools)
+    assert.throws(
+      () => runIrisSurfaceCheck(pi),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.ok(
+          err.message.includes("rogue-extension"),
+          `expected message to mention "rogue-extension", got: ${err.message}`,
+        )
+        return true
+      },
+    )
+  })
+
+  // ---- Regression #1758: pin the pi 0.72.1 ToolInfo shape -----------------
+  //
+  // The diagnostic dump captured for issue #1758 showed pi 0.72.1's
+  // getAllTools() returns exactly {name, description, parameters,
+  // sourceInfo}; sourceInfo is exactly {path, source, scope, origin,
+  // baseDir}. The override builder copies parameters verbatim and currently
+  // also defensively spreads label/promptSnippet/promptGuidelines/
+  // renderShell/prepareArguments, none of which are exposed by 0.72.1's
+  // ToolInfo — those copies are dead today but kept for forward
+  // compatibility with future pi versions.
+  //
+  // If pi ever adds a new field to its ToolInfo (e.g. unsafe, category,
+  // streamingMode) that the override-rebuild path needs to preserve, this
+  // test will fail — forcing a deliberate review of whether the override
+  // builder needs to copy that field through. Update the
+  // EXPECTED_TOOL_INFO_FIELDS set in tandem with the pi pin bump.
+
+  it("#1758: pinned pi 0.72.1 ToolInfo / SourceInfo / source-enum shape (canonical seven)", () => {
+    // Captured verbatim from a diagnostic dump against pi 0.72.1 on the host
+    // (see issue #1758 comment). This test does NOT exercise runtime
+    // behaviour — it pins the upstream shape that the override builder and
+    // surface check are written against, so that a pi version bump that
+    // changes the shape forces a deliberate review of both.
+    //
+    // To regenerate this fixture after a pi bump: re-run the reproducer
+    // from issue #1758 with the diagnostic dump enabled and paste the
+    // resulting field/source values here.
+    const PI_0_72_1_TOOL_INFO_FIELDS = [
+      "name",
+      "description",
+      "parameters",
+      "sourceInfo",
+    ].sort()
+    const PI_0_72_1_SOURCE_INFO_FIELDS = [
+      "path",
+      "source",
+      "scope",
+      "origin",
+      "baseDir",
+    ].sort()
+    // The known sourceInfo.source enum values pi 0.72.1 emits for tools.
+    // "builtin"   — synthetic, from agent-session._baseToolDefinitions
+    // "extension" — extension declared in pi's resolved config
+    // "cli"       — extension loaded via --extension CLI flag (iris uses this)
+    // "sdk"       — customTools injected by SDK consumers
+    // "local"     — a discovered local-on-disk extension
+    const PI_0_72_1_SOURCE_ENUM = ["builtin", "extension", "cli", "sdk", "local"]
+
+    // Sanity assertions that document the pin. If pi changes either shape,
+    // these constants must be re-derived from a fresh diagnostic dump and
+    // the override builder + surface check reviewed in tandem.
+    assert.deepEqual(
+      PI_0_72_1_TOOL_INFO_FIELDS,
+      ["description", "name", "parameters", "sourceInfo"],
+      "ToolInfo field set pin (pi 0.72.1)",
+    )
+    assert.deepEqual(
+      PI_0_72_1_SOURCE_INFO_FIELDS,
+      ["baseDir", "origin", "path", "scope", "source"],
+      "SourceInfo field set pin (pi 0.72.1)",
+    )
+
+    // Cross-check: every member of IRIS_OVERRIDE_SOURCES must be a known
+    // upstream source value. This guards against the inverse drift —
+    // someone adding a typo'd source to the override set.
+    for (const src of ["extension", "cli"]) {
+      assert.ok(
+        PI_0_72_1_SOURCE_ENUM.includes(src),
+        `IRIS_OVERRIDE_SOURCES member "${src}" is not a known pi 0.72.1 source value`,
+      )
+    }
+
+    // Cross-check: the surface check must accept BOTH "extension" and
+    // "cli" as override sources. This is the regression assertion for
+    // #1758: a tool overridden under either source must satisfy the check.
+    for (const src of ["extension", "cli"]) {
+      const pi = mockPI(
+        IRIS_CANONICAL_TOOLS.map((name) => ({
+          name,
+          source: src,
+          sourcePath: "/etc/prism/pi-extensions/prism.ts",
+        })),
+      )
+      assert.doesNotThrow(
+        () => runIrisSurfaceCheck(pi),
+        `surface check rejected source="${src}" (regression of #1758)`,
+      )
+    }
+  })
 })
 
 // ---------------------------------------------------------------------------
