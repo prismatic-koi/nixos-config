@@ -119,7 +119,7 @@ func (r *killNotifyRecorder) snapshot() []killNotifyCall {
 // so today only Finished fires — and the parentNotified latch is the
 // defence-in-depth against any future regression.
 func TestSupervisorKill_CleanSIGTERM_NotifiesParentOnce(t *testing.T) {
-	script := writeShellScript(t, "exec sleep 60\n")
+	script := writeShellScript(t, "exec sleep 60\n", "")
 	sup, rec := killNotifyTestSupervisor(t, script, "iris-test@parent")
 
 	state, err := sup.Kill(context.Background(), 5*time.Second)
@@ -166,8 +166,17 @@ func TestSupervisorKill_SIGKILLEscalation_NotifiesParentOnce(t *testing.T) {
 		t.Skip("SIGKILL escalation sleeps ~1s; skipping in short mode")
 	}
 	// trap '' TERM ignores SIGTERM; SIGKILL still reaps the shell.
-	script := writeShellScript(t, "trap '' TERM\nsleep 60\n")
+	//
+	// The @READY@ marker + waitForReady handshake guarantees the trap is
+	// armed before Kill fires SIGTERM. Without it the test was ~10% flaky
+	// under -race (#1739): Supervisor.setState(StateActive) fires the
+	// moment cmd.Start returns, i.e. while /bin/sh is still parsing the
+	// script, so the test could send SIGTERM before the trap was
+	// installed and bash would exit 143 cleanly within the grace.
+	readyPath := newReadyPath(t)
+	script := writeShellScript(t, "trap '' TERM\n@READY@\nsleep 60\n", readyPath)
 	sup, rec := killNotifyTestSupervisor(t, script, "iris-test@parent")
+	waitForReady(t, readyPath, 5*time.Second)
 
 	state, err := sup.Kill(context.Background(), 1*time.Second)
 	if err != nil {
