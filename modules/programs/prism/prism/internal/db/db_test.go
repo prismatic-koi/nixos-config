@@ -1265,15 +1265,20 @@ func TestUpsertStatusWithRootAgent_SidecarWins(t *testing.T) {
 }
 
 // TestQueryEventsByMessageIDs verifies the secondary query fetches events
-// keyed by messageId JSON field, filtered by type.
+// keyed by either the post-#1787 `parentMessageId` field
+// (tool_call/tool_result) or the legacy `messageId` field
+// (permission_*, thinking), filtered by type.
 func TestQueryEventsByMessageIDs(t *testing.T) {
 	d := openTestDB(t)
 
 	base := time.Now().Truncate(time.Second)
 
+	// writeE writes a tool_call / tool_result with the post-#1787 wire
+	// shape: parentMessageId is the assistant-turn join key, id is the
+	// per-tool-call id (same value used for both here for simplicity).
 	writeE := func(id, typ, msgID string, offset time.Duration) {
 		t.Helper()
-		payload := `{"messageId":"` + msgID + `","tool":"bash","args":"go test","result":"ok"}`
+		payload := `{"parentMessageId":"` + msgID + `","id":"` + msgID + `","name":"bash","args":{"command":"go test"},"output":"ok"}`
 		e := db.Event{
 			ID:          id,
 			SessionName: "repo@main",
@@ -1328,6 +1333,52 @@ func TestQueryEventsByMessageIDs(t *testing.T) {
 	}
 	if results3 != nil {
 		t.Errorf("empty result: got %v, want nil", results3)
+	}
+}
+
+// TestQueryEventsByMessageIDs_LegacyMessageIdField verifies that the
+// secondary-query pushdown still matches event types that carry the
+// parent-link on the legacy `messageId` field (permission_ask,
+// permission_denied, thinking) — the COALESCE(`$.parentMessageId`,
+// `$.messageId`) clause is the join contract for #1787.
+func TestQueryEventsByMessageIDs_LegacyMessageIdField(t *testing.T) {
+	d := openTestDB(t)
+
+	base := time.Now().Truncate(time.Second)
+	writeLegacy := func(id, typ, msgID string, offset time.Duration) {
+		t.Helper()
+		payload := `{"messageId":"` + msgID + `","tool":"bash","patterns":["*"]}`
+		if err := d.WriteEvent(db.Event{
+			ID:          id,
+			SessionName: "repo@main",
+			Repo:        "repo",
+			Worktree:    "/code/repo/main",
+			Type:        typ,
+			Payload:     payload,
+			CreatedAt:   base.Add(offset),
+		}); err != nil {
+			t.Fatalf("WriteEvent %s: %v", id, err)
+		}
+	}
+
+	writeLegacy("p1", "permission_ask", "msg-X", 0)
+	writeLegacy("p2", "permission_denied", "msg-X", time.Second)
+	writeLegacy("p3", "thinking", "msg-Y", 2*time.Second)
+
+	results, err := d.QueryEventsByMessageIDs("repo@main", []string{"msg-X", "msg-Y"},
+		[]string{"permission_ask", "permission_denied", "thinking"})
+	if err != nil {
+		t.Fatalf("QueryEventsByMessageIDs: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("result count: got %d, want 3", len(results))
+	}
+	gotIDs := []string{results[0].ID, results[1].ID, results[2].ID}
+	wantIDs := []string{"p1", "p2", "p3"}
+	for i := range wantIDs {
+		if gotIDs[i] != wantIDs[i] {
+			t.Errorf("results[%d].ID: got %q, want %q", i, gotIDs[i], wantIDs[i])
+		}
 	}
 }
 

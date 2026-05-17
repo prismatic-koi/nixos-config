@@ -98,12 +98,25 @@ type MsgAssistant struct {
 // `internal/harness/pi/adapter.go`) which still populates it from
 // `elapsed_ms`. The current prism extension does not emit a duration
 // field; DurationMs is zero in that case.
+//
+// ParentMessageID (issue #1787) is the messageId of the assistant turn
+// that issued this tool call. The pi prism extension stamps it from
+// the `message_start` event observed immediately before the matching
+// `tool_execution_start`, so it always points at the in-flight
+// assistant message at the moment the tool was invoked. Consumers use
+// this to join a tool_call back to its parent msg_assistant row
+// (`db.QueryEventsByMessageIDs` filters on `$.parentMessageId`). An
+// empty value means "orphan" — either the parent message scrolled
+// out of the query window, or the extension started mid-turn and never
+// observed a message_start; renderers fall back to a standalone summary
+// in that case rather than dropping the row.
 type ToolCall struct {
-	Name       string          `json:"name"`
-	Args       json.RawMessage `json:"args,omitempty"`
-	ID         string          `json:"id"`
-	Truncated  bool            `json:"truncated,omitempty"`
-	DurationMs int64           `json:"durationMs,omitempty"`
+	Name            string          `json:"name"`
+	Args            json.RawMessage `json:"args,omitempty"`
+	ID              string          `json:"id"`
+	ParentMessageID string          `json:"parentMessageId,omitempty"`
+	Truncated       bool            `json:"truncated,omitempty"`
+	DurationMs      int64           `json:"durationMs,omitempty"`
 }
 
 // ToolResult is the payload for tool_result events.
@@ -120,11 +133,20 @@ type ToolCall struct {
 //
 // The older PI stdio adapter (Translate path) produces the same
 // shape after #1783; see `internal/harness/pi/adapter.go`.
+//
+// ParentMessageID (issue #1787) mirrors the field on ToolCall and
+// carries the assistant messageId of the turn that issued the matching
+// tool_call. Populated by the pi extension on both frames so the
+// secondary-query pushdown can fetch the pair together. Empty when the
+// extension could not observe the parent message_start; the renderer
+// then surfaces the result as a standalone summary rather than
+// dropping it.
 type ToolResult struct {
-	ID        string `json:"id"`
-	Success   bool   `json:"success"`
-	Output    string `json:"output"`
-	Truncated bool   `json:"truncated,omitempty"`
+	ID              string `json:"id"`
+	Success         bool   `json:"success"`
+	Output          string `json:"output"`
+	ParentMessageID string `json:"parentMessageId,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
 }
 
 // PermissionAsk is the payload for permission_ask events.

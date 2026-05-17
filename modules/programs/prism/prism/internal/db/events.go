@@ -158,13 +158,28 @@ func (d *DB) QueryEvents(sessionName string, limit int, before, after *string, t
 }
 
 // QueryEventsByMessageIDs returns all events for sessionName whose payload
-// contains a "messageId" field matching one of the provided IDs. Only events
+// joins back to one of the provided assistant-turn message IDs. Only events
 // of the specified types are returned; pass nil for types to return all types.
 // Results are ordered by created_at ASC.
 //
 // This is used by checkin's secondary query to fetch tool_call, tool_result,
 // permission_ask, permission_denied, and thinking events that belong to a set
-// of user message turns retrieved by the primary query.
+// of assistant-message turns retrieved by the primary query.
+//
+// Join field by event type (#1787):
+//
+//   - tool_call / tool_result: matched on `$.parentMessageId`. The pi prism
+//     extension stamps this field with the in-flight assistant messageId on
+//     every tool frame; pre-#1787 these rows had no parent-link field at all
+//     and were silently dropped by the previous `$.messageId` pushdown.
+//   - permission_ask / permission_denied / thinking: matched on `$.messageId`
+//     (the field the plugin has always emitted for these types).
+//
+// To keep the API a single round-trip with one IN clause, the SQL matches a
+// row when *either* JSON path resolves to a value in the provided id set.
+// COALESCE picks whichever path is populated for a given row — since no
+// event type emits both fields, the two paths are mutually exclusive in
+// practice, so the COALESCE never has to choose between competing values.
 func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, types []string) ([]Event, error) {
 	if len(messageIDs) == 0 {
 		return nil, nil
@@ -179,7 +194,9 @@ func (d *DB) QueryEventsByMessageIDs(sessionName string, messageIDs []string, ty
 		idPlaceholders[i] = "?"
 		args = append(args, id)
 	}
-	conditions = append(conditions, "JSON_EXTRACT(payload, '$.messageId') IN ("+strings.Join(idPlaceholders, ",")+")")
+	conditions = append(conditions,
+		"COALESCE(JSON_EXTRACT(payload, '$.parentMessageId'), JSON_EXTRACT(payload, '$.messageId')) IN ("+
+			strings.Join(idPlaceholders, ",")+")")
 
 	if len(types) > 0 {
 		typePlaceholders := make([]string, len(types))

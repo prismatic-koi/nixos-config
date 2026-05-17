@@ -2562,6 +2562,19 @@ export default function prismExtension(pi: ExtensionAPI): void {
       name,
       args,
     }
+    // parentMessageId (#1787): the messageId of the in-flight assistant
+    // message that issued this tool call. Tracked via the message_start
+    // hook below — for the lifecycle pi guarantees, the assistant
+    // message_start always fires before any tool_execution_start whose
+    // tool was requested in that assistant turn, so this value is
+    // populated for every tool call issued by a normal assistant turn.
+    // An empty value (e.g. extension restart mid-turn before any
+    // message_start was observed) is omitted so consumers that filter on
+    // the field can detect orphans without confusing them with the
+    // string "".
+    if (currentAssistantMessageId !== "") {
+      frame.parentMessageId = currentAssistantMessageId
+    }
     if (truncated) frame.truncated = true
     writer.write(frame)
 
@@ -2654,6 +2667,17 @@ export default function prismExtension(pi: ExtensionAPI): void {
       success: !isError,
       output,
     }
+    // parentMessageId (#1787): same value emitted on the matching
+    // tool_call frame. Carried through to tool_result so the consumer's
+    // secondary-query pushdown
+    // (`db.QueryEventsByMessageIDs(..., ['tool_call','tool_result',...])`)
+    // can locate both rows by the same assistant-turn id. The value is
+    // taken from currentAssistantMessageId — pi's lifecycle guarantees
+    // tool_execution_end fires inside the same assistant turn as the
+    // matching tool_execution_start, so the id has not yet rotated.
+    if (currentAssistantMessageId !== "") {
+      frame.parentMessageId = currentAssistantMessageId
+    }
     if (truncated) frame.truncated = true
     writer.write(frame)
   })
@@ -2678,6 +2702,18 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // (then cleared) by `message_end` to decide whether to emit a backstop.
   let currentAssistantSawDelta = false
 
+  // The id of the most recently started assistant message. Captured on
+  // message_start (role=assistant) and stamped onto every tool_call /
+  // tool_result frame emitted during that assistant turn as
+  // `parentMessageId` (#1787). This is what restores tool-call pairing
+  // in `prism checkin --turns` / `iris checkin`: the consumer's
+  // secondary query (`db.QueryEventsByMessageIDs`) joins child events
+  // back to their assistant turn via this field. Empty string means
+  // "no assistant message has started in this session yet" — tool
+  // calls in that window are emitted without the field rather than with
+  // an empty value, so consumers can distinguish "orphan" from "".
+  let currentAssistantMessageId = ""
+
   pi.on("message_start", async (event, ctx) => {
     lastCtx = ctx
     const message = (event as { message?: unknown }).message
@@ -2687,6 +2723,8 @@ export default function prismExtension(pi: ExtensionAPI): void {
       (message as { role?: unknown }).role === "assistant"
     ) {
       currentAssistantSawDelta = false
+      const mid = (message as { id?: unknown }).id
+      currentAssistantMessageId = typeof mid === "string" ? mid : ""
     }
   })
 

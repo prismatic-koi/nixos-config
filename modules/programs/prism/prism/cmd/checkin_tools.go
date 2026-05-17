@@ -20,6 +20,31 @@ func extractMessageID(raw string) string {
 	return p.MessageID
 }
 
+// extractParentMessageID returns the assistant-turn message id that owns a
+// child event (tool_call, tool_result, permission_*, thinking). It prefers
+// the post-#1787 `parentMessageId` field (emitted by the pi prism extension
+// on tool_call/tool_result frames) and falls back to `messageId` for event
+// types that have always carried the parent link on that field
+// (permission_ask, permission_denied, thinking).
+//
+// Returns an empty string for orphan events whose parent assistant turn is
+// not represented in the payload at all — callers should treat that as the
+// "no parent" signal rather than skip silently, so #1787's edge-case AC
+// (orphan rendered as a standalone summary) is honoured.
+func extractParentMessageID(raw string) string {
+	var p struct {
+		ParentMessageID string `json:"parentMessageId"`
+		MessageID       string `json:"messageId"`
+	}
+	if err := json.Unmarshal([]byte(raw), &p); err != nil {
+		return ""
+	}
+	if p.ParentMessageID != "" {
+		return p.ParentMessageID
+	}
+	return p.MessageID
+}
+
 // extractBashCommand extracts the command string from bash tool args.
 // The args may be a plain string (the command itself) or a JSON object
 // with a "command" or "cmd" field.

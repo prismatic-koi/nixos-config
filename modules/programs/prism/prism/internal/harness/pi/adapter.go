@@ -464,11 +464,21 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		// stdio adapter's input shape (snake_case JSONL) is
 		// unchanged — the adapter just translates into the new
 		// canonical struct names.
+		//
+		// Post-#1787: the stdio adapter's piToolCallFrame.MessageID
+		// is PI's parent-assistant message id (the same field that
+		// `msg_assistant` carries as `$.messageId`). It maps to the
+		// new ParentMessageID field so the checkin secondary-query
+		// pushdown can join this row back to its assistant turn.
+		// We also keep it in ID for backward compatibility with any
+		// stdio-path consumer that pairs on ID (the stdio frame
+		// shape never had a distinct tool-call id).
 		p := payload.ToolCall{
-			Name:       f.Tool,
-			Args:       marshalArgs(f.Input),
-			ID:         f.MessageID,
-			DurationMs: f.ElapsedMs,
+			Name:            f.Tool,
+			Args:            marshalArgs(f.Input),
+			ID:              f.MessageID,
+			ParentMessageID: f.MessageID,
+			DurationMs:      f.ElapsedMs,
 		}
 		return "tool_call", p, true
 
@@ -488,11 +498,17 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 		// input frame, so Success defaults to true. Consumers that
 		// need to detect failures fall back to per-tool result
 		// summarisation heuristics (narrative.ToolResultSummary).
+		//
+		// ParentMessageID mirrors the ToolCall mapping above
+		// (#1787): the stdio frame's `message_id` is the parent
+		// assistant turn id, which is what the secondary-query
+		// pushdown joins on.
 		p := payload.ToolResult{
-			ID:        f.MessageID,
-			Success:   true,
-			Output:    output,
-			Truncated: truncated,
+			ID:              f.MessageID,
+			ParentMessageID: f.MessageID,
+			Success:         true,
+			Output:          output,
+			Truncated:       truncated,
 		}
 		return "tool_result", p, true
 
