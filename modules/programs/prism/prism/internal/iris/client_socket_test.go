@@ -344,6 +344,38 @@ func readClientFrame(t *testing.T, r *bufio.Reader) map[string]any {
 	return m
 }
 
+// subscribeAndWait sends a session_subscribe frame for the given session and
+// then sends a ping, draining frames until the matching pong arrives. This
+// is a deterministic readiness barrier: the client socket's handleConn reads
+// frames sequentially, so by the time the ping has been processed and the
+// pong observed, the session_subscribe frame has been parsed and the
+// subscription goroutine has been spawned. In practice the subscription
+// goroutine's setup (sessionExists + MaxSessionEventRowID + addSubscriber)
+// completes within the same scheduler quantum as the ping/pong round-trip,
+// giving a far stronger ordering than a fixed time.Sleep under CPU
+// contention. Any session_event frames that arrive interleaved with the
+// pong (e.g. from since_event_id replay) would be unexpected at this point
+// in the protocol; the helper does not tolerate them and will fail the
+// test, which is the right behaviour for subscribe-without-replay flows.
+func subscribeAndWait(t *testing.T, conn net.Conn, r *bufio.Reader, sessionName string) {
+	t.Helper()
+	sendClientFrame(t, conn, map[string]any{
+		"type": "session_subscribe",
+		"name": sessionName,
+	})
+	sendClientFrame(t, conn, map[string]any{"type": "ping"})
+	for {
+		frame, ok := readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+		if !ok {
+			t.Fatalf("subscribeAndWait(%q): pong not received within 5s", sessionName)
+		}
+		if frame["type"] == "pong" {
+			return
+		}
+		t.Fatalf("subscribeAndWait(%q): unexpected frame before pong: %v", sessionName, frame)
+	}
+}
+
 // readClientFrameWithTimeout reads a frame, failing if none arrives within d.
 func readClientFrameWithTimeout(t *testing.T, conn net.Conn, r *bufio.Reader, d time.Duration) (map[string]any, bool) {
 	t.Helper()
@@ -450,14 +482,8 @@ func TestFanOut(t *testing.T) {
 	for i := range clients {
 		conn, r := dialClientSocket(t, cs.SockPath())
 		clients[i] = clientConn{conn, r}
-		sendClientFrame(t, conn, map[string]any{
-			"type": "session_subscribe",
-			"name": sessionName,
-		})
+		subscribeAndWait(t, conn, r, sessionName)
 	}
-
-	// Allow subscriptions to be registered (goroutines need a moment to start).
-	time.Sleep(50 * time.Millisecond)
 
 	// Publish an event.
 	publish(iris.EventPublication{
@@ -499,21 +525,22 @@ func TestDisconnectedSubscriberRemoved(t *testing.T) {
 	}
 	cs, publish := newTestClientSocket(t, sessions)
 
-	// Subscribe client A (rA not used since A disconnects before receiving events).
-	connA, _ := dialClientSocket(t, cs.SockPath())
-	sendClientFrame(t, connA, map[string]any{"type": "session_subscribe", "name": sessionName})
+	// Subscribe client A. We need a reader for the ping/pong barrier even
+	// though A disconnects before receiving any session events.
+	connA, rA := dialClientSocket(t, cs.SockPath())
+	subscribeAndWait(t, connA, rA, sessionName)
 
 	// Subscribe client B.
 	connB, rB := dialClientSocket(t, cs.SockPath())
-	sendClientFrame(t, connB, map[string]any{"type": "session_subscribe", "name": sessionName})
-
-	// Allow subscriptions to register.
-	time.Sleep(50 * time.Millisecond)
+	subscribeAndWait(t, connB, rB, sessionName)
 
 	// Disconnect client A.
 	connA.Close()
 
-	// Brief delay to let the server detect the disconnect.
+	// Brief delay to let the server detect the disconnect. This is a
+	// best-effort wait — the test still passes if the disconnect hasn't
+	// been observed by the server, because Publish drops on full channels
+	// rather than blocking. The sleep just keeps the log noise down.
 	time.Sleep(50 * time.Millisecond)
 
 	// Publish — client B must still receive.
@@ -633,8 +660,8 @@ func TestSinceEventIDReplay(t *testing.T) {
 	conn, r := dialClientSocket(t, sockPath)
 
 	sendClientFrame(t, conn, map[string]any{
-		"type":          "session_subscribe",
-		"name":          sessionName,
+		"type":           "session_subscribe",
+		"name":           sessionName,
 		"since_event_id": sinceRowID,
 	})
 
@@ -680,13 +707,25 @@ func TestSessionUnsubscribe(t *testing.T) {
 
 	conn, r := dialClientSocket(t, cs.SockPath())
 
-	// Subscribe.
-	sendClientFrame(t, conn, map[string]any{"type": "session_subscribe", "name": sessionName})
-	time.Sleep(50 * time.Millisecond)
-
-	// Unsubscribe.
+	// Subscribe, then immediately unsubscribe. Both pairs use a ping/pong
+	// barrier to ensure the server has processed the frame before we move
+	// on — for subscribe this guarantees the subscriber is registered
+	// (so a missed publish would be a real bug, not a race), and for
+	// unsubscribe it guarantees the subscriber has been removed before
+	// Publish runs (so any frame the client receives would be a real bug).
+	subscribeAndWait(t, conn, r, sessionName)
 	sendClientFrame(t, conn, map[string]any{"type": "session_unsubscribe", "name": sessionName})
-	time.Sleep(50 * time.Millisecond)
+	sendClientFrame(t, conn, map[string]any{"type": "ping"})
+	for {
+		frame, ok := readClientFrameWithTimeout(t, conn, r, 5*time.Second)
+		if !ok {
+			t.Fatal("unsubscribe: pong not received within 5s")
+		}
+		if frame["type"] == "pong" {
+			break
+		}
+		t.Fatalf("unsubscribe: unexpected frame before pong: %v", frame)
+	}
 
 	// Publish — the client should NOT receive this.
 	publish(iris.EventPublication{
@@ -816,8 +855,8 @@ func TestStaleSocketRemoved(t *testing.T) {
 	}
 
 	cs := iris.NewClientSocket(iris.ClientSocketConfig{
-		SockPath: sockPath,
-		Database: database,
+		SockPath:          sockPath,
+		Database:          database,
 		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
 	})
 	// This should succeed even though a file exists at sockPath.
@@ -867,8 +906,8 @@ func TestClientSocketSockPath(t *testing.T) {
 
 	sockPath := filepath.Join(tmp, "iris.sock")
 	cs := iris.NewClientSocket(iris.ClientSocketConfig{
-		SockPath: sockPath,
-		Database: database,
+		SockPath:          sockPath,
+		Database:          database,
 		GetActiveSessions: func() []iris.SessionSnapshot { return nil },
 	})
 	if err := cs.Listen(); err != nil {
@@ -917,12 +956,7 @@ func TestHarnessToClientFanOut(t *testing.T) {
 
 	// --- Connect a client to the ClientSocket and subscribe ---
 	clientConn, clientReader := dialClientSocket(t, sockPath)
-	sendClientFrame(t, clientConn, map[string]any{
-		"type": "session_subscribe",
-		"name": sessionName,
-	})
-	// Allow the subscription goroutine to register.
-	time.Sleep(50 * time.Millisecond)
+	subscribeAndWait(t, clientConn, clientReader, sessionName)
 
 	// --- Simulate a harness event by connecting as the pi extension and sending a tool_exec ---
 	hConn, hReader := dialHarness(t, harnessSockPath)

@@ -470,21 +470,37 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 			activeSubs[frame.Name] = subEntry{id: subID, cancel: subCancel}
 			subMu.Unlock()
 
+			onDone := func() {
+				// Called by the subscription goroutine when done (client
+				// disconnect or ctx cancel). Remove from the local map and
+				// the global subscriber set.
+				subMu.Lock()
+				if e, ok := activeSubs[frame.Name]; ok && e.id == subID {
+					delete(activeSubs, frame.Name)
+				}
+				subMu.Unlock()
+				cs.removeSubscriber(frame.Name, subID)
+				subCancel()
+			}
+
+			// Register the live subscriber synchronously, before reading the
+			// next frame on this connection. This is what makes the
+			// session_subscribe → next-frame ordering on the wire a true
+			// happens-before relationship for Publish: any frame the client
+			// sends after observing a response to a subsequent request (e.g.
+			// ping/pong) is guaranteed to see the subscriber registered. If
+			// setupSubscription fails (session not found, etc.) it has
+			// already sent the error frame; we run onDone to clear the
+			// local activeSubs entry and continue.
+			subState, ok := cs.setupSubscription(w, frame, subID)
+			if !ok {
+				onDone()
+				continue
+			}
 			cs.wg.Add(1)
 			go func() {
 				defer cs.wg.Done()
-				cs.runSubscription(subCtx, w, frame, subID, func() {
-					// Called by the subscription goroutine when done (client
-					// disconnect or ctx cancel). Remove from the local map and
-					// the global subscriber set.
-					subMu.Lock()
-					if e, ok := activeSubs[frame.Name]; ok && e.id == subID {
-						delete(activeSubs, frame.Name)
-					}
-					subMu.Unlock()
-					cs.removeSubscriber(frame.Name, subID)
-					subCancel()
-				})
+				cs.runSubscription(subCtx, w, frame, subState, onDone)
 			}()
 
 		case ClientFrameSessionUnsubscribe:
@@ -588,41 +604,43 @@ func (cs *ClientSocket) handleSessionsList(w *jsonlWriter) {
 	})
 }
 
-// runSubscription manages a single subscription for one session on one client
-// connection. It:
+// subscriptionState carries the result of setupSubscription into the
+// runSubscription goroutine. It captures the snapshot rowid (for replay
+// deduplication) and the live channel (registered in the subscriber set).
+type subscriptionState struct {
+	ch            chan subscriberMessage
+	snapshotRowID int64
+}
+
+// setupSubscription performs the synchronous portion of subscribing a client
+// to a session: verifying the session exists, snapshotting the max rowid for
+// replay deduplication, and registering the live channel in the subscriber
+// set. It runs on the connection's reader goroutine so that by the time it
+// returns, any subsequent frame the client sends (and any response the
+// client observes from this socket) is guaranteed to see the subscriber
+// registered. This is what eliminates the subscribe-then-publish race that
+// plagued tests using a fixed time.Sleep as their readiness barrier.
 //
-//  1. Checks that the session exists (sends error if not; keeps connection open).
-//  2. Snapshots the current max rowid for replay deduplication.
-//  3. Registers a live channel in the subscriber set.
-//  4. Replays events since_event_id from the DB (if requested).
-//  5. Drains the live channel, writing session_event frames to the client.
-//
-// onDone is called when the goroutine exits (whether by ctx cancel, write
-// error, or channel overflow).
-func (cs *ClientSocket) runSubscription(
-	ctx context.Context,
+// Returns ok=false if the session does not exist; an error frame has
+// already been written to the client.
+func (cs *ClientSocket) setupSubscription(
 	w *jsonlWriter,
 	frame ClientSessionSubscribeFrame,
 	subID string,
-	onDone func(),
-) {
-	defer onDone()
-
+) (subscriptionState, bool) {
 	sessionName := frame.Name
 
-	// Step 1: Verify the session exists. A "not found" still registers the
-	// subscription for sessions that may start later, but per the AC the
-	// requirement is to return an error and keep the connection open.
-	// We check the in-memory supervisor map via getActiveSessions.
+	// Verify the session exists. A "not found" still keeps the connection
+	// open, per the documented contract for session_subscribe.
 	if !cs.sessionExists(sessionName) {
 		sendError(w, ClientFrameSessionSubscribe,
 			fmt.Sprintf("session %q not found", sessionName))
-		return
+		return subscriptionState{}, false
 	}
 
-	// Step 2: Snapshot the current max rowid before registering the live
-	// channel. This is the key to avoiding the replay-vs-live race described
-	// in the file-level comment and §4.3 of the design doc.
+	// Snapshot the current max rowid before registering the live channel.
+	// This is the key to avoiding the replay-vs-live race described in the
+	// file-level comment and §4.3 of the design doc.
 	//
 	// Timeline:
 	//   T0: snapshotRowID = MAX(rowid) = N
@@ -639,11 +657,36 @@ func (cs *ClientSocket) runSubscription(
 		snapshotRowID = 0
 	}
 
-	// Step 3: Register the live channel.
+	// Register the live channel. After this returns, Publish() for this
+	// session will see the subscriber.
 	ch := make(chan subscriberMessage, subscriberChanSize)
 	cs.addSubscriber(sessionName, subscriberChan{id: subID, ch: ch})
 
-	// Step 4: Replay from DB if since_event_id was given.
+	return subscriptionState{ch: ch, snapshotRowID: snapshotRowID}, true
+}
+
+// runSubscription handles the asynchronous portion of a subscription: the
+// optional since_event_id replay from the DB, followed by the long-running
+// drain of the live channel. setupSubscription must have been called
+// successfully before this goroutine starts; the live channel and snapshot
+// rowid are passed in via subscriptionState.
+//
+// onDone is called when the goroutine exits (whether by ctx cancel, write
+// error, or channel overflow).
+func (cs *ClientSocket) runSubscription(
+	ctx context.Context,
+	w *jsonlWriter,
+	frame ClientSessionSubscribeFrame,
+	state subscriptionState,
+	onDone func(),
+) {
+	defer onDone()
+
+	sessionName := frame.Name
+	ch := state.ch
+	snapshotRowID := state.snapshotRowID
+
+	// Replay from DB if since_event_id was given.
 	if frame.SinceEventID > 0 {
 		events, err := cs.database.QuerySessionEventsSinceRowID(sessionName, frame.SinceEventID)
 		if err != nil {
@@ -668,7 +711,7 @@ func (cs *ClientSocket) runSubscription(
 		}
 	}
 
-	// Step 5: Drain the live channel, skipping duplicates from the replay range.
+	// Drain the live channel, skipping duplicates from the replay range.
 	for {
 		select {
 		case <-ctx.Done():
@@ -971,10 +1014,10 @@ func (cs *ClientSocket) handleEscalationDeliver(ctx context.Context, w *jsonlWri
 //
 //   - ("<name>", nil)        — explicit --to or single auto-discovered coord.
 //   - ("", nil)              — zero coordinators (the caller should still
-//                              transition to escalated and ack with delivered=false).
+//     transition to escalated and ack with delivered=false).
 //   - ("", err)              — multiple candidates without --to, or --to
-//                              names a session that is not a coordinator,
-//                              or --to names a session that does not exist.
+//     names a session that is not a coordinator,
+//     or --to names a session that does not exist.
 func (cs *ClientSocket) resolveEscalationTarget(from, explicitTo string) (string, error) {
 	if explicitTo != "" {
 		if explicitTo == from {
