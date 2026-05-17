@@ -405,6 +405,17 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 			// Observation frame — write to DB for logging.
 			h.writeObservationEvent("tool_result", line)
 
+		case "tool_progress":
+			// Mid-tool heartbeat (#1761). PI emits this on a fixed cadence
+			// while a tool call is in flight so long-running shells don't
+			// silence the wire long enough to trip downstream inactivity
+			// timers. Deliberately not written to agent_events: it would
+			// otherwise surface in narrative output (default branch of
+			// narrative.RenderRow) as a duplicate artefact. The receipt of
+			// the frame is itself the activity signal — no further work
+			// needed here.
+			continue
+
 		case "state_change":
 			// State transition from the extension (e.g. waiting, active,
 			// finished, interrupted). Write the agent_events row FIRST per

@@ -596,6 +596,35 @@ suffix ` (host)` is appended after the branch label and before any PR/cycle
 info. This surfaces unsandboxed sessions visually so users can tell them
 apart from sandboxed ones at a glance.
 
+### 5.12 `tool_progress`
+
+```json
+{"type":"tool_progress","id":"call_abc123","name":"bash"}
+```
+
+Mid-tool heartbeat. The extension emits this frame on a fixed cadence
+(default 30s, configurable via `PRISM_TOOL_HEARTBEAT_INTERVAL_MS`) while a
+tool execution is in flight, so that long-running invocations such as
+`nix build .#prism` or `go test -count=20` don't silence the wire long
+enough to trip the sidecar's per-session inactivity watchdog (#1728).
+
+- `id` (string, required) — the `tool_call.id` of the in-flight call.
+- `name` (string, required) — the tool name (e.g. `"bash"`). Informational
+  only; the sidecar does not branch on it.
+
+The first heartbeat fires only after the configured cadence has elapsed,
+so fast tools (completing in < cadence) never produce a `tool_progress`
+frame on the wire.
+
+**Sidecar behaviour:** `tool_progress` resets the inactivity watchdog
+via the standard inbound-frame `touchActivity` path, but is **not**
+written to `agent_events`. Downstream consumers (narrative renderer,
+checkin, TUI) therefore never see the frame — it is purely a liveness
+signal between the extension and the sidecar. See `handlePipeFrame`'s
+explicit `tool_progress` case for the no-op-on-events contract.
+
+Introduced in #1761.
+
 ## 6. Frame catalogue — sidecar → extension
 
 Frames sent by the sidecar to the extension. These represent **prism
