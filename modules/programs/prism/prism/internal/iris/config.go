@@ -30,6 +30,20 @@ type Config struct {
 	// PIExtensionPath is the absolute path to the prism.ts extension file
 	// that iris loads into each pi child via --extension.
 	PIExtensionPath string `json:"pi_extension_path"`
+
+	// PIProvider is the LLM provider passed to pi via `--provider`. When
+	// empty, the flag is omitted and pi falls back to its own defaults
+	// (which currently picks github-copilot/gpt-5.4 — see issue #1777).
+	PIProvider string `json:"pi_provider"`
+
+	// PIModel is the LLM model passed to pi via `--model`. When empty, the
+	// flag is omitted.
+	PIModel string `json:"pi_model"`
+
+	// PIThinking is the thinking level passed to pi via `--thinking`
+	// (e.g. "off", "low", "medium", "high"). When empty, the flag is
+	// omitted.
+	PIThinking string `json:"pi_thinking"`
 }
 
 // DefaultAllowedExtensions is the initial extension allowlist per §3.5 of the
@@ -44,6 +58,14 @@ func defaults() Config {
 		LogLevel:          "info",
 		AllowedExtensions: DefaultAllowedExtensions,
 		RestartThreshold:  DefaultRestartThreshold,
+		// Sensible defaults that match what the now-deprecated
+		// writePerSessionPIConfig used to write into per-session
+		// settings.json (issue #1777). The user can override these via
+		// ~/.config/iris/config.json or the iris nix module options
+		// (programs.iris.pi.{provider,model,thinking}).
+		PIProvider: "anthropic",
+		PIModel:    "claude-sonnet-4-20250514",
+		PIThinking: "medium",
 	}
 }
 
@@ -86,6 +108,15 @@ func LoadConfig(path string) (Config, error) {
 	}
 	if parsed.PIExtensionPath != "" {
 		cfg.PIExtensionPath = parsed.PIExtensionPath
+	}
+	if parsed.PIProvider != "" {
+		cfg.PIProvider = parsed.PIProvider
+	}
+	if parsed.PIModel != "" {
+		cfg.PIModel = parsed.PIModel
+	}
+	if parsed.PIThinking != "" {
+		cfg.PIThinking = parsed.PIThinking
 	}
 
 	return cfg, nil

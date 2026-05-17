@@ -30,6 +30,9 @@ let
 
   irisConfig = {
     pi_extension_path = prismExtensionPath;
+    pi_provider = cfg.pi.provider;
+    pi_model = cfg.pi.model;
+    pi_thinking = cfg.pi.thinking;
   };
 
   # NOTE on the daemon's socket path and IRIS_DAEMON_SOCK
@@ -63,6 +66,60 @@ in
     nx.programs.iris = {
       enable = lib.mkEnableOption "iris — daemon-mode successor to prism (codename, D-2+)" // {
         default = false;
+      };
+
+      # pi.{provider,model,thinking} — LLM routing for pi children spawned
+      # by the iris supervisor. See issue #1777: without these, pi 0.72.x
+      # falls back to a built-in default that picks
+      # `github-copilot/gpt-5.4`, for which most users have no auth, and
+      # every turn fails with `400 bad request: Authorization header is
+      # badly formatted`.
+      #
+      # The iris supervisor passes `--provider`/`--model`/`--thinking` to
+      # pi on the command line (see
+      # `internal/iris/supervisor.go::buildPIArgs`). The defaults below
+      # match the values the (now-deprecated) per-session settings.json
+      # injection used to write, plus `medium` thinking as a sensible
+      # default for the coder role.
+      #
+      # Deliberately self-contained: this module does NOT read from
+      # `config.nx.programs.prism.*`. Iris must continue to function with
+      # prism disabled — see the surrounding comment about
+      # `prismExtensionDir` for the same rationale applied to the
+      # extension path.
+      pi = {
+        provider = lib.mkOption {
+          type = lib.types.str;
+          default = "anthropic";
+          example = "openai";
+          description = ''
+            LLM provider passed to pi via `--provider <value>`. Written
+            to `~/.config/iris/config.json` as `pi_provider`. Set to the
+            empty string to omit the flag and let pi pick its own
+            default (not recommended — see issue #1777).
+          '';
+        };
+        model = lib.mkOption {
+          type = lib.types.str;
+          default = "claude-sonnet-4-20250514";
+          example = "gpt-5";
+          description = ''
+            LLM model passed to pi via `--model <value>`. Written to
+            `~/.config/iris/config.json` as `pi_model`. Must be a model
+            that the configured provider exposes.
+          '';
+        };
+        thinking = lib.mkOption {
+          type = lib.types.str;
+          default = "medium";
+          example = "high";
+          description = ''
+            Thinking level passed to pi via `--thinking <value>`. Written
+            to `~/.config/iris/config.json` as `pi_thinking`. Typical
+            values are `off`, `low`, `medium`, `high` — pi validates the
+            value, iris does not.
+          '';
+        };
       };
     };
   };
