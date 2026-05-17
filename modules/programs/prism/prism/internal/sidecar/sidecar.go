@@ -660,6 +660,36 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		}
 	}
 
+	// FK guard (#1760). Any subsequent writeEvent call sets agent_events.instance_id
+	// to s.cfg.InstanceID, which is a foreign key into sessions(instance_id). In
+	// production the parent row is inserted by the tmux-session-start handler
+	// (cmd/event.go) or by session.SpawnSession before the sidecar runs, but the
+	// sidecar may also be started in contexts where that didn't happen — sidecar
+	// unit tests, ad-hoc bring-up, or any future caller that mints an instance_id
+	// inline above. InsertSession uses INSERT OR IGNORE so the call is a no-op
+	// when the row already exists; this guarantees that downstream event writes
+	// never fail with FOREIGN KEY constraint failed (787).
+	if s.cfg.InstanceID != "" && s.cfg.DB != nil {
+		harnessName := s.cfg.HarnessName
+		if harnessName == "" {
+			harnessName = "pi"
+		}
+		sess := db.Session{
+			InstanceID:  s.cfg.InstanceID,
+			SessionName: s.cfg.SessionName,
+			Repo:        s.cfg.Repo,
+			Worktree:    s.cfg.Worktree,
+			Harness:     harnessName,
+		}
+		if s.cfg.AgentRole != "" {
+			role := s.cfg.AgentRole
+			sess.AgentRole = &role
+		}
+		if err := s.cfg.DB.InsertSession(sess); err != nil {
+			s.logger().Printf("sidecar: warning: InsertSession for instance %s failed (FK-guard): %v", s.cfg.InstanceID, err)
+		}
+	}
+
 	// B.3 Stage 2: Start the merge-queue watcher for coordinator sessions.
 	// This is transport-agnostic and must run for ALL transport shapes so that
 	// PI coordinator sessions receive merge-queue notifications exactly like
@@ -1552,6 +1582,21 @@ const piWireProtocolVersion = 2
 // connection drop before marking the session as error. See P2.WIRE §7.2.
 const pipeDisconnectTimeout = 30 * time.Second
 
+// acceptOutcome enumerates the reasons an Accept attempt in
+// runStartupSocketPipe returned without a live connection. It is required
+// (instead of a plain bool) so that the caller can distinguish a startup
+// timeout from a concurrent ctx cancellation — the timeout path must record
+// state=error in the DB even if ctx happens to be cancelled in the same
+// scheduling tick (#1760).
+type acceptOutcome int
+
+const (
+	acceptConnected   acceptOutcome = iota // got a connection
+	acceptTimedOut                          // timer fired before connect or ctx cancel
+	acceptCtxCanceled                       // ctx cancelled (and timer had not yet fired)
+	acceptListenerErr                       // listener.Accept returned an error
+)
+
 // runStartupSocketPipe binds the per-session Unix socket (Linux) or TCP
 // listener (Darwin), accepts the PI extension's connection, performs the
 // P2.WIRE hello/hello_ack handshake, then enters the bidirectional frame loop.
@@ -1657,29 +1702,45 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	defer closePipeListener()
 
 	// acceptWithTimeout waits up to the given duration for a new connection.
-	// Returns (conn, true) on success or (nil, false) on timeout/ctx cancel.
+	// Returns the connection and an outcome value identifying which select
+	// case fired. The outcome is required (not just a bool) because the caller
+	// must perform a state=error write on timeout even when ctx is concurrently
+	// cancelled — collapsing timeout and ctx-cancel into a single "!ok" branch
+	// caused issue #1760, where the select picked ctx.Done() under contended
+	// scheduling and the state write was short-circuited.
 	type acceptResult struct {
 		conn net.Conn
 		err  error
 	}
-	acceptWithTimeout := func(timeout time.Duration) (net.Conn, bool) {
+	acceptWithTimeout := func(timeout time.Duration) (net.Conn, acceptOutcome) {
 		ch := make(chan acceptResult, 1)
 		go func() {
 			c, e := ln.Accept()
 			ch <- acceptResult{c, e}
 		}()
+		deadline := time.Now().Add(timeout)
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
 		select {
-		case <-ctx.Done():
-			return nil, false
 		case <-timer.C:
-			return nil, false
+			return nil, acceptTimedOut
+		case <-ctx.Done():
+			// Prefer the timeout outcome whenever the wall-clock deadline has
+			// already passed, regardless of which channel happened to be ready
+			// first. The original implementation reported ctx-cancel here and
+			// the caller then skipped the state=error write, producing the
+			// #1760 flake: under contended scheduling the deadline can elapse
+			// well before the timer goroutine actually delivers to timer.C,
+			// so a strict "is timer.C ready?" check is not reliable.
+			if !time.Now().Before(deadline) {
+				return nil, acceptTimedOut
+			}
+			return nil, acceptCtxCanceled
 		case ar := <-ch:
 			if ar.err != nil {
-				return nil, false
+				return nil, acceptListenerErr
 			}
-			return ar.conn, true
+			return ar.conn, acceptConnected
 		}
 	}
 
@@ -1728,35 +1789,38 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 	for {
 		// --- Wait for the extension to connect ----------------------------
-		conn, ok := acceptWithTimeout(acceptTimeout)
-		if !ok {
-			s.mu.Lock()
-			if ctx.Err() != nil {
-				// Context cancelled (SIGTERM path) — Shutdown() handles state.
-				s.mu.Unlock()
-			} else {
-				// Timeout waiting for (re)connection.
+		conn, outcome := acceptWithTimeout(acceptTimeout)
+		if outcome != acceptConnected {
+			switch outcome {
+			case acceptTimedOut, acceptListenerErr:
+				// Timeout waiting for (re)connection (or listener error, which
+				// the writer goroutine also treats as a hard failure). We must
+				// record the error state in the DB BEFORE consulting ctx —
+				// under contended scheduling the timer fire and an external
+				// ctx cancel can land in the same window, and skipping the
+				// write because ctx happens to be cancelled produces the
+				// flake described in #1760 (state stays "idle" forever).
+				s.mu.Lock()
 				s.flushPipeAccum()
 				s.upsertState(agent.StateError, nil, nil)
 				s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": "reconnect timeout"}, nil)
 				s.lastState = agent.StateError
+				s.harnessPipeOutCh = nil
 				s.mu.Unlock()
 				err := fmt.Errorf("sidecar: runStartupSocketPipe: timed out waiting for extension to (re)connect (timeout=%s)", acceptTimeout)
 				s.logger().Printf("%v", err)
-				// Drain and stop the writer goroutine.
+				close(outCh)
+				<-writerDone
+				return err
+			case acceptCtxCanceled:
+				// Context cancelled (SIGTERM path) — Shutdown() handles state.
 				s.mu.Lock()
 				s.harnessPipeOutCh = nil
 				s.mu.Unlock()
 				close(outCh)
 				<-writerDone
-				return err
+				return ctx.Err()
 			}
-			s.mu.Lock()
-			s.harnessPipeOutCh = nil
-			s.mu.Unlock()
-			close(outCh)
-			<-writerDone
-			return ctx.Err()
 		}
 
 		s.logger().Printf("sidecar: runStartupSocketPipe: extension connected from %s", conn.RemoteAddr())

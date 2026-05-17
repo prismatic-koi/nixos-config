@@ -292,10 +292,13 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_NeverConnects(t *testing.T)
 	// host-API socket.
 
 	// Poll until the DB shows error state (written by runStartupSocketPipe
-	// timeout path). This replaces a fixed sleep-then-assert — the state write
-	// can land any time after the timeout fires, so a poll-loop is required to
-	// avoid a race under contended scheduling (issue #1595).
-	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+	// timeout path). The state write happens after the 200ms startup timeout
+	// fires; under contended scheduling (race detector + Nix sandbox CI) the
+	// scheduling latency between timer fire and DB commit can run into the
+	// hundreds of ms, so a 5s ceiling is used instead of the original 2s
+	// (#1760). The poll exits as soon as the state lands, so a generous
+	// ceiling is essentially free on healthy runs.
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
 	}
 
@@ -370,7 +373,9 @@ func TestHostAPI_SurvivesHarnessPipeHandshakeFailure_MalformedHello(t *testing.T
 	// Poll until the DB shows error state — the error write from
 	// runStartupSocketPipe can land any time after the malformed hello is
 	// rejected, so polling avoids a sleep-then-assert race (issue #1595).
-	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+	// 5s ceiling chosen to absorb scheduler contention on race-detector
+	// CI runs (#1760).
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after malformed hello = %q, want error", st)
 	}
 
@@ -409,9 +414,10 @@ func TestHostAPI_HarnessPipeFailureRecordsErrorState(t *testing.T) {
 	// Wait for harness-pipe socket, then poll until the DB shows error state.
 	// A fixed sleep-then-assert races the timeout handler's DB write under
 	// contended scheduling (e.g. the Nix sandbox runner); a poll-loop with a
-	// 2s ceiling is robust without materially slowing healthy runs (issue #1595).
+	// 5s ceiling is robust without materially slowing healthy runs
+	// (issues #1595, #1760).
 	waitForHostAPISock(t, hostAPISockPath)
-	if s := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); s != "error" {
+	if s := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); s != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", s)
 	}
 
@@ -636,8 +642,8 @@ func TestHostAPI_NoGoroutineLeak(t *testing.T) {
 	// has fired and its handler has committed the state write. Only then do we
 	// check that the host-API is still serving. Using a poll-loop instead of a
 	// fixed sleep avoids a sleep-then-assert race under contended scheduling
-	// (e.g. the Nix sandbox runner) (issue #1595).
-	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 2*time.Second); st != "error" {
+	// (e.g. the Nix sandbox runner) (issues #1595, #1760).
+	if st := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, "error", 5*time.Second); st != "error" {
 		t.Errorf("DB state after harness-pipe timeout = %q, want error", st)
 	}
 
