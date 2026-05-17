@@ -430,25 +430,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// --- in-TUI overlay openers (issue #1737) ---
 	//
-	// These bindings only fire when no overlay is active. When iris runs
-	// under tmux, the tmux popup bindings on C-f/C-w intercept the
-	// keystroke before bubbletea ever sees it, so the two paths coexist
-	// without conflict (per the issue's coexistence AC).
+	// These bindings fire when no overlay is active. Iris owns them
+	// unconditionally — there is no longer a tmux popup binding to
+	// coexist with (issue #1766).
 	case "ctrl+f":
-		// When iris is hosted inside tmux, this keystroke is intercepted by
-		// the tmux popup binding on C-f (which runs `prism switch` — a
-		// prism, not iris, surface; see modules/programs/prism/tmux.nix:212)
-		// and bubbletea never sees it. Standalone, the in-TUI picker opens.
-		// The two paths coexist because tmux is the outer event source.
+		// Open the in-TUI session picker overlay.
 		m.openPicker()
 		return m, nil
 
 	case "ctrl+w":
-		// Coexistence note mirrors C-f: under tmux, the C-w popup binding
-		// runs `prism dashboard` (a prism surface; tmux.nix:229) and the
-		// in-TUI overlay never fires. The dedicated iris tmux popups are on
-		// `prefix+i` (iris switch), `C-q` (iris dashboard popup), and
-		// `prefix+I` (persistent iris-dashboard).
+		// Open the multi-session dashboard overlay.
 		m.overlay = overlayDashboard
 		return m, nil
 

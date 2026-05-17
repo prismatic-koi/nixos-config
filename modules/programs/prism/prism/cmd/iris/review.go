@@ -10,7 +10,7 @@ package main
 //
 // All heavy lifting lives in the daemon — this CLI is pure plumbing:
 //
-//   1. Resolve the calling session (IRIS_SESSION_NAME env var, then tmux).
+//   1. Resolve the calling session (IRIS_SESSION_NAME / PRISM_SESSION_NAME).
 //   2. Validate flags (--only against the canonical agent set, --timeout
 //      as a Go duration, --rebase as a literal bool).
 //   3. Verify the PR exists via `gh pr view <n>` BEFORE spawning anything.
@@ -45,7 +45,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/iris"
 	"github.com/prismatic-koi/prism/internal/review"
-	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
 // reviewDialTimeout bounds the time we spend dialling the daemon socket.
@@ -312,15 +311,16 @@ func parseOnlyFlag(csv string) ([]string, error) {
 }
 
 // lookupIrisParentSession resolves the calling iris session name from the
-// environment or the tmux session. Resolution order:
+// environment. Iris does not depend on tmux, so no tmux fallback is
+// attempted (issue #1766). Resolution order:
 //
 //   1. IRIS_SESSION_NAME — set by Supervisor.buildEnv when iris launches
 //      its pi child (the canonical signal).
 //   2. PRISM_SESSION_NAME — fall-back for callers that ran under the prism
 //      runtime (rare; supports the iris-spawned-from-prism migration).
-//   3. tmux current session — for ad-hoc invocations from a tmux pane.
 //
-// Returns "" when no session can be identified.
+// Returns "" when no session can be identified. Callers should surface a
+// clear error pointing at --session and the env-var contract.
 func lookupIrisParentSession() string {
 	if s := os.Getenv("IRIS_SESSION_NAME"); s != "" {
 		return s
@@ -328,11 +328,7 @@ func lookupIrisParentSession() string {
 	if s := os.Getenv("PRISM_SESSION_NAME"); s != "" {
 		return s
 	}
-	sess, err := tmux.CurrentSession()
-	if err != nil {
-		return ""
-	}
-	return sess
+	return ""
 }
 
 // ghPRVerifier verifies that the named PR exists by invoking `gh pr view

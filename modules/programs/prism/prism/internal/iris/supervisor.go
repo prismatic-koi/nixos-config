@@ -766,8 +766,8 @@ func (s *Supervisor) buildEnv(piConfigDir string) []string {
 
 	// Set IRIS_SESSION_NAME so in-session CLIs (`iris review` #1694,
 	// `iris escalate` #1693, future `iris prompt` from within a session,
-	// etc.) can identify their calling session without a CWD walk or tmux
-	// lookup. This is the iris analogue of PRISM_SESSION_NAME in prism's
+	// etc.) can identify their calling session without a CWD walk. This
+	// is the iris analogue of PRISM_SESSION_NAME in prism's
 	// worker environment. Guarded against an empty session name so
 	// downstream emptiness checks in the worker CLIs ("set but empty" vs
 	// "unset") don't fire spuriously — pinned by
@@ -1280,9 +1280,8 @@ func PiSessionPathFromSessionID(piAgentDir, encodedCwd, sessionID string) (strin
 //
 // The role parameter is intentionally not part of the name: role is
 // already a separate field on SessionSnapshot and surfaced in its own
-// column. The historical "iris-<role>@" prefix was a tmux-coexistence
-// holdover from when iris and prism shared a tmux server; iris no longer
-// runs under tmux, so the prefix has been dropped.
+// column. (A historical "iris-<role>@" prefix was dropped — iris does
+// not depend on tmux.)
 //
 // Slash in the returned name: callers that derive filesystem paths from
 // the session name must decide how to handle the embedded '/'. iris

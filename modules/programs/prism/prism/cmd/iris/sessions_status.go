@@ -7,19 +7,8 @@ package main
 // set (visual stability across invocations matters for shell aliases that
 // align several lines side by side).
 // With --json: a single JSON object keyed by state with integer counts.
-// With --tmux-format: a tmux #[fg=...] colour-formatted segment (mirrors
-// `prism sessions status --tmux-format` byte-for-byte via the shared
-// internal/tmuxstatus package). Adding --waiting restricts the segment to
-// just the waiting-count pip — this is the form embedded in the tmux
-// status-right alongside the prism segment during the iris coexistence
-// window (#1672).
-//
-// Tmux status-right runs the command continuously. A non-empty error string
-// would therefore be permanently visible in the status bar — so when
-// --tmux-format is set and the daemon is unreachable, the command exits 0
-// with an empty string. The error path is preserved for the non-tmux modes
-// (operators running the command interactively still want to know the
-// daemon is down).
+// With --waiting: a single integer waiting-session count (useful in shell
+// pipelines that alert on attention-needing sessions).
 //
 // The canonical state set we report on is:
 //
@@ -34,11 +23,9 @@ package main
 // that state at the time of the snapshot.
 //
 // `escalated` (issue #1693) is the "needs attention" twin of `waiting`: a
-// worker has handed a question to the coordinator and is paused. For the
-// tmux status segment it is folded into the Waiting bucket so a single
-// glance at the status bar surfaces both attention-needing states; the
-// human line and JSON output preserve it as its own bucket so operators
-// can distinguish at the CLI.
+// worker has handed a question to the coordinator and is paused. The human
+// line and JSON output preserve it as its own bucket so operators can
+// distinguish at the CLI.
 
 import (
 	"context"
@@ -49,9 +36,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/iris"
-	"github.com/prismatic-koi/prism/internal/tmuxstatus"
 )
 
 // sessionStateCounts holds the per-state count totals. Keys correspond to the
@@ -67,9 +52,7 @@ type sessionStateCounts struct {
 	Error    int `json:"error"`
 	// Escalated (issue #1693) is the worker-paused-awaiting-coordinator
 	// state. Always emitted (even when zero) so scripts can rely on the
-	// key being present alongside the other canonical buckets. Folded
-	// into Waiting for the tmux segment — both states mean "needs
-	// attention" — but kept distinct in the human line and JSON.
+	// key being present alongside the other canonical buckets.
 	Escalated int `json:"escalated"`
 	// Spawning is iris-specific (pre-handshake). Emitted only when >0 so
 	// scripts that key off the canonical buckets aren't surprised by an
@@ -80,15 +63,7 @@ type sessionStateCounts struct {
 // runSessionsStatus is the cobra RunE for `iris sessions status`.
 func runSessionsStatus(cmd *cobra.Command, _ []string) error {
 	jsonMode, _ := cmd.Flags().GetBool("json")
-	tmuxFormat, _ := cmd.Flags().GetBool("tmux-format")
 	waitingOnly, _ := cmd.Flags().GetBool("waiting")
-
-	// Mutual exclusion is checked before any I/O so the error message is
-	// the same whether or not the daemon is reachable. Mirrors the
-	// equivalent guard in prism's status command.
-	if jsonMode && tmuxFormat {
-		return fmt.Errorf("iris sessions status: --json and --tmux-format are mutually exclusive")
-	}
 
 	sockPath := resolveSocketPath(cmd)
 	ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Second)
@@ -96,22 +71,11 @@ func runSessionsStatus(cmd *cobra.Command, _ []string) error {
 
 	snap, err := fetchSessionsSnapshot(ctx, sockPath)
 	if err != nil {
-		// Graceful-degradation path for tmux status-right: an error string
-		// would otherwise be permanently visible in the status bar. Exit 0
-		// with no output and let the segment vanish until the daemon
-		// returns. Operators running `iris sessions status` interactively
-		// (no --tmux-format) still get the actionable error.
-		if tmuxFormat {
-			return nil
-		}
 		return err
 	}
 
 	counts := countStates(snap.Sessions)
 
-	if tmuxFormat {
-		return renderStatusTmux(cmd.OutOrStdout(), counts, waitingOnly)
-	}
 	if jsonMode {
 		return renderStatusJSON(cmd.OutOrStdout(), counts)
 	}
@@ -189,60 +153,4 @@ func renderStatusWaitingPlain(w io.Writer, c sessionStateCounts) error {
 		return err
 	}
 	return nil
-}
-
-// renderStatusTmux writes the tmux-format segment via the shared
-// internal/tmuxstatus package. waitingOnly switches between the
-// --waiting --tmux-format and --tmux-format renderers; both return an
-// empty string when there's nothing to display, which is the desired
-// status-right behaviour.
-//
-// Spawning is folded into Active here to match the human-line semantics:
-// the status bar's "active" pip should include sessions still coming up,
-// because the operator-visible distinction is "is something in flight" vs
-// "is something waiting on me".
-func renderStatusTmux(w io.Writer, c sessionStateCounts, waitingOnly bool) error {
-	// Fold Escalated into Waiting for the tmux segment: both states mean
-	// "needs attention" and the status bar's waiting pip is the operator
-	// signal for that category. The human-line and JSON forms keep them
-	// distinct so the CLI surfaces the difference when asked.
-	tc := tmuxstatus.Counts{
-		Active:   c.Active + c.Spawning,
-		Waiting:  c.Waiting + c.Escalated,
-		Idle:     c.Idle,
-		Finished: c.Finished,
-		Error:    c.Error,
-	}
-	cols := tmuxStatusColors()
-	var s string
-	if waitingOnly {
-		s = tmuxstatus.FormatWaiting(tc, cols)
-	} else {
-		s = tmuxstatus.Format(tc, cols)
-	}
-	if s == "" {
-		return nil
-	}
-	if _, err := fmt.Fprint(w, s); err != nil {
-		return err
-	}
-	return nil
-}
-
-// tmuxStatusColors loads the shared prism colour palette via internal/config
-// so the iris status-right segment matches the prism segment exactly. The
-// config loader returns gruvbox-dark defaults when no config file is
-// present, so this works in `go test`, `go build`, and Nix-built binaries
-// alike. Loaded per-call (rather than at init time) so the iris CLI does
-// not pay the JSON-decode cost on commands that don't need colours; the
-// tmux-format command is the only caller.
-func tmuxStatusColors() tmuxstatus.Colors {
-	cfg := config.Load()
-	return tmuxstatus.Colors{
-		Yellow:  cfg.ColorYellow,
-		Purple:  cfg.ColorPurple,
-		Green:   cfg.ColorGreen,
-		Red:     cfg.ColorRed,
-		Primary: cfg.ColorPrimary,
-	}
 }

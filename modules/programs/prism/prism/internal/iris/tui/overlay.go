@@ -17,27 +17,10 @@ package tui
 // always dismisses to overlayNone (per the issue's "Escape closes overlay,
 // does NOT quit the TUI" AC). q and ctrl+c still quit unconditionally.
 //
-// # Coexistence with tmux popup bindings
-//
-// When iris runs under tmux, the popup bindings on `C-f` and `C-w` (see
-// modules/programs/prism/tmux.nix:212 and :229) intercept those keystrokes
-// at the tmux layer and the in-TUI handlers never fire. Note that those
-// two specific popups are owned by prism (`prism switch` and `prism
-// dashboard`), not iris — the dedicated iris tmux popups during the
-// coexistence window are on `prefix+i` (iris switch), `C-q` (iris
-// dashboard popup), and `prefix+I` (persistent iris-dashboard). Either
-// way, when iris runs standalone the tmux bindings are inert and the
-// in-TUI overlays take over. No conflict arises because tmux is the
-// outer event source whichever runtime owns the popup.
-//
-// # Why not import internal/iris/dashboard?
-//
-// internal/iris/dashboard already imports internal/iris/tui (for the
-// DaemonClient and the shared frame types). Reusing the dashboard.Model
-// from here would create an import cycle. The overlay dashboard
-// reimplements a minimal multi-session table using the same data the
-// Model already has in m.sessions \u2014 no extra daemon traffic, no extra
-// dependency.
+// Iris does not depend on tmux: these overlays are the only path to the
+// picker / multi-session dashboard / help surfaces. (Earlier revisions of
+// this file documented coexistence with tmux popup bindings; those
+// bindings were removed in issue #1766.)
 
 import (
 	"fmt"
@@ -248,13 +231,11 @@ func (m Model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		row := m.picker.rows[m.picker.matched[m.picker.cursor]]
 		if row.kind == pickerRowSpawn {
-			// Transition to the worktree-input step. Seed the input with
-			// a reasonable default (the current working directory falls
-			// out as "" here \u2014 RunFocused does not pre-populate it; the
-			// `iris switch` popup path handles that via its tmux popup
-			// `-d "#{pane_current_path}"`. Leaving the default empty
-			// preserves the user's typed value when they re-enter the
-			// flow after a previous spawn failure.).
+			// Transition to the worktree-input step. RunFocused does not
+			// pre-populate the worktree default, so the input opens empty;
+			// the user types one (or pastes from clipboard). Leaving the
+			// default empty also preserves the user's typed value when
+			// they re-enter the flow after a previous spawn failure.
 			m.overlay = overlaySpawnWorktree
 			m.spawn = spawnState{
 				worktree:    []rune{},
@@ -424,9 +405,8 @@ func (m Model) handleSpawnRoleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleDashboardKey: q/esc dismiss the dashboard overlay. This mirrors
-// the existing iris dashboard popup binding's q/esc-to-quit semantics so
-// muscle memory carries over between in-tmux and standalone use.
+// handleDashboardKey: q/esc dismiss the dashboard overlay. Conventional
+// quit semantics for a transient full-screen view.
 func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
@@ -468,9 +448,7 @@ func (m Model) viewOverlay() string {
 	return ""
 }
 
-// viewPickerOverlay renders the picker as a full-screen modal. Layout
-// follows `iris switch` so users see the same visual whether they hit C-f
-// inside tmux (popup) or standalone (overlay).
+// viewPickerOverlay renders the picker as a full-screen modal.
 func (m Model) viewPickerOverlay() string {
 	var sb strings.Builder
 	sb.WriteString("\n")

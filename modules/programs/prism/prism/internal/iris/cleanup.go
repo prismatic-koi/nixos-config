@@ -32,11 +32,7 @@ package iris
 // records which steps ran successfully so callers can surface partial
 // outcomes.
 //
-// Tmux sessions: iris does not create tmux sessions (the design point of
-// the daemon model is to remove the tmux dependency). The "tmux session if
-// any" clause in the D-10 cleanup AC is therefore vacuously satisfied —
-// cleanup makes no tmux calls and the assertion that no tmux session
-// remains is trivially true.
+// Iris does not depend on tmux — cleanup makes no tmux calls.
 
 import (
 	"context"
