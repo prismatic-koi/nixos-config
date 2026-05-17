@@ -350,6 +350,141 @@ func TestToolAbort(t *testing.T) {
 	}
 }
 
+// TestCloseWaitsForInFlightDispatch is the ordering-invariant test for the
+// issue #1724 fix. It verifies that HarnessSocketServer.Close() does not
+// return until every in-flight dispatchToolExec goroutine has finished —
+// including the trailing tool_result DB write that follows the
+// tool_exec_result frame on the abort path.
+//
+// The test sends a tool_exec for a long-running command, aborts it, reads
+// the tool_exec_result frame (proving the dispatch goroutine has reached
+// the post-result code), then calls srv.Close() and asserts that the
+// tool_result event row is present in the DB immediately after Close()
+// returns. With the fix in place this is deterministic; without it the
+// dispatch goroutine would still be inside writeEvent when Close returns,
+// and the assertion would race the DB write (under -race this manifests
+// as a flake; functionally the row may be missing or the DB may be
+// closed under the goroutine's feet).
+func TestCloseWaitsForInFlightDispatch(t *testing.T) {
+	requireBwrap(t)
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "iris.db")
+	database, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenDB: %v", err)
+	}
+
+	const instanceID = "test-close-waits"
+	insertTestSessionRow(t, database, instanceID, "test@close-waits", tmp)
+
+	sockPath := filepath.Join(tmp, "harness.sock")
+	sess := &iris.SessionRecord{
+		InstanceID:      instanceID,
+		SessionName:     "test@close-waits",
+		Worktree:        tmp,
+		Role:            "worker",
+		HarnessSockPath: sockPath,
+	}
+	srv, err := iris.NewHarnessSocketServer(sess, database)
+	if err != nil {
+		t.Fatalf("NewHarnessSocketServer: %v", err)
+	}
+	if err := srv.Listen(); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	acceptDone := make(chan struct{})
+	go func() {
+		defer close(acceptDone)
+		_ = srv.AcceptOne(ctx)
+	}()
+
+	conn, r := dialHarness(t, sockPath)
+	doHandshake(t, conn, r)
+
+	// Start a long-running bash command and abort it.
+	const callID = "call-close-waits-001"
+	sendFrame(t, conn, map[string]any{
+		"type": "tool_exec",
+		"id":   callID,
+		"name": "bash",
+		"args": map[string]any{"command": "sleep 60"},
+	})
+	time.Sleep(50 * time.Millisecond)
+	sendFrame(t, conn, map[string]any{
+		"type": "tool_abort",
+		"id":   callID,
+	})
+
+	// Wait for the tool_exec_result frame — at this point the dispatch
+	// goroutine has written the result frame to the wire but may still
+	// be inside h.writeEvent("tool_result", ...). With the #1724 fix,
+	// srv.Close() must block until that writeEvent returns.
+	deadline := time.Now().Add(10 * time.Second)
+	var gotResult bool
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(deadline) //nolint:errcheck
+		frame := readFrame(t, r)
+		if frame["type"] == "tool_exec_result" && frame["id"] == callID {
+			gotResult = true
+			break
+		}
+	}
+	if !gotResult {
+		t.Fatal("no tool_exec_result received after tool_abort")
+	}
+
+	// The ordering-invariant assertion. Close the conn (so handleConn
+	// returns), call srv.Close(), then IMMEDIATELY close the DB. The
+	// dispatch goroutine — which on the abort path still has a pending
+	// writeEvent("tool_result", ...) call on the same database — must
+	// have completed that write before srv.Close() returned, otherwise
+	// (a) under -race we observe a data race between writeEvent and
+	// database.Close, and (b) the event row is silently missing because
+	// the DB connection is already closed when the late writeEvent runs.
+	conn.Close()
+	srv.Close()
+	if err := database.Close(); err != nil {
+		t.Fatalf("database.Close after srv.Close: %v", err)
+	}
+
+	// AcceptOne should also have unblocked (conn closed → handleConn returned).
+	select {
+	case <-acceptDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("AcceptOne did not return within 5s of conn.Close + srv.Close")
+	}
+
+	// Re-open the DB and verify the tool_result row landed. If srv.Close()
+	// did not wait, the dispatch goroutine's writeEvent ran against a
+	// closed connection (logged as a non-fatal error) and the row is
+	// missing here — a deterministic failure that does not rely on
+	// -race tripping.
+	reopened, err := iris.OpenDB(dbPath)
+	if err != nil {
+		t.Fatalf("reopen DB: %v", err)
+	}
+	t.Cleanup(func() { reopened.Close() })
+	events, err := reopened.AllSessionEvents("test@close-waits")
+	if err != nil {
+		t.Fatalf("AllSessionEvents: %v", err)
+	}
+	var gotToolResult bool
+	for _, e := range events {
+		if e.Type == "tool_result" && strings.Contains(e.Payload, callID) {
+			gotToolResult = true
+			break
+		}
+	}
+	if !gotToolResult {
+		t.Fatalf("tool_result event for %q not present in DB after srv.Close + database.Close — "+
+			"srv.Close() did not wait for the dispatch goroutine (got %d events)",
+			callID, len(events))
+	}
+}
+
 // TestSessionShutdown verifies that a session_shutdown frame is detected.
 func TestSessionShutdown(t *testing.T) {
 	srv := startServer(t)

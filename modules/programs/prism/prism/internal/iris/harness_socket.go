@@ -53,9 +53,44 @@ type HarnessSocketServer struct {
 	// abortChans maps tool call ID → channel signalled by tool_abort.
 	abortChans map[string]chan struct{}
 
+	// activeWG tracks in-flight server-side goroutines that touch shared
+	// state owned by this HarnessSocketServer — the AcceptOne goroutine
+	// and every dispatchToolExec goroutine. Close() waits on it so that:
+	//
+	//  (a) the AcceptOne goroutine's listener.SetDeadline call on the
+	//      shutdown path (harness_socket.go AcceptOne) cannot race
+	//      h.listener.Close() inside Close(), and
+	//  (b) the dispatchToolExec abort-path trailing writeEvent
+	//      ("tool_result", …) cannot race a caller's database.Close()
+	//      that runs immediately after srv.Close().
+	//
+	// Both races were observed under -race in full-suite runs (issue
+	// #1724). Add(1) is performed by AcceptOne on entry, and by handleConn
+	// before launching each dispatchToolExec goroutine. Done is deferred
+	// inside AcceptOne and dispatchToolExec respectively.
+	activeWG sync.WaitGroup
+
+	// closeCh is closed by Close() to signal AcceptOne to abandon its
+	// pending Accept (without anyone touching the listener concurrently
+	// with AcceptOne). AcceptOne owns all listener mutation on the
+	// shutdown path; Close only signals via this channel and then waits
+	// on activeWG before closing the listener itself.
+	//
+	// closed is guarded by h.mu and provides idempotent Close semantics
+	// without an additional sync.Once primitive — callers may invoke
+	// Close more than once safely.
+	closeCh chan struct{}
+	closed  bool
+
 	// writer is the current connected extension's writer (nil when no
 	// connection is active).
 	writer *jsonlWriter
+
+	// activeConn is the currently-handled extension connection (nil when
+	// no connection is active). Close() closes it so handleConn's blocking
+	// readLine returns and AcceptOne can exit, allowing activeWG.Wait()
+	// inside Close to make progress. Guarded by h.mu alongside writer.
+	activeConn net.Conn
 
 	// publisher receives Publish calls for every event written to the DB.
 	// Nil when no client socket is configured (e.g. in harness-only tests).
@@ -95,6 +130,7 @@ func NewHarnessSocketServer(sess *SessionRecord, database *db.DB) (*HarnessSocke
 		sockPath:   sess.HarnessSockPath,
 		inFlight:   make(map[string]chan ToolExecResultFrame),
 		abortChans: make(map[string]chan struct{}),
+		closeCh:    make(chan struct{}),
 	}, nil
 }
 
@@ -158,12 +194,20 @@ func (h *HarnessSocketServer) Listen() error {
 // socket. The listener is only closed (and the socket file removed) by an
 // explicit call to Close().
 func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
+	// Track this goroutine on activeWG so Close() can wait for it before
+	// closing the listener (issue #1724). Add must happen on the caller's
+	// goroutine — here, the goroutine that invoked AcceptOne — so a
+	// racing Close() observes the counter increment.
+	h.activeWG.Add(1)
+	defer h.activeWG.Done()
+
 	// Ensure any prior deadline is cleared before we start waiting.
 	if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
 		_ = dl.SetDeadline(time.Time{})
 	}
 
-	// Set a deadline on the Accept so we can respect context cancellation.
+	// Set a deadline on the Accept so we can respect context cancellation
+	// or Close().
 	type acceptResult struct {
 		conn net.Conn
 		err  error
@@ -179,11 +223,21 @@ func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
 		// Interrupt the Accept goroutine by setting a past deadline. This
 		// unblocks Accept without closing the listener or removing the socket
 		// file — the socket must survive so the next pi spawn can connect.
+		// AcceptOne owns this mutation; Close() does not touch the listener
+		// until activeWG drains (issue #1724).
 		if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
 			_ = dl.SetDeadline(time.Now())
 		}
 		<-ch // wait for the Accept goroutine to unblock and exit
 		return ctx.Err()
+	case <-h.closeCh:
+		// Close() was called. Same mechanism as ctx.Done: own the
+		// SetDeadline locally so it cannot race Close()'s listener.Close().
+		if dl, ok := h.listener.(interface{ SetDeadline(time.Time) error }); ok {
+			_ = dl.SetDeadline(time.Now())
+		}
+		<-ch
+		return fmt.Errorf("iris: harness socket closed")
 	case res := <-ch:
 		if res.err != nil {
 			return fmt.Errorf("iris: harness socket accept: %w", res.err)
@@ -192,8 +246,54 @@ func (h *HarnessSocketServer) AcceptOne(ctx context.Context) error {
 	}
 }
 
-// Close closes the listener and removes the socket file.
+// Close shuts down the server: it interrupts the active connection (if
+// any), drains in-flight server goroutines, closes the listener, and
+// unlinks the socket file.
+//
+// Ordering (issue #1724):
+//  1. Close the active extension connection (if any) so handleConn's
+//     blocking readLine returns, allowing AcceptOne to exit.
+//  2. Wait on activeWG. This blocks until
+//     (a) the AcceptOne goroutine has returned — so its SetDeadline
+//         call on the ctx-cancel path cannot race the listener.Close
+//         below — and
+//     (b) every dispatchToolExec goroutine has finished its trailing
+//         tool_result DB write — so a caller closing the DB immediately
+//         after srv.Close() does not race that write.
+//  3. Close the listener.
+//  4. Unlink the socket file.
+//
+// Close is safe to call concurrently with AcceptOne, with or without
+// a live connection, and with or without a previously-cancelled ctx.
 func (h *HarnessSocketServer) Close() {
+	// 1. Signal AcceptOne to abandon any pending Accept. AcceptOne owns
+	//    the SetDeadline call so no listener mutation happens here.
+	//    The h.closed flag (under h.mu) makes Close idempotent without
+	//    introducing a sync.Once primitive (issue #1724 AC).
+	h.mu.Lock()
+	alreadyClosed := h.closed
+	h.closed = true
+	h.mu.Unlock()
+	if !alreadyClosed {
+		close(h.closeCh)
+	}
+
+	// 2. Interrupt handleConn's blocking readLine by closing the active
+	//    connection. handleConn defers conn.Close(), but it cannot return
+	//    until readLine unblocks — closing the conn here forces that.
+	h.mu.Lock()
+	conn := h.activeConn
+	h.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+
+	// 3. Wait for AcceptOne and any in-flight dispatchToolExec goroutines
+	//    to exit. After this returns, no other goroutine is touching the
+	//    listener or the DB.
+	h.activeWG.Wait()
+
+	// 4. Now safe to close the listener and remove the socket file.
 	if h.listener != nil {
 		h.listener.Close()
 	}
@@ -269,13 +369,17 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 		return fmt.Errorf("iris: harness handshake: write hello_ack: %w", err)
 	}
 
-	// Register the writer so SendFrame() works.
+	// Register the writer and active connection so SendFrame() works and
+	// Close() can interrupt a blocked readLine by closing the conn
+	// (issue #1724).
 	h.mu.Lock()
 	h.writer = w
+	h.activeConn = conn
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
 		h.writer = nil
+		h.activeConn = nil
 		h.mu.Unlock()
 	}()
 
@@ -303,6 +407,11 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 				log.Printf("[iris] harness: bad tool_exec frame: %v", err)
 				continue
 			}
+			// Track the dispatch goroutine on activeWG so Close() can drain
+			// it before the DB closes (issue #1724). Add must happen on the
+			// caller goroutine, before `go`, so a racing Close() observes
+			// the counter increment.
+			h.activeWG.Add(1)
 			go h.dispatchToolExec(ctx, w, frame)
 
 		case FrameTypeToolAbort:
@@ -395,7 +504,13 @@ func (h *HarnessSocketServer) handleConn(ctx context.Context, conn net.Conn) err
 
 // dispatchToolExec executes a tool in a subprocess (host-mode, no sandbox for
 // D-3) and sends back tool_exec_result. Each call runs in its own goroutine.
+//
+// Invariant (issue #1724): the caller must have called h.activeWG.Add(1)
+// before the `go` keyword. dispatchToolExec defers activeWG.Done() so that
+// Close() can drain in-flight dispatches before the DB closes.
 func (h *HarnessSocketServer) dispatchToolExec(ctx context.Context, w *jsonlWriter, frame ToolExecFrame) {
+	defer h.activeWG.Done()
+
 	// Register the abort channel before starting execution so tool_abort
 	// frames that arrive while the subprocess is running can be delivered.
 	abortCh := make(chan struct{}, 1)
