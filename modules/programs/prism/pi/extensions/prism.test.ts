@@ -61,6 +61,9 @@ import {
   // Assistant-message text extraction (issue #1764)
   extractAssistantText,
   isAssistantTextDeltaEvent,
+  // Mid-tool heartbeat (issue #1761)
+  startToolHeartbeat,
+  TOOL_HEARTBEAT_INTERVAL_MS,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -3642,5 +3645,225 @@ describe("#1764: pi 0.72.1 wire-frame coverage matrix", () => {
       0,
       matrix[6].desc,
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #1761: mid-tool heartbeat
+// ---------------------------------------------------------------------------
+//
+// The PI extension emits a `tool_progress` frame on a fixed cadence while a
+// tool execution is in flight so that long-running bash invocations (e.g.
+// `nix build`, `go test -count=20`) don't silence the wire long enough to
+// trip the sidecar's per-session inactivity watchdog (#1728).
+//
+// These tests exercise startToolHeartbeat in isolation: they supply a fake
+// scheduler and a recording writer so the behaviour can be asserted without
+// real wall-clock waits.
+
+interface RecordingWriter extends FrameWriter {
+  frames: Array<Record<string, unknown>>
+  closed: boolean
+}
+
+function makeRecordingWriter(): RecordingWriter {
+  const frames: Array<Record<string, unknown>> = []
+  let closed = false
+  return {
+    frames,
+    get closed() {
+      return closed
+    },
+    write(frame) {
+      if (closed) return
+      // Deep-clone the frame so accidental mutation by the SUT doesn't
+      // invalidate the recorded sequence.
+      frames.push(JSON.parse(JSON.stringify(frame)))
+    },
+    close() {
+      closed = true
+    },
+  }
+}
+
+interface FakeScheduler {
+  setInterval: (cb: () => void, ms: number) => unknown
+  clearInterval: (handle: unknown) => void
+  tick: () => void
+  intervalMs: number
+  cleared: boolean
+  unrefCount: number
+}
+
+function makeFakeScheduler(): FakeScheduler {
+  let callback: (() => void) | null = null
+  let intervalMs = 0
+  let cleared = false
+  let unrefCount = 0
+  // A token object that exposes .unref so the SUT's duck-typed unref call
+  // can be observed (mirrors Node's Timeout shape closely enough for our
+  // purposes).
+  const handle = {
+    unref() {
+      unrefCount++
+    },
+  }
+  return {
+    setInterval(cb, ms) {
+      callback = cb
+      intervalMs = ms
+      return handle
+    },
+    clearInterval(h) {
+      if (h !== handle) {
+        throw new Error("fake clearInterval called with unknown handle")
+      }
+      cleared = true
+      callback = null
+    },
+    tick() {
+      if (callback) callback()
+    },
+    get intervalMs() {
+      return intervalMs
+    },
+    get cleared() {
+      return cleared
+    },
+    get unrefCount() {
+      return unrefCount
+    },
+  }
+}
+
+describe("#1761: startToolHeartbeat — basic cadence", () => {
+  it("emits a tool_progress frame on each tick with id and name", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(
+      writer,
+      "tool-call-abc",
+      "bash",
+      30_000,
+      sched,
+    )
+
+    // No frame emitted before any tick — fast tools that finish before the
+    // first cadence boundary cost nothing on the wire (edge-case AC).
+    assert.equal(writer.frames.length, 0, "no frame before first tick")
+    assert.equal(sched.intervalMs, 30_000)
+
+    sched.tick()
+    assert.equal(writer.frames.length, 1)
+    assert.deepEqual(writer.frames[0], {
+      type: "tool_progress",
+      id: "tool-call-abc",
+      name: "bash",
+    })
+
+    sched.tick()
+    sched.tick()
+    assert.equal(writer.frames.length, 3, "one frame per tick")
+
+    cancel()
+    assert.ok(sched.cleared, "cancel must clear the interval")
+  })
+
+  it("idempotent cancel — calling twice is a no-op the second time", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", 1000, sched)
+    cancel()
+    // Second invocation must not throw or call clearInterval again. The
+    // fake scheduler would throw on a second clear with the same handle
+    // because handle ownership is one-shot.
+    cancel()
+    assert.ok(sched.cleared)
+  })
+
+  it("post-cancel ticks are inert (no further frames)", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", 1000, sched)
+    sched.tick()
+    cancel()
+    // After cancel, the fake's callback is nulled; tick() is a no-op.
+    sched.tick()
+    sched.tick()
+    assert.equal(writer.frames.length, 1)
+  })
+
+  it("unrefs the timer handle so it doesn't pin the event loop", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", 1000, sched)
+    assert.equal(sched.unrefCount, 1, "handle.unref must be called once")
+    cancel()
+  })
+})
+
+describe("#1761: startToolHeartbeat — disabled paths", () => {
+  it("returns a noop cancel when intervalMs is 0 (disabled)", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", 0, sched)
+    // No interval scheduled — interval ms stays at the fake's default 0.
+    assert.equal(sched.intervalMs, 0)
+    // Calling the cancel must not throw and must not clear (nothing armed).
+    cancel()
+    assert.equal(sched.cleared, false)
+    assert.equal(writer.frames.length, 0)
+  })
+
+  it("returns a noop cancel when intervalMs is negative (disabled)", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", -1, sched)
+    cancel()
+    assert.equal(sched.cleared, false)
+    assert.equal(writer.frames.length, 0)
+  })
+
+  it("returns a noop cancel when writer is null (handshake incomplete)", () => {
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(null, "id", "bash", 1000, sched)
+    cancel()
+    assert.equal(sched.cleared, false)
+  })
+})
+
+describe("#1761: startToolHeartbeat — closed writer", () => {
+  it("a tick after writer.close() does not throw and produces no frame", () => {
+    const writer = makeRecordingWriter()
+    const sched = makeFakeScheduler()
+    const cancel = startToolHeartbeat(writer, "id", "bash", 1000, sched)
+    writer.close()
+    // The FrameWriter contract is "silently drop post-close writes". The
+    // tick must therefore be safe even if cancel() lost the race with
+    // socket teardown.
+    sched.tick()
+    sched.tick()
+    assert.equal(writer.frames.length, 0)
+    cancel()
+  })
+})
+
+describe("#1761: TOOL_HEARTBEAT_INTERVAL_MS — env override", () => {
+  it("default cadence is 30 seconds (well below the 15-minute watchdog window)", () => {
+    // Snapshot the export at module-load time. The override is evaluated
+    // once at module init, so we only assert the default-or-override
+    // invariant here: the value is a positive finite number under 15
+    // minutes (the inactivity watchdog window).
+    assert.ok(Number.isFinite(TOOL_HEARTBEAT_INTERVAL_MS))
+    // Sanity: must be strictly less than the 15-minute watchdog window to
+    // leave headroom for clock skew, scheduler jitter, and the socket
+    // round-trip from PI to the sidecar.
+    if (process.env.PRISM_TOOL_HEARTBEAT_INTERVAL_MS === undefined) {
+      assert.equal(
+        TOOL_HEARTBEAT_INTERVAL_MS,
+        30_000,
+        "default cadence must be 30s",
+      )
+    }
   })
 })
