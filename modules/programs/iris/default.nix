@@ -9,6 +9,29 @@ let
   username = config.nx.username;
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
 
+  # Resolve the absolute store path to the prism PI extension file
+  # (prism.ts). The supervisor passes this path verbatim to
+  # `pi --extension <path>`; if it is empty, `--extension` is silently
+  # omitted and every pi child runs as vanilla pi with no iris awareness
+  # (see issue #1752 for the diagnosis).
+  #
+  # Source-sharing: the canonical `prism.ts` lives at
+  # `../prism/pi/extensions/prism.ts`. Both this module and
+  # `modules/programs/prism/pi.nix` reference that same file — there is no
+  # duplicate copy of the extension source. We rebuild the trivial
+  # single-file derivation here (rather than reading
+  # `config.nx.programs.prism.piExtensionDir`) so that iris does not
+  # silently break when prism is disabled on a host.
+  prismExtensionDir = pkgs.runCommand "prism-pi-extension" { } ''
+    mkdir -p $out
+    cp ${../prism/pi/extensions/prism.ts} $out/prism.ts
+  '';
+  prismExtensionPath = "${prismExtensionDir}/prism.ts";
+
+  irisConfig = {
+    pi_extension_path = prismExtensionPath;
+  };
+
   # NOTE on the daemon's socket path and IRIS_DAEMON_SOCK
   # ---------------------------------------------------------------------------
   # An earlier revision of this module set `IRIS_DAEMON_SOCK` in the daemon's
@@ -48,6 +71,12 @@ in
     home-manager.users.${username} = lib.mkMerge [
       {
         home.packages = [ pkgs.iris ];
+
+        # Write ~/.config/iris/config.json so the iris daemon knows where
+        # the prism PI extension lives. Without this, `PIExtensionPath`
+        # defaults to "" and the supervisor omits `--extension` from every
+        # pi child — see issue #1752.
+        xdg.configFile."iris/config.json".text = builtins.toJSON irisConfig;
       }
 
       # ── Linux: systemd user service ─────────────────────────────────────────
