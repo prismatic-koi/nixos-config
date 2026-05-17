@@ -1407,6 +1407,20 @@ export const IRIS_CANONICAL_TOOLS = [
 // extensions NOT in this list abort the session before any LLM turn runs.
 export const IRIS_EXTENSION_ALLOWLIST = ["prism", "atlassian", "anthropic-oauth"]
 
+// Source values that pi assigns to extension-registered tools (as opposed to
+// the synthetic "builtin" source). An extension loaded via the `--extension`
+// CLI flag (the path iris uses when spawning pi children, see
+// supervisor.go:540) is reported with source="cli"; one declared in pi's
+// resolved extension config is reported with source="extension". Both are
+// legitimate override sources for our canonical-seven shim — the surface
+// check at §3.5 must accept either. See #1758 for the regression where the
+// surface check accepted only "extension" and therefore fatal'd on every iris
+// session in production (where the prism extension is loaded via --extension).
+export const IRIS_OVERRIDE_SOURCES: ReadonlySet<string> = new Set([
+  "extension",
+  "cli",
+])
+
 /**
  * registerIrisOverrides — called from session_start when IRIS_DAEMON_SOCK is
  * set. Performs three steps:
@@ -1518,14 +1532,17 @@ export function runIrisSurfaceCheck(pi: ExtensionAPI): void {
         console.error(msg)
         throw new Error(msg)
       }
-    } else if (source === "extension") {
-      // Condition 2: unauthorised extension tool.
+    } else if (IRIS_OVERRIDE_SOURCES.has(source)) {
+      // Condition 2: unauthorised extension tool. Applies to any tool
+      // registered by an extension, whether the extension was loaded via
+      // --extension (source="cli") or via pi's resolved extension config
+      // (source="extension"). See #1758.
       const extName = extractExtensionName(t.sourceInfo.path)
       if (!IRIS_EXTENSION_ALLOWLIST.includes(extName)) {
         const msg =
           `[iris-extension] fatal: tool "${t.name}" is registered by ` +
-          `extension "${extName}" which is not on the iris allowlist ` +
-          `(${IRIS_EXTENSION_ALLOWLIST.join(", ")}). ` +
+          `extension "${extName}" (source="${source}") which is not on the ` +
+          `iris allowlist (${IRIS_EXTENSION_ALLOWLIST.join(", ")}). ` +
           `Add the extension to the iris allowlist or remove it.`
         console.error(msg)
         throw new Error(msg)
