@@ -96,7 +96,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	// termination detection and GroupResults-based result aggregation.
 	// Fail fast if RegisterGroup fails — no sessions are spawned without a
 	// group to belong to (AC: edge-case).
-	groupID, groupErr := d.RegisterGroup(opts.ParentSession)
+	//
+	// PRNumber and round are persisted on session_groups so the worker
+	// sidecar's review-completion recovery watcher (#1709 reopen) can
+	// reconstruct the delivery message when the detached monitor subprocess
+	// dies before delivering.
+	groupID, groupErr := d.RegisterGroupWithPR(opts.ParentSession, opts.PRNumber, round)
 	if groupErr != nil {
 		return nil, fmt.Errorf("register review group: %w", groupErr)
 	}
@@ -414,8 +419,11 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		}
 	}
 
-	// Register session group.
-	groupID, groupErr := d.RegisterGroup(opts.ParentSession)
+	// Register session group. PRNumber and round are persisted on
+	// session_groups so the worker sidecar's review-completion recovery
+	// watcher (#1709 reopen) can reconstruct the delivery message when the
+	// detached monitor subprocess dies before delivering.
+	groupID, groupErr := d.RegisterGroupWithPR(opts.ParentSession, opts.PRNumber, round)
 	if groupErr != nil {
 		return nil, fmt.Errorf("register review group: %w", groupErr)
 	}

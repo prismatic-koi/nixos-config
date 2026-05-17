@@ -245,6 +245,20 @@ type Config struct {
 	// DefaultReviewAgentInactivityTimeout when zero. Set to a small value in
 	// tests to exercise the timeout path deterministically.
 	ActivityTimeout time.Duration
+	// ReviewRecoveryInterval is the period of the worker-sidecar's review-
+	// completion recovery watcher (#1709 reopen). When zero, the watcher
+	// uses defaultReviewRecoveryInterval. Set to a small value (e.g.
+	// 50 ms) in tests to drive the loop deterministically via a fake clock.
+	// A negative value disables the watcher entirely.
+	ReviewRecoveryInterval time.Duration
+	// ReviewRecoveryGrace is the minimum duration a review group must remain
+	// complete (GroupCompleted == true) before the recovery watcher takes
+	// over from the original monitor subprocess. When zero, the watcher uses
+	// defaultReviewRecoveryGrace. Keep this comfortably larger than the
+	// monitor's poll interval (5s) plus one round-trip of
+	// deliverPrompt's first retry so the recovery only fires when the
+	// monitor is genuinely AWOL.
+	ReviewRecoveryGrace time.Duration
 	// HarnessBinaryPath is the path to the harness binary used by
 	// runStartupStdio for TransportStdioPipe harnesses. The binary is launched
 	// inside a bwrap sandbox (when bwrap is available); the sidecar reads its
@@ -452,7 +466,38 @@ type Sidecar struct {
 	// timeout". nil when the watchdog is disabled (cfg.ActivityTimeout == 0).
 	// Protected by s.mu.
 	activityTimer Timer
+
+	// reviewRecoveryCancel cancels the worker-sidecar's review-completion
+	// recovery watcher (#1709 reopen). Set in Run() when the watcher is
+	// started; called by Shutdown so the goroutine exits before the DB is
+	// closed. nil for review-agent sessions (which never own a group) and
+	// when ReviewRecoveryInterval is negative. Protected by mu.
+	reviewRecoveryCancel context.CancelFunc
+
+	// reviewRecoveryFirstSeenComplete records the wall-clock time at which
+	// the recovery watcher first observed GroupCompleted==true for the named
+	// group_id. The grace window is measured against this timestamp so a
+	// monitor that takes a few ticks longer than the watcher to deliver does
+	// not race-condition into a spurious recovery dispatch. Keyed by
+	// group_id; entries are dropped when the group transitions away or
+	// reviewingInFlight clears. Protected by mu.
+	reviewRecoveryFirstSeenComplete map[string]time.Time
 }
+
+// defaultReviewRecoveryInterval is how often the worker-sidecar recovery
+// watcher polls for a stuck-but-complete review group. 30 s strikes a
+// balance between recovery latency and DB load: a healthy monitor delivers
+// within 5-10 s of GroupCompleted flipping true, so a 30 s tick rarely
+// observes a completed group at all; on the unhappy path (monitor dead),
+// the worker is rescued within one grace window + one tick.
+const defaultReviewRecoveryInterval = 30 * time.Second
+
+// defaultReviewRecoveryGrace is how long a review group must remain
+// complete before the worker-sidecar recovery watcher takes over from the
+// original monitor subprocess. 90 s comfortably exceeds the monitor's 5 s
+// poll cadence plus the first 30 s retry-backoff window in
+// deliverWithRetry, so a happy-path monitor always delivers first.
+const defaultReviewRecoveryGrace = 90 * time.Second
 
 // New creates a Sidecar with the given configuration.
 // cfg.Harness must be non-nil; New panics if it is nil.
@@ -640,6 +685,18 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			s.logger().Printf("sidecar: merge-queue watcher NOT started — no instance_id")
 		}
 	}
+
+	// B.3 Stage 2b: Start the review-completion recovery watcher (#1709
+	// reopen). This watcher runs in every session that may host a review
+	// group as a parent (any session that can call `prism review` —
+	// workers, coordinators, and any human-driven session) and rescues
+	// groups whose detached monitor subprocess has died before delivery.
+	// The watcher itself short-circuits for review-agent sessions, so the
+	// branch is unconditional here.
+	recoveryCancel := s.startReviewRecoveryWatcher(ctx)
+	s.mu.Lock()
+	s.reviewRecoveryCancel = recoveryCancel
+	s.mu.Unlock()
 
 	// B.3 Stage 3: transport-shape gate. Consult the harness registry to
 	// determine the wire-level shape and dispatch to the appropriate startup
@@ -880,12 +937,22 @@ func (s *Sidecar) Shutdown() {
 	ctr := s.container
 	watcherCancel := s.mergeWatcherCancel
 	s.mergeWatcherCancel = nil
+	recoveryCancel := s.reviewRecoveryCancel
+	s.reviewRecoveryCancel = nil
 	s.mu.Unlock()
 
 	// Cancel the merge-queue watcher first (before the SQL below) to prevent
 	// a race where the watcher fires a state transition after the abandon SQL.
 	if watcherCancel != nil {
 		watcherCancel()
+	}
+
+	// Cancel the review-recovery watcher (#1709 reopen). Like the merge-queue
+	// watcher, this must run before the DB is closed so the goroutine exits
+	// cleanly. The watcher does not write any state during shutdown so the
+	// ordering relative to AbandonWatchingMerges is unconstrained.
+	if recoveryCancel != nil {
+		recoveryCancel()
 	}
 
 	// Abandon all watching merge rows for this coordinator incarnation.
