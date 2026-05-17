@@ -290,4 +290,3 @@ func renderPreviewRow(si sessionItem, innerW int, selected bool) string {
 	}
 	return styleSelected.Render(plain)
 }
-
