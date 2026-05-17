@@ -404,12 +404,18 @@ defence against unauthorised tool access.
    `grep`, `find`, `ls`). An unknown built-in means pi has added a new tool
    that iris has not reviewed or sandboxed — it would execute unsandboxed.
 
-2. **Unauthorised extension-registered tool:** a tool with
-   `sourceInfo.source === "extension"` was registered by an extension whose
-   name is not on the iris allowlist. The initial allowlist is:
-   `prism`, `atlassian`, `anthropic-oauth`. Any tool from an extension
-   outside this list is fatal — iris cannot sandbox or validate it. Updating
-   the allowlist is a config change, not a code change.
+2. **Unauthorised extension-registered tool:** a tool whose
+   `sourceInfo.source` is in `IRIS_OVERRIDE_SOURCES` (i.e. `"extension"`,
+   for extensions declared in pi's resolved config, or `"cli"`, for
+   extensions loaded via pi's `--extension` CLI flag — which is how iris
+   itself loads the prism extension; see `internal/iris/supervisor.go`)
+   was registered by an extension whose name is not on the iris allowlist.
+   The initial allowlist is: `prism`, `atlassian`, `anthropic-oauth`. Any
+   tool from an extension outside this list is fatal — iris cannot sandbox
+   or validate it. Updating the allowlist is a config change, not a code
+   change. (Issue #1758: before the `"cli"` source was added to the
+   accepted set, the surface check rejected every iris-loaded canonical
+   override and threw fatal on `"read"`.)
 
 3. **Failed override of a canonical built-in:** one of the seven canonical
    tools, after `registerTool()` calls have run, still resolves to the

@@ -1498,8 +1498,9 @@ async function registerIrisOverrides(
  * Fatal conditions (any one throws):
  *  1. Unknown built-in: a tool with sourceInfo.source === "builtin" whose
  *     name is not in the canonical seven.
- *  2. Unauthorised extension tool: a tool with sourceInfo.source === "extension"
- *     whose sourceInfo.path resolves to an extension not on the allowlist.
+ *  2. Unauthorised extension tool: a tool whose sourceInfo.source is in
+ *     IRIS_OVERRIDE_SOURCES (i.e. "extension" or "cli") and whose
+ *     sourceInfo.path resolves to an extension not on the allowlist.
  *  3. Failed override: a canonical tool still resolves to "builtin" (the
  *     registerTool call was silently ignored).
  */
