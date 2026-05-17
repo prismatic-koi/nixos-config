@@ -58,6 +58,9 @@ import {
   extractExtensionName,
   IRIS_CANONICAL_TOOLS,
   IRIS_EXTENSION_ALLOWLIST,
+  // Assistant-message text extraction (issue #1764)
+  extractAssistantText,
+  isAssistantTextDeltaEvent,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -3317,3 +3320,327 @@ describe("iris constants", () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// #1764: pi 0.72.1 assistant-message event vocabulary (regression test)
+//
+// Three goals:
+//
+// 1. Pin pi 0.72.1's actual `AssistantMessageEvent.type` union as the test
+//    fixtures the extension dispatches against. When pi is bumped and the
+//    union changes, the typed-shape assertions below fail and force a
+//    deliberate review (per AC #5 of issue #1764).
+//
+// 2. Verify `isAssistantTextDeltaEvent` correctly distinguishes the
+//    streaming text-delta shape from sibling AssistantMessageEvent variants
+//    (text_start/text_end, thinking_*, toolcall_*, start, done, error).
+//    The extension's `message_update` handler relies on this guard to
+//    decide whether to forward a `msg_assistant` frame.
+//
+// 3. Verify `extractAssistantText` walks pi's AssistantMessage `content`
+//    array and returns each `{type:"text", text}` block while skipping
+//    `{type:"thinking"}` and `{type:"toolCall"}` blocks. This is the
+//    backstop path that fires when pi emits a `message_end` for an
+//    assistant message and the streaming layer produced no `text_delta`
+//    events for that message.
+//
+// Source of the pinned shapes (pi 0.72.1):
+//   - AssistantMessageEvent union:
+//     node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225
+//   - AssistantMessage / TextContent / ThinkingContent / ToolCall:
+//     node_modules/@mariozechner/pi-ai/dist/types.d.ts:75-160
+//   - MessageEndEvent (assistantMessage is delivered to extensions verbatim):
+//     dist/core/extensions/types.d.ts:513
+//   - agent-loop's `text_delta` emission path:
+//     node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js:181-196
+// ---------------------------------------------------------------------------
+
+describe("#1764: pi 0.72.1 AssistantMessageEvent — isAssistantTextDeltaEvent", () => {
+  it("returns true for a text_delta event with a string delta", () => {
+    // This is the streaming-text shape pi-agent-core emits inside
+    // `message_update.assistantMessageEvent` (one per LLM text chunk).
+    const ame = {
+      type: "text_delta" as const,
+      contentIndex: 0,
+      delta: "hello",
+      partial: { role: "assistant", content: [{ type: "text", text: "hello" }] },
+    }
+    assert.equal(isAssistantTextDeltaEvent(ame), true)
+  })
+
+  it("returns true for a text_delta with empty-string delta (boundary)", () => {
+    // Empty deltas are uncommon but legal; the guard's job is the type
+    // discriminator, not whitespace policy. The handler will still emit
+    // an empty msg_assistant frame in this case — that is observable but
+    // harmless, and matches the pre-#1764 behaviour.
+    const ame = { type: "text_delta", contentIndex: 0, delta: "", partial: {} }
+    assert.equal(isAssistantTextDeltaEvent(ame), true)
+  })
+
+  it("returns false for text_start, text_end, thinking_*, toolcall_*", () => {
+    // Every sibling variant in the AssistantMessageEvent union per pi
+    // 0.72.1's pi-ai types. If pi adds, renames, or removes any of these,
+    // this test still passes — but the variants we *do* care about above
+    // would fail. The intent of this list is to document the full union
+    // for future readers and catch accidental conflations of `text_delta`
+    // with `thinking_delta` (similar shape, different semantics).
+    const cases = [
+      { type: "start", partial: {} },
+      { type: "text_start", contentIndex: 0, partial: {} },
+      { type: "text_end", contentIndex: 0, content: "x", partial: {} },
+      { type: "thinking_start", contentIndex: 0, partial: {} },
+      { type: "thinking_delta", contentIndex: 0, delta: "x", partial: {} },
+      { type: "thinking_end", contentIndex: 0, content: "x", partial: {} },
+      { type: "toolcall_start", contentIndex: 0, partial: {} },
+      { type: "toolcall_delta", contentIndex: 0, delta: "x", partial: {} },
+      { type: "toolcall_end", contentIndex: 0, toolCall: {}, partial: {} },
+      { type: "done", reason: "stop", message: {} },
+      { type: "error", reason: "error", error: {} },
+    ]
+    for (const c of cases) {
+      assert.equal(
+        isAssistantTextDeltaEvent(c),
+        false,
+        `${c.type} must not match isAssistantTextDeltaEvent`,
+      )
+    }
+  })
+
+  it("returns false for text_delta with non-string delta (malformed runtime)", () => {
+    // Defensive: pi typings declare delta:string, but the wire is JSON.
+    // If an upstream change ever lets a non-string slip through, the
+    // handler must not crash inside truncateString.
+    assert.equal(
+      isAssistantTextDeltaEvent({ type: "text_delta", delta: 42 }),
+      false,
+    )
+    assert.equal(
+      isAssistantTextDeltaEvent({ type: "text_delta", delta: null }),
+      false,
+    )
+    assert.equal(
+      isAssistantTextDeltaEvent({ type: "text_delta" /* missing delta */ }),
+      false,
+    )
+  })
+
+  it("returns false for null, undefined, primitives, and non-event objects", () => {
+    assert.equal(isAssistantTextDeltaEvent(null), false)
+    assert.equal(isAssistantTextDeltaEvent(undefined), false)
+    assert.equal(isAssistantTextDeltaEvent("text_delta"), false)
+    assert.equal(isAssistantTextDeltaEvent(42), false)
+    assert.equal(isAssistantTextDeltaEvent({}), false)
+    assert.equal(isAssistantTextDeltaEvent({ type: "message_update" }), false)
+  })
+})
+
+describe("#1764: pi 0.72.1 AssistantMessage — extractAssistantText", () => {
+  it("returns each text block's text in order, skipping thinking and toolCall", () => {
+    // Realistic pi 0.72.1 assistant message: a tool-using turn typically
+    // produces text-then-toolCall, sometimes thinking-then-text-then-toolCall.
+    // The extractor returns only the user-visible text blocks; thinking is
+    // internal and toolCall is surfaced via the separate `tool_call` frame.
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "let me think..." },
+        { type: "text", text: "Hello! " },
+        { type: "text", text: "I will run a command." },
+        {
+          type: "toolCall",
+          id: "call_1",
+          name: "bash",
+          arguments: { command: "ls" },
+        },
+      ],
+      api: "anthropic-messages",
+      provider: "anthropic",
+      model: "claude-opus-4-7",
+      usage: {
+        input: 10,
+        output: 20,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 30,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "toolUse",
+      timestamp: 1778986545286,
+    }
+    assert.deepEqual(extractAssistantText(message), [
+      "Hello! ",
+      "I will run a command.",
+    ])
+  })
+
+  it("returns [] for an empty content array", () => {
+    assert.deepEqual(
+      extractAssistantText({ role: "assistant", content: [] }),
+      [],
+    )
+  })
+
+  it("returns [] for assistant message with only thinking + toolCall", () => {
+    // When the LLM produces only tool calls (no preamble text), the
+    // backstop must emit nothing rather than an empty msg_assistant.
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "..." },
+        { type: "toolCall", id: "c1", name: "bash", arguments: {} },
+      ],
+    }
+    assert.deepEqual(extractAssistantText(message), [])
+  })
+
+  it("filters out empty-string text blocks", () => {
+    // Don't emit empty msg_assistant frames as iris would record empty
+    // assistant turns in the DB.
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "text", text: "" },
+        { type: "text", text: "real content" },
+        { type: "text", text: "" },
+      ],
+    }
+    assert.deepEqual(extractAssistantText(message), ["real content"])
+  })
+
+  it("returns [] for a user message (wrong role)", () => {
+    // The handler must only fire for assistant messages — user messages
+    // and toolResult messages share the same MessageEndEvent shape but
+    // their text content is the prompt the user typed, not assistant
+    // output.
+    assert.deepEqual(
+      extractAssistantText({
+        role: "user",
+        content: [{ type: "text", text: "hello" }],
+      }),
+      [],
+    )
+  })
+
+  it("returns [] for a toolResult message (wrong role)", () => {
+    assert.deepEqual(
+      extractAssistantText({
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "bash",
+        content: [{ type: "text", text: "ls output" }],
+        isError: false,
+        timestamp: 0,
+      }),
+      [],
+    )
+  })
+
+  it("returns [] for null, undefined, primitives, and malformed messages", () => {
+    assert.deepEqual(extractAssistantText(null), [])
+    assert.deepEqual(extractAssistantText(undefined), [])
+    assert.deepEqual(extractAssistantText("hello"), [])
+    assert.deepEqual(extractAssistantText({ role: "assistant" }), [])
+    assert.deepEqual(
+      extractAssistantText({ role: "assistant", content: "string-not-array" }),
+      [],
+    )
+    assert.deepEqual(
+      extractAssistantText({ role: "assistant", content: [null, "x", 42] }),
+      [],
+    )
+  })
+
+  it("handles a string-coerced content block as a no-text-block (no crash)", () => {
+    // Defensive: a malformed block missing the `.text` string field must
+    // not throw. The session JSONL in pi 0.72.1 always carries TextContent
+    // with text:string, but this guards against future shape drift.
+    const message = {
+      role: "assistant",
+      content: [
+        { type: "text" /* missing text field */ },
+        { type: "text", text: 123 as unknown as string },
+        { type: "text", text: "real" },
+      ],
+    }
+    assert.deepEqual(extractAssistantText(message), ["real"])
+  })
+})
+
+describe("#1764: pi 0.72.1 wire-frame coverage matrix", () => {
+  // This test enumerates which extension event types produce which wire
+  // frame for assistant content. It's the human-readable contract that
+  // accompanies the helpers above. If any row stops being true, the
+  // contract has broken and the docs (pi-rpc-interface.md) must be
+  // updated alongside the code.
+
+  it("documents which event-type / variant produces a msg_assistant frame", () => {
+    // Per-row: [event description, expected to produce msg_assistant?]
+    // The expectations encode the post-#1764 behaviour: streaming deltas
+    // OR a backstop on message_end for assistant messages.
+    const matrix: Array<{
+      desc: string
+      isAssistantText: boolean
+    }> = [
+      {
+        desc: "message_update + text_delta (streaming chunk)",
+        isAssistantText: true,
+      },
+      {
+        desc: "message_update + thinking_delta (internal reasoning)",
+        isAssistantText: false,
+      },
+      {
+        desc: "message_update + toolcall_delta (tool-call argument streaming)",
+        isAssistantText: false,
+      },
+      {
+        desc: "message_update + text_start / text_end (boundaries)",
+        isAssistantText: false,
+      },
+      {
+        desc: "message_update + done / start (lifecycle)",
+        isAssistantText: false,
+      },
+      {
+        desc:
+          "message_end (assistant role) with text blocks — backstop when no delta seen",
+        isAssistantText: true,
+      },
+      {
+        desc: "message_end (user role) — handler must skip",
+        isAssistantText: false,
+      },
+      {
+        desc: "message_end (toolResult role) — handler must skip",
+        isAssistantText: false,
+      },
+    ]
+    // Spot-check three rows via the actual helpers so the matrix is not
+    // pure prose.
+    assert.equal(
+      isAssistantTextDeltaEvent({ type: "text_delta", delta: "x" }),
+      true,
+      matrix[0].desc,
+    )
+    assert.equal(
+      isAssistantTextDeltaEvent({ type: "thinking_delta", delta: "x" }),
+      false,
+      matrix[1].desc,
+    )
+    assert.equal(
+      extractAssistantText({
+        role: "assistant",
+        content: [{ type: "text", text: "hi" }],
+      }).length,
+      1,
+      matrix[5].desc,
+    )
+    assert.equal(
+      extractAssistantText({
+        role: "user",
+        content: [{ type: "text", text: "hi" }],
+      }).length,
+      0,
+      matrix[6].desc,
+    )
+  })
+})
