@@ -1,5 +1,7 @@
 package tui
 
+import "time"
+
 // export_test.go — test-only accessors that expose internal Model state to
 // the external _test package. These are compiled only when `go test` runs,
 // so they do not enlarge the public API surface.
@@ -65,3 +67,26 @@ func ModelSpawnWorktree(m Model) string { return string(m.spawn.worktree) }
 
 // ModelSpawnRole returns the role-input buffer contents during the spawn flow.
 func ModelSpawnRole(m Model) string { return string(m.spawn.role) }
+
+// ModelSessionLastEventAt returns the sidebar's tracked last-event arrival
+// time for the session at the given index, or the zero time when the
+// index is out of range. Returns a time.Time pointer rather than the
+// value so tests can distinguish "no session at that index" (nil) from
+// "session present but no event yet" (non-nil zero-valued time).
+func ModelSessionLastEventAt(m Model, i int) *time.Time {
+	if i < 0 || i >= len(m.sessions) {
+		return nil
+	}
+	t := m.sessions[i].lastEventAt
+	return &t
+}
+
+// ModelSessionLastAssistantPreview returns the cached one-line preview
+// of the most recent msg_assistant text for the session at the given
+// index, or "" when no preview has been captured (or i is out of range).
+func ModelSessionLastAssistantPreview(m Model, i int) string {
+	if i < 0 || i >= len(m.sessions) {
+		return ""
+	}
+	return m.sessions[i].lastAssistantPreview
+}
