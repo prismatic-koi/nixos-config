@@ -98,8 +98,19 @@ var (
 // --- Model ---
 
 // sessionItem holds one session row in the left pane.
+//
+// lastEventAt and lastAssistantPreview are populated as session_event
+// frames arrive on the daemon socket (see handleDaemonFrame) so the
+// sidebar can show a per-session HH:MM "most recent activity" timestamp
+// and (when msg_assistant events are flowing) a one-line preview of the
+// most recent assistant reply. Both fields are zero/empty for sessions
+// that have produced no events since the TUI subscribed; the renderer in
+// sidebar.go handles those cases gracefully ("-" for the timestamp and
+// no preview row at all).
 type sessionItem struct {
-	snap iris.SessionSnapshot
+	snap                 iris.SessionSnapshot
+	lastEventAt          time.Time
+	lastAssistantPreview string
 }
 
 // focusArea identifies the currently focused interactive region. Tab
@@ -298,6 +309,29 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		e := msg.Event
+		// Sidebar bookkeeping (issue #1771 child 6): every session_event
+		// arrival bumps the per-session last-event timestamp shown in the
+		// sidebar's HH:MM column, regardless of whether the row_id has
+		// been seen before. The de-dupe path below only suppresses
+		// re-rendering into the conversation pane; the sidebar timestamp
+		// should still tick when the daemon replays an event we already
+		// have, because the "most recent activity" signal is about what
+		// the daemon is sending us NOW, not about whether we'd already
+		// drawn it. We also opportunistically capture the latest
+		// msg_assistant text as a one-line preview when payload parsing
+		// succeeds; failures are silent (the preview just doesn't update).
+		now := time.Now()
+		for i, si := range m.sessions {
+			if si.snap.Name == e.SessionName {
+				m.sessions[i].lastEventAt = now
+				if e.EventType == "msg_assistant" {
+					if preview := extractAssistantPreview(e.Payload); preview != "" {
+						m.sessions[i].lastAssistantPreview = preview
+					}
+				}
+				break
+			}
+		}
 		if m.seenRowIDs[e.RowID] {
 			return m, nil
 		}
@@ -722,23 +756,17 @@ func (m Model) viewLeftPane(width int) string {
 		rows = append(rows, "")
 		rows = append(rows, styleDim.Render(padRight("  iris spawn --worktree <path>", innerW)))
 	} else {
-		// Column widths.
-		nameW := innerW - 14 // leave room for state + role
-		if nameW < 8 {
-			nameW = 8
-		}
 		for i, si := range m.sessions {
-			name := truncate(si.snap.Name, nameW)
-			state := stateLabel(si.snap.State)
-			role := truncate(si.snap.Role, 6)
-
-			line := fmt.Sprintf(" %-*s %-8s %-6s", nameW, name, state, role)
-			line = padRight(line, innerW)
-
-			if i == m.cursor {
-				rows = append(rows, styleSelected.Render(line))
-			} else {
-				rows = append(rows, styleNormal.Render(line))
+			selected := i == m.cursor
+			rows = append(rows, renderSessionRow(si, innerW, selected))
+			// Optional second-line preview of the most recent assistant
+			// message. Only present when at least one msg_assistant event
+			// has been observed for this session — today, with pi 0.72.1
+			// still emitting the wrong event type (#1764), this branch
+			// stays empty for every session and the sidebar looks exactly
+			// as it did before this PR.
+			if preview := renderPreviewRow(si, innerW, selected); preview != "" {
+				rows = append(rows, preview)
 			}
 		}
 	}
