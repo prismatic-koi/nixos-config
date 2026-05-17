@@ -611,7 +611,9 @@ func (m Model) viewHelpOverlay() string {
 		{"C-r", "force-refresh sessions list from daemon"},
 		{"C-l", "clear / redraw the screen"},
 		{"\u2191/\u2193", "navigate session list"},
-		{"PgUp/PgDn", "scroll event stream"},
+		{"PgUp/PgDn", "scroll event stream by one page"},
+		{"Home, g", "jump to top of conversation (loads older history)"},
+		{"End, G", "jump to bottom, resume auto-tail"},
 		{"Enter", "send prompt (or pick row when overlay open)"},
 		{"q, C-c", "quit the TUI"},
 	}

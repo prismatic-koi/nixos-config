@@ -313,8 +313,51 @@ type Model struct {
 	// not collapse it."
 	expandedToolCards map[string]bool
 
-	// eventScroll is the number of lines scrolled up from the bottom (0 = live).
-	eventScroll int
+	// viewport tracks scroll position over m.eventLines for the
+	// conversation pane (issue #1770 child 5). It is the
+	// functionally-equivalent in-house alternative to
+	// github.com/charmbracelet/bubbles/viewport — see viewport.go for
+	// the rationale on not pulling in the new dependency and the
+	// auto-tail / lazy-load semantics it implements. The model owns
+	// the underlying line slice so that the tool-card splice logic
+	// (#1769 rebuildCardLines) can mutate it in place without going
+	// through the viewport API.
+	viewport lineViewport
+
+	// pendingNewCount counts unseen events that arrived while the
+	// viewport was NOT at the bottom (the operator was reading
+	// history). Drives the "↓ N new" indicator rendered in the
+	// status-line strip. Reset to 0 when the viewport returns to the
+	// bottom (via End / G / PgDn-to-bottom / a scroll that lands at
+	// the bottom edge).
+	pendingNewCount int
+
+	// historyOldestRowID is the smallest agent_events.rowid currently
+	// loaded into m.eventLines for the subscribed session. Used by
+	// the lazy-load path (issue #1770 child 5) as the `before_row_id`
+	// of the next history page request. Zero means "no events yet for
+	// this session" or "this session has not had any rowid-bearing
+	// event observed yet" — in both cases the first history request
+	// uses 0 (= tail of history).
+	historyOldestRowID int64
+
+	// historyExhausted is set to true once a session_history response
+	// arrives with Done == true OR with zero events — meaning the
+	// daemon has no older rows for this session. Further scroll-up
+	// past the top suppresses the request, satisfying the AC: "a
+	// subsequent scroll-up does not re-request — the TUI knows it has
+	// reached the head."
+	historyExhausted bool
+
+	// historyRequestInFlight is true while a session_history request
+	// is outstanding. Prevents duplicate concurrent requests when the
+	// operator holds PgUp at the top of the buffer.
+	historyRequestInFlight bool
+
+	// historyPageSize is the number of events requested per
+	// session_history call. Held on the model so tests can override
+	// it; production code uses historyPageSizeDefault.
+	historyPageSize int
 
 	// Prompt input (bottom).
 	promptRunes  []rune
@@ -368,6 +411,14 @@ type Model struct {
 	coordinatorEvents []coordinatorEvent
 }
 
+// historyPageSizeDefault is the number of events requested per
+// session_history call when the model has not been customised by a
+// test. 100 matches db.historyDefaultLimit on the daemon side; the
+// daemon will accept and serve a larger value (up to historyMaxLimit)
+// if a future TUI revision wants larger pages, but 100 is plenty for
+// a single PgUp burst at typical terminal heights.
+const historyPageSizeDefault = 100
+
 // NewModel creates the iris TUI model.
 func NewModel(client *DaemonClient) Model {
 	return Model{
@@ -377,6 +428,8 @@ func NewModel(client *DaemonClient) Model {
 		toolCallByMsgID:   make(map[string]int),
 		toolCardByMsgID:   make(map[string]*toolCard),
 		expandedToolCards: make(map[string]bool),
+		viewport:          newLineViewport(),
+		historyPageSize:   historyPageSizeDefault,
 	}
 }
 
@@ -580,12 +633,29 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.seenRowIDs[e.RowID] = true
-		for _, line := range lines {
-			m.eventLines = append(m.eventLines, line)
+		// Track the lowest rowid we've observed for the subscribed
+		// session so the lazy-load path knows what `before_row_id` to
+		// pass on its next page request. A live event's rowid is
+		// always > the rowids of every replayed event, so the
+		// historyOldestRowID is set only when no rowid has been
+		// observed yet for this session (the first event of a
+		// just-spawned session, or after a session switch).
+		if e.SessionName == m.subscribedTo && e.RowID > 0 {
+			if m.historyOldestRowID == 0 || e.RowID < m.historyOldestRowID {
+				m.historyOldestRowID = e.RowID
+			}
 		}
-		// Snap to bottom if the user is not scrolled up.
-		if m.eventScroll == 0 {
-			// (view already renders from bottom; nothing extra needed)
+		wasAtBottom := m.viewport.AtBottom(len(m.eventLines))
+		m.eventLines = append(m.eventLines, lines...)
+		m.viewport.OnAppend(len(lines))
+		// Auto-tail vs. preserve-position: if the viewport was already
+		// at the bottom, leave following=true (set by GotoBottom or by
+		// the initial newLineViewport state). If not, the operator is
+		// reading history — increment the pendingNewCount so the
+		// status-line strip surfaces a "↓ N new" hint and DO NOT touch
+		// the offset.
+		if !wasAtBottom {
+			m.pendingNewCount += len(lines)
 		}
 
 	case iris.DaemonFrameSessionState:
@@ -657,6 +727,116 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 				_ = m.client.SendSessionSubscribe(name, 0)
 				return nil
 			}
+		}
+
+	case iris.DaemonFrameSessionHistory:
+		// Lazy-load response (issue #1770 child 5). The frame carries a
+		// page of older events for the named session, ASC-ordered by
+		// rowid. We:
+		//
+		//   1. Filter the page to the currently-subscribed session
+		//      (defensive: a stale response could arrive after a
+		//      session switch).
+		//   2. Filter out any rowids we've already seen — a concurrent
+		//      live event may have already landed for the same row
+		//      (e.g. a replay+live overlap, or two history pages that
+		//      slightly overlap). This satisfies the AC "no duplicate
+		//      rows, no skipped rows" when a live event arrives during
+		//      a lazy-load.
+		//   3. Render each event through the existing renderer
+		//      dispatch table, producing []NarrativeLine entries.
+		//   4. Prepend the new lines to m.eventLines and shift the
+		//      viewport offset by len(prepended) so the previously-top
+		//      line stays at the top — satisfying the AC "scroll
+		//      position is preserved relative to the previously-top
+		//      event."
+		//   5. Update historyOldestRowID / historyExhausted /
+		//      historyRequestInFlight based on the page contents.
+		if msg.History == nil {
+			return m, nil
+		}
+		m.historyRequestInFlight = false
+		if msg.History.SessionName != m.subscribedTo {
+			// Stale response for a session we no longer care about.
+			return m, nil
+		}
+		if msg.History.Done {
+			m.historyExhausted = true
+		}
+		if len(msg.History.Events) == 0 {
+			// Empty page: head of history reached. Treat as exhausted
+			// regardless of the Done flag (defensive against older
+			// daemons that may not set it).
+			m.historyExhausted = true
+			return m, nil
+		}
+		var prepended []narrative.NarrativeLine
+		var minRowID int64
+		for _, ev := range msg.History.Events {
+			if ev.RowID > 0 {
+				if minRowID == 0 || ev.RowID < minRowID {
+					minRowID = ev.RowID
+				}
+			}
+			if m.seenRowIDs[ev.RowID] {
+				continue
+			}
+			// Historic events run through the legacy renderer dispatch
+			// table, NOT the live tool-card installer (m.installToolCallCard /
+			// m.foldToolResultIntoCard from #1769). Two consequences:
+			//
+			//   - A historic tool_call followed by its tool_result
+			//     renders as a multi-line "in-flight" card header
+			//     followed by an indented one-line result — not as a
+			//     folded paired card. Acceptable per the issue's
+			//     out-of-scope list ("Selection/copy of historic events"
+			//     is OOS; the tool-card OOS is implied since cards are a
+			//     live-pairing affordance).
+			//
+			//   - The expand/collapse `tab` binding (#1769) still only
+			//     operates on the most recent live card; historic
+			//     tool_call lines have no associated toolCard struct.
+			//
+			// This keeps the lazy-load path lean and avoids re-deriving
+			// card state from arbitrary historic rowid ordering, which
+			// would interact awkwardly with rebuildCardLines' lineStart
+			// invariants.
+			lines := m.renderer.dispatch(ev.RowID, ev.EventType, ev.Payload)
+			if len(lines) == 0 {
+				// Suppressed event type (e.g. session_status). Skip
+				// without marking the row as seen so future replays
+				// can still render it if the renderer table grows.
+				continue
+			}
+			m.seenRowIDs[ev.RowID] = true
+			prepended = append(prepended, lines...)
+		}
+		if minRowID > 0 {
+			if m.historyOldestRowID == 0 || minRowID < m.historyOldestRowID {
+				m.historyOldestRowID = minRowID
+			}
+		}
+		if len(prepended) > 0 {
+			// Prepend by allocating a fresh slice so the existing
+			// tool-card lineStart indices need only the matching
+			// shift below — we cannot append in place because the
+			// new lines belong at the head.
+			combined := make([]narrative.NarrativeLine, 0, len(prepended)+len(m.eventLines))
+			combined = append(combined, prepended...)
+			combined = append(combined, m.eventLines...)
+			m.eventLines = combined
+			delta := len(prepended)
+			// Shift any existing tool-card lineStart indices so they
+			// continue to refer to the same NarrativeLine rows after
+			// the prepend. The toolCallByMsgID legacy lookup is also
+			// updated for any cards that survived in the buffer.
+			for _, c := range m.toolCards {
+				c.lineStart += delta
+				if c.msgID != "" {
+					m.toolCallByMsgID[c.msgID] = c.lineStart
+				}
+			}
+			m.viewport.OnPrepend(delta)
 		}
 
 	case iris.DaemonFrameError:
@@ -812,14 +992,61 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "pgup":
-		m.eventScroll += (m.rightPaneHeight() - 2)
-		return m, nil
+		// PgUp scrolls the conversation pane up by one page when the
+		// events pane has focus. The behaviour is identical regardless
+		// of focus (issue #1770 spec: "PgUp / PgDn scroll the
+		// conversation pane by one page when the events pane has
+		// focus. Existing up/down key handling is preserved") because
+		// PgUp/PgDn don't conflict with session-list navigation. Sets
+		// following=false implicitly.
+		page := m.viewportPageSize()
+		m.viewport.ScrollUp(page, len(m.eventLines))
+		return m, m.maybeRequestMoreHistory()
 
 	case "pgdown":
-		m.eventScroll -= (m.rightPaneHeight() - 2)
-		if m.eventScroll < 0 {
-			m.eventScroll = 0
+		page := m.viewportPageSize()
+		m.viewport.ScrollDown(page, len(m.eventLines))
+		if m.viewport.AtBottom(len(m.eventLines)) {
+			m.pendingNewCount = 0
 		}
+		return m, nil
+
+	case "g":
+		// Vi-style "go to top" of the conversation pane (issue #1770
+		// AC). Only fires when focus is on the events pane (or when
+		// the prompt is empty AND focus is anywhere else — then it's
+		// a navigation gesture, not a literal letter). When the
+		// prompt has content, `g` is a literal rune and falls through
+		// to the default insert path. This mirrors how `?` is handled
+		// earlier in the switch.
+		if m.focus == focusPrompt && len(m.promptRunes) > 0 {
+			ins := []rune{'g'}
+			newRunes := make([]rune, len(m.promptRunes)+len(ins))
+			copy(newRunes, m.promptRunes[:m.promptCursor])
+			copy(newRunes[m.promptCursor:], ins)
+			copy(newRunes[m.promptCursor+len(ins):], m.promptRunes[m.promptCursor:])
+			m.promptRunes = newRunes
+			m.promptCursor += len(ins)
+			return m, nil
+		}
+		m.viewport.GotoTop()
+		return m, m.maybeRequestMoreHistory()
+
+	case "G":
+		// Vi-style "go to bottom" and resume auto-tail. Same
+		// prompt-vs-events disambiguation as `g`.
+		if m.focus == focusPrompt && len(m.promptRunes) > 0 {
+			ins := []rune{'G'}
+			newRunes := make([]rune, len(m.promptRunes)+len(ins))
+			copy(newRunes, m.promptRunes[:m.promptCursor])
+			copy(newRunes[m.promptCursor:], ins)
+			copy(newRunes[m.promptCursor+len(ins):], m.promptRunes[m.promptCursor:])
+			m.promptRunes = newRunes
+			m.promptCursor += len(ins)
+			return m, nil
+		}
+		m.viewport.GotoBottom(len(m.eventLines))
+		m.pendingNewCount = 0
 		return m, nil
 
 	case "enter":
@@ -854,9 +1081,29 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "home", "ctrl+a":
+		// Context-sensitive: when focus is on the events pane, `home`
+		// jumps to the top of the conversation scrollback (issue
+		// #1770 AC: "Pressing Home or g jumps to the top of the
+		// loaded window"). In any other focus area `home` continues
+		// to mean "prompt cursor home". ctrl+a remains the
+		// unconditional prompt-cursor-home alias so emacs muscle
+		// memory still works regardless of focus.
+		if msg.String() == "home" && m.focus == focusEvents {
+			m.viewport.GotoTop()
+			return m, m.maybeRequestMoreHistory()
+		}
 		m.promptCursor = 0
 
 	case "end", "ctrl+e":
+		// Context-sensitive: focus on events → jump to bottom and
+		// resume auto-tail (issue #1770 AC). Other focus areas →
+		// prompt cursor end. ctrl+e remains unconditionally the
+		// prompt-end alias.
+		if msg.String() == "end" && m.focus == focusEvents {
+			m.viewport.GotoBottom(len(m.eventLines))
+			m.pendingNewCount = 0
+			return m, nil
+		}
 		m.promptCursor = len(m.promptRunes)
 
 	case "delete", "ctrl+d":
@@ -877,6 +1124,59 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// viewportPageSize returns the number of lines to scroll on PgUp/PgDn.
+// We use the viewport's most recently set content height so a PgDn
+// after a PgUp lands back at the same spot — the symmetric behaviour
+// operators expect from most terminal pagers. The viewport height is
+// set by viewRightPane each frame; before the first frame renders
+// (e.g. immediately after WindowSizeMsg, before View() runs) the
+// viewport height is 0 and we fall back to rightPaneHeight()-2
+// minus the header/separator overhead so unit tests that drive
+// keystrokes without a render still get a sensible page size.
+func (m *Model) viewportPageSize() int {
+	p := m.viewport.height
+	if p < 1 {
+		p = m.rightPaneHeight() - 2
+	}
+	if p < 1 {
+		p = 1
+	}
+	return p
+}
+
+// maybeRequestMoreHistory issues a session_history request when the
+// viewport is at the top of its loaded window AND the head of
+// history has not yet been reached AND no request is currently in
+// flight. Called after every scroll-up gesture and after Home / G.
+//
+// Returns a tea.Cmd that performs the write off the Update goroutine,
+// or nil when no request should be made.
+func (m *Model) maybeRequestMoreHistory() tea.Cmd {
+	if m.subscribedTo == "" {
+		return nil
+	}
+	if m.historyExhausted {
+		return nil
+	}
+	if m.historyRequestInFlight {
+		return nil
+	}
+	if !m.viewport.AtTop() {
+		return nil
+	}
+	name := m.subscribedTo
+	before := m.historyOldestRowID
+	limit := m.historyPageSize
+	if limit <= 0 {
+		limit = historyPageSizeDefault
+	}
+	m.historyRequestInFlight = true
+	return func() tea.Msg {
+		_ = m.client.SendSessionHistory(name, before, limit, "")
+		return nil
+	}
 }
 
 // switchToSelected unsubscribes from the previous session and subscribes to
@@ -1087,7 +1387,11 @@ func (m *Model) resetEventPane() {
 	m.toolCards = nil
 	m.toolCardByMsgID = make(map[string]*toolCard)
 	m.expandedToolCards = make(map[string]bool)
-	m.eventScroll = 0
+	m.viewport.Reset()
+	m.pendingNewCount = 0
+	m.historyOldestRowID = 0
+	m.historyExhausted = false
+	m.historyRequestInFlight = false
 }
 
 // --- View ---
@@ -1269,24 +1573,18 @@ func (m Model) viewRightPane(width int) string {
 	if len(m.eventLines) == 0 {
 		rows = append(rows, "")
 		if m.subscribedTo != "" {
-			rows = append(rows, styleDim.Render(padRight("  waiting for events…", innerW)))
+			rows = append(rows, styleDim.Render(padRight("  no events yet…", innerW)))
 		} else {
 			rows = append(rows, styleDim.Render(padRight("  select a session to stream events", innerW)))
 		}
 	} else {
-		// Render from the bottom up, respecting scroll offset.
-		total := len(m.eventLines)
-		end := total - m.eventScroll
-		if end < 0 {
-			end = 0
-		}
-		if end > total {
-			end = total
-		}
-		start := end - contentH
-		if start < 0 {
-			start = 0
-		}
+		// The viewport tracks scroll position over m.eventLines (issue
+		// #1770 child 5). Update() clamps offset against the current
+		// content height; VisibleRange returns the [start, end)
+		// window. The viewport replaces the previous eventScroll int
+		// + ad-hoc end/start arithmetic.
+		m.viewport.Update(len(m.eventLines), contentH)
+		start, end := m.viewport.VisibleRange(len(m.eventLines))
 		coord := m.focusedIsCoordinator()
 		for _, line := range m.eventLines[start:end] {
 			rendered := styleEventLine(line, innerW, coord)
@@ -1294,10 +1592,21 @@ func (m Model) viewRightPane(width int) string {
 		}
 	}
 
-	// Scroll indicator.
-	if m.eventScroll > 0 {
+	// Scroll-state indicators (issue #1770).
+	//
+	// Top: when the viewport is at the head AND we know we've fetched
+	// every available historic event, render a subtle "(start of
+	// session)" line. This is the AC's "subtle indicator may show
+	// '(start of session)' at the top".
+	if m.viewport.AtTop() && m.historyExhausted && len(m.eventLines) > 0 {
 		rows = append(rows, styleDim.Render(
-			padRight(fmt.Sprintf("  ↑ %d lines above (PgDn to scroll down)", m.eventScroll), innerW),
+			padRight("  (start of session)", innerW),
+		))
+	}
+	// Bottom: when scrolled up, hint at how to return to live.
+	if !m.viewport.AtBottom(len(m.eventLines)) && len(m.eventLines) > 0 {
+		rows = append(rows, styleDim.Render(
+			padRight(fmt.Sprintf("  ↑ offset %d (PgDn / End to return to live)", m.viewport.Offset()), innerW),
 		))
 	}
 
@@ -1459,7 +1768,17 @@ func (m Model) viewStatusLine(width int) string {
 		}
 		parts = append(parts, costStr)
 	}
+	// "↓ N new" indicator (issue #1770 child 5). Appended after the
+	// regular metadata segments so operators can spot it without
+	// losing the session/state/model/cost line they're used to. Only
+	// rendered when the operator has scrolled up AND new events have
+	// arrived since — the count is reset on every return-to-bottom
+	// gesture, so a "↓ 0 new" never appears.
 	line := "  " + strings.Join(parts, " · ")
+	if m.pendingNewCount > 0 {
+		hint := fmt.Sprintf("  ↓ %d new", m.pendingNewCount)
+		line = line + hint
+	}
 	return styleStatusLine.Render(padRight(truncate(line, width), width))
 }
 

@@ -517,6 +517,18 @@ func (cs *ClientSocket) handleConn(ctx context.Context, conn net.Conn) {
 			}
 			subMu.Unlock()
 
+		case ClientFrameSessionHistory:
+			var frame ClientSessionHistoryFrame
+			if err := json.Unmarshal(line, &frame); err != nil {
+				sendError(w, ClientFrameSessionHistory, "invalid frame: "+err.Error())
+				continue
+			}
+			cs.wg.Add(1)
+			go func(frame ClientSessionHistoryFrame) {
+				defer cs.wg.Done()
+				cs.handleSessionHistory(w, frame)
+			}(frame)
+
 		case ClientFrameSessionSpawn:
 			var frame ClientSessionSpawnFrame
 			if err := json.Unmarshal(line, &frame); err != nil {
@@ -601,6 +613,69 @@ func (cs *ClientSocket) handleSessionsList(w *jsonlWriter) {
 	_ = w.write(DaemonSessionsSnapshotFrame{
 		Type:     DaemonFrameSessionsSnapshot,
 		Sessions: sessions,
+	})
+}
+
+// historyMaxLimit caps the per-request page size for session_history
+// queries. Larger requests are silently clamped so a misbehaving client
+// cannot force the daemon into an arbitrarily large allocation.
+const historyMaxLimit = 1000
+
+// historyDefaultLimit is the page size used when the client omits Limit
+// or sends a non-positive value. Matches the iris TUI's default page
+// size for lazy-load scrollback (issue #1770 child 5) so a TUI that
+// trusts the daemon default still gets a useful page.
+const historyDefaultLimit = 100
+
+// handleSessionHistory answers a ClientSessionHistoryFrame with one
+// DaemonSessionHistoryFrame containing the requested page of events.
+// One-shot read; no subscription state is modified.
+//
+// Semantics mirror db.QuerySessionEventsBeforeRowID:
+//
+//   - BeforeRowID > 0 → last `limit` rows with rowid < BeforeRowID
+//   - BeforeRowID == 0 → the most recent `limit` rows (tail of history)
+//
+// `Done` is true when the query returned fewer rows than `limit`,
+// which is sufficient for the TUI to recognise head-of-history and
+// suppress further requests.
+func (cs *ClientSocket) handleSessionHistory(w *jsonlWriter, frame ClientSessionHistoryFrame) {
+	if frame.Name == "" {
+		sendError(w, ClientFrameSessionHistory, "name is required")
+		return
+	}
+	limit := frame.Limit
+	if limit <= 0 {
+		limit = historyDefaultLimit
+	}
+	if limit > historyMaxLimit {
+		limit = historyMaxLimit
+	}
+
+	events, err := cs.database.QuerySessionEventsBeforeRowID(frame.Name, frame.BeforeRowID, limit)
+	if err != nil {
+		log.Printf("[iris] client socket: history query for %q before %d: %v",
+			frame.Name, frame.BeforeRowID, err)
+		sendError(w, ClientFrameSessionHistory, "history query failed: "+err.Error())
+		return
+	}
+
+	out := make([]DaemonSessionEventFrame, 0, len(events))
+	for _, er := range events {
+		out = append(out, DaemonSessionEventFrame{
+			Type:        DaemonFrameSessionEvent,
+			SessionName: frame.Name,
+			RowID:       er.RowID,
+			EventType:   er.Event.Type,
+			Payload:     er.Event.Payload,
+		})
+	}
+	_ = w.write(DaemonSessionHistoryFrame{
+		Type:        DaemonFrameSessionHistory,
+		SessionName: frame.Name,
+		Events:      out,
+		Done:        len(events) < limit,
+		RequestID:   frame.RequestID,
 	})
 }
 

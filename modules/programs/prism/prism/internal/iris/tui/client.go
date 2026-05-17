@@ -34,6 +34,10 @@ type DaemonFrame struct {
 	State *iris.DaemonSessionStateFrame
 	// Spawned is populated when RawType == DaemonFrameSessionSpawned.
 	Spawned *iris.DaemonSessionSpawnedFrame
+	// History is populated when RawType == DaemonFrameSessionHistory.
+	// Carries a page of older events for the lazy-load scrollback in
+	// the conversation pane (issue #1770 child 5).
+	History *iris.DaemonSessionHistoryFrame
 	// Error is populated when RawType == DaemonFrameError.
 	Error *iris.DaemonErrorFrame
 }
@@ -139,6 +143,11 @@ func (c *DaemonClient) readLoop(conn net.Conn) {
 			if err := json.Unmarshal(line, &f); err == nil {
 				msg.Event = &f
 			}
+		case iris.DaemonFrameSessionHistory:
+			var f iris.DaemonSessionHistoryFrame
+			if err := json.Unmarshal(line, &f); err == nil {
+				msg.History = &f
+			}
 		case iris.DaemonFrameSessionState:
 			var f iris.DaemonSessionStateFrame
 			if err := json.Unmarshal(line, &f); err == nil {
@@ -239,6 +248,24 @@ func (c *DaemonClient) SendPromptDeliver(name, text string) error {
 		Type: iris.ClientFramePromptDeliver,
 		Name: name,
 		Text: text,
+	})
+}
+
+// SendSessionHistory requests a page of older events for the named
+// session. beforeRowID == 0 returns the tail of history; otherwise the
+// daemon returns the last `limit` events with rowid < beforeRowID,
+// ASC-ordered. requestID is an opaque echo for client-side correlation.
+//
+// One-shot request; the daemon does not change any subscription state.
+// See iris.ClientSessionHistoryFrame for the wire shape; iris
+// client_socket.go's handleSessionHistory for the daemon-side handler.
+func (c *DaemonClient) SendSessionHistory(name string, beforeRowID int64, limit int, requestID string) error {
+	return c.writeFrame(iris.ClientSessionHistoryFrame{
+		Type:        iris.ClientFrameSessionHistory,
+		Name:        name,
+		BeforeRowID: beforeRowID,
+		Limit:       limit,
+		RequestID:   requestID,
 	})
 }
 
