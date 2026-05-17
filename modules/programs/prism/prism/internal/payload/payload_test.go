@@ -86,31 +86,109 @@ func TestMsgAssistant_Roundtrip(t *testing.T) {
 	}
 }
 
+// TestToolCall_Roundtrip covers the post-#1783 wire shape: `name`,
+// `args` (json.RawMessage / JSON object), `id`. The previous test
+// used the old `tool`/`messageId`/string-args trio which had drifted
+// silently from pi 0.72.1's emitted payload — see issue #1783 for
+// the full root cause analysis.
 func TestToolCall_Roundtrip(t *testing.T) {
-	in := payload.ToolCall{Tool: "bash", Args: `{"command":"go test ./..."}`, MessageID: "msg-1"}
+	in := payload.ToolCall{
+		Name: "bash",
+		Args: json.RawMessage(`{"command":"go test ./..."}`),
+		ID:   "call-1",
+	}
 	out := roundtrip(t, in)
-	if out.Tool != in.Tool {
-		t.Errorf("Tool: got %q, want %q", out.Tool, in.Tool)
+	if out.Name != in.Name {
+		t.Errorf("Name: got %q, want %q", out.Name, in.Name)
 	}
-	if out.Args != in.Args {
-		t.Errorf("Args: got %q, want %q", out.Args, in.Args)
+	if string(out.Args) != string(in.Args) {
+		t.Errorf("Args: got %q, want %q", string(out.Args), string(in.Args))
 	}
-	if out.MessageID != in.MessageID {
-		t.Errorf("MessageID: got %q, want %q", out.MessageID, in.MessageID)
+	if out.ID != in.ID {
+		t.Errorf("ID: got %q, want %q", out.ID, in.ID)
 	}
 }
 
+// TestToolResult_Roundtrip covers the post-#1783 wire shape: `id`,
+// `success`, `output`. Pre-#1783 the struct declared `tool`,
+// `result`, `messageId` — silently broken because the pi extension
+// never emitted that shape.
 func TestToolResult_Roundtrip(t *testing.T) {
-	in := payload.ToolResult{Tool: "bash", Result: "ok", MessageID: "msg-1"}
+	in := payload.ToolResult{
+		ID:      "call-1",
+		Success: true,
+		Output:  "ok",
+	}
 	out := roundtrip(t, in)
-	if out.Tool != in.Tool {
-		t.Errorf("Tool: got %q, want %q", out.Tool, in.Tool)
+	if out.ID != in.ID {
+		t.Errorf("ID: got %q, want %q", out.ID, in.ID)
 	}
-	if out.Result != in.Result {
-		t.Errorf("Result: got %q, want %q", out.Result, in.Result)
+	if out.Success != in.Success {
+		t.Errorf("Success: got %v, want %v", out.Success, in.Success)
 	}
-	if out.MessageID != in.MessageID {
-		t.Errorf("MessageID: got %q, want %q", out.MessageID, in.MessageID)
+	if out.Output != in.Output {
+		t.Errorf("Output: got %q, want %q", out.Output, in.Output)
+	}
+}
+
+// TestToolCall_PiExtensionWireShape is the regression test required
+// by issue #1783's acceptance criteria: pins the pi 0.72.1
+// prism-extension wire format so an upstream rename surfaces here as
+// a deliberate test failure rather than a silent (parse error)
+// regression in the iris TUI.
+//
+// The fixture JSON below is byte-for-byte representative of what
+// `pi/extensions/prism.ts:2429-2444` writes to the harness socket
+// for a real tool_execution_start event.
+func TestToolCall_PiExtensionWireShape(t *testing.T) {
+	raw := []byte(`{"type":"tool_call","id":"call-abc-123","name":"bash","args":{"command":"echo hi"}}`)
+	var tc payload.ToolCall
+	if err := json.Unmarshal(raw, &tc); err != nil {
+		t.Fatalf("unmarshal pi-extension tool_call: %v", err)
+	}
+	if tc.Name != "bash" {
+		t.Errorf("Name: got %q, want %q", tc.Name, "bash")
+	}
+	if tc.ID != "call-abc-123" {
+		t.Errorf("ID: got %q, want %q", tc.ID, "call-abc-123")
+	}
+	if string(tc.Args) != `{"command":"echo hi"}` {
+		t.Errorf("Args: got %q, want a JSON object literal", string(tc.Args))
+	}
+	if tc.Truncated {
+		t.Errorf("Truncated: got true, want false (no truncated field on wire)")
+	}
+}
+
+// TestToolResult_PiExtensionWireShape mirrors TestToolCall_PiExtensionWireShape
+// for the tool_result path (`pi/extensions/prism.ts:2503-2517`).
+func TestToolResult_PiExtensionWireShape(t *testing.T) {
+	raw := []byte(`{"type":"tool_result","id":"call-abc-123","success":true,"output":"hi\n"}`)
+	var tr payload.ToolResult
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("unmarshal pi-extension tool_result: %v", err)
+	}
+	if tr.ID != "call-abc-123" {
+		t.Errorf("ID: got %q, want %q", tr.ID, "call-abc-123")
+	}
+	if !tr.Success {
+		t.Errorf("Success: got false, want true")
+	}
+	if tr.Output != "hi\n" {
+		t.Errorf("Output: got %q, want %q", tr.Output, "hi\n")
+	}
+}
+
+// TestToolResult_PiExtensionWireShape_Error covers the error path:
+// `success` toggles to false when pi reports `isError: true`.
+func TestToolResult_PiExtensionWireShape_Error(t *testing.T) {
+	raw := []byte(`{"type":"tool_result","id":"call-err-1","success":false,"output":"E: command not found","truncated":false}`)
+	var tr payload.ToolResult
+	if err := json.Unmarshal(raw, &tr); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tr.Success {
+		t.Errorf("Success: got true, want false")
 	}
 }
 
@@ -280,15 +358,19 @@ func TestJSONFieldNames(t *testing.T) {
 		t.Errorf("MsgUser.Model: got %q, want \"gh/claude\" (check json:\"model\" tag)", mu.Model)
 	}
 
-	rawTC := `{"tool":"bash","args":"go build","messageId":"abc"}`
+	// Post-#1783: ToolCall wire shape is `{name, id, args}` (args is
+	// a JSON value, not an escaped string). The previous fixture's
+	// `{tool, args, messageId}` shape no longer matches the struct
+	// tags and would silently zero-value the fields.
+	rawTC := `{"type":"tool_call","name":"bash","id":"call-abc","args":{"command":"go build"}}`
 	var tc payload.ToolCall
 	if err := json.Unmarshal([]byte(rawTC), &tc); err != nil {
 		t.Fatalf("unmarshal ToolCall: %v", err)
 	}
-	if tc.Tool != "bash" {
-		t.Errorf("ToolCall.Tool: got %q, want \"bash\"", tc.Tool)
+	if tc.Name != "bash" {
+		t.Errorf("ToolCall.Name: got %q, want \"bash\" (check json:\"name\" tag)", tc.Name)
 	}
-	if tc.MessageID != "abc" {
-		t.Errorf("ToolCall.MessageID: got %q, want \"abc\" (check json:\"messageId\" tag)", tc.MessageID)
+	if tc.ID != "call-abc" {
+		t.Errorf("ToolCall.ID: got %q, want \"call-abc\" (check json:\"id\" tag)", tc.ID)
 	}
 }

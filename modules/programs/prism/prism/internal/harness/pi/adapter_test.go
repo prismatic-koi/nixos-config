@@ -137,6 +137,10 @@ func TestNormaliseFrame_MsgUser(t *testing.T) {
 	}
 }
 
+// TestNormaliseFrame_ToolCall covers the older stdio adapter
+// (Translate strategy) path. Input is the legacy snake_case PI
+// JSONL shape; output is the post-#1783 payload.ToolCall (`Name`,
+// `Args`, `ID`).
 func TestNormaliseFrame_ToolCall(t *testing.T) {
 	a := pi.New("", "", "")
 	raw := []byte(`{"type":"tool_call","tool":"bash","input":{"command":"go test ./..."},"message_id":"msg-123","elapsed_ms":5000}`)
@@ -153,21 +157,24 @@ func TestNormaliseFrame_ToolCall(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected payload.ToolCall, got %T", normPayload)
 	}
-	if p.Tool != "bash" {
-		t.Errorf("Tool: want %q got %q", "bash", p.Tool)
+	if p.Name != "bash" {
+		t.Errorf("Name: want %q got %q", "bash", p.Name)
 	}
-	if p.MessageID != "msg-123" {
-		t.Errorf("MessageID: want %q got %q", "msg-123", p.MessageID)
+	if p.ID != "msg-123" {
+		t.Errorf("ID: want %q got %q", "msg-123", p.ID)
 	}
 	if p.DurationMs != 5000 {
 		t.Errorf("DurationMs: want 5000 got %d", p.DurationMs)
 	}
-	// Args should be the marshalled input
-	if p.Args == "" {
+	// Args should be the marshalled input.
+	if len(p.Args) == 0 {
 		t.Error("Args: expected non-empty")
 	}
 }
 
+// TestNormaliseFrame_ToolResult mirrors the tool_call test for the
+// older stdio adapter path. Output uses the post-#1783 payload
+// fields (`ID`, `Success`, `Output`).
 func TestNormaliseFrame_ToolResult(t *testing.T) {
 	a := pi.New("", "", "")
 	raw := []byte(`{"type":"tool_result","tool":"bash","output":"ok\n2 tests passed","message_id":"msg-456"}`)
@@ -184,11 +191,14 @@ func TestNormaliseFrame_ToolResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected payload.ToolResult, got %T", normPayload)
 	}
-	if p.Tool != "bash" {
-		t.Errorf("Tool: want %q got %q", "bash", p.Tool)
+	if p.ID != "msg-456" {
+		t.Errorf("ID: want %q got %q", "msg-456", p.ID)
 	}
-	if p.MessageID != "msg-456" {
-		t.Errorf("MessageID: want %q got %q", "msg-456", p.MessageID)
+	if !p.Success {
+		t.Errorf("Success: want true (adapter defaults to success since stdio shape has no isError); got false")
+	}
+	if p.Output != "ok\n2 tests passed" {
+		t.Errorf("Output: want %q got %q", "ok\n2 tests passed", p.Output)
 	}
 }
 
@@ -356,7 +366,10 @@ func TestNormaliseFrame_ToolResult_TruncatesLongOutput(t *testing.T) {
 		t.Fatal("expected shouldWrite=true")
 	}
 	p := normPayload.(payload.ToolResult)
-	if len(p.Result) > 500 {
-		t.Errorf("Result length %d exceeds 500-char budget", len(p.Result))
+	if len(p.Output) > 500 {
+		t.Errorf("Output length %d exceeds 500-char budget", len(p.Output))
+	}
+	if !p.Truncated {
+		t.Errorf("Truncated: want true (over-budget output), got false")
 	}
 }

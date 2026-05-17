@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"path/filepath"
@@ -75,9 +76,18 @@ func assistantPayloadWithTokens(msgID, text string, inputTokens, outputTokens, c
 		msgID, text, inputTokens, outputTokens, cacheRead, cacheWrite, durationMs, contextPct)
 }
 
+// toolCallPayloadWithDuration returns a tool_call JSON payload using
+// the post-#1783 pi-extension wire shape ({name, id, args}) plus a
+// `durationMs` field (kept by the older PI stdio adapter).
+//
+// Args is JSON-encoded as a string literal so legacy bare inputs
+// ("echo hello", "main.go") survive without breaking JSON syntax.
+// Stats consumers re-read `Name` (the renamed `Tool` field) and
+// `DurationMs` only; args content is irrelevant to the metric paths.
 func toolCallPayloadWithDuration(msgID, tool, args string, durationMs int64) string {
-	return fmt.Sprintf(`{"messageId":%q,"tool":%q,"args":%q,"durationMs":%d}`,
-		msgID, tool, args, durationMs)
+	encodedArgs, _ := json.Marshal(args)
+	return fmt.Sprintf(`{"name":%q,"id":%q,"args":%s,"durationMs":%d}`,
+		tool, msgID, string(encodedArgs), durationMs)
 }
 
 // assistantPayloadWithAgentModel creates an assistant payload with explicit agent and model fields.

@@ -428,7 +428,11 @@ type childItem struct {
 func renderChildEvents(w io.Writer, children []childItem, verbose bool) {
 	// First pass: collect tool_result payloads by messageId so we can
 	// fold them into their matching tool_call rendering.
-	resultByMsgID := make(map[string]payload.ToolResult, len(children))
+	// resultByID maps payload.ToolResult.ID → the parsed result.
+	// Post-#1783 the wire field is `id` (not `messageId`); pairing
+	// semantics are unchanged — we still match the tool_call's
+	// equivalent id field.
+	resultByID := make(map[string]payload.ToolResult, len(children))
 	for _, c := range children {
 		if c.eventType != "tool_result" {
 			continue
@@ -437,12 +441,12 @@ func renderChildEvents(w io.Writer, children []childItem, verbose bool) {
 		if err := json.Unmarshal([]byte(c.payload), &tr); err != nil {
 			continue
 		}
-		if tr.MessageID != "" {
-			resultByMsgID[tr.MessageID] = tr
+		if tr.ID != "" {
+			resultByID[tr.ID] = tr
 		}
 	}
 
-	seenResultMsgIDs := make(map[string]bool, len(resultByMsgID))
+	seenResultIDs := make(map[string]bool, len(resultByID))
 
 	for _, c := range children {
 		switch c.eventType {
@@ -453,29 +457,29 @@ func renderChildEvents(w io.Writer, children []childItem, verbose bool) {
 				continue
 			}
 			if verbose {
-				fmt.Fprintf(w, "  → %s\n", tc.Tool)
-				fmt.Fprintf(w, "    args: %s\n", tc.Args)
-				if tr, ok := resultByMsgID[tc.MessageID]; ok {
-					fmt.Fprintf(w, "    result: %s\n", tr.Result)
-					seenResultMsgIDs[tc.MessageID] = true
+				fmt.Fprintf(w, "  → %s\n", tc.Name)
+				fmt.Fprintf(w, "    args: %s\n", string(tc.Args))
+				if tr, ok := resultByID[tc.ID]; ok {
+					fmt.Fprintf(w, "    result: %s\n", tr.Output)
+					seenResultIDs[tc.ID] = true
 				}
 				continue
 			}
-			key := narrative.ToolKeyArg(tc.Tool, tc.Args)
-			if tr, ok := resultByMsgID[tc.MessageID]; ok {
-				summary := narrative.ToolResultSummary(tc.Tool, tr.Result)
+			key := narrative.ToolKeyArg(tc.Name, tc.Args)
+			if tr, ok := resultByID[tc.ID]; ok {
+				summary := narrative.ToolResultSummary(tc.Name, tr.Output)
 				if key != "" {
-					fmt.Fprintf(w, "  → %s: %s %s\n", tc.Tool, key, summary)
+					fmt.Fprintf(w, "  → %s: %s %s\n", tc.Name, key, summary)
 				} else {
-					fmt.Fprintf(w, "  → %s %s\n", tc.Tool, summary)
+					fmt.Fprintf(w, "  → %s %s\n", tc.Name, summary)
 				}
-				seenResultMsgIDs[tc.MessageID] = true
+				seenResultIDs[tc.ID] = true
 			} else {
 				// No result yet (in-flight) — render the call alone.
 				if key != "" {
-					fmt.Fprintf(w, "  → %s: %s\n", tc.Tool, key)
+					fmt.Fprintf(w, "  → %s: %s\n", tc.Name, key)
 				} else {
-					fmt.Fprintf(w, "  → %s\n", tc.Tool)
+					fmt.Fprintf(w, "  → %s\n", tc.Name)
 				}
 			}
 		case "tool_result":
@@ -484,14 +488,16 @@ func renderChildEvents(w io.Writer, children []childItem, verbose bool) {
 			if err := json.Unmarshal([]byte(c.payload), &tr); err != nil {
 				continue
 			}
-			if seenResultMsgIDs[tr.MessageID] {
+			if seenResultIDs[tr.ID] {
 				continue
 			}
 			if verbose {
-				fmt.Fprintf(w, "  ↳ result (orphan): %s\n", tr.Result)
+				fmt.Fprintf(w, "  ↳ result (orphan): %s\n", tr.Output)
 				continue
 			}
-			fmt.Fprintf(w, "  ↳ result (orphan): %s\n", narrative.ToolResultSummary(tr.Tool, tr.Result))
+			// Post-#1783: ToolResult has no tool-name field. Pass
+			// "" so the summariser falls into its generic branch.
+			fmt.Fprintf(w, "  ↳ result (orphan): %s\n", narrative.ToolResultSummary("", tr.Output))
 		case "permission_ask":
 			var pa payload.PermissionAsk
 			if err := json.Unmarshal([]byte(c.payload), &pa); err != nil {

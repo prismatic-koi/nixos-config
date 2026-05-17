@@ -348,17 +348,30 @@ func extractText(content []struct {
 	return strings.Join(parts, "")
 }
 
-// marshalArgs marshals a JSON value to a compact string representation,
-// truncated to 500 characters to match the pi truncation budget.
-func marshalArgs(raw json.RawMessage) string {
+// marshalArgs returns the raw tool-call args JSON value, truncated to
+// the 500-byte pi-budget. Post-#1783 the returned value is a
+// json.RawMessage so it can be assigned directly to
+// payload.ToolCall.Args. Truncation that would produce invalid JSON
+// is avoided by re-wrapping over-budget input in a string — the
+// resulting RawMessage is still valid JSON (a string literal), just
+// not a structured object.
+func marshalArgs(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
-		return ""
+		return nil
 	}
-	s := string(raw)
-	if len(s) > 500 {
-		return s[:500]
+	if len(raw) <= 500 {
+		return raw
 	}
-	return s
+	// Over budget. Re-encode as a truncated JSON string so the
+	// resulting RawMessage stays valid JSON. Consumers of
+	// payload.ToolCall.Args treat string-typed args as a fallback
+	// (narrative.ToolKeyArg's default branch echoes the raw value).
+	truncated := string(raw[:500])
+	b, err := json.Marshal(truncated)
+	if err != nil {
+		return nil
+	}
+	return b
 }
 
 // NormaliseFrame maps a raw PI JSONL frame to a canonical pi-shaped
@@ -446,10 +459,15 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			log.Printf("pi: NormaliseFrame: parse tool_call: %v", err)
 			return "", nil, false
 		}
+		// Post-#1783: payload.ToolCall renamed Tool→Name,
+		// MessageID→ID, Args:string→Args:json.RawMessage. The
+		// stdio adapter's input shape (snake_case JSONL) is
+		// unchanged — the adapter just translates into the new
+		// canonical struct names.
 		p := payload.ToolCall{
-			Tool:       f.Tool,
+			Name:       f.Tool,
 			Args:       marshalArgs(f.Input),
-			MessageID:  f.MessageID,
+			ID:         f.MessageID,
 			DurationMs: f.ElapsedMs,
 		}
 		return "tool_call", p, true
@@ -460,14 +478,21 @@ func (a *Adapter) NormaliseFrame(rawLine []byte) (eventType string, normPayload 
 			log.Printf("pi: NormaliseFrame: parse tool_result: %v", err)
 			return "", nil, false
 		}
-		result := f.Output
-		if len(result) > 500 {
-			result = result[:500]
+		output := f.Output
+		truncated := false
+		if len(output) > 500 {
+			output = output[:500]
+			truncated = true
 		}
+		// The stdio adapter has no error/success signal on its
+		// input frame, so Success defaults to true. Consumers that
+		// need to detect failures fall back to per-tool result
+		// summarisation heuristics (narrative.ToolResultSummary).
 		p := payload.ToolResult{
-			Tool:      f.Tool,
-			Result:    result,
-			MessageID: f.MessageID,
+			ID:        f.MessageID,
+			Success:   true,
+			Output:    output,
+			Truncated: truncated,
 		}
 		return "tool_result", p, true
 
