@@ -709,6 +709,107 @@ export const TRUNCATION_SENTINEL = "…[truncated]"
 /** Harness identifier sent in the `hello` frame. */
 export const HARNESS_NAME = "pi"
 
+// ---------------------------------------------------------------------------
+// Mid-tool heartbeat (#1761)
+// ---------------------------------------------------------------------------
+//
+// Long-running tool calls (e.g. `nix build .#prism`, `go test -count=20`) can
+// exceed the sidecar's per-session inactivity watchdog window (#1728, default
+// 15 min for review agents) when the call produces no intermediate frames on
+// the wire. The sidecar interprets the silence as a stuck agent and force-
+// transitions the session to `error`.
+//
+// Fix shape (a) from #1761: while a tool execution is in flight, emit a
+// lightweight `tool_progress` frame on a fixed cadence. The sidecar's
+// `touchActivity` runs on every inbound frame and resets the watchdog, so
+// this drops in with no sidecar-side timer logic. The sidecar has an
+// explicit case for the frame that resets activity *without* writing it to
+// `agent_events`, so the heartbeat is invisible to downstream consumers
+// (narrative, checkin, TUI) and never looks like a duplicate turn or tool
+// call.
+//
+// Cadence: 30s by default, comfortably below the 15-minute watchdog window.
+// The first heartbeat fires after one full cadence has elapsed — fast tools
+// (completing in < TOOL_HEARTBEAT_INTERVAL_MS) never emit one.
+//
+// Genuine-stuck rescue path is preserved: if PI itself is hung (event loop
+// blocked, process wedged), no heartbeats are emitted and the watchdog still
+// fires within its configured window. The heartbeat only proves "PI's event
+// loop is alive and a tool is in flight" — not "the tool is making progress".
+// That weaker guarantee is sufficient: the existing watchdog target is
+// session-level liveness, not per-tool progress.
+//
+// PRISM_TOOL_HEARTBEAT_INTERVAL_MS overrides the cadence for testing
+// (small values make the timer test loop fast). Values <= 0 disable the
+// heartbeat entirely.
+export const TOOL_HEARTBEAT_INTERVAL_MS: number = (() => {
+  const override = process.env.PRISM_TOOL_HEARTBEAT_INTERVAL_MS
+  if (override !== undefined) {
+    const parsed = Number(override)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return 30_000
+})()
+
+/**
+ * Start a periodic heartbeat for an in-flight tool call. Returns a
+ * cancellation function the caller must invoke when the tool ends or the
+ * connection drops.
+ *
+ * The heartbeat is a no-op (returns a noop cancel) when:
+ *   - intervalMs <= 0 (disabled),
+ *   - the writer is unavailable (handshake not complete).
+ *
+ * The first frame fires after `intervalMs` has elapsed — a tool that
+ * completes before then emits nothing.
+ *
+ * Exported for unit testing.
+ */
+export function startToolHeartbeat(
+  writer: FrameWriter | null,
+  toolCallId: string,
+  toolName: string,
+  intervalMs: number = TOOL_HEARTBEAT_INTERVAL_MS,
+  scheduler: {
+    setInterval: (cb: () => void, ms: number) => unknown
+    clearInterval: (handle: unknown) => void
+  } = {
+    setInterval: (cb, ms) => setInterval(cb, ms),
+    clearInterval: (h) => clearInterval(h as ReturnType<typeof setInterval>),
+  },
+): () => void {
+  if (intervalMs <= 0 || writer === null) {
+    return () => {}
+  }
+  // Refresh the unref so the heartbeat interval doesn't pin the Node event
+  // loop open (it's a best-effort liveness ping, not a load-bearing timer).
+  const handle = scheduler.setInterval(() => {
+    // The writer may have been closed between scheduling and firing. The
+    // FrameWriter.write contract already silently drops post-close writes,
+    // but check anyway to skip the JSON.stringify cost.
+    writer.write({
+      type: "tool_progress",
+      id: toolCallId,
+      name: toolName,
+    })
+  }, intervalMs)
+  // Node's setInterval returns a Timeout with .unref(); duck-type to keep
+  // this helper environment-agnostic (the unit-test scheduler returns a
+  // plain object).
+  const maybeUnref = (handle as { unref?: () => void }).unref
+  if (typeof maybeUnref === "function") {
+    maybeUnref.call(handle)
+  }
+  let cancelled = false
+  return () => {
+    if (cancelled) return
+    cancelled = true
+    scheduler.clearInterval(handle)
+  }
+}
+
 /**
  * The message injected as a steer after the agent runs `git push`.
  * Exported so unit tests can assert against the canonical text.
@@ -1889,6 +1990,22 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // ExtensionContext, so we capture one whenever a turn-active hook fires.
   let lastCtx: ExtensionContext | null = null
 
+  // Mid-tool heartbeat cancellation handles, keyed by toolCallId (#1761).
+  // tool_execution_start populates the map; tool_execution_end clears the
+  // matching entry. The map (not a single handle) defends against PI
+  // executing tools concurrently — each gets its own ticker.
+  const toolHeartbeats = new Map<string, () => void>()
+  const cancelAllToolHeartbeats = (): void => {
+    for (const cancel of toolHeartbeats.values()) {
+      try {
+        cancel()
+      } catch (err) {
+        console.error("[prism-extension] cancel tool heartbeat failed:", err)
+      }
+    }
+    toolHeartbeats.clear()
+  }
+
   // ── First-connect retry state ─────────────────────────────────────────
   //
   // firstConnect starts true and is set to false only after a successful
@@ -1998,6 +2115,11 @@ export default function prismExtension(pi: ExtensionAPI): void {
       socket = null
       writer = null
       handshakeComplete = false
+      // Cancel any in-flight tool heartbeats so they don't keep ticking
+      // against a torn-down writer (#1761). The writer's own post-close
+      // guard would silently drop the writes, but cancelling here releases
+      // the timer handles too.
+      cancelAllToolHeartbeats()
       // Per wire spec §7.6: if the sidecar dies, PI continues running
       // standalone. We don't try to reconnect here; the sidecar's reconnect
       // loop re-accepts on session_start.
@@ -2443,6 +2565,14 @@ export default function prismExtension(pi: ExtensionAPI): void {
     if (truncated) frame.truncated = true
     writer.write(frame)
 
+    // Arm the mid-tool heartbeat (#1761). The first frame fires only after
+    // TOOL_HEARTBEAT_INTERVAL_MS has elapsed, so fast tools cost nothing.
+    // Cancellation is keyed by tool-call id so concurrent tools don't
+    // interfere with one another.
+    if (id !== "" && !toolHeartbeats.has(id)) {
+      toolHeartbeats.set(id, startToolHeartbeat(writer, id, name))
+    }
+
     // ── Behavioural guards ────────────────────────────────────────────────
     // Guards are suppressed inside review-agent sessions.
     if (!isReviewSession) {
@@ -2496,11 +2626,20 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   pi.on("tool_execution_end", async (event, ctx) => {
     lastCtx = ctx
-    if (!writer || !handshakeComplete) return
     const id =
       typeof (event as { toolCallId?: unknown }).toolCallId === "string"
         ? (event as { toolCallId: string }).toolCallId
         : ""
+    // Cancel the heartbeat for this tool call (#1761). Always run, even if
+    // the writer was torn down in between — the map entry must not leak.
+    if (id !== "") {
+      const cancel = toolHeartbeats.get(id)
+      if (cancel) {
+        cancel()
+        toolHeartbeats.delete(id)
+      }
+    }
+    if (!writer || !handshakeComplete) return
     const isError =
       (event as { isError?: unknown }).isError === true
     const result = (event as { result?: unknown }).result
@@ -2680,6 +2819,9 @@ export default function prismExtension(pi: ExtensionAPI): void {
       clearTimeout(pendingRetryTimer)
       pendingRetryTimer = null
     }
+    // Cancel any in-flight tool heartbeats on shutdown (#1761) so the
+    // timers don't fire after the writer is closed.
+    cancelAllToolHeartbeats()
     if (writer) {
       writer.close()
     }

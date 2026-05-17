@@ -295,3 +295,197 @@ func TestInactivityWatchdog_NoOpWhenAlreadyTerminal(t *testing.T) {
 	conn.Close()
 	_ = wait()
 }
+
+// ── #1761: mid-tool heartbeat ───────────────────────────────────────────────
+//
+// The PI extension emits a `tool_progress` frame on a fixed cadence while a
+// tool execution is in flight so that long-running bash invocations (e.g.
+// `nix build`, `go test -count=20`) don't silence the wire long enough to
+// trip the per-session inactivity watchdog.
+//
+// Sidecar-side contract:
+//
+//   - tool_progress is treated as an inbound frame: it resets the watchdog
+//     via touchActivity (same path as every other frame).
+//   - tool_progress is NOT written to agent_events: it must remain invisible
+//     to downstream consumers (narrative renderer, checkin, TUI). The
+//     renderer's default branch would otherwise print "tool_progress" lines
+//     between every tool_call/tool_result pair.
+//   - The genuine-stuck rescue path is preserved: if no tool_progress (or
+//     other frame) arrives, the watchdog still fires within the configured
+//     window. This is implicitly true given the watchdog has no per-frame
+//     branch, but the test asserts it explicitly so future refactors can't
+//     accidentally regress it.
+
+// TestToolProgressHeartbeat_ResetsWatchdog drives the exact pathology from
+// issue #1761: a review agent runs a long bash tool with no other frames
+// emitted, but the extension sends a tool_progress heartbeat. The watchdog
+// must be reset (not fire) for each heartbeat that arrives within the
+// timeout window.
+func TestToolProgressHeartbeat_ResetsWatchdog(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newReviewAgentSidecarWithActivityTimeout(t, sockPath, 30*time.Second)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Open a turn and start a tool call — the "before the long sleep"
+	// situation the extension sees just before kicking off `nix build`.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{
+		"type": "tool_call",
+		"id":   "call-1",
+		"name": "bash",
+		"args": map[string]any{"command": "nix build .#prism"},
+	})
+
+	// Timer registration order so far:
+	//   #1 armed by post-handshake touchActivity
+	//   #2 armed by turn_start touchActivity (replaces #1)
+	//   #3 armed by tool_call touchActivity  (replaces #2)
+	t3 := clk.WaitForTimerCount(3, 5*time.Second)
+	if t3 == nil {
+		t.Fatal("no watchdog timer after tool_call")
+	}
+
+	// Heartbeat #1 — must Stop t3 and arm t4.
+	sendJSON(t, conn, map[string]any{
+		"type": "tool_progress",
+		"id":   "call-1",
+		"name": "bash",
+	})
+	if !t3.WaitStopped(5 * time.Second) {
+		t.Fatal("tool_progress did not reset the watchdog (t3 not stopped)")
+	}
+	t4 := clk.WaitForTimerCount(4, 5*time.Second)
+	if t4 == nil || t4 == t3 {
+		t.Fatal("no fresh watchdog timer after tool_progress")
+	}
+
+	// Heartbeat #2 — must reset again.
+	sendJSON(t, conn, map[string]any{
+		"type": "tool_progress",
+		"id":   "call-1",
+		"name": "bash",
+	})
+	if !t4.WaitStopped(5 * time.Second) {
+		t.Fatal("second tool_progress did not reset the watchdog (t4 not stopped)")
+	}
+	t5 := clk.WaitForTimerCount(5, 5*time.Second)
+	if t5 == nil || t5 == t4 {
+		t.Fatal("no fresh watchdog timer after second tool_progress")
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestToolProgressHeartbeat_NotWrittenToEvents verifies tool_progress is
+// excluded from agent_events. The narrative renderer's default branch would
+// otherwise print one "tool_progress" line per heartbeat, polluting checkin
+// output and the TUI feed with internal liveness noise.
+func TestToolProgressHeartbeat_NotWrittenToEvents(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, _ := newReviewAgentSidecarWithActivityTimeout(t, sockPath, 30*time.Second)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a tool_call (must persist) bracketed by several tool_progress
+	// heartbeats (must NOT persist), then a tool_result (must persist).
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{
+		"type": "tool_call",
+		"id":   "call-1",
+		"name": "bash",
+		"args": map[string]any{"command": "nix build .#prism"},
+	})
+	for i := 0; i < 5; i++ {
+		sendJSON(t, conn, map[string]any{
+			"type": "tool_progress",
+			"id":   "call-1",
+			"name": "bash",
+		})
+	}
+	sendJSON(t, conn, map[string]any{
+		"type":    "tool_result",
+		"id":      "call-1",
+		"success": true,
+		"output":  "ok",
+	})
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var (
+		sawToolCall   bool
+		sawToolResult bool
+	)
+	for _, ev := range events {
+		if ev.Type == "tool_progress" {
+			t.Errorf("tool_progress frame leaked into agent_events (event=%+v) — must be invisible to downstream consumers", ev)
+		}
+		if ev.Type == "tool_call" {
+			sawToolCall = true
+		}
+		if ev.Type == "tool_result" {
+			sawToolResult = true
+		}
+	}
+	if !sawToolCall {
+		t.Error("tool_call event missing from agent_events (control)")
+	}
+	if !sawToolResult {
+		t.Error("tool_result event missing from agent_events (control)")
+	}
+}
+
+// TestToolProgressHeartbeat_GenuineStuckStillFires verifies the rescue path
+// is preserved: if the agent stops emitting heartbeats (PI hung, event loop
+// blocked, etc.), the watchdog still force-transitions the session to error
+// within the configured window. This is the property that makes #1728's
+// rescue logic load-bearing — the heartbeat must not be load-bearing in the
+// opposite direction (preventing fire when truly stuck).
+func TestToolProgressHeartbeat_GenuineStuckStillFires(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newReviewAgentSidecarWithActivityTimeout(t, sockPath, 30*time.Second)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive into a long tool call with a couple of heartbeats — simulates
+	// a tool running normally for a while.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{
+		"type": "tool_call",
+		"id":   "call-1",
+		"name": "bash",
+		"args": map[string]any{"command": "nix build .#prism"},
+	})
+	sendJSON(t, conn, map[string]any{"type": "tool_progress", "id": "call-1", "name": "bash"})
+	sendJSON(t, conn, map[string]any{"type": "tool_progress", "id": "call-1", "name": "bash"})
+
+	// State is now active. Timer registration:
+	//   #1 post-handshake, #2 turn_start, #3 tool_call,
+	//   #4 first tool_progress, #5 second tool_progress.
+	if got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateActive), 2*time.Second); got != string(agent.StateActive) {
+		t.Fatalf("state after tool_call: got %q, want active", got)
+	}
+	live := clk.WaitForTimerCount(5, 5*time.Second)
+	if live == nil {
+		t.Fatal("no watchdog timer after two heartbeats")
+	}
+	// Now the agent stops emitting heartbeats entirely (PI hung). Fire the
+	// live watchdog — the rescue path must fire.
+	live.Fire()
+
+	if got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second); got != string(agent.StateError) {
+		t.Fatalf("state after watchdog fire on heartbeat silence: got %q, want %q — rescue path regressed", got, agent.StateError)
+	}
+
+	conn.Close()
+	_ = wait()
+}

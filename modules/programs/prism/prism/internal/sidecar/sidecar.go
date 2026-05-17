@@ -2228,6 +2228,21 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// the existing agent_events payload format (P2.WIRE §8.1).
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
+	case "tool_progress":
+		// Mid-tool heartbeat (#1761). The PI extension emits this frame on
+		// a fixed cadence while a tool call is in flight so that long-running
+		// bash invocations (e.g. `nix build`, `go test -count=20`) don't
+		// silence the wire long enough to trip the inactivity watchdog added
+		// in #1728.
+		//
+		// touchActivity (called at the top of handlePipeFrame) already
+		// resets the watchdog — the heartbeat needs no further action here.
+		// Deliberately do NOT writeEvent: the narrative renderer's default
+		// case prints unknown event types, and we don't want the heartbeat
+		// to surface as a duplicate tool call / extra turn / visible artefact
+		// in `prism checkin`, the TUI, or any downstream consumer.
+		s.logger().Printf("sidecar: tool_progress heartbeat received (activity reset)")
+
 	case "session_status":
 		// Extract the PI session ID from the frame and record it in the DB so
 		// that prism cleanup can locate the correct session directory for
