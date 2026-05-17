@@ -34,6 +34,7 @@ import (
 const (
 	leftPaneRatio   = 0.35 // fraction of total width for the session list
 	bottomBarHeight = 3    // prompt box height in lines
+	statusBarHeight = 1    // status-line strip between events and prompt (#1767)
 	minLeftWidth    = 28
 	minRightWidth   = 20
 )
@@ -93,6 +94,38 @@ var (
 	stylePromptBox = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color(colBlue))
+
+	// styleToolCall renders the one-line tool-call "card" rows. Blue +
+	// bold makes the row visually distinct from surrounding assistant
+	// prose (styleNormal) and from indented tool_result summaries
+	// (styleDim) without using the red treatment reserved for errors.
+	// Issue #1767's renderer table requires tool_call rows be visibly
+	// distinct as one-line cards — child PR 4 replaces this with
+	// multi-line cards; the styling continues to apply to the first row.
+	styleToolCall = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colBlue)).
+			Bold(true)
+
+	// styleErrorProminent renders extension_error blocks. Bold red on
+	// the dark background is the most attention-grabbing combination
+	// available in the existing palette — extension errors are
+	// fatal-class (#1757) so the design doc renderer table calls them
+	// out as a "prominent error block". Distinct from styleError (red
+	// foreground only, no bold) so an extension_error block is visually
+	// louder than a routine permission_denied row.
+	styleErrorProminent = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(colRed)).
+				Bold(true)
+
+	// styleStatusLine renders the bottom status-line strip (#1767) with
+	// a contrasting background bar so the strip reads as a structural
+	// divider between the event pane and the prompt rather than as
+	// another line of conversation content. Foreground stays on the
+	// foreground palette so the metadata (session · state · model ·
+	// cost) is fully legible.
+	styleStatusLine = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colForeground)).
+			Background(lipgloss.Color(colBg1))
 )
 
 // --- Model ---
@@ -111,6 +144,20 @@ type sessionItem struct {
 	snap                 iris.SessionSnapshot
 	lastEventAt          time.Time
 	lastAssistantPreview string
+	// lastModel is the most recently observed model identifier on a
+	// msg_assistant event for this session — sourced from
+	// payload.MsgAssistant.Model ("providerID/modelID"). Used by the
+	// status-line strip (issue #1767) so the focused session shows its
+	// active model without re-querying the DB. Empty string when no
+	// msg_assistant event with a populated Model field has been seen.
+	lastModel string
+	// cumulativeCost is the running sum of payload.MsgAssistant.Cost
+	// values observed for this session since the TUI subscribed.
+	// Displayed by the status-line strip as the focused session's
+	// running cost; zero when no Cost-bearing event has been seen.
+	// Per-session (not per-turn) because the user wants to see total
+	// spend at a glance — per-turn cost is available in checkin output.
+	cumulativeCost float64
 }
 
 // focusArea identifies the currently focused interactive region. Tab
@@ -143,6 +190,14 @@ const (
 // Model is the top-level bubbletea model for the iris TUI.
 type Model struct {
 	client *DaemonClient
+
+	// renderer is the per-event-type dispatch table used by
+	// handleDaemonFrame to render session_event payloads into
+	// NarrativeLines (issue #1767). Constructed once in NewModel; the
+	// dispatch site does not switch on event type directly so child
+	// PR 3 (streaming) and child PR 4 (tool-call cards) can plug into
+	// this table without re-touching the model.
+	renderer *eventRenderer
 
 	// Terminal dimensions.
 	width  int
@@ -204,6 +259,7 @@ type Model struct {
 func NewModel(client *DaemonClient) Model {
 	return Model{
 		client:          client,
+		renderer:        newEventRenderer(),
 		seenRowIDs:      make(map[int64]bool),
 		toolCallByMsgID: make(map[string]int),
 	}
@@ -335,9 +391,40 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		if m.seenRowIDs[e.RowID] {
 			return m, nil
 		}
-		m.seenRowIDs[e.RowID] = true
 
-		lines := narrative.RenderEvent(e.RowID, e.EventType, e.Payload)
+		// Capture model + accumulated cost for the status-line strip
+		// (issue #1767) AFTER the dedupe check — we want
+		// snapshot-replay overlapping with a live frame to keep the
+		// sidebar timestamp ticking (above) but to NOT double-count
+		// cost or thrash lastModel. The previous block keeps the
+		// sidebar's "most recent activity" honest; this block treats
+		// model/cost as content that only updates on truly novel rows.
+		if e.EventType == "msg_assistant" {
+			if model, cost := extractAssistantModelCost(e.Payload); model != "" || cost > 0 {
+				for i, si := range m.sessions {
+					if si.snap.Name == e.SessionName {
+						if model != "" {
+							m.sessions[i].lastModel = model
+						}
+						m.sessions[i].cumulativeCost += cost
+						break
+					}
+				}
+			}
+		}
+
+		lines := m.renderer.dispatch(e.RowID, e.EventType, e.Payload)
+		if len(lines) == 0 {
+			// Suppressed (session_status, turn_start/end) or a handler
+			// declined to render. Do NOT mark the row_id as seen —
+			// future renderer extensions (e.g. tool-call cards in
+			// child PR 4) may decide to render an event type that is
+			// currently suppressed, and the dedupe map must not
+			// preempt them on replay. Suppression has no per-event
+			// side effect beyond "do not append a line".
+			return m, nil
+		}
+		m.seenRowIDs[e.RowID] = true
 		for _, line := range lines {
 			// For tool_result: find the matching tool_call and pair it.
 			if e.EventType == "tool_result" && line.MessageID != "" {
@@ -665,9 +752,16 @@ func (m Model) View() string {
 	rightPane := m.viewRightPane(rightW)
 
 	body := lipgloss.JoinHorizontal(lipgloss.Top, leftPane, rightPane)
+	// Status-line strip between the event pane and the prompt (issue
+	// #1767). Spans the full terminal width — the sidebar takes the
+	// left edge but the status line is per-program (focused-session
+	// metadata), not per-pane. Placed above the prompt because the
+	// design doc's ASCII layout puts it there: prompt is the bottom
+	// affordance, status sits between events and prompt.
+	status := m.viewStatusLine(m.width)
 	prompt := m.viewPrompt(m.width)
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, prompt)
+	return lipgloss.JoinVertical(lipgloss.Left, body, status, prompt)
 }
 
 // focusedBorderStyle returns a border style tinted with the primary accent
@@ -721,7 +815,12 @@ func (m Model) paneWidths() (int, int) {
 }
 
 func (m Model) leftPaneHeight() int {
-	h := m.height - bottomBarHeight - 2 // minus prompt box and borders
+	// Subtract the prompt box (bottomBarHeight, includes borders) AND the
+	// status-line strip (statusBarHeight, single line, no border)
+	// introduced in #1767. The -2 still accounts for the side-pane border
+	// rows. Capped at >= 1 so a tiny terminal still renders something
+	// rather than crashing on a zero-height pane.
+	h := m.height - bottomBarHeight - statusBarHeight - 2
 	if h < 1 {
 		h = 1
 	}
@@ -848,29 +947,114 @@ func (m Model) viewRightPane(width int) string {
 	return m.focusedBorderStyle(focusEvents).Width(innerW).Height(paneH).Render(content)
 }
 
-// styleEventLine applies colour to a NarrativeLine.
+// styleEventLine applies colour to a NarrativeLine, with per-event-type
+// visual treatments per the design-doc renderer table (issue #1767):
+//
+//   - state_change            — dim single line (was green; design doc
+//     calls for "Dim status line" so the pane reads as conversation
+//     content first, state-changes second).
+//   - msg_assistant + _body   — normal-foreground rich text.
+//   - msg_user + _body        — blue (operator input visually
+//     distinguished from assistant output).
+//   - tool_call               — styleToolCall: blue foreground, bold.
+//     Visually distinct from surrounding assistant text so the
+//     one-line card stands out as a tool invocation, not prose.
+//   - tool_result             — dim with the leading-indent prefix from
+//     the renderer ("    ↳ result: …") so it reads as a continuation
+//     of its parent tool_call.
+//   - extension_error + _body — prominent red-on-red block. Both lines
+//     carry the same treatment so the header + message read as one
+//     emergency unit. styleErrorProminent uses bold to break out of
+//     the surrounding muted palette — extension errors are fatal-class
+//     (#1757) and should not be possible to miss.
+//   - permission_ask / permission_denied / error — red foreground
+//     (pre-existing behaviour preserved).
+//   - unknown types           — dim fallback (also pre-existing).
 func styleEventLine(line narrative.NarrativeLine, width int) string {
 	text := truncate(line.Text, width)
 	switch line.EventType {
-	case "state_change":
-		return styleGreen.Render(padRight(text, width))
-	case "msg_assistant", "msg_assistant_body":
+	case evTypeStateChange:
+		return styleDim.Render(padRight(text, width))
+	case evTypeMsgAssistant, evTypeMsgAssistant + "_body":
 		return styleNormal.Render(padRight(text, width))
-	case "msg_user", "msg_user_body":
+	case evTypeMsgUser, evTypeMsgUser + "_body":
 		return styleBlue.Render(padRight(text, width))
-	case "tool_call":
+	case evTypeToolCall:
+		return styleToolCall.Render(padRight(text, width))
+	case evTypeToolResult:
 		return styleDim.Render(padRight(text, width))
-	case "tool_result":
-		return styleDim.Render(padRight(text, width))
-	case "permission_ask":
+	case evTypeExtensionError, evTypeExtensionErrorBody:
+		return styleErrorProminent.Render(padRight(text, width))
+	case evTypePermissionAsk:
 		return styleError.Render(padRight(text, width))
-	case "permission_denied":
+	case evTypePermDenied:
 		return styleError.Render(padRight(text, width))
 	case "error":
 		return styleError.Render(padRight(text, width))
 	default:
 		return styleDim.Render(padRight(text, width))
 	}
+}
+
+// viewStatusLine renders the bottom status-line strip (#1767). Shows
+// the focused session's state, model, and cumulative cost when
+// available. When the focused session has no captured model (no
+// msg_assistant with a Model field yet) and no cost, the strip
+// degrades to just the session name + state — deliberately not
+// rendering the literal string "<nil>" or "$0.00" placeholders, which
+// were both review-time gotchas on previous TUI work. The strip is one
+// row tall (statusBarHeight) with no border, separated from the panes
+// above by the panes' own border and from the prompt below by the
+// prompt's border.
+func (m Model) viewStatusLine(width int) string {
+	if width < 1 {
+		return ""
+	}
+	// Find the focused session. We key off m.subscribedTo because the
+	// status line follows the conversation pane's subject, not the
+	// cursor (which can transiently differ during session switching).
+	// When nothing is subscribed (empty list, pre-snapshot), render a
+	// dim placeholder so the layout doesn't collapse.
+	if m.subscribedTo == "" {
+		return styleDim.Render(padRight("  no session selected", width))
+	}
+	var focused *sessionItem
+	for i := range m.sessions {
+		if m.sessions[i].snap.Name == m.subscribedTo {
+			focused = &m.sessions[i]
+			break
+		}
+	}
+	if focused == nil {
+		return styleDim.Render(padRight("  "+m.subscribedTo, width))
+	}
+
+	// Compose: "<name> · <state> · <model> · $<cost>". Each segment is
+	// included only when it has a value, so the strip degrades from the
+	// full four-segment form (active session, msg_assistant flowed) down
+	// to two segments (session name + state) for newly-spawned sessions
+	// that haven't produced any msg_assistant yet.
+	parts := []string{focused.snap.Name}
+	if s := focused.snap.State; s != "" {
+		parts = append(parts, s)
+	}
+	if model := focused.lastModel; model != "" {
+		parts = append(parts, model)
+	}
+	if cost := focused.cumulativeCost; cost > 0 {
+		// 4 decimal places when the cost is sub-cent so a $0.0001
+		// turn doesn't collapse to "$0.00"; 2 decimals otherwise so
+		// the common case reads as "$1.23".
+		var costStr string
+		if cost < 0.01 {
+			costStr = fmt.Sprintf("$%.4f", cost)
+		} else {
+			costStr = fmt.Sprintf("$%.2f", cost)
+		}
+		parts = append(parts, costStr)
+	}
+	line := "  " + strings.Join(parts, " · ")
+	return styleStatusLine.Render(padRight(truncate(line, width), width))
 }
 
 // viewPrompt renders the bottom prompt input.
