@@ -657,6 +657,78 @@ func (s *Supervisor) handleRPCEvent(line []byte) {
 		s.logf("supervisor: session %s: agent_end", s.sess.InstanceID)
 	case "response":
 		// Command acknowledgement — log at debug level (suppressed for now).
+	case "extension_error":
+		// Issue #1757: pi's prism extension threw inside a handler
+		// (commonly session_start). This is a fatal, non-retriable failure:
+		// the same fault will fire on every restart until the extension bug
+		// is fixed. Surface it loudly in the daemon log and drive the
+		// session to StateError so subscribers and the circuit breaker see
+		// the terminal outcome.
+		s.handleExtensionError(line)
+	default:
+		// Hot-path: keep formatting cheap. Pi can emit many RPC frames per
+		// second during an active turn. Log the parsed type plus the raw
+		// line, truncated so a runaway frame cannot blow the log out.
+		s.logf("supervisor: session %s: unknown RPC type=%q raw=%s",
+			s.sess.InstanceID, generic.Type, truncateForLog(line, rpcLogMaxBytes))
+	}
+}
+
+// rpcLogMaxBytes caps the raw-frame payload included in the default-arm
+// log line. Roughly 1 KiB — enough to identify the frame in a future
+// debug session without flooding the journal if pi ever emits a megabyte
+// blob.
+const rpcLogMaxBytes = 1024
+
+// truncateForLog returns line as a string, truncated to at most max bytes
+// with a trailing ellipsis when truncation occurs. Allocates at most one
+// new string; no JSON re-encoding (the line is already a JSON-line frame
+// from pi's stdout).
+func truncateForLog(line []byte, max int) string {
+	if len(line) <= max {
+		return string(line)
+	}
+	return string(line[:max]) + "...(truncated)"
+}
+
+// handleExtensionError handles the extension_error RPC frame: logs at
+// error level with the extension path, event name, and error message;
+// transitions the supervisor to StateError with reason "extension_error";
+// and cancels the per-session context so pi exits cleanly. Restart is
+// suppressed by the killReason guard in setState (issue #1757).
+func (s *Supervisor) handleExtensionError(line []byte) {
+	var frame ExtensionErrorFrame
+	if err := json.Unmarshal(line, &frame); err != nil {
+		// Fall back to a generic error log if the frame is malformed —
+		// we still want the diagnostic surfaced, just with less detail.
+		s.logf("supervisor: session %s: ERROR extension_error (unparsable frame): %v raw=%s",
+			s.sess.InstanceID, err, truncateForLog(line, rpcLogMaxBytes))
+	} else {
+		s.logf("supervisor: session %s: ERROR extension_error event=%q extensionPath=%q error=%q",
+			s.sess.InstanceID, frame.Event, frame.ExtensionPath, frame.Error)
+	}
+
+	// Set killReason BEFORE setState so the session_end event carries the
+	// correct termination reason, and the setState guard suppresses the
+	// loop's StateFinished override that fires when ctx is cancelled below.
+	s.mu.Lock()
+	// Don't overwrite a prior kill reason — if the operator already
+	// initiated a Kill, that reason takes precedence.
+	if s.killReason == "" {
+		s.killReason = "extension_error"
+	}
+	cancel := s.cancel
+	s.mu.Unlock()
+
+	s.setState(StateError)
+
+	// Tear down pi the same way Kill does: cancel the per-session context.
+	// spawnAndRun configures cmd.Cancel to send SIGTERM, so this triggers a
+	// graceful shutdown attempt. The Start loop's ctx.Err() branch then
+	// runs setState(StateFinished), which the killReason guard suppresses
+	// (see setState).
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -782,7 +854,11 @@ func (s *Supervisor) setState(newState SessionState) {
 	if s.killReason != "" && newState == StateFinished && s.state != StateFinished {
 		// Re-map to StateError when SIGKILL was already needed; otherwise
 		// leave the SIGTERM-clean path to set StateFinished explicitly.
-		if s.killReason == "killed_sigkill" || s.killReason == "killed_no_process" {
+		// Issue #1757: extension_error is also a terminal-StateError reason
+		// — we set StateError directly from handleExtensionError and then
+		// cancel ctx to tear pi down. The loop's ctx.Err() branch must NOT
+		// override that with StateFinished.
+		if s.killReason == "killed_sigkill" || s.killReason == "killed_no_process" || s.killReason == "extension_error" {
 			s.mu.Unlock()
 			return
 		}
