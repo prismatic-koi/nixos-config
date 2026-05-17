@@ -769,10 +769,10 @@ func (cs *ClientSocket) handleSessionSpawn(ctx context.Context, w *jsonlWriter, 
 	}
 
 	// If the caller supplied an explicit session name, reject if a session
-	// with that name is already active. This is the equivalent of prism's
-	// `session already exists` guard at SpawnSession's tmux check; we run
-	// it at the daemon boundary so the CLI returns a clear error instead
-	// of a low-level conflict from the supervisor map.
+	// with that name is already active. Equivalent to prism's
+	// `session already exists` guard at the supervisor boundary; we run it
+	// at the daemon boundary so the CLI returns a clear error instead of a
+	// low-level conflict from the supervisor map.
 	if frame.SessionName != "" && cs.sessionExists(frame.SessionName) {
 		sendError(w, ClientFrameSessionSpawn,
 			fmt.Sprintf("session %q is already active", frame.SessionName))
@@ -919,7 +919,7 @@ func (cs *ClientSocket) handleReviewSpawn(ctx context.Context, w *jsonlWriter, f
 //   - zero candidates without To       → transition worker to escalated
 //     and write a self-marker event; no prompt is delivered. Returns the
 //     escalation_delivered ack with delivered=false. A human is expected
-//     to pick up the worker via tmux.
+//     to pick up the worker via `iris prompt`.
 //
 // Delivery uses the same path as prompt_deliver (deliverPrompt) so the
 // coordinator's existing event stream receives the body. A delivery_id is
@@ -975,7 +975,7 @@ func (cs *ClientSocket) handleEscalationDeliver(ctx context.Context, w *jsonlWri
 
 	if target == "" {
 		// Zero-coordinator branch: the worker is paused; no delivery happens.
-		// A human is expected to attend via tmux + `iris prompt`.
+		// A human is expected to attend via `iris prompt`.
 		_ = w.write(DaemonEscalationDeliveredFrame{
 			Type:       DaemonFrameEscalationDelivered,
 			From:       frame.From,

@@ -4,7 +4,7 @@ package iris
 //
 // Mirrors session.DefaultAgent (internal/session/session.go) so that
 // iris-managed sessions can resolve "coordinator" vs "worker" from a
-// worktree path without depending on prism's tmux-session helpers. See
+// worktree path without depending on prism's session helpers. See
 // daemon-mode-design.md §10.3 (parity checklist: "Spawn worker and
 // coordinator sessions") and the D-10 acceptance criteria on issue #1641
 // (the resolved-agent-from-branch behaviour the parity test asserts).

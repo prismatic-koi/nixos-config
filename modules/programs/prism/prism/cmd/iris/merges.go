@@ -221,10 +221,9 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 }
 
 // resolveIrisMergesCaller resolves the calling session name. Explicit
-// --session wins; otherwise we fall back to $IRIS_SESSION_NAME (set by the
-// iris supervisor on every pi child) and finally the shared
-// lookupIrisParentSession() helper which adds tmux fallback for ad-hoc
-// invocations outside a pi child.
+// --session wins; otherwise we fall back to the shared
+// lookupIrisParentSession() helper which reads $IRIS_SESSION_NAME (set
+// by the iris supervisor on every pi child) and $PRISM_SESSION_NAME.
 func resolveIrisMergesCaller(sessionFlag string) string {
 	if sessionFlag != "" {
 		return sessionFlag

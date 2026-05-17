@@ -150,9 +150,11 @@ func TestRunDaemon_FailsWhenExtensionPathMissingOnDisk(t *testing.T) {
 // to open sockets and block on signals — the helper is what gates the
 // rest of startup.
 //
-// A separate regression check (TestStartup_FailsWhenExtensionPathUnset
-// below) also exercises the startup() entry point to confirm the same
-// guard is wired into the default `iris` invocation, not just `iris daemon`.
+// (Issue #1766 removed the bare-`iris` startup() entry point — bare
+// `iris` now launches the TUI. The guard remains exercised end-to-end
+// by TestRunDaemon_FailsWhenExtensionPathUnset above; `iris daemon` is
+// now the only entry point that runs the validateExtensionPath gate at
+// process start.)
 func TestValidateExtensionPath_PassesWhenSetAndExists(t *testing.T) {
 	iristest.NewIsolated(t)
 	p := iris.ResolvePaths()
@@ -212,27 +214,3 @@ func TestValidateExtensionPath_DirectErrors(t *testing.T) {
 	})
 }
 
-// TestStartup_FailsWhenExtensionPathUnset confirms the fail-fast guard
-// is also wired into the default `iris` (no subcommand) entry point.
-// startup() is what runs when the operator types plain `iris`; it loads
-// config, runs the D-9 restore sequence, then waits for a signal. Without
-// the guard, restore would silently build a SupervisorTemplate with an
-// empty ExtensionPath and re-spawn every previously-active session
-// without --extension — the same silent-corruption mode runDaemon has.
-func TestStartup_FailsWhenExtensionPathUnset(t *testing.T) {
-	iristest.NewIsolated(t)
-	// No config file written → LoadConfig returns defaults → PIExtensionPath == "".
-
-	err := startup()
-	if err == nil {
-		t.Fatal("startup returned nil; want error")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "pi_extension_path") {
-		t.Errorf("error %q does not mention `pi_extension_path`", msg)
-	}
-	p := iris.ResolvePaths()
-	if !strings.Contains(msg, p.ConfigFile) {
-		t.Errorf("error %q does not mention config path %q", msg, p.ConfigFile)
-	}
-}

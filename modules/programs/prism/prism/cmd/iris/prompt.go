@@ -243,15 +243,13 @@ func assertSessionAcceptsPrompt(ctx context.Context, sockPath, sessionName strin
 			continue
 		}
 		if s.State == "waiting" {
-			// Mirror prism's documented message verbatim (minus the
-			// `prism checkin` hint, which has no iris equivalent yet —
-			// the C-f / C-w tmux switch hint applies in both worlds).
 			return fmt.Errorf(
 				"session %q is waiting for user input\n\n"+
 					"The agent has paused and is expecting a direct response from the user.\n"+
 					"Please switch to that session and respond there, or escalate to the user\n"+
 					"so they can address it directly.\n\n"+
-					"  (C-f or C-w)       — switch to the session in tmux",
+					"  iris %s              — open the TUI focused on this session",
+				sessionName,
 				sessionName,
 			)
 		}
