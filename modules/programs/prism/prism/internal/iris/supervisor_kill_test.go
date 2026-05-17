@@ -365,7 +365,7 @@ func countSessionEndEvents(t *testing.T, database *db.DB, sessionName string) in
 func TestSupervisorKill_ReasonStrings(t *testing.T) {
 	// If these strings change, downstream tooling (cleanup output, narrative
 	// CLI, future iris kill --reason) must be updated in lockstep.
-	want := []string{"killed_sigterm", "killed_sigkill", "clean_exit", "error", "killed_no_process"}
+	want := []string{"killed_sigterm", "killed_sigkill", "clean_exit", "error", "killed_no_process", "extension_error"}
 	for _, s := range want {
 		if !strings.Contains(s, "_") && s != "error" {
 			t.Errorf("expected snake_case kill reason, got %q", s)

@@ -107,6 +107,21 @@ type GenericFrame struct {
 	Type string `json:"type"`
 }
 
+// ExtensionErrorFrame is emitted by pi on its stdout RPC channel when an
+// extension handler throws. The supervisor treats this as a non-retriable
+// fatal error: the extension is fundamentally broken and the same fault
+// will fire on every restart until the underlying bug is fixed (issue
+// #1757).
+//
+//	{type: "extension_error", extensionPath: <path>, event: <handler>,
+//	 error: <message>}
+type ExtensionErrorFrame struct {
+	Type          string `json:"type"` // "extension_error"
+	ExtensionPath string `json:"extensionPath"`
+	Event         string `json:"event"`
+	Error         string `json:"error"`
+}
+
 // ProtocolVersion is the wire protocol version iris speaks. Must match the
 // extension's PROTOCOL_VERSION constant (currently 2, bumped in #1434).
 const ProtocolVersion = 2
