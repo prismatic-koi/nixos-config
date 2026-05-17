@@ -115,9 +115,9 @@ type ClientPromptDeliverFrame struct {
 // When To is empty the daemon auto-discovers the coordinator by scanning
 // in-memory active sessions for Role == "coordinator". Zero coordinators
 // still transitions the worker to escalated (a self-marker is written; no
-// prompt is delivered — the issue body documents this is the
-// human-picks-up-via-tmux path). Multiple coordinators with no To set is
-// rejected with an error listing the candidates.
+// prompt is delivered — a human is expected to pick up the worker via
+// `iris prompt`). Multiple coordinators with no To set is rejected with
+// an error listing the candidates.
 //
 // DeliveryID, when non-empty, is forwarded to the underlying prompt path
 // so the coordinator's harness can dedup retries. The daemon mints one

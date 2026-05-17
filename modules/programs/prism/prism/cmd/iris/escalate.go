@@ -37,7 +37,7 @@ package main
 //   - zero                                                  → the worker
 //     still transitions to `escalated` and a self-marker event is written;
 //     no prompt is delivered. A human is expected to attend the session
-//     manually via tmux.
+//     manually via `iris prompt`.
 //
 // State machine summary:
 //
@@ -107,7 +107,7 @@ Auto-discovery rules:
     print the candidate list. The worker stays in active state.
   - zero coordinator sessions                  → still transition to
     escalated and write a self-marker event; no prompt is delivered.
-    A human is expected to attend the worker via tmux.
+    A human is expected to attend the worker via 'iris prompt'.
 
 Three input variants are accepted (mirrors 'iris prompt'):
 

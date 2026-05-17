@@ -513,16 +513,12 @@ func TestIrisMergesList_InvalidSession(t *testing.T) {
 	SetTestDBPath(iso.Paths.DB)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	// Clear env var so resolveIrisMergesCaller returns "".
+	// Clear env var so resolveIrisMergesCaller returns "". With the tmux
+	// fallback removed (issue #1766), lookupIrisParentSession now only
+	// consults $IRIS_SESSION_NAME and $PRISM_SESSION_NAME; clearing both
+	// is sufficient to reach the "cannot determine calling session" path.
 	t.Setenv("IRIS_SESSION_NAME", "")
 	t.Setenv("PRISM_SESSION_NAME", "")
-	// Defensively clear tmux env so lookupIrisParentSession doesn't pick up
-	// the host tmux session inside CI. Clearing $TMUX alone is insufficient
-	// — `tmux display-message` still walks its socket directory and finds a
-	// running server (#1733) — so we also redirect tmux.TmuxBin to a
-	// non-existent path via isolateHostTmux.
-	t.Setenv("TMUX", "")
-	isolateHostTmux(t)
 
 	_, listCmd, _ := newMergesTestCmds(t)
 	var buf bytes.Buffer

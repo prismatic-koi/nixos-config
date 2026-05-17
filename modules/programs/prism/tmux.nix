@@ -10,19 +10,6 @@ let
   isDarwin = pkgs.stdenv.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
-  # iris binary path. Two consumers share this path:
-  #   - the prefix+i context-switcher popup binding (issue #1671); and
-  #   - the tmux status-right iris segment (issue #1672), which calls
-  #     `iris sessions status --waiting --tmux-format` alongside the prism
-  #     equivalent during the iris coexistence window.
-  # The iris module's `nx.programs.iris.enable` gates whether the daemon
-  # runs, but both tmux integrations are wired unconditionally: hosts that
-  # do not enable iris see an empty status-right segment (the command
-  # gracefully degrades when the daemon socket is absent) and a popup
-  # binding that fails fast if pressed. Acceptable for the coexistence
-  # window — neither costs anything visible until the user opts in.
-  irisPkg = pkgs.callPackage ../../../pkgs/iris.nix { };
-  iris = "${irisPkg}/bin/iris";
 
   # Sandboxed-pane guard for tmux if-shell.
   #
@@ -135,12 +122,11 @@ in
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
               # set -g status-right "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}#{=21:pane_title} "
-              # status-right composition (#1672): prism segment first, then the
-              # iris segment, then the hostname. Both segments emit empty
-              # strings when their respective daemons are down or have nothing
-              # waiting, so the visible bar collapses cleanly to just `#h `
-              # in the steady state.
-              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(${iris} sessions status --waiting --tmux-format)#h "
+              # status-right composition: prism segment first, then the
+              # hostname. The prism segment emits an empty string when its
+              # daemon is down or has nothing waiting, so the visible bar
+              # collapses cleanly to just `#h ` in the steady state.
+              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#h "
               set -g status-style 'bg=${bg1} fg=${secondary}'
               set -g message-style 'bg=${primary} fg=${bg1}'
               set -g mode-style 'bg=${bg3} fg=${foreground}'
@@ -211,15 +197,6 @@ in
               # context switcher popup (C-f)
               bind -n C-f display-popup -E -w 80% -h 80% -b single "${prism} switch"
 
-              # iris context-switcher popup (prefix+i, issue #1671).
-              # Mirrors the C-f popup geometry (80% x 80%, -b single, -E to
-              # close on child exit). C-f stays bound to `prism switch` for
-              # the iris coexistence window; the cutover to a shared key
-              # happens at D-11. -d "#{pane_current_path}" so `iris switch`'s
-              # "[+] spawn new" flow defaults its worktree prompt to the
-              # caller pane's directory.
-              bind i display-popup -E -d "#{pane_current_path}" -w 80% -h 80% -b single "${iris} switch"
-
               # C-w: run a fresh dashboard process directly in a popup.
               # Passes --caller-session so the "you are here" indicator works
               # correctly. The popup runs inside the caller's own client, so no
@@ -233,29 +210,6 @@ in
               # to wherever it came from (no global options needed).
               bind-key D run-shell \
                 'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "prism-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t prism-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds prism-dashboard -n dashboard "${prism} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t prism-dashboard; fi'
-
-              # --- Iris dashboard keybindings (issue #1703) ---
-              #
-              # C-q: ephemeral iris dashboard popup. Mirrors the prism C-w
-              # popup geometry (80% x 60%, -b single, -E to close on child
-              # exit). Different leader key from C-w so both surfaces remain
-              # usable side by side during the iris coexistence window. The
-              # --caller-session flag receives the current tmux session name
-              # via display-message so the "you are here" ◆ indicator works
-              # without any additional plumbing.
-              bind -n C-q display-popup -E -w 80% -h 60% -b single \
-                "${iris} dashboard --popup --caller-session \"$(${pkgs.tmux}/bin/tmux display-message -p '#S')\""
-
-              # prefix+I: toggle the persistent iris-dashboard session.
-              # Iris uses 'I' (uppercase) here because prism already binds
-              # the uppercase 'D' to its own persistent dashboard and iris
-              # already binds the lowercase 'i' to the context switcher
-              # (#1684). The recipe mirrors the prism D binding: if already
-              # in the iris-dashboard session, switch-client -l returns the
-              # client to its previous location; otherwise ensure the
-              # session exists and switch to it.
-              bind-key I run-shell \
-                'if [ "$(${pkgs.tmux}/bin/tmux display-message -p "#S")" = "iris-dashboard" ]; then ${pkgs.tmux}/bin/tmux switch-client -l; else ${pkgs.tmux}/bin/tmux has-session -t iris-dashboard 2>/dev/null || ${pkgs.tmux}/bin/tmux new-session -ds iris-dashboard -n dashboard "${iris} dashboard"; ${pkgs.tmux}/bin/tmux switch-client -t iris-dashboard; fi'
 
               # toggle to/from term window (C-Space)
               unbind C-Space

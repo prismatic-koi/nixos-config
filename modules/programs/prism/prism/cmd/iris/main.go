@@ -2,17 +2,21 @@
 //
 // D-3 adds: spawn, harness-socket dispatch, tool override registration.
 // D-6 adds: client IPC socket (iris.sock), session fan-out, subscribe/replay.
-// D-8 adds: bubbletea TUI (iris tui) — session list + live event stream + prompt delivery.
-// Issue #1668: `iris spawn` routes through the running daemon (no in-process supervisor).
-// See docs/daemon-mode-design.md §3 and §4 for the architecture.
+// D-8 adds: bubbletea TUI — session list + live event stream + prompt delivery.
+// Issue #1668: `iris spawn` routes through the running daemon (no in-process
+// supervisor). Issue #1766: bare `iris` IS the TUI; standalone `iris tui` /
+// `iris dashboard` / `iris switch` subcommands have been removed.
+// See docs/daemon-mode-design.md §3 and §4 for the architecture, and
+// docs/iris-tui-design.md for the one-program TUI design.
 //
 // Usage:
 //
+//	iris                                        — open the bubbletea TUI
+//	iris <session-name>                         — open the TUI focused on the named session
 //	iris --version                              — print version string and exit 0
 //	iris version                                — same, as a subcommand
 //	iris daemon                                 — start the full daemon (client socket + sessions)
 //	iris spawn --worktree <path> [--role <role>] — ask the running daemon to spawn a pi session
-//	iris tui [--socket <path>]                  — open the bubbletea TUI
 //	iris sessions list [--json]                 — list daemon-tracked sessions (human or JSON)
 //	iris sessions status [--json]               — print session counts by state
 //	iris prompt <session> --prompt <text>       — deliver a prompt to a running session
@@ -34,6 +38,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/iris"
+	"github.com/prismatic-koi/prism/internal/iris/tui"
 )
 
 // irisVersion is the version string for the iris binary. It is set to the
@@ -57,17 +62,38 @@ func main() {
 	}
 }
 
-var rootCmd = &cobra.Command{
-	Use:     "iris",
-	Short:   "Iris — daemon-mode successor to prism (codename, D-2+)",
-	Version: irisVersion,
+// rootSocketPath is the --socket override for the bare-iris TUI launch
+// path. Defaults to the canonical iris daemon socket when empty.
+var rootSocketPath string
 
-	// The default run opens the DB and loads config so that a plain `iris`
-	// invocation exercises the startup path. --version is handled by cobra
-	// before RunE is called.
+var rootCmd = &cobra.Command{
+	Use:   "iris [session-name]",
+	Short: "Iris — daemon-mode successor to prism; bare `iris` opens the TUI",
+	Long: `iris is the daemon-mode successor to prism. With no arguments it opens the
+bubbletea TUI focused on the most recently active session. Pass a single
+positional session name to open the TUI focused on that session — if no
+session matches, the TUI still opens (with no initial focus).
+
+Subcommands (used by scripts and agents):
+  spawn, prompt, checkin, cleanup, logs, merge, merges, review, reviews,
+  escalate, investigate, feedback, archive, sessions list, sessions status,
+  daemon, version.
+
+Note: if a session happens to share its name with a subcommand (e.g. a
+session literally named "spawn"), cobra resolves the subcommand first.
+In practice this is a non-issue because real session names follow the
+<repo>/<branch> convention and never collide with subcommand verbs.`,
+	Version: irisVersion,
+	Args:    cobra.MaximumNArgs(1),
+
+	// Bare `iris` (no subcommand) launches the bubbletea TUI program.
+	// Optional positional arg names the session to focus on first. --version
+	// is handled by cobra before RunE is called.
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return startup()
+		return runRootTUI(args)
 	},
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
@@ -75,7 +101,29 @@ func init() {
 	// spawnCmd, sessionsCmd and promptCmd are registered in their own files'
 	// init() functions so each subcommand and its flags live together.
 	rootCmd.AddCommand(daemonCmd)
-	rootCmd.AddCommand(tuiCmd)
+	rootCmd.Flags().StringVar(&rootSocketPath, "socket", "", "Path to the iris daemon socket (default: ~/.local/state/iris/iris.sock)")
+}
+
+// runRootTUI is the RunE for bare `iris [session-name]`. It launches the
+// bubbletea TUI, optionally pre-focused on the named session. An unknown
+// session name is not an error — the TUI opens normally and the user can
+// pick from the picker overlay (C-f).
+func runRootTUI(args []string) error {
+	sockPath := rootSocketPath
+	if sockPath == "" {
+		p := iris.ResolvePaths()
+		sockPath = p.Sock
+	}
+
+	initialSession := ""
+	if len(args) == 1 {
+		initialSession = args[0]
+	}
+
+	if err := tui.RunFocused(sockPath, initialSession); err != nil {
+		return fmt.Errorf("iris: %w", err)
+	}
+	return nil
 }
 
 // versionCmd provides `iris version` as an explicit subcommand in addition to
@@ -117,77 +165,6 @@ func validateExtensionPath(cfg iris.Config, configPath string) error {
 			cfg.PIExtensionPath, err, configPath,
 		)
 	}
-	return nil
-}
-
-// startup runs the iris initialisation sequence: resolve paths, load config,
-// open the DB, run the D-9 restore sequence, then enter the daemon loop.
-func startup() error {
-	p := iris.ResolvePaths()
-
-	// Load config — absent file returns defaults, not an error.
-	cfg, err := iris.LoadConfig(p.ConfigFile)
-	if err != nil {
-		return fmt.Errorf("iris: load config: %w", err)
-	}
-
-	// Fail-fast if the prism extension is not wired (issue #1753). Without
-	// the extension, every pi child the daemon spawns runs without
-	// --extension and corrupts the session silently. Refusing to come up at
-	// all is the honest signal — systemd's Restart=always will retry, but
-	// the cause is visible in `journalctl --user -u iris`.
-	if err := validateExtensionPath(cfg, p.ConfigFile); err != nil {
-		log.Print(err.Error())
-		return err
-	}
-
-	// Open (or create) the iris DB.
-	db, err := iris.OpenDB(p.DB)
-	if err != nil {
-		return fmt.Errorf("iris: open db: %w", err)
-	}
-	defer db.Close()
-
-	// Ensure the run directory exists before attempting restore.
-	if err := os.MkdirAll(p.RunDir, 0o700); err != nil {
-		return fmt.Errorf("iris: create run dir: %w", err)
-	}
-
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-
-	// D-9: run the daemon-restart restore sequence. This detects orphaned
-	// tool calls (writing synthetic tool_results), reconciles sessions that
-	// were in spawning state (marking them error), and re-spawns sessions
-	// that were active when the daemon died.
-	extensionPath := cfg.PIExtensionPath
-	restoreCfg := iris.RestoreConfig{
-		Database: db,
-		RunDir:   p.RunDir,
-		SupervisorTemplate: iris.SupervisorConfig{
-			PIBinaryPath:     cfg.PIBinaryPath,
-			ExtensionPath:    extensionPath,
-			RestartThreshold: cfg.RestartThreshold,
-			RunDir:           p.RunDir,
-			LogDir:           p.LogDir,
-			Database:         db,
-		},
-	}
-	restoreResult, err := iris.RunRestore(ctx, restoreCfg)
-	if err != nil {
-		// Non-fatal: log and continue.
-		fmt.Fprintf(os.Stderr, "[iris] restore: %v\n", err)
-	} else {
-		fmt.Printf("[iris] restore complete: spawning_errors=%d orphans=%d restored=%d skipped=%d\n",
-			restoreResult.SpawningMarkError,
-			restoreResult.OrphansWritten,
-			restoreResult.SessionsRestored,
-			restoreResult.SessionsSkipped,
-		)
-	}
-
-	fmt.Println("iris daemon initialised (D-9). Use 'iris daemon' to start the full daemon, or 'iris spawn --worktree <path>' to test a session.")
-	<-ctx.Done()
 	return nil
 }
 
