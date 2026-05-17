@@ -40,12 +40,13 @@ func ModelCursor(m Model) int {
 // Overlay kind constants re-exported for tests. See overlay.go for the
 // canonical names — these mirror them 1:1.
 const (
-	OverlayNone          = int(overlayNone)
-	OverlayPicker        = int(overlayPicker)
-	OverlaySpawnWorktree = int(overlaySpawnWorktree)
-	OverlaySpawnRole     = int(overlaySpawnRole)
-	OverlayDashboard     = int(overlayDashboard)
-	OverlayHelp          = int(overlayHelp)
+	OverlayNone              = int(overlayNone)
+	OverlayPicker            = int(overlayPicker)
+	OverlaySpawnWorktree     = int(overlaySpawnWorktree)
+	OverlaySpawnRole         = int(overlaySpawnRole)
+	OverlayDashboard         = int(overlayDashboard)
+	OverlayHelp              = int(overlayHelp)
+	OverlayCoordinatorEvents = int(overlayCoordinatorEvents)
 )
 
 // ModelOverlay returns the current overlay kind as an int, matching one of
@@ -89,4 +90,35 @@ func ModelSessionLastAssistantPreview(m Model, i int) string {
 		return ""
 	}
 	return m.sessions[i].lastAssistantPreview
+}
+
+// ModelCoordinatorEventCount returns the number of coordinator events
+// the model has accumulated (escalations + merge-queue notifications,
+// issue #1772). Used by tests to assert the accumulator wiring without
+// reaching inside the private slice.
+func ModelCoordinatorEventCount(m Model) int {
+	return len(m.coordinatorEvents)
+}
+
+// ModelCoordinatorEventSummaryAt returns the human-readable summary
+// string of the coordinator event at the given index, or "" when out
+// of range. Tests use this to assert that an escalation or merge-queue
+// notification flowed into the buffer with the expected payload.
+func ModelCoordinatorEventSummaryAt(m Model, i int) string {
+	if i < 0 || i >= len(m.coordinatorEvents) {
+		return ""
+	}
+	return m.coordinatorEvents[i].summary
+}
+
+// ModelErrorMsg returns the current transient errorMsg (e.g. the
+// "not applicable" message a C-o keypress sets on a non-coordinator
+// session). Empty when no error is set.
+func ModelErrorMsg(m Model) string { return m.errorMsg }
+
+// IsMergeQueueNotificationText re-exports the package-private merge-
+// queue text matcher so coordinator_test.go can drive its full
+// keyword/prefix table without duplicating the helper.
+func IsMergeQueueNotificationText(s string) bool {
+	return isMergeQueueNotificationText(s)
 }

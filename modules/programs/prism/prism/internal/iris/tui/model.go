@@ -126,6 +126,38 @@ var (
 	styleStatusLine = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colForeground)).
 			Background(lipgloss.Color(colBg1))
+
+	// styleEscalation is the prominent treatment for session.escalated
+	// rows in the conversation pane when the focused session is a
+	// coordinator (issue #1772). Bold red foreground on the
+	// yellow/highlight background mirrors the visual weight of
+	// styleErrorProminent (extension errors) but with a different
+	// background so the operator can distinguish "a worker hit an
+	// extension error" from "a worker has called for help". The
+	// styling is applied via a guarded path (m.focusedIsCoordinator)
+	// so non-coordinator sessions render escalations with the standard
+	// fallback treatment — the prominence is a coordinator-only signal.
+	styleEscalation = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colRed)).
+			Background(lipgloss.Color(colPrimary)).
+			Bold(true)
+
+	// styleMergeQueue is the prominent treatment for merge-queue
+	// notification rows when the focused session is a coordinator.
+	// Bold green foreground (the prism palette's "success" / "merged"
+	// colour) on the bg1 background distinguishes a merge-queue row
+	// from both styleEscalation (red on yellow) and ordinary msg_user
+	// rows (blue, no background). The distinction is intentional even
+	// for failure notifications ("PR #N CI failed") because the
+	// overlay overall is "merge-queue news", and the operator's
+	// reading flow is: spot the row → read the verb. We do not paint
+	// failed-merge rows red here because the row's content already
+	// names the failure, and styling the entire family one way keeps
+	// the visual vocabulary minimal.
+	styleMergeQueue = lipgloss.NewStyle().
+			Foreground(lipgloss.Color(colGreen)).
+			Background(lipgloss.Color(colBg1)).
+			Bold(true)
 )
 
 // --- Model ---
@@ -179,12 +211,13 @@ const (
 type overlayKind int
 
 const (
-	overlayNone          overlayKind = iota
-	overlayPicker                    // Ctrl+F: session picker / spawn-new
-	overlaySpawnWorktree             // step 2 of spawn flow: typing the worktree path
-	overlaySpawnRole                 // step 3 of spawn flow: typing the role
-	overlayDashboard                 // Ctrl+W: multi-session dashboard view
-	overlayHelp                      // ?: keybindings help
+	overlayNone              overlayKind = iota
+	overlayPicker                        // Ctrl+F: session picker / spawn-new
+	overlaySpawnWorktree                 // step 2 of spawn flow: typing the worktree path
+	overlaySpawnRole                     // step 3 of spawn flow: typing the role
+	overlayDashboard                     // Ctrl+W: multi-session dashboard view
+	overlayHelp                          // ?: keybindings help
+	overlayCoordinatorEvents             // Ctrl+O: coordinator-only escalations + merge-queue events (#1772)
 )
 
 // Model is the top-level bubbletea model for the iris TUI.
@@ -253,6 +286,36 @@ type Model struct {
 
 	// focus is the currently focused interactive region (Tab rotates it).
 	focus focusArea
+
+	// coordinatorEvents is the in-memory accumulator for the
+	// coordinator-events overlay (issue #1772 child 7). Populated by
+	// handleDaemonFrame whenever a session.escalated event arrives, or
+	// when a msg_user event's text matches
+	// isMergeQueueNotificationText. The buffer is bounded to
+	// coordinatorEventBufferCap; older entries are dropped from the
+	// front when capacity is exceeded.
+	//
+	// Routing note (the daemon-side companion of this feature):
+	// session.escalated rows are Publish()ed by
+	// ClientSocket.writeSessionEscalatedEvent on BOTH the worker's
+	// stream AND the target coordinator's stream (the secondary
+	// Publish was added alongside this TUI work, also under #1772).
+	// That means a TUI focused on the coordinator receives the event
+	// in real time without subscribing to every worker. There is
+	// still exactly one DB audit row per escalation — the second
+	// Publish is delivery-only.
+	//
+	// Sourcing note (and the reason this is not a DB query): the TUI's
+	// TestNoDBImport invariant forbids importing internal/db. The
+	// design-doc guidance for this child suggests pulling history from
+	// agent_events directly, but that would require a new daemon frame
+	// to ferry the rows across the socket — out of scope for this PR.
+	// In-memory accumulation gives correct behaviour for events that
+	// arrive while the TUI is running; a future PR can add a daemon
+	// frame for cross-session historic queries when one is needed for
+	// long-running operator workflows. The bounded buffer is the
+	// single point that limits memory exposure.
+	coordinatorEvents []coordinatorEvent
 }
 
 // NewModel creates the iris TUI model.
@@ -414,6 +477,21 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		}
 
 		lines := m.renderer.dispatch(e.RowID, e.EventType, e.Payload)
+
+		// Coordinator-events accumulator (issue #1772 child 7).
+		// session.escalated rows and msg_user rows that match the
+		// merge-queue notification text are appended to the per-Model
+		// coordinatorEvents buffer regardless of which session is
+		// focused, so the coordinator-events overlay can list them. The
+		// merge-queue case also re-labels the rendered NarrativeLine's
+		// EventType to evTypeMergeQueueNotification so styleEventLine can
+		// apply the distinct visual treatment when the focused session
+		// is a coordinator. We do the re-label in place rather than via
+		// a second renderer pass to keep the merge-queue handling
+		// orthogonal to the dispatch table — the renderer.go handler
+		// set stays focused on real agent_events.type values.
+		m.accumulateCoordinatorEvent(e, lines)
+
 		if len(lines) == 0 {
 			// Suppressed (session_status, turn_start/end) or a handler
 			// declined to render. Do NOT mark the row_id as seen —
@@ -545,6 +623,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleOverlayKey(msg)
 	}
 
+	// Clear any transient errorMsg from a previous keystroke (e.g. a
+	// C-o on a non-coordinator session, #1772) unless this very key is
+	// the one that sets it. Without this, an error message would stick
+	// around indefinitely until an overlay opened/closed it. We clear
+	// BEFORE the switch so the per-case body can re-set errorMsg if it
+	// needs to; clearing afterwards would wipe the case's own message.
+	if msg.String() != "ctrl+o" {
+		m.errorMsg = ""
+	}
+
 	switch msg.String() {
 	case "ctrl+c", "q":
 		return m, tea.Quit
@@ -562,6 +650,26 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+w":
 		// Open the multi-session dashboard overlay.
 		m.overlay = overlayDashboard
+		return m, nil
+
+	case "ctrl+o":
+		// Open the coordinator-events overlay (issue #1772). We use
+		// C-o rather than the issue's suggested C-e because C-e is
+		// already bound to "end of line" in the prompt input (see the
+		// `case "end", "ctrl+e"` arm below). C-o is mnemonic for
+		// "overlay of c\u00f6ordinator events" and is otherwise unused by
+		// either the main key handler or the overlay handlers.
+		//
+		// On a non-coordinator session this is a soft no-op: we set
+		// errorMsg so the operator sees a clear "not applicable" line
+		// rather than wondering why the keypress did nothing. The
+		// errorMsg is rendered by viewPrompt's error path and cleared
+		// the next time any overlay opens or closes.
+		if !m.focusedIsCoordinator() {
+			m.errorMsg = "C-o: coordinator-events overlay only applies to coordinator sessions"
+			return m, nil
+		}
+		m.overlay = overlayCoordinatorEvents
 		return m, nil
 
 	case "?":
@@ -924,8 +1032,9 @@ func (m Model) viewRightPane(width int) string {
 		if start < 0 {
 			start = 0
 		}
+		coord := m.focusedIsCoordinator()
 		for _, line := range m.eventLines[start:end] {
-			rendered := styleEventLine(line, innerW)
+			rendered := styleEventLine(line, innerW, coord)
 			rows = append(rows, rendered)
 		}
 	}
@@ -970,7 +1079,16 @@ func (m Model) viewRightPane(width int) string {
 //   - permission_ask / permission_denied / error — red foreground
 //     (pre-existing behaviour preserved).
 //   - unknown types           — dim fallback (also pre-existing).
-func styleEventLine(line narrative.NarrativeLine, width int) string {
+//
+// The `coordinator` flag (issue #1772 child 7) gates the prominent
+// rendering of session.escalated and merge-queue notification rows.
+// On a non-coordinator session those rows fall through to their
+// non-prominent treatments (default dim fallback for
+// session.escalated; ordinary msg_user blue for merge-queue rows that
+// have NOT been re-labelled). On a coordinator session the two
+// signal classes get their dedicated bold/coloured/backgrounded
+// styles so they read as urgent attention items.
+func styleEventLine(line narrative.NarrativeLine, width int, coordinator bool) string {
 	text := truncate(line.Text, width)
 	switch line.EventType {
 	case evTypeStateChange:
@@ -989,6 +1107,26 @@ func styleEventLine(line narrative.NarrativeLine, width int) string {
 		return styleError.Render(padRight(text, width))
 	case evTypePermDenied:
 		return styleError.Render(padRight(text, width))
+	case evTypeSessionEscalated:
+		if coordinator {
+			return styleEscalation.Render(padRight(text, width))
+		}
+		// Non-coordinator sessions still see the row (a worker
+		// viewing its own escalated event), just not the prominent
+		// coordinator-attention treatment. Use styleError so the
+		// row still reads as significant without the loud
+		// background.
+		return styleError.Render(padRight(text, width))
+	case evTypeMergeQueueNotification:
+		if coordinator {
+			return styleMergeQueue.Render(padRight(text, width))
+		}
+		// Non-coordinator: should be unreachable because the
+		// re-label only fires when accumulateCoordinatorEvent
+		// recognises a merge-queue text on a session named
+		// `<repo>@<main>`. Fall back to msg_user styling defensively
+		// so an out-of-band frame does not crash the renderer.
+		return styleBlue.Render(padRight(text, width))
 	case "error":
 		return styleError.Render(padRight(text, width))
 	default:
@@ -1094,7 +1232,17 @@ func (m Model) viewPrompt(width int) string {
 
 	inputLine := labelRendered + before + caretStr + after
 
-	help := styleDim.Render("  ↑/↓ session  enter send  pgup/pgdn scroll  C-f picker  C-w dash  ? help  q quit")
+	// When the model has a transient errorMsg (e.g. a C-o keypress on
+	// a non-coordinator session — #1772), surface it in the help row
+	// so the operator sees feedback without an additional overlay.
+	// The styling matches the picker overlay's errorMsg row (warning
+	// glyph + red foreground) for visual consistency.
+	var help string
+	if m.errorMsg != "" {
+		help = styleError.Render("  ⚠ " + m.errorMsg)
+	} else {
+		help = styleDim.Render("  ↑/↓ session  enter send  pgup/pgdn scroll  C-f picker  C-w dash  ? help  q quit")
+	}
 
 	// Prompt box also gets a focus tint when Tab has parked focus on it.
 	box := stylePromptBox

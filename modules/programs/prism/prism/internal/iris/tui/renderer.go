@@ -73,6 +73,27 @@ const (
 	evTypeTurnStart      = "turn_start"
 	evTypeTurnEnd        = "turn_end"
 
+	// evTypeSessionEscalated is the agent_events.type value written by
+	// ClientSocket.writeSessionEscalatedEvent (internal/iris/client_socket.go)
+	// when a worker calls `iris escalate` / `prism escalate`. The row
+	// lands on the WORKER session's event stream (not the coordinator's),
+	// so it surfaces in the coordinator-events overlay rather than the
+	// coordinator's own conversation pane. The renderer still styles
+	// the row prominently when a worker's stream is being viewed — the
+	// styling for the line is independent of the cross-session overlay.
+	evTypeSessionEscalated = "session.escalated"
+
+	// evTypeMergeQueueNotification is a SYNTHETIC EventType label, NOT a
+	// real agent_events.type value. The merge-queue watcher delivers
+	// notifications as prompt text (internal/mergequeue/watcher.go); the
+	// receiving coordinator's harness persists them as `msg_user` rows.
+	// The TUI re-labels those rows after dispatch (see
+	// handleDaemonFrame) when their text matches
+	// isMergeQueueNotificationText, so styleEventLine can apply the
+	// distinct merge-queue treatment without mis-styling unrelated
+	// msg_user rows.
+	evTypeMergeQueueNotification = "merge_queue_notification"
+
 	// evTypeExtensionErrorBody is a synthetic EventType label attached to
 	// the second line of an extension_error block (the error-message
 	// body). The visual styler uses this label to render the body with
@@ -125,8 +146,67 @@ func newEventRenderer() *eventRenderer {
 	r.handlers[evTypeSessionStatus] = renderSuppressed
 	r.handlers[evTypeTurnStart] = renderSuppressed
 	r.handlers[evTypeTurnEnd] = renderSuppressed
+	r.handlers[evTypeSessionEscalated] = renderSessionEscalated
 	r.fallback = renderFallback
 	return r
+}
+
+// renderSessionEscalated renders the session.escalated bus event as a
+// single prominent row. The writer is
+// ClientSocket.writeSessionEscalatedEvent in
+// internal/iris/client_socket.go; post-#1772 it Publish()es the event
+// on BOTH the escalating worker's stream (primary, audit-row anchor)
+// AND the target coordinator's stream (fan-out so a coordinator-
+// focused subscriber receives the event without subscribing to every
+// worker). This handler is called for either arrival path — the
+// row text reads the same in both cases because it sources the
+// worker name from the payload's `source` field rather than from the
+// event-frame envelope's SessionName. handleDaemonFrame pairs this
+// with a parallel append into Model.coordinatorEvents so the
+// coordinator-events overlay can list the event regardless of which
+// session is currently focused.
+//
+// On payload parse failure we still render a header row so the
+// operator sees that an escalation arrived — a silent drop on JSON
+// shape change has cost us debug-hunts before (cf. #1764).
+func renderSessionEscalated(rowID int64, payloadJSON string) []narrative.NarrativeLine {
+	var p struct {
+		Source     string `json:"source"`
+		Target     string `json:"target"`
+		Prompt     string `json:"prompt"`
+		DeliveryID string `json:"delivery_id"`
+	}
+	_ = json.Unmarshal([]byte(payloadJSON), &p)
+
+	preview := strings.TrimSpace(p.Prompt)
+	if preview == "" {
+		preview = "(no prompt body)"
+	}
+	// Compress to the first non-empty line; the conversation-pane row
+	// is one line and a multi-line escalation prompt would render as a
+	// concatenated mess otherwise.
+	for _, line := range strings.Split(preview, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			preview = line
+			break
+		}
+	}
+
+	var text string
+	switch {
+	case p.Target != "":
+		text = fmt.Sprintf("[%s] \u26a0 escalated to %s: %s", ts(), p.Target, preview)
+	default:
+		// Zero-coordinator branch (writeSessionEscalatedEvent allows
+		// target="" — see client_socket.go: "zero candidates without To
+		// → transition worker to escalated"). Render without a target
+		// rather than printing an empty arrow.
+		text = fmt.Sprintf("[%s] \u26a0 escalated (no coordinator): %s", ts(), preview)
+	}
+	return []narrative.NarrativeLine{
+		{Text: text, EventType: evTypeSessionEscalated, RowID: rowID},
+	}
 }
 
 // dispatch routes one event triple to the appropriate handler. Unknown

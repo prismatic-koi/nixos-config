@@ -1098,6 +1098,33 @@ func (cs *ClientSocket) writeSessionEscalatedEvent(from, to, prompt, deliveryID 
 		EventType:   "session.escalated",
 		Payload:     string(payload),
 	})
+	// Also fan out to subscribers of the target coordinator session so a
+	// coordinator-focused consumer (e.g. the iris TUI's coordinator-events
+	// overlay, issue #1772) sees the escalation arrive in real time without
+	// needing a separate subscription to every worker. We do NOT write a
+	// second audit row — there is exactly one DB record per escalation,
+	// on the worker's stream. This second Publish is delivery-only,
+	// matching the analogous fan-out for prompt_deliver where the
+	// coordinator's harness persists the prompt body on the coordinator's
+	// stream while the audit row stays with the worker.
+	//
+	// The published frame carries SessionName=to so a TUI subscribed only
+	// to the coordinator routes it through the coordinator's event
+	// handler; the payload's `source` field still names the escalating
+	// worker so the consumer can render the escalation as "<worker>
+	// \u2192 <coord>".
+	//
+	// Skipped when to=="" (zero-coordinator branch): no target exists,
+	// so there are no coordinator subscribers to notify; the worker's
+	// stream remains the only delivery surface, as it is today.
+	if to != "" && to != from {
+		cs.Publish(EventPublication{
+			SessionName: to,
+			RowID:       rowID,
+			EventType:   "session.escalated",
+			Payload:     string(payload),
+		})
+	}
 }
 
 // --- Subscriber set management ---

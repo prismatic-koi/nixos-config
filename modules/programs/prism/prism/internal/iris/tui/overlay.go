@@ -80,10 +80,10 @@ type pickerState struct {
 // role). When the user submits the role prompt we send a session_spawn
 // frame to the daemon with both values. Reset by closeOverlay.
 type spawnState struct {
-	worktree     []rune
-	worktreeCur  int
-	role         []rune
-	roleCur      int
+	worktree    []rune
+	worktreeCur int
+	role        []rune
+	roleCur     int
 	// defaultRole holds the ResolveAgent-derived role suggestion shown as
 	// the placeholder. We pre-populate the role input with this value when
 	// transitioning from worktree to role, mirroring `iris switch`.
@@ -213,6 +213,8 @@ func (m Model) handleOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDashboardKey(msg)
 	case overlayHelp:
 		return m.handleHelpKey(msg)
+	case overlayCoordinatorEvents:
+		return m.handleCoordinatorEventsKey(msg)
 	}
 	return m, nil
 }
@@ -426,6 +428,21 @@ func (m Model) handleHelpKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleCoordinatorEventsKey: q/esc dismiss the coordinator-events
+// overlay (issue #1772 child 7). The overlay is read-only for this
+// child PR \u2014 the scope is display, not action (no "ack escalation" or
+// "re-enqueue merge" affordances yet). Future work can add navigation
+// (PgUp/PgDn) and per-row drill-down; today any key other than
+// q/esc/ctrl+c is a deliberate no-op so an accidental keystroke does
+// not produce a confusing partial behaviour.
+func (m Model) handleCoordinatorEventsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.closeOverlay()
+	}
+	return m, nil
+}
+
 // ---------------------------------------------------------------------------
 // Overlay rendering
 // ---------------------------------------------------------------------------
@@ -444,6 +461,8 @@ func (m Model) viewOverlay() string {
 		return m.viewDashboardOverlay()
 	case overlayHelp:
 		return m.viewHelpOverlay()
+	case overlayCoordinatorEvents:
+		return m.viewCoordinatorEventsOverlay()
 	}
 	return ""
 }
@@ -585,6 +604,7 @@ func (m Model) viewHelpOverlay() string {
 	rows := [][2]string{
 		{"C-f", "open picker overlay (session list + [+] spawn new)"},
 		{"C-w", "open dashboard overlay (multi-session view)"},
+		{"C-o", "open coordinator-events overlay (coordinator sessions only)"},
 		{"?", "show this help overlay"},
 		{"Escape", "close any open overlay (does not quit)"},
 		{"Tab", "rotate focus (prompt \u2192 sessions \u2192 events)"},
@@ -620,4 +640,82 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// viewCoordinatorEventsOverlay renders the coordinator-events overlay
+// (issue #1772 child 7). The overlay lists every escalation and
+// merge-queue notification accumulated in Model.coordinatorEvents,
+// newest first. An empty buffer renders the empty-state placeholder
+// required by the issue's edge-case AC ("If there are no escalation
+// or merge-queue events in the DB, the overlay renders an empty-state
+// placeholder \u2014 not a blank pane").
+//
+// Per-row formatting:
+//
+//	\u26a0  HH:MM  <session>  \u2192 <target>: <escalation prompt>
+//	\u2713  HH:MM  <session>  PR #N merged ...
+//
+// Glyph choice mirrors the conversation-pane styling: \u26a0 for
+// escalations (urgent attention), \u2713 for merge-queue (informational
+// outcome). Failure-class merge-queue rows still use \u2713 because the
+// overlay's purpose is "watch the merge queue"; the row text already
+// names the failure verbatim.
+func (m Model) viewCoordinatorEventsOverlay() string {
+	var sb strings.Builder
+	sb.WriteString("\n")
+	header := fmt.Sprintf(" coordinator events \u2014 %d signal", len(m.coordinatorEvents))
+	if len(m.coordinatorEvents) != 1 {
+		header += "s"
+	}
+	sb.WriteString(styleHeader.Render(header))
+	sb.WriteString("\n")
+	sb.WriteString(styleDim.Render(strings.Repeat("\u2500", maxInt(m.width-2, 1))))
+	sb.WriteString("\n")
+
+	if len(m.coordinatorEvents) == 0 {
+		sb.WriteString("\n")
+		sb.WriteString(styleDim.Render("  no coordinator events yet \u2014 escalations and merge-queue notifications will appear here"))
+		sb.WriteString("\n")
+		sb.WriteString("\n")
+		sb.WriteString(styleDim.Render("  q/esc close"))
+		return sb.String()
+	}
+
+	// Render most-recent-first. Stop once we have filled the visible
+	// pane height so the overlay does not scroll off-screen on long
+	// histories \u2014 scroll affordance is future work.
+	maxVisible := m.height - 6
+	if maxVisible < 1 {
+		maxVisible = 8
+	}
+	shown := 0
+	for i := len(m.coordinatorEvents) - 1; i >= 0 && shown < maxVisible; i-- {
+		ev := m.coordinatorEvents[i]
+		var glyph string
+		var styled string
+		switch ev.kind {
+		case coordEventEscalation:
+			glyph = styleEscalation.Render(" \u26a0 ")
+			styled = fmt.Sprintf("%s %s  %s",
+				glyph, ev.at.Format("15:04"), ev.summary)
+		case coordEventMergeQueue:
+			glyph = styleMergeQueue.Render(" \u2713 ")
+			styled = fmt.Sprintf("%s %s  %s  %s",
+				glyph, ev.at.Format("15:04"), ev.sessionName, ev.summary)
+		}
+		sb.WriteString(" ")
+		sb.WriteString(styled)
+		sb.WriteString("\n")
+		shown++
+	}
+	if shown < len(m.coordinatorEvents) {
+		sb.WriteString("\n")
+		sb.WriteString(styleDim.Render(fmt.Sprintf(
+			"  + %d older events (not shown)",
+			len(m.coordinatorEvents)-shown)))
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n")
+	sb.WriteString(styleDim.Render("  q/esc close"))
+	return sb.String()
 }

@@ -523,3 +523,185 @@ func containsEsc(s, sub string) bool {
 	}
 	return false
 }
+
+// TestEscalate_DualPublish_CoordinatorSubscriberReceives is the
+// regression test for the coordinator-events fan-out (issue #1772).
+// writeSessionEscalatedEvent must publish the session.escalated
+// event under BOTH the escalating worker's SessionName (primary,
+// pre-existing) AND the target coordinator's SessionName (added in
+// #1772) so a coordinator-focused subscriber receives the event
+// without subscribing to every worker individually.
+//
+// The test subscribes one client to the coordinator's stream, sends
+// an escalate frame, then verifies that the coordinator subscriber
+// receives a session_event of type session.escalated with the
+// escalating worker named in the payload.
+func TestEscalate_DualPublish_CoordinatorSubscriberReceives(t *testing.T) {
+	sessions := []iris.SessionSnapshot{
+		{Name: "iris-worker@feat", State: "active", Role: "worker"},
+		{Name: "iris-coord@main", State: "active", Role: "coordinator"},
+	}
+	roles := map[string]string{
+		"iris-worker@feat": "worker",
+		"iris-coord@main":  "coordinator",
+	}
+	fx := newEscalateFixture(t, sessions, roles)
+
+	// Subscriber A: subscribes to the coordinator's stream (the
+	// post-#1772 fan-out destination). Subscriber B sends the
+	// escalate frame on a separate connection so the two flows do not
+	// interleave in the test reader.
+	subConn, subR := fx.dial()
+	data, _ := json.Marshal(map[string]any{
+		"type": "session_subscribe",
+		"name": "iris-coord@main",
+	})
+	data = append(data, '\n')
+	if _, err := subConn.Write(data); err != nil {
+		t.Fatalf("write session_subscribe: %v", err)
+	}
+	// Settle: send a ping and wait for the pong so the subscription
+	// is fully registered before the escalation publishes.
+	pingData, _ := json.Marshal(map[string]any{"type": "ping"})
+	pingData = append(pingData, '\n')
+	if _, err := subConn.Write(pingData); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	// Drain until pong.
+	for {
+		_ = subConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := subR.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("read pong: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("parse pong: %v", err)
+		}
+		if m["type"] == "pong" {
+			break
+		}
+	}
+	_ = subConn.SetReadDeadline(time.Time{})
+
+	// Trigger an escalate on a separate connection.
+	escConn, escR := fx.dial()
+	fx.sendEscalate(escConn, "iris-worker@feat", "", "need help on PR 42")
+	ackFrame := fx.readFrame(escConn, escR)
+	if ackFrame["type"] != iris.DaemonFrameEscalationDelivered {
+		t.Fatalf("expected escalation_delivered ack, got %q (full=%+v)",
+			ackFrame["type"], ackFrame)
+	}
+
+	// Subscriber A must now receive a session.escalated frame on the
+	// coordinator's stream. We allow up to 2s for the Publish + read
+	// to land.
+	_ = subConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := subR.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("coordinator subscriber did not receive a frame: %v", err)
+	}
+	var evFrame map[string]any
+	if err := json.Unmarshal(line, &evFrame); err != nil {
+		t.Fatalf("parse event frame %q: %v", line, err)
+	}
+	if evFrame["type"] != "session_event" {
+		t.Fatalf("coordinator received frame type %q, want session_event (full=%+v)",
+			evFrame["type"], evFrame)
+	}
+	if evFrame["event_type"] != "session.escalated" {
+		t.Errorf("coordinator received event_type %q, want session.escalated",
+			evFrame["event_type"])
+	}
+	// The frame envelope's session_name is the coordinator's (since
+	// that is the subscription stream the frame was fanned out on)
+	// but the payload's `source` field names the escalating worker.
+	if evFrame["session_name"] != "iris-coord@main" {
+		t.Errorf("coordinator-stream frame session_name = %q, want iris-coord@main",
+			evFrame["session_name"])
+	}
+	payloadStr, _ := evFrame["payload"].(string)
+	if !containsEsc(payloadStr, `"source":"iris-worker@feat"`) {
+		t.Errorf("coordinator-stream payload does not name escalating worker; payload=%q",
+			payloadStr)
+	}
+	if !containsEsc(payloadStr, `"target":"iris-coord@main"`) {
+		t.Errorf("coordinator-stream payload does not name target; payload=%q",
+			payloadStr)
+	}
+}
+
+// TestEscalate_DualPublish_ZeroCoordinatorNoSecondaryFanOut covers
+// the zero-coordinator branch: when no target exists, only the
+// worker's stream receives the session.escalated event. The
+// secondary Publish under the target's name is skipped (there is no
+// target to fan out to).
+func TestEscalate_DualPublish_ZeroCoordinatorNoSecondaryFanOut(t *testing.T) {
+	sessions := []iris.SessionSnapshot{
+		{Name: "iris-worker@solo", State: "active", Role: "worker"},
+	}
+	roles := map[string]string{"iris-worker@solo": "worker"}
+	fx := newEscalateFixture(t, sessions, roles)
+
+	// Subscribe to the worker's own stream so the test observes the
+	// primary Publish; if a phantom secondary Publish under empty
+	// session name fired, the worker subscriber would see TWO frames
+	// for one escalation.
+	subConn, subR := fx.dial()
+	data, _ := json.Marshal(map[string]any{
+		"type": "session_subscribe",
+		"name": "iris-worker@solo",
+	})
+	data = append(data, '\n')
+	if _, err := subConn.Write(data); err != nil {
+		t.Fatalf("write session_subscribe: %v", err)
+	}
+	pingData, _ := json.Marshal(map[string]any{"type": "ping"})
+	pingData = append(pingData, '\n')
+	if _, err := subConn.Write(pingData); err != nil {
+		t.Fatalf("write ping: %v", err)
+	}
+	for {
+		_ = subConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		line, err := subR.ReadBytes('\n')
+		if err != nil {
+			t.Fatalf("read pong: %v", err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("parse pong: %v", err)
+		}
+		if m["type"] == "pong" {
+			break
+		}
+	}
+	_ = subConn.SetReadDeadline(time.Time{})
+
+	// Trigger escalate — zero-coordinator branch.
+	escConn, escR := fx.dial()
+	fx.sendEscalate(escConn, "iris-worker@solo", "", "lone")
+	_ = fx.readFrame(escConn, escR)
+
+	// Read exactly one session.escalated frame on the worker stream,
+	// then assert nothing else arrives within a short window.
+	_ = subConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := subR.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("worker subscriber did not receive escalate event: %v", err)
+	}
+	var first map[string]any
+	if err := json.Unmarshal(line, &first); err != nil {
+		t.Fatalf("parse first frame: %v", err)
+	}
+	if first["event_type"] != "session.escalated" {
+		t.Errorf("first frame event_type = %q, want session.escalated",
+			first["event_type"])
+	}
+
+	// A second frame would indicate a spurious secondary publish.
+	_ = subConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if _, err := subR.ReadBytes('\n'); err == nil {
+		t.Errorf("unexpected second frame in zero-coordinator branch \u2014 " +
+			"secondary Publish must be skipped when target is empty")
+	}
+}
