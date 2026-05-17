@@ -545,11 +545,11 @@ func TestToolCallResultPairing(t *testing.T) {
 	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
 	m = m2.(tui.Model)
 
-	// Send tool_call.
-	tcPayload, _ := json.Marshal(map[string]string{
-		"tool":      "bash",
-		"args":      `{"command":"echo hello"}`,
-		"messageId": "msg-tc-001",
+	// Send tool_call. Post-#1783 wire shape: `name`/`id`/`args` (object).
+	tcPayload, _ := json.Marshal(map[string]any{
+		"name": "bash",
+		"args": map[string]any{"command": "echo hello"},
+		"id":   "call-tc-001",
 	})
 	m2, _ = m.Update(tui.DaemonFrame{
 		RawType: iris.DaemonFrameSessionEvent,
@@ -563,11 +563,11 @@ func TestToolCallResultPairing(t *testing.T) {
 	})
 	m = m2.(tui.Model)
 
-	// Send tool_result.
-	trPayload, _ := json.Marshal(map[string]string{
-		"tool":      "bash",
-		"result":    "hello",
-		"messageId": "msg-tc-001",
+	// Send tool_result. Post-#1783 wire shape: `id`/`success`/`output`.
+	trPayload, _ := json.Marshal(map[string]any{
+		"id":      "call-tc-001",
+		"success": true,
+		"output":  "hello",
 	})
 	m2, _ = m.Update(tui.DaemonFrame{
 		RawType: iris.DaemonFrameSessionEvent,
@@ -813,20 +813,28 @@ func TestNarrativeRenderEvent(t *testing.T) {
 	})
 
 	t.Run("tool_call_bash", func(t *testing.T) {
-		p, _ := json.Marshal(map[string]string{
-			"tool":      "bash",
-			"args":      `{"command":"go test ./..."}`,
-			"messageId": "mid-3",
+		// Post-#1783 wire shape: `name`, `args` (object), `id`.
+		p, _ := json.Marshal(map[string]any{
+			"name": "bash",
+			"args": map[string]any{"command": "go test ./..."},
+			"id":   "call-mid-3",
 		})
 		lines := renderEventForTest(4, "tool_call", string(p))
 		if len(lines) == 0 {
 			t.Fatal("no lines for tool_call")
 		}
 		if !strings.Contains(lines[0].Text, "bash") {
-			t.Errorf("tool name not in line: %q", lines[0].Text)
+			t.Errorf("tool name not in header line: %q", lines[0].Text)
 		}
-		if !strings.Contains(lines[0].Text, "go test ./...") {
-			t.Errorf("command not in line: %q", lines[0].Text)
+		// Args appear on the second line of the multi-line card
+		// (#1769). Search across all lines so the assertion stays
+		// robust to layout tweaks.
+		joined := lines[0].Text
+		for _, l := range lines[1:] {
+			joined += "\n" + l.Text
+		}
+		if !strings.Contains(joined, "go test ./...") {
+			t.Errorf("command not in any line of the card: %q", joined)
 		}
 	})
 

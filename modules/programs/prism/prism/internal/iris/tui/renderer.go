@@ -101,6 +101,47 @@ const (
 	// narrative package's "_body" suffix convention for msg_assistant /
 	// msg_user multi-line events.
 	evTypeExtensionErrorBody = "extension_error_body"
+
+	// evTypeToolCard* are synthetic EventType labels used by the
+	// multi-line tool-call card introduced in issue #1769 (child 4 of
+	// the iris-tui-design tracker). The renderer dispatches tool_call
+	// through renderToolCall which now emits a 3-line block (header,
+	// args, status) that the styler colours differently depending on
+	// in-flight vs completed state. tool_result is no longer emitted as
+	// its own line — the model layer (handleDaemonFrame) folds the
+	// result into the matching card's status line.
+	//
+	// Naming convention:
+	//   _header  — the "→ <tool>" first line; carries MessageID for
+	//              expand/collapse lookups in the model.
+	//   _args    — the truncated args line shown in collapsed state.
+	//   _status  — the placeholder "⏳ running…" / "↳ <result>" line.
+	//   _argsfull / _resultfull — extra lines emitted when the card
+	//              is expanded (one rune-wrapped line per wrap chunk).
+	//
+	// The _inflight / _done suffix on header and status differentiates
+	// styling between a still-running tool call (dim header, yellow
+	// status) and a paired tool_call+tool_result (bold-blue header,
+	// dim status). styleEventLine maps each label to its colour.
+	evTypeToolCardHeaderInFlight = "tool_card_header_inflight"
+	evTypeToolCardHeaderDone     = "tool_card_header_done"
+	evTypeToolCardArgs           = "tool_card_args"
+	evTypeToolCardArgsFull       = "tool_card_args_full"
+	evTypeToolCardStatusInFlight = "tool_card_status_inflight"
+	evTypeToolCardStatusDone     = "tool_card_status_done"
+	evTypeToolCardResultFull     = "tool_card_result_full"
+)
+
+// Display widths used by the tool-card renderer. Wider than the
+// pre-#1769 80-rune limit because cards have their own row and don't
+// have to coexist with surrounding prose on the same row. Hand-picked
+// to read well at the conversation pane's typical width (~70-90 cols
+// inside the bordered right pane on a 120-col terminal); the styler's
+// truncate() does the final width-fit pass.
+const (
+	toolCardArgsTruncate   = 100
+	toolCardResultTruncate = 100
+	toolCardWrapWidth      = 100
 )
 
 // eventHandler is the per-event-type rendering function signature. A
@@ -286,63 +327,239 @@ func renderMsgUser(rowID int64, payloadJSON string) []narrative.NarrativeLine {
 	}
 }
 
-// renderToolCall produces a one-line "card" of the form
+// renderToolCall produces the multi-line in-flight tool-call card
+// introduced in issue #1769 (child 4). The collapsed card is three
+// rows:
 //
-//	→ <tool>: <key-arg>
+//	[HH:MM:SS] → <tool>
+//	    args: <truncated args>          (or "(no args)" when empty)
+//	    ⏳ running…                      (placeholder until tool_result)
 //
-// using narrative.ToolKeyArg to extract the primary argument (command
-// for bash, file path for read/edit/write, pattern for grep, etc.).
-// The leading "→" plus indent makes a tool-call visually distinct from
-// surrounding assistant text on a single row — the design doc renderer
-// table's "one-line card" requirement. Multi-line/rich tool-call cards
-// (with args, result preview, expand/collapse) are child PR 4's scope.
+// When the paired tool_result arrives, handleDaemonFrame in model.go
+// (not this renderer) mutates the card lines in place: it swaps the
+// header label to the "done" variant for styling and replaces the
+// status line with "↳ <result preview>". This split is deliberate —
+// the renderer cannot mutate prior lines on its own; only the model
+// has the line buffer.
+//
+// Edge cases (covered by tests):
+//   - parse error on payloadJSON: emit a single-line card carrying
+//     the parse-error marker so the operator still sees something
+//     rather than a silent drop.
+//   - empty / malformed args JSON: ToolKeyArg returns "", we render
+//     the "(no args)" placeholder.
+//
+// The MessageID is carried on every line of the block so the model's
+// pair logic and the expand/collapse toggle can find the whole card
+// by msgID lookup. The header line carries the canonical RowID; the
+// args and status lines carry RowID=0 (synthetic line, not directly
+// sourced from an agent_events row).
 func renderToolCall(rowID int64, payloadJSON string) []narrative.NarrativeLine {
 	var p payload.ToolCall
 	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
 		return []narrative.NarrativeLine{
 			{
 				Text:      fmt.Sprintf("[%s] → tool_call (parse error)", ts()),
-				EventType: evTypeToolCall,
+				EventType: evTypeToolCardHeaderInFlight,
 				RowID:     rowID,
 			},
 		}
 	}
-	keyArg := narrative.ToolKeyArg(p.Tool, p.Args)
-	var text string
-	if keyArg != "" {
-		text = fmt.Sprintf("  → %s: %s", p.Tool, keyArg)
-	} else {
-		text = fmt.Sprintf("  → %s", p.Tool)
-	}
-	return []narrative.NarrativeLine{
-		{Text: text, EventType: evTypeToolCall, RowID: rowID, MessageID: p.MessageID},
-	}
+	return buildToolCardLines(rowID, p.ID, p.Name, p.Args, "", false, false)
 }
 
-// renderToolResult renders the indented one-line summary that follows a
-// tool_call. The model layer pairs this line with its matching
-// tool_call (by MessageID) so the rendered conversation reads as
+// renderToolResult is now a defensive-only path: handleDaemonFrame in
+// model.go consumes tool_result frames directly to fold them into the
+// matching tool-call card. This handler only runs when the dispatcher
+// is called against a tool_result frame without going through the
+// model — primarily in unit tests for the renderer in isolation, and
+// as a fallback when a tool_result arrives for a tool_call that has
+// scrolled out of the in-memory window. The output is an indented
+// one-liner — same shape as child 2's behaviour, so the no-parent
+// path does not regress.
 //
-//	→ bash: echo hello ✓ hello
-//
-// rather than as two unrelated rows. When no matching tool_call has
-// been seen yet (replay race, frame ordering), the result line is
-// emitted standalone with a leading indent so the visual still reads
-// as "this is a result, not a top-level statement".
+// Post-#1783: payload.ToolResult no longer carries a tool name (the
+// pi extension's wire shape doesn't include one on tool_result). The
+// orphan path therefore summarises with an empty tool name, which
+// drops ToolResultSummary into its generic "first meaningful line"
+// fallback. The paired path (handleDaemonFrame) still routes
+// per-tool summarisation because it has the matching tool_call's
+// name on the card record.
 func renderToolResult(rowID int64, payloadJSON string) []narrative.NarrativeLine {
 	var p payload.ToolResult
 	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
 		return nil
 	}
-	summary := narrative.ToolResultSummary(p.Tool, p.Result)
+	summary := narrative.ToolResultSummary("", p.Output)
 	return []narrative.NarrativeLine{
 		{
 			Text:      fmt.Sprintf("    ↳ result: %s", summary),
 			EventType: evTypeToolResult,
 			RowID:     rowID,
-			MessageID: p.MessageID,
+			MessageID: p.ID,
 		},
 	}
+}
+
+// buildToolCardLines is the single point of truth for the line shape
+// of a tool-call card. Used by:
+//
+//   - renderToolCall on initial tool_call arrival (paired=false,
+//     expanded=false) — produces the collapsed in-flight card.
+//   - model.go's pairing logic when tool_result arrives (paired=true,
+//     expanded preserved from the model's expandedToolCards set).
+//   - model.go's expand/collapse toggle (paired preserved, expanded
+//     flipped).
+//
+// All three call sites need to produce identical line shapes for the
+// same card state, so the logic lives here rather than being
+// duplicated. Returns at least 3 lines in the collapsed state; the
+// expanded state appends extra wrap lines for full args / result.
+//
+// resultText is the raw tool_result.Result (only used when paired ==
+// true). When paired is false resultText is ignored. When paired is
+// true the result preview replaces the in-flight "⏳ running…"
+// placeholder on the status line.
+func buildToolCardLines(rowID int64, msgID, tool string, args json.RawMessage, resultText string, paired, expanded bool) []narrative.NarrativeLine {
+	displayTool := strings.TrimSpace(tool)
+	if displayTool == "" {
+		displayTool = "(unknown tool)"
+	}
+	headerText := fmt.Sprintf("  [%s] → %s", ts(), displayTool)
+	if expanded {
+		headerText += "  [expanded — tab to collapse]"
+	}
+	headerType := evTypeToolCardHeaderInFlight
+	if paired {
+		headerType = evTypeToolCardHeaderDone
+	}
+
+	// Args line. ToolKeyArg returns the per-tool primary arg (bash
+	// command, file path, etc.) or falls back to a truncated raw
+	// args string for unknown tools. When that returns "" the card
+	// shows the explicit "(no args)" placeholder so the operator
+	// can tell "no args" from "args field missing".
+	keyArg := narrative.ToolKeyArg(displayTool, args)
+	argsEmpty := len(args) == 0 || string(args) == "null" || strings.TrimSpace(string(args)) == "" || strings.TrimSpace(string(args)) == "{}"
+	var argsText string
+	switch {
+	case argsEmpty:
+		argsText = "      args: (no args)"
+	case keyArg == "" && (tool == "todowrite" || tool == "TodoWrite" || tool == "Todowrite"):
+		// todowrite: no key arg but args are present (a TODO list).
+		argsText = "      args: (todo list)"
+	case keyArg == "":
+		// Unknown tool with non-empty args but ToolKeyArg dropped
+		// the value (shouldn't happen — default branch echoes raw
+		// args — but defend explicitly).
+		argsText = "      args: (no args)"
+	default:
+		truncated := truncateForCard(keyArg, toolCardArgsTruncate)
+		argsText = "      args: " + truncated
+	}
+
+	// Status line. In-flight: "⏳ running…". Paired: "↳ <preview>".
+	var statusText, statusType string
+	if paired {
+		summary := narrative.ToolResultSummary(displayTool, resultText)
+		summary = truncateForCard(summary, toolCardResultTruncate)
+		statusText = "      ↳ " + summary
+		statusType = evTypeToolCardStatusDone
+	} else {
+		statusText = "      ⏳ running…"
+		statusType = evTypeToolCardStatusInFlight
+	}
+
+	lines := []narrative.NarrativeLine{
+		{Text: headerText, EventType: headerType, RowID: rowID, MessageID: msgID},
+		{Text: argsText, EventType: evTypeToolCardArgs, MessageID: msgID},
+		{Text: statusText, EventType: statusType, MessageID: msgID},
+	}
+
+	if expanded {
+		// Emit the full args (wrapped) after the args summary line, and
+		// the full result (wrapped) after the status line. Both are
+		// styled dim by the styler so they read as supplementary
+		// context rather than primary content.
+		fullArgs := strings.TrimSpace(string(args))
+		if fullArgs == "" || fullArgs == "null" {
+			fullArgs = "(no args)"
+		}
+		argsLines := wrapForCard(fullArgs, toolCardWrapWidth)
+		// Insert args expansion before the status line.
+		expanded := make([]narrative.NarrativeLine, 0, len(lines)+len(argsLines)+1)
+		expanded = append(expanded, lines[0], lines[1]) // header, args summary
+		for _, l := range argsLines {
+			expanded = append(expanded, narrative.NarrativeLine{
+				Text:      "        " + l,
+				EventType: evTypeToolCardArgsFull,
+				MessageID: msgID,
+			})
+		}
+		expanded = append(expanded, lines[2]) // status line
+		if paired {
+			fullResult := strings.TrimSpace(resultText)
+			if fullResult == "" {
+				fullResult = "(no output)"
+			}
+			resultLines := wrapForCard(fullResult, toolCardWrapWidth)
+			for _, l := range resultLines {
+				expanded = append(expanded, narrative.NarrativeLine{
+					Text:      "        " + l,
+					EventType: evTypeToolCardResultFull,
+					MessageID: msgID,
+				})
+			}
+		}
+		lines = expanded
+	}
+	return lines
+}
+
+// truncateForCard truncates s to at most width runes, appending "…"
+// when truncation occurred. Operates on runes (not bytes) so unicode
+// content is not chopped mid-codepoint. Used by the card renderer for
+// the args and result-preview lines; the styler's truncate() does the
+// final pane-width fit pass.
+func truncateForCard(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	// Replace newlines with " / " so a multi-line value reads as a
+	// single row — the card's collapsed state is one row per slot,
+	// not a free-form block.
+	s = strings.ReplaceAll(s, "\n", " / ")
+	runes := []rune(s)
+	if len(runes) <= width {
+		return s
+	}
+	return string(runes[:width-1]) + "…"
+}
+
+// wrapForCard splits s into rune-bounded chunks of at most width runes
+// each, preserving newline-delimited line breaks where present in the
+// input. Used by the expanded view to render full args/result as
+// multiple display rows.
+func wrapForCard(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
+	}
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		runes := []rune(line)
+		if len(runes) == 0 {
+			out = append(out, "")
+			continue
+		}
+		for len(runes) > width {
+			out = append(out, string(runes[:width]))
+			runes = runes[width:]
+		}
+		if len(runes) > 0 {
+			out = append(out, string(runes))
+		}
+	}
+	return out
 }
 
 // renderStateChange renders a single dim line of the form
