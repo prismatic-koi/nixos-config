@@ -89,6 +89,37 @@ var versionCmd = &cobra.Command{
 	},
 }
 
+// validateExtensionPath enforces that pi_extension_path is set in config and
+// points to a file that exists on disk. The iris daemon cannot do anything
+// useful without the prism.ts extension loaded into each pi child (the
+// extension is what dials IRIS_DAEMON_SOCK and publishes session events) —
+// so a missing or stale config silently produces a daemon that appears
+// healthy but corrupts every session it spawns (issue #1753).
+//
+// Two distinct error shapes so the operator can fix the problem from the
+// log alone:
+//
+//   - cfg.PIExtensionPath == ""   → "unset in <configPath>"
+//   - cfg.PIExtensionPath set but os.Stat fails → "does not exist"
+//
+// Both errors name pi_extension_path verbatim (the JSON key the user types)
+// and the config file path that needs editing.
+func validateExtensionPath(cfg iris.Config, configPath string) error {
+	if cfg.PIExtensionPath == "" {
+		return fmt.Errorf(
+			"iris daemon: pi_extension_path is unset in %s; iris cannot function without the prism extension. See %s and set:\n  { \"pi_extension_path\": \"/path/to/prism.ts\" }",
+			configPath, configPath,
+		)
+	}
+	if _, err := os.Stat(cfg.PIExtensionPath); err != nil {
+		return fmt.Errorf(
+			"iris daemon: pi_extension_path is set to %s but the file does not exist (%v); check %s or ensure the extension is installed",
+			cfg.PIExtensionPath, err, configPath,
+		)
+	}
+	return nil
+}
+
 // startup runs the iris initialisation sequence: resolve paths, load config,
 // open the DB, run the D-9 restore sequence, then enter the daemon loop.
 func startup() error {
@@ -98,6 +129,16 @@ func startup() error {
 	cfg, err := iris.LoadConfig(p.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("iris: load config: %w", err)
+	}
+
+	// Fail-fast if the prism extension is not wired (issue #1753). Without
+	// the extension, every pi child the daemon spawns runs without
+	// --extension and corrupts the session silently. Refusing to come up at
+	// all is the honest signal — systemd's Restart=always will retry, but
+	// the cause is visible in `journalctl --user -u iris`.
+	if err := validateExtensionPath(cfg, p.ConfigFile); err != nil {
+		log.Print(err.Error())
+		return err
 	}
 
 	// Open (or create) the iris DB.
@@ -250,6 +291,14 @@ func runDaemon() error {
 	cfg, err := iris.LoadConfig(p.ConfigFile)
 	if err != nil {
 		return fmt.Errorf("iris: load config: %w", err)
+	}
+
+	// Fail-fast if the prism extension is not wired (issue #1753). The
+	// daemon cannot spawn working sessions without it; see
+	// validateExtensionPath for the rationale and message shapes.
+	if err := validateExtensionPath(cfg, p.ConfigFile); err != nil {
+		log.Print(err.Error())
+		return err
 	}
 
 	database, err := iris.OpenDB(p.DB)
