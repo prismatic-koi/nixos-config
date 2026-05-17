@@ -225,6 +225,11 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		}
 		_ = tmux.KillSession(m.session)
 		prismSession.KillSidecar(m.session)
+		// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
+		// processes still alive for review-group or investigator-group
+		// children of this worker. Runs before the DB-backed cleanup so
+		// processes whose DB rows were already purged are still caught.
+		killOrphanReviewSidecars(m.session)
 		if d, err := openDB(); err == nil {
 			// Stop and remove child review-agent containers BEFORE removing their
 			// DB rows — so a failed stop still has a record to retry against.
@@ -590,6 +595,11 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 	printLine("killing session %s\n", session)
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
+	// processes still alive for review-group or investigator-group
+	// children of this worker. Done before DB cleanup so processes
+	// whose DB rows have already been purged are still caught.
+	killOrphanReviewSidecars(session)
 	// session_killed reflects the post-condition (tmux session is gone),
 	// which is true whether the session was alive or already-dead before this
 	// call. KillSession's error is intentionally ignored above (it returns
@@ -772,6 +782,11 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 	result.SessionKilled = true
 	_ = tmux.KillSession(session)
 	prismSession.KillSidecar(session)
+	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
+	// processes still alive for review-group or investigator-group
+	// children of this session. Done before DB cleanup so processes
+	// whose DB rows have already been purged are still caught.
+	killOrphanReviewSidecars(session)
 	var archiveCollisionWarning string
 	if d, err := openDB(); err == nil {
 		// Stop and remove child review-agent containers BEFORE removing their
