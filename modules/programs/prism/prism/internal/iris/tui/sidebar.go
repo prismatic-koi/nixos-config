@@ -116,6 +116,19 @@ func extractAssistantPreview(payloadJSON string) string {
 	return ""
 }
 
+// extractAssistantModelCost parses a msg_assistant payload and returns
+// (model, cost). Both are zero-valued when the payload doesn't parse or
+// doesn't include them; callers use those to mean "do not update". Used
+// by handleDaemonFrame to keep the status-line strip (#1767) populated
+// without re-decoding the payload in the renderer.
+func extractAssistantModelCost(payloadJSON string) (string, float64) {
+	var p payload.MsgAssistant
+	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+		return "", 0
+	}
+	return p.Model, p.Cost
+}
+
 // previewIndentWidth is the visible column width of previewIndent. Hard
 // coded because previewIndent contains a multi-byte rune ("↳") and
 // len(previewIndent) returns the byte count, not the display width.
