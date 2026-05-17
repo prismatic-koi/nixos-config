@@ -122,3 +122,42 @@ func ModelErrorMsg(m Model) string { return m.errorMsg }
 func IsMergeQueueNotificationText(s string) bool {
 	return isMergeQueueNotificationText(s)
 }
+
+// Focus rotation states re-exported for tests. The integer values
+// mirror the unexported focusArea iota in model.go.
+const (
+	FocusPrompt   = int(focusPrompt)
+	FocusSessions = int(focusSessions)
+	FocusEvents   = int(focusEvents)
+)
+
+// ModelFocus returns the current focus area as an int matching one of
+// the Focus* constants. Used by #1769 tests to assert that the events
+// pane is focused before exercising the tab→expand path.
+func ModelFocus(m Model) int { return int(m.focus) }
+
+// ModelToolCardCount returns the number of tool-call cards currently
+// in the model's event buffer (issue #1769). Zero when no tool_call
+// events have been seen for the subscribed session.
+func ModelToolCardCount(m Model) int { return len(m.toolCards) }
+
+// ModelToolCardExpanded returns true when the tool card with the
+// given MessageID is currently in the expanded state. Returns false
+// when the id is unknown or the card is collapsed.
+func ModelToolCardExpanded(m Model, msgID string) bool {
+	return m.expandedToolCards[msgID]
+}
+
+// ModelEventLineCount returns the number of NarrativeLines currently
+// in the model's event buffer. Used to assert that expand/collapse
+// changes the rendered line count.
+func ModelEventLineCount(m Model) int { return len(m.eventLines) }
+
+// SetModelFocus forces the model's focus to the given area. Tests use
+// this to land focus on the events pane without driving the full
+// tab-rotation sequence — the rotation is covered by the existing
+// #1737 tests; #1769 tests focus on the expand/collapse semantics.
+func SetModelFocus(m Model, focus int) Model {
+	m.focus = focusArea(focus)
+	return m
+}

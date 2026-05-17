@@ -131,15 +131,15 @@ func RenderEvent(rowID int64, eventType, payloadJSON string) []NarrativeLine {
 				{Text: fmt.Sprintf("[%s] → tool_call (parse error)", ts), EventType: eventType, RowID: rowID},
 			}
 		}
-		keyArg := ToolKeyArg(p.Tool, p.Args)
+		keyArg := ToolKeyArg(p.Name, p.Args)
 		var text string
 		if keyArg != "" {
-			text = fmt.Sprintf("  → %s: %s", p.Tool, keyArg)
+			text = fmt.Sprintf("  → %s: %s", p.Name, keyArg)
 		} else {
-			text = fmt.Sprintf("  → %s", p.Tool)
+			text = fmt.Sprintf("  → %s", p.Name)
 		}
 		return []NarrativeLine{
-			{Text: text, EventType: eventType, RowID: rowID, MessageID: p.MessageID},
+			{Text: text, EventType: eventType, RowID: rowID, MessageID: p.ID},
 		}
 
 	case "tool_result":
@@ -147,9 +147,16 @@ func RenderEvent(rowID int64, eventType, payloadJSON string) []NarrativeLine {
 		if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
 			return nil
 		}
-		summary := ToolResultSummary(p.Tool, p.Result)
+		// post-#1783: ToolResult no longer carries the tool name; the
+		// orphan-render path picks the generic summary by passing ""
+		// to ToolResultSummary, which falls through to its default
+		// "first meaningful line" branch. The paired-render path in
+		// cmd/iris/checkin.go and the TUI's renderer.go already knows
+		// the tool name from the matching tool_call and routes
+		// per-tool result summarisation correctly.
+		summary := ToolResultSummary("", p.Output)
 		return []NarrativeLine{
-			{Text: fmt.Sprintf("    ↳ result: %s", summary), EventType: eventType, RowID: rowID, MessageID: p.MessageID},
+			{Text: fmt.Sprintf("    ↳ result: %s", summary), EventType: eventType, RowID: rowID, MessageID: p.ID},
 		}
 
 	case "state_change":
@@ -239,46 +246,64 @@ func TurnLabel(agent, model string) string {
 //	glob/Glob         — pattern
 //	grep/Grep         — pattern / regex / query
 //	todowrite/*       — "" (tool name alone is enough)
-//	<other>           — first ~80 chars of raw args
-func ToolKeyArg(tool, args string) string {
+//	<other>           — first ~80 chars of raw args (compact JSON)
+//
+// args is the raw `args` JSON value from payload.ToolCall, which the
+// pi prism extension emits as a JSON object (`Record<string,
+// unknown>`) per issue #1783. Empty / nil args are valid and yield
+// the empty string — the caller is responsible for rendering a
+// "(no args)" placeholder if it wants one.
+func ToolKeyArg(tool string, args json.RawMessage) string {
+	argsStr := string(args)
 	switch tool {
 	case "bash", "Bash":
-		cmd := ExtractBashCommand(args)
+		cmd := ExtractBashCommand(argsStr)
 		if len([]rune(cmd)) > 80 {
 			return string([]rune(cmd)[:80]) + "..."
 		}
 		return cmd
 
 	case "read", "Read":
-		return ExtractStringField(args, "filePath", "path", "file_path")
+		return ExtractStringField(argsStr, "filePath", "path", "file_path")
 
 	case "edit", "Edit":
-		return ExtractStringField(args, "filePath", "path", "file_path")
+		return ExtractStringField(argsStr, "filePath", "path", "file_path")
 
 	case "write", "Write":
-		return ExtractStringField(args, "filePath", "path", "file_path")
+		return ExtractStringField(argsStr, "filePath", "path", "file_path")
 
 	case "task", "Task":
-		desc := ExtractStringField(args, "description", "desc", "prompt")
+		desc := ExtractStringField(argsStr, "description", "desc", "prompt")
 		if len([]rune(desc)) > 80 {
 			return string([]rune(desc)[:80]) + "..."
 		}
 		return desc
 
 	case "glob", "Glob":
-		return ExtractStringField(args, "pattern", "glob")
+		return ExtractStringField(argsStr, "pattern", "glob")
 
 	case "grep", "Grep":
-		return ExtractStringField(args, "pattern", "regex", "query")
+		return ExtractStringField(argsStr, "pattern", "regex", "query")
 
 	case "todowrite", "TodoWrite", "Todowrite":
 		return ""
 
 	default:
-		if len([]rune(args)) > 80 {
-			return string([]rune(args)[:80]) + "..."
+		// Post-#1783: args is a JSON value (RawMessage). For
+		// unrecognised tools we try a JSON-string-decode pass so a
+		// `"main.go"` literal renders as `main.go` rather than
+		// `"main.go"` (with quotes). This matches the pre-#1783
+		// behaviour where Args was a Go string and json.Unmarshal
+		// had already stripped the quotes at the struct boundary.
+		display := argsStr
+		var s string
+		if err := json.Unmarshal(args, &s); err == nil {
+			display = s
 		}
-		return args
+		if len([]rune(display)) > 80 {
+			return string([]rune(display)[:80]) + "..."
+		}
+		return display
 	}
 }
 

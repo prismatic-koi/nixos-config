@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -88,14 +89,75 @@ func userPayload(msgID, text string) string {
 	return fmt.Sprintf(`{"messageId":%q,"text":%q}`, msgID, text)
 }
 
-// toolCallPayload returns a minimal tool_call JSON payload.
+// toolCallPayload returns a tool_call JSON payload combining the
+// post-#1783 pi-extension wire shape ({name, id, args}) with a
+// synthetic `messageId` field carrying the same id.
+//
+// Why the synthetic messageId: `internal/db/events.go::QueryEventsByMessageIDs`
+// uses `JSON_EXTRACT(payload, '$.messageId')` to fetch child events
+// (tool_call/tool_result) for an assistant turn. The pi prism
+// extension does NOT emit a parent-message linkage on its
+// tool_call/tool_result frames — the per-call `id` it emits is the
+// toolCallId, NOT the parent assistant messageId. That mismatch is a
+// pre-existing bug separate from #1783's field-rename scope (see
+// coordinator escalation 2026-05-17). For tests we inject the
+// synthetic field so the SQL pushdown can still locate children;
+// production output is unchanged from its pre-#1783 broken state
+// until the secondary-query path is reworked.
+//
+// The args input is loose — it may be:
+//   - empty ("") — emitted as JSON null;
+//   - a JSON value literal (starts with `{`, `[`, `"`, `t`, `f`, `n`,
+//     or a digit / minus) — inlined verbatim so call sites can pass
+//     `{"filePath":"..."}` as-is;
+//   - any other bare string — JSON-string-encoded so it survives as
+//     a string-typed args field (matching the consumer's fallback
+//     parsing in extractBashCommand / extractStringField).
 func toolCallPayload(msgID, tool, args string) string {
-	return fmt.Sprintf(`{"messageId":%q,"tool":%q,"args":%q}`, msgID, tool, args)
+	var argsJSON string
+	switch {
+	case args == "":
+		argsJSON = "null"
+	case isJSONValueLiteral(args):
+		argsJSON = args
+	default:
+		b, _ := json.Marshal(args)
+		argsJSON = string(b)
+	}
+	return fmt.Sprintf(`{"name":%q,"id":%q,"messageId":%q,"args":%s}`, tool, msgID, msgID, argsJSON)
 }
 
-// toolResultPayload returns a minimal tool_result JSON payload.
+// isJSONValueLiteral returns true when s looks like a JSON value
+// literal (object, array, string, bool, null, number). Heuristic only
+// — used by toolCallPayload to decide whether to inline verbatim or
+// JSON-encode as a string. The check is on the first non-whitespace
+// byte; that's enough for the test-fixture use cases.
+func isJSONValueLiteral(s string) bool {
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			continue
+		}
+		switch r {
+		case '{', '[', '"', 't', 'f', 'n', '-':
+			return true
+		}
+		if r >= '0' && r <= '9' {
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// toolResultPayload returns a tool_result JSON payload combining the
+// post-#1783 pi-extension wire shape ({id, success, output}) with a
+// synthetic `messageId` field carrying the same id. See
+// toolCallPayload for the rationale on the synthetic field.
+// `tool` is accepted for backward-compat with existing call sites
+// but is no longer part of the wire format; it is silently dropped.
 func toolResultPayload(msgID, tool, result string) string {
-	return fmt.Sprintf(`{"messageId":%q,"tool":%q,"result":%q}`, msgID, tool, result)
+	_ = tool
+	return fmt.Sprintf(`{"id":%q,"messageId":%q,"success":true,"output":%q}`, msgID, msgID, result)
 }
 
 // permAskPayload returns a minimal permission_ask JSON payload.

@@ -17,6 +17,7 @@ package tui
 // reads NO state from the DB — every piece of state comes via the daemon socket.
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/iris"
 	"github.com/prismatic-koi/prism/internal/iris/narrative"
+	"github.com/prismatic-koi/prism/internal/payload"
 )
 
 // --- Layout constants ---
@@ -95,16 +97,32 @@ var (
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color(colBlue))
 
-	// styleToolCall renders the one-line tool-call "card" rows. Blue +
-	// bold makes the row visually distinct from surrounding assistant
-	// prose (styleNormal) and from indented tool_result summaries
-	// (styleDim) without using the red treatment reserved for errors.
-	// Issue #1767's renderer table requires tool_call rows be visibly
-	// distinct as one-line cards — child PR 4 replaces this with
-	// multi-line cards; the styling continues to apply to the first row.
+	// styleToolCall renders completed tool-call card headers (paired
+	// tool_call + tool_result) and the legacy one-line card rows used
+	// by fallback paths. Blue + bold keeps the header visually loud so
+	// it reads as the start of a discrete tool invocation block.
+	// Issue #1767 introduced this style for one-line cards; issue
+	// #1769 extends it to multi-line cards (the header line continues
+	// to carry the same treatment).
 	styleToolCall = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colBlue)).
 			Bold(true)
+
+	// styleToolCallInFlight renders the header of an in-flight tool
+	// call (tool_call seen, no matching tool_result yet) introduced
+	// in issue #1769. Yellow + bold visually flags "this is running
+	// right now" without using the red palette reserved for errors;
+	// distinct from styleToolCall's blue so the operator can scan a
+	// tall conversation and pick out which calls are still in flight.
+	styleToolCallInFlight = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(colPrimary)).
+				Bold(true)
+
+	// styleToolCardArgs renders the args summary line of a tool
+	// card. Dim so the args read as supplementary context to the
+	// header (not competing with it for the operator's attention).
+	styleToolCardArgs = lipgloss.NewStyle().
+				Foreground(lipgloss.Color(colSecondary))
 
 	// styleErrorProminent renders extension_error blocks. Bold red on
 	// the dark background is the most attention-grabbing combination
@@ -261,7 +279,39 @@ type Model struct {
 	seenRowIDs map[int64]bool
 	// toolCallByMsgID indexes the line slice position for open tool_call lines
 	// so that arriving tool_result frames can append the result inline.
+	//
+	// Pre-#1769 this was the single source of truth for tool_call ↔
+	// tool_result pairing. Post-#1769 it is retained for any legacy
+	// callers / tests that may still consult it; the canonical lookup
+	// is now toolCardByMsgID below, which carries the full multi-line
+	// card state required by the expand/collapse toggle.
 	toolCallByMsgID map[string]int
+
+	// toolCards is the ordered list of multi-line tool-call cards in
+	// the current event pane (issue #1769, child 4 of the iris-tui
+	// design). Each card owns a contiguous range of m.eventLines (see
+	// toolCard.lineStart / .lineLen). The slice is append-only; on
+	// resetEventPane it is cleared together with eventLines. The
+	// ordering matches the order in which tool_call events arrived
+	// for the subscribed session.
+	toolCards []*toolCard
+
+	// toolCardByMsgID is the lookup index for toolCards, keyed on
+	// payload.ToolCall.MessageID (the same id used to pair a
+	// tool_call with its tool_result). Inserted on tool_call arrival,
+	// consumed on tool_result arrival, and consulted by the
+	// expand/collapse toggle. Missing keys are not an error — a
+	// tool_result with no matching card falls back to the legacy
+	// indented-summary path.
+	toolCardByMsgID map[string]*toolCard
+
+	// expandedToolCards is the set of MessageIDs whose tool-card is
+	// currently expanded (showing full args / full result). Adding
+	// or removing a key triggers a card re-render via
+	// rebuildToolCardLines. The set persists across event arrivals
+	// per AC: "receiving a new event while a card is expanded does
+	// not collapse it."
+	expandedToolCards map[string]bool
 
 	// eventScroll is the number of lines scrolled up from the bottom (0 = live).
 	eventScroll int
@@ -321,10 +371,12 @@ type Model struct {
 // NewModel creates the iris TUI model.
 func NewModel(client *DaemonClient) Model {
 	return Model{
-		client:          client,
-		renderer:        newEventRenderer(),
-		seenRowIDs:      make(map[int64]bool),
-		toolCallByMsgID: make(map[string]int),
+		client:            client,
+		renderer:          newEventRenderer(),
+		seenRowIDs:        make(map[int64]bool),
+		toolCallByMsgID:   make(map[string]int),
+		toolCardByMsgID:   make(map[string]*toolCard),
+		expandedToolCards: make(map[string]bool),
 	}
 }
 
@@ -476,6 +528,32 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Tool-call card path (#1769): intercept tool_call and
+		// tool_result BEFORE the generic dispatch loop. tool_call
+		// produces a multi-line in-flight card recorded in m.toolCards;
+		// tool_result mutates that card's lines in place to the
+		// completed visual. Falls through to the generic path only when
+		// no matching tool_call exists for a tool_result (legacy
+		// indented-summary fallback per child 2).
+		if e.EventType == evTypeToolCall {
+			if card := m.installToolCallCard(e.RowID, e.Payload); card != nil {
+				m.seenRowIDs[e.RowID] = true
+				return m, nil
+			}
+			// Parse failed and installer returned nil — fall through
+			// to the legacy dispatch path so the parse-error line still
+			// renders. Drops through to the dispatch block below.
+		}
+		if e.EventType == evTypeToolResult {
+			if handled := m.foldToolResultIntoCard(e.Payload); handled {
+				m.seenRowIDs[e.RowID] = true
+				return m, nil
+			}
+			// No matching card — fall through to the dispatcher which
+			// produces the legacy indented one-liner. AC explicit:
+			// "don't regress the orphan tool_result path".
+		}
+
 		lines := m.renderer.dispatch(e.RowID, e.EventType, e.Payload)
 
 		// Coordinator-events accumulator (issue #1772 child 7).
@@ -495,36 +573,15 @@ func (m Model) handleDaemonFrame(msg DaemonFrame) (tea.Model, tea.Cmd) {
 		if len(lines) == 0 {
 			// Suppressed (session_status, turn_start/end) or a handler
 			// declined to render. Do NOT mark the row_id as seen —
-			// future renderer extensions (e.g. tool-call cards in
-			// child PR 4) may decide to render an event type that is
-			// currently suppressed, and the dedupe map must not
-			// preempt them on replay. Suppression has no per-event
-			// side effect beyond "do not append a line".
+			// future renderer extensions may decide to render an event
+			// type that is currently suppressed, and the dedupe map
+			// must not preempt them on replay. Suppression has no
+			// per-event side effect beyond "do not append a line".
 			return m, nil
 		}
 		m.seenRowIDs[e.RowID] = true
 		for _, line := range lines {
-			// For tool_result: find the matching tool_call and pair it.
-			if e.EventType == "tool_result" && line.MessageID != "" {
-				if idx, ok := m.toolCallByMsgID[line.MessageID]; ok {
-					// Append result text to the tool_call line instead of
-					// adding a separate line.
-					if idx < len(m.eventLines) {
-						existing := m.eventLines[idx]
-						existing.IsPaired = true
-						existing.ResultText = line.Text
-						existing.Text = existing.Text + " " + line.Text
-						m.eventLines[idx] = existing
-					}
-					continue
-				}
-			}
-			pos := len(m.eventLines)
 			m.eventLines = append(m.eventLines, line)
-			// Index tool_call lines for later tool_result pairing.
-			if e.EventType == "tool_call" && line.MessageID != "" {
-				m.toolCallByMsgID[line.MessageID] = pos
-			}
 		}
 		// Snap to bottom if the user is not scrolled up.
 		if m.eventScroll == 0 {
@@ -700,7 +757,25 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
-		// Rotate focus prompt → sessions → events → prompt.
+		// Two-mode tab binding (issue #1769 extends #1737):
+		//
+		// When focus is on the events pane AND at least one tool-call
+		// card exists, tab expands/collapses the most recent tool
+		// card. The spec says "Pressing `tab` while the conversation
+		// pane has focus expands the currently-selected tool-call
+		// card." We take "currently-selected" as the most recent card
+		// per the issue's implementation-guidance hint (a single
+		// current-card pointer is fine; child 5 may add full
+		// selection).
+		//
+		// In every other case, tab continues to rotate focus prompt
+		// → sessions → events → prompt as before — the rotation is
+		// the only way to land focus on events in the first place,
+		// so leaving it in place for the no-cards-yet case keeps the
+		// pre-#1769 navigation working.
+		if m.focus == focusEvents && m.toggleSelectedToolCard() {
+			return m, nil
+		}
 		switch m.focus {
 		case focusPrompt:
 			m.focus = focusSessions
@@ -827,11 +902,191 @@ func (m *Model) switchToSelected() tea.Cmd {
 	}
 }
 
+// toolCard is the model-side state for a single multi-line tool-call
+// card (#1769, child 4 of the iris-tui design). One card maps 1∶1 to a
+// tool_call event keyed on payload.ToolCall.ID (the same id used by
+// the matching tool_result — see issue #1783's wire-shape pivot).
+// lineStart and lineLen index into m.eventLines so the card can be
+// re-materialised in place when the result arrives or the operator
+// toggles expand/collapse.
+//
+// The full args / result strings are stored on the card so the
+// expanded view can show them without re-parsing the original event
+// payload (the payload string itself is dropped after rendering).
+//
+// Field naming note: the local field is named `msgID` for backward
+// readability — it holds payload.ToolCall.ID, which the extension
+// emits as the JSON `id` field. The Model maps it via
+// toolCardByMsgID; renaming the variable would churn this file
+// without making the code clearer.
+type toolCard struct {
+	msgID     string
+	rowID     int64
+	tool      string
+	args      json.RawMessage
+	result    string
+	paired    bool
+	lineStart int
+	lineLen   int
+}
+
+// installToolCallCard handles a fresh tool_call frame: parses the
+// payload, builds the multi-line collapsed card, appends its lines to
+// m.eventLines, and registers the card in toolCards / toolCardByMsgID.
+// Returns the new card on success, nil on parse failure (in which
+// case the caller falls back to the dispatcher's parse-error path).
+//
+// payload.ToolCall.ID may legitimately be empty (older pi versions,
+// replay races). When empty we still install the card so the
+// rendering is correct for the in-flight phase, but pairing on
+// tool_result is impossible — the card stays in flight forever,
+// visually flagging the missing pairing context.
+func (m *Model) installToolCallCard(rowID int64, payloadJSON string) *toolCard {
+	var p payload.ToolCall
+	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+		return nil
+	}
+	card := &toolCard{
+		msgID:     p.ID,
+		rowID:     rowID,
+		tool:      p.Name,
+		args:      p.Args,
+		paired:    false,
+		lineStart: len(m.eventLines),
+	}
+	expanded := m.expandedToolCards[p.ID]
+	lines := buildToolCardLines(rowID, p.ID, p.Name, p.Args, "", false, expanded)
+	card.lineLen = len(lines)
+	m.eventLines = append(m.eventLines, lines...)
+	m.toolCards = append(m.toolCards, card)
+	if p.ID != "" {
+		m.toolCardByMsgID[p.ID] = card
+		// Maintain the legacy index pointing at the header line so any
+		// remaining callers continue to find a tool_call line by id.
+		m.toolCallByMsgID[p.ID] = card.lineStart
+	}
+	return card
+}
+
+// foldToolResultIntoCard handles a tool_result frame. Locates the
+// matching tool-card by ID (post-#1783 wire shape: the extension's
+// tool_result.id mirrors the tool_call.id), marks it paired, stores
+// the result output, and rebuilds the card's lines in place. Returns
+// true on success, false when no matching card exists (the caller
+// then falls back to the dispatcher's legacy orphan-result path).
+//
+// On parse failure of the payload, returns false so the dispatcher
+// can render whatever it can. A malformed tool_result must not
+// orphan the in-flight card — future tool_result arrivals for the
+// same id still have a chance to land cleanly.
+func (m *Model) foldToolResultIntoCard(payloadJSON string) bool {
+	var p payload.ToolResult
+	if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+		return false
+	}
+	if p.ID == "" {
+		return false
+	}
+	card, ok := m.toolCardByMsgID[p.ID]
+	if !ok {
+		return false
+	}
+	card.paired = true
+	card.result = p.Output
+	m.rebuildCardLines(card)
+	return true
+}
+
+// rebuildCardLines replaces the line range owned by card with a
+// freshly built block reflecting the card's current state (paired vs
+// in-flight, expanded vs collapsed). When the new block has a
+// different length than the previous block, lineStart of every later
+// card is shifted by the delta so the index stays accurate.
+//
+// This is the single mutation point for card geometry — anything
+// that changes a card's visual state goes through this function so
+// the eventLines slice and the per-card index stay consistent.
+func (m *Model) rebuildCardLines(card *toolCard) {
+	expanded := false
+	if card.msgID != "" {
+		expanded = m.expandedToolCards[card.msgID]
+	}
+	newLines := buildToolCardLines(card.rowID, card.msgID, card.tool, card.args, card.result, card.paired, expanded)
+	oldLen := card.lineLen
+	newLen := len(newLines)
+
+	end := card.lineStart + oldLen
+	if end > len(m.eventLines) {
+		end = len(m.eventLines)
+	}
+	// Splice: prefix + newLines + suffix.
+	prefix := m.eventLines[:card.lineStart]
+	suffix := append([]narrative.NarrativeLine(nil), m.eventLines[end:]...)
+	rebuilt := make([]narrative.NarrativeLine, 0, len(prefix)+newLen+len(suffix))
+	rebuilt = append(rebuilt, prefix...)
+	rebuilt = append(rebuilt, newLines...)
+	rebuilt = append(rebuilt, suffix...)
+	m.eventLines = rebuilt
+
+	card.lineLen = newLen
+
+	// Shift later cards' lineStart by the delta.
+	delta := newLen - oldLen
+	if delta != 0 {
+		for _, c := range m.toolCards {
+			if c.lineStart > card.lineStart {
+				c.lineStart += delta
+				if c.msgID != "" {
+					m.toolCallByMsgID[c.msgID] = c.lineStart
+				}
+			}
+		}
+	}
+}
+
+// toggleSelectedToolCard expand/collapses the "current" tool card.
+// Per the issue's implementation guidance ("a single 'current card
+// index' pointing at the most recent tool card is fine"), the current
+// card is defined as the most recently installed tool_call. Returns
+// true when a card existed and was toggled, false when no cards are
+// present (e.g. focus on events with no tool_call seen yet).
+//
+// The expand/collapse state is keyed on MessageID so it survives
+// later card-state transitions (paired arrival, tool_result fold).
+// A card with empty msgID is not toggleable — the set key would
+// collide with every other empty-id card; in practice every
+// production tool_call carries a MessageID.
+func (m *Model) toggleSelectedToolCard() bool {
+	if len(m.toolCards) == 0 {
+		return false
+	}
+	card := m.toolCards[len(m.toolCards)-1]
+	if card.msgID == "" {
+		return false
+	}
+	if m.expandedToolCards[card.msgID] {
+		delete(m.expandedToolCards, card.msgID)
+	} else {
+		m.expandedToolCards[card.msgID] = true
+	}
+	m.rebuildCardLines(card)
+	return true
+}
+
 // resetEventPane clears the event buffer and associated indexes.
+//
+// Includes the tool-card bookkeeping introduced in #1769: cards belong
+// to a single subscribed session, so switching sessions wipes them
+// alongside eventLines. expandedToolCards is keyed on MessageID and
+// those ids do not survive a session switch either — a fresh
+// subscription means a fresh set of cards.
 func (m *Model) resetEventPane() {
 	m.eventLines = nil
 	m.seenRowIDs = make(map[int64]bool)
 	m.toolCallByMsgID = make(map[string]int)
+	m.toolCards = nil
+	m.toolCardByMsgID = make(map[string]*toolCard)
+	m.expandedToolCards = make(map[string]bool)
 	m.eventScroll = 0
 }
 
@@ -1065,12 +1320,19 @@ func (m Model) viewRightPane(width int) string {
 //   - msg_assistant + _body   — normal-foreground rich text.
 //   - msg_user + _body        — blue (operator input visually
 //     distinguished from assistant output).
-//   - tool_call               — styleToolCall: blue foreground, bold.
-//     Visually distinct from surrounding assistant text so the
-//     one-line card stands out as a tool invocation, not prose.
-//   - tool_result             — dim with the leading-indent prefix from
-//     the renderer ("    ↳ result: …") so it reads as a continuation
-//     of its parent tool_call.
+//   - tool_call               — styleToolCall: blue + bold (legacy
+//     one-line card path / orphan tool_result fallback).
+//   - tool_card_header_done   — styleToolCall: blue + bold; header
+//     line of a completed (paired) tool card.
+//   - tool_card_header_inflight + tool_card_status_inflight —
+//     styleToolCallInFlight: yellow + bold; visually flags "still
+//     running" without using the red error palette.
+//   - tool_card_args / _args_full / _status_done / _result_full —
+//     styleToolCardArgs: dim; supplementary args/result rows beneath
+//     the header line.
+//   - tool_result             — dim with the leading-indent prefix
+//     from the renderer (orphan-result fallback only; the paired
+//     path renders via the card status line).
 //   - extension_error + _body — prominent red-on-red block. Both lines
 //     carry the same treatment so the header + message read as one
 //     emergency unit. styleErrorProminent uses bold to break out of
@@ -1099,6 +1361,12 @@ func styleEventLine(line narrative.NarrativeLine, width int, coordinator bool) s
 		return styleBlue.Render(padRight(text, width))
 	case evTypeToolCall:
 		return styleToolCall.Render(padRight(text, width))
+	case evTypeToolCardHeaderDone:
+		return styleToolCall.Render(padRight(text, width))
+	case evTypeToolCardHeaderInFlight, evTypeToolCardStatusInFlight:
+		return styleToolCallInFlight.Render(padRight(text, width))
+	case evTypeToolCardArgs, evTypeToolCardArgsFull, evTypeToolCardStatusDone, evTypeToolCardResultFull:
+		return styleToolCardArgs.Render(padRight(text, width))
 	case evTypeToolResult:
 		return styleDim.Render(padRight(text, width))
 	case evTypeExtensionError, evTypeExtensionErrorBody:

@@ -33,18 +33,22 @@ func TestTurnLabel(t *testing.T) {
 	}
 }
 
+// All ToolKeyArg tests post-#1783 pass a json.RawMessage (the same
+// type the function now accepts). The fixtures use the JSON-object
+// form that the pi prism extension emits.
 func TestToolKeyArg_Bash(t *testing.T) {
 	// Object-form args.
-	if got := narrative.ToolKeyArg("bash", `{"command":"go test ./..."}`); got != "go test ./..." {
+	if got := narrative.ToolKeyArg("bash", json.RawMessage(`{"command":"go test ./..."}`)); got != "go test ./..." {
 		t.Errorf("bash command extract: got %q", got)
 	}
-	// Plain string args.
-	if got := narrative.ToolKeyArg("bash", `"echo hi"`); got != "echo hi" {
+	// Plain string args (legacy form, still accepted by
+	// ExtractBashCommand's fallback).
+	if got := narrative.ToolKeyArg("bash", json.RawMessage(`"echo hi"`)); got != "echo hi" {
 		t.Errorf("bash plain-string extract: got %q", got)
 	}
 	// Long command is truncated with "...".
 	long := strings.Repeat("x", 200)
-	got := narrative.ToolKeyArg("bash", `{"command":"`+long+`"}`)
+	got := narrative.ToolKeyArg("bash", json.RawMessage(`{"command":"`+long+`"}`))
 	if !strings.HasSuffix(got, "...") {
 		t.Errorf("long bash arg should be truncated with ..., got %q", got[len(got)-10:])
 	}
@@ -54,7 +58,7 @@ func TestToolKeyArg_Bash(t *testing.T) {
 }
 
 func TestToolKeyArg_FilePath(t *testing.T) {
-	args := `{"filePath":"/tmp/x.go","content":"…"}`
+	args := json.RawMessage(`{"filePath":"/tmp/x.go","content":"…"}`)
 	for _, tool := range []string{"read", "Read", "edit", "Edit", "write", "Write"} {
 		if got := narrative.ToolKeyArg(tool, args); got != "/tmp/x.go" {
 			t.Errorf("%s key-arg: got %q, want /tmp/x.go", tool, got)
@@ -63,12 +67,28 @@ func TestToolKeyArg_FilePath(t *testing.T) {
 }
 
 func TestToolKeyArg_GlobGrep(t *testing.T) {
-	if got := narrative.ToolKeyArg("glob", `{"pattern":"**/*.go"}`); got != "**/*.go" {
+	if got := narrative.ToolKeyArg("glob", json.RawMessage(`{"pattern":"**/*.go"}`)); got != "**/*.go" {
 		t.Errorf("glob: got %q", got)
 	}
-	if got := narrative.ToolKeyArg("grep", `{"pattern":"TODO"}`); got != "TODO" {
+	if got := narrative.ToolKeyArg("grep", json.RawMessage(`{"pattern":"TODO"}`)); got != "TODO" {
 		t.Errorf("grep: got %q", got)
 	}
+}
+
+// TestToolKeyArg_EmptyDoesNotPanic covers the #1783 edge-case AC:
+// empty / malformed args must not panic. The previous test surface
+// implicitly relied on Go-string semantics where an empty string is
+// still a valid input; the json.RawMessage transition keeps that
+// behaviour.
+func TestToolKeyArg_EmptyDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("panicked on empty args: %v", r)
+		}
+	}()
+	_ = narrative.ToolKeyArg("bash", nil)
+	_ = narrative.ToolKeyArg("bash", json.RawMessage(""))
+	_ = narrative.ToolKeyArg("bash", json.RawMessage("{not valid"))
 }
 
 func TestToolResultSummary_Bash(t *testing.T) {

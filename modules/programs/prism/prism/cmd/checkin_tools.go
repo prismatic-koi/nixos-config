@@ -113,12 +113,21 @@ func toolKeyArg(tool, args string) string {
 		return ""
 
 	default:
-		// Generic: first ~80 chars of raw args.
-		if len([]rune(args)) > 80 {
-			runes := []rune(args)
+		// Post-#1783: payload.ToolCall.Args is a JSON RawMessage,
+		// so a string-typed args arrives here with its JSON quotes
+		// intact (e.g. `"main.go"`). Strip the quoting via
+		// json.Unmarshal so the generic-tool fallback matches the
+		// pre-#1783 behaviour for unrecognised tools.
+		display := args
+		var s string
+		if err := json.Unmarshal([]byte(args), &s); err == nil {
+			display = s
+		}
+		if len([]rune(display)) > 80 {
+			runes := []rune(display)
 			return string(runes[:80]) + "..."
 		}
-		return args
+		return display
 	}
 }
 

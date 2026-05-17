@@ -68,21 +68,63 @@ type MsgAssistant struct {
 
 // ToolCall is the payload for tool_call events.
 //
-// DurationMs is the wall-clock time of the tool execution in milliseconds,
-// measured from state.start to state.end on the tool part. Zero means
-// "not available" (pre-enrichment events or tools that don't report timing).
+// Field shape (issue #1783): the JSON field names mirror what the pi
+// prism extension emits verbatim on the harness socket
+// (`pi/extensions/prism.ts:2429-2444`):
+//
+//	{"type":"tool_call","id":"...","name":"bash","args":{"command":"…"},"truncated":false}
+//
+// Pre-#1783 the struct declared `tool`, `args` (Go `string`), and
+// `messageId` — a wire format that no live producer has emitted since
+// at least pi 0.72.1. Renderers using the old fields saw
+// `json.Unmarshal` fail on `args` (object vs string mismatch) and
+// emitted `(parse error)` for every tool call. The rename here
+// realigns the consumer side with the upstream wire shape; the older
+// `internal/harness/pi/adapter.go::NormaliseFrame` Translate path is
+// updated alongside so DB rows written by that path also carry the
+// new field names.
+//
+// Args is a `json.RawMessage` because the extension emits a JSON
+// object (a `Record<string, unknown>`), not an escaped string. Each
+// consumer is responsible for re-marshalling or extracting per-tool
+// fields (see `narrative.ToolKeyArg`). An empty/zero RawMessage means
+// "no args" and must not panic any consumer.
+//
+// Truncated is set by the extension when args were oversized for the
+// 500-char budget; renderers may surface this as a visual hint.
+//
+// DurationMs is kept for backward compatibility with the older PI
+// stdio adapter (B5.TR Translate strategy in
+// `internal/harness/pi/adapter.go`) which still populates it from
+// `elapsed_ms`. The current prism extension does not emit a duration
+// field; DurationMs is zero in that case.
 type ToolCall struct {
-	Tool       string `json:"tool"`
-	Args       string `json:"args"`
-	MessageID  string `json:"messageId"`
-	DurationMs int64  `json:"durationMs,omitempty"`
+	Name       string          `json:"name"`
+	Args       json.RawMessage `json:"args,omitempty"`
+	ID         string          `json:"id"`
+	Truncated  bool            `json:"truncated,omitempty"`
+	DurationMs int64           `json:"durationMs,omitempty"`
 }
 
 // ToolResult is the payload for tool_result events.
+//
+// Field shape (issue #1783) matches the pi prism extension's emitted
+// JSON (`pi/extensions/prism.ts:2503-2517`):
+//
+//	{"type":"tool_result","id":"...","success":true,"output":"…","truncated":false}
+//
+// `id` is the tool-call id (same value as ToolCall.ID), used to pair
+// the result back to its call. `success` is the negation of pi's
+// `isError` flag. `output` is the stringified tool output truncated
+// to the extension's character budget.
+//
+// The older PI stdio adapter (Translate path) produces the same
+// shape after #1783; see `internal/harness/pi/adapter.go`.
 type ToolResult struct {
-	Tool      string `json:"tool"`
-	Result    string `json:"result"`
-	MessageID string `json:"messageId"`
+	ID        string `json:"id"`
+	Success   bool   `json:"success"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // PermissionAsk is the payload for permission_ask events.

@@ -156,6 +156,27 @@ func renderCheckinEventsRaw(session string, d *db.DB, events []db.Event, verbose
 	return nil
 }
 
+// displayArgs returns a human-readable string for a tool_call's
+// args field. Post-#1783 Args is a json.RawMessage; when it's a
+// JSON string literal we unwrap the quotes (so `"echo hi"` displays
+// as `echo hi`), otherwise we echo the raw JSON. Empty / null
+// inputs degrade to an empty string. Pure-string fallback preserves
+// pre-#1783 forensic output for unrecognised tool shapes.
+func displayArgs(args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	s := string(args)
+	if s == "null" {
+		return ""
+	}
+	var unquoted string
+	if err := json.Unmarshal(args, &unquoted); err == nil {
+		return unquoted
+	}
+	return s
+}
+
 // renderChildEvent prints a single child event using the legacy raw-event style.
 // Used by renderCheckinEventsRaw (--types path) and renderProxiedCheckin.
 // prefix is prepended before the leading spaces (used for subagent indentation).
@@ -167,11 +188,11 @@ func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string)
 			fmt.Printf("%s  → (tool_call parse error)\n", prefix)
 			return
 		}
-		args := p.Args
+		args := displayArgs(p.Args)
 		if !verbose && len(args) > 80 {
 			args = args[:80] + "..."
 		}
-		fmt.Printf("%s  → %s: %s [✓]\n", prefix, p.Tool, args)
+		fmt.Printf("%s  → %s: %s [✓]\n", prefix, p.Name, args)
 
 	case "tool_result":
 		var p payload.ToolResult
@@ -179,7 +200,7 @@ func renderChildEvent(eventType, rawPayload string, verbose bool, prefix string)
 			fmt.Printf("%s  → (tool_result parse error)\n", prefix)
 			return
 		}
-		result := p.Result
+		result := p.Output
 		if !verbose && len(result) > 80 {
 			result = result[:80] + "..."
 		}
@@ -238,7 +259,7 @@ func renderChildEventVerbose(eventType, rawPayload string, prefix string) {
 			fmt.Printf("%s  → (tool_call parse error)\n", prefix)
 			return
 		}
-		fmt.Printf("%s  → %s: %s\n", prefix, p.Tool, p.Args)
+		fmt.Printf("%s  → %s: %s\n", prefix, p.Name, displayArgs(p.Args))
 
 	case "tool_result":
 		var p payload.ToolResult
@@ -246,7 +267,7 @@ func renderChildEventVerbose(eventType, rawPayload string, prefix string) {
 			fmt.Printf("%s  → (tool_result parse error)\n", prefix)
 			return
 		}
-		fmt.Printf("%s  → result: %s\n", prefix, p.Result)
+		fmt.Printf("%s  → result: %s\n", prefix, p.Output)
 
 	case "permission_ask":
 		var p payload.PermissionAsk
@@ -302,26 +323,28 @@ func renderChildEventVerbose(eventType, rawPayload string, prefix string) {
 // Tool results are matched positionally to tool calls of the same tool name
 // within the message. Permission and thinking events are rendered as before.
 func renderChildEventsDefault(children []childEventItem, prefix string) {
-	// Split children into tool_calls, tool_results (by tool name for pairing),
+	// Split children into tool_calls, tool_results (by id for pairing),
 	// and other events (permission_ask, permission_denied, thinking).
 	//
-	// Pairing strategy: maintain a per-tool FIFO queue of results. When we
-	// encounter a tool_call for tool T, dequeue the next result for T (if any).
-	// This handles the common case where results appear in the same order as calls.
+	// Post-#1783 pairing strategy: payload.ToolCall and ToolResult
+	// share an `id` field (the extension's toolCallId). Pair on id.
+	// A tool_result whose id has no matching tool_call (e.g. parent
+	// scrolled out) is rendered as an orphan line beneath the tool
+	// calls, preserving the previous unpaired-result rendering.
 	type toolCallEntry struct {
+		id      string
 		tool    string
 		args    string
 		payload string
 	}
 	type toolResultEntry struct {
-		tool    string
-		result  string
-		payload string
+		id     string
+		result string
 	}
 
-	// Collect tool calls and results in order.
 	var toolCalls []toolCallEntry
-	resultsByTool := make(map[string][]toolResultEntry)
+	resultByID := make(map[string]toolResultEntry)
+	var orphanResults []toolResultEntry
 
 	// Also collect other events in order (permission_ask, permission_denied, thinking)
 	// to be rendered after the tool one-liners.
@@ -336,34 +359,37 @@ func renderChildEventsDefault(children []childEventItem, prefix string) {
 		case "tool_call":
 			var p payload.ToolCall
 			if err := json.Unmarshal([]byte(c.payload), &p); err == nil {
-				toolCalls = append(toolCalls, toolCallEntry{tool: p.Tool, args: p.Args, payload: c.payload})
-				// Pre-index result slot (will be filled when result arrives).
+				toolCalls = append(toolCalls, toolCallEntry{id: p.ID, tool: p.Name, args: string(p.Args), payload: c.payload})
 			} else {
-				toolCalls = append(toolCalls, toolCallEntry{tool: "?", args: "", payload: c.payload})
+				toolCalls = append(toolCalls, toolCallEntry{id: "", tool: "?", args: "", payload: c.payload})
 			}
 		case "tool_result":
 			var p payload.ToolResult
 			if err := json.Unmarshal([]byte(c.payload), &p); err == nil {
-				resultsByTool[p.Tool] = append(resultsByTool[p.Tool], toolResultEntry{tool: p.Tool, result: p.Result, payload: c.payload})
+				entry := toolResultEntry{id: p.ID, result: p.Output}
+				if p.ID != "" {
+					resultByID[p.ID] = entry
+				} else {
+					orphanResults = append(orphanResults, entry)
+				}
 			}
 		default:
 			others = append(others, otherEvent{c.eventType, c.payload})
 		}
 	}
 
-	// Render tool one-liners, consuming results from the per-tool FIFO queue.
-	usedResults := make(map[string]int) // tool → count consumed
+	// Render tool one-liners. Pair each call with its id-matched
+	// result. A call with no matching result renders alone
+	// (in-flight); a result with no matching call appears in the
+	// orphanResults slice below.
+	pairedIDs := make(map[string]bool, len(toolCalls))
 	for _, tc := range toolCalls {
-		// Dequeue the next result for this tool.
-		resultList := resultsByTool[tc.tool]
-		usedIdx := usedResults[tc.tool]
 		var resultSummary string
-		if usedIdx < len(resultList) {
-			resultSummary = toolResultSummary(tc.tool, resultList[usedIdx].result)
-			usedResults[tc.tool] = usedIdx + 1
-		} else {
-			// No result available (still running or not recorded).
-			resultSummary = ""
+		if tc.id != "" {
+			if tr, ok := resultByID[tc.id]; ok {
+				resultSummary = toolResultSummary(tc.tool, tr.result)
+				pairedIDs[tc.id] = true
+			}
 		}
 
 		keyArg := toolKeyArg(tc.tool, tc.args)
@@ -377,6 +403,19 @@ func renderChildEventsDefault(children []childEventItem, prefix string) {
 		default:
 			fmt.Printf("%s  → %s\n", prefix, tc.tool)
 		}
+	}
+
+	// Render orphan results (no matching tool_call observed in this
+	// turn window). Use the generic summariser since we have no
+	// tool-name context.
+	for _, tr := range orphanResults {
+		fmt.Printf("%s  ↳ result (orphan): %s\n", prefix, toolResultSummary("", tr.result))
+	}
+	for id, tr := range resultByID {
+		if pairedIDs[id] {
+			continue
+		}
+		fmt.Printf("%s  ↳ result (orphan): %s\n", prefix, toolResultSummary("", tr.result))
 	}
 
 	// Render other events (permission_ask, permission_denied, thinking).
