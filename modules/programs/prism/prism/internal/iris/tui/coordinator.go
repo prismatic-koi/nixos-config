@@ -252,16 +252,32 @@ func (m *Model) accumulateCoordinatorEvent(e *iris.DaemonSessionEventFrame, line
 		if preview == "" {
 			preview = "(no prompt body)"
 		}
+		// The escalating worker is named by the payload's `source` field,
+		// NOT by e.SessionName — the frame can arrive via either the
+		// worker's subscription (e.SessionName == worker) or, post-fix
+		// in client_socket.go's writeSessionEscalatedEvent, via the
+		// target coordinator's subscription (e.SessionName ==
+		// coordinator). Sourcing the summary from the payload makes the
+		// rendered row consistent regardless of which stream carried
+		// the frame.
+		worker := p.Source
+		if worker == "" {
+			// Defensive fallback: older daemon writes (pre-fix replay)
+			// without a source field. e.SessionName is the next best
+			// candidate — on the worker's stream it names the
+			// escalating worker correctly.
+			worker = e.SessionName
+		}
 		var summary string
 		switch {
 		case p.Target != "":
-			summary = e.SessionName + " \u2192 " + p.Target + ": " + preview
+			summary = worker + " \u2192 " + p.Target + ": " + preview
 		default:
-			summary = e.SessionName + " (no coordinator): " + preview
+			summary = worker + " (no coordinator): " + preview
 		}
 		m.appendCoordinatorEvent(coordinatorEvent{
 			kind:        coordEventEscalation,
-			sessionName: e.SessionName,
+			sessionName: worker,
 			summary:     summary,
 			at:          time.Now(),
 		})

@@ -152,14 +152,19 @@ func newEventRenderer() *eventRenderer {
 }
 
 // renderSessionEscalated renders the session.escalated bus event as a
-// single prominent row — the row appears on the ESCALATING worker's
-// event stream (the writer is ClientSocket.writeSessionEscalatedEvent
-// in internal/iris/client_socket.go, which Publish()es on the worker's
-// SessionName). The handler is deliberately compact: a glyph + the
-// target coordinator + a truncated prompt preview. handleDaemonFrame
-// pairs this with a parallel append into Model.coordinatorEvents so the
-// coordinator-events overlay can list the same event regardless of
-// which session is currently focused.
+// single prominent row. The writer is
+// ClientSocket.writeSessionEscalatedEvent in
+// internal/iris/client_socket.go; post-#1772 it Publish()es the event
+// on BOTH the escalating worker's stream (primary, audit-row anchor)
+// AND the target coordinator's stream (fan-out so a coordinator-
+// focused subscriber receives the event without subscribing to every
+// worker). This handler is called for either arrival path — the
+// row text reads the same in both cases because it sources the
+// worker name from the payload's `source` field rather than from the
+// event-frame envelope's SessionName. handleDaemonFrame pairs this
+// with a parallel append into Model.coordinatorEvents so the
+// coordinator-events overlay can list the event regardless of which
+// session is currently focused.
 //
 // On payload parse failure we still render a header row so the
 // operator sees that an escalation arrived — a silent drop on JSON

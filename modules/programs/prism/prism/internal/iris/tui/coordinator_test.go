@@ -137,8 +137,16 @@ func modelWithCoordinatorSession(t *testing.T, name string) tui.Model {
 // coordinator's name. We can't introspect ANSI styling from a
 // black-box test, but we can verify the event is in the buffer and
 // the row text follows the documented format.
+//
+// This test exercises the coordinator-stream wire path: the daemon's
+// writeSessionEscalatedEvent (post-#1772 fix) publishes a second
+// frame under the target coordinator's SessionName so a
+// coordinator-focused TUI receives it without subscribing to every
+// worker. The event SessionName is the coordinator; the payload's
+// `source` field names the escalating worker.
 func TestCoordinator_EscalationProminent(t *testing.T) {
 	const coord = "nixos-config@main"
+	const worker = "nixos-config@feature-x"
 	m := modelWithCoordinatorSession(t, coord)
 
 	// Pre-condition: coordinator detection wired correctly.
@@ -146,9 +154,10 @@ func TestCoordinator_EscalationProminent(t *testing.T) {
 		t.Fatalf("setup: IsCoordinatorSessionName(%q) = %v, want %v", coord, got, want)
 	}
 
-	// Deliver a session.escalated frame as if a worker had escalated.
+	// Deliver a session.escalated frame routed via the coordinator's
+	// subscription (e.SessionName == coord).
 	m = deliverEvent(t, m, coord, "session.escalated", 1, map[string]any{
-		"source":      "nixos-config@feature-x",
+		"source":      worker,
 		"target":      coord,
 		"prompt":      "I am stuck on review cycle 3, need direction",
 		"delivery_id": "del-1",
@@ -165,9 +174,77 @@ func TestCoordinator_EscalationProminent(t *testing.T) {
 		t.Errorf("escalation prompt preview not in view; excerpt:\n%s", excerpt(view, 800))
 	}
 
-	// And the buffer must have the event ready for the overlay.
+	// And the buffer must have the event ready for the overlay,
+	// summarised with the WORKER's name (from the payload's `source`),
+	// not the coordinator's name (the frame envelope).
 	if got, want := tui.ModelCoordinatorEventCount(m), 1; got != want {
 		t.Errorf("ModelCoordinatorEventCount = %d, want %d", got, want)
+	}
+	summary := tui.ModelCoordinatorEventSummaryAt(m, 0)
+	if !strings.Contains(summary, worker) {
+		t.Errorf("buffered summary should name the escalating worker (%q); got %q", worker, summary)
+	}
+}
+
+// TestCoordinator_EscalationProminent_WorkerWirePath is the regression
+// test review-context flagged as missing: it asserts the production
+// wire path for escalations works when the frame is tagged with the
+// WORKER's SessionName (which is how writeSessionEscalatedEvent's
+// primary Publish behaves) and the TUI is focused on that worker.
+//
+// The coordinator-side fan-out (TestCoordinator_EscalationProminent
+// above) handles the more common case; this test ensures the
+// payload-sourced worker-name lookup is independent of which stream
+// the frame arrived on. Without this coverage a regression in either
+// publish call could silently break the feature on the focus the
+// test does not exercise.
+func TestCoordinator_EscalationProminent_WorkerWirePath(t *testing.T) {
+	const worker = "nixos-config@feature-y"
+	const coord = "nixos-config@main"
+
+	// Focus the TUI on the WORKER session this time (not a
+	// coordinator). The session.escalated event is published by the
+	// daemon on the worker's stream (primary publish in
+	// writeSessionEscalatedEvent), so a worker-focused TUI also
+	// receives the frame — typically when a coordinator-tier human
+	// is watching the worker session directly.
+	m := newConnectedModel()
+	snap := iris.DaemonSessionsSnapshotFrame{
+		Type: iris.DaemonFrameSessionsSnapshot,
+		Sessions: []iris.SessionSnapshot{
+			{Name: worker, InstanceID: "iid", State: "active", Role: "worker", Worktree: "/repo"},
+		},
+	}
+	m2, _ := m.Update(tui.DaemonFrame{RawType: iris.DaemonFrameSessionsSnapshot, Snapshot: &snap})
+	m = m2.(tui.Model)
+
+	// Deliver session.escalated tagged with the WORKER's SessionName —
+	// matching the daemon's writeSessionEscalatedEvent primary publish.
+	m = deliverEvent(t, m, worker, "session.escalated", 1, map[string]any{
+		"source": worker,
+		"target": coord,
+		"prompt": "stuck on something",
+	})
+
+	// The row must render (no silent drop).
+	view := m.View()
+	if !strings.Contains(view, "escalated") {
+		t.Errorf("escalation row not rendered on worker-tagged stream; excerpt:\n%s",
+			excerpt(view, 800))
+	}
+
+	// The buffer must accumulate. The summary must name the worker
+	// (from the payload's source field) regardless of which stream
+	// carried the frame.
+	if got, want := tui.ModelCoordinatorEventCount(m), 1; got != want {
+		t.Fatalf("ModelCoordinatorEventCount = %d, want %d", got, want)
+	}
+	summary := tui.ModelCoordinatorEventSummaryAt(m, 0)
+	if !strings.Contains(summary, worker) {
+		t.Errorf("summary should name worker %q; got %q", worker, summary)
+	}
+	if !strings.Contains(summary, coord) {
+		t.Errorf("summary should also name target coord %q; got %q", coord, summary)
 	}
 }
 

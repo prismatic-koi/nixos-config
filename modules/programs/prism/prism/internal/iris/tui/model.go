@@ -295,6 +295,16 @@ type Model struct {
 	// coordinatorEventBufferCap; older entries are dropped from the
 	// front when capacity is exceeded.
 	//
+	// Routing note (the daemon-side companion of this feature):
+	// session.escalated rows are Publish()ed by
+	// ClientSocket.writeSessionEscalatedEvent on BOTH the worker's
+	// stream AND the target coordinator's stream (the secondary
+	// Publish was added alongside this TUI work, also under #1772).
+	// That means a TUI focused on the coordinator receives the event
+	// in real time without subscribing to every worker. There is
+	// still exactly one DB audit row per escalation — the second
+	// Publish is delivery-only.
+	//
 	// Sourcing note (and the reason this is not a DB query): the TUI's
 	// TestNoDBImport invariant forbids importing internal/db. The
 	// design-doc guidance for this child suggests pulling history from
