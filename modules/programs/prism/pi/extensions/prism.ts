@@ -865,6 +865,87 @@ export function coerceToolOutput(content: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
+// Assistant-message text extraction — issue #1764.
+//
+// pi 0.72.1's extension event model emits assistant content via two
+// complementary paths:
+//
+//   1. `message_update` with `assistantMessageEvent.type === "text_delta"` —
+//      fires once per streaming text chunk while the LLM response is in
+//      flight. This is the existing path forwarded as one `msg_assistant`
+//      frame per delta.
+//
+//   2. `message_end` with `message.role === "assistant"` — fires once at the
+//      end of every assistant message and carries the *complete* content
+//      array (`(TextContent | ThinkingContent | ToolCall)[]`). This is the
+//      backstop for code paths where the streaming layer never produces
+//      `text_delta` events: non-streaming providers, error paths that bypass
+//      the delta loop, or future provider plugins.
+//
+// The helpers below let both handlers share the same content-walking logic
+// and let the regression test in prism.test.ts pin pi 0.72.1's actual shape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns true when an extension `message_update` event's
+ * `assistantMessageEvent` is a streaming text-delta carrying a non-empty
+ * string delta. Used by the `message_update` handler in the extension and
+ * by the per-message "have we seen a delta yet" tracker that suppresses
+ * duplicate emission from `message_end`.
+ *
+ * The shape comes from pi 0.72.1's pi-ai package:
+ * `node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225`.
+ * The AssistantMessageEvent union includes:
+ *   start, text_start, text_delta, text_end,
+ *   thinking_start, thinking_delta, thinking_end,
+ *   toolcall_start, toolcall_delta, toolcall_end,
+ *   done, error
+ * Of those, only `text_delta` carries assistant-visible text incrementally
+ * (`thinking_delta` is internal reasoning, not user-visible response text).
+ */
+export function isAssistantTextDeltaEvent(
+  ame: unknown,
+): ame is { type: "text_delta"; delta: string } {
+  if (ame === null || typeof ame !== "object") return false
+  if ((ame as { type?: unknown }).type !== "text_delta") return false
+  return typeof (ame as { delta?: unknown }).delta === "string"
+}
+
+/**
+ * Extract every assistant-visible text block from a pi `AssistantMessage`'s
+ * `content` array. Returns one string per `{type:"text", text}` block, in
+ * order. Thinking blocks and toolCall blocks are skipped — thinking is
+ * internal, toolCalls are surfaced via the separate `tool_call` wire frame.
+ *
+ * Empty strings are filtered out so the caller never emits an empty
+ * `msg_assistant` frame. Returns `[]` for non-assistant messages, messages
+ * with no text blocks, or malformed input.
+ *
+ * Source-of-truth for the shape:
+ * `node_modules/@mariozechner/pi-ai/dist/types.d.ts:143` (`AssistantMessage`)
+ * and the `TextContent`/`ThinkingContent`/`ToolCall` interfaces above it.
+ */
+export function extractAssistantText(message: unknown): string[] {
+  if (message === null || typeof message !== "object") return []
+  if ((message as { role?: unknown }).role !== "assistant") return []
+  const content = (message as { content?: unknown }).content
+  if (!Array.isArray(content)) return []
+  const out: string[] = []
+  for (const block of content) {
+    if (
+      block !== null &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string"
+    ) {
+      const text = (block as { text: string }).text
+      if (text.length > 0) out.push(text)
+    }
+  }
+  return out
+}
+
+// ---------------------------------------------------------------------------
 // Endpoint parsing — exported for unit testing.
 // ---------------------------------------------------------------------------
 
@@ -2438,6 +2519,38 @@ export default function prismExtension(pi: ExtensionAPI): void {
     writer.write(frame)
   })
 
+  // ── Assistant-message text forwarding (issue #1764) ──────────────────
+  //
+  // pi emits assistant text via two complementary code paths:
+  //   (a) `message_update` with `assistantMessageEvent.type === "text_delta"`
+  //       — streaming chunks while the LLM response is in flight;
+  //   (b) `message_end` with `message.role === "assistant"` — fires once
+  //       at the end of every assistant message with the complete content.
+  //
+  // Streaming providers (Anthropic, OpenAI, Google for normal responses)
+  // exercise (a). Non-streaming code paths or providers that bypass the
+  // delta loop only exercise (b). The extension forwards from whichever
+  // path fires — and uses `currentAssistantSawDelta` to avoid emitting
+  // the same text twice when both paths fire for the same message.
+  //
+  // The flag tracks the currently in-flight assistant message: set to
+  // `false` on `message_start` for an assistant message, flipped to
+  // `true` the first time a `text_delta` is forwarded, and consulted
+  // (then cleared) by `message_end` to decide whether to emit a backstop.
+  let currentAssistantSawDelta = false
+
+  pi.on("message_start", async (event, ctx) => {
+    lastCtx = ctx
+    const message = (event as { message?: unknown }).message
+    if (
+      message !== null &&
+      typeof message === "object" &&
+      (message as { role?: unknown }).role === "assistant"
+    ) {
+      currentAssistantSawDelta = false
+    }
+  })
+
   pi.on("message_update", async (event, ctx) => {
     lastCtx = ctx
     if (!writer || !handshakeComplete) return
@@ -2446,17 +2559,42 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // the sidecar already gets the final tool call via tool_execution_*.
     const ame = (event as { assistantMessageEvent?: unknown })
       .assistantMessageEvent
-    if (
-      ame !== null &&
-      typeof ame === "object" &&
-      (ame as { type?: unknown }).type === "text_delta" &&
-      typeof (ame as { delta?: unknown }).delta === "string"
-    ) {
-      const delta = (ame as { delta: string }).delta
-      const { text, truncated } = truncateString(delta)
+    if (isAssistantTextDeltaEvent(ame)) {
+      currentAssistantSawDelta = true
+      const { text, truncated } = truncateString(ame.delta)
       const frame: Record<string, unknown> = {
         type: "msg_assistant",
         text,
+      }
+      if (truncated) frame.truncated = true
+      writer.write(frame)
+    }
+  })
+
+  pi.on("message_end", async (event, ctx) => {
+    lastCtx = ctx
+    // Backstop for the non-streaming path (issue #1764). If at least one
+    // text_delta was forwarded for this assistant message, the deltas
+    // already covered the content — emitting again would double-write.
+    // If no delta was observed (non-streaming provider, error path, etc.)
+    // walk the complete content array and emit each text block.
+    const message = (event as { message?: unknown }).message
+    const isAssistant =
+      message !== null &&
+      typeof message === "object" &&
+      (message as { role?: unknown }).role === "assistant"
+    const sawDelta = currentAssistantSawDelta
+    // Reset the per-message flag regardless of role so the next assistant
+    // message starts from a known state if message_start is missed.
+    if (isAssistant) currentAssistantSawDelta = false
+    if (!isAssistant) return
+    if (sawDelta) return
+    if (!writer || !handshakeComplete) return
+    for (const text of extractAssistantText(message)) {
+      const { text: out, truncated } = truncateString(text)
+      const frame: Record<string, unknown> = {
+        type: "msg_assistant",
+        text: out,
       }
       if (truncated) frame.truncated = true
       writer.write(frame)
