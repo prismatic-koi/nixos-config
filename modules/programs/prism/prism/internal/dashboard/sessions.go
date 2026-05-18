@@ -24,7 +24,7 @@ import (
 type AgentSession struct {
 	Name        string
 	AgentState  string  // active | waiting | finished | compacting | error | idle | ""
-	AgentPath   string  // worktree path — used for git diff stats
+	AgentPath   string  // worktree path (e.g. used by ensureSessionAndSwitch)
 	AgentTitle  string  // current session title from agent_status.title
 	AgentName   string  // coordinator | worker | "" — from agent_status.agent_name
 	ModelID     string  // model identifier from agent_status.model_id
@@ -425,17 +425,6 @@ func SortDisplayed(ss []AgentSession) {
 	}
 }
 
-// agentTypeLabel returns a display label for the agent_name value.
-//
-// This is a pass-through: every agent type (coordinator, worker, review-goal,
-// review-code, review-security, review-qa, review-context, ac, retro, and any
-// future type) renders as its own name. An empty input yields an empty label.
-// See #849 for the session-uniformity rationale behind the flat-allowlist
-// removal.
-func agentTypeLabel(agentName string) string {
-	return agentName
-}
-
 // SessionColumnWidth computes the session column width (sessionW) from the
 // actual rendered widths of all displayed sessions. It scans the session names
 // and their tree prefixes to find the minimum sessionW that accommodates every
@@ -578,6 +567,10 @@ func TmuxClientCounts() map[string]int {
 // pass "" for top-level rows. Top-level rows display the full session name
 // padded to treePrefixW+sessionW; child rows display the tree prefix plus the
 // branch name padded to the same total width.
+//
+// The row layout is exactly three columns: session, state, title — separated
+// by two-space gaps. titleW may be 0, in which case the title slot is omitted
+// entirely (state-only mode at very narrow widths).
 func RenderSessionRow(
 	d Shared,
 	s AgentSession,
@@ -585,9 +578,8 @@ func RenderSessionRow(
 	treePrefix string,
 	currentSession string,
 	cursorActive bool,
-	styleDim, styleIns, styleDel, styleFg, styleAgentType lipgloss.Style,
-	sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelW, harnessW int,
-	showType, showHarness, showModel, showStat bool,
+	styleDim, styleFg lipgloss.Style,
+	sessionW, stateW, titleW int,
 ) string {
 	isHere := s.Name == currentSession
 	isSelected := cursorIdx == d.Cursor
@@ -642,59 +634,9 @@ func RenderSessionRow(
 		sessionArea = treePrefix + fmt.Sprintf("%-*s", totalSessionW-runeCount, branch)
 	}
 
-	agentLabel := agentTypeLabel(s.AgentName)
-	paddedAgentLabel := fmt.Sprintf("%-*s", agentTypeW, agentLabel)
-
-	harnessLabel := s.Harness
-	paddedHarnessLabel := fmt.Sprintf("%-*s", harnessW, harnessLabel)
-
-	modelLabel := s.ModelID
-	if utf8.RuneCountInString(modelLabel) > modelW {
-		modelLabel = string([]rune(modelLabel)[:modelW-1]) + "…"
-	}
-	paddedModelLabel := fmt.Sprintf("%-*s", modelW, modelLabel)
-
-	result := d.GitStats[s.AgentPath]
-	var statPlain string
-	if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
-		statPlain = "—"
-	} else if !result.Ok {
-		statPlain = "?"
-	} else if statW == statWCompact {
-		statPlain = fmt.Sprintf("+%d -%d", result.Stat.Insertions, result.Stat.Deletions)
-	} else {
-		fileWord := "files"
-		if result.Stat.Files == 1 {
-			fileWord = "file "
-		}
-		statPlain = fmt.Sprintf("%d %s +%d -%d", result.Stat.Files, fileWord, result.Stat.Insertions, result.Stat.Deletions)
-	}
-
 	title := s.AgentTitle
-
-	// portLabel is the compact port display shown when a port is allocated.
-	// It is rendered at the start of the title column, before the title text.
-	portLabel := ""
-	if s.HarnessPort != nil {
-		portLabel = fmt.Sprintf(":%d", *s.HarnessPort)
-	}
-
-	// When a portLabel is present, reserve its width (plus one space separator)
-	// from the title budget so the title still fits within titleW.
-	// Only show the port label if at least 5 characters remain for the title
-	// after the reservation; otherwise suppress it to avoid overflow.
-	titleAvail := titleW
-	if portLabel != "" && titleAvail >= 5 {
-		reserved := utf8.RuneCountInString(portLabel) + 1 // +1 for the separating space
-		if titleAvail-reserved >= 5 {
-			titleAvail -= reserved
-		} else {
-			// Not enough room for the port label and a usable title; suppress it.
-			portLabel = ""
-		}
-	}
-	if titleAvail >= 5 && utf8.RuneCountInString(title) > titleAvail {
-		title = string([]rune(title)[:titleAvail-1]) + "…"
+	if titleW >= 5 && utf8.RuneCountInString(title) > titleW {
+		title = string([]rune(title)[:titleW-1]) + "…"
 	}
 
 	if isSelected && cursorActive {
@@ -708,29 +650,9 @@ func RenderSessionRow(
 		}
 
 		plain := fmt.Sprintf(" %s%s", dot, sessionArea)
-		if showType {
-			plain += fmt.Sprintf("  %-*s", agentTypeW, agentLabel)
-		}
-		if showHarness {
-			plain += fmt.Sprintf("  %-*s", harnessW, harnessLabel)
-		}
-		if showModel {
-			plain += fmt.Sprintf("  %-*s", modelW, modelLabel)
-		}
 		plain += fmt.Sprintf("  %-*s", stateW, stateLabel(s.AgentState))
-		if showStat {
-			plain += fmt.Sprintf("  %-*s", statW, statPlain)
-		}
 		if titleW >= 5 {
-			titleSection := ""
-			if portLabel != "" && title != "" {
-				titleSection = portLabel + " " + title
-			} else if portLabel != "" {
-				titleSection = portLabel
-			} else {
-				titleSection = title
-			}
-			plain += fmt.Sprintf("  %s", titleSection)
+			plain += fmt.Sprintf("  %s", title)
 		}
 		row := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorBg0)).
@@ -741,70 +663,15 @@ func RenderSessionRow(
 		return row + "\n"
 	}
 
-	// Unselected: coloured state + coloured diff + dimmed agent type, normal fg for the rest.
+	// Unselected: coloured state, normal fg for the rest.
 	stateStr := lipgloss.NewStyle().
 		Foreground(stateStyle(s.AgentState).GetForeground()).
 		Render(fmt.Sprintf("%-*s", stateW, stateLabel(s.AgentState)))
 
-	agentTypeStr := styleAgentType.Render(paddedAgentLabel)
-	harnessStr := styleDim.Render(paddedHarnessLabel)
-	modelStr := styleDim.Render(paddedModelLabel)
-
-	var statStr string
-	if showStat {
-		if s.AgentPath == "" || result.Ok && result.Stat.Files == 0 {
-			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "—"))
-		} else if !result.Ok {
-			statStr = styleDim.Render(fmt.Sprintf("%-*s", statW, "?"))
-		} else if statW == statWCompact {
-			coloured := styleIns.Render(fmt.Sprintf("+%d", result.Stat.Insertions)) +
-				" " + styleDel.Render(fmt.Sprintf("-%d", result.Stat.Deletions))
-			rawLen := len(fmt.Sprintf("+%d -%d", result.Stat.Insertions, result.Stat.Deletions))
-			pad := statW - rawLen
-			if pad < 0 {
-				pad = 0
-			}
-			statStr = coloured + strings.Repeat(" ", pad)
-		} else {
-			fileWord := "files"
-			if result.Stat.Files == 1 {
-				fileWord = "file "
-			}
-			plain := fmt.Sprintf("%d %s ", result.Stat.Files, fileWord)
-			coloured := styleIns.Render(fmt.Sprintf("+%d", result.Stat.Insertions)) +
-				" " + styleDel.Render(fmt.Sprintf("-%d", result.Stat.Deletions))
-			rawStat := fmt.Sprintf("%d %s +%d -%d", result.Stat.Files, fileWord, result.Stat.Insertions, result.Stat.Deletions)
-			pad := statW - len(rawStat)
-			if pad < 0 {
-				pad = 0
-			}
-			statStr = styleFg.Render(plain) + coloured + strings.Repeat(" ", pad)
-		}
-	}
-
 	prefix := styleFg.Render(fmt.Sprintf(" %s%s", dot, sessionArea))
-	row := prefix
-	if showType {
-		row += styleFg.Render("  ") + agentTypeStr
-	}
-	if showHarness {
-		row += styleFg.Render("  ") + harnessStr
-	}
-	if showModel {
-		row += styleFg.Render("  ") + modelStr
-	}
-	row += styleFg.Render("  ") + stateStr
-	if showStat {
-		row += styleFg.Render("  ") + statStr
-	}
-	if titleW >= 5 {
-		if portLabel != "" && title != "" {
-			row += styleDim.Render("  "+portLabel) + styleDim.Render(" "+title)
-		} else if portLabel != "" {
-			row += styleDim.Render("  " + portLabel)
-		} else if title != "" {
-			row += styleDim.Render("  " + title)
-		}
+	row := prefix + styleFg.Render("  ") + stateStr
+	if titleW >= 5 && title != "" {
+		row += styleDim.Render("  " + title)
 	}
 	return row + "\n"
 }

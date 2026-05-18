@@ -40,14 +40,11 @@ func NewPersistentModel(client, callerSession string) PersistentModel {
 }
 
 func (m PersistentModel) Init() tea.Cmd {
-	// FetchSessionsFromDB populates the initial session list with git diff stats.
-	// GitStatTick schedules a 5-second periodic refresh to keep git diff stats up
-	// to date independently of state-transition rendering (push events update only
-	// session state, not git stats).
+	// FetchSessionsFromDB populates the initial session list.
 	// SessionSyncTick schedules a 10-second periodic full re-fetch from the DB so
 	// that sessions spawned or cleaned up after Init are reflected without manual
 	// refresh. This complements push events, which only update existing sessions.
-	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick(), GitStatTick(), SessionSyncTick())
+	return tea.Batch(FetchSessionsFromDB, FetchGitHubStats, GhTick(), SessionSyncTick())
 }
 
 func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -60,12 +57,6 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case RefreshMsg:
 		return m, FetchSessionsFromDB
 
-	case GitStatTickMsg:
-		// 5-second git stat refresh: fetch only git stats (not session states),
-		// then schedule the next tick. Using FetchGitStatsOnly ensures that
-		// push-event state updates are never overwritten by the ticker.
-		return m, tea.Batch(FetchGitStatsOnly, GitStatTick())
-
 	case SessionSyncTickMsg:
 		// 10-second full session-list re-sync from the DB. This catches sessions
 		// that were spawned or cleaned up since the last full refresh — changes
@@ -75,17 +66,6 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// returns an empty SessionsMsg; ApplySessionsMsg guards against clearing
 		// the list when Sessions is nil, so the last-known state is retained.
 		return m, tea.Batch(FetchSessionsFromDB, SessionSyncTick())
-
-	case GitStatsOnlyMsg:
-		// Apply updated git diff stats without touching session states.
-		if msg.GitStats != nil {
-			if m.GitStats == nil {
-				m.GitStats = make(map[string]GitStatResult)
-			}
-			for k, v := range msg.GitStats {
-				m.GitStats[k] = v
-			}
-		}
 
 	case PushEventMsg:
 		// A sidecar pushed a state-change event directly to the dashboard socket.

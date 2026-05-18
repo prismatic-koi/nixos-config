@@ -25,7 +25,7 @@ func RenderReviewGroupRow(
 	treePrefix string,
 	expanded bool,
 	cursorActive bool,
-	styleDim, styleFg, styleAgentType lipgloss.Style,
+	styleDim, styleFg lipgloss.Style,
 	sessionW, stateW int,
 ) string {
 	isSelected := cursorIdx == d.Cursor
@@ -185,11 +185,8 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleHeader := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	styleIns := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorGreen))
-	styleDel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorRed))
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorForeground))
 	stylePrompt := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorPrimary)).Bold(true)
-	styleAgentType := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
 	// ── column widths ────────────────────────────────────────────────────────
 	// Tree prefix slot for child rows.
@@ -198,54 +195,17 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// treePrefixW=10 sets the total reserved width (prefix + branch) so column
 	// alignment is preserved across all depths.
 	const treePrefixW = 10
-	const agentTypeW = 15 // widest: "review-security" (15 chars); other types right-pad.
 	const stateW = 10
 	const dotW = 2
-	const sessionWCap = 40  // maximum session width before the rest goes to title
-	const statWFull = 22    // "2 files +122 -14"
-	const statWCompact = 10 // "+122 -14"
-	const modelWFull = 22   // e.g. "claude-sonnet-4-6    "
-	const harnessW = 10     // width for harness column
+	const sessionWCap = 40 // maximum session width before the rest goes to title
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
 	const fixedCore = 1 + dotW + treePrefixW + 2 + stateW
 
-	showType := true
-	showModel := true
-	showHarness := true
-	showStat := true
-	statW := statWFull
 	// Derive session column width from the longest rendered session name
-	// across all displayed entries, clamped to [7, 40]. This allows the
-	// column to be narrower than the old hardcoded 20-char floor when all
-	// session names are short, while still never truncating the "session"
-	// header word and respecting the existing cap.
+	// across all displayed entries, clamped to [7, 40].
 	sessionW := SessionColumnWidth(d.Displayed)
-
-	// usedWidth returns the width of all non-title columns at their current settings.
-	usedWidth := func() int {
-		w := fixedCore + sessionW
-		if showType {
-			w += agentTypeW + 2
-		}
-		if showHarness {
-			w += harnessW + 2
-		}
-		if showModel {
-			w += modelWFull + 2
-		}
-		if showStat {
-			w += statW + 2
-		}
-		return w
-	}
-
-	// calcTitleW returns the space available for the title column content
-	// (excluding the 2-char gap before it).
-	calcTitleW := func() int {
-		return d.Width - usedWidth() - 2
-	}
 
 	// growSession offers surplus space to sessionW (up to sessionWCap) before
 	// allocating the rest to titleW.
@@ -258,74 +218,30 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 		return tw
 	}
 
-	// Start with the widest layout and shed columns in order until the layout fits.
-	titleW := growSession(calcTitleW())
-
+	// Layout: " " + dot(2) + treePrefixW + sessionW + 2 + stateW + 2 + titleW.
+	// titleW absorbs all leftover width; below the minimum it clamps to 0,
+	// suppressing the title column.
+	titleW := growSession(d.Width - fixedCore - sessionW - 2)
 	if titleW < 0 {
-		// Compact stat column first.
-		statW = statWCompact
-		titleW = growSession(calcTitleW())
-	}
-	if titleW < 0 {
-		// Drop model.
-		showModel = false
-		titleW = growSession(calcTitleW())
-	}
-	if titleW < 0 {
-		// Drop harness.
-		showHarness = false
-		titleW = growSession(calcTitleW())
-	}
-	if titleW < 0 {
-		// Drop stat entirely.
-		showStat = false
-		titleW = growSession(calcTitleW())
-	}
-	if titleW < 0 {
-		// Drop type.  After this only session + state remain; grow session to
-		// fill all available space, clamped to 0 on extremely narrow terminals.
-		showType = false
-		avail := d.Width - fixedCore
-		if avail > 0 {
-			sessionW = avail
-		} else {
-			sessionW = 0
-		}
 		titleW = 0
 	}
 
 	var sb strings.Builder
 
 	// ── header: stats left, art right ───────────────────────────────────────
-	sb.WriteString(RenderHeader(d, styleDim, styleIns, styleDel))
+	sb.WriteString(RenderHeader(d, styleDim))
 
 	// Rainbow separator between header and column headers.
 	sb.WriteString(RainbowLineWidth(strings.Repeat("─", d.Width), d.Width))
 	sb.WriteString("\n")
 
-	changesHeader := "changes"
-	if statW == statWCompact {
-		changesHeader = "+/-"
-	}
 	// Column header: top-level rows have no tree prefix gap, so session column
 	// spans treePrefixW+sessionW total (same total width as all data rows).
 	header := fmt.Sprintf(" %-*s%-*s",
 		dotW, "",
 		treePrefixW+sessionW, "session",
 	)
-	if showType {
-		header += fmt.Sprintf("  %-*s", agentTypeW, "type")
-	}
-	if showHarness {
-		header += fmt.Sprintf("  %-*s", harnessW, "harness")
-	}
-	if showModel {
-		header += fmt.Sprintf("  %-*s", modelWFull, "model")
-	}
 	header += fmt.Sprintf("  %-*s", stateW, "state")
-	if showStat {
-		header += fmt.Sprintf("  %-*s", statW, changesHeader)
-	}
 	if titleW >= 5 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
@@ -343,7 +259,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	} else if d.FilterActive {
 		// Flat list while filter is active (no grouping — easier to scan).
 		for i, s := range sessions {
-			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
+			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, titleW))
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
@@ -437,9 +353,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 			// For review group rows, use specialised renderer.
 			if isReviewGrp {
 				expanded := d.CollapsedGroups[s.Name]
-				sb.WriteString(RenderReviewGroupRow(d, s, i, treePrefix, expanded, cursorActive, styleDim, styleFg, styleAgentType, sessionW, stateW))
+				sb.WriteString(RenderReviewGroupRow(d, s, i, treePrefix, expanded, cursorActive, styleDim, styleFg, sessionW, stateW))
 			} else {
-				sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleIns, styleDel, styleFg, styleAgentType, sessionW, agentTypeW, stateW, statW, statWCompact, titleW, modelWFull, harnessW, showType, showHarness, showModel, showStat))
+				sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, titleW))
 			}
 		}
 	}

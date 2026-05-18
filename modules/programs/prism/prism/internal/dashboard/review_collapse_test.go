@@ -660,8 +660,6 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 
 	styleFg := lipgloss.NewStyle().Foreground(lipgloss.Color(fgColor))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(dimColor))
-	styleAgentType := lipgloss.NewStyle()
-
 	d := dashboard.Shared{
 		Width:  120,
 		Cursor: 99, // cursor far away so isSelected is false
@@ -673,7 +671,7 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 	}
 
 	// Render with collapsed indicator (▶) — non-selected, cursor NOT active.
-	row := dashboard.RenderReviewGroupRow(d, s, 0 /*cursorIdx != Cursor*/, "  ├── ", false /*expanded*/, false /*cursorActive*/, styleDim, styleFg, styleAgentType, 10 /*sessionW*/, 10 /*stateW*/)
+	row := dashboard.RenderReviewGroupRow(d, s, 0 /*cursorIdx != Cursor*/, "  ├── ", false /*expanded*/, false /*cursorActive*/, styleDim, styleFg, 10 /*sessionW*/, 10 /*stateW*/)
 
 	// The raw row must contain ANSI sequences for both colours.
 	// We search for the 24-bit RGB escape that lipgloss produces for each colour.
@@ -696,7 +694,7 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 	}
 
 	// Also verify the expanded indicator path (▼) to satisfy the edge-case AC.
-	rowExpanded := dashboard.RenderReviewGroupRow(d, s, 0, "  └── ", true /*expanded*/, false, styleDim, styleFg, styleAgentType, 10, 10)
+	rowExpanded := dashboard.RenderReviewGroupRow(d, s, 0, "  └── ", true /*expanded*/, false, styleDim, styleFg, 10, 10)
 	if fgIdx2 := strings.Index(rowExpanded, fgSeq); fgIdx2 < 0 {
 		t.Errorf("expanded: styleFg colour sequence not found; row=%q", rowExpanded)
 	}

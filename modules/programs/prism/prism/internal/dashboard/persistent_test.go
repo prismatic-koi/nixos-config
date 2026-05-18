@@ -9,8 +9,8 @@ import (
 )
 
 // TestPersistentInit_SchedulesSessionSyncTick verifies that PersistentModel.Init
-// returns a non-nil command batch that includes at least 5 commands:
-// FetchSessionsFromDB, FetchGitHubStats, GhTick, GitStatTick, SessionSyncTick.
+// returns a non-nil command batch that includes at least 4 commands:
+// FetchSessionsFromDB, FetchGitHubStats, GhTick, SessionSyncTick.
 func TestPersistentInit_SchedulesSessionSyncTick(t *testing.T) {
 	m := dashboard.NewPersistentModel("", "")
 	cmd := m.Init()
@@ -25,10 +25,10 @@ func TestPersistentInit_SchedulesSessionSyncTick(t *testing.T) {
 		t.Fatalf("Init() cmd produced %T, want tea.BatchMsg", msg)
 	}
 
-	// The batch must contain at least 5 commands:
-	//   FetchSessionsFromDB, FetchGitHubStats, GhTick, GitStatTick, SessionSyncTick
-	if len(batch) < 5 {
-		t.Errorf("Init() batch has %d cmds, want >= 5 (including SessionSyncTick)", len(batch))
+	// The batch must contain at least 4 commands:
+	//   FetchSessionsFromDB, FetchGitHubStats, GhTick, SessionSyncTick
+	if len(batch) < 4 {
+		t.Errorf("Init() batch has %d cmds, want >= 4 (including SessionSyncTick)", len(batch))
 	}
 
 	for _, c := range batch {
