@@ -1,6 +1,7 @@
 package dashboard_test
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -63,15 +64,17 @@ func TestShortAgentName(t *testing.T) {
 
 // ── BuildReviewChildSummaries ────────────────────────────────────────────────
 
-// canonicalShortNames mirrors the production mapping for assertions. It is
+// alphabeticalShortNames returns the canonical review-agent short labels in
+// alphabetical order — the new display order asserted by #1802. It is
 // derived from review.Agents() so the test will break (intentionally) if the
 // canonical list changes without updating ShortAgentName.
-func canonicalShortNames() []string {
+func alphabeticalShortNames() []string {
 	agents := review.Agents()
 	out := make([]string, len(agents))
 	for i, a := range agents {
 		out[i] = dashboard.ShortAgentName(a.Name)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -99,17 +102,17 @@ func itoaTest(n int) string {
 	return "10"
 }
 
-func TestBuildReviewChildSummaries_CanonicalOrder(t *testing.T) {
+func TestBuildReviewChildSummaries_AlphabeticalOrder(t *testing.T) {
 	children := buildChildren(1, nil, nil)
 	got := dashboard.BuildReviewChildSummaries(children)
 
-	want := canonicalShortNames()
+	want := alphabeticalShortNames()
 	if len(got) != len(want) {
 		t.Fatalf("got %d summaries, want %d", len(got), len(want))
 	}
 	for i, w := range want {
 		if got[i].AgentShortName != w {
-			t.Errorf("summary[%d].AgentShortName = %q, want %q", i, got[i].AgentShortName, w)
+			t.Errorf("summary[%d].AgentShortName = %q, want %q (alphabetical order)", i, got[i].AgentShortName, w)
 		}
 	}
 }
@@ -134,6 +137,8 @@ func TestBuildReviewChildSummaries_MixedPassFail(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
 	msgs := map[string]string{}
+	// Mark each agent pass/fail by full name (not by index in the alphabetical
+	// output order). Even canonical index → pass; odd → fail.
 	for i, a := range agents {
 		states[a.Name] = "finished"
 		if i%2 == 0 {
@@ -142,16 +147,21 @@ func TestBuildReviewChildSummaries_MixedPassFail(t *testing.T) {
 			msgs[a.Name] = "<verdict>fail</verdict>"
 		}
 	}
+	// Build the expected verdict-by-short-name map to compare in alphabetical order.
+	wantByShort := map[string]string{}
+	for i, a := range agents {
+		short := dashboard.ShortAgentName(a.Name)
+		if i%2 == 0 {
+			wantByShort[short] = dashboard.VerdictPass
+		} else {
+			wantByShort[short] = dashboard.VerdictFail
+		}
+	}
 	got := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
 	for i, s := range got {
-		var want string
-		if i%2 == 0 {
-			want = dashboard.VerdictPass
-		} else {
-			want = dashboard.VerdictFail
-		}
+		want := wantByShort[s.AgentShortName]
 		if s.Verdict != want {
-			t.Errorf("summary[%d].Verdict = %q, want %q", i, s.Verdict, want)
+			t.Errorf("summary[%d] (%s).Verdict = %q, want %q", i, s.AgentShortName, s.Verdict, want)
 		}
 	}
 }
@@ -211,26 +221,36 @@ func TestBuildReviewChildSummaries_StartupErrorChild(t *testing.T) {
 		msgs[a.Name] = "<verdict>pass</verdict>"
 	}
 	// Force the first canonical agent into error state.
-	states[agents[0].Name] = "error"
-	msgs[agents[0].Name] = ""
+	errAgent := agents[0].Name
+	errShort := dashboard.ShortAgentName(errAgent)
+	states[errAgent] = "error"
+	msgs[errAgent] = ""
 
 	got := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
-	if got[0].Verdict != dashboard.VerdictError {
-		t.Errorf("summary[0].Verdict = %q, want error", got[0].Verdict)
-	}
-	for i := 1; i < len(got); i++ {
-		if got[i].Verdict != dashboard.VerdictPass {
-			t.Errorf("summary[%d].Verdict = %q, want pass", i, got[i].Verdict)
+	for _, s := range got {
+		if s.AgentShortName == errShort {
+			if s.Verdict != dashboard.VerdictError {
+				t.Errorf("error agent %q: Verdict = %q, want error", errShort, s.Verdict)
+			}
+		} else {
+			if s.Verdict != dashboard.VerdictPass {
+				t.Errorf("agent %q: Verdict = %q, want pass", s.AgentShortName, s.Verdict)
+			}
 		}
 	}
 }
 
 func TestBuildReviewChildSummaries_MissingChildBecomesError(t *testing.T) {
 	// Construct only two of the canonical agents — the other three slots must
-	// render as VerdictError (✕) per the AC ("missing agents as ✕").
+	// render as VerdictError (✕) per the AC ("missing agents as ✕"), in their
+	// alphabetical slot.
 	agents := review.Agents()
 	full0 := agents[0].Name
 	full1 := agents[1].Name
+	present := map[string]bool{
+		dashboard.ShortAgentName(full0): true,
+		dashboard.ShortAgentName(full1): true,
+	}
 
 	children := []dashboard.AgentSession{
 		{
@@ -248,158 +268,135 @@ func TestBuildReviewChildSummaries_MissingChildBecomesError(t *testing.T) {
 	if len(got) != len(agents) {
 		t.Fatalf("got %d summaries, want %d (one per canonical agent)", len(got), len(agents))
 	}
-	if got[0].Verdict != dashboard.VerdictPass {
-		t.Errorf("summary[0].Verdict = %q, want pass", got[0].Verdict)
+	// The slice must already be in alphabetical order by short name.
+	for i := 1; i < len(got); i++ {
+		if got[i-1].AgentShortName >= got[i].AgentShortName {
+			t.Errorf("summaries not in alphabetical order: %q before %q", got[i-1].AgentShortName, got[i].AgentShortName)
+		}
 	}
-	if got[1].Verdict != dashboard.VerdictRunning {
-		t.Errorf("summary[1].Verdict = %q, want running", got[1].Verdict)
-	}
-	for i := 2; i < len(got); i++ {
-		if got[i].Verdict != dashboard.VerdictError {
-			t.Errorf("summary[%d].Verdict = %q (agent %q), want error", i, got[i].Verdict, got[i].AgentShortName)
+	// Missing agents (not in `present`) must be VerdictError. The two present
+	// ones keep their derived verdicts (pass / running).
+	for _, s := range got {
+		if !present[s.AgentShortName] {
+			if s.Verdict != dashboard.VerdictError {
+				t.Errorf("missing agent %q: Verdict = %q, want error", s.AgentShortName, s.Verdict)
+			}
 		}
 	}
 }
 
 // ── RenderReviewSummary: width-budget truncation ────────────────────────────
 
-func TestRenderReviewSummary_FullBudgetRendersAll(t *testing.T) {
+func TestRenderReviewSummary_FullBudgetRendersLabels(t *testing.T) {
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
-	// Plenty of width.
-	cluster, labels, tail, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if cluster == "" {
-		t.Errorf("cluster empty at full budget")
-	}
+	labels, plain := dashboard.RenderReviewSummary(summaries, 200)
 	if labels == "" {
 		t.Errorf("labels empty at full budget")
 	}
-	if tail == "" {
-		t.Errorf("tail empty at full budget")
+	if plain == 0 {
+		t.Errorf("plainWidth = 0 at full budget")
 	}
 }
 
-func TestRenderReviewSummary_NarrowDropsLabels(t *testing.T) {
-	// Budget large enough for cluster + tail but not labels.
-	// cluster=5, gap=2, tail="5/5 done"=8 → need 15 for cluster+tail.
-	// labels for canonical agents = sum of "name:X" + separators.
+func TestRenderReviewSummary_NarrowSuppressesLabels(t *testing.T) {
+	// Budget smaller than the labels width must suppress the labels entirely
+	// (no cluster fallback — the new design is binary).
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
-	tail := "5/5 done"
-	_ = tail
-	cluster, labels, gotTail, _ := dashboard.RenderReviewSummary(summaries, 20)
-	if cluster == "" {
-		t.Errorf("cluster empty at budget=20")
-	}
+	labels, plain := dashboard.RenderReviewSummary(summaries, 10)
 	if labels != "" {
-		t.Errorf("labels should be empty at budget=20, got %q", stripANSI(labels))
+		t.Errorf("labels should be empty at budget=10, got %q", stripANSI(labels))
 	}
-	if gotTail == "" {
-		t.Errorf("tail should be visible at budget=20, got empty")
+	if plain != 0 {
+		t.Errorf("plainWidth should be 0 at budget=10, got %d", plain)
 	}
 }
 
-func TestRenderReviewSummary_VeryNarrowKeepsCluster(t *testing.T) {
+func TestRenderReviewSummary_ExactBudgetRendersLabels(t *testing.T) {
+	// At exactly the labels width, the labels should still render.
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
-	// Cluster is 5 glyphs.
-	cluster, labels, tail, _ := dashboard.RenderReviewSummary(summaries, 5)
-	if cluster == "" {
-		t.Errorf("cluster should be visible at budget=5")
+	_, plain := dashboard.RenderReviewSummary(summaries, 200)
+	if plain == 0 {
+		t.Fatalf("could not measure label width")
 	}
-	if labels != "" || tail != "" {
-		t.Errorf("labels/tail should be empty at budget=5; labels=%q tail=%q", labels, tail)
+	labels, _ := dashboard.RenderReviewSummary(summaries, plain)
+	if labels == "" {
+		t.Errorf("labels should render when budget == plainWidth (%d)", plain)
 	}
-}
-
-func TestRenderReviewSummary_TooNarrowReturnsEmpty(t *testing.T) {
-	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, nil, nil))
-	cluster, labels, tail, w := dashboard.RenderReviewSummary(summaries, 4)
-	if cluster != "" || labels != "" || tail != "" {
-		t.Errorf("all fragments must be empty at budget=4; got cluster=%q labels=%q tail=%q", cluster, labels, tail)
-	}
-	if w != 0 {
-		t.Errorf("plainWidth = %d, want 0", w)
+	labels2, _ := dashboard.RenderReviewSummary(summaries, plain-1)
+	if labels2 != "" {
+		t.Errorf("labels should be suppressed when budget == plainWidth-1 (%d)", plain-1)
 	}
 }
 
-// ── Progress tail text ───────────────────────────────────────────────────────
+// ── No cluster, no tail ──────────────────────────────────────────────────────
 
-func TestProgressTail_AllPass(t *testing.T) {
+// TestRenderReviewSummary_NoClusterGlyphs guards against the cluster being
+// reintroduced: none of the cluster glyphs (●○◐) must ever appear in the
+// rendered output. ✕ is still valid as a letter for VerdictError, and · is a
+// valid letter for VerdictPending — so they are not asserted-absent here.
+func TestRenderReviewSummary_NoClusterGlyphs(t *testing.T) {
 	agents := review.Agents()
 	states := map[string]string{}
 	msgs := map[string]string{}
-	for _, a := range agents {
-		states[a.Name] = "finished"
-		msgs[a.Name] = "<verdict>pass</verdict>"
-	}
-	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
-	_, _, tail, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if !strings.Contains(stripANSI(tail), "all pass") {
-		t.Errorf("tail = %q, want to contain 'all pass'", stripANSI(tail))
-	}
-}
-
-func TestProgressTail_AllFail(t *testing.T) {
-	agents := review.Agents()
-	states := map[string]string{}
-	msgs := map[string]string{}
-	for _, a := range agents {
-		states[a.Name] = "finished"
-		msgs[a.Name] = "<verdict>fail</verdict>"
-	}
-	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
-	_, _, tail, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if !strings.Contains(stripANSI(tail), "all fail") {
-		t.Errorf("tail = %q, want to contain 'all fail'", stripANSI(tail))
-	}
-}
-
-func TestProgressTail_PartialCounts(t *testing.T) {
-	// 2 pass, 1 fail, 2 running → terminal count = 3 → "3/5 done"
-	agents := review.Agents()
-	states := map[string]string{}
-	msgs := map[string]string{}
+	// Mix of all verdict classes so any cluster path would surface a glyph.
 	for i, a := range agents {
-		switch i {
-		case 0, 1:
-			states[a.Name] = "finished"
-			msgs[a.Name] = "<verdict>pass</verdict>"
-		case 2:
-			states[a.Name] = "finished"
-			msgs[a.Name] = "<verdict>fail</verdict>"
-		case 3, 4:
-			states[a.Name] = "active"
-		}
-	}
-	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
-	_, _, tail, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if !strings.Contains(stripANSI(tail), "3/5 done") {
-		t.Errorf("tail = %q, want to contain '3/5 done'", stripANSI(tail))
-	}
-}
-
-func TestProgressTail_ErrorCountsAsTerminal(t *testing.T) {
-	// 1 pass, 1 error, 3 running → terminal count = 2 → "2/5 done"
-	agents := review.Agents()
-	states := map[string]string{}
-	msgs := map[string]string{}
-	for i, a := range agents {
-		switch i {
+		switch i % 4 {
 		case 0:
 			states[a.Name] = "finished"
 			msgs[a.Name] = "<verdict>pass</verdict>"
 		case 1:
-			states[a.Name] = "error"
-		default:
+			states[a.Name] = "finished"
+			msgs[a.Name] = "<verdict>fail</verdict>"
+		case 2:
 			states[a.Name] = "active"
+		case 3:
+			states[a.Name] = "error"
 		}
 	}
 	summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
-	_, _, tail, _ := dashboard.RenderReviewSummary(summaries, 200)
-	if !strings.Contains(stripANSI(tail), "2/5 done") {
-		t.Errorf("tail = %q, want to contain '2/5 done'", stripANSI(tail))
+	labels, _ := dashboard.RenderReviewSummary(summaries, 200)
+	plain := stripANSI(labels)
+	for _, glyph := range []string{"●", "○", "◐"} {
+		if strings.Contains(plain, glyph) {
+			t.Errorf("labels should not contain cluster glyph %q; got %q", glyph, plain)
+		}
 	}
 }
 
-// ── Integration: collapsed group row contains cluster + labels + tail ───────
+// TestRenderReviewSummary_NoProgressTail guards against the progress tail
+// ("N/5 done", "all pass", "all fail") being reintroduced.
+func TestRenderReviewSummary_NoProgressTail(t *testing.T) {
+	cases := []struct {
+		name  string
+		state string
+		msg   string
+	}{
+		{"all pass", "finished", "<verdict>pass</verdict>"},
+		{"all fail", "finished", "<verdict>fail</verdict>"},
+		{"all active", "active", ""},
+	}
+	agents := review.Agents()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			states := map[string]string{}
+			msgs := map[string]string{}
+			for _, a := range agents {
+				states[a.Name] = tc.state
+				msgs[a.Name] = tc.msg
+			}
+			summaries := dashboard.BuildReviewChildSummaries(buildChildren(1, states, msgs))
+			labels, _ := dashboard.RenderReviewSummary(summaries, 200)
+			plain := stripANSI(labels)
+			for _, forbidden := range []string{"all pass", "all fail", "0/5", "1/5", "2/5", "3/5", "4/5", "5/5", " done"} {
+				if strings.Contains(plain, forbidden) {
+					t.Errorf("labels should not contain tail fragment %q; got %q", forbidden, plain)
+				}
+			}
+		})
+	}
+}
+
+// ── Integration: collapsed group row contains the alphabetical labels ───────
 
 // renderCollapsedReviewRow is a small test helper that constructs a dashboard
 // Shared, populates a single review-round with the supplied per-agent states
@@ -450,20 +447,45 @@ func TestCollapsedRow_AllPass(t *testing.T) {
 		msgs[a.Name] = "<verdict>pass</verdict>"
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Five filled circles.
-	if strings.Count(row, "●") != 5 {
-		t.Errorf("expected 5 ● glyphs in row, got %d; row=%q", strings.Count(row, "●"), row)
-	}
-	if !strings.Contains(row, "all pass") {
-		t.Errorf("row missing 'all pass'; row=%q", row)
-	}
-	// Per-agent labels: every canonical short name appears followed by :P
+	// Per-agent labels: every canonical short name appears followed by :P.
 	for _, a := range agents {
 		short := dashboard.ShortAgentName(a.Name)
 		want := short + ":P"
 		if !strings.Contains(row, want) {
 			t.Errorf("row missing %q; row=%q", want, row)
 		}
+	}
+	// No cluster glyphs, no tail.
+	for _, forbidden := range []string{"●", "○", "◐", "all pass", "5/5 done"} {
+		if strings.Contains(row, forbidden) {
+			t.Errorf("row should not contain %q; row=%q", forbidden, row)
+		}
+	}
+}
+
+func TestCollapsedRow_AlphabeticalOrder(t *testing.T) {
+	// The labels must appear in alphabetical order by short label, not in
+	// review.Agents() canonical order.
+	agents := review.Agents()
+	states := map[string]string{}
+	msgs := map[string]string{}
+	for _, a := range agents {
+		states[a.Name] = "finished"
+		msgs[a.Name] = "<verdict>pass</verdict>"
+	}
+	row := renderCollapsedReviewRow(t, 200, states, msgs)
+	shorts := alphabeticalShortNames()
+	// Walk through the row and find the position of each short:letter label.
+	prev := -1
+	for _, s := range shorts {
+		idx := strings.Index(row, s+":")
+		if idx < 0 {
+			t.Fatalf("short label %q not in row: %q", s, row)
+		}
+		if idx <= prev {
+			t.Errorf("label %q at idx=%d appears before previous label (idx=%d); row=%q", s, idx, prev, row)
+		}
+		prev = idx
 	}
 }
 
@@ -480,14 +502,18 @@ func TestCollapsedRow_MixedPassFail(t *testing.T) {
 		}
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Glyphs: alternating ● and ○.
-	if strings.Count(row, "●") < 1 || strings.Count(row, "○") < 1 {
-		t.Errorf("expected both ● and ○ glyphs; row=%q", row)
+	// Both :P and :F letters should appear among the labels.
+	if !strings.Contains(row, ":P") {
+		t.Errorf("expected at least one :P label; row=%q", row)
 	}
-	// Progress tail: terminal count = 5 (all finished with verdicts) but mixed
-	// → falls into "5/5 done" (because neither all-pass nor all-fail).
-	if !strings.Contains(row, "5/5 done") {
-		t.Errorf("row missing '5/5 done'; row=%q", row)
+	if !strings.Contains(row, ":F") {
+		t.Errorf("expected at least one :F label; row=%q", row)
+	}
+	// No cluster, no tail.
+	for _, forbidden := range []string{"●", "○", "◐", "5/5 done"} {
+		if strings.Contains(row, forbidden) {
+			t.Errorf("row should not contain %q; row=%q", forbidden, row)
+		}
 	}
 }
 
@@ -507,19 +533,17 @@ func TestCollapsedRow_TwoRunning(t *testing.T) {
 		}
 	}
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	// Two ◐ glyphs (running) and three ●.
-	if strings.Count(row, "◐") != 2 {
-		t.Errorf("expected 2 ◐ glyphs, got %d; row=%q", strings.Count(row, "◐"), row)
+	// Running letter is ◌ — two should be present in labels.
+	if strings.Count(row, "◌") != 2 {
+		t.Errorf("expected exactly 2 ◌ letters in labels, got %d; row=%q", strings.Count(row, "◌"), row)
 	}
-	if strings.Count(row, "●") != 3 {
-		t.Errorf("expected 3 ● glyphs, got %d; row=%q", strings.Count(row, "●"), row)
+	// Three :P letters.
+	if strings.Count(row, ":P") != 3 {
+		t.Errorf("expected exactly 3 :P labels, got %d; row=%q", strings.Count(row, ":P"), row)
 	}
-	if !strings.Contains(row, "3/5 done") {
-		t.Errorf("row missing '3/5 done'; row=%q", row)
-	}
-	// Running letter is ◌ — at least two should be present.
-	if strings.Count(row, "◌") < 2 {
-		t.Errorf("expected >=2 ◌ letters in labels, got %d; row=%q", strings.Count(row, "◌"), row)
+	// No tail.
+	if strings.Contains(row, "3/5 done") {
+		t.Errorf("row should not contain '3/5 done'; row=%q", row)
 	}
 }
 
@@ -530,12 +554,13 @@ func TestCollapsedRow_AllPending(t *testing.T) {
 		states[a.Name] = "" // idle
 	}
 	row := renderCollapsedReviewRow(t, 200, states, nil)
-	if strings.Count(row, "·") < 5 {
-		t.Errorf("expected at least 5 · in row (5 glyphs + 5 letters), got %d; row=%q",
-			strings.Count(row, "·"), row)
+	// Pending letter is · — every label must use it.
+	if strings.Count(row, ":·") != len(agents) {
+		t.Errorf("expected %d :· labels (pending), got %d; row=%q", len(agents), strings.Count(row, ":·"), row)
 	}
-	if !strings.Contains(row, "0/5 done") {
-		t.Errorf("row missing '0/5 done'; row=%q", row)
+	// No tail.
+	if strings.Contains(row, "0/5 done") {
+		t.Errorf("row should not contain '0/5 done'; row=%q", row)
 	}
 }
 
@@ -552,38 +577,51 @@ func TestCollapsedRow_StartupErrorChild(t *testing.T) {
 	msgs[agents[0].Name] = ""
 
 	row := renderCollapsedReviewRow(t, 200, states, msgs)
-	if !strings.Contains(row, "✕") {
-		t.Errorf("expected ✕ (error glyph or letter) in row; row=%q", row)
+	// Exactly one ✕ should be present (the error letter for the one error agent).
+	if strings.Count(row, "✕") != 1 {
+		t.Errorf("expected exactly 1 ✕ in row, got %d; row=%q", strings.Count(row, "✕"), row)
 	}
-	// Terminal count: 4 pass + 1 error = 5 → not uniform-pass / uniform-fail → "5/5 done"
-	if !strings.Contains(row, "5/5 done") {
-		t.Errorf("row missing '5/5 done'; row=%q", row)
+	// And the corresponding error short name + :✕ pair.
+	errShort := dashboard.ShortAgentName(agents[0].Name)
+	if !strings.Contains(row, errShort+":✕") {
+		t.Errorf("expected %q in row; row=%q", errShort+":✕", row)
 	}
 }
 
 func TestCollapsedRow_MissingChildren(t *testing.T) {
 	// Only include the first canonical agent; the remaining four slots are
-	// missing → must render as ✕ and the tail must still use /5 as denominator.
+	// missing → must render as ✕ in their alphabetical slot.
 	agents := review.Agents()
 	states := map[string]string{
 		agents[0].Name: "active",
 	}
 	row := renderCollapsedReviewRow(t, 200, states, nil)
-	if strings.Count(row, "✕") < 4 {
-		t.Errorf("expected at least 4 ✕ for missing agents, got %d; row=%q",
+	// Four missing → four ✕ letters.
+	if strings.Count(row, "✕") != 4 {
+		t.Errorf("expected exactly 4 ✕ for missing agents, got %d; row=%q",
 			strings.Count(row, "✕"), row)
 	}
-	if !strings.Contains(row, "/5") {
-		t.Errorf("tail must still use /5 denominator; row=%q", row)
+	// The present (first canonical) agent is in state "active" so its label is ◌.
+	present := dashboard.ShortAgentName(agents[0].Name)
+	if !strings.Contains(row, present+":◌") {
+		t.Errorf("expected present agent label %q; row=%q", present+":◌", row)
+	}
+	// And the alphabetical slot rule means every short label appears, even the
+	// missing ones (with ✕).
+	for _, a := range agents {
+		short := dashboard.ShortAgentName(a.Name)
+		if !strings.Contains(row, short+":") {
+			t.Errorf("expected short label %q to appear in row; row=%q", short, row)
+		}
 	}
 }
 
 // ── Narrow-width truncation ──────────────────────────────────────────────────
 
 func TestCollapsedRow_NarrowDropsLabels(t *testing.T) {
-	// At width=80, all the leaf-row columns are present and the session column
-	// is grown to absorb surplus, leaving a small trailing budget that fits
-	// the cluster + tail but not the per-agent labels.
+	// At width=70 the trailing budget is below the labels width
+	// ("code:P  context:P  goal:P  qa:P  sec:P" = 38 runes), so labels are
+	// suppressed entirely. The row renders only session + state.
 	agents := review.Agents()
 	states := map[string]string{}
 	msgs := map[string]string{}
@@ -591,27 +629,34 @@ func TestCollapsedRow_NarrowDropsLabels(t *testing.T) {
 		states[a.Name] = "finished"
 		msgs[a.Name] = "<verdict>pass</verdict>"
 	}
-	row := renderCollapsedReviewRow(t, 80, states, msgs)
-	// Cluster still visible.
-	if strings.Count(row, "●") < 5 {
-		t.Errorf("expected 5 ● in narrow row, got %d; row=%q", strings.Count(row, "●"), row)
+	row := renderCollapsedReviewRow(t, 70, states, msgs)
+	// No per-agent labels.
+	for _, a := range agents {
+		short := dashboard.ShortAgentName(a.Name)
+		if strings.Contains(row, short+":") {
+			t.Errorf("expected per-agent labels to be dropped at narrow width; saw %q in row=%q", short+":", row)
+		}
 	}
-	// Per-agent labels (look for "goal:") should be absent at narrow widths.
-	if strings.Contains(row, "goal:") {
-		t.Errorf("expected per-agent labels to be dropped at narrow width; row=%q", row)
+	// No cluster glyphs (the cluster is gone in #1802).
+	for _, glyph := range []string{"●", "○", "◐"} {
+		if strings.Contains(row, glyph) {
+			t.Errorf("narrow row should not contain cluster glyph %q; row=%q", glyph, row)
+		}
+	}
+	// Row must still contain the group label.
+	if !strings.Contains(row, "~review-1") {
+		t.Errorf("narrow row missing group label; row=%q", row)
 	}
 }
 
-func TestCollapsedRow_VeryNarrowKeepsClusterFloor(t *testing.T) {
-	// At very narrow widths, only the original row content (label + state)
-	// remains visible. The cluster never collapses while it fits, but if even
-	// the cluster does not fit, the row still renders without crash.
+func TestCollapsedRow_VeryNarrowNoCrash(t *testing.T) {
+	// At very narrow widths, only session + state remain visible.
 	agents := review.Agents()
 	states := map[string]string{}
 	for _, a := range agents {
 		states[a.Name] = "active"
 	}
-	row := renderCollapsedReviewRow(t, 60, states, nil)
+	row := renderCollapsedReviewRow(t, 50, states, nil)
 	// Row must at least contain the group label.
 	if !strings.Contains(row, "~review-1") {
 		t.Errorf("group label must remain visible at narrow width; row=%q", row)
@@ -660,12 +705,19 @@ func TestCollapsedRow_ExpandedStillShowsSummary(t *testing.T) {
 	if groupLine == "" {
 		t.Fatalf("group line not found in expanded output:\n%s", out)
 	}
-	// Summary must still be present on the parent row when expanded.
-	if strings.Count(groupLine, "●") != 5 {
-		t.Errorf("expanded group row missing cluster; line=%q", groupLine)
+	// Per-agent labels must still appear on the parent row when expanded.
+	for _, a := range agents {
+		short := dashboard.ShortAgentName(a.Name)
+		want := short + ":P"
+		if !strings.Contains(groupLine, want) {
+			t.Errorf("expanded group row missing label %q; line=%q", want, groupLine)
+		}
 	}
-	if !strings.Contains(groupLine, "all pass") {
-		t.Errorf("expanded group row missing 'all pass' tail; line=%q", groupLine)
+	// No cluster, no tail.
+	for _, forbidden := range []string{"●", "○", "◐", "all pass"} {
+		if strings.Contains(groupLine, forbidden) {
+			t.Errorf("expanded group row should not contain %q; line=%q", forbidden, groupLine)
+		}
 	}
 	// And per-agent child rows must be visible.
 	childCount := 0
@@ -683,7 +735,7 @@ func TestCollapsedRow_ExpandedStillShowsSummary(t *testing.T) {
 
 func TestNonReviewRowsUnchanged(t *testing.T) {
 	// A plain top-level + a regular depth-1 child (non-review branch) must not
-	// pick up any cluster glyphs.
+	// pick up any cluster glyphs or progress tails.
 	sessions := []dashboard.AgentSession{
 		{Name: "repo@main", AgentState: "active", AgentName: "coordinator"},
 		{Name: "repo@feature", AgentState: "finished", AgentName: "worker"},
@@ -696,6 +748,12 @@ func TestNonReviewRowsUnchanged(t *testing.T) {
 	for _, glyph := range []string{"●", "○", "◐", "✕"} {
 		if strings.Contains(out, glyph) {
 			t.Errorf("non-review rows should not contain glyph %q; output=\n%s", glyph, out)
+		}
+	}
+	// None of the progress-tail strings either.
+	for _, tail := range []string{"all pass", "all fail", "/5 done"} {
+		if strings.Contains(out, tail) {
+			t.Errorf("non-review rows should not contain tail %q; output=\n%s", tail, out)
 		}
 	}
 }

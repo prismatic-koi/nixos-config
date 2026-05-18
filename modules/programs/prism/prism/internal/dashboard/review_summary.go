@@ -9,14 +9,15 @@ package dashboard
 //     last assistant message, mirroring internal/db/sessions.go::ReviewVerdict),
 //   - the canonical short-name mapping (derived from review.Agents()), and
 //   - the single rendering helper RenderReviewSummary that produces the
-//     coloured glyph cluster, per-agent verdict labels, and progress tail
-//     shown on the collapsed review-group row.
+//     per-agent verdict labels shown on the collapsed review-group row.
 //
-// The canonical five-agent order is read from review.Agents() in
-// internal/review/agents.go — never duplicated here. See AC for #1795.
+// The canonical five-agent set is read from review.Agents() in
+// internal/review/agents.go — never duplicated here. The display order of
+// the rendered labels is alphabetical by short label (see #1802); the
+// canonical agent list is unchanged.
 
 import (
-	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -33,12 +34,13 @@ const (
 	VerdictError   = "error"   // errored / startup failure / missing agent
 )
 
-// ReviewChildSummary holds the per-agent rollup used to render one cell of the
-// collapsed review-group row's glyph cluster and label list. One entry per
-// canonical review agent in the order returned by review.Agents().
+// ReviewChildSummary holds the per-agent rollup used to render one cell of
+// the collapsed review-group row's per-agent verdict labels. One entry per
+// canonical review agent (the set comes from review.Agents()); the display
+// order is alphabetical by AgentShortName.
 type ReviewChildSummary struct {
 	// AgentShortName is the canonical short label (e.g. "goal", "code",
-	// "security" — see ShortAgentName). It is rendered in the per-agent
+	// "sec" — see ShortAgentName). It is rendered in the per-agent
 	// verdict labels, e.g. "goal:P".
 	AgentShortName string
 	// State is the AgentState string ("active" | "waiting" | "finished" |
@@ -131,7 +133,9 @@ func classifyVerdict(state, lastMessage string) string {
 }
 
 // BuildReviewChildSummaries returns one ReviewChildSummary per canonical
-// review agent, in the order defined by review.Agents().
+// review agent (the set defined by review.Agents()), sorted alphabetically
+// by short label so the rendered labels line is "code … context … goal …
+// qa … sec".
 //
 // `children` is the set of per-agent AgentSessions that belong to the same
 // review-round group. It is matched against the canonical agent list by the
@@ -175,6 +179,13 @@ func BuildReviewChildSummaries(children []AgentSession) []ReviewChildSummary {
 			Verdict:        classifyVerdict(ch.AgentState, ch.LastMessage),
 		}
 	}
+
+	// Sort alphabetically by short label for display. The canonical agent
+	// set is unchanged (still review.Agents()); only the display order is
+	// derived. See AC #1802.
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].AgentShortName < out[j].AgentShortName
+	})
 	return out
 }
 
@@ -197,13 +208,9 @@ func trailingReviewAgent(sessionName string) string {
 
 // ── width budget ─────────────────────────────────────────────────────────────
 
-// reviewSummaryClusterWidth is the rune width of the five-glyph cluster
-// (5 glyphs, no separators). This is the floor — the cluster never collapses.
-const reviewSummaryClusterWidth = 5
-
 // reviewSummaryLabelsWidth returns the rune width of the per-agent verdict
 // labels segment for the given summaries (e.g.
-// "goal:P  code:P  sec:F  qa:◌  context:·"). Used by RenderReviewSummary to
+// "code:P  context:·  goal:P  qa:◌  sec:F"). Used by RenderReviewSummary to
 // decide whether the labels fit in the remaining width budget.
 func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 	if len(summaries) == 0 {
@@ -217,56 +224,6 @@ func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 		w += utf8.RuneCountInString(s.AgentShortName) + 1 + 1 // "name" + ":" + letter
 	}
 	return w
-}
-
-// reviewSummaryTailText returns the progress-tail text for the given
-// summaries. Used by RenderReviewSummary and by tests.
-//
-//   - "all pass" when all five terminal verdicts are PASS
-//   - "all fail" when all five terminal verdicts are FAIL
-//   - "N/5 done" otherwise, where N counts PASS, FAIL, or ERROR
-//
-// "Terminal" mirrors the AC: PASS, FAIL, ERROR all count toward N.
-func reviewSummaryTailText(summaries []ReviewChildSummary) string {
-	if len(summaries) == 0 {
-		return ""
-	}
-	var pass, fail, terminal int
-	for _, s := range summaries {
-		switch s.Verdict {
-		case VerdictPass:
-			pass++
-			terminal++
-		case VerdictFail:
-			fail++
-			terminal++
-		case VerdictError:
-			terminal++
-		}
-	}
-	if terminal == 5 && pass == 5 {
-		return "all pass"
-	}
-	if terminal == 5 && fail == 5 {
-		return "all fail"
-	}
-	return fmt.Sprintf("%d/5 done", terminal)
-}
-
-// glyphForVerdict returns the cluster glyph for a verdict.
-func glyphForVerdict(v string) string {
-	switch v {
-	case VerdictPass:
-		return "●"
-	case VerdictFail:
-		return "○"
-	case VerdictRunning:
-		return "◐"
-	case VerdictError:
-		return "✕"
-	default:
-		return "·"
-	}
 }
 
 // letterForVerdict returns the per-agent label letter for a verdict.
@@ -286,7 +243,7 @@ func letterForVerdict(v string) string {
 }
 
 // colorForVerdict returns the lipgloss colour name for a verdict, used for
-// both glyphs and label letters.
+// the per-agent label letters.
 func colorForVerdict(v string) string {
 	switch v {
 	case VerdictPass:
@@ -302,67 +259,31 @@ func colorForVerdict(v string) string {
 	}
 }
 
-// RenderReviewSummary builds the cluster + per-agent labels + progress tail
-// for a collapsed review-group row. It returns three independently rendered
-// (ANSI-coloured) string fragments so the caller can place gap characters
-// between them and apply its own enclosing styles.
+// RenderReviewSummary builds the per-agent labels segment for a collapsed
+// review-group row. It returns the ANSI-coloured label fragment and its plain
+// rune width.
 //
-// The width budget is honoured as follows:
+// The width budget is honoured as a single decision:
 //
-//   - If `budget` >= cluster + 2 (gap) + labels + 2 (gap) + tail, all three
-//     fragments are returned non-empty.
-//   - If only cluster + 2 + tail fits, the labels fragment is returned empty.
-//   - If only cluster fits, both labels and tail are returned empty.
-//   - If even the cluster does not fit, all three are returned empty (the
-//     caller falls back to its previous render — the floor is preserved as
-//     described in the edge-case AC).
+//   - If `budget` >= labels width, the labels fragment is returned non-empty.
+//   - Otherwise the labels fragment is suppressed entirely and the caller
+//     falls back to rendering session + state only (see #1802).
 //
-// Returns the plain rune width consumed by the rendered fragments (excluding
-// the inter-fragment gaps, which the caller is responsible for inserting) so
-// the caller can correctly pad / truncate trailing columns.
-func RenderReviewSummary(summaries []ReviewChildSummary, budget int) (cluster, labels, tail string, plainWidth int) {
+// The caller is responsible for any inter-fragment gap characters between
+// the preceding state column and the returned labels string.
+func RenderReviewSummary(summaries []ReviewChildSummary, budget int) (labels string, plainWidth int) {
 	if len(summaries) == 0 {
-		return "", "", "", 0
+		return "", 0
 	}
-
-	// Build cluster (always rendered when the budget allows).
-	clusterW := reviewSummaryClusterWidth
-	if budget < clusterW {
-		return "", "", "", 0
-	}
-
-	var clusterB strings.Builder
-	for _, s := range summaries {
-		st := lipgloss.NewStyle().Foreground(lipgloss.Color(colorForVerdict(s.Verdict)))
-		clusterB.WriteString(st.Render(glyphForVerdict(s.Verdict)))
-	}
-	cluster = clusterB.String()
-	plainWidth = clusterW
-
-	// Decide whether labels fit.
 	labelsW := reviewSummaryLabelsWidth(summaries)
-	tailText := reviewSummaryTailText(summaries)
-	tailW := utf8.RuneCountInString(tailText)
-
-	// Try cluster + labels + tail. Each transition costs 2 runes of gap.
-	if budget >= clusterW+2+labelsW+2+tailW {
-		labels = renderLabels(summaries)
-		tail = renderTail(tailText)
-		plainWidth = clusterW + 2 + labelsW + 2 + tailW
-		return
+	if budget < labelsW {
+		return "", 0
 	}
-	// Try cluster + tail (drop labels first per the AC).
-	if budget >= clusterW+2+tailW && tailW > 0 {
-		tail = renderTail(tailText)
-		plainWidth = clusterW + 2 + tailW
-		return
-	}
-	// Only the cluster fits.
-	return
+	return renderLabels(summaries), labelsW
 }
 
 // renderLabels renders the per-agent verdict labels segment as a single
-// ANSI-coloured string. Format: "goal:P  code:P  sec:F  qa:◌  context:·" —
+// ANSI-coloured string. Format: "code:P  context:·  goal:P  qa:◌  sec:F" —
 // the agent short name in dim, ":" in dim, the verdict letter in the verdict
 // colour.
 func renderLabels(summaries []ReviewChildSummary) string {
@@ -377,20 +298,4 @@ func renderLabels(summaries []ReviewChildSummary) string {
 		b.WriteString(letter.Render(letterForVerdict(s.Verdict)))
 	}
 	return b.String()
-}
-
-// renderTail renders the progress-tail text. "all pass" is rendered green,
-// "all fail" red, and "N/5 done" dim.
-func renderTail(text string) string {
-	if text == "" {
-		return ""
-	}
-	color := ColorSecondary
-	switch text {
-	case "all pass":
-		color = ColorGreen
-	case "all fail":
-		color = ColorRed
-	}
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(color)).Render(text)
 }
