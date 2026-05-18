@@ -8,10 +8,11 @@ package cmd
 // keystroke through.
 //
 // Behaviour summary:
-//   - up/down walks the top-level prism sessions (the rows the dashboard
-//     renders without a tree connector) in dashboard ordering, wrapping at
-//     both ends. Sessions in terminal states (finished/deleted/interrupted)
-//     and sessions without a live tmux session are skipped.
+//   - up/down walks every real switchable session in dashboard order
+//     (top-level rows and their depth-1 children), excluding review-group
+//     virtual rows, depth-2 review-agent children, sessions in terminal
+//     states (finished/deleted/interrupted), and sessions without a live
+//     tmux session. The cycle wraps at both ends.
 //   - left/right walks the review cycle for the current session:
 //       [parent, review-goal, review-code, review-security, review-qa, review-context]
 //     when the current session is either a depth-2 review agent (the cycle is

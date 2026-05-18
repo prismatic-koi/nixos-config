@@ -39,16 +39,24 @@ func ParseDirection(s string) (Direction, error) {
 	}
 }
 
-// IsTopLevel reports whether the session is a top-level row in the dashboard:
-// either a plain session name (no "@") or an "@main" branch session. Mirrors
-// the predicate inlined in internal/dashboard/view.go::isTopLevel and excludes
-// review-group virtual rows and depth-2 children.
-func IsTopLevel(s dashboard.AgentSession) bool {
+// IsSpineRow reports whether the session is a real switchable row in the
+// dashboard's vertical spine. The spine includes top-level rows AND their
+// depth-1 children (e.g. `nixos-config@dashboard-slim`). It excludes:
+//
+//   - virtual review-group rows (IsReviewGroup == true), and
+//   - depth-2 review-agent children (matching dashboard.IsDepth2Session).
+//
+// This is broader than the original `IsTopLevel` predicate (which only
+// admitted plain or `@main` names) and matches the actual spine the
+// dashboard renders — see issue #1800.
+func IsSpineRow(s dashboard.AgentSession) bool {
 	if s.IsReviewGroup {
 		return false
 	}
-	branch := dashboard.SessionBranch(s.Name)
-	return branch == s.Name || branch == "@main"
+	if dashboard.IsDepth2Session(s.Name) {
+		return false
+	}
+	return true
 }
 
 // terminalStates is the set of agent states that exclude a session from the
@@ -61,12 +69,12 @@ var terminalStates = map[string]bool{
 	"interrupted": true,
 }
 
-// IsNavigableTopLevel reports whether s should be included in the up/down
-// navigable set. The session must be top-level, not in a terminal state, and
-// must have a live tmux session (the latter checked by the caller via the
-// liveCheck callback because tmux IO is impure).
-func IsNavigableTopLevel(s dashboard.AgentSession, liveCheck func(string) bool) bool {
-	if !IsTopLevel(s) {
+// IsNavigableSpine reports whether s should be included in the up/down
+// navigable spine. The session must be a spine row (per IsSpineRow), not in
+// a terminal state, and must have a live tmux session (the latter checked
+// by the caller via the liveCheck callback because tmux IO is impure).
+func IsNavigableSpine(s dashboard.AgentSession, liveCheck func(string) bool) bool {
+	if !IsSpineRow(s) {
 		return false
 	}
 	if terminalStates[s.AgentState] {
@@ -78,13 +86,16 @@ func IsNavigableTopLevel(s dashboard.AgentSession, liveCheck func(string) bool) 
 	return true
 }
 
-// VerticalTargets returns the ordered list of top-level session names that
-// participate in the up/down spine, given a slice of all dashboard sessions
-// (already sorted by dashboard.SortDisplayed) and a tmux liveness check.
+// VerticalTargets returns the ordered list of spine session names that
+// participate in the up/down navigation, given a slice of all dashboard
+// sessions (already sorted by dashboard.SortDisplayed) and a tmux liveness
+// check. Both top-level rows and their depth-1 children are included; the
+// dashboard ordering — `@main` first within each repo, then other branches
+// alphabetically; repos ordered alphabetically — is preserved.
 func VerticalTargets(sessions []dashboard.AgentSession, liveCheck func(string) bool) []string {
 	var out []string
 	for _, s := range sessions {
-		if IsNavigableTopLevel(s, liveCheck) {
+		if IsNavigableSpine(s, liveCheck) {
 			out = append(out, s.Name)
 		}
 	}

@@ -50,22 +50,27 @@ func TestParseDirection(t *testing.T) {
 	}
 }
 
-func TestIsTopLevel(t *testing.T) {
+func TestIsSpineRow(t *testing.T) {
 	cases := []struct {
-		name    string
-		s       dashboard.AgentSession
-		topLvl  bool
+		name  string
+		s     dashboard.AgentSession
+		want  bool
 	}{
+		// Top-level rows: included.
 		{"plain", dashboard.AgentSession{Name: "scratchpad"}, true},
 		{"main", dashboard.AgentSession{Name: "nixos-config@main"}, true},
-		{"branch", dashboard.AgentSession{Name: "nixos-config@feature"}, false},
+		// Depth-1 child branches: now included (issue #1800).
+		{"branch", dashboard.AgentSession{Name: "nixos-config@feature"}, true},
+		{"dashboard-slim", dashboard.AgentSession{Name: "nixos-config@dashboard-slim"}, true},
+		// Depth-2 review-agent children: excluded.
 		{"depth2", dashboard.AgentSession{Name: "nixos-config@feature~review-1-review-goal"}, false},
+		// Virtual review-group rows: excluded.
 		{"review-group", dashboard.AgentSession{Name: "nixos-config@feature~review-1", IsReviewGroup: true}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nav.IsTopLevel(c.s); got != c.topLvl {
-				t.Errorf("IsTopLevel(%q) = %v, want %v", c.s.Name, got, c.topLvl)
+			if got := nav.IsSpineRow(c.s); got != c.want {
+				t.Errorf("IsSpineRow(%q) = %v, want %v", c.s.Name, got, c.want)
 			}
 		})
 	}
@@ -74,7 +79,7 @@ func TestIsTopLevel(t *testing.T) {
 func TestVerticalTargets_FiltersTerminalAndNonLive(t *testing.T) {
 	sessions := makeSessions(t,
 		[2]string{"alpha@main", "active"},
-		[2]string{"alpha@feature", "active"}, // depth-1: not top-level
+		[2]string{"alpha@feature", "active"}, // depth-1: included (issue #1800)
 		[2]string{"beta@main", "finished"},   // terminal state: excluded
 		[2]string{"gamma@main", "idle"},
 		[2]string{"gamma@feature~review-1-review-goal", "active"}, // depth-2: excluded
@@ -84,9 +89,128 @@ func TestVerticalTargets_FiltersTerminalAndNonLive(t *testing.T) {
 	live := liveSet("alpha@main", "alpha@feature", "gamma@main", "gamma@feature~review-1-review-goal", "scratchpad")
 
 	got := nav.VerticalTargets(sessions, live)
-	want := []string{"alpha@main", "gamma@main", "scratchpad"}
+	want := []string{"alpha@main", "alpha@feature", "gamma@main", "scratchpad"}
 	if !equalSlice(got, want) {
 		t.Errorf("VerticalTargets = %v, want %v", got, want)
+	}
+}
+
+// TestVerticalTargets_Depth1Included_BasicRegression covers the core
+// regression from issue #1800: a fixture with `nixos-config@main` and a
+// depth-1 child `nixos-config@dashboard-slim` (no review groups) must yield
+// both names in dashboard order, and the cycle must connect them.
+func TestVerticalTargets_Depth1Included_BasicRegression(t *testing.T) {
+	sessions := makeSessions(t,
+		[2]string{"nixos-config@main", "active"},
+		[2]string{"nixos-config@dashboard-slim", "active"},
+	)
+	got := nav.VerticalTargets(sessions, alwaysLive)
+	want := []string{"nixos-config@main", "nixos-config@dashboard-slim"}
+	if !equalSlice(got, want) {
+		t.Fatalf("VerticalTargets = %v, want %v", got, want)
+	}
+	if next, ok := nav.ResolveVertical("nixos-config@main", nav.DirDown, got); !ok || next != "nixos-config@dashboard-slim" {
+		t.Errorf("down from @main: got (%q,%v), want (nixos-config@dashboard-slim,true)", next, ok)
+	}
+	if next, ok := nav.ResolveVertical("nixos-config@dashboard-slim", nav.DirDown, got); !ok || next != "nixos-config@main" {
+		t.Errorf("down from @dashboard-slim (wrap): got (%q,%v), want (nixos-config@main,true)", next, ok)
+	}
+	if next, ok := nav.ResolveVertical("nixos-config@main", nav.DirUp, got); !ok || next != "nixos-config@dashboard-slim" {
+		t.Errorf("up from @main (wrap): got (%q,%v), want (nixos-config@dashboard-slim,true)", next, ok)
+	}
+	if next, ok := nav.ResolveVertical("nixos-config@dashboard-slim", nav.DirUp, got); !ok || next != "nixos-config@main" {
+		t.Errorf("up from @dashboard-slim: got (%q,%v), want (nixos-config@main,true)", next, ok)
+	}
+}
+
+// TestVerticalTargets_DashboardOrdering verifies that the spine is ordered
+// per dashboard.SortDisplayed: within each repo `@main` first then other
+// branches alphabetically; repos ordered alphabetically.
+func TestVerticalTargets_DashboardOrdering(t *testing.T) {
+	sessions := makeSessions(t,
+		[2]string{"other-repo@main", "active"},
+		[2]string{"nixos-config@feat-a", "active"},
+		[2]string{"nixos-config@main", "active"},
+	)
+	got := nav.VerticalTargets(sessions, alwaysLive)
+	want := []string{"nixos-config@main", "nixos-config@feat-a", "other-repo@main"}
+	if !equalSlice(got, want) {
+		t.Errorf("VerticalTargets = %v, want %v", got, want)
+	}
+}
+
+// TestVerticalTargets_ExcludesReviewGroupAndDepth2 verifies that review-group
+// virtual rows and depth-2 review-agent children are not part of the up/down
+// spine even though they appear in dashboard rendering.
+func TestVerticalTargets_ExcludesReviewGroupAndDepth2(t *testing.T) {
+	parent := "repo@feature"
+	rgName := parent + "~review-1"
+	d2Name := parent + "~review-1-review-goal"
+	sessions := makeSessions(t,
+		[2]string{"repo@main", "active"},
+		[2]string{parent, "active"},
+		[2]string{d2Name, "active"},
+	)
+	// Inject a virtual review-group row (these are synthesised by the
+	// dashboard layer, not present in the DB; build it directly here).
+	sessions = append(sessions, dashboard.AgentSession{Name: rgName, IsReviewGroup: true, AgentState: "active"})
+	dashboard.SortDisplayed(sessions)
+
+	got := nav.VerticalTargets(sessions, alwaysLive)
+	want := []string{"repo@main", parent}
+	if !equalSlice(got, want) {
+		t.Errorf("VerticalTargets = %v, want %v", got, want)
+	}
+}
+
+// TestVerticalTargets_Depth1OnlyRepo verifies the edge case where a repo has
+// only depth-1 children (no `@main` sibling). Those children must still be
+// rendered in the spine.
+func TestVerticalTargets_Depth1OnlyRepo(t *testing.T) {
+	sessions := makeSessions(t,
+		[2]string{"alpha@main", "active"},
+		[2]string{"orphan@feature-x", "active"},
+		[2]string{"orphan@feature-y", "active"},
+	)
+	got := nav.VerticalTargets(sessions, alwaysLive)
+	// Expect alpha@main, then orphan repo's depth-1 children in alpha order.
+	want := []string{"alpha@main", "orphan@feature-x", "orphan@feature-y"}
+	if !equalSlice(got, want) {
+		t.Errorf("VerticalTargets = %v, want %v", got, want)
+	}
+	// Confirm they cycle.
+	if next, ok := nav.ResolveVertical("orphan@feature-x", nav.DirDown, got); !ok || next != "orphan@feature-y" {
+		t.Errorf("down from orphan@feature-x: got (%q,%v), want (orphan@feature-y,true)", next, ok)
+	}
+}
+
+// TestVerticalTargets_MainOnlyRepo verifies the edge case where a repo has
+// only `@main` and no depth-1 children — unchanged from previous behaviour.
+func TestVerticalTargets_MainOnlyRepo(t *testing.T) {
+	sessions := makeSessions(t,
+		[2]string{"alpha@main", "active"},
+		[2]string{"beta@main", "active"},
+	)
+	got := nav.VerticalTargets(sessions, alwaysLive)
+	want := []string{"alpha@main", "beta@main"}
+	if !equalSlice(got, want) {
+		t.Errorf("VerticalTargets = %v, want %v", got, want)
+	}
+}
+
+// TestVerticalTargets_TerminalStateExcludesDepth1 verifies that depth-1
+// children in terminal states are excluded from the spine, just like
+// top-level rows.
+func TestVerticalTargets_TerminalStateExcludesDepth1(t *testing.T) {
+	for _, state := range []string{"finished", "deleted", "interrupted"} {
+		sessions := makeSessions(t,
+			[2]string{"repo@main", "active"},
+			[2]string{"repo@feature", state},
+		)
+		got := nav.VerticalTargets(sessions, alwaysLive)
+		if len(got) != 1 || got[0] != "repo@main" {
+			t.Errorf("depth-1 state=%q: got %v, want [repo@main]", state, got)
+		}
 	}
 }
 
