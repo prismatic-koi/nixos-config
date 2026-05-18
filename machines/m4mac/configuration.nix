@@ -27,7 +27,10 @@ in
       prism = {
         profile.default = "anthropic";
         agent.isolation.default = "sandbox-exec";
-        pi.atlassian.enable = true;
+        pi.atlassian = {
+          enable = true;
+          defaultCloudId = "08986a80-a6ed-4480-ae2d-4a439d50d71b";
+        };
         projects.isolationOverrides = {
           "~/Documents/obsidian" = "host";
         };
