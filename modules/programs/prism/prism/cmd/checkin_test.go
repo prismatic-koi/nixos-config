@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,13 @@ import (
 
 // captureStdout redirects os.Stdout to a pipe for the duration of fn,
 // then returns everything that was written.
+//
+// Drain the read end concurrently with fn so that writes larger than the
+// kernel pipe buffer (16 pages ≈ 64 KiB on Linux) do not deadlock fn on
+// Write. Without the goroutine, a single fn() that writes more than the
+// pipe buffer (e.g. `agent-context` JSON, which is currently ~69 KiB)
+// blocks on the underlying write(2) syscall forever because nothing is
+// reading from the pipe until after fn returns.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -33,14 +41,23 @@ func captureStdout(t *testing.T, fn func()) string {
 	old := os.Stdout
 	os.Stdout = w
 
+	var buf bytes.Buffer
+	var copyErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, copyErr = io.Copy(&buf, r)
+	}()
+
 	fn()
 
 	w.Close()
+	wg.Wait()
 	os.Stdout = old
 
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("io.Copy: %v", err)
+	if copyErr != nil {
+		t.Fatalf("io.Copy: %v", copyErr)
 	}
 	return buf.String()
 }
