@@ -239,6 +239,35 @@ in
               bind -n C-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys Home'
               bind -n C-M-g if-shell '${sandboxedPaneGuard} "#{pane_current_command}"' 'send-keys End'
 
+              # Directional session switching for the agent window (issue #1794).
+              #
+              # Root-level C-h/C-j/C-k/C-l invoke `prism nav <dir>` when the active
+              # window is named `agent`; on every other window (edit / term /
+              # custom) the literal keystroke is sent through unchanged via
+              # `send-keys`. This preserves neovim's window navigation on the
+              # `edit` window and the shell's C-h (backspace) on the `term` window.
+              #
+              # The guard is window-name based ("#{window_name}" = "agent"), not
+              # pane-command based, because the agent window may be on its second
+              # pane (a shell next to pi) and the keystroke should still navigate
+              # sessions in that case.
+              #
+              # `run-shell -b` runs `prism nav` in the background so the tmux
+              # binding returns immediately; the nav subcommand calls
+              # `tmux switch-client` itself.
+              bind -n C-h if-shell '[ "#{window_name}" = "agent" ]' \
+                'run-shell -b "${prism} nav left"' \
+                'send-keys C-h'
+              bind -n C-j if-shell '[ "#{window_name}" = "agent" ]' \
+                'run-shell -b "${prism} nav down"' \
+                'send-keys C-j'
+              bind -n C-k if-shell '[ "#{window_name}" = "agent" ]' \
+                'run-shell -b "${prism} nav up"' \
+                'send-keys C-k'
+              bind -n C-l if-shell '[ "#{window_name}" = "agent" ]' \
+                'run-shell -b "${prism} nav right"' \
+                'send-keys C-l'
+
               # Clipboard paste bridge for sandboxed agent panes (issue #752).
               #
               # When Ctrl-V is pressed in a pane whose current command is one of
