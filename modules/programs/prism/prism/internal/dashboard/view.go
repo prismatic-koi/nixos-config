@@ -11,6 +11,13 @@ import (
 // RenderReviewGroupRow renders a virtual review-round group row (collapsed or
 // expanded). treePrefix is the depth-1 connector ("  ├── " or "  └── ").
 // expanded controls whether the ▼ (expanded) or ▶ (collapsed) indicator is shown.
+//
+// When s.ReviewChildSummaries is non-empty, the row also renders the
+// per-agent status cluster (●○◐·✕), the per-agent verdict labels
+// ("goal:P  code:F  …"), and the progress tail ("3/5 done" or "all pass")
+// after the state column, subject to the available width budget. The cluster
+// is the floor — it never collapses while it fits; the per-agent labels are
+// dropped first, the progress tail second. See #1795.
 func RenderReviewGroupRow(
 	d Shared,
 	s AgentSession,
@@ -52,12 +59,42 @@ func RenderReviewGroupRow(
 	}
 	sessionArea := treePrefix + fmt.Sprintf("%-*s", totalSessionW-runeCount, content)
 
+	// Compute the trailing summary fragments (cluster + labels + tail) if
+	// per-child summaries are populated. The width budget is whatever is
+	// left of d.Width after the leading session area + state column + the
+	// fixed gaps. We deliberately budget only against d.Width, not the
+	// other columns rendered by leaf rows — the group row's trailing area
+	// is independent of the leaf rows' type / model / harness / stat / title
+	// columns; it just consumes whatever horizontal space remains.
+	var clusterStr, labelsStr, tailStr string
+	var trailingPlainW int
+	if len(s.ReviewChildSummaries) > 0 && d.Width > 0 {
+		// Bytes consumed so far in the plain (un-styled) layout:
+		//   leading space (1) + dot (2) + sessionArea (totalSessionW) +
+		//   gap (2) + state label (stateW) + gap (2) = consumed.
+		consumed := 1 + 2 + totalSessionW + 2 + stateW + 2
+		budget := d.Width - consumed
+		if budget < 0 {
+			budget = 0
+		}
+		clusterStr, labelsStr, tailStr, trailingPlainW = RenderReviewSummary(s.ReviewChildSummaries, budget)
+	}
+
 	if isSelected && cursorActive {
 		barBg := lipgloss.Color(ColorSecondary)
 		if c, ok := stateStyle(s.AgentState).GetForeground().(lipgloss.Color); ok {
 			barBg = c
 		}
 		plain := fmt.Sprintf(" %s%s  %-*s", dot, sessionArea, stateW, stateLabel(s.AgentState))
+		if clusterStr != "" {
+			// The selected-row bar uses lipgloss.Width(...).Render(plain),
+			// which would strip the cluster colours under the bar. Render
+			// the trailing summary as plain text (no per-glyph colour) when
+			// the row is selected so the bar bg stays uniform and the glyphs
+			// stay readable in foreground/background contrast. The labels
+			// and tail follow the same drop-order rules.
+			plain += "  " + plainSummaryForBudget(s.ReviewChildSummaries, labelsStr != "", tailStr != "")
+		}
 		row := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorBg0)).
 			Background(barBg).
@@ -77,7 +114,51 @@ func RenderReviewGroupRow(
 	labelPart := styleDim.Render(fmt.Sprintf("%-*s", totalSessionW-runeCount, content))
 	prefix := treePart + labelPart
 	row := prefix + styleFg.Render("  ") + stateStr
+	if clusterStr != "" {
+		row += styleFg.Render("  ") + clusterStr
+		if labelsStr != "" {
+			row += styleFg.Render("  ") + labelsStr
+		}
+		if tailStr != "" {
+			row += styleFg.Render("  ") + tailStr
+		}
+	}
+	_ = trailingPlainW
 	return row + "\n"
+}
+
+// plainSummaryForBudget renders the cluster + (optionally) labels +
+// (optionally) tail as a plain (unstyled) string for use inside the
+// selected-row bar, where lipgloss's Width().Render would interact poorly
+// with per-glyph colours. The includeLabels / includeTail flags must match
+// the budget decisions made by RenderReviewSummary so the selected and
+// unselected renders have the same width footprint.
+func plainSummaryForBudget(summaries []ReviewChildSummary, includeLabels, includeTail bool) string {
+	if len(summaries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for _, sm := range summaries {
+		b.WriteString(glyphForVerdict(sm.Verdict))
+	}
+	if includeLabels {
+		b.WriteString("  ")
+		for i, sm := range summaries {
+			if i > 0 {
+				b.WriteString("  ")
+			}
+			b.WriteString(sm.AgentShortName)
+			b.WriteString(":")
+			b.WriteString(letterForVerdict(sm.Verdict))
+		}
+	}
+	if includeTail {
+		if tail := reviewSummaryTailText(summaries); tail != "" {
+			b.WriteString("  ")
+			b.WriteString(tail)
+		}
+	}
+	return b.String()
 }
 
 // DashView is the shared rendering function for both popup and persistent modes.

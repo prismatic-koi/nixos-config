@@ -42,6 +42,17 @@ type AgentSession struct {
 	// IsReviewGroup marks a virtual ~review-N group row (not a real session).
 	// Selecting this row in the picker toggles expand/collapse rather than switching.
 	IsReviewGroup bool
+	// LastMessage is the most recent assistant message payload for this
+	// session, when available. It is populated only for per-agent review
+	// sessions (i.e. those with a non-empty ReviewRoundKey) so that
+	// BuildDisplayRows can derive per-child verdicts when constructing the
+	// virtual review-group row. Empty for all other rows. See #1795.
+	LastMessage string
+	// ReviewChildSummaries is populated on virtual IsReviewGroup rows. One
+	// entry per canonical review agent in the order returned by
+	// review.Agents(). Empty on non-group rows. See review_summary.go for
+	// the rendering helpers. See #1795.
+	ReviewChildSummaries []ReviewChildSummary
 }
 
 // StatusToAgentSession converts a db.Status into an AgentSession.
@@ -310,10 +321,11 @@ func BuildDisplayRows(sessions []AgentSession, collapsedGroups map[string]bool, 
 		// Emit the virtual group row.
 		// Use the first child's path/harness for context (or empty).
 		groupRow := AgentSession{
-			Name:          currentGroupKey,
-			AgentState:    esc,
-			AgentPath:     currentChildren[0].AgentPath,
-			IsReviewGroup: true,
+			Name:                 currentGroupKey,
+			AgentState:           esc,
+			AgentPath:            currentChildren[0].AgentPath,
+			IsReviewGroup:        true,
+			ReviewChildSummaries: BuildReviewChildSummaries(currentChildren),
 		}
 		out = append(out, groupRow)
 		if expanded {

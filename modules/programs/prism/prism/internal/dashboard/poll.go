@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -50,6 +51,12 @@ func FetchSessionsFromDB() tea.Msg {
 	// Filter out internal sessions (scratchpad, prism-dashboard).
 	sessions = FilterAgentSessions(sessions)
 
+	// Attach last-assistant messages for per-agent review sessions so the
+	// virtual review-group row can derive per-child verdicts (#1795). We
+	// fetch GroupResults once per unique review group_id — review groups
+	// are bounded in number, so this is a small fixed cost per refresh.
+	attachReviewLastMessages(d, sessions)
+
 	// Collect unique agent paths that need git stat computation.
 	seen := map[string]bool{}
 	var paths []string
@@ -78,6 +85,48 @@ func FetchSessionsFromDB() tea.Msg {
 	wg.Wait()
 
 	return SessionsMsg{Sessions: sessions, GitStats: stats}
+}
+
+// attachReviewLastMessages populates sessions[i].LastMessage for every
+// per-agent review session (i.e. ReviewRoundKey(sessions[i].Name) != "")
+// using db.GroupResults() keyed by group_id. The DB handle is reused; on
+// error the field is left empty (best-effort — the dashboard still renders
+// correctly, just without verdict glyphs / labels until the next refresh).
+//
+// One GroupResults() call per unique review group_id. Review groups are
+// bounded in number, so this is a small fixed cost per FetchSessionsFromDB
+// invocation.
+func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
+	// Collect unique group_ids belonging to per-agent review sessions.
+	groupIDs := map[string]bool{}
+	for _, s := range sessions {
+		if s.GroupID == nil || *s.GroupID == "" {
+			continue
+		}
+		if ReviewRoundKey(s.Name) == "" {
+			continue
+		}
+		groupIDs[*s.GroupID] = true
+	}
+	if len(groupIDs) == 0 {
+		return
+	}
+	// Fetch GroupResults for each unique group and stash a per-session map.
+	bySession := map[string]string{}
+	for gid := range groupIDs {
+		members, err := d.GroupResults(gid)
+		if err != nil {
+			continue
+		}
+		for name, m := range members {
+			bySession[name] = m.LastMessage
+		}
+	}
+	for i, s := range sessions {
+		if msg, ok := bySession[s.Name]; ok {
+			sessions[i].LastMessage = msg
+		}
+	}
 }
 
 // FetchGitStatsOnly queries the current set of active sessions from the DB
