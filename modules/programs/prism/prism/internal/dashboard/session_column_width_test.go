@@ -289,9 +289,15 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 	// so the total session area fits the actual content without using the old floor.
 	// We can't easily check the exact final width (growSession may add more),
 	// but we verify the header renders without panic and contains expected labels.
-	for _, label := range []string{"session", "state", "type"} {
+	for _, label := range []string{"session", "state", "title"} {
 		if !strings.Contains(headerLine, label) {
 			t.Errorf("header line missing %q: %q", label, headerLine)
+		}
+	}
+	// After the slim row format (#1799) the dropped columns must NOT appear.
+	for _, label := range []string{"type", "harness", "model", "changes", "+/-"} {
+		if strings.Contains(headerLine, label) {
+			t.Errorf("header line should not contain dropped column %q: %q", label, headerLine)
 		}
 	}
 }

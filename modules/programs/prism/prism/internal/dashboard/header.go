@@ -101,16 +101,10 @@ func RainbowLineWidth(line string, totalWidth int) string {
 // RenderHeader composites the stats panel (left) with the art block (right)
 // into a single header string that fills termWidth on each line.
 // When the terminal is too short, a compact 2-line header is used instead.
-func RenderHeader(d Shared, styleDim, styleIns, styleDel lipgloss.Style) string {
+func RenderHeader(d Shared, styleDim lipgloss.Style) string {
 	// ── compute stats ────────────────────────────────────────────────────────
 	var nActive, nWaiting, nIdle, nFinished, nInterrupted int
-	var totalIns, totalDel int
 	for _, s := range d.Sessions {
-		result := d.GitStats[s.AgentPath]
-		if result.Ok {
-			totalIns += result.Stat.Insertions
-			totalDel += result.Stat.Deletions
-		}
 		switch agent.AgentState(s.AgentState) {
 		case agent.StateActive:
 			nActive++
@@ -188,15 +182,6 @@ func RenderHeader(d Shared, styleDim, styleIns, styleDel lipgloss.Style) string 
 		prLine = fmt.Sprintf("↑ %d open PRs", d.GhOpenPRs)
 	}
 
-	var changesLine string
-	if totalIns == 0 && totalDel == 0 {
-		changesLine = styleStatDim.Render("no changes")
-	} else {
-		changesLine = styleIns.Render(fmt.Sprintf("+%d", totalIns)) +
-			"  " +
-			styleDel.Render(fmt.Sprintf("-%d", totalDel))
-	}
-
 	prRendered := styleStatDim.Render(prLine)
 	stateRendered := styleStatDim.Render(stateLine)
 	sessionCountLine := styleStatLabel.Render(fmt.Sprintf("%d sessions", len(d.Sessions)))
@@ -206,20 +191,20 @@ func RenderHeader(d Shared, styleDim, styleIns, styleDel lipgloss.Style) string 
 	// never overflows into the art column.
 	const minStatsW = 20
 	statsW := minStatsW
-	for _, s := range []string{sessionCountLine, stateRendered, changesLine, prRendered} {
+	for _, s := range []string{sessionCountLine, stateRendered, prRendered} {
 		if w := lipgloss.Width(s); w > statsW {
 			statsW = w
 		}
 	}
 
 	// 7 stat lines matching artHeight, each exactly statsW wide.
-	// Lines 0-1: blank  2: sessions  3: states  4: changes  5: PRs  6: blank
+	// Lines 0-2: blank  3: sessions  4: states  5: PRs  6: blank
 	statLines := []string{
+		strings.Repeat(" ", statsW),
 		strings.Repeat(" ", statsW),
 		strings.Repeat(" ", statsW),
 		padTo(sessionCountLine, statsW),
 		padTo(stateRendered, statsW),
-		padTo(changesLine, statsW),
 		padTo(prRendered, statsW),
 		strings.Repeat(" ", statsW),
 	}

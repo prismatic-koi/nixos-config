@@ -17,7 +17,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -28,14 +27,6 @@ type RefreshMsg struct{}
 
 // DashStatusMsg carries a transient status/error message to display in the dashboard.
 type DashStatusMsg string
-
-// GitStatResult holds the outcome of a git.Stat call for a single worktree.
-// Ok is false when the git command failed; in that case Stat is zero and the
-// caller should render "?" rather than "—".
-type GitStatResult struct {
-	Stat git.DiffStat
-	Ok   bool
-}
 
 // FocusClientMsg is sent by the persistent model's FocusMsg handler after
 // querying which tmux client just attached to the session. It updates m.client
@@ -48,31 +39,19 @@ type FocusClientMsg struct {
 	CurrentSession string
 }
 
-// SessionsMsg carries a fresh sessions list and git stats from the DB poller.
+// SessionsMsg carries a fresh sessions list from the DB poller.
 type SessionsMsg struct {
 	Sessions []AgentSession
-	GitStats map[string]GitStatResult // keyed by AgentPath
 }
 
 // GhTickMsg is sent on the 60-second GitHub stats refresh timer.
 type GhTickMsg time.Time
-
-// GitStatTickMsg is sent on the 5-second git stat refresh timer.
-type GitStatTickMsg time.Time
 
 // SessionSyncTickMsg is sent on the 10-second session-list sync timer.
 // Receiving it triggers a full FetchSessionsFromDB to ensure the persistent
 // dashboard's session list converges with DB state (handles spawned or cleaned-up
 // sessions that are not covered by push events).
 type SessionSyncTickMsg time.Time
-
-// GitStatsOnlyMsg carries only the result of git.Stat calls, without a fresh
-// session list from the DB. It is used by the persistent dashboard's 5-second
-// git stat ticker to update diff counters in-place, leaving session states
-// (which may have been updated by push events) untouched.
-type GitStatsOnlyMsg struct {
-	GitStats map[string]GitStatResult // keyed by AgentPath
-}
 
 // CursorTimeoutMsg is sent when the cursor auto-hide timeout fires.
 type CursorTimeoutMsg struct{}
@@ -113,7 +92,6 @@ func CursorTimeoutCmd() tea.Cmd {
 // (no popup bool, no callerClient, no currentSession, no inDashSession).
 type Shared struct {
 	Sessions          []AgentSession
-	GitStats          map[string]GitStatResult // keyed by AgentPath; populated on SessionsMsg
 	Cursor            int
 	CursorInitialised bool // true once we've snapped cursor to currentSession
 	Width             int
@@ -146,9 +124,6 @@ func (d Shared) ApplySessionsMsg(msg SessionsMsg, snapSession string) (Shared, b
 	d.Loading = false
 	if msg.Sessions != nil {
 		d.Sessions = msg.Sessions
-	}
-	if msg.GitStats != nil {
-		d.GitStats = msg.GitStats
 	}
 	needsSnap := !d.CursorInitialised && !d.FilterActive
 	if !d.CursorInitialised {

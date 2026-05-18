@@ -10,18 +10,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/git"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// FetchSessionsFromDB queries agent_status for all active sessions and
-// enriches them with git diff stats. Used by the popup dashboard (which fetches
-// fresh data on every open) and by the persistent dashboard's RefreshMsg path.
+// FetchSessionsFromDB queries agent_status for all active sessions. Used by
+// the popup dashboard (which fetches fresh data on every open) and by the
+// persistent dashboard's RefreshMsg path.
 func FetchSessionsFromDB() tea.Msg {
 	d, err := openDB()
 	if err != nil {
@@ -57,34 +54,7 @@ func FetchSessionsFromDB() tea.Msg {
 	// are bounded in number, so this is a small fixed cost per refresh.
 	attachReviewLastMessages(d, sessions)
 
-	// Collect unique agent paths that need git stat computation.
-	seen := map[string]bool{}
-	var paths []string
-	for _, s := range sessions {
-		if s.AgentPath != "" && !seen[s.AgentPath] {
-			seen[s.AgentPath] = true
-			paths = append(paths, s.AgentPath)
-		}
-	}
-
-	// Run git.Stat for each unique path concurrently.
-	stats := make(map[string]GitStatResult, len(paths))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for _, p := range paths {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-			diffStat, err := git.Stat(path)
-			result := GitStatResult{Stat: diffStat, Ok: err == nil}
-			mu.Lock()
-			stats[path] = result
-			mu.Unlock()
-		}(p)
-	}
-	wg.Wait()
-
-	return SessionsMsg{Sessions: sessions, GitStats: stats}
+	return SessionsMsg{Sessions: sessions}
 }
 
 // attachReviewLastMessages populates sessions[i].LastMessage for every
@@ -129,64 +99,6 @@ func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
 	}
 }
 
-// FetchGitStatsOnly queries the current set of active sessions from the DB
-// solely to discover their worktree paths, then runs git.Stat on each unique
-// path concurrently and returns a GitStatsOnlyMsg. It does NOT update the
-// session list or agent states — those are managed by FetchSessionsFromDB and
-// push events. This is what the persistent dashboard's 5-second git stat ticker
-// calls so that diff-counter updates never overwrite push-event state changes.
-//
-// Internal sessions (scratchpad, prism-dashboard) are filtered out before
-// collecting paths, consistent with FetchSessionsFromDB.
-func FetchGitStatsOnly() tea.Msg {
-	d, err := openDB()
-	if err != nil {
-		return GitStatsOnlyMsg{}
-	}
-	defer d.Close()
-
-	statuses, err := d.AllActiveStatus()
-	if err != nil {
-		return GitStatsOnlyMsg{}
-	}
-
-	// Collect unique worktree paths, skipping internal sessions
-	// (scratchpad, prism-dashboard) by name — the same filter applied by
-	// FilterAgentSessions. We operate directly on db.Status here to avoid
-	// the TmuxClientCounts() subprocess call that StatusToAgentSession
-	// requires but FetchGitStatsOnly does not use.
-	seen := map[string]bool{}
-	var paths []string
-	for _, s := range statuses {
-		if session.IsMetaSession(s.SessionName) {
-			continue
-		}
-		if s.Worktree != "" && !seen[s.Worktree] {
-			seen[s.Worktree] = true
-			paths = append(paths, s.Worktree)
-		}
-	}
-
-	// Run git.Stat for each unique path concurrently.
-	stats := make(map[string]GitStatResult, len(paths))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	for _, p := range paths {
-		wg.Add(1)
-		go func(path string) {
-			defer wg.Done()
-			diffStat, err := git.Stat(path)
-			result := GitStatResult{Stat: diffStat, Ok: err == nil}
-			mu.Lock()
-			stats[path] = result
-			mu.Unlock()
-		}(p)
-	}
-	wg.Wait()
-
-	return GitStatsOnlyMsg{GitStats: stats}
-}
-
 // FetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
 // Runs as a tea.Cmd so it never blocks the render loop.
 func FetchGitHubStats() tea.Msg {
@@ -227,20 +139,11 @@ func GhTick() tea.Cmd {
 	})
 }
 
-// GitStatTick returns a tea.Cmd that fires a GitStatTickMsg after 5 seconds.
-func GitStatTick() tea.Cmd {
-	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
-		return GitStatTickMsg(t)
-	})
-}
-
 // SessionSyncTick returns a tea.Cmd that fires a SessionSyncTickMsg after 10
 // seconds. The persistent dashboard uses this to periodically re-fetch the full
 // session list from the DB, ensuring that sessions spawned or cleaned up since
 // the last full refresh become visible (or disappear) within one tick interval.
-// The interval is intentionally coarser than GitStatTick (10s vs 5s) to avoid
-// unnecessary DB load; push events remain the primary mechanism for sub-second
-// state-change updates.
+// push events remain the primary mechanism for sub-second state-change updates.
 func SessionSyncTick() tea.Cmd {
 	return tea.Tick(10*time.Second, func(t time.Time) tea.Msg {
 		return SessionSyncTickMsg(t)

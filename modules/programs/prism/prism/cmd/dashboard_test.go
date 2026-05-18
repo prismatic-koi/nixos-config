@@ -22,7 +22,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/prismatic-koi/prism/internal/dashboard"
-	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -1119,114 +1118,6 @@ func TestSortDisplayed(t *testing.T) {
 
 // ─── git stat error rendering tests ──────────────────────────────────────────
 
-// TestDashViewStatError verifies that a session with a failed git stat shows
-// "?" in the rendered view, not "—" (which would imply a clean worktree).
-func TestDashViewStatError(t *testing.T) {
-	t.Parallel()
-
-	m := dashboard.PersistentModel{
-		Shared: dashboard.Shared{
-			Sessions:  []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			Displayed: []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			GitStats: map[string]dashboard.GitStatResult{
-				"/some/path": {Ok: false}, // stat failed
-			},
-			Width:  80,
-			Height: 40,
-		},
-	}
-	view := m.View()
-	if !strings.Contains(view, "?") {
-		t.Errorf("View() should contain '?' for a failed git stat, got:\n%s", view)
-	}
-}
-
-// TestDashViewStatClean verifies that a session with a successful git stat
-// showing no changes renders "—", not "?".
-func TestDashViewStatClean(t *testing.T) {
-	t.Parallel()
-
-	m := dashboard.PersistentModel{
-		Shared: dashboard.Shared{
-			Sessions:  []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			Displayed: []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			GitStats: map[string]dashboard.GitStatResult{
-				"/some/path": {Ok: true}, // stat succeeded, zero DiffStat = clean
-			},
-			Width:  80,
-			Height: 40,
-		},
-	}
-	view := m.View()
-	if !strings.Contains(view, "—") {
-		t.Errorf("View() should contain '—' for a clean worktree, got:\n%s", view)
-	}
-	if strings.Contains(view, "?") {
-		t.Errorf("View() should NOT contain '?' for a clean worktree, got:\n%s", view)
-	}
-}
-
-// TestDashViewStatDirty verifies that a session with uncommitted changes shows
-// the numeric diff stats (not "—" or "?").
-func TestDashViewStatDirty(t *testing.T) {
-	t.Parallel()
-
-	m := dashboard.PersistentModel{
-		Shared: dashboard.Shared{
-			Sessions:  []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			Displayed: []dashboard.AgentSession{{Name: "repo@main", AgentPath: "/some/path"}},
-			GitStats: map[string]dashboard.GitStatResult{
-				"/some/path": {
-					Ok:   true,
-					Stat: git.DiffStat{Files: 3, Insertions: 42, Deletions: 7},
-				},
-			},
-			Width:  120,
-			Height: 40,
-		},
-	}
-	view := m.View()
-	if !strings.Contains(view, "+42") {
-		t.Errorf("View() should contain '+42' for a dirty worktree, got:\n%s", view)
-	}
-	if !strings.Contains(view, "-7") {
-		t.Errorf("View() should contain '-7' for a dirty worktree, got:\n%s", view)
-	}
-}
-
-// TestDashViewStatErrorDoesNotAffectOtherSessions verifies that a stat failure
-// for one session does not affect the rendering of other sessions.
-func TestDashViewStatErrorDoesNotAffectOtherSessions(t *testing.T) {
-	t.Parallel()
-
-	sessions := []dashboard.AgentSession{
-		{Name: "repo@main", AgentPath: "/good/path"},
-		{Name: "repo@bad", AgentPath: "/bad/path"},
-	}
-	m := dashboard.PersistentModel{
-		Shared: dashboard.Shared{
-			Sessions:  sessions,
-			Displayed: sessions,
-			GitStats: map[string]dashboard.GitStatResult{
-				"/good/path": {Ok: true},  // clean
-				"/bad/path":  {Ok: false}, // stat failed
-			},
-			Width:  120,
-			Height: 40,
-		},
-	}
-	view := m.View()
-
-	// The view should contain both "—" (for the clean session) and "?" (for the
-	// failed one). We cannot assert exact positions but both must appear.
-	if !strings.Contains(view, "—") {
-		t.Errorf("View() should contain '—' for the clean session, got:\n%s", view)
-	}
-	if !strings.Contains(view, "?") {
-		t.Errorf("View() should contain '?' for the failed session, got:\n%s", view)
-	}
-}
-
 // ─── multi-client integration tests ──────────────────────────────────────────
 
 // TestPersistentModelEnterMultiClient verifies that pressing Enter in client
@@ -1570,30 +1461,5 @@ func TestPopupModelEnterMultiClient(t *testing.T) {
 	}
 	if gotB != "nixos-config@main" {
 		t.Errorf("clientB session = %q, want %q (bystander must be unaffected)", gotB, "nixos-config@main")
-	}
-}
-
-// TestDashViewStatEmptyAgentPath verifies that a session with an empty
-// AgentPath renders "—" (no stat available), not "?" (which would imply a
-// git error). Sessions with no worktree path are not stat-failed; they simply
-// have no path to stat.
-func TestDashViewStatEmptyAgentPath(t *testing.T) {
-	t.Parallel()
-
-	m := dashboard.PersistentModel{
-		Shared: dashboard.Shared{
-			Sessions:  []dashboard.AgentSession{{Name: "scratchpad-like", AgentPath: ""}},
-			Displayed: []dashboard.AgentSession{{Name: "scratchpad-like", AgentPath: ""}},
-			GitStats:  map[string]dashboard.GitStatResult{}, // no entry for empty path
-			Width:     80,
-			Height:    40,
-		},
-	}
-	view := m.View()
-	if strings.Contains(view, "?") {
-		t.Errorf("View() should NOT contain '?' for a session with empty AgentPath, got:\n%s", view)
-	}
-	if !strings.Contains(view, "—") {
-		t.Errorf("View() should contain '—' for a session with empty AgentPath, got:\n%s", view)
 	}
 }
