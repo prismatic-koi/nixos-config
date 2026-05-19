@@ -77,6 +77,18 @@ func runNav(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Use the explicit -c <client> form whenever CurrentClient returns a name.
+	// This matches the pattern used by cmd/switch.go, cmd/switch_project.go,
+	// and cmd/cleanup.go and ensures that `prism nav` switches the client
+	// whose pane invoked the binding rather than the server-global
+	// "most-recently-active" client (which differs after a fresh spawn).
+	client, _ := tmux.CurrentClient()
+	if client != "" {
+		if err := tmux.SwitchClient(client, target); err != nil {
+			return fmt.Errorf("prism nav: switch-client (client=%q, target=%q) failed: %w", client, target, err)
+		}
+		return nil
+	}
 	if _, err := tmux.SwitchClientCurrent(target); err != nil {
 		return fmt.Errorf("prism nav: switch-client to %q failed: %w", target, err)
 	}
