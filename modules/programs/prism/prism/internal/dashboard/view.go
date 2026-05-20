@@ -66,6 +66,7 @@ func RenderReviewGroupRow(
 	// type / model / harness / stat / title columns; it just consumes
 	// whatever horizontal space remains.
 	var labelsStr string
+	var summaryRenderMode summaryMode
 	if len(s.ReviewChildSummaries) > 0 && d.Width > 0 {
 		// Bytes consumed so far in the plain (un-styled) layout:
 		//   leading space (1) + dot (2) + sessionArea (totalSessionW) +
@@ -75,7 +76,7 @@ func RenderReviewGroupRow(
 		if budget < 0 {
 			budget = 0
 		}
-		labelsStr, _ = RenderReviewSummary(s.ReviewChildSummaries, budget)
+		labelsStr, _, summaryRenderMode = RenderReviewSummary(s.ReviewChildSummaries, budget)
 	}
 
 	if isSelected && cursorActive {
@@ -87,10 +88,12 @@ func RenderReviewGroupRow(
 		if labelsStr != "" {
 			// The selected-row bar uses lipgloss.Width(...).Render(plain),
 			// which would strip per-letter colours under the bar. Render the
-			// labels as plain text (no per-letter colour) when the row is
-			// selected so the bar bg stays uniform and the letters stay
-			// readable in foreground/background contrast.
-			plain += "  " + plainSummaryForBudget(s.ReviewChildSummaries)
+			// trailing segment as plain text (no per-letter colour) when the
+			// row is selected so the bar bg stays uniform and the letters
+			// stay readable in foreground/background contrast. The mode
+			// chosen by RenderReviewSummary is reused here so the plain
+			// mirror has the same width footprint as the coloured form.
+			plain += "  " + plainSummaryForBudget(s.ReviewChildSummaries, summaryRenderMode)
 		}
 		row := lipgloss.NewStyle().
 			Foreground(lipgloss.Color(ColorBg0)).
@@ -117,13 +120,14 @@ func RenderReviewGroupRow(
 	return row + "\n"
 }
 
-// plainSummaryForBudget renders the per-agent verdict labels as a plain
+// plainSummaryForBudget renders the per-agent trailing segment as a plain
 // (unstyled) string for use inside the selected-row bar, where lipgloss's
-// Width().Render would interact poorly with per-letter colours. Only called
-// when RenderReviewSummary has decided the labels fit, so it always renders
-// the full label set.
-func plainSummaryForBudget(summaries []ReviewChildSummary) string {
-	if len(summaries) == 0 {
+// Width().Render would interact poorly with per-letter colours. The `mode`
+// argument selects which rendering tier to emit — it must match the mode
+// chosen by RenderReviewSummary so the plain mirror has the same width
+// footprint as the coloured form on the unselected render. See #1812.
+func plainSummaryForBudget(summaries []ReviewChildSummary, mode summaryMode) string {
+	if len(summaries) == 0 || mode == summaryNone {
 		return ""
 	}
 	var b strings.Builder
@@ -131,8 +135,10 @@ func plainSummaryForBudget(summaries []ReviewChildSummary) string {
 		if i > 0 {
 			b.WriteString("  ")
 		}
-		b.WriteString(sm.AgentShortName)
-		b.WriteString(":")
+		if mode == summaryFull {
+			b.WriteString(sm.AgentShortName)
+			b.WriteString(":")
+		}
 		b.WriteString(letterForVerdict(sm.Verdict))
 	}
 	return b.String()

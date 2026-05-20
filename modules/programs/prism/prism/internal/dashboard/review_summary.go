@@ -208,6 +208,25 @@ func trailingReviewAgent(sessionName string) string {
 
 // ── width budget ─────────────────────────────────────────────────────────────
 
+// summaryMode is the rendering tier chosen by RenderReviewSummary for the
+// trailing per-agent verdict segment on a collapsed review-group row. The
+// caller (RenderReviewGroupRow) and the plain-text mirror used inside the
+// selected-row bar must agree on the mode so their width footprints stay
+// in sync. See #1812.
+type summaryMode int
+
+const (
+	// summaryNone suppresses the trailing segment entirely — there isn't
+	// enough horizontal budget even for the compact letter-only form.
+	summaryNone summaryMode = iota
+	// summaryCompact renders just the verdict letters separated by two
+	// spaces, in alphabetical short-label order (e.g. "P  ·  P  ◌  F").
+	summaryCompact
+	// summaryFull renders the alphabetical labels form
+	// ("code:P  context:·  goal:P  qa:◌  sec:F").
+	summaryFull
+)
+
 // reviewSummaryLabelsWidth returns the rune width of the per-agent verdict
 // labels segment for the given summaries (e.g.
 // "code:P  context:·  goal:P  qa:◌  sec:F"). Used by RenderReviewSummary to
@@ -224,6 +243,20 @@ func reviewSummaryLabelsWidth(summaries []ReviewChildSummary) int {
 		w += utf8.RuneCountInString(s.AgentShortName) + 1 + 1 // "name" + ":" + letter
 	}
 	return w
+}
+
+// reviewSummaryCompactWidth returns the rune width of the compact letter-only
+// segment for the given summaries (e.g. "P  ·  P  ◌  F"). Each verdict
+// letter is one rune wide (P / F / ◌ / · / ✕) and adjacent letters are
+// separated by two spaces, matching the wide form's separator. Peer of
+// reviewSummaryLabelsWidth. See #1812.
+func reviewSummaryCompactWidth(summaries []ReviewChildSummary) int {
+	n := len(summaries)
+	if n == 0 {
+		return 0
+	}
+	// n single-rune letters + (n-1) two-space separators.
+	return n + 2*(n-1)
 }
 
 // letterForVerdict returns the per-agent label letter for a verdict.
@@ -259,27 +292,35 @@ func colorForVerdict(v string) string {
 	}
 }
 
-// RenderReviewSummary builds the per-agent labels segment for a collapsed
-// review-group row. It returns the ANSI-coloured label fragment and its plain
-// rune width.
+// RenderReviewSummary builds the per-agent trailing segment for a collapsed
+// review-group row. It returns the ANSI-coloured fragment, its plain rune
+// width, and the rendering mode chosen for the given budget so the caller
+// can keep its selected-row mirror in sync.
 //
-// The width budget is honoured as a single decision:
+// Width-budget tiers (see #1812):
 //
-//   - If `budget` >= labels width, the labels fragment is returned non-empty.
-//   - Otherwise the labels fragment is suppressed entirely and the caller
-//     falls back to rendering session + state only (see #1802).
+//   - `budget >= labelsW` → summaryFull: the alphabetical labels form
+//     ("code:P  context:·  goal:P  qa:◌  sec:F").
+//   - `labelsW > budget >= compactW` → summaryCompact: letter-only form
+//     in alphabetical short-label order ("P  ·  P  ◌  F").
+//   - `budget < compactW` → summaryNone: the trailing segment is suppressed
+//     entirely and the caller falls back to session + state only.
 //
 // The caller is responsible for any inter-fragment gap characters between
-// the preceding state column and the returned labels string.
-func RenderReviewSummary(summaries []ReviewChildSummary, budget int) (labels string, plainWidth int) {
+// the preceding state column and the returned fragment.
+func RenderReviewSummary(summaries []ReviewChildSummary, budget int) (rendered string, plainWidth int, mode summaryMode) {
 	if len(summaries) == 0 {
-		return "", 0
+		return "", 0, summaryNone
 	}
 	labelsW := reviewSummaryLabelsWidth(summaries)
-	if budget < labelsW {
-		return "", 0
+	if budget >= labelsW {
+		return renderLabels(summaries), labelsW, summaryFull
 	}
-	return renderLabels(summaries), labelsW
+	compactW := reviewSummaryCompactWidth(summaries)
+	if budget >= compactW {
+		return renderCompact(summaries), compactW, summaryCompact
+	}
+	return "", 0, summaryNone
 }
 
 // renderLabels renders the per-agent verdict labels segment as a single
@@ -294,6 +335,24 @@ func renderLabels(summaries []ReviewChildSummary) string {
 			b.WriteString("  ")
 		}
 		b.WriteString(styleDim.Render(s.AgentShortName + ":"))
+		letter := lipgloss.NewStyle().Foreground(lipgloss.Color(colorForVerdict(s.Verdict)))
+		b.WriteString(letter.Render(letterForVerdict(s.Verdict)))
+	}
+	return b.String()
+}
+
+// renderCompact renders the letter-only fallback form as a single
+// ANSI-coloured string. Format: "P  ·  P  ◌  F" — each verdict letter is
+// rendered in its colorForVerdict colour (matching the wide form's palette),
+// with two-space separators between letters. The alphabetical short-label
+// order of `summaries` (produced by BuildReviewChildSummaries) is preserved.
+// See #1812.
+func renderCompact(summaries []ReviewChildSummary) string {
+	var b strings.Builder
+	for i, s := range summaries {
+		if i > 0 {
+			b.WriteString("  ")
+		}
 		letter := lipgloss.NewStyle().Foreground(lipgloss.Color(colorForVerdict(s.Verdict)))
 		b.WriteString(letter.Render(letterForVerdict(s.Verdict)))
 	}
