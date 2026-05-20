@@ -1,5 +1,5 @@
 // Unit tests for the prism PI extension's pure helpers.
-// Run with: node --test --import tsx prism.test.ts
+// Run with: node --test --test-force-exit --import tsx prism.test.ts
 //
 // We test the helper functions in isolation: truncation, endpoint parsing,
 // the JSONL line reader, and the inbound dispatcher with a mock API. The
