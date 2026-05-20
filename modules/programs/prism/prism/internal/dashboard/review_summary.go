@@ -132,20 +132,25 @@ func classifyVerdict(state, lastMessage string) string {
 	}
 }
 
-// BuildReviewChildSummaries returns one ReviewChildSummary per canonical
-// review agent (the set defined by review.Agents()), sorted alphabetically
-// by short label so the rendered labels line is "code … context … goal …
-// qa … sec".
+// BuildReviewChildSummaries returns one ReviewChildSummary per child in
+// `children` that matches a canonical review-agent name (via
+// trailingReviewAgent), sorted alphabetically by short label.
 //
 // `children` is the set of per-agent AgentSessions that belong to the same
 // review-round group. It is matched against the canonical agent list by the
 // suffix of each child's session name: a child "...~review-1-review-goal"
 // matches the canonical agent "review-goal".
 //
-// Agents that have no matching child (e.g. the round was spawned with --only,
-// or an agent failed to start) are rendered as VerdictError so the user can
-// see at a glance that the slot is missing — this matches the AC's intent
-// ("missing agents as ✕").
+// Canonical agents that have no matching child in `children` (e.g. the round
+// was spawned with --only, or an agent was never started) are omitted from
+// the returned slice — they produce no entry and no ✕ placeholder. Only
+// children that were actually spawned appear in the output. A child whose
+// AgentState is "error" (spawned but errored) still produces a
+// ReviewChildSummary with Verdict == VerdictError (✕) — the errored-but-
+// spawned path is unchanged.
+//
+// When `children` contains no canonical review agents, the returned slice is
+// empty (length 0) and RenderReviewSummary returns ("", 0, summaryNone).
 func BuildReviewChildSummaries(children []AgentSession) []ReviewChildSummary {
 	names := canonicalReviewAgentNames()
 
@@ -162,22 +167,17 @@ func BuildReviewChildSummaries(children []AgentSession) []ReviewChildSummary {
 		}
 	}
 
-	out := make([]ReviewChildSummary, len(names))
-	for i, full := range names {
+	out := make([]ReviewChildSummary, 0, len(names))
+	for _, full := range names {
 		ch, ok := byAgent[full]
 		if !ok {
-			out[i] = ReviewChildSummary{
-				AgentShortName: ShortAgentName(full),
-				State:          "",
-				Verdict:        VerdictError,
-			}
 			continue
 		}
-		out[i] = ReviewChildSummary{
+		out = append(out, ReviewChildSummary{
 			AgentShortName: ShortAgentName(full),
 			State:          ch.AgentState,
 			Verdict:        classifyVerdict(ch.AgentState, ch.LastMessage),
-		}
+		})
 	}
 
 	// Sort alphabetically by short label for display. The canonical agent
