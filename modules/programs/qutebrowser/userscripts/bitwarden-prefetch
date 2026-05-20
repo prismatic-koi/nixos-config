@@ -11,6 +11,14 @@ import json
 import subprocess
 import time
 
+# Upstream regression reference: https://github.com/bitwarden/clients/issues/20703
+# When the buggy bitwarden-cli versions (2026.3.0+) are in use, `bw unlock --raw`
+# returns an 88-char session token that `bw status` / `bw list` silently reject.
+# We defend against re-introduction by validating any freshly minted session via
+# `bw status` before persisting it.
+UPSTREAM_ISSUE = "bitwarden/clients#20703"
+
+
 def get_cache_file_path():
     """Get the path to store the cached vault items."""
     runtime_dir = os.getenv("XDG_RUNTIME_DIR", "/tmp")
@@ -26,31 +34,78 @@ def get_session_file_path():
     runtime_dir = os.getenv("XDG_RUNTIME_DIR", "/tmp")
     return os.path.join(runtime_dir, "bw_session_key")
 
+def session_unlocks_vault(session_key):
+    """Verify that the given session key actually unlocks the vault.
+
+    Runs `bw status` with BW_SESSION=<key> in env and parses the JSON output.
+    Returns True only if status == "unlocked". On parse failure or any other
+    status (including "locked"), returns False.
+    """
+    try:
+        env = os.environ.copy()
+        env["BW_SESSION"] = session_key
+        process = subprocess.run(
+            ["bw", "status"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        if process.returncode != 0:
+            return False
+        status_doc = json.loads(process.stdout.strip())
+        return status_doc.get("status") == "unlocked"
+    except (json.JSONDecodeError, ValueError):
+        return False
+    except Exception:
+        return False
+
 def unlock_bitwarden():
-    """Unlock Bitwarden using the password from environment variable."""
+    """Unlock Bitwarden using the password from environment variable.
+
+    Returns a session key only if it is validated as actually unlocking the
+    vault. If validation fails, prints an error referencing the upstream issue
+    and returns None.
+    """
     master_pass = os.getenv("BITWARDEN_PASSWORD")
     if not master_pass:
         return None
 
     try:
         process = subprocess.run(
-            ["bw", "unlock", "--raw"],
-            input=master_pass,
+            ["bw", "unlock", "--raw", "--passwordenv", "BITWARDEN_PASSWORD"],
             capture_output=True,
-            text=True
+            text=True,
         )
 
         if process.returncode != 0:
             print(f"Failed to unlock Bitwarden: {process.stderr.strip()}", file=sys.stderr)
             return None
 
-        return process.stdout.strip()
+        session_key = process.stdout.strip()
+        if not session_key:
+            print(f"bw unlock returned an empty session key (see {UPSTREAM_ISSUE})", file=sys.stderr)
+            return None
+
+        if not session_unlocks_vault(session_key):
+            print(
+                f"bw unlock returned a session that does not unlock the vault "
+                f"(see {UPSTREAM_ISSUE}); refusing to persist bogus key",
+                file=sys.stderr,
+            )
+            return None
+
+        return session_key
     except Exception as e:
         print(f"Error unlocking Bitwarden: {e}", file=sys.stderr)
         return None
 
 def get_session_key():
-    """Get existing session key from file, or create one if BITWARDEN_PASSWORD is set."""
+    """Get existing session key from file, or create one if BITWARDEN_PASSWORD is set.
+
+    A freshly minted key is only written to disk if it has been validated via
+    `bw status` as actually unlocking the vault, so we never overwrite an
+    existing usable key with a bogus one.
+    """
     session_file = get_session_file_path()
 
     # Try to read existing session file
@@ -66,7 +121,7 @@ def get_session_key():
     session_key = unlock_bitwarden()
     if session_key:
         try:
-            # Save the session key for future use
+            # Save the validated session key for future use
             with open(session_file, "w", encoding="utf-8") as f:
                 f.write(session_key)
             print("Created new Bitwarden session", file=sys.stderr)
@@ -79,6 +134,17 @@ def get_session_key():
     # No session available and can't create one
     return None
 
+def run_bw_list_items(session_key):
+    """Run `bw list items` with BW_SESSION=<key> in env."""
+    env = os.environ.copy()
+    env["BW_SESSION"] = session_key
+    return subprocess.run(
+        ["bw", "list", "items"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
 def prefetch_vault_items():
     """Prefetch all vault items and cache them."""
     session_key = get_session_key()
@@ -88,12 +154,8 @@ def prefetch_vault_items():
         return False
 
     try:
-        # Fetch all items
-        process = subprocess.run(
-            ["bw", "list", "items", "--session", session_key],
-            capture_output=True,
-            text=True
-        )
+        # Fetch all items using BW_SESSION env (upstream-recommended form).
+        process = run_bw_list_items(session_key)
 
         if process.returncode != 0:
             error_msg = process.stderr.strip()
@@ -113,11 +175,7 @@ def prefetch_vault_items():
                     return False
 
                 # Retry with fresh session
-                process = subprocess.run(
-                    ["bw", "list", "items", "--session", session_key],
-                    capture_output=True,
-                    text=True
-                )
+                process = run_bw_list_items(session_key)
 
                 if process.returncode != 0:
                     print(f"Bitwarden CLI error after retry: {process.stderr.strip()}", file=sys.stderr)

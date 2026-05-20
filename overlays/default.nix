@@ -27,6 +27,15 @@ rec {
 
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
+
+      # bitwarden-cli: upstream 2026.3.0+ regressed `bw unlock --raw` — the
+      # returned session token is silently rejected by `bw status` / `bw list`,
+      # breaking all non-interactive automation (qutebrowser userscript,
+      # bitwarden-prefetch). Pin to nixpkgs-stable (currently 2025.9.0) which
+      # predates the regression.
+      # See: https://github.com/bitwarden/clients/issues/20703
+      # Remove this override once upstream lands a fix.
+      bitwarden-cli = stablePkgs.bitwarden-cli;
       pi-coding-agent =
         let
           newSrc = prev.fetchFromGitHub {
