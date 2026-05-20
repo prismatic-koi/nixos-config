@@ -24,7 +24,6 @@ package cmd
 // boxes still call this; it returns silently rather than erroring.
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,6 +31,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/prismatic-koi/prism/internal/proglog"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -66,7 +66,7 @@ func killOrphanReviewSidecars(parentSession string) {
 		// /proc is missing or unreadable — non-fatal; we just can't
 		// do the traversal. Log to stderr so the caller has a
 		// breadcrumb but do not return an error.
-		fmt.Fprintf(os.Stderr, "[prism] warning: killOrphanReviewSidecars: enumerate /proc: %v\n", err)
+		proglog.Warnf("[prism] warning: killOrphanReviewSidecars: enumerate /proc: %v\n", err)
 		return
 	}
 
@@ -75,7 +75,7 @@ func killOrphanReviewSidecars(parentSession string) {
 		// clean up its socket and PID file. ESRCH is benign (process
 		// already exited between enumeration and signal).
 		if err := syscall.Kill(match.pid, syscall.SIGTERM); err != nil && err != syscall.ESRCH {
-			fmt.Fprintf(os.Stderr, "[prism] warning: killOrphanReviewSidecars: kill pid %d (session %q): %v\n",
+			proglog.Warnf("[prism] warning: killOrphanReviewSidecars: kill pid %d (session %q): %v\n",
 				match.pid, match.session, err)
 			continue
 		}

@@ -20,7 +20,16 @@ func resetForTest(t *testing.T, w *bytes.Buffer) {
 	defer writerMu.Unlock()
 	once = sync.Once{}
 	cached = LevelError
+	if w == nil {
+		writer = nil
+		return
+	}
 	writer = w
+	t.Cleanup(func() {
+		writerMu.Lock()
+		defer writerMu.Unlock()
+		writer = nil
+	})
 }
 
 func TestParseLevel(t *testing.T) {

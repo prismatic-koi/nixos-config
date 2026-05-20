@@ -28,11 +28,11 @@ package review
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
@@ -106,7 +106,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	if err != nil {
 		// Non-fatal: emit a degraded delivery rather than refusing to deliver.
 		// MonitorFunc takes the same stance on this branch.
-		fmt.Fprintf(os.Stderr, "[prism review recovery] warning: GroupResults(%s): %v — using empty data\n", groupID, err)
+		proglog.Warnf("[prism review recovery] warning: GroupResults(%s): %v — using empty data\n", groupID, err)
 		groupData = map[string]db.GroupMemberResult{}
 	}
 
@@ -119,7 +119,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	if !allPassed && currentCycleProducedVerdicts(groupData) {
 		prior, ccErr := CompletedReviewCyclesForParent(d, info.ParentSession, groupID)
 		if ccErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism review recovery] warning: cycle count failed: %v — footer suppressed\n", ccErr)
+			proglog.Warnf("[prism review recovery] warning: cycle count failed: %v — footer suppressed\n", ccErr)
 		} else if prior+1 >= REVIEW_CYCLE_THRESHOLD {
 			deliveryText += buildLoopLimitFooter(prior+1, info.PRNumber)
 		}
@@ -132,13 +132,13 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 		if workerStatus.State == string(agent.StateReviewing) {
 			if upErr := d.UpsertStatus(info.ParentSession, workerStatus.Repo, workerStatus.Worktree,
 				string(agent.StateActive), nil, nil); upErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism review recovery] warning: could not clear reviewing\u2192active before delivery: %v\n", upErr)
+				proglog.Warnf("[prism review recovery] warning: could not clear reviewing\u2192active before delivery: %v\n", upErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "[prism review recovery] worker state reviewing\u2192active (pre-delivery, group=%s)\n", groupID)
+				proglog.Errorf("[prism review recovery] worker state reviewing\u2192active (pre-delivery, group=%s)\n", groupID)
 			}
 		}
 	} else if stErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism review recovery] warning: CurrentStatus(%s): %v\n", info.ParentSession, stErr)
+		proglog.Warnf("[prism review recovery] warning: CurrentStatus(%s): %v\n", info.ParentSession, stErr)
 	}
 
 	res := &RecoveryDeliveryResult{

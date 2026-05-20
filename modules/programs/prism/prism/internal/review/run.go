@@ -24,6 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -384,7 +385,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	activeGroupID, activeErr := ActiveReviewGroupForParent(d, opts.ParentSession)
 	if activeErr != nil {
 		// Non-fatal: log and proceed (better to allow duplicate than block falsely).
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not check for active review group: %v\n", activeErr)
+		proglog.Warnf("[prism review] warning: could not check for active review group: %v\n", activeErr)
 	} else if activeGroupID != "" {
 		// Determine the round number for a useful error message.
 		members, _ := d.GroupMembersForParent(opts.ParentSession)
@@ -604,7 +605,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not start monitor process: %v\n"+
+		proglog.Warnf("[prism review] warning: could not start monitor process: %v\n"+
 			"Review results will NOT be delivered automatically.\n"+
 			"Check agent progress with: prism checkin %s~review-%d-<agent>\n",
 			startErr, opts.ParentSession, round)
@@ -625,10 +626,10 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	if workerStatus, stErr := d.CurrentStatus(opts.WorkerSession); stErr == nil && workerStatus != nil {
 		if err := d.UpsertStatus(opts.WorkerSession, workerStatus.Repo, workerStatus.Worktree,
 			string(agent.StateReviewing), nil, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "[prism review] warning: could not set worker state to reviewing: %v\n", err)
+			proglog.Warnf("[prism review] warning: could not set worker state to reviewing: %v\n", err)
 		}
 	} else if stErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not look up worker session %q: %v\n", opts.WorkerSession, stErr)
+		proglog.Warnf("[prism review] warning: could not look up worker session %q: %v\n", opts.WorkerSession, stErr)
 	}
 
 	// Build acknowledgement message (#1051 Piece C: surface partial-success).

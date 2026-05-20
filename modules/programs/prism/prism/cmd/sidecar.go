@@ -55,6 +55,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
@@ -134,7 +135,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	for _, entry := range modelOverrideRaw {
 		role, model, ok := strings.Cut(entry, "=")
 		if !ok || role == "" || model == "" {
-			fmt.Fprintf(os.Stderr, "[prism sidecar] warning: ignoring malformed --model-override %q (expected role=model)\n", entry)
+			proglog.Warnf("[prism sidecar] warning: ignoring malformed --model-override %q (expected role=model)\n", entry)
 			continue
 		}
 		modelsByRole[role] = model
@@ -198,7 +199,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// the dashboard immediately. Use UpsertStatus with state "idle" and write
 	// repo/worktree — mirroring what tmux-session-start does.
 	if err := d.UpsertStatus(sessionName, repo, worktree, "idle", nil, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism sidecar] initial upsert: %v\n", err)
+		proglog.Errorf("[prism sidecar] initial upsert: %v\n", err)
 	}
 
 	// Load prism runtime config.
@@ -285,20 +286,20 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		onReady = func() {
 			readyPath, pathErr := prismSession.SidecarReadyPath(sessionName)
 			if pathErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism sidecar] ready path: %v\n", pathErr)
+				proglog.Errorf("[prism sidecar] ready path: %v\n", pathErr)
 				return
 			}
 			if err := os.MkdirAll(filepath.Dir(readyPath), 0o755); err != nil {
-				fmt.Fprintf(os.Stderr, "[prism sidecar] ready dir: %v\n", err)
+				proglog.Errorf("[prism sidecar] ready dir: %v\n", err)
 				return
 			}
 			f, err := os.Create(readyPath)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "[prism sidecar] write ready signal: %v\n", err)
+				proglog.Errorf("[prism sidecar] write ready signal: %v\n", err)
 				return
 			}
 			_ = f.Close()
-			fmt.Fprintf(os.Stderr, "[prism sidecar] ready signal written: %s\n", readyPath)
+			proglog.Infof("[prism sidecar] ready signal written: %s\n", readyPath)
 		}
 	}
 
@@ -395,14 +396,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}()
 	}
 
-	fmt.Fprintf(os.Stderr, "[prism sidecar] starting: session=%s url=%s isolation=%s\n",
+	proglog.Infof("[prism sidecar] starting: session=%s url=%s isolation=%s\n",
 		sessionName, harnessURL, isolationMode)
 
 	if err := sc.Run(ctx); err != nil && ctx.Err() == nil {
 		return fmt.Errorf("sidecar: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "[prism sidecar] shutting down\n")
+	proglog.Infof("[prism sidecar] shutting down\n")
 	return nil
 }
 

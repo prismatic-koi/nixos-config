@@ -31,6 +31,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // CapStatus is the outcome of an Isolator.Cap probe. It generalises
@@ -136,7 +137,7 @@ func (s CapStatus) RenderWarning() string {
 //	if err := iso.Cap(ctx, dbPath()).Check(ignoreCap); err != nil { return err }
 func (s CapStatus) Check(ignoreCap bool) error {
 	if s.Note != "" {
-		fmt.Fprintf(os.Stderr, "[prism] warning: %s\n", s.Note)
+		proglog.Warnf("[prism] warning: %s\n", s.Note)
 	}
 	if !s.Exceeded {
 		return nil

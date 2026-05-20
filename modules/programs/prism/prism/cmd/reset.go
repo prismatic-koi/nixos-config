@@ -32,6 +32,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -84,7 +85,7 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	fmt.Println("Killing tmux server...")
 	if _, err := tmux.Run("kill-server"); err != nil {
 		// No server running is not an error — continue.
-		fmt.Fprintf(os.Stderr, "[prism reset] tmux kill-server: %v (continuing)\n", err)
+		proglog.Warnf("[prism reset] tmux kill-server: %v (continuing)\n", err)
 	} else {
 		fmt.Println("  tmux server killed.")
 	}
@@ -97,19 +98,19 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	// return nil — orphan-agent-run reaping is a future implementation.
 	fmt.Println("Removing prism- podman containers...")
 	if err := resetIsolators(); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism reset] isolator cleanup: %v (continuing)\n", err)
+		proglog.Warnf("[prism reset] isolator cleanup: %v (continuing)\n", err)
 	}
 
 	// ── Step 3: Mark all agent_status rows as ended ───────────────────────────
 	fmt.Println("Marking all sessions as ended in DB...")
 	if err := resetMarkDBEnded(); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism reset] DB cleanup: %v (continuing)\n", err)
+		proglog.Warnf("[prism reset] DB cleanup: %v (continuing)\n", err)
 	}
 
 	// ── Step 4: Kill sidecar processes ────────────────────────────────────────
 	fmt.Println("Terminating sidecar processes...")
 	if err := resetKillSidecars(); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism reset] sidecar cleanup: %v (continuing)\n", err)
+		proglog.Warnf("[prism reset] sidecar cleanup: %v (continuing)\n", err)
 	}
 
 	fmt.Println("Reset complete.")
@@ -149,14 +150,14 @@ func resetIsolators() error {
 	for _, mode := range container.Names() {
 		iso, err := container.For(mode, container.ConstructorOpts{})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[prism reset] %s: %v\n", mode, err)
+			proglog.Errorf("[prism reset] %s: %v\n", mode, err)
 			if firstErr == nil {
 				firstErr = err
 			}
 			continue
 		}
 		if err := iso.Reset(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "[prism reset] %s: %v\n", mode, err)
+			proglog.Errorf("[prism reset] %s: %v\n", mode, err)
 			if firstErr == nil {
 				firstErr = err
 			}

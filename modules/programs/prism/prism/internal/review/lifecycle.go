@@ -8,12 +8,11 @@ package review
 // command — they have no dependency on prompt or result formatting.
 
 import (
-	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -116,7 +115,7 @@ func KillReviewSessionsForParentWithDB(d *db.DB, parentSession string) {
 			return
 		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: KillReviewSessionsForParentWithDB: DB error for %q: %v — using name-prefix fallback\n", parentSession, err)
+			proglog.Warnf("[prism] warning: KillReviewSessionsForParentWithDB: DB error for %q: %v — using name-prefix fallback\n", parentSession, err)
 		}
 		// len(members) == 0: fall through to name-prefix for pre-migration rows.
 	}
@@ -148,7 +147,7 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 		return
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[prism] warning: CleanupReviewSessionsForParent: DB group error for %q: %v — using name-prefix fallback\n", parentSession, err)
+		proglog.Warnf("[prism] warning: CleanupReviewSessionsForParent: DB group error for %q: %v — using name-prefix fallback\n", parentSession, err)
 	}
 	// Pre-migration fallback: find rows by name prefix and kill by prefix.
 

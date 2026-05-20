@@ -35,6 +35,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -322,7 +323,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// ~/documents/obsidian are always restored with the correct isolation mode
 	// (e.g. "host") even if they were originally recorded with a different mode.
 	if override := cfg.IsolationOverrideForPath(directory); override != "" {
-		fmt.Fprintf(os.Stderr, "[prism restore] using isolation override %q for path %q\n", override, directory)
+		proglog.Infof("[prism restore] using isolation override %q for path %q\n", override, directory)
 		isoMode = override
 	}
 
@@ -366,7 +367,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(s.SessionName); pipeErr == nil {
 			opts.HarnessPipeSockPath = pipePath
 		} else {
-			fmt.Fprintf(os.Stderr, "[prism restore] warning: could not resolve harness pipe path for %q: %v\n", s.SessionName, pipeErr)
+			proglog.Warnf("[prism restore] warning: could not resolve harness pipe path for %q: %v\n", s.SessionName, pipeErr)
 		}
 	}
 

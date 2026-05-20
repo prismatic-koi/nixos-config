@@ -32,6 +32,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -148,7 +149,7 @@ var prCmd = &cobra.Command{
 				if isoCaps.NeedsConfigBlob || profileFlag != "" {
 					return pfErr
 				}
-				fmt.Fprintf(os.Stderr, "[prism pr] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
+				proglog.Warnf("[prism pr] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
 				pf = nil
 			}
 		}

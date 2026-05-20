@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // currentStateOf looks up the current agent state for sessionName. Returns
@@ -46,7 +46,7 @@ func (d *DB) checkTransition(sessionName string, toState agent.AgentState, calle
 	fromState, err := d.currentStateOf(sessionName)
 	if err != nil {
 		// Non-fatal: if we can't read the current state we skip validation.
-		fmt.Fprintf(os.Stderr, "[prism] %s: could not read current state for %q: %v\n",
+		proglog.Errorf("[prism] %s: could not read current state for %q: %v\n",
 			callerCtx, sessionName, err)
 		return
 	}
@@ -59,7 +59,7 @@ func (d *DB) checkTransition(sessionName string, toState agent.AgentState, calle
 		return
 	}
 	if err := agent.Transition(fromState, toState); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism] %s: invalid transition for session %q: %v\n",
+		proglog.Errorf("[prism] %s: invalid transition for session %q: %v\n",
 			callerCtx, sessionName, err)
 	}
 }
@@ -247,7 +247,7 @@ WHERE session_name = ?
 	// write (session already terminal), there is no transition to check.
 	if n > 0 && fromState != "" {
 		if terr := agent.Transition(fromState, agent.AgentState(state)); terr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusIfNotTerminal: invalid transition for session %q: %v\n",
+			proglog.Errorf("[prism] UpsertStatusIfNotTerminal: invalid transition for session %q: %v\n",
 				sessionName, terr)
 		}
 	}
@@ -295,7 +295,7 @@ WHERE session_name = ?
 	// to check.
 	if n > 0 && fromState != "" {
 		if terr := agent.Transition(fromState, agent.StateInterrupted); terr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] UpsertStatusInterruptedOverrideFinished: invalid transition for session %q: %v\n",
+			proglog.Errorf("[prism] UpsertStatusInterruptedOverrideFinished: invalid transition for session %q: %v\n",
 				sessionName, terr)
 		}
 	}

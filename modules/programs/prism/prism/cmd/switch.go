@@ -18,6 +18,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -44,7 +45,7 @@ func applyPathIsolationOverride(path string, cfg config.Config, opts *session.Op
 	if override == "" {
 		return isoMode, isoCaps
 	}
-	fmt.Fprintf(os.Stderr, "[prism switch] using isolation override %q for path %q\n", override, path)
+	proglog.Infof("[prism switch] using isolation override %q for path %q\n", override, path)
 	opts.IsolationMode = string(override)
 	effCaps := container.CapabilitiesFor(override)
 	// When the override crosses the sandbox/host boundary (sandboxed → host),
@@ -195,7 +196,7 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
 			opts.HarnessPipeSockPath = pipePath
 		} else {
-			fmt.Fprintf(os.Stderr, "[prism switch] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+			proglog.Warnf("[prism switch] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
 		}
 	}
 
@@ -314,7 +315,7 @@ var switchCmd = &cobra.Command{
 				if isoCaps.NeedsConfigBlob {
 					return pfErr
 				}
-				fmt.Fprintf(os.Stderr, "[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
+				proglog.Warnf("[prism switch] warning: could not load profiles.json (agent env vars will not be injected): %v\n", pfErr)
 				pf = nil
 			}
 		}

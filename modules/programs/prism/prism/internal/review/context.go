@@ -14,6 +14,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // prViewJSON is the JSON shape returned by `gh pr view --json ...`.
@@ -168,14 +170,14 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 	viewOut, err := runGH("pr", "view", opts.PRNumber, "--json",
 		"number,title,body,headRefName,headRefOid,baseRefName,baseRefOid,additions,deletions,changedFiles")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR metadata via gh: %v — agents will fall back to git-based discovery\n", err)
+		proglog.Warnf("[prism review] warning: could not fetch PR metadata via gh: %v — agents will fall back to git-based discovery\n", err)
 		prCtx.FetchFailed = true
 		return prCtx
 	}
 
 	var meta prViewJSON
 	if jsonErr := json.Unmarshal([]byte(viewOut), &meta); jsonErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not parse PR metadata JSON: %v — agents will fall back to git-based discovery\n", jsonErr)
+		proglog.Warnf("[prism review] warning: could not parse PR metadata JSON: %v — agents will fall back to git-based discovery\n", jsonErr)
 		prCtx.FetchFailed = true
 		return prCtx
 	}
@@ -214,7 +216,7 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 	diffOut, diffErr := runGH("pr", "diff", opts.PRNumber)
 	if diffErr != nil {
 		// Diff failure is non-fatal: we have metadata, just no diff content.
-		fmt.Fprintf(os.Stderr, "[prism review] warning: could not fetch PR diff via gh: %v — agents will use git diff instead\n", diffErr)
+		proglog.Warnf("[prism review] warning: could not fetch PR diff via gh: %v — agents will use git diff instead\n", diffErr)
 		// Leave Diff and DiffFilePath empty; the prompt will note diff unavailability.
 	} else {
 		prCtx.DiffBytes = len(diffOut)
@@ -244,12 +246,12 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 				if mkErr := os.MkdirAll(opts.StateDir, 0o755); mkErr != nil {
 					// Directory creation failed; fall back to /tmp path to preserve
 					// the write attempt rather than silently inlining.
-					fmt.Fprintf(os.Stderr, "[prism review] warning: could not create state dir %s: %v — using /tmp fallback\n", opts.StateDir, mkErr)
+					proglog.Warnf("[prism review] warning: could not create state dir %s: %v — using /tmp fallback\n", opts.StateDir, mkErr)
 				}
 			}
 			diffPath := diffFilePath(opts.StateDir, opts.PRNumber, opts.Round)
 			if writeErr := os.WriteFile(diffPath, []byte(diffOut), 0o644); writeErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism review] warning: could not write diff to %s: %v — inlining diff instead\n", diffPath, writeErr)
+				proglog.Warnf("[prism review] warning: could not write diff to %s: %v — inlining diff instead\n", diffPath, writeErr)
 				prCtx.Diff = truncated
 			} else {
 				prCtx.DiffFilePath = diffPath

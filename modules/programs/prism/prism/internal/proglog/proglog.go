@@ -38,6 +38,20 @@ import (
 	"sync"
 )
 
+// writerFor returns the destination io.Writer for emit. By default this is
+// os.Stderr, looked up on every call so that callers (and tests) that replace
+// os.Stderr — e.g. via os.Pipe() redirection — keep seeing emitted output.
+// Tests can pin a different writer with SetWriterForTest.
+func writerFor() io.Writer {
+	writerMu.Lock()
+	w := writer
+	writerMu.Unlock()
+	if w == nil {
+		return os.Stderr
+	}
+	return w
+}
+
 // Level is the verbosity level of a single message or the effective threshold.
 // Lower values are more important; a message at level N is emitted iff
 // effective >= N.
@@ -61,7 +75,10 @@ var (
 	once     sync.Once
 	cached   Level
 	writerMu sync.Mutex
-	writer   io.Writer = os.Stderr
+	// writer is nil in normal operation — emit() resolves os.Stderr at call
+	// time via writerFor() so tests that redirect os.Stderr (os.Pipe etc.)
+	// observe the output. Test helpers may set this to a *bytes.Buffer.
+	writer io.Writer
 )
 
 // ParseLevel maps a case-insensitive string to a Level. An unrecognised or
@@ -94,16 +111,13 @@ func effective() Level {
 	return cached
 }
 
-// emit writes a single formatted message to the configured writer iff the
-// message's level is at or below the effective level.
+// emit writes a single formatted message to stderr (or the test writer) iff
+// the message's level is at or below the effective level.
 func emit(msgLevel Level, format string, args ...any) {
 	if effective() < msgLevel {
 		return
 	}
-	writerMu.Lock()
-	w := writer
-	writerMu.Unlock()
-	_, _ = fmt.Fprintf(w, format, args...)
+	_, _ = fmt.Fprintf(writerFor(), format, args...)
 }
 
 // Errorf writes an error-level message. Always emitted (even at the default
@@ -120,3 +134,27 @@ func Infof(format string, args ...any) { emit(LevelInfo, format, args...) }
 
 // Debugf writes a debug-level message. Emitted only when PRISM_LOG_LEVEL=debug.
 func Debugf(format string, args ...any) { emit(LevelDebug, format, args...) }
+
+// SetLevelForTest pins the effective level for tests, bypassing the sync.Once
+// env-var read. It exists because the production effective() reads
+// PRISM_LOG_LEVEL once per process — without a test hook, the first test
+// that triggers an emit() pins the level for every subsequent test in the
+// same binary, and t.Setenv has no effect.
+//
+// The returned restore func reverts to a fresh sync.Once so that the next
+// emit() re-reads PRISM_LOG_LEVEL from the environment. Callers should pair
+// SetLevelForTest with t.Cleanup or defer restore().
+func SetLevelForTest(lvl Level) (restore func()) {
+	writerMu.Lock()
+	defer writerMu.Unlock()
+	prevCached := cached
+	once = sync.Once{}
+	// Burn the once so subsequent emit() calls see lvl without re-reading env.
+	once.Do(func() { cached = lvl })
+	return func() {
+		writerMu.Lock()
+		defer writerMu.Unlock()
+		once = sync.Once{}
+		cached = prevCached
+	}
+}
