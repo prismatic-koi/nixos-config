@@ -284,9 +284,6 @@ func appendPodmanVolume(args []string, spec MountSpec) []string {
 //
 // Free function (not a method on bwrapIsolator) — the emitter is stateless
 // and a free function is symmetric with appendPodmanVolume above.
-//
-// Exported so that the iris package can reuse the MountSpec emission machinery
-// without depending on bwrapIsolator directly (D-4 requirement).
 func AppendBwrapBind(args []string, spec MountSpec) []string {
 	src, ok := resolveMountHostPath(spec)
 	if !ok {
