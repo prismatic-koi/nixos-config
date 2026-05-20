@@ -24,9 +24,7 @@ Load this skill when:
 
 ## Integration: pi atlassian-mcp extension
 
-Atlassian operations are performed exclusively via the **pi atlassian-mcp extension** — a TypeScript extension bundled with pi that connects to `mcp.atlassian.com` using OAuth PKCE.
-
-**There is no standalone `atlassian` CLI binary.** The old CLI has been removed. Do not attempt to call `atlassian` from a Bash tool.
+Atlassian operations are performed via the **pi atlassian-mcp extension** — a TypeScript extension bundled with pi that connects to `mcp.atlassian.com` using OAuth PKCE. Use the MCP tools listed below; there is no separate command-line surface.
 
 ### Authentication
 
