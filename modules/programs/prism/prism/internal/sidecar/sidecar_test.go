@@ -4836,9 +4836,12 @@ func newSidecarWithRoleAndBinary(t *testing.T, sessionName, repo, role string, d
 
 func TestHostAPI_ListSessions_WorkerOwnRepo(t *testing.T) {
 	d := openTestDB(t)
-	// Seed two sessions: one in "myrepo" and one in "otherrepo".
+	// Seed: own-repo session plus an other-repo coordinator (via @main heuristic)
+	// and an other-repo worker. Only own-repo sessions and other-repo coordinators
+	// should be visible in the default (no all=true) listing.
 	_ = d.UpsertStatus("myrepo@feature", "myrepo", "/wt1", "active", nil, nil)
-	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil) // coordinator (name heuristic)
+	_ = d.UpsertStatus("otherrepo@feat", "otherrepo", "/wt3", "active", nil, nil) // worker — must be hidden
 
 	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)
 	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
@@ -4850,23 +4853,23 @@ func TestHostAPI_ListSessions_WorkerOwnRepo(t *testing.T) {
 	var sessions []map[string]any
 	decodeJSONBody(t, rr, &sessions)
 
-	// Only myrepo sessions should appear.
+	nameSet := make(map[string]bool)
 	for _, s := range sessions {
 		name, _ := s["SessionName"].(string)
-		if strings.HasPrefix(name, "otherrepo") {
-			t.Errorf("worker got cross-repo session %q in list-sessions", name)
-		}
+		nameSet[name] = true
 	}
+
 	// myrepo@feature must be present.
-	found := false
-	for _, s := range sessions {
-		if s["SessionName"] == "myrepo@feature" {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !nameSet["myrepo@feature"] {
 		t.Error("myrepo@feature not found in list-sessions response")
+	}
+	// Other-repo coordinator (@main) must be visible.
+	if !nameSet["otherrepo@main"] {
+		t.Error("otherrepo@main (coordinator) not found in default list-sessions — should be visible")
+	}
+	// Other-repo worker must be hidden.
+	if nameSet["otherrepo@feat"] {
+		t.Error("otherrepo@feat (worker) should not appear in default list-sessions")
 	}
 }
 
@@ -4887,8 +4890,12 @@ func TestHostAPI_ListSessions_WorkerAllForbidden(t *testing.T) {
 
 func TestHostAPI_ListSessions_CoordinatorOwnRepo(t *testing.T) {
 	d := openTestDB(t)
+	// Seed: own-repo sessions plus an other-repo coordinator and an other-repo worker.
+	// Default listing must include other-repo coordinators but hide other-repo workers.
 	_ = d.UpsertStatus("myrepo@main", "myrepo", "/wt1", "active", nil, nil)
-	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)
+	_ = d.UpsertStatus("myrepo@branch", "myrepo", "/wt3", "active", nil, nil)
+	_ = d.UpsertStatus("otherrepo@main", "otherrepo", "/wt2", "active", nil, nil)  // coordinator (name heuristic)
+	_ = d.UpsertStatus("otherrepo@feat", "otherrepo", "/wt4", "active", nil, nil)  // worker — must be hidden
 
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
 	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
@@ -4900,12 +4907,26 @@ func TestHostAPI_ListSessions_CoordinatorOwnRepo(t *testing.T) {
 	var sessions []map[string]any
 	decodeJSONBody(t, rr, &sessions)
 
-	// Default should only show own repo.
+	nameSet := make(map[string]bool)
 	for _, s := range sessions {
 		name, _ := s["SessionName"].(string)
-		if strings.HasPrefix(name, "otherrepo") {
-			t.Errorf("coordinator got cross-repo session %q in default list-sessions", name)
-		}
+		nameSet[name] = true
+	}
+
+	// Own-repo sessions must be present.
+	if !nameSet["myrepo@main"] {
+		t.Error("myrepo@main not found in default list-sessions")
+	}
+	if !nameSet["myrepo@branch"] {
+		t.Error("myrepo@branch not found in default list-sessions")
+	}
+	// Other-repo coordinator must be visible.
+	if !nameSet["otherrepo@main"] {
+		t.Error("otherrepo@main (coordinator) not found in default list-sessions — should be visible")
+	}
+	// Other-repo worker must be hidden.
+	if nameSet["otherrepo@feat"] {
+		t.Error("otherrepo@feat (worker) should not appear in default list-sessions")
 	}
 }
 
@@ -4940,6 +4961,80 @@ func TestHostAPI_ListSessions_CoordinatorAll(t *testing.T) {
 	}
 	if !foundOtherRepo {
 		t.Error("otherrepo@main not found in all list-sessions")
+	}
+}
+
+// TestHostAPI_ListSessions_DefaultScope_HidesOtherRepoWorkers verifies the
+// full four-session scenario from issue #1830:
+//   repoA@main (coordinator)  → visible from repoA
+//   repoA@feature (worker)    → visible from repoA
+//   repoB@main (coordinator)  → visible from repoA (cross-repo coordinator)
+//   repoB@feature (worker)    → HIDDEN from repoA (cross-repo worker)
+func TestHostAPI_ListSessions_DefaultScope_HidesOtherRepoWorkers(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repoA@main", "repoA", "/wA/main", "active", nil, nil)
+	_ = d.UpsertStatus("repoA@feature", "repoA", "/wA/feat", "active", nil, nil)
+	// repoB coordinator: set root_agent_name via UpsertStatusSeedRootAgentName
+	// so the DB-backed path (not only the name heuristic) is exercised.
+	_ = d.UpsertStatusSeedRootAgentName("repoB@main", "repoB", "/wB/main", "active", nil, nil, "coordinator", "pi")
+	_ = d.UpsertStatus("repoB@feature", "repoB", "/wB/feat", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "repoA@main", "repoA", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var sessions []map[string]any
+	decodeJSONBody(t, rr, &sessions)
+
+	nameSet := make(map[string]bool)
+	for _, s := range sessions {
+		name, _ := s["SessionName"].(string)
+		nameSet[name] = true
+	}
+
+	want := []string{"repoA@main", "repoA@feature", "repoB@main"}
+	for _, w := range want {
+		if !nameSet[w] {
+			t.Errorf("session %q missing from default list-sessions (should be visible)", w)
+		}
+	}
+	if nameSet["repoB@feature"] {
+		t.Error("repoB@feature (worker) must not appear in default list-sessions")
+	}
+}
+
+// TestHostAPI_ListSessions_PreMigrationCoordinator verifies that an other-repo
+// session with root_agent_name IS NULL and a @main name is still classified as
+// a coordinator and included in the default listing (pre-migration heuristic).
+func TestHostAPI_ListSessions_PreMigrationCoordinator(t *testing.T) {
+	d := openTestDB(t)
+	_ = d.UpsertStatus("repoA@main", "repoA", "/wA", "active", nil, nil)
+	// repoC@main: inserted with root_agent_name = NULL (pre-migration row).
+	// UpsertStatus does not write root_agent_name, so it stays NULL.
+	_ = d.UpsertStatus("repoC@main", "repoC", "/wC", "active", nil, nil)
+
+	sc := newSidecarWithRole(t, "repoA@main", "repoA", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/list-sessions", "")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	var sessions []map[string]any
+	decodeJSONBody(t, rr, &sessions)
+
+	found := false
+	for _, s := range sessions {
+		if s["SessionName"] == "repoC@main" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("repoC@main (pre-migration NULL root_agent_name @main) must appear in default list-sessions")
 	}
 }
 

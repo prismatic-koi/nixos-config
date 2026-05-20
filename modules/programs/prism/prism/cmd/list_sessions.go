@@ -32,7 +32,7 @@ var listSessionsCmd = &cobra.Command{
 }
 
 func init() {
-	listSessionsCmd.Flags().BoolP("all", "A", false, "List all sessions across all repos")
+	listSessionsCmd.Flags().BoolP("all", "A", false, "List ALL sessions across all repos, including other repos' workers.\nBy default the listing already includes other repos' coordinators — only their workers are hidden.")
 	listSessionsCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
 	rootCmd.AddCommand(listSessionsCmd)
 }
@@ -86,7 +86,10 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 	if showAll {
 		ss, err = d.AllActiveStatus()
 	} else {
-		ss, err = d.AllActiveStatusForRepo(currentRepo)
+		// Same-repo: everything. Other repos: only coordinators
+		// (root_agent_name = 'coordinator', with @main name-heuristic fallback
+		// for pre-migration rows where root_agent_name IS NULL).
+		ss, err = d.AllActiveStatusForRepoAndOtherCoordinators(currentRepo)
 	}
 	if err != nil {
 		return fmt.Errorf("sessions list: query db: %w", err)

@@ -715,6 +715,39 @@ WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
 }
 
+// AllActiveStatusForRepoAndOtherCoordinators returns all active agent_status
+// rows that belong to repo, PLUS active rows from other repos that are
+// coordinator sessions. "Coordinator" is defined as:
+//
+//	(root_agent_name = 'coordinator')
+//	OR
+//	(root_agent_name IS NULL AND session_name = '<other-repo>@main')
+//
+// The second clause handles pre-migration rows where root_agent_name has not
+// yet been written, using the same @main name-heuristic as isCoordinatorSession
+// in internal/sidecar/helpers.go.
+//
+// This is the default scope for `prism list-sessions` (no --all): own-repo
+// sessions are always shown; other-repo sessions are shown only when they are
+// coordinators. Other-repo workers are hidden as noise.
+func (d *DB) AllActiveStatusForRepoAndOtherCoordinators(repo string) ([]Status, error) {
+	const q = `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE ended_at IS NULL
+  AND (
+    repo = ?
+    OR (
+      repo != ?
+      AND (
+        root_agent_name = 'coordinator'
+        OR (root_agent_name IS NULL AND session_name = (repo || '@main'))
+      )
+    )
+  )`
+	return d.queryStatuses(q, repo, repo)
+}
+
 // ActiveStatusForRepoBranch returns the active (ended_at IS NULL) agent_status
 // row for the given repo and worktree (branch) name, or nil when no such row
 // exists. This is the natural-key dedupe check used by prism spawn --reuse.

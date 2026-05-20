@@ -417,13 +417,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if showAll {
 			sessions, err = s.cfg.DB.AllActiveStatus()
 		} else {
-			// Scope to own repo by default.
+			// Same-repo: everything. Other repos: only coordinators
+			// (root_agent_name = 'coordinator', with @main name-heuristic
+			// fallback for pre-migration rows where root_agent_name IS NULL).
 			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
 			if repoErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 				return
 			}
-			sessions, err = s.cfg.DB.AllActiveStatusForRepo(ownRepo)
+			sessions, err = s.cfg.DB.AllActiveStatusForRepoAndOtherCoordinators(ownRepo)
 		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
