@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // spawnWaitJSON is the JSON shape emitted by `prism spawn --wait --json`.
@@ -81,7 +82,7 @@ func waitForSpawnTerminal(sessionName string, jsonMode bool, timeout time.Durati
 		func() (bool, error) {
 			st, qErr := probe.SessionStatus(sessionName)
 			if qErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism spawn --wait] probe error: %v (will retry)\n", qErr)
+				proglog.Debugf("[prism spawn --wait] probe error: %v (will retry)\n", qErr)
 				return false, nil
 			}
 			if st == nil {

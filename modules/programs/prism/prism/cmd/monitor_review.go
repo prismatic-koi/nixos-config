@@ -16,6 +16,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -49,7 +50,7 @@ func runMonitorReview(cmd *cobra.Command, _ []string) error {
 
 	if monErr := review.MonitorFunc(opts); monErr != nil {
 		// Log the error — the process is detached so nothing else reads this.
-		fmt.Fprintf(os.Stderr, "[prism monitor-review] error: %v\n", monErr)
+		proglog.Errorf("[prism monitor-review] error: %v\n", monErr)
 		os.Exit(1)
 	}
 	return nil
