@@ -42,6 +42,33 @@ let
     esac
   '';
 
+  # Yank filter: strip the single leading U+0020 (space) that pi's card
+  # rendering paints into every terminal buffer cell, but only when the
+  # entire selection looks like a pi card (every non-empty line begins with
+  # a space). When any non-empty line starts with a non-space character the
+  # whole selection is passed through verbatim so indented code, ls -la
+  # output, and other left-aligned content is never modified.
+  #
+  # Only U+0020 is handled. U+0009 (tab), U+00A0 (non-breaking space), and
+  # box-drawing characters are treated as content and force the no-strip
+  # branch. This is deliberate — revisit if pi ever uses a Unicode border
+  # glyph for its card left edge.
+  yankStripAwk = pkgs.writeText "prism-tmux-yank-strip.awk" ''
+    {
+      lines[NR] = $0
+      if ($0 != "" && substr($0, 1, 1) != " ") any_no_lead = 1
+    }
+    END {
+      for (i = 1; i <= NR; i++) {
+        if (any_no_lead || substr(lines[i], 1, 1) != " ") print lines[i]
+        else print substr(lines[i], 2)
+      }
+    }
+  '';
+  yankStrip = pkgs.writeShellScript "prism-tmux-yank-strip" ''
+    exec ${pkgs.gawk}/bin/awk -f ${yankStripAwk}
+  '';
+
   # Host-side clipboard paste bridge script for sandboxed agent panes.
   # Invoked by the tmux Ctrl-V keybind when the pane is running a prism
   # agent (see sandboxedPaneGuard above for the matching rules).
@@ -331,7 +358,7 @@ in
               set -g mode-keys vi
               bind-key -T copy-mode-vi 'v' send -X begin-selection
               bind-key -T copy-mode-vi 'V' send -X select-line
-              bind-key -T copy-mode-vi 'y' send -X copy-selection-and-cancel
+              bind-key -T copy-mode-vi 'y' send -X copy-pipe-and-cancel "${yankStrip}"
               bind-key -T copy-mode-vi 'q' send -X cancel
               bind-key -T copy-mode-vi Escape send -X cancel
             '';
