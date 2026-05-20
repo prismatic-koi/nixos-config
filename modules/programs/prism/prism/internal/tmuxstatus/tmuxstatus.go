@@ -1,12 +1,7 @@
 // Package tmuxstatus formats agent-session state counts for embedding in a
 // tmux status-right segment.
 //
-// This is the shared rendering layer used by both `prism sessions status
-// --tmux-format` and `iris sessions status --tmux-format`. Keeping the two
-// callers locked to a single implementation is the entire point: the user
-// runs prism and iris side-by-side during the coexistence window (#1672),
-// and visual divergence between the two segments would be immediately
-// noticeable in the status bar.
+// This is the rendering layer used by `prism sessions status --tmux-format`.
 //
 // The output uses tmux #[fg=...] colour escapes — these are interpreted by
 // tmux when the string is substituted into status-right; they are *not*
@@ -28,10 +23,10 @@ import (
 // Counts is the per-state session-count input to the formatters.
 //
 // The five fields here are the canonical state set rendered in the status
-// bar. Other states (e.g. iris's transient "spawning") must be folded into
-// one of these by the caller before rendering — keeping the formatter agnostic
-// of upstream state taxonomies means iris and prism can evolve their state
-// machines independently without dragging the formatter along.
+// bar. Other transient states must be folded into one of these by the
+// caller before rendering — keeping the formatter agnostic of upstream
+// state taxonomies means callers can evolve their state machines
+// independently without dragging the formatter along.
 type Counts struct {
 	Active   int
 	Waiting  int
@@ -46,8 +41,7 @@ type Counts struct {
 // The fields are tmux-format colour values (typically "#rrggbb" hex strings,
 // but any tmux-accepted colour name works). They come from the prism config
 // (loaded via internal/config) so a single ~/.config/prism/config.json drives
-// both prism and iris segments — the user theming the prism segment also
-// themes the iris segment.
+// the segment.
 type Colors struct {
 	Yellow  string // waiting count
 	Purple  string // active count
