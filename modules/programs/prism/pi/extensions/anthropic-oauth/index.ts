@@ -16,8 +16,8 @@ import {
   ModelRegistry,
   type ExtensionAPI,
   type ProviderConfig,
-} from "@mariozechner/pi-coding-agent"
-import type { OAuthCredentials } from "@mariozechner/pi-ai"
+} from "@earendil-works/pi-coding-agent"
+import type { OAuthCredentials } from "@earendil-works/pi-ai"
 import { initLogger, log } from "./logger.ts"
 import {
   loginAnthropic,
@@ -26,7 +26,7 @@ import {
 } from "./auth.ts"
 import { getCachedCredentials, repairCredentials } from "./credentials.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
-import { streamSimpleAnthropic } from "@mariozechner/pi-ai"
+import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
 import { getModelBetas, getExcludedBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
 import {
@@ -124,7 +124,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const { createAssistantMessageEventStream, calculateCost } =
-        require("@mariozechner/pi-ai") as typeof import("@mariozechner/pi-ai")
+        require("@earendil-works/pi-ai") as typeof import("@earendil-works/pi-ai")
 
       const stream = createAssistantMessageEventStream()
 

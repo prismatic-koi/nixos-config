@@ -21,7 +21,7 @@ import type {
   ToolResultMessage,
   Message,
   Tool,
-} from "@mariozechner/pi-ai"
+} from "@earendil-works/pi-ai"
 
 // ──────────────────────────────────────────────
 // Type helpers
@@ -74,7 +74,7 @@ const CLAUDE_CODE_IDENTITY =
   "You are Claude Code, Anthropic's official CLI for Claude."
 const PI_REMOVAL_ANCHORS = [
   "pi-coding-agent",
-  "@mariozechner/pi-coding-agent",
+  "@earendil-works/pi-coding-agent",
   "badlogic/pi-mono",
 ] as const
 

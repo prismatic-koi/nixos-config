@@ -13,7 +13,7 @@
 //
 // See UPSTREAM.md for auth method rationale and token storage location.
 
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent"
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { createMcpSession, type McpSession, type McpTool, getDefaultCloudId } from "./mcp-client.ts"
 import { loadTokens, getValidAccessToken, loginAtlassian, type AtlassianTokens } from "./auth.ts"

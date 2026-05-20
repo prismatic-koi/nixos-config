@@ -3348,13 +3348,13 @@ describe("iris constants", () => {
 //
 // Source of the pinned shapes (pi 0.72.1):
 //   - AssistantMessageEvent union:
-//     node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225
+//     node_modules/@earendil-works/pi-ai/dist/types.d.ts:185-225
 //   - AssistantMessage / TextContent / ThinkingContent / ToolCall:
-//     node_modules/@mariozechner/pi-ai/dist/types.d.ts:75-160
+//     node_modules/@earendil-works/pi-ai/dist/types.d.ts:75-160
 //   - MessageEndEvent (assistantMessage is delivered to extensions verbatim):
 //     dist/core/extensions/types.d.ts:513
 //   - agent-loop's `text_delta` emission path:
-//     node_modules/@mariozechner/pi-agent-core/dist/agent-loop.js:181-196
+//     node_modules/@earendil-works/pi-agent-core/dist/agent-loop.js:181-196
 // ---------------------------------------------------------------------------
 
 describe("#1764: pi 0.72.1 AssistantMessageEvent — isAssistantTextDeltaEvent", () => {

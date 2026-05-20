@@ -36,7 +36,7 @@ export interface OAuthCredentials {
   expires: number
 }
 
-// pi-specific: OAuthLoginCallbacks mirrors @mariozechner/pi-ai's interface
+// pi-specific: OAuthLoginCallbacks mirrors @earendil-works/pi-ai's interface
 export interface OAuthLoginCallbacks {
   onAuth: (opts: { url: string; instructions: string }) => void
   onManualCodeInput?: () => Promise<string>
