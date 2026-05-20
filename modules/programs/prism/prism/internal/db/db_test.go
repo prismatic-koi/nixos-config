@@ -15,7 +15,6 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 func openTestDB(t *testing.T) *db.DB {
@@ -2302,10 +2301,12 @@ func TestCheckTransition_SameState(t *testing.T) {
 // transition (e.g. idle → finished) still logs a warning to
 // stderr after the same-state early-return fix is in place.
 func TestCheckTransition_InvalidTransition(t *testing.T) {
-	// Invalid-transition warnings are emitted via proglog.Warnf, which is
-	// silent at the default level (error). Pin to warn for this test so the
-	// captured-stderr assertion below has something to observe (#1818).
-	defer proglog.SetLevelForTest(proglog.LevelWarn)()
+	// The invalid-transition diagnostic in status.go is emitted via
+	// proglog.Errorf (it is not a 'warning:' line per the issue rubric, even
+	// though the test comment historically called it one). Errorf is always
+	// on at the default level, so no level override is needed here — but
+	// the test does rely on proglog resolving os.Stderr at emit time, which
+	// is the contract written into writerFor(). See #1818.
 
 	// "error → active" is valid per ValidTransitions; use only pairs that are
 	// genuinely invalid (not present in ValidTransitions).
