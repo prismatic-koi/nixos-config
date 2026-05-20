@@ -485,9 +485,9 @@ LIMIT ?`
 
 // QuerySessionEventsSinceRowID returns all events for sessionName with
 // rowid > sinceRowID, ordered by rowid ASC (monotonic DB insertion order).
-// This is the backing query for the client IPC socket's since_event_id replay
-// (§4.3 of daemon-mode-design.md). Each returned EventRow carries the rowid so
-// the client can use it in a subsequent since_event_id field.
+// This is the backing query for a since_event_id replay protocol: each
+// returned EventRow carries the rowid so the client can use it in a
+// subsequent since_event_id field.
 func (d *DB) QuerySessionEventsSinceRowID(sessionName string, sinceRowID int64) ([]EventRow, error) {
 	const q = `
 SELECT rowid, id, session_name, repo, worktree, harness_session_id,
