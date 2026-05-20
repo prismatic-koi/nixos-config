@@ -24,6 +24,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
 
@@ -106,7 +107,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 	defer d.Close()
 
-	fmt.Fprintf(os.Stderr, "[prism monitor-review] watching group %s for PR #%s (worker: %s)\n",
+	proglog.Infof("[prism monitor-review] watching group %s for PR #%s (worker: %s)\n",
 		opts.GroupID, opts.PRNumber, opts.WorkerSession)
 
 	// Set deadline if timeout is specified.
@@ -119,16 +120,16 @@ func MonitorFunc(opts MonitorOpts) error {
 	timedOut := false
 	for {
 		if !deadline.IsZero() && time.Now().After(deadline) {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] timeout reached for group %s — delivering partial results\n", opts.GroupID)
+			proglog.Infof("[prism monitor-review] timeout reached for group %s — delivering partial results\n", opts.GroupID)
 			timedOut = true
 			break
 		}
 
 		done, groupErr := d.GroupCompleted(opts.GroupID)
 		if groupErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: GroupCompleted(%s): %v — retrying\n", opts.GroupID, groupErr)
+			proglog.Warnf("[prism monitor-review] warning: GroupCompleted(%s): %v — retrying\n", opts.GroupID, groupErr)
 		} else if done {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] group %s complete — aggregating results\n", opts.GroupID)
+			proglog.Infof("[prism monitor-review] group %s complete — aggregating results\n", opts.GroupID)
 			break
 		}
 
@@ -150,7 +151,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	// Aggregate results.
 	groupData, grErr := d.GroupResults(opts.GroupID)
 	if grErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: GroupResults(%s): %v — using empty data\n", opts.GroupID, grErr)
+		proglog.Warnf("[prism monitor-review] warning: GroupResults(%s): %v — using empty data\n", opts.GroupID, grErr)
 		groupData = map[string]db.GroupMemberResult{}
 	}
 
@@ -177,7 +178,7 @@ func MonitorFunc(opts MonitorOpts) error {
 		if currentCycleProducedVerdicts(groupData) {
 			prior, ccErr := CompletedReviewCyclesForParent(d, opts.WorkerSession, opts.GroupID)
 			if ccErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: cycle count failed: %v — footer suppressed\n", ccErr)
+				proglog.Warnf("[prism monitor-review] warning: cycle count failed: %v — footer suppressed\n", ccErr)
 			} else if prior+1 >= REVIEW_CYCLE_THRESHOLD {
 				deliveryText += buildLoopLimitFooter(prior+1, opts.PRNumber)
 			}
@@ -205,13 +206,13 @@ func MonitorFunc(opts MonitorOpts) error {
 		if workerStatus.State == string(agent.StateReviewing) {
 			if err := d.UpsertStatus(opts.WorkerSession, workerStatus.Repo, workerStatus.Worktree,
 				string(agent.StateActive), nil, nil); err != nil {
-				fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: could not clear reviewing→active before delivery: %v\n", err)
+				proglog.Warnf("[prism monitor-review] warning: could not clear reviewing→active before delivery: %v\n", err)
 			} else {
-				fmt.Fprintf(os.Stderr, "[prism monitor-review] worker state reviewing→active (pre-delivery)\n")
+				proglog.Infof("[prism monitor-review] worker state reviewing→active (pre-delivery)\n")
 			}
 		}
 	} else if stErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: could not look up worker session %q before delivery: %v\n", opts.WorkerSession, stErr)
+		proglog.Warnf("[prism monitor-review] warning: could not look up worker session %q before delivery: %v\n", opts.WorkerSession, stErr)
 	}
 
 	// Deliver to worker via prism prompt with bounded retry.
@@ -219,17 +220,17 @@ func MonitorFunc(opts MonitorOpts) error {
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
 		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(opts.PRNumber), opts.Round)
-		fmt.Fprintf(os.Stderr, "[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
+		proglog.Errorf("[prism monitor-review] delivery failed after %d retries — writing fallback to %s\n", maxRetries, fallbackPath)
 		writeErr := os.WriteFile(fallbackPath, []byte(deliveryText), 0o644)
 		if writeErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] error: could not write fallback file %s: %v\n", fallbackPath, writeErr)
+			proglog.Errorf("[prism monitor-review] error: could not write fallback file %s: %v\n", fallbackPath, writeErr)
 		} else {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] fallback file written to %s\n", fallbackPath)
+			proglog.Infof("[prism monitor-review] fallback file written to %s\n", fallbackPath)
 		}
 		return fmt.Errorf("monitor-review: delivery failed and fallback written to %s", fallbackPath)
 	}
 
-	fmt.Fprintf(os.Stderr, "[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
+	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
 	return nil
 }
 
@@ -255,7 +256,7 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 		}
 		status, err := d.CurrentStatus(sess)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: CurrentStatus(%s) during force-terminate sweep: %v\n", sess, err)
+			proglog.Warnf("[prism monitor-review] warning: CurrentStatus(%s) during force-terminate sweep: %v\n", sess, err)
 			continue
 		}
 		if status == nil {
@@ -267,10 +268,10 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 		if isTerminalAgentState(status.State) {
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "[prism monitor-review] force-terminating stuck member %s (state=%q, per-agent timeout=%v)\n",
+		proglog.Warnf("[prism monitor-review] force-terminating stuck member %s (state=%q, per-agent timeout=%v)\n",
 			sess, status.State, perAgentTimeout)
 		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
+			proglog.Warnf("[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
 		}
 	}
 }
@@ -433,7 +434,7 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			fmt.Fprintf(os.Stderr, "[prism monitor-review] delivery attempt %d/%d failed (%v) — retrying in %s\n",
+			proglog.Warnf("[prism monitor-review] delivery attempt %d/%d failed (%v) — retrying in %s\n",
 				attempt, maxRetries, lastErr, backoff)
 			time.Sleep(backoff)
 			backoff *= 2
@@ -727,7 +728,7 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 			// count. Log and skip the group so we do not fire LOOP-LIMIT
 			// based on partial data, but do not return the error — callers
 			// (the monitor) treat a missing footer as a benign degradation.
-			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
+			proglog.Warnf("[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
 			continue
 		}
 		producedVerdict := false

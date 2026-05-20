@@ -62,6 +62,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -675,7 +676,11 @@ func openAgentRunLog(sessionName string) *os.File {
 // instrumentation that never blocks or fails the launch path.
 func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 	line := fmt.Sprintf("[timing] %s: %s\n", phase, d.Round(time.Millisecond))
-	_, _ = fmt.Fprint(os.Stderr, line)
+	// Stderr is gated through proglog so the line is visible only when
+	// PRISM_LOG_LEVEL=debug; the file write below is unconditional so the
+	// per-session agent-run.log keeps every [timing] marker for post-mortem
+	// `grep '\[timing\]'` diagnostics (see issue #1818).
+	proglog.Debugf("%s", line)
 	if logFile != nil {
 		_, _ = logFile.WriteString(line)
 	}

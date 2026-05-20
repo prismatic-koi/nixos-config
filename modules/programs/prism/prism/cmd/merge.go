@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	"github.com/prismatic-koi/prism/internal/session"
@@ -262,7 +263,7 @@ func waitForMergeTerminal(pr int, jsonMode bool, timeout time.Duration) error {
 			row, qErr := probe.Merge(pr)
 			if qErr != nil {
 				// Transient — keep polling.
-				fmt.Fprintf(os.Stderr, "[prism merge --wait] probe error: %v (will retry)\n", qErr)
+				proglog.Debugf("[prism merge --wait] probe error: %v (will retry)\n", qErr)
 				return false, nil
 			}
 			if row == nil {

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
@@ -70,7 +71,7 @@ func waitForReviewTerminal(prNumber, groupID string, jsonMode bool, timeout time
 		func() (bool, error) {
 			done, _, _, gErr := probe.GroupPoll(groupID)
 			if gErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism review --wait] probe error: %v (will retry)\n", gErr)
+				proglog.Debugf("[prism review --wait] probe error: %v (will retry)\n", gErr)
 				return false, nil
 			}
 			return done, nil

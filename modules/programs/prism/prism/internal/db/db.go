@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/proglog"
+
 	_ "modernc.org/sqlite" // register sqlite3 driver
 )
 
@@ -1833,7 +1835,7 @@ func migrateV29ToV30(conn *sql.DB, version *int) error {
 // Close still calls conn.Close() — a failed checkpoint is non-fatal.
 func (d *DB) Close() error {
 	if _, err := d.conn.Exec("PRAGMA wal_checkpoint(PASSIVE)"); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism] db.Close: wal_checkpoint failed (non-fatal): %v\n", err)
+		proglog.Warnf("[prism] db.Close: wal_checkpoint failed (non-fatal): %v\n", err)
 	}
 	return d.conn.Close()
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -237,7 +238,7 @@ func DefaultAgentForSession(sessionName, directory, explicit string, d *db.DB) s
 	if d != nil {
 		rootName, rowExists, err := d.RootAgentName(sessionName)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: DefaultAgentForSession: DB error reading root_agent_name for %q: %v — using directory heuristic\n", sessionName, err)
+			proglog.Warnf("[prism] warning: DefaultAgentForSession: DB error reading root_agent_name for %q: %v — using directory heuristic\n", sessionName, err)
 		} else if rowExists && rootName != "" {
 			// DB-backed: return the stored root_agent_name.
 			dirBased := DefaultAgent(directory, "")

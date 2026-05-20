@@ -37,6 +37,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -241,17 +242,17 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				removeContainerIfExists(m.session)
 			}
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] doCleanup: release port: %v\n", releaseErr)
+				proglog.Errorf("[prism] doCleanup: release port: %v\n", releaseErr)
 			}
 			instanceIDForSessions := instanceIDFromStatus(d, m.session)
 			isolationMode := isolationModeFromDB(d, m.session)
 			_ = d.SetEnded(m.session)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
-					fmt.Fprintf(os.Stderr, "[prism] doCleanup: update session ended: %v\n", updErr)
+					proglog.Errorf("[prism] doCleanup: update session ended: %v\n", updErr)
 				}
 				if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-					fmt.Fprintf(os.Stderr, "[prism] doCleanup: write spawn outcome: %v\n", outcomeErr)
+					proglog.Errorf("[prism] doCleanup: write spawn outcome: %v\n", outcomeErr)
 				}
 				// Archive the session storage after recording the end state.
 				if archiveErr := runSessionArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
@@ -427,10 +428,10 @@ var cleanupCmd = &cobra.Command{
 				if probedBareRoot != "" {
 					// We know where the worktree *should* be but it isn't
 					// there — log an actionable message and continue.
-					fmt.Fprintf(os.Stderr, "[prism] warning: worktree not found at conventional path %s — skipping worktree removal\n",
+					proglog.Warnf("[prism] warning: worktree not found at conventional path %s — skipping worktree removal\n",
 						filepath.Join(probedBareRoot, worktreeName))
 				} else {
-					fmt.Fprintf(os.Stderr, "[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
+					proglog.Warnf("[prism] warning: could not determine worktree path for session %q — skipping worktree removal\n", session)
 				}
 				return headlessCleanupWithJSON(session, worktreeName, "", "", jsonFlag)
 			} else {
@@ -510,7 +511,7 @@ func emitCleanupJSON(r cleanupResult) {
 		// Marshal of a small fixed-shape struct should never fail; surface
 		// the error on stderr so the caller has something to work with
 		// rather than empty stdout.
-		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup --json: marshal: %v\n", err)
+		proglog.Warnf("[prism] warning: cleanup --json: marshal: %v\n", err)
 		return
 	}
 	fmt.Println(string(data))
@@ -556,19 +557,19 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 			// Non-fatal: the path may no longer be a registered git worktree
 			// (e.g. already removed, or pointing at the prism source dir).
 			// Log a warning and continue so sidecar/DB cleanup still happens.
-			fmt.Fprintf(os.Stderr, "[prism] warning: worktree remove: %v — continuing cleanup\n", err)
+			proglog.Warnf("[prism] warning: worktree remove: %v — continuing cleanup\n", err)
 		} else {
 			wt := worktreePath
 			result.WorktreeRemoved = &wt
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: refusing to remove worktree %s — path matches main worktree or an active session's worktree; skipping filesystem removal\n", worktreePath)
+		proglog.Warnf("[prism] warning: cleanup: refusing to remove worktree %s — path matches main worktree or an active session's worktree; skipping filesystem removal\n", worktreePath)
 	}
 
 	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
 		printLine("deleting branch %s...\n", worktreeName)
 		if err := git.ForceDeleteBranch(bareRoot, worktreeName); err != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: branch delete: %v — continuing cleanup\n", err)
+			proglog.Warnf("[prism] warning: branch delete: %v — continuing cleanup\n", err)
 		} else {
 			bn := worktreeName
 			result.BranchDeleted = &bn
@@ -623,7 +624,7 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: release port: %v\n", releaseErr)
+			proglog.Errorf("[prism] headlessCleanup: release port: %v\n", releaseErr)
 		}
 		// Capture instance_id and isolation_mode before SetEnded clears the
 		// row's lifecycle fields.
@@ -632,10 +633,10 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: update session ended: %v\n", updErr)
+				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] headlessCleanup: write spawn outcome: %v\n", outcomeErr)
+				proglog.Errorf("[prism] headlessCleanup: write spawn outcome: %v\n", outcomeErr)
 			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
@@ -664,7 +665,7 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		removeContainerIfExists(session)
 	}
 	if archiveCollisionWarning != "" {
-		fmt.Fprintf(os.Stderr, "[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
+		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
 	}
 	if jsonMode {
 		emitCleanupJSON(result)
@@ -703,17 +704,17 @@ func closeSession(session string) error {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] closeSession: release port: %v\n", releaseErr)
+			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] closeSession: update session ended: %v\n", updErr)
+				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)
 			}
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] closeSession: write spawn outcome: %v\n", outcomeErr)
+				proglog.Errorf("[prism] closeSession: write spawn outcome: %v\n", outcomeErr)
 			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
@@ -799,17 +800,17 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 			removeContainerIfExists(session)
 		}
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: release port: %v\n", releaseErr)
+			proglog.Errorf("[prism] headlessCloseSession: release port: %v\n", releaseErr)
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: update session ended: %v\n", updErr)
+				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
 			}
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] headlessCloseSession: write spawn outcome: %v\n", outcomeErr)
+				proglog.Errorf("[prism] headlessCloseSession: write spawn outcome: %v\n", outcomeErr)
 			}
 			// Archive the session storage after recording the end state.
 			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
@@ -831,7 +832,7 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 		removeContainerIfExists(session)
 	}
 	if archiveCollisionWarning != "" {
-		fmt.Fprintf(os.Stderr, "[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
+		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
 	}
 	if jsonMode {
 		emitCleanupJSON(result)
@@ -968,7 +969,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	case "host", "bwrap", "sandbox-exec":
 		// OK — supported modes.
 	default:
-		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — unsupported isolation mode %q\n",
+		proglog.Warnf("[prism] archive: skipping session %q — unsupported isolation mode %q\n",
 			sessionName, statusIsolationMode)
 		return nil
 	}
@@ -976,12 +977,12 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	// Fetch the full sessions row (has ended_at/end_state set by caller).
 	sess, err := d.SessionByInstanceID(instanceID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
+		proglog.Warnf("[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
 		return nil
 	}
 	if sess == nil {
 		// No sessions row — pre-migration or session that never inserted.
-		fmt.Fprintf(os.Stderr, "[prism] archive: no sessions row for instance_id %q — skipping archive\n", instanceID)
+		proglog.Warnf("[prism] archive: no sessions row for instance_id %q — skipping archive\n", instanceID)
 		return nil
 	}
 
@@ -989,7 +990,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	// unregistered harness is a clear error (not a nil-pointer panic).
 	archiveAdapter, adapterErr := harness.ArchiveAdapterFor(sess.Harness)
 	if adapterErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: skipping session %q — %v\n", sessionName, adapterErr)
+		proglog.Warnf("[prism] archive: skipping session %q — %v\n", sessionName, adapterErr)
 		return nil
 	}
 
@@ -1006,7 +1007,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	}
 	srcPath, srcErr := archiveAdapter.SourcePath(srcParams)
 	if srcErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
+		proglog.Warnf("[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
 		return nil
 	}
 
@@ -1045,7 +1046,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		// tables. Fall back to agent_status, which is where the sidecar
 		// historically wrote the value.
 		if sid, fallbackErr := d.HarnessSessionIDForInstance(instanceID); fallbackErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
+			proglog.Warnf("[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
 		} else if sid != "" {
 			params.HarnessSessionID = sid
 			// Also update srcParams so the Copier closure uses the resolved ID.
@@ -1091,18 +1092,18 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 
 	archivePath, archiveErr := archive.Run(params)
 	if archiveErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: copy failed for session %q: %v\n", sessionName, archiveErr)
+		proglog.Warnf("[prism] archive: copy failed for session %q: %v\n", sessionName, archiveErr)
 		return archiveErr
 	}
 
 	if updErr := d.UpdateSessionArchivePath(instanceID, archivePath); updErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
+		proglog.Warnf("[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
 
 	// Translate the raw archive via the adapter's Export method.
 	// Failure is non-fatal: the raw archive remains intact for re-translation later.
 	if exportErr := archiveAdapter.Export(ctx, archivePath, srcParams); exportErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism] archive: export failed for session %q: %v\n", sessionName, exportErr)
+		proglog.Warnf("[prism] archive: export failed for session %q: %v\n", sessionName, exportErr)
 	}
 
 	return nil
@@ -1165,12 +1166,12 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 		}
 	} else {
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: DB group lookup for %q: %v — using name-prefix fallback\n", parentSession, err)
+			proglog.Warnf("[prism] warning: stopAndRemoveChildContainers: DB group lookup for %q: %v — using name-prefix fallback\n", parentSession, err)
 		}
 		// Fallback: scan all rows with the review prefix.
 		rows, scanErr := d.AllStatusesWithPrefix(prefix)
 		if scanErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: AllStatusesWithPrefix for %q: %v — skipping child container teardown\n", parentSession, scanErr)
+			proglog.Warnf("[prism] warning: stopAndRemoveChildContainers: AllStatusesWithPrefix for %q: %v — skipping child container teardown\n", parentSession, scanErr)
 			return
 		}
 		for _, row := range rows {
@@ -1200,7 +1201,7 @@ func stopAndRemoveChildContainers(d *db.DB, parentSession string) {
 		if isoErr != nil {
 			// Unknown mode — fall back to bwrap (best-effort temp-file cleanup).
 			if iso, isoErr = container.For(config.IsolationBwrap, container.ConstructorOpts{Name: name}); isoErr != nil {
-				fmt.Fprintf(os.Stderr, "[prism] warning: stopAndRemoveChildContainers: unknown mode %q for %q: %v\n", isoMode, childSession, isoErr)
+				proglog.Warnf("[prism] warning: stopAndRemoveChildContainers: unknown mode %q for %q: %v\n", isoMode, childSession, isoErr)
 				continue
 			}
 		}
@@ -1248,7 +1249,7 @@ func removeContainerIfExists(sessionName string) {
 	if isoErr != nil {
 		// Unknown mode — fall back to bwrap (best-effort temp-file cleanup).
 		if iso, isoErr = container.For(config.IsolationBwrap, container.ConstructorOpts{Name: name}); isoErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] removeContainerIfExists: unknown isolation mode %q for %q: %v\n", isoMode, sessionName, isoErr)
+			proglog.Errorf("[prism] removeContainerIfExists: unknown isolation mode %q for %q: %v\n", isoMode, sessionName, isoErr)
 			return
 		}
 	}
@@ -1364,7 +1365,7 @@ func isCoordinatorFromDB(session string, isDefaultBranch bool) bool {
 		}
 		// Pre-migration fallback: use branch-name heuristic.
 		if rootErr != nil {
-			fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
+			proglog.Warnf("[prism] warning: cleanup: DB error reading root_agent_name for %q: %v — using branch heuristic\n", session, rootErr)
 		} else if rowExists {
 			// Row exists but root_agent_name is NULL — pre-migration.
 			fmt.Fprintf(os.Stderr, "[deprecation] cleanup: root_agent_name NULL for %q — using branch heuristic\n", session)
@@ -1372,7 +1373,7 @@ func isCoordinatorFromDB(session string, isDefaultBranch bool) bool {
 		// rowExists=false: no row yet — use heuristic silently.
 		return isDefaultBranch
 	} else {
-		fmt.Fprintf(os.Stderr, "[prism] warning: cleanup: could not open DB for %q: %v — using branch heuristic\n", session, dbErr)
+		proglog.Warnf("[prism] warning: cleanup: could not open DB for %q: %v — using branch heuristic\n", session, dbErr)
 		return isDefaultBranch
 	}
 }

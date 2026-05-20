@@ -38,6 +38,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/skills"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -437,7 +438,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			if isoCaps.NeedsConfigBlob || profileFlag != "" {
 				return loadErr
 			}
-			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
+			proglog.Warnf("[prism spawn] warning: could not load profiles.json (agent env vars will not be injected): %v\n", loadErr)
 			pf = nil
 		}
 	}
@@ -675,7 +676,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
 			spawnOpts.HarnessPipeSockPath = pipePath
 		} else {
-			fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+			proglog.Warnf("[prism spawn] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
 		}
 	}
 	// AgentEnvVars only applies to host-mode sessions; container sessions
@@ -697,7 +698,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	skillsDir := prismSkillsDir()
 	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
 	if skillsHashErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		proglog.Warnf("[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
 		skillsManifestHash = ""
 	}
 
@@ -706,7 +707,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	agentRoleFilePath := prismAgentRolePath(agentRole)
 	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
 	if agentHashErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		proglog.Warnf("[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
 		agentPromptHash = ""
 	}
 
@@ -805,7 +806,7 @@ type spawnInputsArgs struct {
 func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	st, err := d.CurrentStatus(args.sessionName)
 	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not read instance_id for spawn_inputs: %v\n", err)
+		proglog.Warnf("[prism spawn] warning: could not read instance_id for spawn_inputs: %v\n", err)
 		return
 	}
 
@@ -869,7 +870,7 @@ func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
 	}
 
 	if err := d.InsertSpawnInputs(si); err != nil {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not write spawn_inputs: %v\n", err)
+		proglog.Warnf("[prism spawn] warning: could not write spawn_inputs: %v\n", err)
 	}
 }
 
@@ -1148,13 +1149,13 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	skillsDir := prismSkillsDir()
 	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
 	if skillsHashErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		proglog.Warnf("[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
 		skillsManifestHash = ""
 	}
 	agentRoleFilePath := prismAgentRolePath(plannedRole)
 	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
 	if agentHashErr != nil {
-		fmt.Fprintf(os.Stderr, "[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		proglog.Warnf("[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
 		agentPromptHash = ""
 	}
 
@@ -1201,14 +1202,14 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				_ = tmux.KillSession(r.sessionName)
 				session.KillSidecar(r.sessionName)
 				if killDBErr := d.SetEnded(r.sessionName); killDBErr != nil {
-					fmt.Fprintf(os.Stderr, "[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
+					proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)
 				}
 			}
 			// Remove the worktree even when sessionName is empty — the
 			// worktree may have been created before the session started.
 			if r.worktreePath != "" {
 				if rmErr := git.RemoveWorktree(bareRoot, r.worktreePath); rmErr != nil {
-					fmt.Fprintf(os.Stderr, "[prism spawn] warning: cleanup worktree %q failed: %v\n", r.worktreePath, rmErr)
+					proglog.Warnf("[prism spawn] warning: cleanup worktree %q failed: %v\n", r.worktreePath, rmErr)
 				}
 			}
 		}
@@ -1312,7 +1313,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
 			spawnOpts.HarnessPipeSockPath = pipePath
 		} else {
-			fmt.Fprintf(os.Stderr, "[prism spawn --abtest] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+			proglog.Warnf("[prism spawn --abtest] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
 		}
 	}
 

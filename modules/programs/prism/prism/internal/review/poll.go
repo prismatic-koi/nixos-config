@@ -10,10 +10,10 @@ package review
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // pollAgents polls the DB until all agents reach a terminal state or the
@@ -45,7 +45,7 @@ func pollAgents(ctx context.Context, d *db.DB, agents []Agent, agentSessions []s
 		if groupErr != nil {
 			// DB error — log and fall through to per-agent checks below
 			// so progress tracking still works.
-			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupCompleted(%s): %v\n", groupID, groupErr)
+			proglog.Warnf("[prism review] warning: GroupCompleted(%s): %v\n", groupID, groupErr)
 		}
 
 		// Even when groupDone is true, scan agents once more to emit any
@@ -174,7 +174,7 @@ func buildResults(agents []Agent, agentSessions []string, d *db.DB, finished, ti
 		groupData, grErr = d.GroupResults(groupID)
 		if grErr != nil {
 			// Non-fatal: fall back to per-session queries below.
-			fmt.Fprintf(os.Stderr, "[prism review] warning: GroupResults(%s): %v — falling back to per-session queries\n", groupID, grErr)
+			proglog.Warnf("[prism review] warning: GroupResults(%s): %v — falling back to per-session queries\n", groupID, grErr)
 			groupData = nil
 		}
 	}
