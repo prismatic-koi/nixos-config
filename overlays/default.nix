@@ -41,18 +41,36 @@ rec {
           newSrc = prev.fetchFromGitHub {
             owner = "badlogic";
             repo = "pi-mono";
-            tag = "v0.72.1";
-            hash = "sha256-SqUxghc60P3HfmaFJGB/m23mvzw0cD7cDEUrNFOqo0Y=";
+            tag = "v0.75.3";
+            hash = "sha256-c/+cxkp/EZ2PLERxTENN5edXHEs7M2oqzNepjRA4TIE=";
           };
         in
         prev.pi-coding-agent.overrideAttrs (old: {
-          version = "0.72.1";
+          version = "0.75.3";
           src = newSrc;
           npmDeps = prev.fetchNpmDeps {
             inherit (old) npmWorkspace;
             src = newSrc;
-            hash = "sha256-KUC1xQK6oJXtg962YeLOnO76uTdR10/VNa9iiCdT3VM=";
+            hash = "sha256-/mWjrZFzRmtkbWYMJOXKnLPxFITFndq5hgdY0DnPfAg=";
           };
+          # Upstream nixpkgs' postInstall hard-codes the old
+          # @mariozechner/* workspace names; in v0.75.0 the monorepo
+          # renamed to @earendil-works/*. Re-derive postInstall with the
+          # new names.
+          postInstall = ''
+            local nm="$out/lib/node_modules/pi-monorepo/node_modules"
+
+            for ws in @earendil-works/pi-ai:packages/ai \
+                      @earendil-works/pi-agent-core:packages/agent \
+                      @earendil-works/pi-tui:packages/tui; do
+              IFS=: read -r pkg src <<< "$ws"
+              rm "$nm/$pkg"
+              cp -r "$src" "$nm/$pkg"
+            done
+
+            find "$nm" -type l -lname '*/packages/*' -delete
+            find "$nm/.bin" -xtype l -delete
+          '';
         });
 
       # direnv: disable the test phase on Darwin to work around a hang in

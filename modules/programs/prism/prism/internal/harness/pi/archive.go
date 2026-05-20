@@ -6,7 +6,7 @@ package pi
 // Unlike some harnesses, PI has no SQLite database — it is a pure flat-file store.
 //
 // Source path layout (authoritative reference: docs/pi-rpc-interface.md Q5,
-// confirmed against pi 0.72.1 dist/core/session-manager.js line 213):
+// confirmed against pi 0.75.3 dist/core/session-manager.js line 213):
 //
 //	~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 //
@@ -252,7 +252,7 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 }
 
 // EncodePiCWD encodes an absolute directory path to the directory name pi uses
-// for its session storage. The formula mirrors pi 0.72.1
+// for its session storage. The formula mirrors pi 0.75.3
 // dist/core/session-manager.js line 213:
 //
 //	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--

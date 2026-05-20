@@ -20,7 +20,7 @@ func encodePiCWDForTest(cwd string) string {
 	return "--" + r.Replace(stripped) + "--"
 }
 
-// TestEncodePiCWD verifies the encoding formula matches pi 0.72.1
+// TestEncodePiCWD verifies the encoding formula matches pi 0.75.3
 // dist/core/session-manager.js line 213.
 func TestEncodePiCWD(t *testing.T) {
 	cases := []struct {

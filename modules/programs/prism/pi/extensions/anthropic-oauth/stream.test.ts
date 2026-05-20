@@ -27,7 +27,7 @@ import { sanitizeSystemText, buildAnthropicSystemPrompt } from "./stream.ts"
 function legacySanitize(text: string): string {
   const PI_REMOVAL_ANCHORS = [
     "pi-coding-agent",
-    "@mariozechner/pi-coding-agent",
+    "@earendil-works/pi-coding-agent",
     "badlogic/pi-mono",
   ]
   const paragraphs = text.split(/\n\n+/)
@@ -139,17 +139,17 @@ describe("sanitizeSystemText — prose pi → Claude Code substitution", () => {
 // [functional] PI_REMOVAL_ANCHORS paragraph filtering preserved
 // ---------------------------------------------------------------------------
 describe("sanitizeSystemText — PI_REMOVAL_ANCHORS paragraph filtering", () => {
-  it("removes a paragraph anchored by '@mariozechner/pi-coding-agent'", () => {
+  it("removes a paragraph anchored by '@earendil-works/pi-coding-agent'", () => {
     const input = [
       "Normal intro paragraph.",
-      "This extension is @mariozechner/pi-coding-agent and does things.",
+      "This extension is @earendil-works/pi-coding-agent and does things.",
       "Normal trailing paragraph.",
     ].join("\n\n")
 
     const output = sanitizeSystemText(input)
 
     assert.ok(
-      !output.includes("@mariozechner/pi-coding-agent"),
+      !output.includes("@earendil-works/pi-coding-agent"),
       "anchor paragraph should be stripped",
     )
     assert.ok(
@@ -324,7 +324,7 @@ describe("sanitizeSystemText — prose-only no regression", () => {
   })
 
   it("PI_REMOVAL_ANCHORS still work in prose-only prompts", () => {
-    const input = "Intro.\n\n@mariozechner/pi-coding-agent extension.\n\nEnd."
+    const input = "Intro.\n\n@earendil-works/pi-coding-agent extension.\n\nEnd."
     const newOutput = sanitizeSystemText(input)
     const oldOutput = legacySanitize(input)
     assert.equal(newOutput, oldOutput)

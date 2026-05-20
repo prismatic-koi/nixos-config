@@ -63,7 +63,7 @@ import type {
   ExtensionAPI,
   ExtensionContext,
   ProviderConfig,
-} from "@mariozechner/pi-coding-agent"
+} from "@earendil-works/pi-coding-agent"
 
 // ---------------------------------------------------------------------------
 // Constants — kept at module scope so unit tests can import them.
@@ -995,7 +995,7 @@ export function coerceToolOutput(content: unknown): string {
  * duplicate emission from `message_end`.
  *
  * The shape comes from pi 0.72.1's pi-ai package:
- * `node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225`.
+ * `node_modules/@earendil-works/pi-ai/dist/types.d.ts:185-225`.
  * The AssistantMessageEvent union includes:
  *   start, text_start, text_delta, text_end,
  *   thinking_start, thinking_delta, thinking_end,
@@ -1023,7 +1023,7 @@ export function isAssistantTextDeltaEvent(
  * with no text blocks, or malformed input.
  *
  * Source-of-truth for the shape:
- * `node_modules/@mariozechner/pi-ai/dist/types.d.ts:143` (`AssistantMessage`)
+ * `node_modules/@earendil-works/pi-ai/dist/types.d.ts:143` (`AssistantMessage`)
  * and the `TextContent`/`ThinkingContent`/`ToolCall` interfaces above it.
  */
 export function extractAssistantText(message: unknown): string[] {

@@ -89,7 +89,7 @@ func TestMsgAssistant_Roundtrip(t *testing.T) {
 // TestToolCall_Roundtrip covers the post-#1783 wire shape: `name`,
 // `args` (json.RawMessage / JSON object), `id`. The previous test
 // used the old `tool`/`messageId`/string-args trio which had drifted
-// silently from pi 0.72.1's emitted payload — see issue #1783 for
+// silently from pi 0.75.3's emitted payload — see issue #1783 for
 // the full root cause analysis.
 func TestToolCall_Roundtrip(t *testing.T) {
 	in := payload.ToolCall{
@@ -132,7 +132,7 @@ func TestToolResult_Roundtrip(t *testing.T) {
 }
 
 // TestToolCall_PiExtensionWireShape is the regression test required
-// by issue #1783's acceptance criteria: pins the pi 0.72.1
+// by issue #1783's acceptance criteria: pins the pi 0.75.3
 // prism-extension wire format so an upstream rename surfaces here as
 // a deliberate test failure rather than a silent (parse error)
 // regression in the iris TUI.

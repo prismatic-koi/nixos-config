@@ -76,7 +76,7 @@ type MsgAssistant struct {
 //
 // Pre-#1783 the struct declared `tool`, `args` (Go `string`), and
 // `messageId` — a wire format that no live producer has emitted since
-// at least pi 0.72.1. Renderers using the old fields saw
+// at least pi 0.75.3. Renderers using the old fields saw
 // `json.Unmarshal` fail on `args` (object vs string mismatch) and
 // emitted `(parse error)` for every tool call. The rename here
 // realigns the consumer side with the upstream wire shape; the older
