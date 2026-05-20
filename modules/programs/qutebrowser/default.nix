@@ -146,6 +146,17 @@
             # Linux: use rofi as default dmenu
             export PATH="${pkgs.bitwarden-cli}/bin:$PATH"
 
+            # Load Bitwarden password from sops secret if available and not
+            # already set. Mirrors the Darwin branch above — needed because
+            # qutebrowser launched via .desktop / wayland bindings does not
+            # always inherit environment.sessionVariables.
+            if [ -z "$BITWARDEN_PASSWORD" ]; then
+              BW_SECRET_PATH="${config.sops.secrets.bitwarden_password.path}"
+              if [ -f "$BW_SECRET_PATH" ]; then
+                export BITWARDEN_PASSWORD="$(cat "$BW_SECRET_PATH")"
+              fi
+            fi
+
             # Build arguments array
             ARGS=()
             HAS_DMENU=0

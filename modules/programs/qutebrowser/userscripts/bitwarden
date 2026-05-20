@@ -97,6 +97,36 @@ argument_parser.add_argument(
 
 stderr = functools.partial(print, file=sys.stderr)
 
+# Upstream regression reference: https://github.com/bitwarden/clients/issues/20703
+# When the buggy bitwarden-cli versions (2026.3.0+) are in use, `bw` prompts
+# interactively for the master password even when BW_SESSION is set, because
+# the session token from `bw unlock --raw` is silently rejected. The stderr
+# signature is a line containing "Master password:" — we detect that
+# specifically so we can surface a clear diagnostic instead of a generic error.
+UPSTREAM_ISSUE = "bitwarden/clients#20703"
+BROKEN_SESSION_HINT = (
+    "bw unlock returned a session that does not unlock the vault \u2014 see "
+    + UPSTREAM_ISSUE
+    + " and modules/programs/bitwarden.nix"
+)
+
+
+def _is_broken_session_stderr(err):
+    """Detect the upstream-regression stderr signature.
+
+    `bw` prints `? Master password: [input is hidden]` to stderr when the
+    session token does not unlock the vault.
+    """
+    return err is not None and "Master password:" in err
+
+
+class BwSessionError(Exception):
+    """Raised when `bw` fails in a way that should abort the candidate loop."""
+
+    def __init__(self, message):
+        super().__init__(message)
+        self.message = message
+
 
 class ExitCodes(enum.IntEnum):
     SUCCESS = 0
@@ -105,6 +135,7 @@ class ExitCodes(enum.IntEnum):
     NO_PASS_CANDIDATES = 2
     COULD_NOT_MATCH_USERNAME = 3
     COULD_NOT_MATCH_PASSWORD = 4
+    BW_SESSION_ERROR = 5
 
 
 def qute_command(command):
@@ -171,32 +202,39 @@ def get_all_vault_items(encoding, password_prompt_invocation, use_cache=True):
         except (json.JSONDecodeError, FileNotFoundError):
             pass  # Fall through to fetch fresh data
     
-    # Fetch fresh data from bitwarden
+    # Fetch fresh data from bitwarden using BW_SESSION env (upstream-recommended
+    # form, matches bitwarden-prefetch).
     session_key = get_session_key(password_prompt_invocation)
+    env = os.environ.copy()
+    env["BW_SESSION"] = session_key
     process = subprocess.run(
-        ["bw", "list", "items", "--session", session_key],
+        ["bw", "list", "items"],
         capture_output=True,
+        env=env,
     )
-    
+
     err = process.stderr.decode(encoding).strip()
     if err:
-        stderr(f"Bitwarden CLI error when fetching all items: {err}")
-        return []
-    
+        if _is_broken_session_stderr(err):
+            raise BwSessionError(BROKEN_SESSION_HINT)
+        raise BwSessionError("Bitwarden CLI error when fetching all items: {}".format(err))
+
     if process.returncode:
-        return []
-    
+        raise BwSessionError(
+            "Bitwarden CLI exited {} when fetching all items".format(process.returncode)
+        )
+
     try:
         items = json.loads(process.stdout.decode(encoding).strip())
-        
+
         # Cache the result
         with open(cache_file, "w", encoding="utf-8") as f:
             json.dump(items, f)
-        
+
         # Update timestamp
         with open(timestamp_file, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
-        
+
         return items
     except json.JSONDecodeError:
         return []
@@ -345,13 +383,22 @@ def main(arguments):
             extract_result.ipv4,
         ],
     ):
-        target_candidates = json.loads(
-            pass_(
-                target,
-                arguments.io_encoding,
-                arguments.password_prompt_invocation,
+        try:
+            target_candidates = json.loads(
+                pass_(
+                    target,
+                    arguments.io_encoding,
+                    arguments.password_prompt_invocation,
+                )
             )
-        )
+        except BwSessionError as e:
+            # `bw` failed in a way that will fail identically for every
+            # remaining candidate (typically the upstream-regression
+            # "Master password:" prompt). Emit exactly one error line and
+            # abort the loop rather than amplifying it into N identical lines.
+            stderr(e.message)
+            return ExitCodes.BW_SESSION_ERROR
+
         if not target_candidates:
             continue
 
