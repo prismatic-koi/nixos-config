@@ -18,10 +18,8 @@ import (
 )
 
 // statusColors returns the tmuxstatus.Colors palette derived from the loaded
-// prism theme (cmd/colors.go). Wrapped in a helper so the iris CLI and the
-// prism CLI can share the formatter implementation without sharing the
-// cmd-package theme globals — iris loads the same internal/config and builds
-// its own equivalent struct.
+// prism theme (cmd/colors.go). Wrapped in a helper so the formatter in
+// internal/tmuxstatus can stay free of the cmd-package theme globals.
 func statusColors() tmuxstatus.Colors {
 	return tmuxstatus.Colors{
 		Yellow:  ColorYellow,
@@ -114,8 +112,6 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	if waitingOnly {
 		if tmuxFormat {
 			// Emit a tmux-formatted colour string, or nothing if count is zero.
-			// The shared tmuxstatus.FormatWaiting helper guarantees the iris
-			// segment renders byte-identically to this one.
 			if s := tmuxstatus.FormatWaiting(counts, statusColors()); s != "" {
 				fmt.Print(s)
 			}

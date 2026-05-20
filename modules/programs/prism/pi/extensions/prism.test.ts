@@ -18,7 +18,6 @@ import {
   attachJsonlReader,
   coerceToolOutput,
   dispatchInboundFrame,
-  isIrisMode,
   parseEndpoint,
   redactLine,
   shouldActivate,
@@ -53,11 +52,6 @@ import {
   // Frame writer
   makeFrameWriter,
   type FrameWriter,
-  // Iris surface check helpers
-  runIrisSurfaceCheck,
-  extractExtensionName,
-  IRIS_CANONICAL_TOOLS,
-  IRIS_EXTENSION_ALLOWLIST,
   // Assistant-message text extraction (issue #1764)
   extractAssistantText,
   isAssistantTextDeltaEvent,
@@ -72,11 +66,11 @@ import prismExtension from "./prism.ts"
 // ---------------------------------------------------------------------------
 
 describe("shouldActivate", () => {
-  it("returns false when neither PRISM_SESSION_NAME nor IRIS_DAEMON_SOCK is set", () => {
+  it("returns false when PRISM_SESSION_NAME is not set", () => {
     assert.equal(shouldActivate({}), false)
   })
 
-  it("returns false when PRISM_SESSION_NAME is empty and IRIS_DAEMON_SOCK is absent", () => {
+  it("returns false when PRISM_SESSION_NAME is empty", () => {
     assert.equal(shouldActivate({ PRISM_SESSION_NAME: "" }), false)
   })
 
@@ -84,48 +78,6 @@ describe("shouldActivate", () => {
     assert.equal(
       shouldActivate({ PRISM_SESSION_NAME: "nixos-config@main" }),
       true,
-    )
-  })
-
-  // Issue #1701: the extension must also activate under iris so the
-  // state_change="waiting" emission path (turn_end paused) can fire.
-  it("returns true when IRIS_DAEMON_SOCK is set (iris mode)", () => {
-    assert.equal(
-      shouldActivate({ IRIS_DAEMON_SOCK: "/run/user/1000/iris/foo/harness.sock" }),
-      true,
-    )
-  })
-
-  it("returns false when IRIS_DAEMON_SOCK is set but empty", () => {
-    assert.equal(shouldActivate({ IRIS_DAEMON_SOCK: "" }), false)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// isIrisMode (iris-mode flag for turn_end paused emission)
-// ---------------------------------------------------------------------------
-
-describe("isIrisMode", () => {
-  it("returns false when IRIS_DAEMON_SOCK is absent", () => {
-    assert.equal(isIrisMode({}), false)
-  })
-
-  it("returns false when IRIS_DAEMON_SOCK is empty", () => {
-    assert.equal(isIrisMode({ IRIS_DAEMON_SOCK: "" }), false)
-  })
-
-  it("returns true when IRIS_DAEMON_SOCK is set", () => {
-    assert.equal(
-      isIrisMode({ IRIS_DAEMON_SOCK: "/tmp/iris/abc/harness.sock" }),
-      true,
-    )
-  })
-
-  it("does NOT activate iris-mode when only PRISM_SESSION_NAME is set", () => {
-    // prism-mode session: must not switch turn_end paused to "waiting".
-    assert.equal(
-      isIrisMode({ PRISM_SESSION_NAME: "nixos-config@main" }),
-      false,
     )
   })
 })
@@ -804,7 +756,7 @@ describe("similarityKey — bash full-argv keying (#1683)", () => {
 // The fix includes the full normalised argv in the key.
 describe("similarityKey — #1683 false-positive cases", () => {
   it("5 prism-checkin calls with different --last/--types/--verbose flags produce 5 distinct keys", () => {
-    const session = "nixos-config@iris-tui-session-spawned"
+    const session = "nixos-config@checkin-flag-variants"
     const cmds = [
       `prism checkin ${session} --types audit --last 50`,
       `prism checkin ${session} --last 40 --verbose`,
@@ -2910,420 +2862,6 @@ describe("#1472: post-resume state_change{finished} emitted on second task", () 
 })
 
 // ---------------------------------------------------------------------------
-// Iris surface check (§3.5 of daemon-mode-design.md)
-// ---------------------------------------------------------------------------
-//
-// The surface check has three fatal conditions:
-//   1. Unknown built-in: a tool with source="builtin" not in the canonical seven.
-//   2. Unauthorised extension tool: a tool from an extension not on the allowlist.
-//   3. Failed override: a canonical tool still resolves to source="builtin".
-//
-// These are tested via negative tests that mock pi.getAllTools() to produce
-// each violation.
-
-describe("iris surface check (runIrisSurfaceCheck)", () => {
-  /**
-   * Build a minimal mock ExtensionAPI whose getAllTools() returns the given
-   * tool list. No other methods are needed for the surface check.
-   */
-  function mockPI(
-    tools: Array<{ name: string; source: string; sourcePath?: string; description?: string; parameters?: unknown }>,
-  ): Parameters<typeof runIrisSurfaceCheck>[0] {
-    return {
-      getAllTools: () =>
-        tools.map((t) => ({
-          name: t.name,
-          description: t.description ?? "",
-          parameters: t.parameters ?? {},
-          sourceInfo: {
-            source: t.source,
-            path: t.sourcePath ?? `/extensions/${t.source}.ts`,
-            scope: "user" as const,
-            origin: "top-level" as const,
-          },
-        })),
-    } as Parameters<typeof runIrisSurfaceCheck>[0]
-  }
-
-  /**
-   * All seven canonical built-ins overridden (source="extension" from prism).
-   * Represents the expected post-registerTool() state.
-   */
-  const overriddenCanonicals = IRIS_CANONICAL_TOOLS.map((name) => ({
-    name,
-    source: "extension",
-    sourcePath: "/etc/prism/pi-extensions/prism.ts",
-  }))
-
-  it("passes when all canonical tools are overridden and no unknown tools exist", () => {
-    const pi = mockPI(overriddenCanonicals)
-    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
-  })
-
-  it("passes when allowlisted extension tools are present alongside overridden canonicals", () => {
-    const tools = [
-      ...overriddenCanonicals,
-      { name: "jira_search", source: "extension", sourcePath: "/path/to/atlassian.ts" },
-      { name: "oauth_login", source: "extension", sourcePath: "/path/to/anthropic-oauth.ts" },
-    ]
-    const pi = mockPI(tools)
-    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
-  })
-
-  // ---- Fatal condition 1: unknown built-in --------------------------------
-
-  it("throws on unknown built-in (pi reports an 8th built-in)", () => {
-    // Simulate pi 0.73 adding a new built-in tool that iris has not reviewed.
-    const tools = [
-      ...overriddenCanonicals,
-      { name: "web_fetch", source: "builtin", sourcePath: "" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("web_fetch"),
-          `expected message to mention tool name "web_fetch", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  it("throws on unknown built-in (name is in canonical set but source is still builtin)", () => {
-    // Condition 3: canonical tool not overridden.
-    const tools = [
-      // Six overridden, one still builtin.
-      ...IRIS_CANONICAL_TOOLS.slice(1).map((name) => ({
-        name,
-        source: "extension",
-        sourcePath: "/etc/prism/pi-extensions/prism.ts",
-      })),
-      { name: "read", source: "builtin", sourcePath: "" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("read"),
-          `expected message to mention "read", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  // ---- Fatal condition 2: unauthorised extension tool ----------------------
-
-  it("throws on unauthorised extension tool (extension not on allowlist)", () => {
-    const tools = [
-      ...overriddenCanonicals,
-      // Tool from a hypothetical extension not on the allowlist.
-      { name: "some_mcp_tool", source: "extension", sourcePath: "/path/to/evil-extension.ts" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("evil-extension"),
-          `expected message to mention extension name, got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  it("throws on unauthorised extension even if tool name is canonical", () => {
-    // A rogue extension that registers a tool with a canonical name.
-    const tools = [
-      ...overriddenCanonicals,
-      // Duplicate "bash" from a non-allowlisted extension.
-      { name: "bash", source: "extension", sourcePath: "/path/to/rogue.ts" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("rogue"),
-          `expected message to mention "rogue", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  // ---- Fatal condition 3: canonical built-in that failed to override ------
-
-  it("throws when a canonical built-in was not overridden (source still builtin)", () => {
-    // All but 'edit' are overridden; 'edit' still resolves to builtin.
-    const tools = [
-      ...IRIS_CANONICAL_TOOLS.filter((n) => n !== "edit").map((name) => ({
-        name,
-        source: "extension",
-        sourcePath: "/etc/prism/pi-extensions/prism.ts",
-      })),
-      { name: "edit", source: "builtin", sourcePath: "" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("edit"),
-          `expected message to mention "edit", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  it("throws when a canonical built-in is absent from getAllTools() entirely (silent no-op registerTool)", () => {
-    // 'write' is simply absent — registerTool() was silently dropped.
-    const tools = IRIS_CANONICAL_TOOLS.filter((n) => n !== "write").map((name) => ({
-      name,
-      source: "extension",
-      sourcePath: "/etc/prism/pi-extensions/prism.ts",
-    }))
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("write"),
-          `expected message to mention "write", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  // ---- Regression #1758: pi 0.72.1 reports --extension-loaded extensions
-  //      with sourceInfo.source === "cli", not "extension". The surface
-  //      check must accept both as valid override sources.
-  // -----------------------------------------------------------------------
-  //
-  // Iris spawns pi children with `pi --extension <prism.ts>` (see
-  // internal/iris/supervisor.go); pi 0.72.1 tags every tool registered by
-  // such an extension with source="cli" (see
-  // pi-coding-agent-0.72.1/dist/core/resource-loader.js:260-265). Before
-  // the fix, the surface check accepted only source==="extension" and
-  // therefore reported every canonical tool as un-overridden — throwing on
-  // the first canonical name ("read") and breaking every iris session.
-
-  it("#1758: passes when all canonical tools are overridden with source=\"cli\" (--extension load path)", () => {
-    // Reproduces the on-host shape captured by the diagnostic dump from
-    // pi 0.72.1 with --extension /path/to/prism.ts. Every overridden tool
-    // has sourceInfo.source === "cli".
-    const tools = IRIS_CANONICAL_TOOLS.map((name) => ({
-      name,
-      source: "cli",
-      sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
-    }))
-    const pi = mockPI(tools)
-    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
-  })
-
-  it("#1758: passes when canonical tools are a mix of source=\"cli\" and source=\"extension\"", () => {
-    // Defensive: should the loader ever assign "extension" to some and
-    // "cli" to others (e.g. a future pi that distinguishes config-declared
-    // vs CLI-flagged extensions per tool), the check should still accept
-    // both.
-    const tools = IRIS_CANONICAL_TOOLS.map((name, i) => ({
-      name,
-      source: i % 2 === 0 ? "cli" : "extension",
-      sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
-    }))
-    const pi = mockPI(tools)
-    assert.doesNotThrow(() => runIrisSurfaceCheck(pi))
-  })
-
-  it("#1758: unauthorised --extension-loaded extension still throws (the allowlist still applies to source=\"cli\")", () => {
-    // A canonical-named tool registered by an unauthorised extension via
-    // --extension must still be rejected — the looser source check must
-    // not bypass the allowlist.
-    const tools = [
-      ...IRIS_CANONICAL_TOOLS.filter((n) => n !== "bash").map((name) => ({
-        name,
-        source: "cli",
-        sourcePath: "/nix/store/abc-prism-pi-extension/prism.ts",
-      })),
-      // A rogue extension supplied via --extension also registers "bash".
-      { name: "bash", source: "cli", sourcePath: "/tmp/rogue-extension.ts" },
-    ]
-    const pi = mockPI(tools)
-    assert.throws(
-      () => runIrisSurfaceCheck(pi),
-      (err: unknown) => {
-        assert.ok(err instanceof Error)
-        assert.ok(
-          err.message.includes("rogue-extension"),
-          `expected message to mention "rogue-extension", got: ${err.message}`,
-        )
-        return true
-      },
-    )
-  })
-
-  // ---- Regression #1758: pin the pi 0.72.1 ToolInfo shape -----------------
-  //
-  // The diagnostic dump captured for issue #1758 showed pi 0.72.1's
-  // getAllTools() returns exactly {name, description, parameters,
-  // sourceInfo}; sourceInfo is exactly {path, source, scope, origin,
-  // baseDir}. The override builder copies parameters verbatim and currently
-  // also defensively spreads label/promptSnippet/promptGuidelines/
-  // renderShell/prepareArguments, none of which are exposed by 0.72.1's
-  // ToolInfo — those copies are dead today but kept for forward
-  // compatibility with future pi versions.
-  //
-  // If pi ever adds a new field to its ToolInfo (e.g. unsafe, category,
-  // streamingMode) that the override-rebuild path needs to preserve, this
-  // test will fail — forcing a deliberate review of whether the override
-  // builder needs to copy that field through. Update the
-  // EXPECTED_TOOL_INFO_FIELDS set in tandem with the pi pin bump.
-
-  it("#1758: pinned pi 0.72.1 ToolInfo / SourceInfo / source-enum shape (canonical seven)", () => {
-    // Captured verbatim from a diagnostic dump against pi 0.72.1 on the host
-    // (see issue #1758 comment). This test does NOT exercise runtime
-    // behaviour — it pins the upstream shape that the override builder and
-    // surface check are written against, so that a pi version bump that
-    // changes the shape forces a deliberate review of both.
-    //
-    // To regenerate this fixture after a pi bump: re-run the reproducer
-    // from issue #1758 with the diagnostic dump enabled and paste the
-    // resulting field/source values here.
-    const PI_0_72_1_TOOL_INFO_FIELDS = [
-      "name",
-      "description",
-      "parameters",
-      "sourceInfo",
-    ].sort()
-    const PI_0_72_1_SOURCE_INFO_FIELDS = [
-      "path",
-      "source",
-      "scope",
-      "origin",
-      "baseDir",
-    ].sort()
-    // The known sourceInfo.source enum values pi 0.72.1 emits for tools.
-    // "builtin"   — synthetic, from agent-session._baseToolDefinitions
-    // "extension" — extension declared in pi's resolved config
-    // "cli"       — extension loaded via --extension CLI flag (iris uses this)
-    // "sdk"       — customTools injected by SDK consumers
-    // "local"     — a discovered local-on-disk extension
-    const PI_0_72_1_SOURCE_ENUM = ["builtin", "extension", "cli", "sdk", "local"]
-
-    // Sanity assertions that document the pin. If pi changes either shape,
-    // these constants must be re-derived from a fresh diagnostic dump and
-    // the override builder + surface check reviewed in tandem.
-    assert.deepEqual(
-      PI_0_72_1_TOOL_INFO_FIELDS,
-      ["description", "name", "parameters", "sourceInfo"],
-      "ToolInfo field set pin (pi 0.72.1)",
-    )
-    assert.deepEqual(
-      PI_0_72_1_SOURCE_INFO_FIELDS,
-      ["baseDir", "origin", "path", "scope", "source"],
-      "SourceInfo field set pin (pi 0.72.1)",
-    )
-
-    // Cross-check: every member of IRIS_OVERRIDE_SOURCES must be a known
-    // upstream source value. This guards against the inverse drift —
-    // someone adding a typo'd source to the override set.
-    for (const src of ["extension", "cli"]) {
-      assert.ok(
-        PI_0_72_1_SOURCE_ENUM.includes(src),
-        `IRIS_OVERRIDE_SOURCES member "${src}" is not a known pi 0.72.1 source value`,
-      )
-    }
-
-    // Cross-check: the surface check must accept BOTH "extension" and
-    // "cli" as override sources. This is the regression assertion for
-    // #1758: a tool overridden under either source must satisfy the check.
-    for (const src of ["extension", "cli"]) {
-      const pi = mockPI(
-        IRIS_CANONICAL_TOOLS.map((name) => ({
-          name,
-          source: src,
-          sourcePath: "/etc/prism/pi-extensions/prism.ts",
-        })),
-      )
-      assert.doesNotThrow(
-        () => runIrisSurfaceCheck(pi),
-        `surface check rejected source="${src}" (regression of #1758)`,
-      )
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
-// extractExtensionName helper
-// ---------------------------------------------------------------------------
-
-describe("extractExtensionName", () => {
-  it("extracts 'prism' from /etc/prism/pi-extensions/prism.ts", () => {
-    assert.equal(extractExtensionName("/etc/prism/pi-extensions/prism.ts"), "prism")
-  })
-  it("extracts 'atlassian' from /path/to/atlassian.js", () => {
-    assert.equal(extractExtensionName("/path/to/atlassian.js"), "atlassian")
-  })
-  it("extracts 'anthropic-oauth' from anthropic-oauth/index.ts", () => {
-    assert.equal(extractExtensionName("anthropic-oauth/index.ts"), "anthropic-oauth")
-  })
-  it("extracts 'anthropic-oauth' from absolute path ending in anthropic-oauth/index.ts", () => {
-    assert.equal(
-      extractExtensionName("/etc/prism/pi-extensions/anthropic-oauth/index.ts"),
-      "anthropic-oauth",
-    )
-  })
-  it("returns basename when generic filename has no parent segment", () => {
-    assert.equal(extractExtensionName("index.ts"), "index")
-  })
-  it("extracts 'my-ext' from my-ext/main.ts (generic 'main' basename)", () => {
-    assert.equal(extractExtensionName("my-ext/main.ts"), "my-ext")
-  })
-  it("handles Windows-style backslash paths", () => {
-    assert.equal(extractExtensionName("C:\\path\\to\\prism.ts"), "prism")
-  })
-})
-
-// ---------------------------------------------------------------------------
-// IRIS_CANONICAL_TOOLS and IRIS_EXTENSION_ALLOWLIST exports
-// ---------------------------------------------------------------------------
-
-describe("iris constants", () => {
-  it("IRIS_CANONICAL_TOOLS has exactly 7 entries", () => {
-    assert.equal(IRIS_CANONICAL_TOOLS.length, 7)
-  })
-  it("IRIS_CANONICAL_TOOLS contains the expected names", () => {
-    const expected = ["read", "bash", "edit", "write", "grep", "find", "ls"]
-    for (const name of expected) {
-      assert.ok(
-        (IRIS_CANONICAL_TOOLS as readonly string[]).includes(name),
-        `expected ${name} in IRIS_CANONICAL_TOOLS`,
-      )
-    }
-  })
-  it("IRIS_EXTENSION_ALLOWLIST includes prism, atlassian, anthropic-oauth", () => {
-    for (const name of ["prism", "atlassian", "anthropic-oauth"]) {
-      assert.ok(
-        IRIS_EXTENSION_ALLOWLIST.includes(name),
-        `expected ${name} in IRIS_EXTENSION_ALLOWLIST`,
-      )
-    }
-  })
-})
-
-// ---------------------------------------------------------------------------
 // #1764: pi 0.72.1 assistant-message event vocabulary (regression test)
 //
 // Three goals:
@@ -3496,7 +3034,7 @@ describe("#1764: pi 0.72.1 AssistantMessage — extractAssistantText", () => {
   })
 
   it("filters out empty-string text blocks", () => {
-    // Don't emit empty msg_assistant frames as iris would record empty
+    // Don't emit empty msg_assistant frames — they would record empty
     // assistant turns in the DB.
     const message = {
       role: "assistant",
@@ -3876,8 +3414,8 @@ describe("#1761: TOOL_HEARTBEAT_INTERVAL_MS — env override", () => {
 // id observed via `message_start`) onto every `tool_call` and `tool_result`
 // frame it writes. This is the field the consumer's secondary-query SQL
 // pushdown (`db.QueryEventsByMessageIDs`) joins on to pair child tool events
-// back to their parent assistant turn for the `iris checkin` / `prism checkin
-// --turns` narrative views.
+// back to their parent assistant turn for the `prism checkin --turns`
+// narrative view.
 //
 // Pre-#1787 the extension did not stamp any parent-message linkage on the
 // wire — the `id` it emitted was the tool-call id (per-invocation UUID), NOT

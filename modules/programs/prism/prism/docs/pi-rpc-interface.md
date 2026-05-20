@@ -375,10 +375,10 @@ file.
 ```
 
 The `<encoded-cwd>` is computed as `--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`.
-**This is not the same as `~/.pi/agent/sessions/<session_id>/`** as claimed in
-§9.2 of the daemon-mode design doc and §5.11 of `pi-wire-protocol.md` — both
-of which reference `~/.pi/agent/sessions/<session_id>/`. The session UUID is
-*embedded in the filename*, not used as a directory name.
+**This is not the same as `~/.pi/agent/sessions/<session_id>/`** as claimed
+in §5.11 of `pi-wire-protocol.md`, which references
+`~/.pi/agent/sessions/<session_id>/`. The session UUID is *embedded in the
+filename*, not used as a directory name.
 
 **UUID-prefix matching** (`dist/main.js` lines 106–125): `--session <prefix>`
 does a prefix-match against session UUIDs in the session directory. It searches

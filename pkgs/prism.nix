@@ -21,10 +21,8 @@ buildGoModule {
 
   # Build only the prism entrypoint from the shared Go module.
   # subPackages restricts what buildGoModule compiles into the output,
-  # so the derivation produces only the prism binary (not iris or any
-  # other cmd/ entrypoints). This avoids a bin/iris collision with
-  # pkgs/iris.nix when Home Manager merges both packages into the user
-  # profile (see issue #1633).
+  # so the derivation produces only the prism binary (not any other
+  # cmd/ entrypoints).
   subPackages = [ "." ];
 
   doCheck = runChecks;

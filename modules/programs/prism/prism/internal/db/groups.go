@@ -50,8 +50,7 @@ func isTerminalState(state string) bool {
 // worker-sidecar recovery watcher (#1709 reopen) reads those columns to
 // reconstruct enough context to deliver the review-complete prompt when the
 // detached monitor subprocess dies. RegisterGroup remains the back-compat
-// entry point for callers that do not have the PR/round (legacy iris paths
-// and unit-test setup).
+// entry point for callers that do not have the PR/round (unit-test setup).
 func (d *DB) RegisterGroup(parentSession string) (string, error) {
 	return d.RegisterGroupWithPR(parentSession, "", 0)
 }

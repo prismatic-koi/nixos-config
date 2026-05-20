@@ -75,10 +75,9 @@ type Session struct {
 	ArchivePath      *string
 	PrismVersion     *string
 	// ParentSession is the logical session_name of the session that spawned
-	// this one (iris notifyParentWorker, issue #1700). Populated at spawn time
-	// from the spawning session's IRIS_SESSION_NAME, forwarded through the
-	// session_spawn wire frame. NULL for top-level spawns (no parent), for
-	// non-iris sessions, and for pre-migration rows.
+	// this one (issue #1700). Populated at spawn time from the spawning
+	// session's PRISM_SESSION_NAME, forwarded through the session_spawn wire
+	// frame. NULL for top-level spawns (no parent) and for pre-migration rows.
 	ParentSession *string
 }
 

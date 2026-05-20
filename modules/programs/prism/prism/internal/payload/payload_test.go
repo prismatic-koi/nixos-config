@@ -135,7 +135,7 @@ func TestToolResult_Roundtrip(t *testing.T) {
 // by issue #1783's acceptance criteria: pins the pi 0.75.3
 // prism-extension wire format so an upstream rename surfaces here as
 // a deliberate test failure rather than a silent (parse error)
-// regression in the iris TUI.
+// regression in downstream consumers.
 //
 // The fixture JSON below is byte-for-byte representative of what
 // `pi/extensions/prism.ts:2429-2444` writes to the harness socket

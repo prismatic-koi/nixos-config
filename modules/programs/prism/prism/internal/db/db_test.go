@@ -7568,9 +7568,9 @@ func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 	}
 }
 
-// TestQuerySessionEventsBeforeRowID covers the paged-history query that
-// backs the iris TUI's lazy-load scrollback (issue #1770 child 5). The
-// query must:
+// TestQuerySessionEventsBeforeRowID covers the paged-history query for
+// rowid-paginated session-event reads (issue #1770 child 5). The query
+// must:
 //
 //   - return up to `limit` rows in ASC rowid order
 //   - filter by session_name

@@ -15,20 +15,7 @@ type exitCoder interface {
 	ExitCode() int
 }
 
-// irisParityTripwireExitCode is the exit code prism uses when the iris
-// parity gate tripwire env var IRIS_PARITY_TEST_MODE is set. A non-1 code
-// makes accidental invocations easy to spot in CI logs.
-const irisParityTripwireExitCode = 99
-
 func main() {
-	// Iris parity gate tripwire (issue #1641). The iris parity test suite
-	// sets IRIS_PARITY_TEST_MODE=1 to prove no prism binary is invoked by
-	// any parity test. When the variable is set we exit 99 with a clear
-	// message before any prism-specific work runs.
-	if os.Getenv("IRIS_PARITY_TEST_MODE") != "" {
-		fmt.Fprintln(os.Stderr, "iris parity test mode active: prism binary must not be invoked from iris parity tests (see issue #1641)")
-		os.Exit(irisParityTripwireExitCode)
-	}
 	if err := cmd.Execute(); err != nil {
 		var ec exitCoder
 		if errors.As(err, &ec) {

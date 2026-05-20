@@ -260,8 +260,8 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 // In Go terms: strip the leading '/' or '\', replace every occurrence of '/',
 // '\', and ':' with '-', then wrap in "--…--".
 //
-// Exported so that internal/iris can reuse the same encoding when constructing
-// the pi JSONL session file path at daemon-restart time (D-9, #1640).
+// Exported because the encoding formula mirrors pi's own JS and downstream
+// packages may need to reproduce it to locate a session's JSONL file.
 func EncodePiCWD(cwd string) string {
 	// Strip leading slash or backslash.
 	stripped := strings.TrimLeft(cwd, "/\\")

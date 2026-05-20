@@ -31,8 +31,7 @@ func TestFormatWaiting_ZeroIsEmpty(t *testing.T) {
 	}
 }
 
-// TestFormatWaiting_NonZero asserts the byte-for-byte segment shape so the
-// iris and prism status bar segments stay visually identical.
+// TestFormatWaiting_NonZero asserts the byte-for-byte segment shape.
 func TestFormatWaiting_NonZero(t *testing.T) {
 	got := FormatWaiting(Counts{Waiting: 2}, testColors())
 	want := "#[fg=#yellow]2 waiting #[fg=#primary]| "

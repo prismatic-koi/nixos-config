@@ -485,9 +485,9 @@ LIMIT ?`
 
 // QuerySessionEventsSinceRowID returns all events for sessionName with
 // rowid > sinceRowID, ordered by rowid ASC (monotonic DB insertion order).
-// This is the backing query for the client IPC socket's since_event_id replay
-// (§4.3 of daemon-mode-design.md). Each returned EventRow carries the rowid so
-// the client can use it in a subsequent since_event_id field.
+// This is the backing query for a since_event_id replay protocol: each
+// returned EventRow carries the rowid so the client can use it in a
+// subsequent since_event_id field.
 func (d *DB) QuerySessionEventsSinceRowID(sessionName string, sinceRowID int64) ([]EventRow, error) {
 	const q = `
 SELECT rowid, id, session_name, repo, worktree, harness_session_id,
@@ -541,11 +541,10 @@ func (d *DB) MaxSessionEventRowID(sessionName string) (int64, error) {
 // tail of history — which is useful when the caller has not yet seen any
 // event for the session and wants a starting window.
 //
-// This is the backing query for the iris client IPC socket's paged-history
-// frame (issue #1770 child 5): when the TUI's operator scrolls past the top
-// of the in-memory window, the TUI requests another page of older events
-// using the rowid of the previously-top event as `beforeRowID`. The result
-// is returned in ASC order so the caller can prepend it directly without
+// Pagination protocol: when a scrollback-style caller scrolls past the top
+// of its in-memory window, it requests another page of older events using
+// the rowid of the previously-top event as `beforeRowID`. The result is
+// returned in ASC order so the caller can prepend it directly without
 // re-sorting; the caller is responsible for detecting head-of-history
 // (zero rows returned) and suppressing further requests.
 func (d *DB) QuerySessionEventsBeforeRowID(sessionName string, beforeRowID int64, limit int) ([]EventRow, error) {

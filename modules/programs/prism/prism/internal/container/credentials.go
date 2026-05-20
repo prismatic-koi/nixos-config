@@ -107,45 +107,6 @@ func (m *Manager) CredentialEnvVars() []string {
 	return m.credentialEnvVars()
 }
 
-// GithubAccountFromBareRoot is the exported version of githubAccountFromBareRoot.
-// Used by the iris credential broker (D-7) to identify which role-scoped
-// PRISM_GITHUB_TOKEN_<account>_<role> env var was the source of the resolved
-// token, so the audit log can distinguish role-scoped from host-fallback hits.
-func GithubAccountFromBareRoot(bareRoot string) string {
-	return githubAccountFromBareRoot(bareRoot)
-}
-
-// GithubTokenForBareRootAndRole returns the role-scoped GitHub token for the
-// given bare repo root and agent role, using the 4-PAT architecture.
-// Returns "" when no matching token is found in the host environment.
-//
-// This is an exported free function so that the iris per-tool bash sandbox
-// (D-5) can reuse the account × role → token selection logic without
-// duplicating it or constructing a full container.Manager.
-//
-// Logic mirrors credentialEnvVars: derive the GitHub account from the bare
-// repo's origin remote URL, build the env-var name, look it up, fall back
-// to host GITHUB_TOKEN.
-func GithubTokenForBareRootAndRole(bareRoot, role string) string {
-	account := githubAccountFromBareRoot(bareRoot)
-
-	var tokenEnvVar string
-	if account != "" {
-		accountKey := strings.ToUpper(strings.ReplaceAll(account, "-", "_"))
-		roleKey := strings.ToUpper(role)
-		if roleKey == "WORKER" || roleKey == "COORDINATOR" {
-			tokenEnvVar = "PRISM_GITHUB_TOKEN_" + accountKey + "_" + roleKey
-		}
-	}
-
-	if tokenEnvVar != "" {
-		if tok := os.Getenv(tokenEnvVar); tok != "" {
-			return tok
-		}
-	}
-	// Fallback: host GITHUB_TOKEN.
-	return os.Getenv("GITHUB_TOKEN")
-}
 
 // credentialEnvVars returns the environment variable assignments to inject into
 // the container based on the agent role and current host environment.
