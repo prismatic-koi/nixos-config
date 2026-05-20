@@ -242,17 +242,12 @@ func TestBuildReviewChildSummaries_StartupErrorChild(t *testing.T) {
 	}
 }
 
-func TestBuildReviewChildSummaries_MissingChildBecomesError(t *testing.T) {
+func TestBuildReviewChildSummaries_MissingChildOmitted(t *testing.T) {
 	// Construct only two of the canonical agents — the other three slots must
-	// render as VerdictError (✕) per the AC ("missing agents as ✕"), in their
-	// alphabetical slot.
+	// be absent from the output (omitted, not rendered as VerdictError).
 	agents := review.Agents()
 	full0 := agents[0].Name
 	full1 := agents[1].Name
-	present := map[string]bool{
-		dashboard.ShortAgentName(full0): true,
-		dashboard.ShortAgentName(full1): true,
-	}
 
 	children := []dashboard.AgentSession{
 		{
@@ -267,22 +262,29 @@ func TestBuildReviewChildSummaries_MissingChildBecomesError(t *testing.T) {
 		},
 	}
 	got := dashboard.BuildReviewChildSummaries(children)
-	if len(got) != len(agents) {
-		t.Fatalf("got %d summaries, want %d (one per canonical agent)", len(got), len(agents))
+	// Only the two present children should appear — missing agents are omitted.
+	if len(got) != 2 {
+		t.Fatalf("got %d summaries, want 2 (only present children)", len(got))
 	}
-	// The slice must already be in alphabetical order by short name.
+	// The slice must be in alphabetical order by short name.
 	for i := 1; i < len(got); i++ {
 		if got[i-1].AgentShortName >= got[i].AgentShortName {
 			t.Errorf("summaries not in alphabetical order: %q before %q", got[i-1].AgentShortName, got[i].AgentShortName)
 		}
 	}
-	// Missing agents (not in `present`) must be VerdictError. The two present
-	// ones keep their derived verdicts (pass / running).
+	// No VerdictError entries — neither present agent is in error state.
 	for _, s := range got {
-		if !present[s.AgentShortName] {
-			if s.Verdict != dashboard.VerdictError {
-				t.Errorf("missing agent %q: Verdict = %q, want error", s.AgentShortName, s.Verdict)
-			}
+		if s.Verdict == dashboard.VerdictError {
+			t.Errorf("agent %q: Verdict = VerdictError, but no missing-agent placeholders expected", s.AgentShortName)
+		}
+	}
+	// The two present agents must appear with their derived verdicts.
+	short0 := dashboard.ShortAgentName(full0)
+	short1 := dashboard.ShortAgentName(full1)
+	presentShorts := map[string]bool{short0: true, short1: true}
+	for _, s := range got {
+		if !presentShorts[s.AgentShortName] {
+			t.Errorf("unexpected agent %q in output", s.AgentShortName)
 		}
 	}
 }
@@ -604,17 +606,18 @@ func TestCollapsedRow_StartupErrorChild(t *testing.T) {
 	}
 }
 
-func TestCollapsedRow_MissingChildren(t *testing.T) {
-	// Only include the first canonical agent; the remaining four slots are
-	// missing → must render as ✕ in their alphabetical slot.
+func TestCollapsedRow_MissingChildrenOmitted(t *testing.T) {
+	// Only include the first canonical agent; the remaining four agents are
+	// missing → they must be absent from the rendered output (no ✕ letters,
+	// no "name:" slots for the missing agents).
 	agents := review.Agents()
 	states := map[string]string{
 		agents[0].Name: "active",
 	}
 	row := renderCollapsedReviewRow(t, 200, states, nil)
-	// Four missing → four ✕ letters.
-	if strings.Count(row, "✕") != 4 {
-		t.Errorf("expected exactly 4 ✕ for missing agents, got %d; row=%q",
+	// No ✕ letters — missing agents are not rendered as VerdictError.
+	if strings.Count(row, "✕") != 0 {
+		t.Errorf("expected no ✕ for missing agents (omitted policy), got %d; row=%q",
 			strings.Count(row, "✕"), row)
 	}
 	// The present (first canonical) agent is in state "active" so its label is ◌.
@@ -622,12 +625,11 @@ func TestCollapsedRow_MissingChildren(t *testing.T) {
 	if !strings.Contains(row, present+":◌") {
 		t.Errorf("expected present agent label %q; row=%q", present+":◌", row)
 	}
-	// And the alphabetical slot rule means every short label appears, even the
-	// missing ones (with ✕).
-	for _, a := range agents {
+	// The missing agents must not appear in the row at all.
+	for _, a := range agents[1:] {
 		short := dashboard.ShortAgentName(a.Name)
-		if !strings.Contains(row, short+":") {
-			t.Errorf("expected short label %q to appear in row; row=%q", short, row)
+		if strings.Contains(row, short+":") {
+			t.Errorf("missing agent %q should not appear in row; row=%q", short, row)
 		}
 	}
 }
