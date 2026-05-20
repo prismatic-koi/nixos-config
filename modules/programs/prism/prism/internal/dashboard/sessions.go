@@ -455,10 +455,10 @@ func SortDisplayed(ss []AgentSession) {
 //     Using the maximum of both formulas ensures correctness in all modes.
 //
 // Constants are defined here as unexported values to avoid import cycles;
-// the view's own sessionWCap and treePrefixW constants must stay in sync.
+// treePrefixW must stay in sync with the constant of the same name in view.go.
 func SessionColumnWidth(sessions []AgentSession) int {
 	const sessionWMin = 7  // len("session") — never truncate the column header
-	const sessionWCap = 40 // must match sessionWCap in view.go
+	const sessionWCap = 40 // maximum session column width
 	const treePrefixW = 10 // must match treePrefixW in view.go
 	const d1PrefixLen = 6  // "  ├── " or "  └── "
 	const d2PrefixLen = 10 // "  │   ├── " or "  │   └── "

@@ -180,7 +180,6 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const treePrefixW = 10
 	const stateW = 10
 	const dotW = 2
-	const sessionWCap = 40 // maximum session width before the rest goes to title
 
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
@@ -190,21 +189,10 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// across all displayed entries, clamped to [7, 40].
 	sessionW := SessionColumnWidth(d.Displayed)
 
-	// growSession offers surplus space to sessionW (up to sessionWCap) before
-	// allocating the rest to titleW.
-	growSession := func(tw int) int {
-		if tw > 2 && sessionW < sessionWCap {
-			gain := min(tw-2, sessionWCap-sessionW)
-			sessionW += gain
-			tw -= gain
-		}
-		return tw
-	}
-
 	// Layout: " " + dot(2) + treePrefixW + sessionW + 2 + stateW + 2 + titleW.
 	// titleW absorbs all leftover width; below the minimum it clamps to 0,
 	// suppressing the title column.
-	titleW := growSession(d.Width - fixedCore - sessionW - 2)
+	titleW := d.Width - fixedCore - sessionW - 2
 	if titleW < 0 {
 		titleW = 0
 	}

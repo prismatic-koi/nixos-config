@@ -284,11 +284,10 @@ func TestSessionColumnWidth_DashViewIntegration(t *testing.T) {
 	if headerLine == "" {
 		t.Fatal("could not find header line in DashView output for long sessions")
 	}
-	// The session column spans treePrefixW(10) + sessionW(after growSession).
-	// What matters: DashView started from 22, not the old hardcoded 20-char floor,
-	// so the total session area fits the actual content without using the old floor.
-	// We can't easily check the exact final width (growSession may add more),
-	// but we verify the header renders without panic and contains expected labels.
+	// The session column spans treePrefixW(10) + sessionW, where sessionW is
+	// the content-derived width from SessionColumnWidth (clamped to [7, 40]).
+	// titleW absorbs all remaining horizontal space with no inflation of sessionW.
+	// Verify the header renders without panic and contains the expected labels.
 	for _, label := range []string{"session", "state", "title"} {
 		if !strings.Contains(headerLine, label) {
 			t.Errorf("header line missing %q: %q", label, headerLine)
