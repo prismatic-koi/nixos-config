@@ -1,6 +1,6 @@
 // Unit tests for slim.ts — field-drop logic for Atlassian MCP responses.
-// Run with: tsx --test slim.test.ts (from this directory)
-// Or: cd modules/programs/prism/pi/extensions/atlassian && tsx --test slim.test.ts
+// Run with: tsx --test --test-force-exit slim.test.ts (from this directory)
+// Or: cd modules/programs/prism/pi/extensions/atlassian && tsx --test --test-force-exit slim.test.ts
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
