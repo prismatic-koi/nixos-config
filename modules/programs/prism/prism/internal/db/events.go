@@ -541,11 +541,10 @@ func (d *DB) MaxSessionEventRowID(sessionName string) (int64, error) {
 // tail of history — which is useful when the caller has not yet seen any
 // event for the session and wants a starting window.
 //
-// This is the backing query for the iris client IPC socket's paged-history
-// frame (issue #1770 child 5): when the TUI's operator scrolls past the top
-// of the in-memory window, the TUI requests another page of older events
-// using the rowid of the previously-top event as `beforeRowID`. The result
-// is returned in ASC order so the caller can prepend it directly without
+// Pagination protocol: when a scrollback-style caller scrolls past the top
+// of its in-memory window, it requests another page of older events using
+// the rowid of the previously-top event as `beforeRowID`. The result is
+// returned in ASC order so the caller can prepend it directly without
 // re-sorting; the caller is responsible for detecting head-of-history
 // (zero rows returned) and suppressing further requests.
 func (d *DB) QuerySessionEventsBeforeRowID(sessionName string, beforeRowID int64, limit int) ([]EventRow, error) {

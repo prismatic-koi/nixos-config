@@ -71,7 +71,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   end_state           TEXT,
   archive_path        TEXT,
   prism_version       TEXT,
-  iris_state          TEXT,
   parent_session      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC);
@@ -378,11 +377,10 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration is
 // idempotent on fresh databases where the base schema already includes the
 // column.
-// v28→v29 adds the iris_state TEXT column to the sessions table (D-9, iris
-// daemon restart / orphan detection, #1640). The iris supervisor writes this
-// column at each state transition so the restore path can distinguish
-// spawning sessions from active ones. NULL means a non-iris or pre-D-9
-// session. The ALTER TABLE is guarded by pragma_table_info for idempotency.
+// v28→v29 was a no-op-from-prism's-perspective schema bump that previously
+// added a now-abandoned column to the sessions table (#1640). The migration
+// is preserved as a version-counter bump only so schema_version progresses
+// linearly through deployed databases.
 //
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1741,52 +1739,28 @@ func migrateV27ToV28(conn *sql.DB, version *int) error {
 	return nil
 }
 
-// migrateV28ToV29 adds the iris_state TEXT column to the sessions table (D-9,
-// iris daemon restart / orphan detection). The iris supervisor writes this
-// column at each state transition ("spawning", "active") so that the restore
-// path at daemon startup can distinguish sessions that were mid-creation
-// (spawning) from sessions that were fully running (active).
-//
-// The column is nullable TEXT; NULL means a non-iris session or a session
-// predating D-9. The ALTER TABLE is guarded by a pragma_table_info check so
-// the migration is idempotent on fresh databases where the base schema already
-// includes the column.
+// migrateV28ToV29 is a version-counter-only bump. It originally added an
+// abandoned column to the sessions table; the column is dropped from the
+// declarative schema and the ALTER TABLE has been removed so that fresh
+// databases do not acquire it. Deployed databases that already ran this
+// migration keep the dead column harmlessly — no prism code path reads it.
 func migrateV28ToV29(conn *sql.DB, version *int) error {
 	if *version >= 29 {
 		return nil
 	}
-	// Only ALTER TABLE when the column does not yet exist.
-	var colExists int
-	if err := conn.QueryRow(
-		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'iris_state'`,
-	).Scan(&colExists); err != nil {
-		return fmt.Errorf("db: migration v28→v29: check iris_state column: %w", err)
-	}
-	if colExists == 0 {
-		if _, err := conn.Exec(`ALTER TABLE sessions ADD COLUMN iris_state TEXT`); err != nil {
-			return fmt.Errorf("db: migration v28→v29: add iris_state column: %w", err)
-		}
-	}
-	steps := []string{
-		`CREATE INDEX IF NOT EXISTS idx_sessions_iris_state ON sessions(iris_state) WHERE iris_state IS NOT NULL`,
-		`UPDATE schema_version SET version = 29`,
-	}
-	for _, s := range steps {
-		if _, err := conn.Exec(s); err != nil {
-			return fmt.Errorf("db: migration v28→v29: %w", err)
-		}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 29`); err != nil {
+		return fmt.Errorf("db: migration v28→v29: %w", err)
 	}
 	*version = 29
 	return nil
 }
 
 // migrateV29ToV30 adds the parent_session TEXT column to the sessions table
-// (issue #1700, iris notifyParentWorker analogue). The iris supervisor writes
-// this column at session-spawn time from the spawning session's identity
-// (IRIS_SESSION_NAME on the calling pi child, forwarded through the
-// session_spawn wire frame). The terminal-state notification path reads this
-// column to locate the parent session that should receive the
-// "Agent <name> has finished" prompt.
+// (issue #1700). The column is populated at session-spawn time from the
+// spawning session's identity (PRISM_SESSION_NAME on the calling pi child,
+// forwarded through the session_spawn wire frame). The terminal-state
+// notification path reads this column to locate the parent session that
+// should receive the "Agent <name> has finished" prompt.
 //
 // The column is nullable TEXT; NULL means the session has no parent
 // (top-level coordinator spawned outside a session, or pre-migration rows).
