@@ -32,6 +32,8 @@ import (
 // pipe buffer (e.g. `agent-context` JSON, which is currently ~69 KiB)
 // blocks on the underlying write(2) syscall forever because nothing is
 // reading from the pipe until after fn returns.
+//
+// See modules/programs/prism/prism/docs/stdout-capture-testing.md.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()

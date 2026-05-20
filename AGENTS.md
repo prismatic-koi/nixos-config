@@ -108,6 +108,17 @@ assertions on profile content are necessary but not sufficient. See
 `modules/programs/prism/prism/docs/sandbox-exec-testing.md` for the full
 convention and helpers (issue #1192).
 
+### stdout-capture testing convention
+
+Any test helper that redirects `os.Stdout` or `os.Stderr` through an
+`os.Pipe` must drain the read end concurrently with the function under test —
+otherwise a single write larger than the kernel pipe buffer (16 pages ≈ 64 KiB
+on Linux) deadlocks the writer until `go test`'s timeout fires. The
+`agent-context` JSON output (~69 KiB) is the current worst offender and the
+reason this gap surfaced. See
+`modules/programs/prism/prism/docs/stdout-capture-testing.md` for the full
+convention and the canonical `captureStdout` helper (issue #1798).
+
 ### File naming and organisation
 
 Names of files and directories should be in lowercase, with dashes between words — kebab case, not camel case.
