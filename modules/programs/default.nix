@@ -36,7 +36,6 @@
     ./picard.nix
     ./plexamp.nix
     ./podman.nix
-    ./iris
     ./prism
     ./python.nix
     ./qutebrowser
