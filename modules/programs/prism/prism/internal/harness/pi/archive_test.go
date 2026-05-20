@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prismatic-koi/prism/internal/harness/pi"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
+	"github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // encodePiCWDForTest mirrors the encodePiCWD logic in archive.go for use in
@@ -82,8 +83,12 @@ func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
 // HarnessSessionID is empty (harness failed to start), SourcePath returns the
 // sessions root, which Archive's os.IsNotExist path treats as a no-op.
 func TestArchiveAdapter_SourcePath_EmptyHarnessSessionID(t *testing.T) {
+	// Redirect $HOME so the test does not touch the real home or fail under
+	// /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	a := pi.NewArchiveAdapter()
-	home, _ := os.UserHomeDir()
+	home := fakeHome
 
 	p := harnessarchive.SourceParams{
 		Worktree: "/tmp/test-my-repo",
@@ -101,8 +106,12 @@ func TestArchiveAdapter_SourcePath_EmptyHarnessSessionID(t *testing.T) {
 // TestArchiveAdapter_SourcePath_EmptyWorktree verifies that when Worktree is
 // empty (non-worktree session), SourcePath returns the sessions root.
 func TestArchiveAdapter_SourcePath_EmptyWorktree(t *testing.T) {
+	// Redirect $HOME so the test does not touch the real home or fail under
+	// /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	a := pi.NewArchiveAdapter()
-	home, _ := os.UserHomeDir()
+	home := fakeHome
 
 	p := harnessarchive.SourceParams{
 		HarnessSessionID: "some-uuid",
@@ -122,8 +131,12 @@ func TestArchiveAdapter_SourcePath_EmptyWorktree(t *testing.T) {
 // directory does not exist on disk, SourcePath returns a sentinel path (not an
 // error), and Archive treats it as a no-op via os.IsNotExist.
 func TestArchiveAdapter_SourcePath_NoCWDDir(t *testing.T) {
+	// Redirect $HOME so the test does not touch the real home or fail under
+	// /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	a := pi.NewArchiveAdapter()
-	home, _ := os.UserHomeDir()
+	home := fakeHome
 	const sessionID = "aabbccdd-0000-0000-0000-000000000000"
 	// Use a worktree path unlikely to have a real session directory.
 	const worktree = "/tmp/nonexistent-prism-test-worktree-xyzzy"
@@ -323,8 +336,12 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 // IsolationMode is "sandbox-exec" but InstanceID is empty, SourcePath falls
 // back to the real home directory rather than returning an error.
 func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
+	// Redirect $HOME so the test does not touch the real home or fail under
+	// /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	a := pi.NewArchiveAdapter()
-	home, _ := os.UserHomeDir()
+	home := fakeHome
 	const worktree = "/tmp/test-fallback"
 	const sessionID = "some-session-uuid"
 
@@ -347,14 +364,19 @@ func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome verifies that
-// non-sandbox-exec isolation modes (podman, bwrap, host) use the real home
-// directory for the sessions root.
+// non-sandbox-exec, non-bwrap isolation modes (podman, host, "") use the real
+// home directory for the sessions root. The bwrap branch is covered
+// separately by TestArchiveAdapter_SourcePath_Bwrap* below.
 func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
-	home, _ := os.UserHomeDir()
+	// Redirect $HOME so the test does not touch the real home or fail under
+	// /homeless-shelter in the Nix sandbox CI build.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	home := fakeHome
 	const sessionID = "pi-ses-xyz-nonse"
 	const worktree = "/tmp/test-non-sandbox"
 
-	for _, mode := range []string{"podman", "bwrap", "host", ""} {
+	for _, mode := range []string{"podman", "host", ""} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			a := pi.NewArchiveAdapter()
 			p := harnessarchive.SourceParams{
@@ -444,5 +466,291 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 	}
 	if string(got) != sessionContent {
 		t.Errorf("exported session.jsonl: got %q, want %q", got, sessionContent)
+	}
+}
+
+// stageBwrapSession writes a fake pi JSONL file at the bwrap layout path and
+// returns (filePath, content). It assumes $XDG_STATE_HOME has already been
+// redirected to a temp dir by the caller (t.Setenv("XDG_STATE_HOME", t.TempDir())).
+func stageBwrapSession(t *testing.T, stateHome, sessionName, worktree, harnessSessionID string) (string, string) {
+	t.Helper()
+	dirHash := session.SessionDirName(sessionName)
+	encodedCWD := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(stateHome, "prism", "run", dirHash, "pi-agent", "sessions", encodedCWD)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	filePath := filepath.Join(sessDir, "2026-05-20T07-27-30-806Z_"+harnessSessionID+".jsonl")
+	content := `{"type":"session","version":3,"id":"` + harnessSessionID + `"}` + "\n" +
+		`{"type":"msg_user","content":"hello bwrap"}` + "\n"
+	if err := os.WriteFile(filePath, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return filePath, content
+}
+
+// TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile verifies that under
+// bwrap mode, SourcePath locates the JSONL inside
+// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/<encoded-cwd>/
+// and returns the matching file path (AC #1, #2, #5).
+func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
+	// Redirect both $HOME and $XDG_STATE_HOME so no real-host paths are
+	// touched (works in both dev shell and Nix sandbox).
+	t.Setenv("HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	const sessionName = "nixos-config@bwrap-test"
+	const worktree = "/tmp/test-bwrap-worktree"
+	const harnessSessionID = "ses_01HQXY7Z8ABCDEFG"
+
+	wantPath, _ := stageBwrapSession(t, stateHome, sessionName, worktree, harnessSessionID)
+
+	a := pi.NewArchiveAdapter()
+	got, err := a.SourcePath(harnessarchive.SourceParams{
+		SessionName:      sessionName,
+		IsolationMode:    "bwrap",
+		HarnessSessionID: harnessSessionID,
+		Worktree:         worktree,
+	})
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if got != wantPath {
+		t.Errorf("SourcePath (bwrap): got %q, want %q", got, wantPath)
+	}
+
+	// The path must be under the run/<sessionDirHash>/pi-agent/sessions/<encoded-cwd>/
+	// layout — not under ~/.pi/agent/sessions/ — and the sessionDirHash must
+	// match session.SessionDirName(sessionName) byte-for-byte.
+	wantPrefix := filepath.Join(
+		stateHome, "prism", "run",
+		session.SessionDirName(sessionName),
+		"pi-agent", "sessions",
+		encodePiCWDForTest(worktree),
+	)
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("SourcePath (bwrap): got %q, expected prefix %q", got, wantPrefix)
+	}
+	// Defensive: must not point into the ~/.pi/agent/ tree.
+	if strings.Contains(got, filepath.Join(".pi", "agent")) {
+		t.Errorf("SourcePath (bwrap) returned path under .pi/agent/: %q", got)
+	}
+}
+
+// TestArchiveAdapter_Archive_Bwrap_EndToEnd verifies that for a staged bwrap
+// session, composing SourcePath then Archive produces rawDir/session.jsonl
+// byte-identical to the source file (AC #8).
+func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	const sessionName = "nixos-config@bwrap-e2e"
+	const worktree = "/tmp/test-bwrap-e2e-worktree"
+	const harnessSessionID = "ses_e2e_01HQXY7Z9ABCDEFG"
+
+	srcPath, content := stageBwrapSession(t, stateHome, sessionName, worktree, harnessSessionID)
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		SessionName:      sessionName,
+		IsolationMode:    "bwrap",
+		HarnessSessionID: harnessSessionID,
+		Worktree:         worktree,
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if got != srcPath {
+		t.Fatalf("SourcePath: got %q, want %q", got, srcPath)
+	}
+
+	rawDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	dst := filepath.Join(rawDir, "session.jsonl")
+	gotContent, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read rawDir/session.jsonl: %v", err)
+	}
+	if string(gotContent) != content {
+		t.Errorf("rawDir/session.jsonl content mismatch:\n got: %q\nwant: %q", gotContent, content)
+	}
+}
+
+// TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName verifies that when
+// IsolationMode is "bwrap" but SessionName is empty (the bwrap branch cannot
+// compute a sessionDirHash), SourcePath returns a path that Archive treats as
+// a no-op — matching the existing fallback contract for the other modes
+// (AC #6).
+func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		SessionName:      "", // empty — bwrap branch cannot compute dirHash
+		IsolationMode:    "bwrap",
+		HarnessSessionID: "ses_01HQXY",
+		Worktree:         "/tmp/test-no-session-name",
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath (bwrap empty SessionName): %v", err)
+	}
+
+	// Archive on that sentinel must be a no-op (the dir does not exist).
+	rawDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+		t.Fatalf("Archive on bwrap-empty-SessionName sentinel: %v", err)
+	}
+	entries, _ := os.ReadDir(rawDir)
+	if len(entries) != 0 {
+		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+	}
+}
+
+// TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile verifies that when the
+// bwrap encoded-cwd directory exists but contains no file matching
+// *_<HarnessSessionID>.jsonl, SourcePath returns a sentinel path inside the
+// encoded-cwd dir and Archive on that sentinel is a no-op (AC #7).
+func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	const sessionName = "nixos-config@bwrap-nomatch"
+	const worktree = "/tmp/test-bwrap-nomatch-worktree"
+	const harnessSessionID = "ses_NOTPRESENT"
+
+	// Create the encoded-cwd dir but with a file that does NOT match the
+	// HarnessSessionID suffix — so the scan succeeds but finds no match.
+	dirHash := session.SessionDirName(sessionName)
+	encodedCWD := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(stateHome, "prism", "run", dirHash, "pi-agent", "sessions", encodedCWD)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(sessDir, "2026-05-20T07-27-30-806Z_some-other-id.jsonl"),
+		[]byte(`{"type":"session"}`+"\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		SessionName:      sessionName,
+		IsolationMode:    "bwrap",
+		HarnessSessionID: harnessSessionID,
+		Worktree:         worktree,
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath (bwrap no match): %v", err)
+	}
+	// The sentinel must live inside the encoded-cwd dir (so future Archive
+	// calls land on a non-existent file path under it).
+	if !strings.HasPrefix(got, sessDir+string(filepath.Separator)) {
+		t.Errorf("SourcePath sentinel must be inside %q; got %q", sessDir, got)
+	}
+	// Archive on the sentinel is a no-op (the file does not exist).
+	rawDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+		t.Fatalf("Archive on bwrap-no-match sentinel: %v", err)
+	}
+	entries, _ := os.ReadDir(rawDir)
+	if len(entries) != 0 {
+		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+	}
+}
+
+// TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that with
+// identical SessionName + Worktree + HarnessSessionID, the three isolation
+// modes (bwrap, host, sandbox-exec) return paths that differ along the
+// documented dimensions — no cross-contamination (AC #9).
+func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	const sessionName = "nixos-config@cross-mode"
+	const worktree = "/tmp/test-cross-mode"
+	const harnessSessionID = "ses_CROSS"
+	const instanceID = "inst-cross-1234"
+
+	a := pi.NewArchiveAdapter()
+	base := harnessarchive.SourceParams{
+		SessionName:      sessionName,
+		HarnessSessionID: harnessSessionID,
+		Worktree:         worktree,
+		InstanceID:       instanceID,
+	}
+
+	hostParams := base
+	hostParams.IsolationMode = "host"
+	hostPath, err := a.SourcePath(hostParams)
+	if err != nil {
+		t.Fatalf("SourcePath (host): %v", err)
+	}
+
+	bwrapParams := base
+	bwrapParams.IsolationMode = "bwrap"
+	bwrapPath, err := a.SourcePath(bwrapParams)
+	if err != nil {
+		t.Fatalf("SourcePath (bwrap): %v", err)
+	}
+
+	sandboxParams := base
+	sandboxParams.IsolationMode = "sandbox-exec"
+	sandboxPath, err := a.SourcePath(sandboxParams)
+	if err != nil {
+		t.Fatalf("SourcePath (sandbox-exec): %v", err)
+	}
+
+	// All three must differ.
+	if hostPath == bwrapPath {
+		t.Errorf("host and bwrap returned the same path: %q", hostPath)
+	}
+	if hostPath == sandboxPath {
+		t.Errorf("host and sandbox-exec returned the same path: %q", hostPath)
+	}
+	if bwrapPath == sandboxPath {
+		t.Errorf("bwrap and sandbox-exec returned the same path: %q", bwrapPath)
+	}
+
+	// host: under <fakeHome>/.pi/agent/sessions/
+	hostPrefix := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	if !strings.HasPrefix(hostPath, hostPrefix) {
+		t.Errorf("host path %q does not have prefix %q", hostPath, hostPrefix)
+	}
+
+	// bwrap: under <stateHome>/prism/run/<dirHash>/pi-agent/sessions/, and
+	// MUST NOT touch .pi/agent.
+	bwrapPrefix := filepath.Join(
+		stateHome, "prism", "run",
+		session.SessionDirName(sessionName),
+		"pi-agent", "sessions",
+	)
+	if !strings.HasPrefix(bwrapPath, bwrapPrefix) {
+		t.Errorf("bwrap path %q does not have prefix %q", bwrapPath, bwrapPrefix)
+	}
+	if strings.Contains(bwrapPath, filepath.Join(".pi", "agent")) {
+		t.Errorf("bwrap path %q must not contain .pi/agent", bwrapPath)
+	}
+
+	// sandbox-exec: under <fakeHome>/.local/state/prism/sessions/<instanceID>/home/.pi/agent/sessions/
+	sandboxPrefix := filepath.Join(
+		fakeHome, ".local", "state", "prism", "sessions", instanceID, "home",
+		".pi", "agent", "sessions",
+	)
+	if !strings.HasPrefix(sandboxPath, sandboxPrefix) {
+		t.Errorf("sandbox-exec path %q does not have prefix %q", sandboxPath, sandboxPrefix)
 	}
 }
