@@ -347,13 +347,30 @@ func buildDirectAgentCmd(opts Opts) string {
 	} else {
 		cmd = binary
 	}
-	// Append --session <id> for host-mode pi-resume (issue #1838). Scoped
-	// to the pi harness via harnessBinary's coverage — "pi" and "" map to
-	// the pi binary; any other harness name skips resume because
-	// ResolvePIResumeSession's encoded-cwd / sessions-root layout is pi-
-	// specific. Inserted before --prompt so the flag pair stays adjacent to
-	// the binary and the positional prompt (if any) remains the last token.
-	if opts.HarnessSessionID != "" && (opts.HarnessName == "pi" || opts.HarnessName == "") {
+	// Append --session <id> for host-mode pi-resume (issue #1838).
+	//
+	// Three guards stack here:
+	//
+	//  1. effectiveIsolationMode(opts) == "host" — BuildAgentCmd calls this
+	//     helper for every mode (the result is discarded for bwrap and
+	//     sandbox-exec by their AgentPaneCmd, which substitutes
+	//     `prism agent-run --session <name>`). Without this gate, the
+	//     resolver would run on every restore and — because the bwrap/
+	//     sandbox-exec pi sessions live under prism's per-session run dir,
+	//     not under ~/.pi/agent/sessions — the host-fallback lookup would
+	//     miss and piLogResumeWarning would spuriously write a misleading
+	//     "resume failed" line to the agent-run.log even though the actual
+	//     resume succeeds via prism agent-run's DB-read + PIInvocation
+	//     path. (Review round 2 / review-context.)
+	//  2. HarnessName ∈ {"pi", ""} — ResolvePIResumeSession's encoded-cwd /
+	//     sessions-root layout is pi-specific.
+	//  3. HarnessSessionID != "" — empty IDs are a silent no-op (AC5).
+	//
+	// Inserted before --prompt so the flag pair stays adjacent to the binary
+	// and the positional prompt (if any) remains the last token.
+	if effectiveIsolationMode(opts) == "host" &&
+		opts.HarnessSessionID != "" &&
+		(opts.HarnessName == "pi" || opts.HarnessName == "") {
 		resumeCfg := container.Config{
 			SessionName:      opts.SessionName,
 			Worktree:         opts.Worktree,

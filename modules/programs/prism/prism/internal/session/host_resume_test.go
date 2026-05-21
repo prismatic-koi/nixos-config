@@ -115,6 +115,75 @@ func TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent(t *testing.T
 	}
 }
 
+// TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver verifies the
+// review-context round-2 blocker fix: BuildAgentCmd calls buildDirectAgentCmd
+// for every isolation mode, but the bwrap/sandbox-exec AgentPaneCmd discards
+// the result and substitutes `prism agent-run`. If buildDirectAgentCmd ran
+// ResolvePIResumeSession unconditionally, the resolver's host-fallback path
+// would miss (bwrap sessions live under prism's per-session run dir, not
+// under ~/.pi/agent/sessions) and piLogResumeWarning would spuriously write
+// a misleading "pi session <id> not found" line to the per-session
+// agent-run.log on every bwrap restore. The actual resume succeeds via
+// agent-run's DB-read + PIInvocation path — the log line would be operator-
+// confusing noise.
+//
+// Assertion: a bwrap-mode call with HarnessSessionID set must not produce
+// any agent-run.log file (the dir wouldn't even be created by the resolver
+// when the gate is correctly in place).
+func TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("HOME", t.TempDir())
+
+	const sessionName = "myrepo@feature"
+	opts := Opts{
+		IsolationMode:    "bwrap",
+		HarnessName:      "pi",
+		Agent:            "worker",
+		SessionName:      sessionName,
+		Worktree:         "/some/worktree",
+		HarnessSessionID: "019e00ed-1111-2222-3333-444444444444",
+		Prompt:           "hello",
+	}
+	_ = buildDirectAgentCmd(opts)
+
+	// The host-mode resolver would write to
+	// <XDG_STATE_HOME>/prism/run/<dirHash>/agent-run.log on a miss. With the
+	// host-mode gate in place, the file (and even its parent run dir) must
+	// not exist.
+	logPath := filepath.Join(stateHome, "prism", "run")
+	if _, err := os.Stat(logPath); err == nil {
+		t.Errorf("resolver ran on bwrap mode and created %s — the host-mode gate is missing", logPath)
+	}
+}
+
+// TestBuildDirectAgentCmd_SandboxExecMode_DoesNotInvokeResolver is the
+// sandbox-exec analogue of the bwrap-mode test above. Both modes use
+// `prism agent-run --session <name>` as their pane command (see
+// dispatch.go AgentPaneCmd for both isolators), so buildDirectAgentCmd's
+// resolver-invocation must be gated for both.
+func TestBuildDirectAgentCmd_SandboxExecMode_DoesNotInvokeResolver(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("HOME", t.TempDir())
+
+	opts := Opts{
+		IsolationMode:    "sandbox-exec",
+		HarnessName:      "pi",
+		Agent:            "worker",
+		SessionName:      "myrepo@feature",
+		Worktree:         "/some/worktree",
+		HarnessSessionID: "019e00ed-1111-2222-3333-555555555555",
+		Prompt:           "hello",
+	}
+	_ = buildDirectAgentCmd(opts)
+
+	logPath := filepath.Join(stateHome, "prism", "run")
+	if _, err := os.Stat(logPath); err == nil {
+		t.Errorf("resolver ran on sandbox-exec mode and created %s — the host-mode gate is missing", logPath)
+	}
+}
+
 // TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume verifies AC7:
 // non-pi harnesses never go through the resume path even if HarnessSessionID
 // somehow gets set (defence-in-depth — restoreProjectSession only sets it
