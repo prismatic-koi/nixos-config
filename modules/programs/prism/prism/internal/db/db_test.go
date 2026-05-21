@@ -398,6 +398,219 @@ func TestSetEnded_LikeWildcardsInSessionName(t *testing.T) {
 	}
 }
 
+// insertActiveSession is a test helper that inserts an agent_status row and a
+// corresponding sessions row (with instance_id) for a session, simulating the
+// normal two-table lifecycle. Returns the instance_id that was written.
+func insertActiveSession(t *testing.T, d *db.DB, sessionName, repo, worktree string) string {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, repo, worktree, "active", nil, nil); err != nil {
+		t.Fatalf("insertActiveSession: UpsertStatus %q: %v", sessionName, err)
+	}
+	iid := uuid.New().String()
+	if err := d.SetInstanceID(sessionName, iid); err != nil {
+		t.Fatalf("insertActiveSession: SetInstanceID %q: %v", sessionName, err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  iid,
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    worktree,
+		Harness:     "pi",
+	}); err != nil {
+		t.Fatalf("insertActiveSession: InsertSession %q: %v", sessionName, err)
+	}
+	return iid
+}
+
+// sessionsEndedAt queries sessions.ended_at for the given instance_id.
+// Returns nil when the row is not found or ended_at IS NULL.
+func sessionsEndedAt(t *testing.T, d *db.DB, instanceID string) *int64 {
+	t.Helper()
+	var v *int64
+	if err := d.QueryRow("SELECT ended_at FROM sessions WHERE instance_id = ?", instanceID).Scan(&v); err != nil {
+		t.Fatalf("sessionsEndedAt(%q): %v", instanceID, err)
+	}
+	return v
+}
+
+// sessionsEndState queries sessions.end_state for the given instance_id.
+// Returns "" when the row is not found or end_state IS NULL.
+func sessionsEndState(t *testing.T, d *db.DB, instanceID string) string {
+	t.Helper()
+	var v *string
+	if err := d.QueryRow("SELECT end_state FROM sessions WHERE instance_id = ?", instanceID).Scan(&v); err != nil {
+		t.Fatalf("sessionsEndState(%q): %v", instanceID, err)
+	}
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
+// TestSetEnded_AlsoUpdatesSessionsTable verifies that SetEnded writes ended_at
+// (non-NULL) and end_state = 'reset' to the corresponding sessions rows,
+// keeping both tables consistent after the call.
+func TestSetEnded_AlsoUpdatesSessionsTable(t *testing.T) {
+	d := openTestDB(t)
+
+	// Set up a parent session and a review child, both with sessions rows.
+	parent := "repo@feat"
+	parentIID := insertActiveSession(t, d, parent, "repo", "/wt/feat")
+
+	child := parent + "~review-1-review-goal"
+	childIID := insertActiveSession(t, d, child, "repo", "/wt/feat")
+
+	// Pre-condition: sessions.ended_at must be NULL for both.
+	if v := sessionsEndedAt(t, d, parentIID); v != nil {
+		t.Fatalf("pre-condition: parent sessions.ended_at is non-nil")
+	}
+	if v := sessionsEndedAt(t, d, childIID); v != nil {
+		t.Fatalf("pre-condition: child sessions.ended_at is non-nil")
+	}
+
+	if err := d.SetEnded(parent); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Both sessions rows must now have ended_at IS NOT NULL.
+	if v := sessionsEndedAt(t, d, parentIID); v == nil {
+		t.Error("parent: sessions.ended_at is nil after SetEnded")
+	}
+	if v := sessionsEndedAt(t, d, childIID); v == nil {
+		t.Error("child: sessions.ended_at is nil after SetEnded")
+	}
+
+	// end_state must be 'reset' on both rows.
+	if s := sessionsEndState(t, d, parentIID); s != "reset" {
+		t.Errorf("parent: sessions.end_state = %q, want \"reset\"", s)
+	}
+	if s := sessionsEndState(t, d, childIID); s != "reset" {
+		t.Errorf("child: sessions.end_state = %q, want \"reset\"", s)
+	}
+
+	// agent_status.ended_at must also be non-nil (existing behaviour preserved).
+	for _, name := range []string{parent, child} {
+		st, err := d.CurrentStatus(name)
+		if err != nil || st == nil {
+			t.Fatalf("CurrentStatus %q: %v", name, err)
+		}
+		if st.EndedAt == nil {
+			t.Errorf("%q: agent_status.ended_at is nil after SetEnded", name)
+		}
+	}
+}
+
+// TestMarkAllEnded_AlsoUpdatesSessionsTable verifies that MarkAllEnded writes
+// ended_at (non-NULL) and end_state = 'reset' to every sessions row that
+// corresponds to a previously-active agent_status row.
+func TestMarkAllEnded_AlsoUpdatesSessionsTable(t *testing.T) {
+	d := openTestDB(t)
+
+	// Insert two active sessions, each with a sessions row.
+	iid1 := insertActiveSession(t, d, "repo@s1", "repo", "/wt/s1")
+	iid2 := insertActiveSession(t, d, "repo@s2", "repo", "/wt/s2")
+
+	// Insert a third session that is already ended (must not be re-touched).
+	iid3 := insertActiveSession(t, d, "repo@s3", "repo", "/wt/s3")
+	if err := d.SetEnded("repo@s3"); err != nil {
+		t.Fatalf("pre-condition SetEnded repo@s3: %v", err)
+	}
+
+	// Pre-condition: sessions.ended_at must be NULL for the active two.
+	for _, iid := range []string{iid1, iid2} {
+		if v := sessionsEndedAt(t, d, iid); v != nil {
+			t.Fatalf("pre-condition: instance %q sessions.ended_at is non-nil", iid)
+		}
+	}
+
+	n, err := d.MarkAllEnded()
+	if err != nil {
+		t.Fatalf("MarkAllEnded: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("MarkAllEnded returned n=%d, want 2", n)
+	}
+
+	// Both active sessions' rows in sessions must now be ended.
+	for _, iid := range []string{iid1, iid2} {
+		if v := sessionsEndedAt(t, d, iid); v == nil {
+			t.Errorf("instance %q: sessions.ended_at is nil after MarkAllEnded", iid)
+		}
+		if s := sessionsEndState(t, d, iid); s != "reset" {
+			t.Errorf("instance %q: sessions.end_state = %q, want \"reset\"", iid, s)
+		}
+	}
+
+	// The already-ended session's sessions row must not have been re-touched.
+	// (Its ended_at and end_state were set by the earlier SetEnded call.)
+	if v := sessionsEndedAt(t, d, iid3); v == nil {
+		t.Errorf("already-ended instance %q: sessions.ended_at became nil", iid3)
+	}
+}
+
+// TestMarkAllEnded_Atomic_RollsBackOnSessionsFailure verifies that if the
+// sessions UPDATE inside MarkAllEnded fails, the agent_status UPDATE is also
+// rolled back — neither table is partially updated.
+//
+// Failure is injected by installing a BEFORE UPDATE trigger on the sessions
+// table that raises an error, then verifying that agent_status rows still have
+// ended_at IS NULL after the (expected) error return.
+func TestMarkAllEnded_Atomic_RollsBackOnSessionsFailure(t *testing.T) {
+	d := openTestDB(t)
+
+	// Insert an active session with a sessions row.
+	_ = insertActiveSession(t, d, "repo@main", "repo", "/wt/main")
+
+	// Pre-condition: agent_status.ended_at IS NULL.
+	st, err := d.CurrentStatus("repo@main")
+	if err != nil || st == nil {
+		t.Fatalf("CurrentStatus before trigger: %v", err)
+	}
+	if st.EndedAt != nil {
+		t.Fatal("pre-condition: ended_at is non-nil")
+	}
+
+	// Install a BEFORE UPDATE trigger on sessions that always raises an error.
+	// This forces the sessions UPDATE inside MarkAllEnded to fail, which should
+	// cause the whole transaction to roll back.
+	rawConn, err := sql.Open("sqlite", d.Path())
+	if err != nil {
+		t.Fatalf("raw open for trigger install: %v", err)
+	}
+	t.Cleanup(func() { rawConn.Close() })
+
+	_, err = rawConn.Exec(`
+		CREATE TRIGGER force_sessions_update_error
+		BEFORE UPDATE ON sessions
+		BEGIN
+			SELECT RAISE(ABORT, 'injected sessions update failure');
+		END`)
+	if err != nil {
+		t.Fatalf("create trigger: %v", err)
+	}
+
+	// MarkAllEnded must return an error because the trigger aborts the sessions UPDATE.
+	_, markErr := d.MarkAllEnded()
+	if markErr == nil {
+		t.Fatal("MarkAllEnded: expected error due to trigger, got nil")
+	}
+
+	// Drop the trigger so subsequent reads are not affected.
+	if _, err := rawConn.Exec("DROP TRIGGER force_sessions_update_error"); err != nil {
+		t.Fatalf("drop trigger: %v", err)
+	}
+
+	// The transaction must have been rolled back: agent_status.ended_at must
+	// still be NULL (the agent_status UPDATE was also undone).
+	st2, err := d.CurrentStatus("repo@main")
+	if err != nil || st2 == nil {
+		t.Fatalf("CurrentStatus after rollback: %v", err)
+	}
+	if st2.EndedAt != nil {
+		t.Error("agent_status.ended_at is non-nil after expected rollback — atomicity broken")
+	}
+}
+
 // TestAllActiveStatus_ExcludesEnded verifies that ended sessions are not returned.
 func TestAllActiveStatus_ExcludesEnded(t *testing.T) {
 	d := openTestDB(t)

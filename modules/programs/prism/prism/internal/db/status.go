@@ -309,7 +309,18 @@ WHERE session_name = ?
 // It also cascades the ended_at to any child review-agent rows whose
 // session_name matches the pattern "<sessionName>~review-%", setting
 // ended_at only on rows where it is not already set (idempotent).
-// Both the parent and child updates are performed in a single transaction.
+//
+// Both tables are updated atomically in a single transaction:
+//   - agent_status: ended_at = now for the matched rows
+//   - sessions: ended_at = now, end_state = 'reset' for the corresponding
+//     instance_id rows
+//
+// end_state is set to 'reset' rather than a lifecycle-derived value because
+// SetEnded is called in contexts where the caller does not yet have a final
+// state to report (e.g. prism cleanup, review teardown). The sessions row
+// may subsequently be overwritten by UpdateSessionEnded with a more precise
+// end_state (e.g. 'finished') — that call is idempotent with respect to
+// ended_at and simply refines end_state.
 //
 // The session name is escaped for SQL LIKE wildcards before being used as a
 // pattern prefix (using the same escaping as AllStatusesWithPrefix) so that
@@ -325,13 +336,32 @@ func (d *DB) SetEnded(sessionName string) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	const q = `
+	const agentStatusQ = `
 UPDATE agent_status
 SET    ended_at = ?
 WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
   AND  ended_at IS NULL`
-	if _, err := tx.Exec(q, now, sessionName, escaped); err != nil {
-		return fmt.Errorf("db: set ended: %w", err)
+	if _, err := tx.Exec(agentStatusQ, now, sessionName, escaped); err != nil {
+		return fmt.Errorf("db: set ended: agent_status update: %w", err)
+	}
+
+	// Also update the sessions table for the corresponding instance_id rows.
+	// end_state 'reset' is used because SetEnded is called before the caller
+	// knows the final lifecycle outcome; UpdateSessionEnded may overwrite with
+	// a more specific end_state (e.g. 'finished') in the same cleanup pass.
+	const sessionsQ = `
+UPDATE sessions
+SET    ended_at  = ?,
+       end_state = 'reset'
+WHERE  instance_id IN (
+         SELECT instance_id
+         FROM   agent_status
+         WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
+           AND  instance_id IS NOT NULL
+       )
+  AND  ended_at IS NULL`
+	if _, err := tx.Exec(sessionsQ, now, sessionName, escaped); err != nil {
+		return fmt.Errorf("db: set ended: sessions update: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -346,23 +376,64 @@ WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
 // throughout the codebase; state captures the last known agent state before teardown
 // and is not overwritten here.
 //
+// Both tables are updated atomically in a single transaction:
+//   - agent_status: ended_at = now for all rows where ended_at IS NULL
+//   - sessions: ended_at = now, end_state = 'reset' for the corresponding
+//     instance_id rows (matched via the instance_id column in agent_status)
+//
+// end_state is set to 'reset' because MarkAllEnded is called by `prism reset`,
+// which forcibly terminates all live sessions regardless of their lifecycle
+// state. 'reset' is more precise than 'interrupted' (which implies a pane
+// crash) and more honest than 'finished' (which implies a clean exit).
+//
 // It is used by `prism reset` to atomically close all live sessions in one
 // query rather than iterating over them individually.
 //
-// Returns the number of rows updated and any database error.
+// Returns the number of agent_status rows updated and any database error.
 // When there are no rows with ended_at IS NULL, returns (0, nil) — not an error.
 func (d *DB) MarkAllEnded() (int64, error) {
 	now := time.Now().UnixMilli()
-	res, err := d.conn.Exec(
+	tx, err := d.conn.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("db: mark all ended: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	res, err := tx.Exec(
 		"UPDATE agent_status SET ended_at = ? WHERE ended_at IS NULL",
 		now,
 	)
 	if err != nil {
-		return 0, fmt.Errorf("db: mark all ended: %w", err)
+		return 0, fmt.Errorf("db: mark all ended: agent_status update: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("db: mark all ended: rows affected: %w", err)
+	}
+
+	// Also update the sessions table for all instance_ids whose agent_status
+	// rows were just ended. end_state 'reset' is used because MarkAllEnded is
+	// invoked exclusively by `prism reset`, which forcibly terminates all live
+	// sessions — 'reset' accurately describes the cause of termination.
+	_, err = tx.Exec(`
+UPDATE sessions
+SET    ended_at  = ?,
+       end_state = 'reset'
+WHERE  instance_id IN (
+         SELECT instance_id
+         FROM   agent_status
+         WHERE  instance_id IS NOT NULL
+           AND  ended_at    = ?
+       )
+  AND  ended_at IS NULL`,
+		now, now,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("db: mark all ended: sessions update: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("db: mark all ended: commit: %w", err)
 	}
 	return n, nil
 }
