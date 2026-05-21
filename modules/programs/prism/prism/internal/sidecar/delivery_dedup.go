@@ -112,8 +112,15 @@ const pendingReplayCapacity = 16
 // reconnect loop drains the slice in arrival order and enqueues each entry
 // with `replay: true` set on the prompt frame so the receiver can identify
 // it as a replayed (not fresh) delivery. Issue #1685 AC #7.
+//
+// Source carries the originating /prompt request's `source` field through
+// the buffer so the flush path can run source-specific bookkeeping after a
+// successful re-enqueue. In particular, source=="review-complete" is the
+// signal for flushPendingReplay to clear reviewingInFlight (the same flag
+// the synchronous-delivery branch clears post-DeliverPrompt). Issue #1843.
 type pendingReplayDelivery struct {
 	DeliveryID string
 	Text       string
 	DeliverAs  string
+	Source     string
 }
