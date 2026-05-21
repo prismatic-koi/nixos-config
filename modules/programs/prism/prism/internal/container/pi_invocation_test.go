@@ -1087,3 +1087,119 @@ func TestStagePIAgentConfigDir_SkillsDoesNotAffectOtherEntries(t *testing.T) {
 		t.Errorf("skills must be a symlink; mode = %v", skillsInfo.Mode())
 	}
 }
+
+// ── StagePIAgentConfigDir: idempotency (simulate home-manager switch) ─────────
+
+func TestStagePIAgentConfigDir_SkillsSymlink_UpdatesOnSecondCall(t *testing.T) {
+	// Simulate a home-manager switch: call StagePIAgentConfigDir twice for the
+	// same session with different resolved skills targets. After the second call
+	// the staging-dir skills symlink must point at the NEW target, not the old one.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+
+	// First call: skills symlink points at oldTarget.
+	oldTarget := t.TempDir()
+	// Resolve through any OS-level symlinks (e.g. /tmp → /private/tmp on macOS)
+	// so that comparisons match what filepath.EvalSymlinks returns.
+	oldTargetResolved, err := filepath.EvalSymlinks(oldTarget)
+	if err != nil {
+		t.Fatalf("EvalSymlinks oldTarget: %v", err)
+	}
+	skillsSrc := filepath.Join(piAgentDir, "skills")
+	if err := os.Symlink(oldTarget, skillsSrc); err != nil {
+		t.Fatalf("symlink skills to oldTarget: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-update")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
+	}
+
+	skillsLink := filepath.Join(hostDir, "skills")
+	gotFirst, err := os.Readlink(skillsLink)
+	if err != nil {
+		t.Fatalf("readlink skills (first call): %v", err)
+	}
+	if gotFirst != oldTargetResolved {
+		t.Errorf("first call: skills target = %q, want %q", gotFirst, oldTargetResolved)
+	}
+
+	// Simulate a home-manager switch: repoint ~/.pi/agent/skills to newTarget.
+	newTarget := t.TempDir()
+	newTargetResolved, err := filepath.EvalSymlinks(newTarget)
+	if err != nil {
+		t.Fatalf("EvalSymlinks newTarget: %v", err)
+	}
+	if err := os.Remove(skillsSrc); err != nil {
+		t.Fatalf("remove skills symlink: %v", err)
+	}
+	if err := os.Symlink(newTarget, skillsSrc); err != nil {
+		t.Fatalf("symlink skills to newTarget: %v", err)
+	}
+
+	// Second call (same session, same staging dir).
+	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-update")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
+	}
+
+	gotSecond, err := os.Readlink(skillsLink)
+	if err != nil {
+		t.Fatalf("readlink skills (second call): %v", err)
+	}
+	if gotSecond != newTargetResolved {
+		t.Errorf("second call: skills target = %q, want %q (symlink not updated after home-manager switch)", gotSecond, newTargetResolved)
+	}
+}
+
+func TestStagePIAgentConfigDir_AuthJSONSymlink_UpdatesOnSecondCall(t *testing.T) {
+	// auth.json target is fixed in practice, but the symlink creation must still
+	// be idempotent. Call StagePIAgentConfigDir twice and assert the symlink
+	// points at the correct target on both calls.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(piAgentDir, "auth.json"), []byte(`{"token":"v1"}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
+	expectedTarget := filepath.Join(piAgentDir, "auth.json")
+
+	// First call.
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@auth-update")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
+	}
+	authLink := filepath.Join(hostDir, "auth.json")
+	got, readErr := os.Readlink(authLink)
+	if readErr != nil {
+		t.Fatalf("readlink auth.json (first call): %v", readErr)
+	}
+	if got != expectedTarget {
+		t.Errorf("first call: auth.json target = %q, want %q", got, expectedTarget)
+	}
+
+	// Second call: must not fail due to EEXIST and must leave symlink intact.
+	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@auth-update")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
+	}
+	got2, readErr2 := os.Readlink(authLink)
+	if readErr2 != nil {
+		t.Fatalf("readlink auth.json (second call): %v", readErr2)
+	}
+	if got2 != expectedTarget {
+		t.Errorf("second call: auth.json target = %q, want %q", got2, expectedTarget)
+	}
+}

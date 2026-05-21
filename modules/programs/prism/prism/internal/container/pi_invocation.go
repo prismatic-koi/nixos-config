@@ -353,7 +353,7 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 	if home, err := os.UserHomeDir(); err == nil {
 		authTarget := filepath.Join(home, ".pi", "agent", "auth.json")
 		authLink := filepath.Join(stagingDir, "auth.json")
-		_ = os.Symlink(authTarget, authLink)
+		_ = symlinkIdempotent(authTarget, authLink)
 	}
 
 	// Copy settings.json and themes/ from ~/.pi/agent/ into the staging
@@ -386,15 +386,27 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 			if resolved, evalErr := filepath.EvalSymlinks(skillsSrc); evalErr == nil {
 				resolvedTarget = resolved
 			}
-			// Non-fatal: ignore error if the symlink already exists or if the
-			// OS call fails for any other reason.
-			_ = os.Symlink(resolvedTarget, skillsLink)
+			// Non-fatal: remove any existing entry before creating the new
+			// symlink so that the target is always current (e.g. after a
+			// home-manager switch the resolved Nix-store path changes).
+			_ = symlinkIdempotent(resolvedTarget, skillsLink)
 		}
 		// When skillsSrc is absent (lstat failed), do nothing — no skills entry
 		// is created in the staging dir, and PI starts without skills.
 	}
 
 	return stagingDir, piAgentConfigSandboxDefault, nil
+}
+
+// symlinkIdempotent removes any existing filesystem entry at dst (file,
+// symlink, or empty directory) and then creates a symlink dst → src. Removing
+// before creating ensures the symlink target is always current — without this,
+// a pre-existing symlink at dst would cause os.Symlink to return EEXIST and
+// the target would never be updated (e.g. after a home-manager switch where
+// the resolved Nix-store path changes between calls).
+func symlinkIdempotent(src, dst string) error {
+	_ = os.Remove(dst) // ignore error — dst may not exist
+	return os.Symlink(src, dst)
 }
 
 // copyFileIfExists copies a single regular file from src to dst. It is a
