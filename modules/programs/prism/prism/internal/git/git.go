@@ -266,6 +266,12 @@ func CreateWorktree(projectPath, branchName string) (string, error) {
 	return worktreePath, nil
 }
 
+// convertToBareStepHook is called at each named step inside ConvertToBare.
+// If it returns a non-nil error that error is returned as if the step itself
+// failed, triggering rollback. The hook is nil in production and is set only
+// by tests via the package-internal convertToBareTestHook variable.
+var convertToBareStepHook func(step string) error
+
 // ConvertToBare converts a regular git repo at dir to the prism bare+worktree
 // layout in-place. progress receives human-readable step messages.
 // Returns the path to the default-branch worktree on success.
@@ -296,11 +302,72 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		return "", fmt.Errorf("rename .git: %w", err)
 	}
 
-	rollback := func() {
+	// rollback restores the repo to its pre-conversion state. It is safe to
+	// call at any point after .git has been renamed to .git.orig. After the
+	// file-move loop completes, worktreePath and barePath may also be
+	// populated; rollback removes them and moves files back to dir.
+	//
+	// rollback is idempotent: calling it when the state is already clean is a
+	// no-op. If any individual step fails, the remaining steps are still
+	// attempted, and the caller receives a combined error describing what
+	// could not be cleaned up.
+	var rollbackErr error
+	rollback := func(worktreePath string) {
+		var errs []string
+
+		// If .git exists as a file/dir (the .bare pointer written mid-way),
+		// remove it so we can restore .git.orig unconditionally.
+		if info, e := os.Stat(gitFile); e == nil && !info.IsDir() {
+			// It's the gitfile we wrote, not the original directory — remove it.
+			if re := os.Remove(gitFile); re != nil {
+				errs = append(errs, fmt.Sprintf("remove .git file: %v", re))
+			}
+		}
+
+		// If worktreePath was populated, move entries back to dir.
+		if worktreePath != "" {
+			if entries, re := os.ReadDir(worktreePath); re == nil {
+				for _, e := range entries {
+					if e.Name() == ".git" {
+						// The worktree .git file we may have written — just remove it.
+						_ = os.Remove(filepath.Join(worktreePath, ".git"))
+						continue
+					}
+					src := filepath.Join(worktreePath, e.Name())
+					dst := filepath.Join(dir, e.Name())
+					if re2 := os.Rename(src, dst); re2 != nil {
+						errs = append(errs, fmt.Sprintf("move %s back: %v", e.Name(), re2))
+					}
+				}
+			} else if !os.IsNotExist(re) {
+				errs = append(errs, fmt.Sprintf("readdir worktree for rollback: %v", re))
+			}
+			// Remove the now-empty worktree directory (and any parent dirs for
+			// slash-branch names like "feat/foo" whose "feat" dir was created).
+			_ = os.Remove(worktreePath)
+			// If branch contains a slash, also remove the top-level segment dir.
+			_ = os.Remove(filepath.Join(dir, strings.SplitN(defaultBranch, "/", 2)[0]))
+		}
+
+		// Remove .bare.
+		if _, e := os.Stat(barePath); e == nil {
+			if re := os.RemoveAll(barePath); re != nil {
+				errs = append(errs, fmt.Sprintf("remove .bare: %v", re))
+			}
+		}
+
+		// Restore .git.orig → .git.
 		if _, e := os.Stat(origGit); e == nil {
 			if _, e2 := os.Stat(gitFile); e2 != nil {
-				_ = os.Rename(origGit, gitFile)
+				if re := os.Rename(origGit, gitFile); re != nil {
+					errs = append(errs, fmt.Sprintf("rename .git.orig → .git: %v", re))
+				}
 			}
+		}
+
+		if len(errs) > 0 {
+			rollbackErr = fmt.Errorf("rollback incomplete — manual recovery needed: %s",
+				strings.Join(errs, "; "))
 		}
 	}
 
@@ -308,7 +375,10 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	progress("  cloning bare repo (this may take a moment)...")
 	if out, err := exec.Command("git", "clone", "--bare", remoteURL, barePath).
 		CombinedOutput(); err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("bare clone failed: %w: %s", err, out)
 	}
 	progress("  bare clone done")
@@ -318,18 +388,27 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	if out, err := exec.Command("git", "--git-dir", barePath, "config",
 		"remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*").
 		CombinedOutput(); err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("config fetch refspec: %w: %s", err, out)
 	}
 	if out, err := exec.Command("git", "--git-dir", barePath, "fetch", "origin").
 		CombinedOutput(); err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("fetch origin: %w: %s", err, out)
 	}
 
 	// Write .git pointer.
 	if err := os.WriteFile(gitFile, []byte("gitdir: ./.bare\n"), 0o644); err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("write .git: %w", err)
 	}
 
@@ -342,13 +421,19 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	progress("  moving working tree into " + defaultBranch + "/...")
 	worktreePath := filepath.Join(dir, defaultBranch)
 	if err := os.MkdirAll(worktreePath, 0o755); err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("mkdir worktree: %w", err)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		rollback()
+		rollback("")
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("readdir: %w", err)
 	}
 	// topLevelBranchComponent is the first path segment of the branch name.
@@ -363,7 +448,10 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 		src := filepath.Join(dir, e.Name())
 		dst := filepath.Join(worktreePath, e.Name())
 		if err := os.Rename(src, dst); err != nil {
-			rollback()
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
 			return "", fmt.Errorf("move %s: %w", e.Name(), err)
 		}
 	}
@@ -393,7 +481,20 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// naming convention for `git worktree add` with slash-containing branch names.
 	worktreeEntryName := filepath.Base(defaultBranch)
 	worktreesDir := filepath.Join(barePath, "worktrees", worktreeEntryName)
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("mkdir-worktrees-dir"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
+	}
 	if err := os.MkdirAll(worktreesDir, 0o755); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("mkdir worktrees dir: %w", err)
 	}
 
@@ -404,20 +505,54 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// repo root is moved or accessed through a different path.
 	relWorktreesDir, err := filepath.Rel(worktreePath, worktreesDir)
 	if err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("compute worktree gitdir rel path: %w", err)
+	}
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("write-worktree-git"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
 	}
 	if err := os.WriteFile(worktreeGitFile,
 		[]byte("gitdir: "+relWorktreesDir+"\n"), 0o644); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("write worktree .git: %w", err)
 	}
 	// Write a relative back-pointer from worktreesDir to the worktree .git file,
 	// keeping the registration relocatable.
 	relWorktreeGitFile, err := filepath.Rel(worktreesDir, worktreeGitFile)
 	if err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("compute gitdir rel path: %w", err)
+	}
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("write-gitdir"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
 	}
 	if err := os.WriteFile(gitdirFile,
 		[]byte(relWorktreeGitFile+"\n"), 0o644); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("write gitdir: %w", err)
 	}
 	// commondir must be a relative path from worktreesDir back to barePath.
@@ -425,20 +560,45 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// this is always "../.." regardless of slashes in the branch name.
 	commondirRel, err := filepath.Rel(worktreesDir, barePath)
 	if err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("compute commondir rel path: %w", err)
+	}
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("write-commondir"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
 	}
 	if err := os.WriteFile(filepath.Join(worktreesDir, "commondir"),
 		[]byte(commondirRel+"\n"), 0o644); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("write commondir: %w", err)
+	}
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("write-head"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
 	}
 	if err := os.WriteFile(filepath.Join(worktreesDir, "HEAD"),
 		[]byte("ref: refs/heads/"+defaultBranch+"\n"), 0o644); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("write HEAD: %w", err)
-	}
-
-	// Remove backed-up .git.orig.
-	for _, candidate := range []string{origGit, filepath.Join(worktreePath, ".git.orig")} {
-		_ = os.RemoveAll(candidate)
 	}
 
 	// Prune stale entries.
@@ -450,12 +610,31 @@ func ConvertToBare(dir string, progress func(string)) (string, error) {
 	// Must use the worktree-specific gitdir (worktreesDir) so that read-tree
 	// writes to .bare/worktrees/<branch>/index, not the bare repo's own index.
 	progress("  populating index...")
+	if convertToBareStepHook != nil {
+		if hookErr := convertToBareStepHook("read-tree"); hookErr != nil {
+			rollback(worktreePath)
+			if rollbackErr != nil {
+				progress("  WARNING: " + rollbackErr.Error())
+			}
+			return "", hookErr
+		}
+	}
 	if out, err := exec.Command("git",
 		"--git-dir", worktreesDir,
 		"--work-tree", worktreePath,
 		"read-tree", "HEAD",
 	).CombinedOutput(); err != nil {
+		rollback(worktreePath)
+		if rollbackErr != nil {
+			progress("  WARNING: " + rollbackErr.Error())
+		}
 		return "", fmt.Errorf("read-tree: %w: %s", err, out)
+	}
+
+	// Remove backed-up .git.orig only after all steps have succeeded, so that
+	// rollback can restore it if read-tree (or a prior step) fails.
+	for _, candidate := range []string{origGit, filepath.Join(worktreePath, ".git.orig")} {
+		_ = os.RemoveAll(candidate)
 	}
 
 	progress("  done — worktree at " + worktreePath)

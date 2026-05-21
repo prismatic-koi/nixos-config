@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -723,5 +724,138 @@ func TestCloneWorktree_NonEmptyRepo(t *testing.T) {
 		if strings.Contains(msg, "empty") || strings.Contains(msg, "orphan") {
 			t.Errorf("unexpected empty/orphan message for non-empty repo: %q", msg)
 		}
+	}
+}
+
+// assertPreConversionState verifies that dir looks exactly like a regular git
+// repo — .git is a directory, .git.orig is absent, .bare is absent, and none
+// of the original top-level entries have been moved away.
+func assertPreConversionState(t *testing.T, dir string, originalEntries []string) {
+	t.Helper()
+
+	// .git must be a directory.
+	gitInfo, err := os.Stat(filepath.Join(dir, ".git"))
+	if err != nil {
+		t.Errorf(".git missing after rollback: %v", err)
+	} else if !gitInfo.IsDir() {
+		t.Errorf(".git is not a directory after rollback (mode=%v)", gitInfo.Mode())
+	}
+
+	// .git.orig must be absent.
+	if _, err := os.Stat(filepath.Join(dir, ".git.orig")); err == nil {
+		t.Error(".git.orig still present after rollback")
+	}
+
+	// .bare must be absent.
+	if _, err := os.Stat(filepath.Join(dir, ".bare")); err == nil {
+		t.Error(".bare still present after rollback")
+	}
+
+	// Every original top-level entry must be back at the root.
+	for _, name := range originalEntries {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("original entry %q missing at root after rollback: %v", name, err)
+		}
+	}
+}
+
+
+// errInjected is the sentinel error returned by the step hook in tests.
+var errInjected = fmt.Errorf("injected test failure")
+
+// withStepHook sets convertToBareStepHook for the duration of f and restores
+// the previous value afterwards. Not safe for concurrent test use.
+func withStepHook(hook func(step string) error, f func()) {
+	prev := convertToBareStepHook
+	convertToBareStepHook = hook
+	defer func() { convertToBareStepHook = prev }()
+	f()
+}
+
+// TestConvertToBare_PostMoveRollback tests that a failure injected at each of
+// the six post-move-loop steps triggers a full rollback leaving the repo in its
+// pre-conversion state: .git is a directory, .git.orig and .bare are absent,
+// and all original top-level files are back at the root.
+func TestConvertToBare_PostMoveRollback(t *testing.T) {
+	steps := []string{
+		"mkdir-worktrees-dir",
+		"write-worktree-git",
+		"write-gitdir",
+		"write-commondir",
+		"write-head",
+		"read-tree",
+	}
+
+	for _, step := range steps {
+		step := step // capture
+		t.Run(step, func(t *testing.T) {
+			dir := t.TempDir()
+			remoteDir := t.TempDir()
+			initRepoWithRemote(t, dir, remoteDir, "main")
+
+			origEntries := []string{"README"}
+
+			var convErr error
+			withStepHook(func(s string) error {
+				if s == step {
+					return errInjected
+				}
+				return nil
+			}, func() {
+				_, convErr = ConvertToBare(dir, func(string) {})
+			})
+
+			if convErr == nil {
+				t.Fatalf("ConvertToBare should have failed at step %q but succeeded", step)
+			}
+
+			// Core assertion: on-disk state must match pre-conversion.
+			assertPreConversionState(t, dir, origEntries)
+		})
+	}
+}
+
+// TestConvertToBare_RollbackEnablesRerun verifies that after a failed
+// ConvertToBare (with full rollback), calling ConvertToBare again on the same
+// directory succeeds â i.e. rollback fully restores the pre-conversion state.
+func TestConvertToBare_RollbackEnablesRerun(t *testing.T) {
+	dir := t.TempDir()
+	remoteDir := t.TempDir()
+	initRepoWithRemote(t, dir, remoteDir, "main")
+
+	// Inject a failure at the write-worktree-git step (first step after the
+	// file-move loop). This is the earliest post-move failure site.
+	var firstErr error
+	withStepHook(func(s string) error {
+		if s == "write-worktree-git" {
+			return errInjected
+		}
+		return nil
+	}, func() {
+		_, firstErr = ConvertToBare(dir, func(string) {})
+	})
+
+	if firstErr == nil {
+		t.Fatal("first ConvertToBare should have failed but succeeded")
+	}
+
+	// Verify .git is a directory before re-run.
+	if info, err := os.Stat(filepath.Join(dir, ".git")); err != nil || !info.IsDir() {
+		t.Fatalf(".git not restored after first failure: err=%v", err)
+	}
+
+	// Re-run (no hook) must succeed.
+	worktreePathSecond, err := ConvertToBare(dir, func(string) {})
+	if err != nil {
+		t.Fatalf("second ConvertToBare after rollback failed: %v", err)
+	}
+	if worktreePathSecond == "" {
+		t.Fatal("second ConvertToBare returned empty worktree path")
+	}
+
+	// Verify git status is clean in the re-run worktree.
+	statusOut := runGitIn(t, worktreePathSecond, "status")
+	if !strings.Contains(statusOut, "nothing to commit") {
+		t.Errorf("git status after second ConvertToBare does not contain 'nothing to commit':\n%s", statusOut)
 	}
 }
