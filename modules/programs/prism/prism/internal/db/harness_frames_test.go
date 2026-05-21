@@ -264,8 +264,8 @@ func TestHarnessFrame_MigrationCreatesTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if ver != 31 {
-		t.Errorf("schema_version after fresh open = %d, want 31", ver)
+	if ver != 32 {
+		t.Errorf("schema_version after fresh open = %d, want 32", ver)
 	}
 
 	// The expected indexes must exist (look them up by name).
@@ -299,8 +299,8 @@ func TestHarnessFrame_MigrationIdempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if ver != 31 {
-		t.Errorf("schema_version after second open = %d, want 31", ver)
+	if ver != 32 {
+		t.Errorf("schema_version after second open = %d, want 32", ver)
 	}
 
 	// The table must still accept rows.
