@@ -514,6 +514,101 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 			mA.sandboxExecProfilePath(), mA.name)
 	}
 }
+// TestSandboxExecPrepare_StagingHomeFailurePropagated verifies that when
+// PrepareSandboxExecHome fails (e.g. because the staging-home path is
+// blocked by a pre-existing regular file), sandboxExecIsolator.Prepare
+// returns a non-nil error whose message mentions the staging HOME failure.
+// The session must NOT launch: no profile file is written and no
+// sandbox-exec subprocess is started (issue #1879).
+func TestSandboxExecPrepare_StagingHomeFailurePropagated(t *testing.T) {
+	// Build the manager and derive the staging home path before injecting the
+	// failure, so we know which path to block.
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "staging-home-fail-test",
+		Worktree:    t.TempDir(),
+	})
+
+	// sandboxExecHomePath relies on os.UserHomeDir() (or $HOME fallback).
+	// Call it directly so the test knows the exact path that will be blocked.
+	stagingHome, err := m.sandboxExecHomePath()
+	if err != nil {
+		t.Fatalf("sandboxExecHomePath: %v", err)
+	}
+
+	// Ensure the staging home's parent exists so we can create the blocker file.
+	if err := os.MkdirAll(filepath.Dir(stagingHome), 0o755); err != nil {
+		t.Fatalf("MkdirAll parent of staging home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(stagingHome)) })
+
+	// Plant a regular file at the staging home path. When PrepareSandboxExecHome
+	// calls os.MkdirAll(stagingHome, ...) it will fail with ENOTDIR because the
+	// path already exists as a file, not a directory.
+	if err := os.WriteFile(stagingHome, []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("WriteFile blocker at staging home path %s: %v", stagingHome, err)
+	}
+
+	// Prepare must return a non-nil error.
+	iso := &sandboxExecIsolator{name: m.name}
+	args, prepErr := iso.Prepare(context.Background(), m)
+	if prepErr == nil {
+		t.Fatalf("Prepare: expected non-nil error when staging home cannot be created, got nil (args=%v)", args)
+	}
+
+	// The error message must name the staging HOME failure so the operator
+	// knows what went wrong (AC: "clear error message naming the staging HOME
+	// path and the underlying cause").
+	errMsg := prepErr.Error()
+	if !strings.Contains(errMsg, "staging HOME") && !strings.Contains(errMsg, "staging home") {
+		t.Errorf("error message must mention staging HOME; got: %q", errMsg)
+	}
+	if !strings.Contains(errMsg, stagingHome) {
+		t.Errorf("error message must include the staging HOME path %q; got: %q", stagingHome, errMsg)
+	}
+
+	// No profile file must be written — the session did not advance to the
+	// write-profile step.
+	profilePath := m.sandboxExecProfilePath()
+	if _, statErr := os.Stat(profilePath); statErr == nil {
+		t.Errorf("profile file %q was written despite Prepare returning an error: launch was not aborted", profilePath)
+		_ = os.Remove(profilePath)
+	}
+}
+
+// TestSandboxExecPrepare_StagingHomeFailurePropagated_NilArgs verifies that
+// the Prepare error is a hard fail and the returned args slice is nil,
+// confirming no sandbox-exec argument list was produced for the caller to
+// use (regression guard for issue #1879).
+func TestSandboxExecPrepare_StagingHomeFailurePropagated_NilArgs(t *testing.T) {
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "staging-home-fail-nil-args-test",
+		Worktree:    t.TempDir(),
+	})
+
+	stagingHome, err := m.sandboxExecHomePath()
+	if err != nil {
+		t.Fatalf("sandboxExecHomePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(stagingHome), 0o755); err != nil {
+		t.Fatalf("MkdirAll parent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(stagingHome)) })
+	if err := os.WriteFile(stagingHome, []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("WriteFile blocker: %v", err)
+	}
+
+	iso := &sandboxExecIsolator{name: m.name}
+	args, prepErr := iso.Prepare(context.Background(), m)
+	if prepErr == nil {
+		t.Fatalf("expected error, got nil (args=%v)", args)
+	}
+	if args != nil {
+		t.Errorf("args must be nil on error; got %v", args)
+	}
+}
+
 // TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile verifies that the
 // harness binary appears at args[3] — directly after "sandbox-exec -f
 // <profile>". This is the shape the AC requires.
