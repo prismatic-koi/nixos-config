@@ -24,6 +24,12 @@ const (
 	PortRangeStart = 14000
 	// PortRangeEnd is the last port in the allocation range (inclusive).
 	PortRangeEnd = 14999
+
+	// currentSchemaVersion is the highest schema version this binary understands.
+	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
+	// A meta-test in db_test.go asserts that this constant equals the count of
+	// migration functions, so forgetting to bump it will fail CI.
+	currentSchemaVersion = 32
 )
 
 // DB wraps a SQLite connection.
@@ -608,6 +614,13 @@ func runMigrations(conn *sql.DB) error {
 	}
 	if err := migrateV31ToV32(conn, &version); err != nil {
 		return err
+	}
+	if version > currentSchemaVersion {
+		return fmt.Errorf(
+			"db schema version %d is newer than this prism binary (max %d); "+
+				"please upgrade prism, or restore the matching DB from before the downgrade",
+			version, currentSchemaVersion,
+		)
 	}
 	return nil
 }
