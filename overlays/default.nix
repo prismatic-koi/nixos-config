@@ -28,13 +28,18 @@ rec {
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
 
-      # bitwarden-cli: upstream 2026.3.0+ regressed `bw unlock --raw` — the
-      # returned session token is silently rejected by `bw status` / `bw list`,
-      # breaking all non-interactive automation (qutebrowser userscript,
-      # bitwarden-prefetch). Pin to nixpkgs-stable (currently 2025.9.0) which
-      # predates the regression.
-      # See: https://github.com/bitwarden/clients/issues/20703
-      # Remove this override once upstream lands a fix.
+      # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
+      # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
+      # --raw` bogus-session regression (bitwarden/clients#20703, issue #1894).
+      # nixpkgs-stable rolled forward to bitwarden-cli-2025.11.0 which still
+      # carries the bug. The root cause is a server-pushed feature flag
+      # (`unlock-via-sdk`) that triggers the broken code path regardless of
+      # client version. The durable fix is the `unlock-via-sdk = false` patch
+      # in modules/programs/bitwarden.nix (home.activation hook) and the
+      # defensive patch in modules/programs/qutebrowser/userscripts/bitwarden-prefetch.
+      # The pin is kept for institutional memory and because nixpkgs-stable
+      # remains our most-vetted package source.
+      # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
       pi-coding-agent =
         let
