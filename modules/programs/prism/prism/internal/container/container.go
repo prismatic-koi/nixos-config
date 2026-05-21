@@ -724,9 +724,14 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 // before buildRunArgs() is called — so that buildRunArgs() itself remains a
 // pure argument builder with no filesystem side-effects.
 //
-// Individual MkdirAll failures are logged and treated as non-fatal: if the
-// directory is still absent when podman runs, podman will produce the real
-// error. Returns a non-nil error only when multiple dirs fail.
+// Directories are classified as critical or optional:
+//   - Critical directories are unconditionally bound by the container runtime
+//     (bwrap --bind, podman --volume). A missing critical dir causes the
+//     runtime to abort at exec time with an unhelpful error, so we return an
+//     error immediately so the caller sees the real cause.
+//   - Optional directories are guarded by an os.Stat check in buildRunArgs
+//     and are skipped when absent. A failure to create them is logged but does
+//     not fail the call — the container still starts, just without that mount.
 //
 // perSessionState controls whether the per-session pi state directory
 // (~/.local/share/pi/prism-sessions/<name>/) is created. The podman path
@@ -738,41 +743,18 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		home = os.Getenv("HOME")
 	}
 
-	var errs []string
+	// ── Critical directories ──────────────────────────────────────────────
+	// These are unconditionally bound by the container runtime. A single
+	// MkdirAll failure here is fatal — return immediately so the caller
+	// sees the real cause rather than a confusing runtime abort.
 
-	// Per-session pi state directory (podman only).
+	// Per-session pi state directory (podman only, critical because podman
+	// always binds it via --volume).
 	if perSessionState {
 		piSessionDir := filepath.Join(home, ".local", "share", "pi", "prism-sessions", m.name)
 		if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
-			log.Printf("container: failed to create per-session pi state dir %q: %v", piSessionDir, err)
-			errs = append(errs, err.Error())
+			return fmt.Errorf("container: failed to create per-session pi state dir %q: %w", piSessionDir, err)
 		}
-	}
-
-	// Agent plugin/model cache.
-	piCacheDir := filepath.Join(home, ".cache", "pi")
-	if err := os.MkdirAll(piCacheDir, 0o755); err != nil {
-		log.Printf("container: failed to create pi cache dir %q: %v", piCacheDir, err)
-		errs = append(errs, err.Error())
-	}
-
-	// bun transpiler cache.
-	bunCacheDir := filepath.Join(home, ".cache", "bun")
-	if err := os.MkdirAll(bunCacheDir, 0o755); err != nil {
-		log.Printf("container: failed to create bun cache dir %q: %v", bunCacheDir, err)
-		errs = append(errs, err.Error())
-	}
-
-	// Clipboard staging directory: pre-create so that the bind-mount in
-	// buildRunArgs() is always active, even on the first paste. Without this,
-	// a first-ever paste on a fresh system would write the file host-side but
-	// the container would not see it (the bind-mount only fires when the dir
-	// exists at container spawn time). Creating it eagerly here ensures the
-	// directory always exists before buildRunArgs() runs its os.Stat check.
-	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
-	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
-		log.Printf("container: failed to create clipboard staging dir %q: %v", clipboardCacheDir, err)
-		errs = append(errs, err.Error())
 	}
 
 	// Per-session host-API socket directory (both podman and bwrap, security fix #960).
@@ -789,14 +771,37 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	if m.cfg.HostAPISockPath != "" {
 		sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 		if err := os.MkdirAll(sockDir, 0o700); err != nil {
-			log.Printf("container: failed to create host-API socket dir %q: %v", sockDir, err)
-			errs = append(errs, err.Error())
+			return fmt.Errorf("container: failed to create host-API socket dir %q: %w", sockDir, err)
 		}
 	}
 
-	if len(errs) > 1 {
-		return fmt.Errorf("%d directories could not be created", len(errs))
+	// ── Optional directories ──────────────────────────────────────────────
+	// These are guarded by os.Stat in buildRunArgs and skipped when absent.
+	// Log failures but do not fail the call — the container still starts.
+
+	// Agent plugin/model cache.
+	piCacheDir := filepath.Join(home, ".cache", "pi")
+	if err := os.MkdirAll(piCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create pi cache dir %q (optional): %v", piCacheDir, err)
 	}
+
+	// bun transpiler cache.
+	bunCacheDir := filepath.Join(home, ".cache", "bun")
+	if err := os.MkdirAll(bunCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create bun cache dir %q (optional): %v", bunCacheDir, err)
+	}
+
+	// Clipboard staging directory: pre-create so that the bind-mount in
+	// buildRunArgs() is always active, even on the first paste. Without this,
+	// a first-ever paste on a fresh system would write the file host-side but
+	// the container would not see it (the bind-mount only fires when the dir
+	// exists at container spawn time). Creating it eagerly here ensures the
+	// directory always exists before buildRunArgs() runs its os.Stat check.
+	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
+	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
+		log.Printf("container: failed to create clipboard staging dir %q (optional): %v", clipboardCacheDir, err)
+	}
+
 	return nil
 }
 

@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -145,8 +144,10 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	}
 
 	// Pre-create directories referenced as bind-mount sources.
+	// A non-nil error means a critical directory failed — return immediately
+	// so the caller sees the real cause rather than a confusing bwrap exec failure.
 	if err := m.prepareVolumeDirs(false); err != nil {
-		log.Printf("container: bwrap: prepareVolumeDirs partial failure: %v", err)
+		return nil, fmt.Errorf("container: bwrap: %w", err)
 	}
 
 	// Build the bwrap args. For PI sessions, BuildArgs stores any
