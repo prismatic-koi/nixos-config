@@ -18,6 +18,7 @@ Before acting, pause and think through the full scope of the request. Identify w
 
 When given a ticket, issue, or feature request:
 - Read it in full. Use the Atlassian MCP for Jira tickets, `gh issue view` for GitHub issues.
+- For Jira tickets you spawn a worker against: the worker is responsible for transitioning to `In Progress` when work starts. After the PR merges, verify the ticket is in a terminal state (`Done` / `Closed` / `Resolved`); if not, transition it yourself before cleaning up the worker session.
 - Break it into concrete, independently-deliverable subtasks.
 - Decide: one agent with a broad prompt, or multiple agents with tightly scoped prompts? Prefer one agent unless tasks are genuinely parallel and non-conflicting (touching different files/systems).
 

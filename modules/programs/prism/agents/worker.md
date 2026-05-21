@@ -70,6 +70,18 @@ commit history is disposable — commit early, commit often.
 
 Push your branch when work is complete. Work is not done until pushed.
 
+## Jira ticket lifecycle
+
+If your spawn prompt references a Jira ticket (e.g. `PLAT-123`), keep its state in sync with your actual progress:
+
+1. **Before your first commit**, transition the ticket to `In Progress`:
+   ```
+   transitionJiraIssueByName(issueIdOrKey: "PLAT-123", transitionName: "In Progress")
+   ```
+2. **After your PR is merged** (or, for non-PR work, after the change is live), transition the ticket to its terminal state. Use `Done` if it is available; otherwise call `getTransitionsForJiraIssue` to find the correct closed state for this project (`Closed`, `Resolved`, `Complete`, etc.).
+
+Load the `atlassian` skill for full tool usage. Reading a ticket to gather context or decide whether to action it does not change the ticket state — transition only when you actually start or finish work.
+
 ## Quality gates
 
 After each meaningful code change, run the quality gates described in the repo's

@@ -160,6 +160,47 @@ If the name matches no available transition, it returns an error listing the
 available names. `getJiraIssue` also returns a `transitions` array so you
 can see available transitions alongside the issue data.
 
+## Lifecycle: when to transition a ticket
+
+A Jira board reflects reality only when agents keep ticket state in sync with actual work. Transition tickets at the right moments so humans can trust the board at a glance.
+
+### Mandatory transitions
+
+**1. When work starts → transition to `In Progress`**
+
+As soon as you begin acting on a ticket — first commit, first PR draft, first substantive investigation that produces output — transition it to `In Progress`:
+
+```
+# You have been asked to action PLAT-123. Before your first commit:
+transitionJiraIssueByName(issueIdOrKey: "PLAT-123", transitionName: "In Progress")
+# Now begin the work.
+```
+
+**2. When work completes → transition to the terminal state**
+
+Once the work is done — PR merged, doc published, change deployed — transition the ticket to its closed state:
+
+```
+# PR has been merged. Transition the ticket:
+transitionJiraIssueByName(issueIdOrKey: "PLAT-123", transitionName: "Done")
+```
+
+The terminal state name varies by project workflow. `Done` is the default; if it is not available, call `getTransitionsForJiraIssue` (or read the `transitions` array returned by `getJiraIssue`) to find the correct closed state for this project — `Closed`, `Resolved`, `Complete`, or similar.
+
+### Read-only interactions — keep the state as-is
+
+When you are reading a ticket purely for context — gathering background, summarising the issue, or evaluating whether to action it — the ticket state stays exactly as it is. Transition only when you actually begin or finish work.
+
+### Coordinator / worker boundary
+
+The coordinator that files a ticket and spawns a worker leaves the ticket in its initial state — the worker owns the `In Progress` transition at the moment it starts. After the PR merges, the coordinator verifies the ticket reached a terminal state and transitions it if the worker has not already done so.
+
+### Blocked or handed-off tickets (judgement call)
+
+If you escalate, hand off to a human, or otherwise pause on a ticket before completion, add a comment explaining the situation and optionally transition to a suitable intermediate state (`Blocked`, `In Review`, etc.) based on what is available in the project workflow.
+
+---
+
 ### Confluence: fetch-edit-push
 
 ```
