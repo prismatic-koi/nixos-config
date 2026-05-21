@@ -76,20 +76,25 @@ func TestIsSpineRow(t *testing.T) {
 	}
 }
 
-func TestVerticalTargets_FiltersTerminalAndNonLive(t *testing.T) {
+// TestVerticalTargets_FiltersNonLive verifies that liveness is the only
+// runtime filter applied to the spine — sessions in any agent state
+// (including "finished", which means the turn is over but the session is
+// alive) are included as long as their tmux session is live. Depth-2 and
+// review-group rows are still excluded by IsSpineRow. See issue #1839.
+func TestVerticalTargets_FiltersNonLive(t *testing.T) {
 	sessions := makeSessions(t,
 		[2]string{"alpha@main", "active"},
-		[2]string{"alpha@feature", "active"}, // depth-1: included (issue #1800)
-		[2]string{"beta@main", "finished"},   // terminal state: excluded
+		[2]string{"alpha@feature", "active"},                       // depth-1: included (issue #1800)
+		[2]string{"beta@main", "finished"},                         // finished but live: included (issue #1839)
 		[2]string{"gamma@main", "idle"},
-		[2]string{"gamma@feature~review-1-review-goal", "active"}, // depth-2: excluded
+		[2]string{"gamma@feature~review-1-review-goal", "active"},  // depth-2: excluded
 		[2]string{"delta@main", "active"},                          // not live: excluded
 		[2]string{"scratchpad", "idle"},
 	)
-	live := liveSet("alpha@main", "alpha@feature", "gamma@main", "gamma@feature~review-1-review-goal", "scratchpad")
+	live := liveSet("alpha@main", "alpha@feature", "beta@main", "gamma@main", "gamma@feature~review-1-review-goal", "scratchpad")
 
 	got := nav.VerticalTargets(sessions, live)
-	want := []string{"alpha@main", "alpha@feature", "gamma@main", "scratchpad"}
+	want := []string{"alpha@main", "alpha@feature", "beta@main", "gamma@main", "scratchpad"}
 	if !equalSlice(got, want) {
 		t.Errorf("VerticalTargets = %v, want %v", got, want)
 	}
@@ -198,32 +203,71 @@ func TestVerticalTargets_MainOnlyRepo(t *testing.T) {
 	}
 }
 
-// TestVerticalTargets_TerminalStateExcludesDepth1 verifies that depth-1
-// children in terminal states are excluded from the spine, just like
-// top-level rows.
-func TestVerticalTargets_TerminalStateExcludesDepth1(t *testing.T) {
-	for _, state := range []string{"finished", "deleted", "interrupted"} {
+// TestVerticalTargets_DepthOneStateAgnostic verifies that depth-1 children
+// are included in the spine regardless of their AgentState, as long as
+// their tmux session is live. Previously these were excluded for terminal
+// states; per issue #1839 that filter was wrong ("finished" means turn
+// complete, not session ended).
+func TestVerticalTargets_DepthOneStateAgnostic(t *testing.T) {
+	for _, state := range []string{"finished", "deleted", "interrupted", "idle", "active"} {
 		sessions := makeSessions(t,
 			[2]string{"repo@main", "active"},
 			[2]string{"repo@feature", state},
 		)
 		got := nav.VerticalTargets(sessions, alwaysLive)
-		if len(got) != 1 || got[0] != "repo@main" {
-			t.Errorf("depth-1 state=%q: got %v, want [repo@main]", state, got)
+		want := []string{"repo@main", "repo@feature"}
+		if !equalSlice(got, want) {
+			t.Errorf("depth-1 state=%q: got %v, want %v", state, got, want)
 		}
 	}
 }
 
-func TestVerticalTargets_TerminalStatesExcluded(t *testing.T) {
-	for _, state := range []string{"finished", "deleted", "interrupted"} {
+// TestVerticalTargets_TopLevelStateAgnostic mirrors the depth-1 variant:
+// top-level rows in any agent state are included as long as they are live.
+// Issue #1839.
+func TestVerticalTargets_TopLevelStateAgnostic(t *testing.T) {
+	for _, state := range []string{"finished", "deleted", "interrupted", "idle", "active"} {
 		sessions := makeSessions(t,
 			[2]string{"alpha@main", "active"},
 			[2]string{"beta@main", state},
 		)
 		got := nav.VerticalTargets(sessions, alwaysLive)
-		if len(got) != 1 || got[0] != "alpha@main" {
-			t.Errorf("state=%q: got %v, want [alpha@main]", state, got)
+		want := []string{"alpha@main", "beta@main"}
+		if !equalSlice(got, want) {
+			t.Errorf("top-level state=%q: got %v, want %v", state, got, want)
 		}
+	}
+}
+
+// TestVerticalTargets_FinishedAndActive_BothNavigable is the positive
+// regression for issue #1839. Two sessions, one `active`, one `finished`,
+// both live: both must be in the spine and C-j-style ResolveVertical must
+// switch between them in both directions (and wrap).
+func TestVerticalTargets_FinishedAndActive_BothNavigable(t *testing.T) {
+	sessions := makeSessions(t,
+		[2]string{"alpha@main", "active"},
+		[2]string{"beta@main", "finished"},
+	)
+	targets := nav.VerticalTargets(sessions, alwaysLive)
+	want := []string{"alpha@main", "beta@main"}
+	if !equalSlice(targets, want) {
+		t.Fatalf("VerticalTargets = %v, want %v", targets, want)
+	}
+	// Down from alpha lands on beta.
+	if next, ok := nav.ResolveVertical("alpha@main", nav.DirDown, targets); !ok || next != "beta@main" {
+		t.Errorf("down from alpha: got (%q,%v), want (beta@main,true)", next, ok)
+	}
+	// Down from beta wraps to alpha.
+	if next, ok := nav.ResolveVertical("beta@main", nav.DirDown, targets); !ok || next != "alpha@main" {
+		t.Errorf("down from beta (wrap): got (%q,%v), want (alpha@main,true)", next, ok)
+	}
+	// Up from alpha wraps to beta.
+	if next, ok := nav.ResolveVertical("alpha@main", nav.DirUp, targets); !ok || next != "beta@main" {
+		t.Errorf("up from alpha (wrap): got (%q,%v), want (beta@main,true)", next, ok)
+	}
+	// Up from beta lands on alpha.
+	if next, ok := nav.ResolveVertical("beta@main", nav.DirUp, targets); !ok || next != "alpha@main" {
+		t.Errorf("up from beta: got (%q,%v), want (alpha@main,true)", next, ok)
 	}
 }
 
