@@ -1465,3 +1465,98 @@ func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
 			expectedPath, err)
 	}
 }
+
+// TestRestoreSession_PlumbsHarnessSessionID exercises AC8(d): when the
+// agent_status row has a non-NULL harness_session_id, restoreProjectSession
+// must copy that value into opts.HarnessSessionID so the downstream container
+// launcher can ask pi to resume the prior conversation.
+//
+// Issue #1838.
+func TestRestoreSession_PlumbsHarnessSessionID(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	withRestoreConfig(t, config.Config{
+		DefaultIsolationMode: config.IsolationBwrap,
+	})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	bareRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot, "feature-branch")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@feature"
+
+	const harnessSessionID = "019e00ed-1234-7890-abcd-ef0123456789"
+	hsid := harnessSessionID
+	status := seedStatus(t, d, sessionName, worktreeDir, &hsid)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if capturedOpts.HarnessSessionID != harnessSessionID {
+		t.Errorf("opts.HarnessSessionID = %q, want %q", capturedOpts.HarnessSessionID, harnessSessionID)
+	}
+}
+
+// TestRestoreSession_EmptyHarnessSessionID_LeavesOptsEmpty verifies AC5 / AC7
+// on the restore side: when the DB row has NULL harness_session_id (harness
+// never started, or non-pi harness), restoreProjectSession must leave
+// opts.HarnessSessionID empty so PIInvocation skips --session silently.
+func TestRestoreSession_EmptyHarnessSessionID_LeavesOptsEmpty(t *testing.T) {
+	// Uses withCmdServer — must not run in parallel.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	withRestoreConfig(t, config.Config{
+		DefaultIsolationMode: config.IsolationBwrap,
+	})
+	pf := fakeProfilesFile()
+	withRestoreProfiles(t, pf, nil)
+
+	d := openRestoreTestDB(t)
+
+	bareRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare: %v", err)
+	}
+	worktreeDir := filepath.Join(bareRoot, "feature-branch")
+	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	sessionName := "myrepo@feature-empty"
+
+	// nil harness_session_id => row written with NULL.
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	var capturedOpts session.Opts
+	withCreateSessionHook(t, func(opts session.Opts) {
+		capturedOpts = opts
+	})
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if capturedOpts.HarnessSessionID != "" {
+		t.Errorf("opts.HarnessSessionID = %q, want empty string when DB row has NULL harness_session_id", capturedOpts.HarnessSessionID)
+	}
+}

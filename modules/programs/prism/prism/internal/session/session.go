@@ -176,6 +176,16 @@ type Opts struct {
 	// it is forwarded to the sidecar via repeated --model-override flags.
 	// Nil means no per-role overrides.
 	ModelsByRole map[string]string
+	// HarnessSessionID is the persisted harness-specific session UUID to
+	// resume when launching the harness (e.g. pi's session UUID). Populated
+	// by `prism restore` (and `prism restart`, which calls Restore) from
+	// agent_status.harness_session_id; left empty by `prism spawn` and
+	// `prism switch`. When non-empty and Harness == "pi" the value is
+	// propagated to container.Config.HarnessSessionID by the agent-run
+	// dispatch path so PIInvocation can append --session <id>.
+	//
+	// Issue #1838.
+	HarnessSessionID string
 }
 
 // Layout selects the window layout used when creating a new session.

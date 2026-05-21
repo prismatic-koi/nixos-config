@@ -119,6 +119,13 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		instanceID = *status.InstanceID
 	}
 
+	// Carry the persisted harness session UUID through to ctrCfg so that
+	// PIInvocation can append --session <id> for conversation resume on
+	// restore (issue #1838). Empty when the harness never started.
+	sandboxHarnessSessionID := ""
+	if status.HarnessSessionID != nil {
+		sandboxHarnessSessionID = *status.HarnessSessionID
+	}
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -136,6 +143,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		RuntimeEnv:        sandboxRuntimeEnv,
 		AgentEnvVars:      agentEnvVars,
 		Harness:           sandboxHarnessName,
+		HarnessSessionID:  sandboxHarnessSessionID,
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it

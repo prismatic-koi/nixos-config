@@ -312,6 +312,20 @@ type Config struct {
 	// omitted and PI uses its own default.
 	PIThinking string
 
+	// HarnessSessionID is the persisted harness-specific session UUID to resume
+	// when launching the harness (e.g. pi's session UUID written by the sidecar
+	// on the `session_status` frame). When non-empty and Harness == "pi",
+	// PIInvocation looks up the on-disk session JSONL using the mode-aware
+	// sessions-root resolver and, if found, appends `--session <HarnessSessionID>`
+	// so pi reopens the prior conversation. When empty (fresh session, no prior
+	// incarnation, or the harness failed to start last time) the flag is omitted
+	// and pi starts a new conversation.
+	//
+	// Populated by `prism restore` (and `prism restart`, which calls Restore).
+	// `prism spawn` / `prism switch` leave this empty by design — those paths
+	// create new sessions.
+	HarnessSessionID string
+
 	// PIBinaryPath is the absolute host path to the pi binary
 	// (e.g. /nix/store/.../bin/pi or from the Nix profile at
 	// /etc/profiles/per-user/<user>/bin/pi). When non-empty and
