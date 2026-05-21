@@ -59,25 +59,18 @@ func IsSpineRow(s dashboard.AgentSession) bool {
 	return true
 }
 
-// terminalStates is the set of agent states that exclude a session from the
-// navigable vertical spine, per the issue spec. Sessions in any of these
-// states are skipped even if `ended_at IS NULL` has not yet been written by
-// the lifecycle layer.
-var terminalStates = map[string]bool{
-	"finished":    true,
-	"deleted":     true,
-	"interrupted": true,
-}
-
 // IsNavigableSpine reports whether s should be included in the up/down
-// navigable spine. The session must be a spine row (per IsSpineRow), not in
-// a terminal state, and must have a live tmux session (the latter checked
-// by the caller via the liveCheck callback because tmux IO is impure).
+// navigable spine. The session must be a spine row (per IsSpineRow) and
+// must have a live tmux session (the latter checked by the caller via the
+// liveCheck callback because tmux IO is impure).
+//
+// Agent state is intentionally NOT consulted here. `agent_status.state ==
+// "finished"` means the current turn is finished and the agent is idle
+// waiting for input — it does not mean the session has ended. True session
+// termination is gated by `ended_at IS NOT NULL` at the DB layer
+// (`db.AllActiveStatus`) and by tmux liveness at runtime; see issue #1839.
 func IsNavigableSpine(s dashboard.AgentSession, liveCheck func(string) bool) bool {
 	if !IsSpineRow(s) {
-		return false
-	}
-	if terminalStates[s.AgentState] {
 		return false
 	}
 	if liveCheck != nil && !liveCheck(s.Name) {
