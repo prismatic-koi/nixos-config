@@ -226,6 +226,16 @@ func (d *DB) SessionsByNamePattern(suffix string) ([]Session, error) {
 	return d.querySessions(sessionsSelectCols+` WHERE session_name LIKE ? ESCAPE '\' ORDER BY started_at DESC`, "%"+escaped)
 }
 
+// SessionsByNamePatternAndRepo returns all sessions rows whose session_name ends
+// with the given suffix AND whose repo equals the given repo, ordered by
+// started_at DESC. Used by lookupWorkerArchivePath to scope the PR-number suffix
+// match to a single repository, avoiding false matches when two repos share the
+// same PR number.
+func (d *DB) SessionsByNamePatternAndRepo(suffix, repo string) ([]Session, error) {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(suffix)
+	return d.querySessions(sessionsSelectCols+` WHERE session_name LIKE ? ESCAPE '\' AND repo = ? ORDER BY started_at DESC`, "%"+escaped, repo)
+}
+
 // SessionTurnTokens returns per-turn token data for the given instance_id.
 func (d *DB) SessionTurnTokens(instanceID string) ([]TokenTurn, error) {
 	const q = `

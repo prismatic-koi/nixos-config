@@ -351,7 +351,7 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge) {
 		log.Printf("[mergequeue] TerminateMerge(merged) PR #%d: %v", head.PR, err)
 	}
 	// Look up the worker session's archive_path from the sessions table.
-	archivePath := w.lookupWorkerArchivePath(head.PR)
+	archivePath := w.lookupWorkerArchivePath(head)
 	var notifyText string
 	if archivePath != "" {
 		notifyText = fmt.Sprintf(
@@ -467,9 +467,50 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 // lookupWorkerArchivePath finds the most recent sessions row for the PR's
 // worker branch (heuristic: session_name ends with "@<prNumber>").
 // Returns the archive_path if found, or "".
-func (w *Watcher) lookupWorkerArchivePath(pr int) string {
-	branchSuffix := fmt.Sprintf("@%d", pr)
-	sessions, err := w.db.SessionsByNamePattern(branchSuffix)
+//
+// Scoping strategy (to avoid returning an archive from a different repo that
+// happens to share the same PR number):
+//
+//  1. Primary path — when head.InstanceID is non-empty, look up the
+//     coordinator session via its instance_id to obtain the authoritative
+//     repo slug, then scope the session-name suffix query to that repo.
+//
+//  2. Legacy fallback — when head.InstanceID is empty (rows written before
+//     instance_id was added to pending_merges), scope by w.repo directly.
+//     A log line is emitted so the legacy path is visible in production logs.
+func (w *Watcher) lookupWorkerArchivePath(head *db.PendingMerge) string {
+	branchSuffix := fmt.Sprintf("@%d", head.PR)
+
+	var repo string
+	if head.InstanceID != "" {
+		// Primary path: resolve the repo from the coordinator session that owns
+		// this pending_merges row. This is the most precise scope — it ties the
+		// worker-archive lookup to the exact coordinator instance that enqueued
+		// the PR, preventing cross-repo collisions when two repos share a PR
+		// number (e.g. nixos-config@782 vs myrepo@782).
+		coordinator, err := w.db.SessionByInstanceID(head.InstanceID)
+		if err == nil && coordinator != nil && coordinator.Repo != "" {
+			repo = coordinator.Repo
+		}
+	}
+	if repo == "" {
+		// Legacy fallback: instance_id was not set on this pending_merges row
+		// (pre-dates the instance_id column), or the coordinator session row is
+		// missing. Scope by w.repo, which is resolved once at watcher startup.
+		if head.InstanceID == "" {
+			log.Printf("[mergequeue] lookupWorkerArchivePath PR #%d: PendingMerge has empty instance_id — using legacy repo fallback (repo=%q)", head.PR, w.repo)
+		}
+		repo = w.repo
+	}
+
+	var sessions []db.Session
+	var err error
+	if repo != "" {
+		sessions, err = w.db.SessionsByNamePatternAndRepo(branchSuffix, repo)
+	} else {
+		// Last resort: no repo info available; fall back to unscoped lookup.
+		sessions, err = w.db.SessionsByNamePattern(branchSuffix)
+	}
 	if err != nil || len(sessions) == 0 {
 		return ""
 	}
