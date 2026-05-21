@@ -365,24 +365,30 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	sc := sidecar.New(cfg)
 
 	// Set up signal handling for clean shutdown.
+	//
+	// Two-signal contract:
+	//   - First SIGINT/SIGTERM: invoke sc.Shutdown() synchronously, then
+	//     cancel() the run context.  This preserves the DB-ordering invariant:
+	//     Shutdown() completes its writes before cancel() fires and d.Close()
+	//     is reached.
+	//   - Second SIGINT/SIGTERM while Shutdown is still running: reset the
+	//     signal to the Go runtime's default handler and re-raise it, causing
+	//     an immediate process exit.  The process terminates before d.Close()
+	//     runs, so the ordering invariant is moot on this path.  This gives the
+	//     operator a reliable force-exit path (two Ctrl-C presses) without
+	//     requiring a kill -9.
+	//
+	// signal.Stop(sigCh) is deferred to release the subscription on the happy
+	// path (no signal received) so OS resources are not held for the process
+	// lifetime after Run() returns.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sigCh := make(chan os.Signal, 1)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
-	go func() {
-		<-sigCh
-		// Shutdown() runs before cancel() so that its DB writes (upsertState,
-		// writeEvent) complete while the database connection is still open.
-		// Defer d.Close() runs only after runSidecar returns, which happens
-		// after Run() exits, which happens after cancel() fires here.
-		// OnReady is gated on Sidecar.shuttingDown (set at the start of
-		// Shutdown()) to prevent it from firing after SIGTERM even though
-		// cancel() comes last.
-		sc.Shutdown()
-		cancel()
-	}()
+	runSignalHandler(sigCh, sc.Shutdown, cancel)
 
 	// Run clipboard staging dir cleanup in the background at sidecar startup.
 	// This implements the TTL sweep that prevents ~/.cache/prism/clipboard/ from
@@ -405,6 +411,63 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 
 	proglog.Infof("[prism sidecar] shutting down\n")
 	return nil
+}
+
+// sidecarForceExit is the function called on the second signal to immediately
+// terminate the process.  It is a package-level variable so tests can replace
+// it with a stub that does not actually kill the test process.
+var sidecarForceExit = func(sig syscall.Signal) {
+	signal.Reset(syscall.SIGINT, syscall.SIGTERM)
+	_ = syscall.Kill(os.Getpid(), sig)
+}
+
+// runSignalHandler starts the two-signal shutdown goroutine and returns
+// immediately.  The caller must have already called signal.Notify(sigCh, ...) and
+// deferred signal.Stop(sigCh).
+//
+// Two-signal contract:
+//
+//  1. First SIGINT/SIGTERM: invoke shutdownFn() synchronously, then call
+//     cancelFn() to unblock the Run loop.  This preserves the critical ordering
+//     invariant: Shutdown() must complete its DB writes before cancel() fires
+//     and allows d.Close() to proceed.  Shutdown may take several hundred
+//     milliseconds to seconds (DB writes, container teardown, listener draining).
+//
+//  2. Second SIGINT/SIGTERM arriving while Shutdown is still running: reset the
+//     SIGINT/SIGTERM handlers to the Go runtime defaults and re-raise the
+//     signal.  This causes an immediate process exit, bypassing the d.Close()
+//     defer entirely, and gives the operator a reliable force-exit path (two
+//     Ctrl-C presses) without requiring kill -9.  The DB ordering invariant is
+//     not a concern here — on force-exit the process terminates immediately and
+//     no deferred cleanup runs.
+func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()) {
+	go func() {
+		// First signal: arm the second-signal watcher, then run Shutdown
+		// synchronously so that all DB writes complete before cancel() fires.
+		_, ok := <-sigCh
+		if !ok {
+			return // channel closed on normal exit
+		}
+
+		// Concurrently watch for a second signal while Shutdown runs.
+		// If it arrives, force-exit immediately — no cleanup needed because
+		// the process is being killed and defer d.Close() will not run.
+		go func() {
+			sig2, ok2 := <-sigCh
+			if !ok2 {
+				return // channel closed — normal exit already in progress
+			}
+			sidecarForceExit(sig2.(syscall.Signal))
+		}()
+
+		// Shutdown() runs synchronously before cancel() so that its DB writes
+		// (AbandonWatchingMerges, UpdateSessionEnded, upsertState,
+		// writeStateChange) complete while the database connection is still open.
+		// defer d.Close() fires only after runSidecar returns, which happens
+		// after sc.Run() exits, which happens after cancel() fires here.
+		shutdownFn()
+		cancelFn()
+	}()
 }
 
 
