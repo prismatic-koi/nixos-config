@@ -111,7 +111,13 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	// no-ops for non-review-agent session names, so workers and
 	// coordinators that opt into ActivityTimeout do not generate spurious
 	// parent notifications.
-	go s.notifyParentWorkerOnStartupFailure(fmt.Errorf("inactivity timeout: no inbound frame for %v", timeout))
+	//
+	// Use goNotify (not a raw `go`) so the goroutine is tracked by notifyWG
+	// and tests can drain in-flight notifications via WaitNotifies() without
+	// sleeping or polling (#1842).
+	s.goNotify(func() {
+		s.notifyParentWorkerOnStartupFailure(fmt.Errorf("inactivity timeout: no inbound frame for %v", timeout))
+	})
 }
 
 func (s *Sidecar) currentDBState() agent.AgentState {

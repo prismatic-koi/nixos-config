@@ -11,6 +11,7 @@ package sidecar
 // returns true and the worker is freed.
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
 // newReviewAgentSidecarWithActivityTimeout builds a Sidecar with
@@ -484,6 +486,104 @@ func TestToolProgressHeartbeat_GenuineStuckStillFires(t *testing.T) {
 
 	if got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second); got != string(agent.StateError) {
 		t.Fatalf("state after watchdog fire on heartbeat silence: got %q, want %q — rescue path regressed", got, agent.StateError)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// ── #1842: goNotify registration ─────────────────────────────────────────────
+//
+// handleActivityTimeout previously spawned the parent-worker startup-failure
+// notification with a raw `go` instead of s.goNotify. The raw `go` bypassed
+// notifyWG, so tests had to sleep or poll to observe the notification — the
+// same race class that motivated goNotify in #1713/#1716.
+//
+// The fix wraps the call in s.goNotify so WaitNotifies() drains it
+// deterministically.
+
+// TestInactivityWatchdog_NotifyRegisteredWithWaitGroup verifies that when the
+// inactivity watchdog fires on a review-agent session, the parent-worker
+// startup-failure notification is tracked by notifyWG so WaitNotifies()
+// returns only after the delivery has completed — no sleeping or polling
+// required (#1842).
+func TestInactivityWatchdog_NotifyRegisteredWithWaitGroup(t *testing.T) {
+	// The parent worker session for "prism-test@worker-1842~review-1-review-goal"
+	// is "prism-test@worker-1842".
+	workerSession := "prism-test@worker-1842"
+	reviewSession := workerSession + "~review-1-review-goal"
+
+	// NewIsolated seeds the worker as an active session in the DB and starts
+	// an httptest.Server to capture delivered prompt bodies. It also sets
+	// XDG_STATE_HOME and PRISM_TEST_MODE_RESTRICT_HOSTAPI so no host-state
+	// is touched (#1608).
+	bus := sidecartest.NewIsolated(t, workerSession)
+
+	sockPath := shortSockPath(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           reviewSession,
+		Repo:                  "prism-test",
+		Worktree:              t.TempDir(),
+		DB:                    bus.DB,
+		Clock:                 clk,
+		AgentRole:             "review-goal",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		ActivityTimeout:       30 * time.Second,
+		IsolationMode:         config.IsolationMode("host"),
+		Harness:               pih.New("", "", ""),
+	}
+	sc := New(cfg)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Drive to active so the watchdog timer is armed.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	if got := waitForState(t, bus.DB, sc.cfg.SessionName, string(agent.StateActive), 2*time.Second); got != string(agent.StateActive) {
+		t.Fatalf("state after turn_start: got %q, want %q", got, agent.StateActive)
+	}
+
+	// Wait for the watchdog timer that turn_start armed (#2 overall — #1 from
+	// the post-handshake touchActivity, #2 from turn_start's touchActivity).
+	timer := clk.WaitForTimerCount(2, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no activity watchdog timer registered after turn_start")
+	}
+
+	// Fire the watchdog — simulates ActivityTimeout of silence.
+	timer.Fire()
+
+	// Wait for the session to reach StateError (the DB write) before checking
+	// the notification, so we know handleActivityTimeout ran to completion.
+	if got := waitForState(t, bus.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second); got != string(agent.StateError) {
+		t.Fatalf("state after watchdog fire: got %q, want %q", got, agent.StateError)
+	}
+
+	// WaitNotifies() blocks until every goroutine spawned via goNotify has
+	// returned — no sleep or poll required. If the notification was still
+	// spawned with a raw `go` this call would return immediately and the
+	// body assertion below would race.
+	sc.WaitNotifies()
+
+	// The parent worker must have received a notification containing the
+	// inactivity-timeout reason.
+	bodies := bus.CopyBodies()
+	if len(bodies) == 0 {
+		t.Fatal("no notification delivered to parent worker after inactivity watchdog fired")
+	}
+	found := false
+	for _, b := range bodies {
+		if strings.Contains(b, "inactivity timeout") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("notification body does not contain \"inactivity timeout\"; bodies: %v", bodies)
 	}
 
 	conn.Close()
