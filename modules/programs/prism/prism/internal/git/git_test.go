@@ -505,6 +505,92 @@ func TestStat_DeduplicatesStagedAndUnstaged(t *testing.T) {
 	}
 }
 
+// TestStat_FilenameWithSpace verifies that Stat correctly parses a filename
+// containing spaces from git diff --numstat output (tab-delimited, not
+// space-delimited).
+func TestStat_FilenameWithSpace(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+
+	// Create a tracked file whose name contains a space.
+	spaceFile := filepath.Join(dir, "my notes.md")
+	if err := os.WriteFile(spaceFile, []byte("initial\n"), 0o644); err != nil {
+		t.Fatalf("write 'my notes.md': %v", err)
+	}
+	c := exec.Command("git", "add", "my notes.md")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git add 'my notes.md': %v\n%s", err, out)
+	}
+	c = exec.Command("git", "commit", "-m", "add notes")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	// Modify the file so it appears in the diff.
+	if err := os.WriteFile(spaceFile, []byte("initial\nmore content\n"), 0o644); err != nil {
+		t.Fatalf("modify 'my notes.md': %v", err)
+	}
+
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	// Exactly one file changed — the file with a space in its name.
+	if stat.Files != 1 {
+		t.Errorf("Stat.Files = %d, want 1", stat.Files)
+	}
+}
+
+// TestStat_TwoFilesWithSharedSpacePrefix verifies that two paths sharing the
+// same space-delimited prefix (e.g. "docs/my notes.md" and
+// "docs/my other.md") are counted as two distinct files, not collapsed into
+// one entry by a split-on-spaces parser.
+func TestStat_TwoFilesWithSharedSpacePrefix(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	initRepo(t, dir, "main")
+
+	// Create two files whose paths share the same first space-delimited token.
+	files := []string{"docs/my notes.md", "docs/my other.md"}
+	if err := os.Mkdir(filepath.Join(dir, "docs"), 0o755); err != nil {
+		t.Fatalf("mkdir docs: %v", err)
+	}
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("initial\n"), 0o644); err != nil {
+			t.Fatalf("write %q: %v", name, err)
+		}
+	}
+	c := exec.Command("git", "add", "docs/my notes.md", "docs/my other.md")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %v\n%s", err, out)
+	}
+	c = exec.Command("git", "commit", "-m", "add docs")
+	c.Dir = dir
+	if out, err := c.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, out)
+	}
+
+	// Modify both files so they appear in the diff.
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("initial\nmore\n"), 0o644); err != nil {
+			t.Fatalf("modify %q: %v", name, err)
+		}
+	}
+
+	stat, err := Stat(dir)
+	if err != nil {
+		t.Fatalf("Stat returned error: %v", err)
+	}
+	// Both files must be counted independently — not collapsed into one.
+	if stat.Files != 2 {
+		t.Errorf("Stat.Files = %d, want 2 (both space-named files counted separately)", stat.Files)
+	}
+}
+
 // initEmptyBareRepo creates an empty bare git repo at dir with HEAD pointing
 // at defaultBranch. No commits are made.
 func initEmptyBareRepo(t *testing.T, dir, defaultBranch string) {
