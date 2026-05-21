@@ -244,6 +244,7 @@
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
         home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
         home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
+        home.file.".pi/agent/AGENTS.md".text = builtins.readFile ./agents/global-instructions.md;
         # Custom theme derived from config.theme, deployed so pi picks it up
         # from ~/.pi/agent/themes/ at runtime. The theme name matches
         # config.theme.name and all colour values come from the system palette.
