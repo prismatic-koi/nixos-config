@@ -727,12 +727,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Session string `json:"session"`
 			Prompt  string `json:"prompt"`
 			// Source identifies the logical origin of the delivery. When
-			// "review-complete" the sidecar clears reviewingInFlight before
-			// enqueuing the prompt frame, allowing the subsequent turn_start
-			// to transition normally to active. All other deliveries (coordinator
-			// follow-ups, merge-queue notifications, etc.) leave the flag
-			// unchanged — clearing on non-review prompts would prematurely end
-			// the reviewing window and reintroduce the race (#1372, AC #7).
+			// "review-complete" the sidecar clears reviewingInFlight AFTER the
+			// prompt frame is enqueued on the outbound writer (synchronous-
+			// success path) or after flushPendingReplay re-enqueues the frame
+			// post-reconnect (buffered path) — see #1843. Clearing only after
+			// the frame is on the wire keeps the events.go suppression guards
+			// armed through the delivery window, preventing the spurious
+			// "finished" notification class (#1372 / #1652). All other
+			// deliveries (coordinator follow-ups, merge-queue notifications,
+			// etc.) leave the flag unchanged — clearing on non-review prompts
+			// would prematurely end the reviewing window (#1372, AC #7).
 			Source string `json:"source,omitempty"`
 			// DeliverAs controls the delivery mode for same-session PI targets.
 			// Accepted values: "steer", "followUp", "nextTurn". When omitted the
@@ -807,20 +811,26 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					}
 				}
 
-				// Clear reviewingInFlight only when this is the monitor's
-				// review-complete delivery (source == "review-complete"). This
-				// ensures the turn_start that immediately follows the delivered
-				// prompt sees reviewingInFlight=false and correctly transitions
-				// to active. Non-review deliveries (coordinator follow-ups,
-				// merge-queue notifications) must NOT clear the flag — doing so
-				// would prematurely end the reviewing window and allow idle
-				// debounce to fire a spurious "finished" transition before the
-				// real review-complete prompt arrives (#1372, AC #7).
-				if req.Source == "review-complete" {
-					s.mu.Lock()
-					s.reviewingInFlight = false
-					s.mu.Unlock()
-				}
+				// reviewingInFlight handling for source=="review-complete":
+				// see issue #1843. The flag MUST remain true until the prompt
+				// is actually on the wire (or, on the buffered path, has been
+				// re-enqueued from flushPendingReplay) — otherwise an
+				// incidental state_change{finished} / session.idle arriving
+				// between this point and the actual delivery evades the
+				// suppression guards in events.go and fires a spurious
+				// "finished" notification (the #1372 / #1652 race class).
+				//
+				// Strategy (#1843):
+				//   - Synchronous-success path: call DeliverPrompt first;
+				//     clear reviewingInFlight only after it returns true.
+				//   - Buffered (PI-disconnected) path: tag the pending entry
+				//     with Source=="review-complete" and leave the flag set.
+				//     flushPendingReplay clears it after the replayed frame is
+				//     successfully enqueued post-reconnect.
+				//
+				// Non-review-complete deliveries (coordinator follow-ups,
+				// merge-queue notifications) must NEVER clear the flag — doing
+				// so would prematurely end the reviewing window (#1372, AC #7).
 				s.logger().Printf("sidecar: host-API /prompt: delivering via socket-pipe to self (%s) deliver_as=%s", req.Session, deliverAs)
 				if !s.DeliverPrompt(req.Prompt, deliverAs) {
 					// PI extension is disconnected. Buffer the delivery so it
@@ -829,15 +839,28 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					// Pre-#1685 behaviour returned 503; the new contract is that
 					// a single /prompt call delivers exactly once (after
 					// reconnect, marked replay) rather than failing the call.
-					// Issue #1685 AC #7.
+					// Issue #1685 AC #7. Source is propagated so flushPendingReplay
+					// can clear reviewingInFlight after the replayed frame is
+					// enqueued on the new connection (#1843).
 					s.bufferPendingReplay(pendingReplayDelivery{
 						DeliveryID: req.DeliveryID,
 						Text:       req.Prompt,
 						DeliverAs:  deliverAs,
+						Source:     req.Source,
 					})
-					s.logger().Printf("sidecar: host-API /prompt: PI disconnected, buffered for replay (session=%s deliver_as=%s delivery_id=%s)", req.Session, deliverAs, req.DeliveryID)
+					s.logger().Printf("sidecar: host-API /prompt: PI disconnected, buffered for replay (session=%s deliver_as=%s delivery_id=%s source=%s)", req.Session, deliverAs, req.DeliveryID, req.Source)
 					writeJSON(w, http.StatusOK, map[string]bool{"buffered": true})
 					return
+				}
+				// Synchronous success: the prompt frame is enqueued on the
+				// outbound writer. Now it is safe to clear reviewingInFlight
+				// for the review-complete case — the suppression guards have
+				// served their purpose, and the immediately-following turn_start
+				// must observe the cleared flag to transition normally to active.
+				if req.Source == "review-complete" {
+					s.mu.Lock()
+					s.reviewingInFlight = false
+					s.mu.Unlock()
 				}
 				writeJSON(w, http.StatusOK, map[string]string{})
 				return

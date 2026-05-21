@@ -450,6 +450,17 @@ type Sidecar struct {
 	// delivers the review-complete prompt via /prompt (same-session,
 	// TransportSocketPipe path only — HTTP-harness sessions bypass /prompt).
 	//
+	// Clearing semantics for the same-session /prompt path (#1843):
+	//   - Synchronous-success branch: cleared AFTER DeliverPrompt returns true.
+	//     Clearing earlier would let an incidental state_change{finished} /
+	//     session.idle frame slip past the suppression guards in events.go and
+	//     fire a spurious "finished" notification — the #1372 / #1652 race class.
+	//   - Buffered-for-replay branch (PI disconnected at delivery time):
+	//     remains true until flushPendingReplay re-enqueues the replayed frame
+	//     on the next handshake. The pendingReplayDelivery's Source field
+	//     carries the "review-complete" tag through the buffer so the flush
+	//     path knows which entry's enqueue triggers the clear.
+	//
 	// The suppress guards in events.go additionally check currentDBState() ==
 	// StateReviewing so they lift naturally when the monitor's pre-delivery DB
 	// write ("active") lands, even on HTTP-harness sessions where
@@ -2426,6 +2437,21 @@ func (s *Sidecar) flushPendingReplay() {
 			// Outbound channel not yet live or another disconnect raced us.
 			// Re-buffer so the next handshake picks it up.
 			requeue = append(requeue, d)
+			continue
+		}
+		// Successful re-enqueue: if this entry was the monitor's
+		// review-complete delivery, clear reviewingInFlight now — the
+		// synchronous-delivery branch in host_api.go was unable to clear
+		// it because DeliverPrompt failed (PI disconnected at the time),
+		// so the flag has remained true to keep the events.go suppression
+		// guards active through the disconnect window. With the replayed
+		// frame now on the wire, the suppression has done its job and the
+		// post-replay turn_start must observe the cleared flag. Issue #1843.
+		if d.Source == "review-complete" {
+			s.mu.Lock()
+			s.reviewingInFlight = false
+			s.mu.Unlock()
+			s.logger().Printf("sidecar: flushPendingReplay: cleared reviewingInFlight after replayed review-complete enqueue (delivery_id=%s)", d.DeliveryID)
 		}
 	}
 	if len(requeue) > 0 {
