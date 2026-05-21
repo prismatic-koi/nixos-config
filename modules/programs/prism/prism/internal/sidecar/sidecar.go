@@ -1393,6 +1393,9 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 	var framesRead int
 	var lastState string
 	scanner := bufio.NewScanner(stdout)
+	// Bump the scanner buffer to 16 MiB to match the /review handler precedent
+	// (host_api.go); large msg_assistant frames can exceed the default 64 KiB.
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
