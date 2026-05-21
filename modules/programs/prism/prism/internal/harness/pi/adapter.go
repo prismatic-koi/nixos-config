@@ -49,15 +49,18 @@ var _ harness.StdinReceiver = (*Adapter)(nil)
 
 // Adapter implements harness.Harness for the PI runtime.
 //
-// PI uses TransportStdioPipe: the harness binary writes JSONL frames to stdout;
-// prompts are written to the binary's stdin. There is no HTTP server to dial.
+// PI is registered as TransportSocketPipe: the sidecar binds a Unix socket and
+// the PI extension connects to it, exchanging JSONL frames. There is no HTTP
+// server to dial. The stdio-shaped methods on this adapter (SetStdinPipe,
+// DeliverInitialPrompt, DeliverPrompt, Subscribe, MapEvent, ExtractMessage,
+// HealthCheck) exist only to satisfy the harness.Harness and related interfaces;
+// they are not exercised by the socket-pipe path in production.
 type Adapter struct {
 	binaryPath string
 	agentRole  string
 	agentModel string
 
 	mu        sync.Mutex
-	sessionID string
 	stdinPipe io.WriteCloser // set after the process starts
 }
 
@@ -86,10 +89,9 @@ func (a *Adapter) ContainerCommand() string {
 	return "pi"
 }
 
-// HealthCheck for a stdio harness is a no-op — the process being alive and
-// the stdout pipe being open is the health signal. The sidecar's
-// runStartupStdio loop handles the "process died before writing any frames"
-// case as a startup error independently of this method.
+// HealthCheck satisfies harness.Harness; not exercised by the socket-pipe path.
+// For the socket-pipe shape, the sidecar's handlePipeFrame loop is the liveness
+// signal; there is no HTTP endpoint to poll.
 func (a *Adapter) HealthCheck(_ context.Context, _ int) error {
 	return nil
 }
@@ -102,10 +104,9 @@ func (a *Adapter) ConfigMountPath() string {
 	return fmt.Sprintf("%s/.config/pi", home)
 }
 
-// DeliverInitialPrompt writes the prompt to the PI process's stdin. For the
-// stdio transport the prompt is delivered directly to the process's stdin.
-// In container mode (where PI is launched with the prompt on the command line)
-// this is a no-op.
+// DeliverInitialPrompt satisfies harness.Harness; not exercised by the
+// socket-pipe path. For PI, the prompt is embedded in the agent configuration
+// file rather than being written to stdin at startup.
 func (a *Adapter) DeliverInitialPrompt(_ context.Context, prompt, _ string) error {
 	a.mu.Lock()
 	pipe := a.stdinPipe
@@ -118,7 +119,9 @@ func (a *Adapter) DeliverInitialPrompt(_ context.Context, prompt, _ string) erro
 	return err
 }
 
-// DeliverPrompt writes a follow-up prompt to the PI process's stdin.
+// DeliverPrompt satisfies harness.Harness; not exercised by the socket-pipe
+// path. Follow-up prompts are delivered via the Unix socket by the sidecar's
+// handlePipeFrame loop rather than written to stdin.
 func (a *Adapter) DeliverPrompt(_ context.Context, prompt string) error {
 	a.mu.Lock()
 	pipe := a.stdinPipe
@@ -130,67 +133,46 @@ func (a *Adapter) DeliverPrompt(_ context.Context, prompt string) error {
 	return err
 }
 
-// SetStdinPipe hands the adapter the open stdin pipe for the running PI process.
-// Called by the sidecar immediately after cmd.StdinPipe() succeeds, before
-// cmd.Start(). After this call, DeliverInitialPrompt and DeliverPrompt write
-// directly to the PI process's stdin.
+// SetStdinPipe satisfies harness.StdinReceiver; not exercised by the
+// socket-pipe path. Stored here for potential stdio-fallback use.
 func (a *Adapter) SetStdinPipe(pipe io.WriteCloser) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.stdinPipe = pipe
 }
 
-// Subscribe is not used for stdio harnesses: the sidecar reads the JSONL
-// stream in runStartupStdio instead of calling Subscribe. This method exists
-// to satisfy the Harness interface; it returns a closed channel.
+// Subscribe satisfies harness.Harness; not exercised by the socket-pipe path.
+// The sidecar's handlePipeFrame loop consumes PI frames directly from the Unix
+// socket. Returns a closed channel.
 func (a *Adapter) Subscribe(_ context.Context) (<-chan harness.HarnessEvent, error) {
 	ch := make(chan harness.HarnessEvent)
 	close(ch)
 	return ch, nil
 }
 
-// MapEvent satisfies harness.Harness; not used by the stdio path.
+// MapEvent satisfies harness.Harness; not exercised by the socket-pipe path.
 func (a *Adapter) MapEvent(_ harness.HarnessEvent) (harness.StateTransition, bool) {
 	return harness.StateTransition{}, false
 }
 
-// ExtractMessage satisfies harness.Harness; not used by the stdio path.
+// ExtractMessage satisfies harness.Harness; not exercised by the socket-pipe path.
 func (a *Adapter) ExtractMessage(_ harness.HarnessEvent) (harness.Message, bool) {
 	return harness.Message{}, false
 }
 
-// CreateSession returns the PI session ID recorded by SetSessionID, or "" when
-// the real session ID has not been received yet (i.e. the session_status frame
-// has not arrived). Callers should treat "" as "session ID not yet known" and
-// retry after the sidecar has processed the session_status frame from the PI
-// extension.
-//
-// The hardcoded "pi-session" placeholder that was returned here previously is
-// removed (bug #1538 fix #3). The real session ID is now populated by the
-// sidecar's session_status handler via SetSessionID before CreateSession is
-// called from cleanup.
+// CreateSession satisfies harness.Harness. It always returns "": the real PI
+// session ID is populated by the sidecar's session_status handler directly
+// into agent_status.harness_session_id via UpdateHarnessSessionID, bypassing
+// the adapter. cmd/cleanup reads the ID back from the DB, not from this method.
 func (a *Adapter) CreateSession(_ context.Context) (string, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.sessionID, nil
+	return "", nil
 }
 
-// SetSessionID records the PI session ID received from the session_status frame.
-// This is called by the sidecar when it processes a session_status frame so
-// that CreateSession can return the real ID instead of a placeholder.
-func (a *Adapter) SetSessionID(id string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if id != "" {
-		a.sessionID = id
-	}
-}
-
-// SessionID returns the most recently created session ID.
+// SessionID satisfies harness.Harness. Always returns "": the authoritative
+// session ID lives in agent_status.harness_session_id (written by the sidecar
+// directly to the DB; see sidecar.go session_status handler).
 func (a *Adapter) SessionID() string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.sessionID
+	return ""
 }
 
 // ExtractEventType returns the "type" field from the raw JSON event payload.
@@ -377,12 +359,10 @@ func marshalArgs(raw json.RawMessage) json.RawMessage {
 // NormaliseFrame maps a raw PI JSONL frame to a canonical pi-shaped
 // (eventType, payload, shouldWrite) tuple (implements FrameNormaliser).
 //
-// Note: PI is registered as TransportSocketPipe. NormaliseFrame is only called
-// from the TransportStdioPipe path (runStartupStdio). It is retained here to
-// satisfy the FrameNormaliser interface and to normalise any PI frames that may
-// be replayed or parsed outside the socket-pipe path (e.g. tests, piexport).
-// The idle→active state transition on turn_start is handled by handlePipeFrame
-// in sidecar.go, which is the actual runtime code path for PI sessions.
+// PI is registered as TransportSocketPipe; in production, frames are consumed
+// by handlePipeFrame in sidecar.go. NormaliseFrame is retained for stdio
+// fallback, tests, and replay tooling (e.g. piexport) that parse PI JSONL
+// outside the socket-pipe path.
 //
 // Normalisation map:
 //
