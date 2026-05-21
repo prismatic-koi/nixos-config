@@ -683,6 +683,110 @@ func TestPrepareVolumeDirs_SocketDirOmittedWhenNoSockPath(t *testing.T) {
 	}
 }
 
+// TestPrepareVolumeDirs_CriticalSockDirFailureReturnsError verifies that when
+// the host-API socket directory cannot be created (unwritable parent), the
+// call returns a non-nil error that names the specific directory.
+func TestPrepareVolumeDirs_CriticalSockDirFailureReturnsError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot make an unwritable directory")
+	}
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Create an unwritable parent directory so that MkdirAll cannot create
+	// the subdirectory beneath it.
+	unwritable := filepath.Join(fakeHome, "unwritable")
+	if err := os.Mkdir(unwritable, 0o555); err != nil {
+		t.Fatalf("setup: mkdir %q: %v", unwritable, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o755) })
+
+	sockPath := filepath.Join(unwritable, "session", "hostapi.sock")
+	m := New(Config{
+		SessionName:     "repo@feat",
+		AllocatedPort:   14000,
+		HostAPISockPath: sockPath,
+	})
+
+	err := m.prepareVolumeDirs(false)
+	if err == nil {
+		t.Fatal("prepareVolumeDirs: expected non-nil error for unwritable critical sock dir, got nil")
+	}
+	// The error should mention the directory path so callers can diagnose it.
+	wantSubstr := filepath.Join(unwritable, "session")
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("error %q does not mention the failing directory %q", err.Error(), wantSubstr)
+	}
+}
+
+// TestPrepareVolumeDirs_CriticalPerSessionDirFailureReturnsError verifies that
+// when the per-session pi state directory cannot be created (unwritable parent),
+// the call returns a non-nil error naming the specific directory.
+func TestPrepareVolumeDirs_CriticalPerSessionDirFailureReturnsError(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot make an unwritable directory")
+	}
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Make .local/share/pi unwritable so the per-session subdir cannot be created.
+	piBase := filepath.Join(fakeHome, ".local", "share", "pi")
+	if err := os.MkdirAll(piBase, 0o755); err != nil {
+		t.Fatalf("setup: MkdirAll %q: %v", piBase, err)
+	}
+	if err := os.Chmod(piBase, 0o555); err != nil {
+		t.Fatalf("setup: chmod %q: %v", piBase, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(piBase, 0o755) })
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+
+	err := m.prepareVolumeDirs(true) // perSessionState=true triggers the critical per-session dir
+	if err == nil {
+		t.Fatal("prepareVolumeDirs: expected non-nil error for unwritable critical per-session dir, got nil")
+	}
+	wantSubstr := filepath.Join(piBase, "prism-sessions")
+	if !strings.Contains(err.Error(), wantSubstr) {
+		t.Errorf("error %q does not mention the failing directory %q", err.Error(), wantSubstr)
+	}
+}
+
+// TestPrepareVolumeDirs_OptionalCacheDirFailureDoesNotFail verifies that when
+// an optional cache directory cannot be created (unwritable parent), the call
+// succeeds — the container starts without that cache mount rather than aborting.
+func TestPrepareVolumeDirs_OptionalCacheDirFailureDoesNotFail(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root: cannot make an unwritable directory")
+	}
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Make .cache unwritable so all cache subdirs (pi, bun, clipboard) cannot
+	// be created — these are all optional.
+	cacheDir := filepath.Join(fakeHome, ".cache")
+	if err := os.Mkdir(cacheDir, 0o555); err != nil {
+		t.Fatalf("setup: mkdir %q: %v", cacheDir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cacheDir, 0o755) })
+
+	m := New(Config{
+		SessionName:   "repo@feat",
+		AllocatedPort: 14000,
+	})
+
+	// perSessionState=false: no critical sock path, no per-session dir. Only
+	// the optional cache dirs are attempted and all will fail — call must succeed.
+	if err := m.prepareVolumeDirs(false); err != nil {
+		t.Errorf("prepareVolumeDirs: optional cache dir failures should not fail the call, got: %v", err)
+	}
+}
+
 // ── auth.json overlay tests (AC-3) ───────────────────────────────────────────
 
 // TestBuildRunArgs_AuthJsonOverlayMountedWhenExists verifies that when
