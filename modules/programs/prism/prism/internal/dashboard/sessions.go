@@ -534,8 +534,16 @@ func SessionColumnWidth(sessions []AgentSession) int {
 
 // FilterAgentSessions removes internal sessions (scratchpad, prism-dashboard)
 // from the slice.
+//
+// The returned slice is always non-nil — even when every input session is a
+// meta session and the result is empty, this returns an empty-but-non-nil
+// slice. This is load-bearing: the dashboard relies on nil-vs-empty to
+// distinguish "DB error, preserve last-known sessions" (nil, set by
+// FetchSessionsFromDB on error) from "successful fetch returned zero
+// non-meta sessions" (empty non-nil, which must clear the displayed list).
+// See issue #1859 and the nil-guard in Shared.ApplySessionsMsg.
 func FilterAgentSessions(all []AgentSession) []AgentSession {
-	var out []AgentSession
+	out := make([]AgentSession, 0, len(all))
 	for _, s := range all {
 		if session.IsMetaSession(s.Name) {
 			continue

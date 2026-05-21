@@ -120,6 +120,19 @@ type Shared struct {
 // snapSession is the session name to snap the cursor to on first load
 // (pass the currentSession value from the mode-specific model).
 // Returns the updated Shared and whether a snap was performed.
+//
+// The nil-vs-empty distinction on msg.Sessions is the wire contract between
+// FetchSessionsFromDB and this method:
+//
+//   - nil          → DB error (openDB or AllActiveStatus failed). Preserve
+//     the last-known session list so the dashboard does not flash empty on
+//     a transient failure.
+//   - empty slice  → successful fetch returned zero non-meta sessions. Clear
+//     the displayed list so the dashboard reflects reality (no ghost rows).
+//   - non-empty    → normal update; replace the list.
+//
+// FilterAgentSessions is responsible for upholding the empty-slice half of
+// the contract: it always returns a non-nil slice. See issue #1859.
 func (d Shared) ApplySessionsMsg(msg SessionsMsg, snapSession string) (Shared, bool) {
 	d.Loading = false
 	if msg.Sessions != nil {
