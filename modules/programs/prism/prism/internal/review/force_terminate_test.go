@@ -12,11 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // TestForceTerminateStuckMembers_TransitionsActiveRows verifies the core
-// invariant: an active row is rewritten to "error" by the sweep.
+// invariant: an active row is rewritten to "error" by the sweep, AND that
+// ended_at is set so the row is fully terminal for ended_at IS NOT NULL queries
+// (#1887).
 func TestForceTerminateStuckMembers_TransitionsActiveRows(t *testing.T) {
 	d := openTestDB(t)
 	stuck := "prism-test@invoker-force-terminate~review-1-review-goal"
@@ -35,6 +38,11 @@ func TestForceTerminateStuckMembers_TransitionsActiveRows(t *testing.T) {
 	}
 	if status.State != "error" {
 		t.Errorf("state after sweep: got %q, want %q", status.State, "error")
+	}
+	// ended_at must be set so that queries filtering on ended_at IS NOT NULL
+	// treat the row as terminal (mirrors cleanupAgentSession, lifecycle.go:170-178).
+	if status.EndedAt == nil {
+		t.Error("ended_at after sweep: got nil, want non-nil (force-terminated row must have ended_at set)")
 	}
 }
 
@@ -98,6 +106,84 @@ func TestForceTerminateStuckMembers_SkipsMissingRows(t *testing.T) {
 		}
 		t.Errorf("live session state after mixed-input sweep: got %q, want error", gotState)
 	}
+}
+
+// TestForceTerminateStuckMembers_EndedAtExcludedFromActiveQueries verifies
+// that after the sweep, force-terminated rows are excluded from downstream
+// queries that filter on ended_at IS NOT NULL. Specifically, AllActiveStatus
+// (which is what dashboard active-session listings use) must not return rows
+// that the sweep has touched (#1887).
+func TestForceTerminateStuckMembers_EndedAtExcludedFromActiveQueries(t *testing.T) {
+	d := openTestDB(t)
+
+	// Seed two agent sessions: one that will be swept (stuck), one that is
+	// already legitimately finished before the sweep runs.
+	stuck1 := "prism-test@invoker-active-query-excl~review-1-review-goal"
+	stuck2 := "prism-test@invoker-active-query-excl~review-1-review-code"
+	finished := "prism-test@invoker-active-query-excl~review-1-review-qa"
+	for _, sess := range []string{stuck1, stuck2} {
+		if err := d.UpsertStatus(sess, "testrepo", "/wt", "active", nil, nil); err != nil {
+			t.Fatalf("seed %q: %v", sess, err)
+		}
+	}
+	if err := d.UpsertStatus(finished, "testrepo", "/wt", "finished", nil, nil); err != nil {
+		t.Fatalf("seed finished: %v", err)
+	}
+	// Confirm the two stuck rows appear in AllActiveStatus before the sweep.
+	activeBefore, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus before sweep: %v", err)
+	}
+	countBefore := countMatchingSessions(activeBefore, stuck1, stuck2)
+	if countBefore != 2 {
+		t.Fatalf("expected both stuck sessions in AllActiveStatus before sweep, got %d", countBefore)
+	}
+
+	// Run the sweep.
+	review.ForceTerminateStuckMembersForTest(d, []string{stuck1, stuck2, finished}, 10*time.Minute)
+
+	// After the sweep, AllActiveStatus must not include the force-terminated rows.
+	activeAfter, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus after sweep: %v", err)
+	}
+	countAfter := countMatchingSessions(activeAfter, stuck1, stuck2)
+	if countAfter != 0 {
+		t.Errorf("force-terminated rows still in AllActiveStatus after sweep: got %d, want 0", countAfter)
+	}
+
+	// Double-check the rows themselves: state=error AND ended_at IS NOT NULL.
+	for _, sess := range []string{stuck1, stuck2} {
+		st, err := d.CurrentStatus(sess)
+		if err != nil {
+			t.Fatalf("CurrentStatus(%q): %v", sess, err)
+		}
+		if st == nil {
+			t.Fatalf("CurrentStatus(%q): nil after sweep", sess)
+		}
+		if st.State != "error" {
+			t.Errorf("%q state: got %q, want \"error\"", sess, st.State)
+		}
+		if st.EndedAt == nil {
+			t.Errorf("%q ended_at: got nil, want non-nil after sweep", sess)
+		}
+	}
+}
+
+// countMatchingSessions counts how many of the given session names appear in
+// the provided Status slice. Used to verify presence/absence in active listings.
+func countMatchingSessions(statuses []db.Status, names ...string) int {
+	targets := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		targets[n] = struct{}{}
+	}
+	count := 0
+	for _, s := range statuses {
+		if _, ok := targets[s.SessionName]; ok {
+			count++
+		}
+	}
+	return count
 }
 
 // TestForceTerminateStuckMembers_LeavesEndedRowsAlone verifies that rows with
