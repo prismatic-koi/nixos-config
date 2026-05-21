@@ -227,6 +227,16 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if opts.Worktree == "" {
 		return fmt.Errorf("spawn session: Worktree is required")
 	}
+	// Reject an empty prompt for layouts that require one (layer 4 of issue
+	// #1891). LayoutFull and LayoutAgentOnly host an agent pane and need a
+	// prompt to drive the agent; without one the session is created
+	// successfully but the agent sits idle forever. LayoutBare and
+	// LayoutScratchpad are not agent panes — they are plain shells/dashboards
+	// — and legitimately have no prompt, so they must continue to accept
+	// an empty opts.Prompt.
+	if opts.Prompt == "" && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly) {
+		return fmt.Errorf("spawn session: Prompt is required for layout %d (LayoutFull or LayoutAgentOnly) — an agent pane cannot start without a prompt", opts.Layout)
+	}
 
 	// Open the per-session startup log as the very first step (#1051 Piece B).
 	// Doing this before any other work means the per-session run directory

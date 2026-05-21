@@ -345,6 +345,7 @@ func TestProxySpawn_IgnoreConcurrencyCapForwarded(t *testing.T) {
 	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "cap-branch")
+	_ = cmd.Flags().Set("prompt", "hi")
 	_ = cmd.Flags().Set("ignore-concurrency-cap", "true")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
@@ -408,6 +409,7 @@ func TestProxySpawn_IsolationForwarded(t *testing.T) {
 			cmd.Flags().String("harness", "pi", "")
 			addPromptFlags(cmd)
 			_ = cmd.Flags().Set("branch", "iso-branch")
+			_ = cmd.Flags().Set("prompt", "hi")
 			_ = cmd.Flags().Set("isolation", mode)
 
 			if err := proxySpawn(srv.apiURL(), cmd); err != nil {
@@ -458,6 +460,7 @@ func TestProxySpawn_IsolationOmittedWhenUnset(t *testing.T) {
 	cmd.Flags().String("harness", "pi", "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "no-iso-branch")
+	_ = cmd.Flags().Set("prompt", "hi")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -1322,6 +1325,7 @@ func TestProxySpawn_ModelOverrideForwarded(t *testing.T) {
 	cmd.Flags().StringArray("model-override", nil, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
+	_ = cmd.Flags().Set("prompt", "hi")
 	_ = cmd.Flags().Set("model-override", "review-context=google/gemini-2.5-pro")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
@@ -1385,6 +1389,7 @@ func TestProxySpawn_NoModelOverrideOmitsField(t *testing.T) {
 	cmd.Flags().StringArray("model-override", nil, "")
 	addPromptFlags(cmd)
 	_ = cmd.Flags().Set("branch", "test-branch")
+	_ = cmd.Flags().Set("prompt", "hi")
 	// No --model-override flag set.
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
@@ -1398,5 +1403,147 @@ func TestProxySpawn_NoModelOverrideOmitsField(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for request")
+	}
+}
+
+// ── proxySpawn empty-prompt rejection (issue #1891) ─────────────────────────
+//
+// These tests verify the operator-boundary fix (layers 1+2 of the four-layer
+// silent-acceptance chain described in issue #1891). Before the fix, an empty
+// prompt-file, an empty --prompt literal, or empty stdin all silently posted
+// {"prompt":""} to the host-API /spawn endpoint, producing a session that
+// came up successfully on every observable surface but never received a
+// prompt and sat idle forever. proxySpawn now refuses the spawn upfront with
+// a clear, source-named error.
+//
+// The error message must name the specific input source so the operator
+// immediately knows what to fix.
+
+// TestProxySpawn_EmptyPromptFile_Rejected verifies AC6(a): an empty
+// --prompt-file produces a clear error and never reaches the host-API.
+func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
+	// Mock server that records whether it was hit. The test passes only if
+	// the request never arrives — the rejection must happen client-side.
+	called := make(chan struct{}, 1)
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"should-not-happen"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	// Write an empty prompt file.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prompt.txt")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write empty prompt file: %v", err)
+	}
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "empty-file-branch")
+	_ = cmd.Flags().Set("prompt-file", path)
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("proxySpawn: got nil, want error for empty --prompt-file")
+	}
+	// Error must name the specific input source.
+	if !strings.Contains(err.Error(), "--prompt-file") || !strings.Contains(err.Error(), path) {
+		t.Errorf("error %q does not name the empty --prompt-file path %q", err.Error(), path)
+	}
+	if !strings.Contains(err.Error(), "file is empty") {
+		t.Errorf("error %q does not say 'file is empty'", err.Error())
+	}
+
+	select {
+	case <-called:
+		t.Fatal("host-API /spawn was called despite empty-prompt rejection — layers 1+2 are not closing the loop")
+	case <-time.After(100 * time.Millisecond):
+		// good: never called
+	}
+}
+
+// TestProxySpawn_EmptyPromptLiteral_Rejected verifies AC6(b): --prompt ""
+// produces a clear error and never reaches the host-API.
+func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"should-not-happen"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "empty-literal-branch")
+	_ = cmd.Flags().Set("prompt", "") // explicitly empty
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("proxySpawn: got nil, want error for --prompt \"\"")
+	}
+	if !strings.Contains(err.Error(), "--prompt") {
+		t.Errorf("error %q does not mention --prompt", err.Error())
+	}
+
+	select {
+	case <-called:
+		t.Fatal("host-API /spawn was called despite empty-prompt rejection")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestProxySpawn_EmptyPromptStdin_Rejected verifies the stdin variant of
+// AC6(b): --prompt - with empty stdin produces a clear error and never
+// reaches the host-API.
+func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"should-not-happen"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+
+	// Redirect os.Stdin to an empty file for the duration of the test.
+	empty, err := os.CreateTemp(t.TempDir(), "empty-stdin")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	origStdin := os.Stdin
+	os.Stdin = empty
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		_ = empty.Close()
+	})
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("branch", "empty-stdin-branch")
+	_ = cmd.Flags().Set("prompt", "-")
+
+	err = proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("proxySpawn: got nil, want error for --prompt - with empty stdin")
+	}
+	if !strings.Contains(err.Error(), "--prompt -") || !strings.Contains(err.Error(), "stdin") {
+		t.Errorf("error %q does not name '--prompt -' / 'stdin'", err.Error())
+	}
+
+	select {
+	case <-called:
+		t.Fatal("host-API /spawn was called despite empty-stdin rejection")
+	case <-time.After(100 * time.Millisecond):
 	}
 }

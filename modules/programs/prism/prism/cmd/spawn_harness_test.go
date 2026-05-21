@@ -178,6 +178,7 @@ func TestProxySpawn_HarnessForwarded(t *testing.T) {
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "test-harness")
+	_ = cmd.Flags().Set("prompt", "hi")
 	_ = cmd.Flags().Set("harness", "pi")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
@@ -224,6 +225,7 @@ func TestProxySpawn_HarnessAbsentWhenNotExplicit(t *testing.T) {
 	addPromptFlags(cmd)
 
 	_ = cmd.Flags().Set("branch", "default-harness")
+	_ = cmd.Flags().Set("prompt", "hi")
 	// harness stays at default ("pi") but is NOT explicitly changed
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {

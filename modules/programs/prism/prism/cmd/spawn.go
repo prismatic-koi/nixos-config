@@ -128,6 +128,15 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
+	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
+	// stdin produces a session that is created successfully on every
+	// observable surface but never receives a prompt and sits idle forever.
+	// The host-API /spawn handler has a defence-in-depth check too (layer 3);
+	// this surfaces the error in the caller's stderr instead of an HTTP 400.
+	if promptFlag == "" {
+		return emptyPromptError(cmd, "prism spawn")
+	}
 
 	harnessChanged := cmd.Flags().Changed("harness")
 
@@ -368,6 +377,14 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// the auto-detected "cli-positional" (C.4.SRC, issue #1148).
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
+	}
+	// Reject an empty prompt at the operator boundary (issue #1891). When the
+	// hidden --prompt-source flag is set we are running as the child of the
+	// host-API /spawn handler, which has already validated that req.Prompt is
+	// non-empty (layer 3); skipping the check there keeps the proxy's own
+	// 400 surface as the source of truth for that path.
+	if promptText == "" && promptSource != "proxy-spawn" {
+		return emptyPromptError(cmd, "prism spawn")
 	}
 
 	attachFlag, _ := cmd.Flags().GetBool("attach")
@@ -1046,6 +1063,11 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 	}
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
+	}
+	// Reject an empty prompt at the operator boundary (issue #1891). See
+	// the matching check in runSpawn for the proxy-spawn carve-out.
+	if promptText == "" && promptSource != "proxy-spawn" {
+		return emptyPromptError(cmd, "prism spawn")
 	}
 
 	cfg := config.Load()

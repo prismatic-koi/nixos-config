@@ -367,17 +367,18 @@ func TestSpawnSession_LostPromptRace_TurnStartUnblocksGate(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_NoPrompt_KeepsLooseGate verifies that when SpawnOpts.Prompt
-// is empty, the legacy loose gate is used. This protects review fan-out's
-// per-agent gate (which has a prompt) AND any future caller that wants the
-// legacy behaviour for a prompt-less spawn from regressing.
-func TestSpawnSession_NoPrompt_KeepsLooseGate(t *testing.T) {
+// TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected verifies the layer-4
+// guard from issue #1891: an agent-only layout requires a prompt. Pre-#1891
+// this combination silently produced a session that came up successfully
+// on every observable surface but sat idle forever because no prompt was
+// ever delivered. Now SpawnSession refuses the spawn upfront.
+func TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	const sessionName = "myrepo@no-prompt-loose"
+	const sessionName = "myrepo@no-prompt-rejected"
 	opts := SpawnOpts{
 		SessionName: sessionName,
 		Repo:        "myrepo",
@@ -390,13 +391,17 @@ func TestSpawnSession_NoPrompt_KeepsLooseGate(t *testing.T) {
 		ReadinessTimeout: 2 * time.Second,
 	}
 
-	go func() {
-		time.Sleep(100 * time.Millisecond)
-		writeStateChangeFromGoroutine(d, sessionName, "active", "noprompt-1")
-	}()
-
-	if err := SpawnSession(d, opts); err != nil {
-		t.Errorf("SpawnSession (no prompt, bare active): got %v, want nil — loose gate should accept bare active", err)
+	err := SpawnSession(d, opts)
+	if err == nil {
+		t.Fatal("SpawnSession (empty Prompt, LayoutAgentOnly): got nil, want rejection per issue #1891")
+	}
+	if !strings.Contains(err.Error(), "Prompt is required") {
+		t.Errorf("error %q does not mention 'Prompt is required'", err.Error())
+	}
+	// Nothing should have been written to the DB: refusal must happen
+	// before any side-effects.
+	if st, _ := d.CurrentStatus(sessionName); st != nil {
+		t.Errorf("agent_status row created despite empty-prompt rejection: %+v", st)
 	}
 }
 
