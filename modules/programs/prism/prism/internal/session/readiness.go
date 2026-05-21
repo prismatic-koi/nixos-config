@@ -277,17 +277,22 @@ func promptReadinessSatisfied(d *db.DB, sessionName string, requirePromptDeliver
 }
 
 // payloadIsBareActive reports whether a state_change payload is the bare
-// "agent transitioned to active" event. Returns true only when the payload
-// parses as {"state":"active"} — anything else (idle, finished, error,
-// interrupted, parse failure) is treated as "not bare active" and counts as
-// progress evidence. Conservative on parse failure: an unparseable payload
-// is assumed to be progress (rather than risk the gate hanging).
+// "agent transitioned to active" event. Returns true when the payload parses
+// as {"state":"active"}, and also returns true when the payload cannot be
+// parsed at all. Treating a malformed payload as "bare active" means the
+// strict-mode gate does not count it as progress evidence — the gate falls
+// through to the deadline-based timeout rather than declaring premature
+// success. The deadline at WaitForReadyWithOpts already prevents indefinite
+// hangs, so returning true here is the correct conservative choice for the
+// failure class strict mode was added to catch (lost/corrupted prompts).
 func payloadIsBareActive(payload string) bool {
 	var p struct {
 		State string `json:"state"`
 	}
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
-		return false
+		// Malformed payload — treat as bare active so the strict-mode gate
+		// falls through to the deadline rather than declaring ready.
+		return true
 	}
 	return p.State == "active"
 }

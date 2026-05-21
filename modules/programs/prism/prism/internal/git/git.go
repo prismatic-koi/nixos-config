@@ -62,7 +62,7 @@ func Stat(dir string) (DiffStat, error) {
 			if line == "" {
 				continue
 			}
-			parts := strings.Fields(line)
+			parts := strings.SplitN(line, "\t", 3)
 			if len(parts) < 3 {
 				continue
 			}
