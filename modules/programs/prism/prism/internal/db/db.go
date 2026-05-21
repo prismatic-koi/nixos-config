@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS agent_events (
   created_at         INTEGER NOT NULL,
   instance_id        TEXT REFERENCES sessions(instance_id)
 );
-CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_name, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_events_repo    ON agent_events(repo, type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session    ON agent_events(session_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_repo       ON agent_events(repo, type, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS sessions (
   instance_id         TEXT PRIMARY KEY,
@@ -381,6 +381,11 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // added a now-abandoned column to the sessions table (#1640). The migration
 // is preserved as a version-counter bump only so schema_version progresses
 // linearly through deployed databases.
+// v31→v32 adds six missing indexes for hot DB query paths (#1864):
+//   - idx_events_instance, idx_events_created_at on agent_events
+//   - idx_agent_status_{active,group_id,instance_id,repo_active} on agent_status
+// Each CREATE INDEX uses IF NOT EXISTS so the migration is idempotent on a
+// fresh DB (which already has the indexes via the declarative schema block).
 //
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -419,7 +424,8 @@ func Open(path string) (*DB, error) {
 // so they apply to every connection in the pool. It closes conn on any error
 // and returns the same conn on success.
 func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
-	// Create all tables.
+	// Create all tables and the indexes that reference columns guaranteed
+	// to be present in every historical table shape.
 	if _, err := conn.Exec(schema); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("db: apply schema: %w", err)
@@ -435,8 +441,57 @@ func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 		return nil, err
 	}
 
+	// Apply the post-migration declarative index block. These indexes
+	// reference columns (agent_events.instance_id, agent_status.group_id,
+	// agent_status.instance_id) that may not exist on a database opened
+	// at a pre-v6 / pre-v9 / pre-v16 schema version. Running them after
+	// migrations guarantees the columns exist; running them from the
+	// declarative block (rather than only the migration) keeps fresh and
+	// migrated DBs from drifting if the v31→v32 migration is ever pruned
+	// (the DB-F16 drift class). CREATE INDEX IF NOT EXISTS makes the
+	// double-execution (declarative + migration) idempotent. (#1864)
+	if _, err := conn.Exec(postMigrationIndexes); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("db: apply post-migration indexes: %w", err)
+	}
+
 	return conn, nil
 }
+
+// postMigrationIndexes contains CREATE INDEX statements that reference
+// columns added by migrations (agent_events.instance_id added in v15→v16,
+// agent_status.instance_id added in v5→v6, agent_status.group_id added in
+// v8→v9). They cannot live in the declarative `schema` block because that
+// block executes before migrations, while tests open databases at older
+// schema versions where the referenced columns do not yet exist. The block
+// is applied after migrations so the columns are guaranteed to be present.
+//
+// Mirrors the v31→v32 migration body. The migration itself is the source
+// of truth for deployed databases; this block is the declarative mirror
+// that protects against drift if the migration is ever pruned (#1864 /
+// DB-F16). CREATE INDEX IF NOT EXISTS makes both paths idempotent.
+const postMigrationIndexes = `
+-- F1 (#1864): cover WHERE instance_id = ? on agent_events for
+-- WriteSpawnOutcome's aggregation and SessionTurnTokens. Includes type
+-- and created_at so the CASE-on-type sums and MIN(created_at) are
+-- covered without heap reads.
+CREATE INDEX IF NOT EXISTS idx_events_instance   ON agent_events(instance_id, type, created_at);
+-- F3 (#1864): standalone created_at index for EventsSince, which has no
+-- session_name / repo filter and so cannot use the leading column of
+-- idx_events_session or idx_events_repo.
+CREATE INDEX IF NOT EXISTS idx_events_created_at ON agent_events(created_at);
+-- F2 (#1864): partial indexes covering hot agent_status query paths.
+-- agent_status is never pruned, so these scale with lifetime spawn
+-- count; partial WHERE clauses keep the indexes small.
+CREATE INDEX IF NOT EXISTS idx_agent_status_active        ON agent_status(ended_at)
+  WHERE ended_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_status_group_id      ON agent_status(group_id)
+  WHERE group_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_status_instance_id   ON agent_status(instance_id)
+  WHERE instance_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_agent_status_repo_active   ON agent_status(repo)
+  WHERE ended_at IS NULL;
+`
 
 // seedSchemaVersionIfEmpty inserts schema_version=11 when the table is empty.
 // Fresh databases have all current columns so starting at 11 is safe — the
@@ -455,7 +510,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v27.
+// migrations in order from v1 to v32.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -551,6 +606,65 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV30ToV31(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV31ToV32(conn, &version); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateV31ToV32 adds six missing indexes for hot DB query paths (#1864):
+// two on agent_events (idx_events_instance, idx_events_created_at) and four
+// partial indexes on agent_status (active, group_id, instance_id, repo_active).
+//
+// Background — the three audit findings rolled into this migration:
+//
+//   F1: agent_events.instance_id had no index. WriteSpawnOutcome's
+//       aggregation query (sessions.go) filters WHERE instance_id = ? and
+//       runs 14 CASE expressions over the matching rows once per session
+//       end; SessionTurnTokens has the same WHERE shape. Both were full
+//       table scans growing linearly with retained event volume.
+//   F2: agent_status had only the narrow partial coordinator-per-repo
+//       index, leaving GroupCompleted, ActiveSessionCountForMode,
+//       HarnessSessionIDForInstance, CoordinatorForRepo and every other
+//       active-row filter on full-table scans. agent_status is never
+//       pruned, so this scales with lifetime spawn count.
+//   F3: agent_events.created_at had no standalone index. EventsSince
+//       (prism stats --days) filters by created_at >= ? with no session/
+//       repo leading column, so neither existing index could be used.
+//
+// Each CREATE INDEX uses IF NOT EXISTS, making the migration idempotent —
+// fresh databases already have the indexes from the declarative schema
+// block above, so the migration is a no-op there. The declarative block
+// and this migration must produce identical sqlite_master output (avoiding
+// the declarative-vs-migrated drift class that DB-F16 calls out).
+func migrateV31ToV32(conn *sql.DB, version *int) error {
+	if *version >= 32 {
+		return nil
+	}
+	steps := []string{
+		// F1: cover WriteSpawnOutcome's WHERE instance_id = ? plus the CASE-on-type
+		// aggregation and MIN(created_at) selection in a single index.
+		`CREATE INDEX IF NOT EXISTS idx_events_instance   ON agent_events(instance_id, type, created_at)`,
+		// F3: cover EventsSince's WHERE created_at >= ? ORDER BY created_at ASC.
+		`CREATE INDEX IF NOT EXISTS idx_events_created_at ON agent_events(created_at)`,
+		// F2: partial indexes — agent_status is never pruned, so partials keep the
+		// indexes small (active rows only / non-NULL keys only).
+		`CREATE INDEX IF NOT EXISTS idx_agent_status_active        ON agent_status(ended_at)
+		   WHERE ended_at IS NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_status_group_id      ON agent_status(group_id)
+		   WHERE group_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_status_instance_id   ON agent_status(instance_id)
+		   WHERE instance_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_status_repo_active   ON agent_status(repo)
+		   WHERE ended_at IS NULL`,
+		`UPDATE schema_version SET version = 32`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v31\u2192v32: %w", err)
+		}
+	}
+	*version = 32
 	return nil
 }
 
