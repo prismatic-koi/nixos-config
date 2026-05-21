@@ -355,6 +355,13 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),
 		HarnessName:      restoreHarnessName,
 	}
+	// Propagate the persisted harness session ID so the sandbox launcher can
+	// ask pi to resume the prior conversation (issue #1838). Empty pointer
+	// or empty string both mean "start fresh" — PIInvocation treats an empty
+	// HarnessSessionID as a silent no-op.
+	if s.HarnessSessionID != nil && *s.HarnessSessionID != "" {
+		opts.HarnessSessionID = *s.HarnessSessionID
+	}
 	if isoCaps.IsContainer {
 		opts.PluginHostPath = cfg.SidecarPluginPath
 	}

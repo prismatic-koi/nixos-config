@@ -280,6 +280,14 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	if agentRunHarness != nil {
 		runtimeEnv = agentRunHarness.RuntimeEnv()
 	}
+	// Carry the persisted harness session UUID through to ctrCfg so that
+	// PIInvocation can append --session <id> for conversation resume on
+	// restore (issue #1838). Empty when the harness never started or this is
+	// a spawn/switch path — PIInvocation treats empty as a silent no-op.
+	harnessSessionID := ""
+	if status.HarnessSessionID != nil {
+		harnessSessionID = *status.HarnessSessionID
+	}
 	ctrCfg := container.Config{
 		SessionName:       sessionName,
 		Worktree:          worktree,
@@ -296,6 +304,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		RuntimeEnv:          runtimeEnv,
 		AgentEnvVars:      agentEnvVars,
 		Harness:           harnessName,
+		HarnessSessionID:  harnessSessionID,
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.

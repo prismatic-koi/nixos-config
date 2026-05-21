@@ -26,6 +26,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/prismatic-koi/prism/internal/config"
 )
@@ -65,12 +66,22 @@ const (
 //	--model    <cfg.PIModel>              (when non-empty)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
+//	--session  <cfg.HarnessSessionID>     (when non-empty AND on-disk session
+//	                                       file exists — see piResolveResumeSession)
 //	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
 //
 // The system prompt is delivered via PI_CODING_AGENT_DIR (set in the bwrap
 // environment) pointing at the per-session staging directory that contains
 // APPEND_SYSTEM.md. No --append-system-prompt flag is needed — PI discovers
 // APPEND_SYSTEM.md automatically from its agent config directory.
+//
+// Conversation resume (issue #1838): when cfg.HarnessSessionID is non-empty,
+// PIInvocation looks up the on-disk session JSONL via
+// piResolveResumeSession. If found, --session <id> is appended immediately
+// before any positional InitialPrompt arg so pi reopens the prior turns.
+// If the file is missing, a warning line is written to the per-session
+// agent-run log and pi starts a fresh conversation — restore is
+// best-effort and must never fail because of a missing resume target.
 func PIInvocation(cfg Config) []string {
 	// Use the resolved binary path when set; fall back to the bare name for
 	// back-compat in test/host-mode contexts where the binary is on PATH.
@@ -98,11 +109,191 @@ func PIInvocation(cfg Config) []string {
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
 
+	// --session <id> for conversation resume (#1838). Skipped silently when
+	// HarnessSessionID is empty (fresh session); on missing-file the helper
+	// logs a warning and returns ok=false so pi starts a new conversation.
+	if cfg.HarnessSessionID != "" {
+		if ResolvePIResumeSession(cfg) {
+			args = append(args, "--session", cfg.HarnessSessionID)
+		}
+	}
+
 	if cfg.InitialPrompt != "" {
 		args = append(args, cfg.InitialPrompt)
 	}
 
 	return args
+}
+
+// ResolvePIResumeSession returns true when the on-disk pi session JSONL for
+// cfg.HarnessSessionID exists under the mode-aware sessions root and pi can
+// be told to resume it. Returns false when the file is missing, in which case
+// it also writes a tagged warning line to the per-session agent-run log so
+// the operator can see why the conversation didn't resume.
+//
+// Callers may pass:
+//
+//   - a fully-populated Config (as PIInvocation does for bwrap and sandbox-exec);
+//   - or a minimal Config with just SessionName, Worktree, and HarnessSessionID
+//     set (as the host-mode launch path in internal/session does, since it has
+//     no container fields).
+//
+// The mode-aware sessions root mirrors internal/harness/pi/archive.go's
+// piSessionsRoot helper (see that file for the authoritative reference). It
+// is duplicated here rather than imported because internal/harness/pi already
+// imports internal/container, so the reverse dependency would create an
+// import cycle. The two implementations MUST stay in sync — if you change
+// one, change the other.
+//
+// Caller contract: HarnessSessionID is non-empty. An empty HarnessSessionID
+// must be filtered out upstream (PIInvocation and buildDirectAgentCmd both
+// handle that).
+func ResolvePIResumeSession(cfg Config) bool {
+	return piResolveResumeSession(cfg)
+}
+
+func piResolveResumeSession(cfg Config) bool {
+	root, ok := piResumeSessionsRoot(cfg)
+	if !ok {
+		// Couldn't resolve a sessions root — don't append --session, but
+		// don't write a warning either: the empty/host-only fallback path
+		// isn't an error, it's a no-op.
+		return false
+	}
+
+	// pi names its session files <timestamp>_<uuid>.jsonl inside an
+	// encoded-cwd subdirectory. Worktree determines the encoded-cwd dir.
+	// Scan it for an entry ending in _<HarnessSessionID>.jsonl.
+	if cfg.Worktree == "" {
+		return false
+	}
+	cwdDir := filepath.Join(root, encodePiCWD(cfg.Worktree))
+	suffix := "_" + cfg.HarnessSessionID + ".jsonl"
+
+	entries, err := os.ReadDir(cwdDir)
+	if err != nil {
+		piLogResumeWarning(cfg, cwdDir, fmt.Sprintf("scan %s: %v", cwdDir, err))
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), suffix) {
+			return true
+		}
+	}
+	piLogResumeWarning(cfg, cwdDir, fmt.Sprintf("no file matching *%s in %s", suffix, cwdDir))
+	return false
+}
+
+// piResumeSessionsRoot returns the host-side sessions root directory that pi
+// writes session JSONL files under, given the isolation mode implied by cfg.
+// The three branches mirror internal/harness/pi/archive.go::piSessionsRoot:
+//
+//	host         → <home>/.pi/agent/sessions
+//	bwrap        → <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions
+//	sandbox-exec → <stagingHome>/.pi/agent/sessions
+//
+// Mode is inferred from cfg fields rather than carried explicitly:
+//
+//   - sandbox-exec is identified by InstanceID being set AND
+//     PIAgentConfigSandboxDir == PIAgentConfigHostDir (sandbox-exec shares the
+//     host FS, so populatePIConfig deliberately collapses the two paths).
+//   - bwrap is identified by SessionName being set AND
+//     PIAgentConfigSandboxDir != PIAgentConfigHostDir (bwrap remaps the staging
+//     dir to /run/prism/pi-agent inside the sandbox).
+//   - host is the fallback when neither condition matches.
+//
+// Returns ok=false only when host-mode resolution fails (no home dir).
+func piResumeSessionsRoot(cfg Config) (string, bool) {
+	// sandbox-exec: per-session staging HOME.
+	if cfg.InstanceID != "" && cfg.PIAgentConfigSandboxDir != "" &&
+		cfg.PIAgentConfigSandboxDir == cfg.PIAgentConfigHostDir {
+		stagingHome, err := SandboxExecStagingHomePath(cfg.InstanceID)
+		if err != nil || stagingHome == "" {
+			return "", false
+		}
+		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), true
+	}
+
+	// bwrap: per-session staging dir under XDG_STATE_HOME.
+	if cfg.SessionName != "" && cfg.PIAgentConfigSandboxDir != "" &&
+		cfg.PIAgentConfigSandboxDir != cfg.PIAgentConfigHostDir {
+		stateHome := os.Getenv("XDG_STATE_HOME")
+		if stateHome == "" {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", false
+			}
+			stateHome = filepath.Join(home, ".local", "state")
+		}
+		return filepath.Join(
+			stateHome, "prism", "run",
+			sessionDirName(cfg.SessionName),
+			"pi-agent", "sessions",
+		), true
+	}
+
+	// host (and unhandled fallbacks): real home directory.
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	return filepath.Join(home, ".pi", "agent", "sessions"), true
+}
+
+// encodePiCWD mirrors internal/harness/pi.EncodePiCWD: pi's session-dir naming
+// formula (`--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`).
+//
+// Duplicated here — see piResumeSessionsRoot's note on why we cannot import
+// internal/harness/pi. The two implementations MUST stay in sync.
+func encodePiCWD(cwd string) string {
+	stripped := strings.TrimLeft(cwd, "/\\")
+	replaced := strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(stripped)
+	return "--" + replaced + "--"
+}
+
+// piLogResumeWarning appends a single tagged warning line to the per-session
+// agent-run log. Best-effort: any failure to resolve or open the log path is
+// swallowed silently — the warning is purely informational and must never
+// take down a bwrap arg-build that would otherwise succeed.
+//
+// The tag matches the convention used elsewhere in agent-run
+// ("[agent-run] warning: …") so operators can grep for resume issues.
+func piLogResumeWarning(cfg Config, lookupPath, detail string) {
+	if cfg.SessionName == "" {
+		return
+	}
+	logPath, err := piAgentRunLogPath(cfg.SessionName)
+	if err != nil {
+		return
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(logPath), 0o700); mkErr != nil {
+		return
+	}
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f,
+		"[agent-run] warning: pi session %s not found at %s — starting fresh conversation (%s)\n",
+		cfg.HarnessSessionID, lookupPath, detail,
+	)
+}
+
+// piAgentRunLogPath is the container-side mirror of
+// internal/session.AgentRunLogPath. Duplicated to keep this file free of an
+// internal/session dependency (which would in turn pull in db / tmux / … from
+// a leaf invocation builder).
+func piAgentRunLogPath(sessionName string) (string, error) {
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "prism", "run", sessionDirName(sessionName), "agent-run.log"), nil
 }
 
 // StagePIAgentConfigDir prepares the per-session PI agent config staging
