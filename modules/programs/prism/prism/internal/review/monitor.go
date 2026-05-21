@@ -246,6 +246,15 @@ func MonitorFunc(opts MonitorOpts) error {
 // braces fallback for the case where the sidecar itself is unreachable
 // (crashed, killed without cleanup, etc.).
 //
+// After setting state="error" we also call SetEnded so that ended_at is
+// written atomically for both agent_status and sessions rows. This mirrors
+// cleanupAgentSession (lifecycle.go:170-178), which calls UpsertStatus then
+// SetEnded for the same reason — without SetEnded the row has state="error"
+// but ended_at=NULL, and any query that filters on "ended_at IS NOT NULL"
+// (e.g. AllActiveStatus, dashboard active-session listings) will still treat
+// the row as live. Same table-drift class as #1870 (MarkAllEnded/SetEnded)
+// and #1881 (cleanupHalfAliveSession).
+//
 // All failures are logged but non-fatal: a stuck DB row is recoverable via
 // `prism cleanup`, but a hard error here would also block the partial
 // review-results delivery the monitor has already promised the worker.
@@ -272,6 +281,12 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 			sess, status.State, perAgentTimeout)
 		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
 			proglog.Warnf("[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
+		}
+		// Set ended_at so the row is fully terminal for queries filtering on
+		// ended_at IS NOT NULL (see comment above). Best-effort: failure logs
+		// and continues — this is already a recovery path.
+		if err := d.SetEnded(sess); err != nil {
+			proglog.Warnf("[prism monitor-review] warning: SetEnded(%s) after force-terminate: %v\n", sess, err)
 		}
 	}
 }
