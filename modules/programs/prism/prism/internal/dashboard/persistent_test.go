@@ -1,12 +1,29 @@
 package dashboard_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prismatic-koi/prism/internal/dashboard"
 )
+
+// unopenableDBPath returns a filesystem path that cannot be opened as a
+// sqlite DB: it sits beneath a regular file (not a directory), so the
+// os.MkdirAll() inside db.Open() fails with ENOTDIR. Using a path under a
+// regular file is portable and does not depend on /nonexistent staying
+// absent across test runs (#1859).
+func unopenableDBPath(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatalf("failed to create blocker file: %v", err)
+	}
+	return filepath.Join(blocker, "prism.db")
+}
 
 // TestPersistentInit_SchedulesSessionSyncTick verifies that PersistentModel.Init
 // returns a non-nil command batch that includes at least 4 commands:
@@ -48,7 +65,7 @@ func TestPersistentInit_SchedulesSessionSyncTick(t *testing.T) {
 func TestPersistentUpdate_SessionSyncTickMsg_HandledGracefully(t *testing.T) {
 	// Use a fake DB path so openDB fails cleanly — FetchSessionsFromDB will
 	// return an empty SessionsMsg rather than querying a real DB.
-	dashboard.SetTestDBPath("/nonexistent/path/prism.db")
+	dashboard.SetTestDBPath(unopenableDBPath(t))
 	t.Cleanup(func() { dashboard.SetTestDBPath("") })
 
 	m := dashboard.NewPersistentModel("", "")
@@ -118,8 +135,8 @@ func TestPersistentUpdate_SessionSyncTickMsg_HandledGracefully(t *testing.T) {
 // SessionsMsg{} with nil Sessions on error; ApplySessionsMsg guards nil so the
 // existing session list is preserved.
 func TestPersistentUpdate_SessionSyncTickMsg_RetainsSessionsOnDBError(t *testing.T) {
-	// Point the DB at a nonexistent path so FetchSessionsFromDB always errors.
-	dashboard.SetTestDBPath("/nonexistent/path/prism.db")
+	// Point the DB at an unopenable path so FetchSessionsFromDB always errors.
+	dashboard.SetTestDBPath(unopenableDBPath(t))
 	t.Cleanup(func() { dashboard.SetTestDBPath("") })
 
 	m := dashboard.NewPersistentModel("", "")
@@ -182,4 +199,78 @@ func TestPersistentUpdate_SessionSyncTickMsg_RetainsSessionsOnDBError(t *testing
 			i = len(batch) // break loop
 		}
 	}
+}
+
+// TestPersistentUpdate_SessionsMsg_AllThreeSignals drives the PersistentModel
+// through every signal the FetchSessionsFromDB → ApplySessionsMsg wire
+// carries, asserting the resulting PersistentModel.Sessions state. This is the
+// PersistentModel-level companion to TestApplySessionsMsg_ThreeStates in
+// poll_test.go and the central regression test for #1859.
+//
+//   - (a) non-empty success: Sessions is a non-empty slice → list updates.
+//   - (b) empty success:     Sessions is an empty non-nil slice → list clears
+//     (the regression: ghost rows after every prism session was cleaned up).
+//   - (c) DB error:          Sessions is nil                  → list preserved.
+func TestPersistentUpdate_SessionsMsg_AllThreeSignals(t *testing.T) {
+	// Seed the model with two pre-existing sessions, then drive each signal.
+	seed := func(t *testing.T) dashboard.PersistentModel {
+		t.Helper()
+		m := dashboard.NewPersistentModel("", "")
+		m2, _ := m.Update(dashboard.SessionsMsg{Sessions: []dashboard.AgentSession{
+			{Name: "nixos-config@main"},
+			{Name: "nixos-config@feature"},
+		}})
+		pm, ok := m2.(dashboard.PersistentModel)
+		if !ok {
+			t.Fatalf("seed: Update returned %T, want PersistentModel", m2)
+		}
+		if len(pm.Sessions) != 2 {
+			t.Fatalf("seed: want 2 sessions, got %d", len(pm.Sessions))
+		}
+		return pm
+	}
+
+	t.Run("a: non-empty success updates list", func(t *testing.T) {
+		pm := seed(t)
+		fresh := []dashboard.AgentSession{
+			{Name: "nixos-config@main"},
+			{Name: "nixos-config@feature"},
+			{Name: "nixos-config@bugfix"},
+		}
+		m2, _ := pm.Update(dashboard.SessionsMsg{Sessions: fresh})
+		pm2, ok := m2.(dashboard.PersistentModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want PersistentModel", m2)
+		}
+		if len(pm2.Sessions) != 3 {
+			t.Errorf("want 3 sessions after non-empty success, got %d", len(pm2.Sessions))
+		}
+	})
+
+	t.Run("b: empty success clears list (no ghost rows)", func(t *testing.T) {
+		pm := seed(t)
+		// An empty-but-non-nil slice models a successful fetch that returned
+		// zero non-meta sessions — the #1859 scenario.
+		m2, _ := pm.Update(dashboard.SessionsMsg{Sessions: []dashboard.AgentSession{}})
+		pm2, ok := m2.(dashboard.PersistentModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want PersistentModel", m2)
+		}
+		if len(pm2.Sessions) != 0 {
+			t.Errorf("want 0 sessions after empty success (no ghost rows), got %d: %+v", len(pm2.Sessions), pm2.Sessions)
+		}
+	})
+
+	t.Run("c: DB error preserves list", func(t *testing.T) {
+		pm := seed(t)
+		// SessionsMsg with nil Sessions models a DB error.
+		m2, _ := pm.Update(dashboard.SessionsMsg{Sessions: nil})
+		pm2, ok := m2.(dashboard.PersistentModel)
+		if !ok {
+			t.Fatalf("Update returned %T, want PersistentModel", m2)
+		}
+		if len(pm2.Sessions) != 2 {
+			t.Errorf("want 2 sessions preserved after DB error, got %d", len(pm2.Sessions))
+		}
+	})
 }
