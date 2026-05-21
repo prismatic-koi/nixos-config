@@ -2339,6 +2339,126 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 	}
 }
 
+// ── lookupWorkerArchivePath scoping tests ─────────────────────────────────────
+
+// seedWorkerSession inserts a sessions row simulating a worker session for the
+// given PR branch (session_name = "<repoShort>@<pr>", repo = repoFull). The
+// optional archivePath is set on the row if non-empty.
+func seedWorkerSession(t *testing.T, d *db.DB, instanceID, sessionName, repo, archivePath string) {
+	t.Helper()
+	sess := db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    "/tmp/wt-" + instanceID,
+		Harness:     "pi",
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("seedWorkerSession InsertSession(%s): %v", sessionName, err)
+	}
+	if archivePath != "" {
+		if err := d.UpdateSessionArchivePath(instanceID, archivePath); err != nil {
+			t.Fatalf("seedWorkerSession UpdateSessionArchivePath(%s): %v", instanceID, err)
+		}
+	}
+}
+
+// seedCoordinatorSession inserts both an agent_status row and a sessions row for
+// a coordinator, so that SessionByInstanceID can resolve it.
+func seedCoordinatorSession(t *testing.T, d *db.DB, sessionName, instanceID, repo string) {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, repo, "/tmp/coord-wt", "active", nil, nil); err != nil {
+		t.Fatalf("seedCoordinatorSession UpsertStatus(%s): %v", sessionName, err)
+	}
+	if err := d.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("seedCoordinatorSession SetInstanceID(%s): %v", sessionName, err)
+	}
+	sess := db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        repo,
+		Worktree:    "/tmp/coord-wt",
+		Harness:     "pi",
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("seedCoordinatorSession InsertSession(%s): %v", sessionName, err)
+	}
+}
+
+// TestLookupWorkerArchivePath_InstanceIDScoping verifies that when two repos
+// share a PR number (e.g. nixos-config@782 and myrepo@782), the primary lookup
+// path (head.InstanceID non-empty) returns the correct archive for the repo
+// whose coordinator enqueued the merge.
+func TestLookupWorkerArchivePath_InstanceIDScoping(t *testing.T) {
+	d := openTestDB(t)
+
+	// Coordinator for nixos-config.
+	coordInstanceID := "coord-inst-nixos-782"
+	coordSession := "nixos-config@main"
+	coordRepo := "owner/nixos-config"
+	seedCoordinatorSession(t, d, coordSession, coordInstanceID, coordRepo)
+
+	// Worker sessions: one per repo, both ending in @782.
+	seedWorkerSession(t, d, "worker-inst-nixos-782", "nixos-config@782", "owner/nixos-config",
+		"/archives/nixos-config-782.tar.gz")
+	seedWorkerSession(t, d, "worker-inst-myrepo-782", "myrepo@782", "owner/myrepo",
+		"/archives/myrepo-782.tar.gz")
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  coordInstanceID,
+		sessionName: coordSession,
+		httpClient:  http.DefaultClient,
+		repo:        coordRepo,
+	}
+
+	head := &db.PendingMerge{
+		PR:          782,
+		SessionName: coordSession,
+		InstanceID:  coordInstanceID,
+	}
+
+	got := w.lookupWorkerArchivePath(head)
+	want := "/archives/nixos-config-782.tar.gz"
+	if got != want {
+		t.Errorf("lookupWorkerArchivePath: got %q, want %q", got, want)
+	}
+}
+
+// TestLookupWorkerArchivePath_LegacyRepoFallback verifies that when
+// head.InstanceID is empty (a legacy pending_merges row), lookupWorkerArchivePath
+// falls back to scoping by w.repo and still returns the correct archive.
+func TestLookupWorkerArchivePath_LegacyRepoFallback(t *testing.T) {
+	d := openTestDB(t)
+
+	// Worker sessions: one per repo, both ending in @782.
+	seedWorkerSession(t, d, "worker-leg-nixos-782", "nixos-config@782", "owner/nixos-config",
+		"/archives/nixos-config-legacy-782.tar.gz")
+	seedWorkerSession(t, d, "worker-leg-myrepo-782", "myrepo@782", "owner/myrepo",
+		"/archives/myrepo-legacy-782.tar.gz")
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  "",
+		sessionName: "nixos-config@main",
+		httpClient:  http.DefaultClient,
+		repo:        "owner/nixos-config",
+	}
+
+	// Legacy row: InstanceID is empty.
+	head := &db.PendingMerge{
+		PR:          782,
+		SessionName: "nixos-config@main",
+		InstanceID:  "",
+	}
+
+	got := w.lookupWorkerArchivePath(head)
+	want := "/archives/nixos-config-legacy-782.tar.gz"
+	if got != want {
+		t.Errorf("lookupWorkerArchivePath legacy fallback: got %q, want %q", got, want)
+	}
+}
+
 // TestFetchRequiredChecks_ErrorStaysWatching verifies the Watcher.tick()
 // integration: when fetchRequiredChecks returns an error on an UNSTABLE PR,
 // the row stays in watching and no merge is attempted. This exercises the
