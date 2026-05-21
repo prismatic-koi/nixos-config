@@ -107,6 +107,53 @@ func TestEscalatedState(t *testing.T) {
 		{"precedence: interrupted beats finished",
 			[]string{"finished", "interrupted"},
 			"interrupted"},
+		// ── reviewing: background work, ranks above compacting, below active ──
+		// (a) all children reviewing — must not show "idle"
+		{"all reviewing",
+			[]string{"reviewing", "reviewing", "reviewing", "reviewing", "reviewing"},
+			"reviewing"},
+		// (b) one child reviewing, others idle
+		{"one reviewing others idle",
+			[]string{"", "", "", "", "reviewing"},
+			"reviewing"},
+		// reviewing ranks above compacting
+		{"reviewing beats compacting",
+			[]string{"compacting", "reviewing"},
+			"reviewing"},
+		// active beats reviewing (active work trumps background work)
+		{"active beats reviewing",
+			[]string{"reviewing", "active"},
+			"active"},
+		// error beats reviewing
+		{"error beats reviewing",
+			[]string{"reviewing", "error"},
+			"error"},
+		// waiting beats reviewing
+		{"waiting beats reviewing",
+			[]string{"reviewing", "waiting"},
+			"waiting"},
+		// ── escalated: awaiting coordinator, ranks above waiting ──
+		// (c) all children escalated — must not show "idle"
+		{"all escalated",
+			[]string{"escalated", "escalated", "escalated", "escalated", "escalated"},
+			"escalated"},
+		// (d) one child escalated, one active — escalated wins (most urgent)
+		{"escalated beats active",
+			[]string{"active", "escalated"},
+			"escalated"},
+		// escalated beats waiting
+		{"escalated beats waiting",
+			[]string{"waiting", "escalated"},
+			"escalated"},
+		// escalated beats error
+		{"escalated beats error",
+			[]string{"error", "escalated"},
+			"escalated"},
+		// Full precedence table including new states:
+		// escalated > waiting > error > active > reviewing > compacting > interrupted > finished > idle
+		{"full precedence with escalated and reviewing",
+			[]string{"finished", "interrupted", "compacting", "reviewing", "active", "error", "waiting", "escalated"},
+			"escalated"},
 	}
 	for _, tt := range tests {
 		got := dashboard.EscalatedState(tt.states)
@@ -700,6 +747,41 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 	}
 	if dimIdx2 := strings.Index(rowExpanded, dimSeq); dimIdx2 < 0 {
 		t.Errorf("expanded: styleDim colour sequence not found; row=%q", rowExpanded)
+	}
+}
+
+// ── Visual test: all-reviewing group row must not show "idle" ─────────────────
+
+// TestRenderReviewGroupRow_ReviewingStateNotIdle verifies that when a review-
+// group row's AgentState is "reviewing" (set by EscalatedState when all children
+// are reviewing), the rendered state column shows "reviewing", not "idle".
+// This is the visual counterpart to the EscalatedState unit test cases above.
+func TestRenderReviewGroupRow_ReviewingStateNotIdle(t *testing.T) {
+	// Use ASCII colour profile so the output is plain text and easy to search.
+	lipgloss.SetColorProfile(termenv.Ascii)
+	t.Cleanup(func() {
+		lipgloss.SetColorProfile(termenv.Ascii)
+	})
+
+	styleFg := lipgloss.NewStyle()
+	styleDim := lipgloss.NewStyle()
+	d := dashboard.Shared{
+		Width:  80,
+		Cursor: 99, // cursor far away so isSelected is false
+	}
+	s := dashboard.AgentSession{
+		Name:          "repo@feature~review-1",
+		AgentState:    "reviewing", // EscalatedState result when all children are reviewing
+		IsReviewGroup: true,
+	}
+
+	row := dashboard.RenderReviewGroupRow(d, s, 0, "  ├── ", false /*collapsed*/, false /*cursorActive*/, styleDim, styleFg, 10, 12)
+
+	if strings.Contains(row, "idle") {
+		t.Errorf("group row with AgentState=\"reviewing\" must not contain \"idle\"; got row=%q", row)
+	}
+	if !strings.Contains(row, "reviewing") {
+		t.Errorf("group row with AgentState=\"reviewing\" must contain \"reviewing\"; got row=%q", row)
 	}
 }
 

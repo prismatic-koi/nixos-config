@@ -231,30 +231,45 @@ func ReviewRoundKey(name string) string {
 }
 
 // EscalatedState returns the highest-priority state across a slice of states.
-// Priority order (highest first): waiting > error > active > compacting >
-// interrupted > finished > idle/empty.
+// Priority order (highest first):
 //
-// compacting is a first-class AgentState (see internal/agent) and ranks
-// alongside active — it means the agent is doing background work and is not
-// idle. It sits just below active so that a round with one active agent and
-// one compacting agent shows "active".
+//	escalated > waiting > error > active > reviewing > compacting >
+//	interrupted > finished > idle/empty
+//
+// Rationale for new entries (see internal/agent/machine.go for state graph):
+//
+//   - reviewing: an agent has called `prism review` and is awaiting results.
+//     Comparable to compacting — it is background work, not awaiting user input.
+//     Ranked just above compacting so that a round with one active agent and one
+//     reviewing agent shows "active" (active work trumps background work), but a
+//     round with only reviewing agents shows "reviewing" rather than the
+//     misleading "idle".
+//
+//   - escalated: an agent has called `prism escalate` and is awaiting coordinator
+//     guidance. Comparable to waiting — both states require external input before
+//     the agent can proceed. Ranked above waiting because an escalation is more
+//     urgent: it signals a blocking decision, not merely a normal turn prompt.
 func EscalatedState(states []string) string {
 	priority := func(s string) int {
 		switch s {
+		case "escalated":
+			return 8
 		case "waiting":
 			return 7
 		case "error":
 			return 6
 		case "active":
 			return 5
+		case "reviewing":
+			return 4 // background work (awaiting review results), not idle
 		case "compacting":
-			return 4
-		case "interrupted":
 			return 3
-		case "finished":
+		case "interrupted":
 			return 2
+		case "finished":
+			return 1
 		default:
-			return 1 // idle or ""
+			return 0 // idle or ""
 		}
 	}
 	best := ""
