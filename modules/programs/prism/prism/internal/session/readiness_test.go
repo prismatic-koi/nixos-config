@@ -218,6 +218,110 @@ func errorWrap(prefix string, inner error) error {
 	return &wrappedErr{prefix: prefix, inner: inner}
 }
 
+// ── WaitForReadyWithOpts — strict mode (RequirePromptDelivered) ──────────────
+
+// TestWaitForReadyWithOpts_StrictMode_MalformedPayloadTimesOut verifies that a
+// state_change event with an unparseable payload does NOT satisfy the
+// strict-mode gate. The gate must fall through to the deadline and return a
+// *ReadinessTimeoutError rather than treating the malformed payload as
+// progress evidence.
+func TestWaitForReadyWithOpts_StrictMode_MalformedPayloadTimesOut(t *testing.T) {
+	d := openReadinessTestDB(t)
+	const sess = "myrepo@strict-malformed"
+	seedSession(t, d, sess)
+
+	// Inject a state_change with a truncated / unparseable payload.
+	evt := db.Event{
+		ID:          "evt-malformed",
+		SessionName: sess,
+		Repo:        "test",
+		Worktree:    "/tmp",
+		Type:        "state_change",
+		Payload:     `{"state":truncated`,
+	}
+	if err := d.WriteEvent(evt); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	const timeout = 500 * time.Millisecond
+	err := session.WaitForReadyWithOpts(d, sess, session.ReadinessOpts{
+		Timeout:                timeout,
+		RequirePromptDelivered: true,
+	})
+
+	if err == nil {
+		t.Fatal("WaitForReadyWithOpts: got nil, want *ReadinessTimeoutError — malformed payload must not satisfy strict gate")
+	}
+	if !session.IsReadinessTimeout(err) {
+		t.Errorf("WaitForReadyWithOpts error = %v (type %T), want *ReadinessTimeoutError", err, err)
+	}
+}
+
+// TestWaitForReadyWithOpts_StrictMode_BareActivePayloadTimesOut verifies the
+// boundary case: a well-formed bare {"state":"active"} payload also does not
+// satisfy the strict gate — the agent acknowledged idle/active but has not
+// yet shown evidence of processing the prompt.
+func TestWaitForReadyWithOpts_StrictMode_BareActivePayloadTimesOut(t *testing.T) {
+	d := openReadinessTestDB(t)
+	const sess = "myrepo@strict-bare-active"
+	seedSession(t, d, sess)
+
+	evt := db.Event{
+		ID:          "evt-bare-active",
+		SessionName: sess,
+		Repo:        "test",
+		Worktree:    "/tmp",
+		Type:        "state_change",
+		Payload:     `{"state":"active"}`,
+	}
+	if err := d.WriteEvent(evt); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	const timeout = 500 * time.Millisecond
+	err := session.WaitForReadyWithOpts(d, sess, session.ReadinessOpts{
+		Timeout:                timeout,
+		RequirePromptDelivered: true,
+	})
+
+	if err == nil {
+		t.Fatal("WaitForReadyWithOpts: got nil, want *ReadinessTimeoutError — bare-active must not satisfy strict gate")
+	}
+	if !session.IsReadinessTimeout(err) {
+		t.Errorf("WaitForReadyWithOpts error = %v (type %T), want *ReadinessTimeoutError", err, err)
+	}
+}
+
+// TestWaitForReadyWithOpts_StrictMode_NonBareActivePayloadReturnsReady verifies
+// the regression path: a well-formed state_change carrying a non-bare-active
+// state (e.g. "finished") satisfies the strict gate and returns nil.
+func TestWaitForReadyWithOpts_StrictMode_NonBareActivePayloadReturnsReady(t *testing.T) {
+	d := openReadinessTestDB(t)
+	const sess = "myrepo@strict-non-bare"
+	seedSession(t, d, sess)
+
+	evt := db.Event{
+		ID:          "evt-non-bare",
+		SessionName: sess,
+		Repo:        "test",
+		Worktree:    "/tmp",
+		Type:        "state_change",
+		Payload:     `{"state":"finished"}`,
+	}
+	if err := d.WriteEvent(evt); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	err := session.WaitForReadyWithOpts(d, sess, session.ReadinessOpts{
+		Timeout:                2 * time.Second,
+		RequirePromptDelivered: true,
+	})
+
+	if err != nil {
+		t.Errorf("WaitForReadyWithOpts: got %v, want nil — non-bare-active state_change must satisfy strict gate", err)
+	}
+}
+
 // ── WaitForReady — argument validation ────────────────────────────────────────
 
 // TestWaitForReady_RequiresDB verifies the nil-DB guard.
