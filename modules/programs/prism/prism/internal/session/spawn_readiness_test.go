@@ -161,6 +161,76 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded verifies the fix
+// for #1881: after cleanupHalfAliveSession runs on readiness-timeout,
+// the pre-inserted sessions row (which SpawnSession inserts host-side per
+// #1507) must have ended_at IS NOT NULL and end_state set to the documented
+// value "readiness-timeout".
+//
+// Prior to the fix, sessions.ended_at remained NULL even though
+// agent_status.ended_at was set, leaving a zombie incarnation row for every
+// readiness-timeout failure.
+func TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@branch~sessions-row-ended"
+	opts := SpawnOpts{
+		SessionName:      sessionName,
+		Repo:             "myrepo",
+		Worktree:         "/worktrees/myrepo-branch",
+		AgentRole:        "review-code",
+		Prompt:           "go",
+		Layout:           LayoutAgentOnly,
+		ReadinessTimeout: 100 * time.Millisecond, // short; no signal will arrive
+	}
+
+	if err := SpawnSession(d, opts); !IsReadinessTimeout(err) {
+		t.Fatalf("SpawnSession: got err=%v (IsReadinessTimeout=%v), want ReadinessTimeoutError",
+			err, IsReadinessTimeout(err))
+	}
+
+	// (a) agent_status.ended_at must be set.
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want row")
+	}
+	if st.EndedAt == nil {
+		t.Error("agent_status.ended_at IS NULL after readiness-timeout cleanup; want non-NULL")
+	}
+
+	// Retrieve the instance_id so we can look up the sessions row.
+	if st.InstanceID == nil || *st.InstanceID == "" {
+		t.Fatal("agent_status.instance_id is nil/empty; cannot verify sessions row")
+	}
+	instanceID := *st.InstanceID
+
+	// (b) sessions.ended_at must be set.
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		t.Fatalf("SessionByInstanceID(%s): %v", instanceID, err)
+	}
+	if sess == nil {
+		t.Fatalf("sessions row not found for instance_id %s", instanceID)
+	}
+	if sess.EndedAt == nil {
+		t.Error("sessions.ended_at IS NULL after readiness-timeout cleanup; want non-NULL (#1881)")
+	}
+
+	// (c) sessions.end_state must be non-nil and equal to the documented value.
+	const wantEndState = "readiness-timeout"
+	if sess.EndState == nil {
+		t.Errorf("sessions.end_state is nil, want %q (#1881)", wantEndState)
+	} else if *sess.EndState != wantEndState {
+		t.Errorf("sessions.end_state = %q, want %q (#1881)", *sess.EndState, wantEndState)
+	}
+}
+
 // TestSpawnSession_ReadinessTimeoutWritesFailureToStartupLog verifies that
 // when the readiness gate trips, the failure is recorded in the startup
 // log so the operator has a forensic trail.
