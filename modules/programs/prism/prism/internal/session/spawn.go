@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,35 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
+
+// spawnMu serialises concurrent SpawnSession calls for the same session name.
+//
+// Implementation choice: in-process advisory lock (sync.Map[string]*sync.Mutex).
+// This handles the realistic case where all SpawnSession callers (spawn, review
+// fan-out) share one process. It does NOT protect against two separate prism
+// binaries racing on the same session name — that is a cross-process race that
+// would require a DB-side conditional UPDATE (option 2 from issue #1880). For
+// the current usage pattern (all callers in one coordinator process) in-process
+// serialisation is sufficient and is the simpler implementation.
+//
+// Scope: the entire SpawnSession prologue (seed → group_id → instance_id →
+// InsertSession → AllocatePort) is protected by the lock for a given session
+// name. Releasing the lock after AllocatePort (but before the layout spawner
+// runs) is safe: once instance_id and the sessions row are written and the port
+// is allocated, the DB state is consistent and idempotent operations from
+// concurrent callers (UpsertStatusSeedRootAgentName, InsertSession via INSERT OR
+// IGNORE) become no-ops.
+var spawnMu sync.Map // key: sessionName, value: *sync.Mutex
+
+// spawnLock returns the per-session-name mutex, creating it if necessary, and
+// locks it. The caller must call the returned unlock function when the critical
+// section is complete.
+func spawnLock(sessionName string) (unlock func()) {
+	v, _ := spawnMu.LoadOrStore(sessionName, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
 
 // SpawnOpts describes a single session to create end-to-end.
 // All fields are available regardless of agent type — SpawnSession does not
@@ -448,6 +478,38 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	opts.PromptFilePath = promptFilePath
 
+	// F2 (#1880): Serialise concurrent SpawnSession calls for the same session
+	// name. Without this guard, two concurrent callers both execute the
+	// non-atomic prologue (seed → instance_id → InsertSession → AllocatePort)
+	// in parallel: SetInstanceID is an unconditional UPDATE so the last writer
+	// wins; both InsertSession calls succeed (different PKs) leaving one orphan;
+	// AllocatePort may pick the same port. The lock ensures only one caller runs
+	// the prologue at a time.
+	//
+	// After acquiring the lock, we check whether the session is already alive
+	// (agent_status row exists with a non-nil instance_id and ended_at IS NULL).
+	// If it is, the second (and later) concurrent callers return an error
+	// immediately without touching the DB — preserving the winning caller's
+	// state. This is the minimal correct behaviour: the second caller was
+	// redundant (the session already exists) and failing fast is safer than
+	// letting it overwrite the winning caller's instance_id.
+	//
+	// In-process only: cross-process races (two prism binaries spawning the
+	// same session name) are not protected here.
+	unlockSpawn := spawnLock(opts.SessionName)
+	defer unlockSpawn()
+
+	// Post-lock: check for a live session so late arrivals fail fast without
+	// corrupting the winner's DB state.
+	if existing, checkErr := d.CurrentStatus(opts.SessionName); checkErr == nil && existing != nil {
+		if existing.InstanceID != nil && *existing.InstanceID != "" && existing.EndedAt == nil {
+			startup.log("spawn-session: session already alive (instance_id=%s) — concurrent duplicate rejected",
+				*existing.InstanceID)
+			return fmt.Errorf("spawn session: %q is already alive (instance_id=%s) — concurrent spawn rejected",
+				opts.SessionName, *existing.InstanceID)
+		}
+	}
+
 	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
 	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
 	// value written here.
@@ -592,9 +654,28 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	}
 	if layoutErr != nil {
 		startup.log("spawn-session: layout setup FAILED: %v", layoutErr)
-		// Wrap the error with a cleanup hint. The DB row, worktree, and any
-		// sidecar process may have been created before the tmux step failed;
-		// tell the operator how to clean up side effects.
+		// F5 (#1880): Auto-clean on layout failure to match the readiness-timeout
+		// path. Both failure modes leave the same residue (pre-inserted sessions
+		// row, allocated port, prompt file, possibly a partial sidecar process);
+		// cleaning here removes operator toil and prevents stale DB rows from
+		// blocking a retry with the same session name.
+		//
+		// Cleanup primitive set (same as readiness-timeout path above):
+		//   - KillSidecar:              stops any sidecar that was started before
+		//                               the tmux step failed (spawnAgentOnlyLayout
+		//                               starts the sidecar first).
+		//   - cleanupHalfAliveSession:  marks agent_status ended, releases the
+		//                               port, purges bus messages, and writes
+		//                               sessions.ended_at (#1881).
+		//   - tmux.KillSession:         removes any partial tmux session created
+		//                               before the failure (e.g. NewSessionDetached
+		//                               succeeded but NewWindow failed).
+		//   - removeInitialPrompt:      drops the per-session prompt file so a
+		//                               retry with the same name starts fresh.
+		KillSidecar(opts.SessionName)
+		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
+		_ = tmux.KillSession(opts.SessionName)
+		removeInitialPrompt(opts.SessionName)
 		return fmt.Errorf("%w — to remove side effects run: prism cleanup --yes --session %s",
 			layoutErr, opts.SessionName)
 	}
