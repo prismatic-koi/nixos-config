@@ -249,6 +249,7 @@ Once the sense-check passes, enqueue the PR in the merge queue and continue with
    - **`PR #N has merge conflicts...`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again.
    - **`PR #N CI failed...`** — `prism prompt <worker-session>` to investigate and fix, then `prism merge <number>` again.
    - **`PR #N is blocked — human reviewer approval required...`** — request a human review on the PR (e.g. `gh pr review --request <user>`); once approved, `prism merge <number>` again.
+   - **`PR #N is blocked — reviewer requested changes...`** — `prism prompt <worker-session>` to address the reviewer's requested changes and re-request review on the PR; once the reviewer re-approves, `prism merge <number>` again.
    - **`PR #N was closed without merging...`** — typically nothing; the PR was closed deliberately.
 3. Use `prism merges` to inspect the current queue at any time.
 

@@ -233,13 +233,18 @@ func (w *Watcher) tick(ctx context.Context) {
 		w.failAndNotify(head, "merge conflicts")
 
 	case "BLOCKED":
-		// Disambiguate: CI failure, review required, or still running.
+		// Disambiguate: CI failure, review required, changes requested, or still running.
 		if hasCIFailure(prInfo.StatusCheckRollup) {
 			w.failAndNotify(head, "CI failed")
 		} else if prInfo.ReviewDecision == "REVIEW_REQUIRED" {
 			w.failAndNotify(head, "human reviewer approval required before merge")
+		} else if prInfo.ReviewDecision == "CHANGES_REQUESTED" {
+			w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
 		} else {
-			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or review requirement — staying watching", head.PR)
+			// Include the actual ReviewDecision string so any future unhandled
+			// value (new GitHub enum addition, unexpected empty/"" state) surfaces
+			// in the operator log rather than vanishing into a generic message.
+			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or known review requirement (reviewDecision=%q) — staying watching", head.PR, prInfo.ReviewDecision)
 		}
 
 	case "UNSTABLE":
@@ -378,6 +383,8 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 		notifyText = fmt.Sprintf("PR #%d was closed without merging — removed from queue", head.PR)
 	case "human reviewer approval required before merge":
 		notifyText = fmt.Sprintf("PR #%d is blocked — human reviewer approval required before merge", head.PR)
+	case "reviewer requested changes — fix and re-request review":
+		notifyText = fmt.Sprintf("PR #%d is blocked — reviewer requested changes — fix and re-request review", head.PR)
 	default:
 		notifyText = fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	}

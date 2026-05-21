@@ -1,9 +1,11 @@
 package mergequeue
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -527,6 +529,10 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 			fw.watcher.failAndNotify(head, "CI failed")
 		} else if prInfoVal.ReviewDecision == "REVIEW_REQUIRED" {
 			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
+		} else if prInfoVal.ReviewDecision == "CHANGES_REQUESTED" {
+			fw.watcher.failAndNotify(head, "reviewer requested changes — fix and re-request review")
+		} else {
+			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or known review requirement (reviewDecision=%q) — staying watching", head.PR, prInfoVal.ReviewDecision)
 		}
 
 	case "UNSTABLE":
@@ -992,6 +998,133 @@ func TestWatcher_BLOCKEDNoReviewDecisionNoCIStaysWatching(t *testing.T) {
 	}
 	if row.Status != "watching" {
 		t.Errorf("status: got %q, want watching", row.Status)
+	}
+}
+
+// TestWatcher_BLOCKEDWithChangesRequested transitions to failed with the
+// changes-requested notification message when reviewDecision is
+// "CHANGES_REQUESTED" and CI is passing. Regression test for issue #1884:
+// previously this case fell through to the "staying watching" log branch
+// and the PR sat in the queue forever.
+func TestWatcher_BLOCKEDWithChangesRequested(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-changes"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-changes")
+
+	if _, err := d.EnqueueMerge(1884, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:             "OPEN",
+				MergeStateStatus:  "BLOCKED",
+				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
+				ReviewDecision:    "CHANGES_REQUESTED",
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	// Row must have transitioned to failed with the expected reason.
+	const wantMsg = "reviewer requested changes — fix and re-request review"
+	row, err := d.PendingMergeByPR(1884)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+	if row.Error == nil || *row.Error != wantMsg {
+		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
+	}
+
+	// Notification must have been sent and contain the expected text.
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
+		t.Fatalf("unmarshal notification body: %v", err)
+	}
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "PR #1884") {
+		t.Errorf("notification text %q does not contain 'PR #1884'", text)
+	}
+	if !strings.Contains(text, wantMsg) {
+		t.Errorf("notification text %q does not contain changes-requested message", text)
+	}
+}
+
+// TestWatcher_BLOCKEDUnrecognisedReviewDecisionLogsValue verifies the
+// defensive log branch: an unrecognised ReviewDecision value (e.g. a future
+// GitHub enum addition) keeps the row in watching state AND emits a log line
+// containing the literal decision string for forensic visibility.
+func TestWatcher_BLOCKEDUnrecognisedReviewDecisionLogsValue(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-foobar"
+	session := "myrepo@main"
+
+	if _, err := d.EnqueueMerge(1885, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:             "OPEN",
+				MergeStateStatus:  "BLOCKED",
+				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
+				ReviewDecision:    "FOOBAR",
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	// Capture log output only around processHead so we don't pick up the
+	// unrelated repo-resolution log lines emitted by New().
+	var buf bytes.Buffer
+	origOut := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(origOut)
+		log.SetFlags(origFlags)
+	})
+
+	fw.processHead(context.Background())
+
+	// Row stays in watching state (stay-watching path).
+	row, err := d.PendingMergeByPR(1885)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching (unrecognised decision must not terminate)", row.Status)
+	}
+
+	// Log line must include the literal value "FOOBAR" for forensic visibility.
+	logged := buf.String()
+	if !strings.Contains(logged, "FOOBAR") {
+		t.Errorf("log output %q does not contain literal \"FOOBAR\"", logged)
+	}
+	if !strings.Contains(logged, "PR #1885") {
+		t.Errorf("log output %q does not reference PR #1885", logged)
 	}
 }
 
