@@ -1466,97 +1466,150 @@ func TestRestoreSession_BwrapMode_TempFileWritten2(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_PlumbsHarnessSessionID exercises AC8(d): when the
-// agent_status row has a non-NULL harness_session_id, restoreProjectSession
-// must copy that value into opts.HarnessSessionID so the downstream container
-// launcher can ask pi to resume the prior conversation.
+// TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists is the
+// end-to-end host-mode regression guard for issue #1838 / AC8(d). It seeds
+// an agent_status row with a non-NULL harness_session_id, writes a matching
+// pi session JSONL under ~/.pi/agent/sessions/<encoded-cwd>/, runs restore,
+// and asserts that the resulting tmux agent pane start command contains
+// `pi ... --session '<id>'`. This is the load-bearing assertion: if the
+// HarnessSessionID plumbing breaks anywhere between agent_status and the
+// final tmux launch command, the substring will be absent and this test
+// fails.
 //
-// Issue #1838.
-func TestRestoreSession_PlumbsHarnessSessionID(t *testing.T) {
+// Host mode (rather than bwrap/sandbox-exec) is chosen because the host
+// branch is the one the launch-command path actually exercises —
+// container-mode panes run `prism agent-run`, which reads HarnessSessionID
+// straight from the DB row inside that subprocess (covered by the
+// PIInvocation tests in internal/container/pi_invocation_resume_test.go and
+// by the obvious-by-inspection plumbing in cmd/agent_run.go +
+// cmd/agent_run_sandbox_exec_darwin.go).
+func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) {
+	skipRestoreOnGHA(t)
 	// Uses withCmdServer — must not run in parallel.
+	// Redirect both XDG_STATE_HOME (prism per-session dirs) and HOME (pi
+	// sessions root in host mode) so the test never touches real state.
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationBwrap,
-	})
-	pf := fakeProfilesFile()
-	withRestoreProfiles(t, pf, nil)
+	// Force host isolation on the restore path so the pane runs the direct
+	// `pi ...` command rather than `prism agent-run`.
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationHost})
 
 	d := openRestoreTestDB(t)
 
-	bareRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
-		t.Fatalf("write .bare: %v", err)
-	}
-	worktreeDir := filepath.Join(bareRoot, "feature-branch")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	sessionName := "myrepo@feature"
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@host-resume"
 
 	const harnessSessionID = "019e00ed-1234-7890-abcd-ef0123456789"
 	hsid := harnessSessionID
-	status := seedStatus(t, d, sessionName, worktreeDir, &hsid)
+	_ = seedStatus(t, d, sessionName, worktreeDir, &hsid)
+	if err := d.SetIsolationMode(sessionName, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	var status db.Status
+	for _, st := range statuses {
+		if st.SessionName == sessionName {
+			status = st
+			break
+		}
+	}
 
-	var capturedOpts session.Opts
-	withCreateSessionHook(t, func(opts session.Opts) {
-		capturedOpts = opts
-	})
+	// Write a synthetic pi session JSONL under the host-mode sessions root
+	// so ResolvePIResumeSession finds it. The encoded-cwd formula matches
+	// pi's own session-manager naming.
+	encoded := encodePiCWDForTest(worktreeDir)
+	sessionDir := filepath.Join(fakeHome, ".pi", "agent", "sessions", encoded)
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		t.Fatalf("mkdir host-mode sessions dir: %v", err)
+	}
+	sessionFile := filepath.Join(sessionDir, "2026-01-02T03-04-05-000Z_"+harnessSessionID+".jsonl")
+	if err := os.WriteFile(sessionFile, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
 
 	if err := callRestoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	if capturedOpts.HarnessSessionID != harnessSessionID {
-		t.Errorf("opts.HarnessSessionID = %q, want %q", capturedOpts.HarnessSessionID, harnessSessionID)
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created", sessionName)
+	}
+
+	// The agent pane's start command must contain `--session '<id>'`.
+	pane := agentPaneStartCmd(t, s, sessionName)
+	want := "--session '" + harnessSessionID + "'"
+	if !strings.Contains(pane, want) {
+		t.Errorf("agent pane start command missing %q\ncaptured: %s", want, pane)
 	}
 }
 
-// TestRestoreSession_EmptyHarnessSessionID_LeavesOptsEmpty verifies AC5 / AC7
-// on the restore side: when the DB row has NULL harness_session_id (harness
-// never started, or non-pi harness), restoreProjectSession must leave
-// opts.HarnessSessionID empty so PIInvocation skips --session silently.
-func TestRestoreSession_EmptyHarnessSessionID_LeavesOptsEmpty(t *testing.T) {
-	// Uses withCmdServer — must not run in parallel.
+// TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing exercises AC4 /
+// AC5 on the host-mode launch path: when the agent_status row carries a
+// HarnessSessionID but no matching pi JSONL exists on disk,
+// buildDirectAgentCmd must omit --session and pi must start a fresh
+// conversation. The negative assertion proves the test from
+// TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists isn't a
+// no-op (i.e. the --session token doesn't sneak in unconditionally).
+func TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing(t *testing.T) {
+	skipRestoreOnGHA(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	// Empty fake HOME — no pi sessions dir present, so the resolver
+	// must fail and the launcher must omit --session.
+	t.Setenv("HOME", t.TempDir())
+
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
-	withRestoreConfig(t, config.Config{
-		DefaultIsolationMode: config.IsolationBwrap,
-	})
-	pf := fakeProfilesFile()
-	withRestoreProfiles(t, pf, nil)
+	withRestoreConfig(t, config.Config{DefaultIsolationMode: config.IsolationHost})
 
 	d := openRestoreTestDB(t)
 
-	bareRoot := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
-		t.Fatalf("write .bare: %v", err)
-	}
-	worktreeDir := filepath.Join(bareRoot, "feature-branch")
-	if err := os.MkdirAll(worktreeDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	sessionName := "myrepo@feature-empty"
+	worktreeDir := t.TempDir()
+	sessionName := "myrepo@host-resume-miss"
 
-	// nil harness_session_id => row written with NULL.
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	var capturedOpts session.Opts
-	withCreateSessionHook(t, func(opts session.Opts) {
-		capturedOpts = opts
-	})
+	const harnessSessionID = "019e00ed-aaaa-bbbb-cccc-deadbeef0000"
+	hsid := harnessSessionID
+	_ = seedStatus(t, d, sessionName, worktreeDir, &hsid)
+	if err := d.SetIsolationMode(sessionName, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	statuses, err := d.AllActiveStatus()
+	if err != nil {
+		t.Fatalf("AllActiveStatus: %v", err)
+	}
+	var status db.Status
+	for _, st := range statuses {
+		if st.SessionName == sessionName {
+			status = st
+			break
+		}
+	}
 
 	if err := callRestoreSession(d, status); err != nil {
 		t.Fatalf("restoreSession: %v", err)
 	}
 	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	if capturedOpts.HarnessSessionID != "" {
-		t.Errorf("opts.HarnessSessionID = %q, want empty string when DB row has NULL harness_session_id", capturedOpts.HarnessSessionID)
+	pane := agentPaneStartCmd(t, s, sessionName)
+	if strings.Contains(pane, "--session") {
+		t.Errorf("agent pane start command unexpectedly contains --session when no JSONL exists\ncaptured: %s", pane)
 	}
+}
+
+// encodePiCWDForTest mirrors internal/container.encodePiCWD /
+// internal/harness/pi.EncodePiCWD. Duplicated locally so the restore test
+// stays in the cmd package without an internal-package dependency.
+func encodePiCWDForTest(cwd string) string {
+	stripped := strings.TrimLeft(cwd, "/\\")
+	replaced := strings.NewReplacer("/", "-", "\\", "-", ":", "-").Replace(stripped)
+	return "--" + replaced + "--"
 }

@@ -113,7 +113,7 @@ func PIInvocation(cfg Config) []string {
 	// HarnessSessionID is empty (fresh session); on missing-file the helper
 	// logs a warning and returns ok=false so pi starts a new conversation.
 	if cfg.HarnessSessionID != "" {
-		if piResolveResumeSession(cfg) {
+		if ResolvePIResumeSession(cfg) {
 			args = append(args, "--session", cfg.HarnessSessionID)
 		}
 	}
@@ -125,11 +125,18 @@ func PIInvocation(cfg Config) []string {
 	return args
 }
 
-// piResolveResumeSession returns true when the on-disk pi session JSONL for
+// ResolvePIResumeSession returns true when the on-disk pi session JSONL for
 // cfg.HarnessSessionID exists under the mode-aware sessions root and pi can
 // be told to resume it. Returns false when the file is missing, in which case
 // it also writes a tagged warning line to the per-session agent-run log so
 // the operator can see why the conversation didn't resume.
+//
+// Callers may pass:
+//
+//   - a fully-populated Config (as PIInvocation does for bwrap and sandbox-exec);
+//   - or a minimal Config with just SessionName, Worktree, and HarnessSessionID
+//     set (as the host-mode launch path in internal/session does, since it has
+//     no container fields).
 //
 // The mode-aware sessions root mirrors internal/harness/pi/archive.go's
 // piSessionsRoot helper (see that file for the authoritative reference). It
@@ -139,7 +146,12 @@ func PIInvocation(cfg Config) []string {
 // one, change the other.
 //
 // Caller contract: HarnessSessionID is non-empty. An empty HarnessSessionID
-// must be filtered out upstream (PIInvocation handles that).
+// must be filtered out upstream (PIInvocation and buildDirectAgentCmd both
+// handle that).
+func ResolvePIResumeSession(cfg Config) bool {
+	return piResolveResumeSession(cfg)
+}
+
 func piResolveResumeSession(cfg Config) bool {
 	root, ok := piResumeSessionsRoot(cfg)
 	if !ok {

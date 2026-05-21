@@ -180,12 +180,28 @@ type Opts struct {
 	// resume when launching the harness (e.g. pi's session UUID). Populated
 	// by `prism restore` (and `prism restart`, which calls Restore) from
 	// agent_status.harness_session_id; left empty by `prism spawn` and
-	// `prism switch`. When non-empty and Harness == "pi" the value is
-	// propagated to container.Config.HarnessSessionID by the agent-run
-	// dispatch path so PIInvocation can append --session <id>.
+	// `prism switch`.
+	//
+	// Consumed in host mode by buildDirectAgentCmd (which calls
+	// container.ResolvePIResumeSession and appends `--session <id>` to the
+	// direct pi invocation when the on-disk JSONL is found). In bwrap and
+	// sandbox-exec the equivalent plumbing lives in cmd/agent_run.go and
+	// cmd/agent_run_sandbox_exec_darwin.go, which re-read the value from
+	// agent_status and pass it into container.Config.HarnessSessionID for
+	// PIInvocation — those paths do not depend on this Opts field because
+	// the bwrap/sandbox-exec tmux pane runs `prism agent-run`, which
+	// reconstructs its container config from the DB rather than carrying
+	// the launch opts forward.
 	//
 	// Issue #1838.
 	HarnessSessionID string
+	// Worktree is the absolute worktree path the session was created in. It
+	// is required only by the host-mode pi-resume path (buildDirectAgentCmd
+	// passes it into container.ResolvePIResumeSession so the encoded-cwd
+	// component of the on-disk pi sessions directory resolves correctly).
+	// Other launch shapes derive the worktree from the DB or from the
+	// container-mode plumbing and do not consult this field.
+	Worktree string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -313,6 +329,15 @@ func harnessBinary(harnessName string) string {
 // buildDirectAgentCmd returns the direct-launch command for the session
 // harness (pre-container mode). For harness="" or "pi" this is a pi
 // invocation.
+//
+// Host-mode pi-resume (issue #1838): when opts.HarnessSessionID is non-empty
+// and the harness is pi, the launcher calls container.ResolvePIResumeSession
+// to look up the on-disk session JSONL under ~/.pi/agent/sessions and, if
+// found, appends `--session <id>` immediately before any --prompt argument so
+// pi reopens the prior conversation. Missing file falls back silently to a
+// fresh conversation (the resolver writes a tagged warning to the per-session
+// agent-run.log). Non-pi harnesses and empty IDs skip the resume path
+// entirely.
 func buildDirectAgentCmd(opts Opts) string {
 	binary := harnessBinary(opts.HarnessName)
 	agent := opts.Agent
@@ -321,6 +346,22 @@ func buildDirectAgentCmd(opts Opts) string {
 		cmd = binary + " --agent " + agent
 	} else {
 		cmd = binary
+	}
+	// Append --session <id> for host-mode pi-resume (issue #1838). Scoped
+	// to the pi harness via harnessBinary's coverage — "pi" and "" map to
+	// the pi binary; any other harness name skips resume because
+	// ResolvePIResumeSession's encoded-cwd / sessions-root layout is pi-
+	// specific. Inserted before --prompt so the flag pair stays adjacent to
+	// the binary and the positional prompt (if any) remains the last token.
+	if opts.HarnessSessionID != "" && (opts.HarnessName == "pi" || opts.HarnessName == "") {
+		resumeCfg := container.Config{
+			SessionName:      opts.SessionName,
+			Worktree:         opts.Worktree,
+			HarnessSessionID: opts.HarnessSessionID,
+		}
+		if container.ResolvePIResumeSession(resumeCfg) {
+			cmd += " --session " + shellQuote(opts.HarnessSessionID)
+		}
 	}
 	if opts.Prompt != "" {
 		// #1064: when PromptFilePath is supplied, route the prompt through
@@ -681,6 +722,13 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// opts.SessionName must be set by the caller before setupFullLayout is
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
 	// BuildAgentCmd uses it to prefix PRISM_SESSION_NAME for the plugin.
+	//
+	// Propagate the worktree path into opts so buildDirectAgentCmd (host
+	// mode) can resolve the encoded-cwd component of the pi sessions
+	// directory for conversation resume (issue #1838). Other isolation
+	// modes ignore opts.Worktree — their `prism agent-run` dispatch reads
+	// the worktree from the DB row instead.
+	opts.Worktree = directory
 	agentCmd := BuildAgentCmd(opts)
 
 	// Persist isolation_mode BEFORE opening the agent window. This is the
