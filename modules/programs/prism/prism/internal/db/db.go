@@ -1553,40 +1553,59 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 	}
 	if osColExists > 0 {
 		// Rebuild sessions without outcome_summary using the rename-copy-drop
-		// idiom. Foreign keys are temporarily disabled during the rebuild to
-		// allow rename without cascading FK errors.
-		rebuildSteps := []string{
-			`PRAGMA foreign_keys = OFF`,
-			`ALTER TABLE sessions RENAME TO sessions_old_v24`,
-			`CREATE TABLE sessions (
-			  instance_id         TEXT PRIMARY KEY,
-			  session_name        TEXT NOT NULL,
-			  agent_role          TEXT,
-			  root_agent_name     TEXT,
-			  repo                TEXT NOT NULL,
-			  worktree            TEXT NOT NULL,
-			  harness             TEXT NOT NULL,
-			  harness_session_id  TEXT,
-			  group_id            TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
-			  started_at          INTEGER NOT NULL,
-			  ended_at            INTEGER,
-			  end_state           TEXT,
-			  archive_path        TEXT,
-			  prism_version       TEXT
-			)`,
-			`INSERT INTO sessions SELECT instance_id, session_name, agent_role,
-			  root_agent_name, repo, worktree, harness, harness_session_id,
-			  group_id, started_at, ended_at, end_state, archive_path, prism_version
-			  FROM sessions_old_v24`,
-			`DROP TABLE sessions_old_v24`,
-			`CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC)`,
-			`PRAGMA foreign_keys = ON`,
+		// idiom, wrapped in a transaction so a mid-migration crash leaves the
+		// DB fully rolled back rather than in a partial state (e.g.
+		// sessions_old_v24 present but sessions missing). PRAGMA foreign_keys
+		// must be set outside the transaction per the SQLite docs. This
+		// matches the pattern used by the v8→v9 and v25→v26 migrations.
+		//
+		// See https://www.sqlite.org/lang_altertable.html#otheralter
+		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("db: migration v23→v24: disable FK: %w", err)
 		}
-		for _, step := range rebuildSteps {
-			if _, err := conn.Exec(step); err != nil {
-				return fmt.Errorf("db: migration v23→v24: rebuild sessions: %w", err)
+		if err := func() error {
+			tx, err := conn.Begin()
+			if err != nil {
+				return fmt.Errorf("begin tx: %w", err)
 			}
+			defer tx.Rollback() //nolint:errcheck
+			steps := []string{
+				`ALTER TABLE sessions RENAME TO sessions_old_v24`,
+				`CREATE TABLE sessions (
+				  instance_id         TEXT PRIMARY KEY,
+				  session_name        TEXT NOT NULL,
+				  agent_role          TEXT,
+				  root_agent_name     TEXT,
+				  repo                TEXT NOT NULL,
+				  worktree            TEXT NOT NULL,
+				  harness             TEXT NOT NULL,
+				  harness_session_id  TEXT,
+				  group_id            TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+				  started_at          INTEGER NOT NULL,
+				  ended_at            INTEGER,
+				  end_state           TEXT,
+				  archive_path        TEXT,
+				  prism_version       TEXT
+				)`,
+				`INSERT INTO sessions SELECT instance_id, session_name, agent_role,
+				  root_agent_name, repo, worktree, harness, harness_session_id,
+				  group_id, started_at, ended_at, end_state, archive_path, prism_version
+				  FROM sessions_old_v24`,
+				`DROP TABLE sessions_old_v24`,
+				`CREATE INDEX IF NOT EXISTS idx_sessions_repo_started ON sessions(repo, started_at DESC)`,
+				`CREATE INDEX IF NOT EXISTS idx_sessions_name         ON sessions(session_name, started_at DESC)`,
+			}
+			for _, s := range steps {
+				if _, err := tx.Exec(s); err != nil {
+					return fmt.Errorf("step %q: %w", s[:min(40, len(s))], err)
+				}
+			}
+			return tx.Commit()
+		}(); err != nil {
+			return fmt.Errorf("db: migration v23→v24: rebuild sessions: %w", err)
+		}
+		if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			return fmt.Errorf("db: migration v23→v24: re-enable FK: %w", err)
 		}
 	}
 	// Add spawn_outcome table and indexes (idempotent: IF NOT EXISTS).
