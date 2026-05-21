@@ -383,6 +383,8 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 		notifyText = fmt.Sprintf("PR #%d was closed without merging — removed from queue", head.PR)
 	case "human reviewer approval required before merge":
 		notifyText = fmt.Sprintf("PR #%d is blocked — human reviewer approval required before merge", head.PR)
+	case "reviewer requested changes — fix and re-request review":
+		notifyText = fmt.Sprintf("PR #%d is blocked — reviewer requested changes — fix and re-request review", head.PR)
 	default:
 		notifyText = fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	}
