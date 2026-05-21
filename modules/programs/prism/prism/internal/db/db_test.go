@@ -7149,6 +7149,133 @@ func TestMigration_V23ToV24_Idempotent(t *testing.T) {
 	}
 }
 
+// TestMigration_V23ToV24_CrashRecovery verifies that simulating a mid-migration
+// failure during the v23→v24 sessions table rebuild leaves the DB in a
+// recoverable state. The test manually drives the rename-copy-drop steps using
+// a raw sql.DB, simulates a crash by rolling back the transaction mid-way
+// (after RENAME but before COMMIT), and then re-opens the DB via db.Open to
+// confirm the migration either fully succeeds or fully reverts — never a
+// partial state.
+//
+// The crash is simulated by beginning a transaction, running the RENAME, then
+// calling Rollback instead of Commit. This leaves sessions intact (the rename
+// was rolled back) and sessions_old_v24 absent, which is the correct "fully
+// reverted" state. After rollback, db.Open must succeed (it will re-run the
+// migration from scratch) and the schema_version must advance to the current
+// maximum.
+func TestMigration_V23ToV24_CrashRecovery(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v23_crash_recovery.db")
+	seedV23DB(t, dbPath)
+
+	// Simulate a mid-migration crash: open the DB directly with the sqlite
+	// driver, begin a transaction, execute the first rebuild step (RENAME)
+	// so the intermediate state exists, then roll back — mimicking what
+	// SQLite's transaction atomicity guarantees on a crash or SIGKILL between
+	// steps.
+	func() {
+		rawConn, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("raw open for crash sim: %v", err)
+		}
+		defer rawConn.Close()
+
+		if _, err := rawConn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			t.Fatalf("disable FK: %v", err)
+		}
+		tx, err := rawConn.Begin()
+		if err != nil {
+			t.Fatalf("begin crash-sim tx: %v", err)
+		}
+		// Execute the RENAME (first rebuild step) so the intermediate state
+		// briefly exists inside the transaction.
+		if _, err := tx.Exec("ALTER TABLE sessions RENAME TO sessions_old_v24"); err != nil {
+			t.Fatalf("rename in crash-sim tx: %v", err)
+		}
+		// Simulate crash / SIGKILL: roll back instead of commit.
+		// SQLite guarantees this is atomic — the rename is undone.
+		if err := tx.Rollback(); err != nil {
+			t.Fatalf("rollback crash-sim tx: %v", err)
+		}
+		if _, err := rawConn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			t.Fatalf("re-enable FK: %v", err)
+		}
+	}()
+
+	// The DB must now be in a recoverable state:
+	// - sessions still exists (RENAME was rolled back)
+	// - sessions_old_v24 does not exist
+	// - schema_version is still 23
+	func() {
+		rawConn, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			t.Fatalf("raw open to verify post-rollback state: %v", err)
+		}
+		defer rawConn.Close()
+
+		// sessions must be present (RENAME rolled back).
+		var sessTable string
+		if err := rawConn.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'",
+		).Scan(&sessTable); err != nil {
+			t.Errorf("sessions table missing after rollback — DB is in partial state: %v", err)
+		}
+
+		// sessions_old_v24 must be absent (RENAME rolled back).
+		var oldTable string
+		err = rawConn.QueryRow(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='sessions_old_v24'",
+		).Scan(&oldTable)
+		if err == nil {
+			t.Errorf("sessions_old_v24 unexpectedly present after rollback — DB is in partial state")
+		}
+
+		// schema_version must still be 23 (migration was not committed).
+		var ver int
+		if err := rawConn.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
+			t.Fatalf("read schema_version after rollback: %v", err)
+		}
+		if ver != 23 {
+			t.Errorf("schema_version after rollback: got %d, want 23", ver)
+		}
+	}()
+
+	// db.Open must succeed (re-runs the migration from the recoverable state).
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open after crash-recovery: %v", err)
+	}
+	defer d.Close()
+
+	// The migration must have fully completed: schema_version at current max.
+	var finalVer int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&finalVer); err != nil {
+		t.Fatalf("read schema_version after recovery: %v", err)
+	}
+	if finalVer != 32 {
+		t.Errorf("schema_version after recovery: got %d, want 32", finalVer)
+	}
+
+	// Sessions data must be preserved (the two rows seeded by seedV23DB).
+	var sessionCount int
+	if err := d.QueryRow("SELECT COUNT(*) FROM sessions").Scan(&sessionCount); err != nil {
+		t.Fatalf("count sessions after recovery: %v", err)
+	}
+	if sessionCount != 2 {
+		t.Errorf("sessions count after recovery: got %d, want 2", sessionCount)
+	}
+
+	// sessions.outcome_summary must no longer exist.
+	var osColCount int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'outcome_summary'`,
+	).Scan(&osColCount); err != nil {
+		t.Fatalf("pragma_table_info sessions after recovery: %v", err)
+	}
+	if osColCount != 0 {
+		t.Errorf("sessions.outcome_summary present after recovery: want 0, got %d", osColCount)
+	}
+}
+
 // TestWriteSpawnOutcome_Basic verifies that WriteSpawnOutcome creates a
 // spawn_outcome row for a session with no events (zero counts), and that a
 // second call is idempotent.
