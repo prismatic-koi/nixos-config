@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 32
+	currentSchemaVersion = 33
 )
 
 // DB wraps a SQLite connection.
@@ -472,10 +472,13 @@ func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 // schema versions where the referenced columns do not yet exist. The block
 // is applied after migrations so the columns are guaranteed to be present.
 //
-// Mirrors the v31→v32 migration body. The migration itself is the source
-// of truth for deployed databases; this block is the declarative mirror
-// that protects against drift if the migration is ever pruned (#1864 /
+// Mirrors the v31→v32 and v32→v33 migration bodies. The migrations themselves
+// are the source of truth for deployed databases; this block is the declarative
+// mirror that protects against drift if a migration is ever pruned (#1864 /
 // DB-F16). CREATE INDEX IF NOT EXISTS makes both paths idempotent.
+// harness_port is also included here (added in v32→v33, #1865 / DB-F4) because
+// harness_port was itself added by a migration (v7→v8) so it cannot live in
+// the declarative schema block.
 const postMigrationIndexes = `
 -- F1 (#1864): cover WHERE instance_id = ? on agent_events for
 -- WriteSpawnOutcome's aggregation and SessionTurnTokens. Includes type
@@ -497,6 +500,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_status_instance_id   ON agent_status(instan
   WHERE instance_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_agent_status_repo_active   ON agent_status(repo)
   WHERE ended_at IS NULL;
+-- F4 (#1865): unique partial index on harness_port so that concurrent
+-- AllocatePort calls cannot assign the same port to two sessions. The
+-- partial WHERE excludes NULL (released / never-allocated ports) so the
+-- uniqueness constraint only fires when a real port value is present.
+-- ended_at IS NULL additionally excludes ended sessions so that their
+-- reclaimed ports can be reused by new sessions.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_status_harness_port ON agent_status(harness_port)
+  WHERE harness_port IS NOT NULL AND ended_at IS NULL;
 `
 
 // seedSchemaVersionIfEmpty inserts schema_version=11 when the table is empty.
@@ -516,7 +527,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v32.
+// migrations in order from v1 to v33.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -615,6 +626,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV31ToV32(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV32ToV33(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -650,6 +664,36 @@ func runMigrations(conn *sql.DB) error {
 // block above, so the migration is a no-op there. The declarative block
 // and this migration must produce identical sqlite_master output (avoiding
 // the declarative-vs-migrated drift class that DB-F16 calls out).
+// migrateV32ToV33 adds a partial unique index on agent_status.harness_port
+// (WHERE harness_port IS NOT NULL) to make concurrent AllocatePort calls
+// serialisable at the DB layer (#1865 / DB-F4). Without this index, two
+// writers racing in the check-then-write loop could both read the same
+// usedPorts snapshot, both pick the same port, and both succeed — assigning
+// the same port to two different sessions. With the unique index, the second
+// writer's UPDATE fails with a constraint violation, which AllocatePort's
+// retry loop uses as the signal to restart port selection.
+//
+// The partial WHERE (harness_port IS NOT NULL AND ended_at IS NULL) excludes
+// both NULL/released ports and ended sessions, so that ended sessions' ports
+// can be reclaimed by new sessions without triggering a constraint error.
+func migrateV32ToV33(conn *sql.DB, version *int) error {
+	if *version >= 33 {
+		return nil
+	}
+	steps := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_status_harness_port ON agent_status(harness_port)
+		   WHERE harness_port IS NOT NULL AND ended_at IS NULL`,
+		`UPDATE schema_version SET version = 33`,
+	}
+	for _, s := range steps {
+		if _, err := conn.Exec(s); err != nil {
+			return fmt.Errorf("db: migration v32\u2192v33: %w", err)
+		}
+	}
+	*version = 33
+	return nil
+}
+
 func migrateV31ToV32(conn *sql.DB, version *int) error {
 	if *version >= 32 {
 		return nil

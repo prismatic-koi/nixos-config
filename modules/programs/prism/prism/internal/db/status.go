@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/proglog"
+
+	sqlitelib "modernc.org/sqlite"
 )
 
 // currentStateOf looks up the current agent state for sessionName. Returns
@@ -392,9 +395,70 @@ func (d *DB) ClearEnded(sessionName string) error {
 //
 // Returns an error if all ports in the range are exhausted or if the session does
 // not exist in agent_status.
+//
+// Concurrency mechanism — transaction + retry with unique-constraint guard (#1865 / DB-F4):
+//
+// The original check-then-write design was a race: two concurrent callers could
+// both read the same usedPorts snapshot, both pick the same free port, both call
+// portAvailable() (which may transiently succeed for both because the OS listen
+// window is brief), and both write the same port to different rows — with neither
+// UPDATE failing. The fix wraps each attempt in a BEGIN IMMEDIATE transaction so
+// that SQLite serialises the read+write pair: once the first writer commits, the
+// second writer's read sees the updated row and picks a different port. A
+// partial unique index on harness_port (WHERE harness_port IS NOT NULL AND ended_at IS NULL,
+// added in migration v32→v33) provides a second line of defence: even if two transactions
+// race to write the same port, only one can commit; the other receives a
+// SQLITE_CONSTRAINT_UNIQUE error and retries from scratch. The retry budget is
+// bounded (maxRetries) to prevent an infinite loop when the range is exhausted.
 func (d *DB) AllocatePort(sessionName string) (int, error) {
+	const maxRetries = 10
+	for attempt := range maxRetries {
+		port, err := d.allocatePortOnce(sessionName)
+		if err == nil {
+			return port, nil
+		}
+		// Retry on unique-constraint violations (another concurrent caller
+		// committed the same port between our read and our write) and on
+		// SQLITE_BUSY / SQLITE_BUSY_SNAPSHOT (WAL lock contention when many
+		// goroutines issue write transactions simultaneously).
+		if (isUniqueConstraintError(err) || isBusyError(err)) && attempt < maxRetries-1 {
+			continue
+		}
+		return 0, err
+	}
+	return 0, fmt.Errorf("db: allocate port: failed after %d attempts due to concurrent allocation", maxRetries)
+}
+
+// allocatePortOnce performs a single attempt of the port-allocation logic
+// inside a BEGIN IMMEDIATE transaction. Returns an error (possibly wrapping a
+// unique-constraint violation or SQLITE_BUSY) if the chosen port was claimed
+// by a concurrent writer or if the write lock could not be acquired.
+func (d *DB) allocatePortOnce(sessionName string) (int, error) {
+	ctx := context.Background()
+	// Obtain a dedicated connection from the pool so that we can issue
+	// BEGIN IMMEDIATE directly. database/sql's BeginTx does not expose
+	// SQLite-specific locking modes; using a raw connection and executing
+	// "BEGIN IMMEDIATE" is the canonical way to avoid SQLITE_BUSY_SNAPSHOT
+	// (which the busy_timeout does not suppress).
+	conn, err := d.conn.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("db: allocate port: acquire conn: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		// SQLITE_BUSY: another writer holds the write lock; caller retries.
+		return 0, fmt.Errorf("db: allocate port: begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			conn.ExecContext(ctx, "ROLLBACK") //nolint:errcheck
+		}
+	}()
+
 	// Collect ports currently assigned to active (non-ended) sessions.
-	rows, err := d.conn.Query(
+	rows, err := conn.QueryContext(ctx,
 		"SELECT harness_port FROM agent_status WHERE ended_at IS NULL AND harness_port IS NOT NULL",
 	)
 	if err != nil {
@@ -422,12 +486,16 @@ func (d *DB) AllocatePort(sessionName string) (int, error) {
 		if !portAvailable(port) {
 			continue
 		}
-		// Write the allocated port to agent_status.
-		res, err := d.conn.Exec(
+		// Write the allocated port inside the transaction. The unique partial
+		// index on harness_port (WHERE harness_port IS NOT NULL AND ended_at IS NULL) means this
+		// UPDATE fails with a constraint error if another transaction committed
+		// the same port concurrently.
+		res, err := conn.ExecContext(ctx,
 			"UPDATE agent_status SET harness_port = ? WHERE session_name = ?",
 			port, sessionName,
 		)
 		if err != nil {
+			// Propagate as-is; the caller checks isUniqueConstraintError.
 			return 0, fmt.Errorf("db: allocate port: update: %w", err)
 		}
 		n, err := res.RowsAffected()
@@ -437,10 +505,44 @@ func (d *DB) AllocatePort(sessionName string) (int, error) {
 		if n == 0 {
 			return 0, fmt.Errorf("db: allocate port: session %q not found in agent_status", sessionName)
 		}
+		if _, err := conn.ExecContext(ctx, "COMMIT"); err != nil {
+			return 0, fmt.Errorf("db: allocate port: commit: %w", err)
+		}
+		committed = true
 		return port, nil
 	}
 
 	return 0, fmt.Errorf("db: allocate port: all ports in range %d–%d are exhausted", PortRangeStart, PortRangeEnd)
+}
+
+// isUniqueConstraintError reports whether err is a SQLite unique-constraint
+// violation (SQLITE_CONSTRAINT_UNIQUE or SQLITE_CONSTRAINT_PRIMARYKEY).
+func isUniqueConstraintError(err error) bool {
+	var sqliteErr *sqlitelib.Error
+	if errors.As(err, &sqliteErr) {
+		// SQLite extended result codes: 2067 = SQLITE_CONSTRAINT_UNIQUE,
+		// 1555 = SQLITE_CONSTRAINT_PRIMARYKEY.
+		code := sqliteErr.Code()
+		return code == 2067 || code == 1555
+	}
+	return false
+}
+
+// isBusyError reports whether err is a SQLite lock-contention error
+// (SQLITE_BUSY=5, SQLITE_BUSY_RECOVERY=261, SQLITE_BUSY_SNAPSHOT=517,
+// SQLITE_BUSY_TIMEOUT=773, or plain SQLITE_LOCKED=6).
+// These arise under WAL mode when many goroutines issue write transactions
+// simultaneously — the busy timeout does not apply to SQLITE_BUSY_SNAPSHOT.
+func isBusyError(err error) bool {
+	var sqliteErr *sqlitelib.Error
+	if errors.As(err, &sqliteErr) {
+		// All SQLITE_BUSY variants share the low 8 bits == 5;
+		// SQLITE_LOCKED shares the low 8 bits == 6.
+		code := sqliteErr.Code()
+		primary := code & 0xFF
+		return primary == 5 || primary == 6
+	}
+	return false
 }
 
 // ReleasePort sets harness_port = NULL for the given session.
