@@ -659,7 +659,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// releases the port and marks the row ended, and tmux.KillSession
 			// releases the pane. All three are best-effort and idempotent.
 			KillSidecar(opts.SessionName)
-			cleanupHalfAliveSession(d, opts.SessionName)
+			cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
 			_ = tmux.KillSession(opts.SessionName)
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
@@ -737,7 +737,12 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 // db.GroupCompleted treats the row as terminal — without that, a review
 // monitor watching the group would block indefinitely on the half-alive
 // member's "idle" state (#1051 AC-6).
-func cleanupHalfAliveSession(d *db.DB, sessionName string) {
+//
+// instanceID is the host-minted UUID pre-inserted into sessions by
+// SpawnSession (#1507). When non-empty, cleanupHalfAliveSession also writes
+// sessions.ended_at and sessions.end_state so the two tables stay in lock-step
+// (fixing the zombie-incarnation drift class described in #1881).
+func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string) {
 	st, lookupErr := d.CurrentStatus(sessionName)
 	if lookupErr == nil && st != nil {
 		// UpsertStatus is idempotent and validates the transition (idle →
@@ -749,6 +754,27 @@ func cleanupHalfAliveSession(d *db.DB, sessionName string) {
 	_ = d.ReleasePort(sessionName)
 	_ = d.SetEnded(sessionName)
 	_ = d.PurgeBusMessages(sessionName)
+
+	// Keep sessions in lock-step with agent_status: write ended_at and
+	// end_state to the sessions row so consumers that join on
+	// sessions.ended_at IS NULL do not see a zombie incarnation for every
+	// readiness-timeout (#1881).
+	//
+	// end_state "readiness-timeout" is chosen over the generic "error" to
+	// make the specific failure mode visible in audit queries and dashboards —
+	// a readiness-timeout is a distinct failure class (the agent process never
+	// reached the harness handshake) and deserves its own token.
+	//
+	// This is best-effort: if the UPDATE fails (e.g. the row was never
+	// inserted due to an earlier error, or the DB is temporarily locked),
+	// we log and continue — the other cleanup steps above have already run.
+	if instanceID != "" {
+		if updErr := d.UpdateSessionEnded(instanceID, "readiness-timeout"); updErr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: cleanupHalfAliveSession: UpdateSessionEnded(%s): %v\n",
+				instanceID, updErr)
+		}
+	}
 }
 
 // spawnFullLayout delegates to Create, which handles the 3-window spawn-path
