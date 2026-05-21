@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,10 +49,26 @@ func (m *Manager) writeClaudeCredentials() {
 	m.claudeCredentialsReady = true
 }
 
+// gitBareRootTimeout is the per-call timeout for git subprocess invocations
+// inside githubAccountFromBareRoot. Matches the convention introduced for
+// internal/review/context.go (#1888). A bare git dir on a network FS or a
+// credential helper waiting on a missing TTY should not block indefinitely.
+const gitBareRootTimeout = 5 * time.Second
+
+// githubAccountCache caches the result of githubAccountFromBareRoot keyed on
+// bareRoot. The remote URL is stable for the lifetime of the worktree, so the
+// cache never needs to be invalidated.
+var githubAccountCache sync.Map // map[string]string
+
 // githubAccountFromBareRoot returns the GitHub account (organisation or user)
 // for the repo by reading the origin remote URL from the bare git dir.
 // Returns "" when the bare root is empty, git is unavailable, or the remote
 // URL does not match a github.com URL pattern.
+//
+// Results are cached per bareRoot so repeated calls (e.g. once per spawn)
+// do not re-fork git. The git subprocess is bounded by gitBareRootTimeout
+// to prevent an indefinite hang on network-FS repos or misbehaving credential
+// helpers.
 //
 // Supported URL formats:
 //
@@ -61,16 +78,37 @@ func githubAccountFromBareRoot(bareRoot string) string {
 	if bareRoot == "" {
 		return ""
 	}
+	// Return cached result if available — the remote URL is stable.
+	if cached, ok := githubAccountCache.Load(bareRoot); ok {
+		return cached.(string)
+	}
+	account := githubAccountFromBareRootUncached(bareRoot)
+	githubAccountCache.Store(bareRoot, account)
+	return account
+}
+
+// githubAccountFromBareRootUncached performs the actual git subprocess calls
+// without consulting the cache. Exported for testing via export_test.go.
+func githubAccountFromBareRootUncached(bareRoot string) string {
 	// The bare git dir lives at <bareRoot>/.bare — use --git-dir to run git
 	// against it directly without needing to be inside a worktree.
 	bareDir := filepath.Join(bareRoot, ".bare")
-	cmd := exec.Command("git", "--git-dir", bareDir, "remote", "get-url", "origin")
-	out, err := cmd.Output()
+	ctx, cancel := context.WithTimeout(context.Background(), gitBareRootTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "--git-dir", bareDir, "remote", "get-url", "origin").Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			log.Printf("container: git --git-dir %s remote get-url origin timed out after %s", bareDir, gitBareRootTimeout)
+			return ""
+		}
 		// Also try the bareRoot itself in case it IS the raw bare git dir.
-		cmd2 := exec.Command("git", "--git-dir", bareRoot, "remote", "get-url", "origin")
-		out, err = cmd2.Output()
+		ctx2, cancel2 := context.WithTimeout(context.Background(), gitBareRootTimeout)
+		defer cancel2()
+		out, err = exec.CommandContext(ctx2, "git", "--git-dir", bareRoot, "remote", "get-url", "origin").Output()
 		if err != nil {
+			if ctx2.Err() != nil {
+				log.Printf("container: git --git-dir %s remote get-url origin timed out after %s", bareRoot, gitBareRootTimeout)
+			}
 			return ""
 		}
 	}
