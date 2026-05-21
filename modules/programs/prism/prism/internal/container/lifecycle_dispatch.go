@@ -211,13 +211,22 @@ func (s *sandboxExecIsolator) Reset(ctx context.Context) error {
 // and returns the complete sandbox-exec argument list. Mirrors the
 // pre-refactor body of Manager.PrepareSandboxExec
 // (internal/container/container.go:637).
+//
+// If PrepareSandboxExecHome fails, Prepare returns an error immediately
+// and does not write the profile or launch the session. A staging-HOME
+// failure causes generateProfile to silently omit every (subpath …) rule
+// for the worktree, bare repo, host-API socket, and pi data dirs, producing
+// a profile that denies all worktree access — the session would crash with
+// opaque EPERM on first file open. There is no usable degraded-profile
+// fallback, so we hard-fail here (issue #1879).
 func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
-	// Populate the staging HOME with symlinks. Non-fatal if the staging HOME
-	// cannot be created (e.g. read-only home, as in the nix sandbox build
-	// environment): log and continue with a degraded profile.
+	// Populate the staging HOME with symlinks. Fail hard if the staging HOME
+	// cannot be created: without it, generateProfile omits every session-specific
+	// (subpath …) rule and the resulting profile denies worktree access entirely.
 	stagingHome, err := m.PrepareSandboxExecHome()
 	if err != nil {
-		log.Printf("container: sandbox-exec: prepare staging home: %v — launching with degraded profile", err)
+		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare staging HOME %s: %w",
+			stagingHome, err)
 	}
 	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
 
