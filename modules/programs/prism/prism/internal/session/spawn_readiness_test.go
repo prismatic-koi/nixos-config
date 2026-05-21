@@ -46,6 +46,7 @@ func TestSpawnSession_ReadinessTimeout_FiresAndCleansUp(t *testing.T) {
 		Repo:             "myrepo",
 		Worktree:         "/worktrees/myrepo-branch",
 		AgentRole:        "review-code",
+		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 300 * time.Millisecond, // short; no signal will arrive
 	}
@@ -91,6 +92,7 @@ func TestSpawnSession_ReadinessTimeoutZero_SkipsGate(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		AgentRole:   "review-code",
+		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 		// ReadinessTimeout omitted (zero) — gate must be skipped.
 	}
@@ -124,6 +126,7 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		AgentRole:   "review-code",
+		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 	}
 
@@ -173,6 +176,7 @@ func TestSpawnSession_ReadinessTimeoutWritesFailureToStartupLog(t *testing.T) {
 		Repo:             "myrepo",
 		Worktree:         "/worktrees/myrepo-branch",
 		AgentRole:        "review-code",
+		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 250 * time.Millisecond,
 	}

@@ -999,6 +999,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "branch is required")
 			return
 		}
+		// Reject an empty prompt at the API boundary (layer 3 of issue #1891).
+		// The CLI proxy (proxySpawn) already rejects empty prompts at layers 1+2,
+		// so a well-behaved client never reaches this branch. Defence-in-depth:
+		// a malformed or alternate client that POSTs {"prompt":""} would otherwise
+		// produce a session that comes up successfully but sits idle forever
+		// because no --prompt argument is forwarded to the host-side prism spawn.
+		if req.Prompt == "" {
+			writeError(w, http.StatusBadRequest, "prompt is required — the request body must include a non-empty \"prompt\" field")
+			return
+		}
 		// Validate --abtest: must be 0 or 2 values; mutually exclusive with profile.
 		if len(req.Abtest) == 1 || len(req.Abtest) > 2 {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("--abtest requires exactly two profile names (got %d)", len(req.Abtest)))

@@ -5449,7 +5449,7 @@ echo "session \"${last}@test-branch\" created"
 	// Client sends "repo":"prism-git" (a container mount-path name).
 	// Server must ignore this and use "test-repo" (from session name).
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"repo":"prism-git","branch":"test-branch"}`)
+		`{"repo":"prism-git","branch":"test-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5493,7 +5493,7 @@ echo "session \"${last}@new-branch\" created"
 	sc := New(cfg)
 
 	// No "repo" field sent at all.
-	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"new-branch"}`)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"new-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 for empty repo field; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5521,6 +5521,39 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 	}
 }
 
+// TestHostAPI_Spawn_EmptyPromptReturns400 verifies the layer-3 defence in
+// depth from issue #1891: a /spawn request with an empty or missing "prompt"
+// field is rejected with HTTP 400. The CLI proxy (proxySpawn) already
+// rejects empty prompts at layers 1+2, but a malformed or alternate client
+// that POSTs {"prompt":""} (or omits the field entirely) would otherwise
+// produce a session that comes up successfully on every observable surface
+// but sits idle forever waiting for a prompt that never arrives.
+func TestHostAPI_Spawn_EmptyPromptReturns400(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "explicit empty string", body: `{"branch":"feature","prompt":""}`},
+		{name: "prompt field omitted", body: `{"branch":"feature"}`},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+
+			rr := doHostAPI(t, sc, http.MethodPost, "/spawn", tc.body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400 for empty prompt; body = %s", rr.Code, rr.Body.String())
+			}
+			var errResp map[string]string
+			decodeJSONBody(t, rr, &errResp)
+			if !strings.Contains(errResp["error"], "prompt is required") {
+				t.Errorf("error %q should mention 'prompt is required'", errResp["error"])
+			}
+		})
+	}
+}
+
 // TestHostAPI_Spawn_SidecarNoAtSign_Returns500 verifies AC edge case: if the
 // sidecar's own session name contains no "@", /spawn returns 500 with a
 // message indicating the repo cannot be derived, and no spawn is attempted.
@@ -5532,7 +5565,7 @@ func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	}
 	// Session name without "@" — repoFromSession will fail.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
-	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch"}`)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500 when sidecar session has no '@'", rr.Code)
 	}
@@ -5577,7 +5610,7 @@ echo "session \"${last}@cross-branch\" created"
 	// Client sends "repo":"otherrepo" — this should be ignored, not rejected.
 	// The spawn runs with ownRepo ("myrepo"), so session_name must reflect myrepo.
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"repo":"otherrepo","branch":"cross-branch"}`)
+		`{"repo":"otherrepo","branch":"cross-branch","prompt":"hi"}`)
 	if rr.Code == http.StatusForbidden {
 		t.Fatalf("status = 403 (Forbidden), but client-supplied repo must be ignored, not rejected")
 	}
@@ -5651,7 +5684,7 @@ echo "session \"${last}@cap-branch\" created"
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"cap-branch","ignore_concurrency_cap":true}`)
+		`{"branch":"cap-branch","ignore_concurrency_cap":true,"prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5702,7 +5735,7 @@ echo "session \"${last}@iso-branch\" created"
 			}
 			sc := New(cfg)
 
-			body := `{"branch":"iso-branch","isolation":"` + mode + `"}`
+			body := `{"branch":"iso-branch","prompt":"hi","isolation":"` + mode + `"}`
 			rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
 			if rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
@@ -5754,7 +5787,7 @@ echo "session \"${last}@no-iso-branch\" created"
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"no-iso-branch"}`)
+		`{"branch":"no-iso-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5801,7 +5834,7 @@ exit 99
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"bad-iso-branch","isolation":"banana"}`)
+		`{"branch":"bad-iso-branch","prompt":"hi","isolation":"banana"}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5850,7 +5883,7 @@ exit 1
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"cap-branch"}`)
+		`{"branch":"cap-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status = %d, want 500; body = %s", rr.Code, rr.Body.String())
 	}
@@ -5909,7 +5942,7 @@ echo "session \"${last}@override-branch\" created"
 
 	// model_variant_overrides encodes {"review-context":"google/gemini-2.5-pro"}
 	// as a JSON string, matching what proxySpawn (cmd/spawn.go) sends.
-	body := `{"branch":"override-branch","model_variant_overrides":"{\"review-context\":\"google/gemini-2.5-pro\"}"}`
+	body := `{"branch":"override-branch","prompt":"hi","model_variant_overrides":"{\"review-context\":\"google/gemini-2.5-pro\"}"}`
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
@@ -5957,7 +5990,7 @@ echo "session \"${last}@no-override-branch\" created"
 	}
 	sc := New(cfg)
 
-	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"no-override-branch"}`)
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"no-override-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -6378,7 +6411,7 @@ exit 0
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"feature","harness":"not-a-real-harness"}`)
+		`{"branch":"feature","prompt":"hi","harness":"not-a-real-harness"}`)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400 for unknown harness; body = %s", rr.Code, rr.Body.String())
 	}
@@ -6437,7 +6470,7 @@ echo "session \"${last}@harness-branch\" created"
 	sc := New(cfg)
 
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"harness-branch","harness":"pi"}`)
+		`{"branch":"harness-branch","prompt":"hi","harness":"pi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
 	}
@@ -6485,7 +6518,7 @@ echo "session \"${last}@no-harness-branch\" created"
 
 	// No "harness" field in request body — host-side spawn must not receive --harness.
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
-		`{"branch":"no-harness-branch"}`)
+		`{"branch":"no-harness-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 for missing harness; body = %s", rr.Code, rr.Body.String())
 	}

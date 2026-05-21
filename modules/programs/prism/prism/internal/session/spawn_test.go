@@ -119,6 +119,7 @@ func TestSpawnSession_AgentOnly_WritesGroupID(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		AgentRole:   "review-goal",
+		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 		GroupID:     groupID,
 	}
@@ -158,6 +159,7 @@ func TestSpawnSession_AgentOnly_CreatesTmuxSession(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		AgentRole:   "review-qa",
+		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 	}
 
@@ -197,6 +199,7 @@ func TestSpawnSession_NoAgentRole_LeavesRootAgentNameNull(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		// AgentRole intentionally left empty.
+		Prompt: "go",
 		Layout: LayoutAgentOnly,
 	}
 
@@ -239,6 +242,7 @@ func TestSpawnSession_AllocatePortFails_ReturnsError(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		AgentRole:   "review-security",
+		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 	}
 
@@ -336,6 +340,7 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 				Repo:          "myrepo",
 				Worktree:      "/worktrees/myrepo-branch",
 				AgentRole:     "review-code",
+				Prompt:        "go",
 				Layout:        LayoutAgentOnly,
 				IsolationMode: mode,
 			}
@@ -421,44 +426,13 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 	}
 }
 
-// TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt verifies that when
-// opts.Prompt is empty, spawnAgentOnlyLayout does NOT set
-// PRISM_INITIAL_PROMPT in the tmux pane environment. An empty-string -e entry
-// would override an inherited value, which is not the desired behaviour.
-func TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt(t *testing.T) {
-	d, _ := openSpawnTestDB(t)
-	argsFile := spyTmuxBin(t)
-	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-
-	const sessionName = "myrepo@branch~review-1-review-code-noprompt"
-	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-code",
-		// Prompt intentionally left empty.
-		Layout: LayoutAgentOnly,
-	}
-
-	if err := SpawnSession(d, opts); err != nil {
-		t.Fatalf("SpawnSession: %v", err)
-	}
-
-	args := readSpyArgs(argsFile)
-	for i, a := range args {
-		if a == "-e" {
-			next := ""
-			if i+1 < len(args) {
-				next = args[i+1]
-			}
-			if strings.HasPrefix(next, "PRISM_INITIAL_PROMPT=") {
-				t.Errorf("tmux args %v contain -e PRISM_INITIAL_PROMPT=… when Prompt was empty; an empty entry would override an inherited value", args)
-				break
-			}
-		}
-	}
-}
+// TestSpawnSession_AgentOnly_PromptEnvVar_NoPrompt used to verify that
+// spawnAgentOnlyLayout did not set an empty PRISM_INITIAL_PROMPT env var when
+// opts.Prompt was empty. Since issue #1891 that combination is rejected at
+// the SpawnSession entry point (LayoutAgentOnly requires a non-empty Prompt),
+// so this test would never reach the env-var setup code it was guarding. The
+// new rejection is covered by TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected
+// in lost_prompt_test.go.
 
 // TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Bwrap is the regression
 // test for #1092. When opts.IsolationMode is "bwrap" and opts.Prompt is
@@ -818,5 +792,98 @@ func TestSpawnSession_AgentOnly_PromptFile_CleanedUpOnReadinessTimeout(t *testin
 	}
 	if _, err := os.Stat(filePath); err == nil {
 		t.Errorf("initial-prompt file %s still exists after readiness-gate timeout cleanup — AC6 requires it to be removed so a re-spawn with the same session name starts fresh (#1195)", filePath)
+	}
+}
+
+// ── empty-prompt rejection (issue #1891 layer 4) ────────────────────────────
+//
+// LayoutFull and LayoutAgentOnly host an agent pane and require a prompt to
+// drive the agent. LayoutBare and LayoutScratchpad are plain shells or
+// dashboards and legitimately have no prompt. The layer-4 guard must reject
+// the former and accept the latter — see issue #1891 AC5/AC6.
+
+// TestSpawnSession_EmptyPrompt_LayoutFull_Rejected verifies AC6(d): an empty
+// Prompt with LayoutFull is rejected before any side-effects (no tmux session,
+// no DB row, no port allocation).
+func TestSpawnSession_EmptyPrompt_LayoutFull_Rejected(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	argsFile := spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@empty-prompt-full"
+	opts := SpawnOpts{
+		SessionName:   sessionName,
+		Repo:          "myrepo",
+		Worktree:      "/worktrees/myrepo-empty-full",
+		AgentRole:     "worker",
+		Layout:        LayoutFull,
+		IsolationMode: "host",
+		HarnessName:   "pi",
+		// Prompt deliberately empty.
+	}
+
+	err := SpawnSession(d, opts)
+	if err == nil {
+		t.Fatal("SpawnSession: got nil, want error for empty Prompt with LayoutFull")
+	}
+	if !strings.Contains(err.Error(), "Prompt is required") {
+		t.Errorf("error %q does not mention 'Prompt is required'", err.Error())
+	}
+
+	// Refusal must happen before any side-effects.
+	if st, _ := d.CurrentStatus(sessionName); st != nil {
+		t.Errorf("agent_status row created despite empty-prompt rejection: %+v", st)
+	}
+	args := readSpyArgs(argsFile)
+	for _, a := range args {
+		if a == "new-session" {
+			t.Errorf("tmux new-session was invoked despite empty-prompt rejection; args: %v", args)
+			break
+		}
+	}
+}
+
+// TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt is
+// the regression guard for AC6(e) / AC5 of issue #1891: the layer-4 empty
+// prompt guard must fire ONLY for LayoutFull and LayoutAgentOnly. LayoutBare
+// and LayoutScratchpad are shell/dashboard layouts with no agent pane and
+// legitimately have no prompt.
+//
+// SpawnSession does not currently support LayoutBare/LayoutScratchpad end to
+// end — they have their own creation path — so we cannot assert nil-error
+// here. What we *can* assert (and what would catch the regression #1891
+// warns against) is that the error returned for these layouts is NOT the
+// new "Prompt is required" guard. If a future refactor routes these layouts
+// through SpawnSession, this test still passes; if the guard accidentally
+// widens to reject them, this test fails immediately.
+func TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt(t *testing.T) {
+	for _, layout := range []struct {
+		name string
+		v    Layout
+	}{
+		{name: "LayoutBare", v: LayoutBare},
+		{name: "LayoutScratchpad", v: LayoutScratchpad},
+	} {
+		layout := layout
+		t.Run(layout.name, func(t *testing.T) {
+			d, _ := openSpawnTestDB(t)
+			_ = spyTmuxBin(t)
+			t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+			opts := SpawnOpts{
+				SessionName: "myrepo@" + layout.name + "-no-prompt",
+				Repo:        "myrepo",
+				Worktree:    "/worktrees/myrepo-" + layout.name,
+				Layout:      layout.v,
+				// Prompt deliberately empty — legitimate for these layouts.
+			}
+
+			err := SpawnSession(d, opts)
+			if err != nil && strings.Contains(err.Error(), "Prompt is required") {
+				t.Errorf("SpawnSession with empty Prompt + %s returned a 'Prompt is required' error: %v — the layer-4 guard must fire only for LayoutFull/LayoutAgentOnly (issue #1891 AC5)", layout.name, err)
+			}
+		})
 	}
 }

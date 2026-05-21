@@ -58,6 +58,34 @@ func resolvePrompt(cmd *cobra.Command) (string, error) {
 	return text, err
 }
 
+// emptyPromptError returns an error naming the specific input source that
+// produced an empty prompt. Callers that require a non-empty prompt (e.g.
+// proxySpawn, the direct spawn path) use this after resolvePromptWithSource
+// to produce an operator-friendly error message that immediately identifies
+// which flag to fix. The shape is:
+//
+//   prism spawn: --prompt-file <path>: file is empty — supply a non-empty prompt
+//   prism spawn: --prompt: empty string — supply a non-empty prompt
+//   prism spawn: --prompt -: empty stdin — supply a non-empty prompt
+//   prism spawn: a prompt is required — supply --prompt, --prompt -, or --prompt-file
+//
+// The `verb` argument is the subcommand name used in the error prefix
+// ("prism spawn", "prism prompt", …).
+func emptyPromptError(cmd *cobra.Command, verb string) error {
+	promptFile, _ := cmd.Flags().GetString("prompt-file")
+	promptText, _ := cmd.Flags().GetString("prompt")
+	switch {
+	case promptFile != "":
+		return fmt.Errorf("%s: --prompt-file %s: file is empty — supply a non-empty prompt", verb, promptFile)
+	case promptText == "-":
+		return fmt.Errorf("%s: --prompt -: empty stdin — supply a non-empty prompt", verb)
+	case cmd.Flags().Changed("prompt"):
+		return fmt.Errorf("%s: --prompt: empty string — supply a non-empty prompt", verb)
+	default:
+		return fmt.Errorf("%s: a prompt is required — supply --prompt <text>, --prompt - (stdin), or --prompt-file <path>", verb)
+	}
+}
+
 // resolvePromptWithSource reads the prompt text from whichever source was
 // provided and also returns the prompt_source discriminator for C.4.SRC:
 //
