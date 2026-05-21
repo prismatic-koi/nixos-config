@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -91,6 +93,22 @@ func init() {
 		writeFrame(map[string]any{
 			"type":  "turn_end",
 			"usage": map[string]any{"input": 5, "output": 3},
+		})
+		writeFrame(sc("finished"))
+
+	case "large_frame":
+		// Emit a single msg_assistant frame whose text is 128 KiB — well above
+		// the default 64 KiB bufio.Scanner limit — to exercise the enlarged
+		// scanner buffer added in issue #1852.
+		writeFrame(sc("active"))
+		writeFrame(map[string]any{"type": "turn_start"})
+		writeFrame(map[string]any{
+			"type": "msg_assistant",
+			"text": strings.Repeat("A", 128*1024),
+		})
+		writeFrame(map[string]any{
+			"type":  "turn_end",
+			"usage": map[string]any{"input": 1, "output": 1},
 		})
 		writeFrame(sc("finished"))
 
@@ -332,5 +350,55 @@ func TestStdio_LegacyCoalesced(t *testing.T) {
 	}
 	if p.Text != "AB" {
 		t.Errorf("legacy coalesced text = %q, want %q", p.Text, "AB")
+	}
+}
+
+// TestStdio_LargeFrameNoErrTooLong verifies that a 128 KiB single-line frame
+// emitted by the stdio harness is processed without bufio.ErrTooLong and
+// without causing StateError (issue #1852).
+//
+// Prior to the fix the scanner used the default 64 KiB max token size; a
+// large msg_assistant frame would cause scanner.Scan() to return false with
+// scanner.Err() == bufio.ErrTooLong, the loop would exit with framesRead > 0
+// but lastState != "finished", and writeStartupError would be called.
+func TestStdio_LargeFrameNoErrTooLong(t *testing.T) {
+	requireUsableBwrap(t)
+	sc := newStdioSidecar(t, "large_frame", nil)
+	wait := runStdioSidecarAsync(sc)
+
+	err := wait()
+	if err != nil {
+		t.Fatalf("runStartupStdio returned error: %v", err)
+	}
+
+	// The harness finished cleanly — confirm no StateError was written.
+	status, dbErr := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if dbErr != nil {
+		t.Fatalf("CurrentStatus: %v", dbErr)
+	}
+	if status != nil && status.State == string(agent.StateError) {
+		t.Errorf("session entered StateError; expected clean finish after 128 KiB frame")
+	}
+
+	// The 128 KiB msg_assistant frame must appear in agent_events.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var msgEvents []db.Event
+	for _, ev := range events {
+		if ev.Type == "msg_assistant" {
+			msgEvents = append(msgEvents, ev)
+		}
+	}
+	if len(msgEvents) == 0 {
+		t.Fatal("no msg_assistant event recorded; large frame was dropped")
+	}
+	var payload struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(msgEvents[0].Payload), &payload); err != nil {
+		t.Fatalf("unmarshal msg_assistant payload: %v", err)
+	}
+	const wantLen = 128 * 1024
+	if got := len(payload.Text); got != wantLen {
+		t.Errorf("msg_assistant text length = %d, want %d", got, wantLen)
 	}
 }
