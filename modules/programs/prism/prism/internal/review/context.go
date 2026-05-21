@@ -9,11 +9,14 @@ package review
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
@@ -89,16 +92,29 @@ func parseLinkedIssues(body string) []string {
 	return result
 }
 
+// gitWorktreeTimeout is the per-call timeout for runGitInWorktree.
+// Local git operations are filesystem-bound and should complete well within
+// 10 seconds; a longer hang likely indicates a stalled index-pack or network
+// remote, both of which we want to surface rather than block indefinitely.
+const gitWorktreeTimeout = 10 * time.Second
+
 // runGitInWorktree runs a git command in the given worktree directory and returns
 // its stdout. Returns an empty string on error (git log failures are non-fatal).
+// Uses a 10-second timeout (context.DeadlineExceeded on expiry) to prevent a
+// stalled git subprocess from blocking the entire review spawn.
 func runGitInWorktree(worktree string, args ...string) string {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), gitWorktreeTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if worktree != "" {
 		cmd.Dir = worktree
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return ""
+		}
 		return ""
 	}
 	return stdout.String()
@@ -126,14 +142,26 @@ func truncateDiff(diff string, maxBytes, maxLines int) (string, bool) {
 	return diff, false
 }
 
+// ghTimeout is the per-call timeout for runGH. Matches the mergequeue.execGH
+// convention (30 s) so both gh-calling subsystems enforce the same policy.
+const ghTimeout = 30 * time.Second
+
 // runGH executes a gh command and returns its stdout as a string.
 // Returns an error if gh is not found or exits with a non-zero status.
+// Uses a 30-second timeout (matches mergequeue.execGH convention) so a hanging
+// gh subprocess (network partition, GitHub 5xx, ssh auth prompt) does not
+// block the entire review spawn indefinitely.
 func runGH(args ...string) (string, error) {
-	cmd := exec.Command("gh", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return "", fmt.Errorf("gh %s timed out after %s: %w", strings.Join(args, " "), ghTimeout, context.DeadlineExceeded)
+		}
 		if stderr.Len() > 0 {
 			return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 		}
