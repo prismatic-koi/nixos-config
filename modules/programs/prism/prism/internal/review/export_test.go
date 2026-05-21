@@ -16,6 +16,23 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
+// RunGHForTest is an exported wrapper around runGH for use in timeout tests.
+func RunGHForTest(args ...string) (string, error) {
+	return runGH(args...)
+}
+
+// RunGitInWorktreeForTest is an exported wrapper around runGitInWorktree for
+// use in timeout tests.
+func RunGitInWorktreeForTest(worktree string, args ...string) string {
+	return runGitInWorktree(worktree, args...)
+}
+
+// GHTimeoutForTest exposes ghTimeout for assertions in tests.
+const GHTimeoutForTest = ghTimeout
+
+// GitWorktreeTimeoutForTest exposes gitWorktreeTimeout for assertions.
+const GitWorktreeTimeoutForTest = gitWorktreeTimeout
+
 // BuildReviewPromptForTest is an exported wrapper around buildReviewPrompt for
 // use in external test packages. It allows tests to verify prompt content,
 // section ordering, and fallback behaviour without needing a live tmux/DB.
