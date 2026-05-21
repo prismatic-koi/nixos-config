@@ -12,10 +12,14 @@ import subprocess
 import time
 
 # Upstream regression reference: https://github.com/bitwarden/clients/issues/20703
-# When the buggy bitwarden-cli versions (2026.3.0+) are in use, `bw unlock --raw`
-# returns an 88-char session token that `bw status` / `bw list` silently reject.
-# We defend against re-introduction by validating any freshly minted session via
-# `bw status` before persisting it.
+# issue #1894 — server-pushed `unlock-via-sdk` flag causes `bw unlock --raw` to
+# return a bogus session regardless of client version. Two layers of defence:
+#   1. home.activation hook in modules/programs/bitwarden.nix patches data.json
+#      after every `nh switch` to keep the flag false.
+#   2. patch_unlock_via_sdk() below patches data.json immediately before every
+#      `bw unlock` call so that a fresh login or a server-pushed flag flip cannot
+#      re-introduce the broken path between activations.
+# See also: overlays/default.nix (bitwarden-cli pin comment)
 UPSTREAM_ISSUE = "bitwarden/clients#20703"
 
 
@@ -59,8 +63,46 @@ def session_unlocks_vault(session_key):
     except Exception:
         return False
 
+def patch_unlock_via_sdk():
+    """Patch data.json to set unlock-via-sdk = false before calling bw unlock.
+
+    This is a defensive measure against a server-pushed feature flag that causes
+    `bw unlock --raw` to return a bogus session (bitwarden/clients#20703, #1894).
+    The home.activation hook in modules/programs/bitwarden.nix provides the same
+    patch after every `nh switch`; this call handles the window between a fresh
+    `bw login` and the next activation, and guards against mid-session flag flips.
+    No-op when data.json does not exist or when the flag is already false.
+    """
+    config_dir = os.path.join(
+        os.environ.get("XDG_CONFIG_HOME", os.path.join(os.path.expanduser("~"), ".config")),
+        "Bitwarden CLI",
+    )
+    data_path = os.path.join(config_dir, "data.json")
+    if not os.path.exists(data_path):
+        return
+    try:
+        with open(data_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        server_cfg = data.setdefault("global_config_byServer", {})
+        bw_cfg = server_cfg.setdefault("https://api.bitwarden.com", {})
+        feature_states = bw_cfg.setdefault("featureStates", {})
+        if feature_states.get("unlock-via-sdk") is False:
+            return  # already correct, no write needed
+        feature_states["unlock-via-sdk"] = False
+        tmp_path = data_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_path, data_path)
+    except Exception as e:
+        print(f"Warning: could not patch unlock-via-sdk in data.json: {e}", file=sys.stderr)
+
+
 def unlock_bitwarden():
     """Unlock Bitwarden using the password from environment variable.
+
+    Patches the unlock-via-sdk feature flag to false before invoking `bw unlock`
+    to prevent the server-pushed flag from triggering the bogus-session path
+    (bitwarden/clients#20703, #1894).
 
     Returns a session key only if it is validated as actually unlocking the
     vault. If validation fails, prints an error referencing the upstream issue
@@ -69,6 +111,10 @@ def unlock_bitwarden():
     master_pass = os.getenv("BITWARDEN_PASSWORD")
     if not master_pass:
         return None
+
+    # Patch the feature flag before unlocking so the server cannot force the
+    # broken code path via a freshly written data.json or a mid-session flip.
+    patch_unlock_via_sdk()
 
     try:
         process = subprocess.run(
