@@ -689,10 +689,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 	info := payload.Properties.Info
 
 	if info.Role == "user" {
-		if s.writtenMessages[info.ID] {
+		if s.writtenMessages.has(info.ID) {
 			return
 		}
-		text := s.textByMessage[info.ID]
+		text, _ := s.textByMessage.get(info.ID)
 		if text == "" {
 			return
 		}
@@ -730,8 +730,8 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			"agent":     agentName,
 			"model":     model,
 		}, nil)
-		s.writtenMessages[info.ID] = true
-		delete(s.textByMessage, info.ID)
+		s.writtenMessages.set(info.ID, true)
+		s.textByMessage.del(info.ID)
 
 	} else if info.Role == "assistant" {
 		// Store time.created for TTFT computation as soon as we see any
@@ -741,8 +741,8 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 		// subsequent message.updated events for the same message don't
 		// overwrite the original created time.
 		if info.Time != nil && info.Time.Created != nil {
-			if _, alreadyStored := s.msgCreatedAtMs[info.ID]; !alreadyStored {
-				s.msgCreatedAtMs[info.ID] = *info.Time.Created
+			if !s.msgCreatedAtMs.has(info.ID) {
+				s.msgCreatedAtMs.set(info.ID, *info.Time.Created)
 			}
 		}
 
@@ -751,10 +751,10 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			return
 		}
 
-		if s.writtenMessages[info.ID] {
+		if s.writtenMessages.has(info.ID) {
 			return
 		}
-		text := s.textByMessage[info.ID]
+		text, _ := s.textByMessage.get(info.ID)
 		if text == "" {
 			return
 		}
@@ -903,15 +903,15 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			}
 		}
 
-		if ttft, ok := s.ttftByMessage[info.ID]; ok && ttft > 0 {
+		if ttft, ok := s.ttftByMessage.get(info.ID); ok && ttft > 0 {
 			eventPayload["ttftMs"] = ttft
 		}
 
 		s.writeEvent("msg_assistant", eventPayload, nil)
-		s.writtenMessages[info.ID] = true
-		delete(s.textByMessage, info.ID)
-		delete(s.msgCreatedAtMs, info.ID)
-		delete(s.ttftByMessage, info.ID)
+		s.writtenMessages.set(info.ID, true)
+		s.textByMessage.del(info.ID)
+		s.msgCreatedAtMs.del(info.ID)
+		s.ttftByMessage.del(info.ID)
 	}
 }
 
@@ -949,16 +949,16 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 	switch part.Type {
 	case "text":
 		if part.Text != "" {
-			s.textByMessage[part.MessageID] = part.Text
+			s.textByMessage.set(part.MessageID, part.Text)
 		}
 		// Capture TTFT from the first text part with a time.start timestamp.
 		// Only record once per message (first text part wins).
-		if _, alreadyRecorded := s.ttftByMessage[part.MessageID]; !alreadyRecorded {
+		if !s.ttftByMessage.has(part.MessageID) {
 			if part.Time != nil && part.Time.Start != nil {
-				if createdAt, ok := s.msgCreatedAtMs[part.MessageID]; ok {
+				if createdAt, ok := s.msgCreatedAtMs.get(part.MessageID); ok {
 					ttft := *part.Time.Start - createdAt
 					if ttft > 0 {
-						s.ttftByMessage[part.MessageID] = int64(ttft)
+						s.ttftByMessage.set(part.MessageID, int64(ttft))
 					}
 				}
 			}
