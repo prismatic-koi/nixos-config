@@ -289,7 +289,17 @@ func (s *Sidecar) notifyCoordinator() {
 	// All sessions use the pi harness — deliver via host-API Unix socket.
 	// Use "followUp" so the coordinator receives the notification after its
 	// current turn completes. Finish notifications are post-turn signals.
-	if err := promptdelivery.DeliverToSession(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
+	//
+	// notifyCoordinatorDeliverFn is the narrow test seam (issue #1856) that
+	// lets tests force a delivery failure so the WriteBusMessageFailed audit
+	// path can be asserted on. In production the field is nil and the real
+	// promptdelivery.DeliverToSession is used. See the seam field's
+	// declaration on the Sidecar struct for the full rationale.
+	deliverFn := s.notifyCoordinatorDeliverFn
+	if deliverFn == nil {
+		deliverFn = promptdelivery.DeliverToSession
+	}
+	if err := deliverFn(coordinatorName, coordStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {
 		s.logger().Printf("sidecar: notifyCoordinator: FAILED — coordinator=%s reason=%v", coordinatorName, err)
 		if writeErr := s.cfg.DB.WriteBusMessageFailed(msg); writeErr != nil {
 			s.logger().Printf("sidecar: notifyCoordinator: write failed audit: %v", writeErr)
