@@ -2178,7 +2178,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		status := liveModelSwapForSession(s, req.Session, req.Provider, req.Model, req.Thinking)
-		writeJSON(w, http.StatusOK, map[string]string{
+		// When the outbound channel is full, return 503 so the caller knows the
+		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		httpStatus := http.StatusOK
+		if status == "error:queue-full" {
+			httpStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(w, httpStatus, map[string]string{
 			"session": req.Session,
 			"status":  status,
 		})
@@ -2291,6 +2297,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Status  string `json:"status"`
 		}
 		results := make([]sessionResult, 0, len(targets))
+		applyAnyQueueFull := false
 		for _, targetSess := range targets {
 			// Look up role to find the correct slot.
 			role, status := resolveRoleForSession(s, targetSess)
@@ -2311,9 +2318,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 			deliveryStatus := liveModelSwapForSession(s, targetSess, slot.Provider, slot.Model, slot.Thinking)
 			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
+			if deliveryStatus == "error:queue-full" {
+				applyAnyQueueFull = true
+			}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+		// When any target's outbound channel was full, return 503 so the caller
+		// knows at least one set_model frame was dropped. Issue #1844.
+		applyHTTPStatus := http.StatusOK
+		if applyAnyQueueFull {
+			applyHTTPStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(w, applyHTTPStatus, map[string]any{"results": results})
 	})
 
 	// POST /register-provider
@@ -2403,12 +2419,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Status  string `json:"status"`
 		}
 		results := make([]sessionResult, 0, len(targets))
+		anyQueueFull := false
 		for _, targetSess := range targets {
 			deliveryStatus := liveRegisterProviderForSession(s, targetSess, req.Name, req.Config)
 			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
+			if deliveryStatus == "error:queue-full" {
+				anyQueueFull = true
+			}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+		// When any target's outbound channel was full, return 503 so the caller
+		// knows at least one frame was dropped. Issue #1844.
+		regHTTPStatus := http.StatusOK
+		if anyQueueFull {
+			regHTTPStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(w, regHTTPStatus, map[string]any{"results": results})
 	})
 
 	// POST /register-provider-direct
@@ -2443,7 +2469,100 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "error:disconnected"})
 			return
 		}
-		s.RegisterProvider(req.Name, req.Config)
+		// Propagate channel-full failure as 503 so the forwarding sidecar
+		// knows the frame was dropped. Issue #1844.
+		if !s.RegisterProvider(req.Name, req.Config) {
+			s.logger().Printf("sidecar: /register-provider-direct: enqueue failed (queue full) for session %s", req.Session)
+			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
+	})
+
+	// POST /set-active-tools
+	// Request:  {"session":"<name>","tools":["tool1","tool2",...]}
+	// Response: {"session":"<name>","status":"applied"|"error:disconnected"} | 503
+	//
+	// Enqueues a set_active_tools frame to the PI extension for the session's
+	// own harness pipe. Only targets the calling session (workers) or a named
+	// session (coordinator). Returns 503 Service Unavailable when the outbound
+	// channel is full so the caller knows the frame was dropped. Issue #1844.
+	mux.HandleFunc("/set-active-tools", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Session string   `json:"session"`
+			Tools   []string `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		// Workers may only target their own session.
+		satCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		if !satCallerIsCoordinator && req.Session != s.cfg.SessionName {
+			writeError(w, http.StatusForbidden, "workers can only call /set-active-tools for their own session")
+			return
+		}
+		if !isPipeConnected(s) {
+			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "error:disconnected"})
+			return
+		}
+		// Return 503 when the outbound channel is full so the caller knows the
+		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		if !s.SetActiveTools(req.Tools) {
+			s.logger().Printf("sidecar: /set-active-tools: enqueue failed (queue full) for session %s", req.Session)
+			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
+	})
+
+	// POST /abort
+	// Request:  {"session":"<name>"}
+	// Response: {"session":"<name>","status":"applied"|"error:disconnected"} | 503
+	//
+	// Enqueues an abort frame to the PI extension for the session's own harness
+	// pipe. Only targets the calling session (workers) or a named session
+	// (coordinator). Returns 503 Service Unavailable when the outbound channel
+	// is full so the caller knows the frame was dropped. Issue #1844.
+	mux.HandleFunc("/abort", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		var req struct {
+			Session string `json:"session"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+		// Workers may only target their own session.
+		abortCallerIsCoordinator := s.cfg.AgentRole == "coordinator" || (s.cfg.AgentRole == "" && isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()))
+		if !abortCallerIsCoordinator && req.Session != s.cfg.SessionName {
+			writeError(w, http.StatusForbidden, "workers can only call /abort for their own session")
+			return
+		}
+		if !isPipeConnected(s) {
+			writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "error:disconnected"})
+			return
+		}
+		// Return 503 when the outbound channel is full so the caller knows the
+		// frame was dropped rather than silently accepting 200 OK. Issue #1844.
+		if !s.Abort() {
+			s.logger().Printf("sidecar: /abort: enqueue failed (queue full) for session %s", req.Session)
+			writeError(w, http.StatusServiceUnavailable, "outbound queue full")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"session": req.Session, "status": "applied"})
 	})
 
@@ -2608,7 +2727,12 @@ func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking s
 		if !isPipeConnected(s) {
 			return "error:disconnected"
 		}
-		s.SetModel(provider, model, thinking)
+		// Propagate channel-full failure as error:queue-full so the HTTP caller
+		// receives a non-200 response rather than a silent 200 OK. Issue #1844.
+		if !s.SetModel(provider, model, thinking) {
+			s.logger().Printf("sidecar: liveModelSwapForSession: enqueue failed (queue full) for %s", targetSess)
+			return "error:queue-full"
+		}
 		return "applied"
 	}
 
@@ -2626,7 +2750,12 @@ func liveRegisterProviderForSession(s *Sidecar, targetSess, name string, cfg map
 		if !isPipeConnected(s) {
 			return "error:disconnected"
 		}
-		s.RegisterProvider(name, cfg)
+		// Propagate channel-full failure as error:queue-full so the HTTP caller
+		// receives a non-200 response rather than a silent 200 OK. Issue #1844.
+		if !s.RegisterProvider(name, cfg) {
+			s.logger().Printf("sidecar: liveRegisterProviderForSession: enqueue failed (queue full) for %s", targetSess)
+			return "error:queue-full"
+		}
 		return "applied"
 	}
 
