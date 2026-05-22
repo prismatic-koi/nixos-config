@@ -133,6 +133,8 @@ type legacyFakeHarness struct {
 // h is the Harness to use; pass nil to use the PI adapter (has FrameNormaliser).
 func newStdioSidecar(t *testing.T, mode string, h harness.Harness) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	t.Setenv("PRISM_FAKE_STDIO_HARNESS", mode)
 
 	exe, err := os.Executable()

@@ -54,6 +54,11 @@ func shortSockPath(t *testing.T) string {
 // The caller must set cfg.HarnessPipeSockPath before calling runStartupSocketPipe.
 func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 	t.Helper()
+	// Redirect XDG_STATE_HOME so sidecar writes (touchDashboardSentinel,
+	// socket paths, etc.) never escape to the developer's real prism state.
+	// Also activate the host-API socket guard.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -747,6 +752,8 @@ func TestSocketPipe_UnknownFramePersisted(t *testing.T) {
 // TestSocketPipe_NeitherSocketNorTCP verifies that a sidecar with no socket
 // path and no TCP port returns an error immediately.
 func TestSocketPipe_NeitherSocketNorTCP(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -1300,6 +1307,8 @@ func TestSocketPipe_ReconnectAfterDrop(t *testing.T) {
 // TestSocketPipe_ReconnectTimeout verifies that if no reconnect arrives within
 // pipeDisconnectTimeout, the sidecar transitions to error state and exits.
 func TestSocketPipe_ReconnectTimeout(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	sockPath := shortSockPath(t)
 
 	// Use a very short StartupConnectTimeout so the test does not need to wait
@@ -1354,6 +1363,8 @@ func TestSocketPipe_ReconnectTimeout(t *testing.T) {
 // listener block is ever moved back to after the transport-shape switch, the
 // host-API socket will not yet exist at that point and this test will fail.
 func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	// Two short-prefix socket paths: one for the harness pipe, one for the
 	// host-API listener.  Both must fit within the 104-char POSIX limit.
 	pipeSockPath := shortSockPath(t)
@@ -1432,6 +1443,8 @@ func TestSocketPipe_HostAPISockCreatedBeforeDispatch(t *testing.T) {
 // connection without a session_shutdown don't block for 30s.
 func newSocketPipeSidecarWithClock(t *testing.T, sockPath string) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -3195,6 +3208,8 @@ const testMaxLineBytes = 256
 // state mutation and is safe for parallel tests.
 func newSocketPipeSidecarWithLineCap(t *testing.T, sockPath string, cap int) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{

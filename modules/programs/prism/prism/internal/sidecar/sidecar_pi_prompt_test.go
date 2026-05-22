@@ -41,6 +41,8 @@ func containsAll(s string, subs ...string) bool {
 // and suitable for hostAPIHandler tests.
 func newPiSidecarForHostAPITest(t *testing.T, sessionName, repo, role string, d *db.DB) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: sessionName,

@@ -297,6 +297,8 @@ func openTestDB(t *testing.T) *db.DB {
 
 func newTestSidecar(t *testing.T) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	d := openTestDB(t)
 
@@ -1853,6 +1855,8 @@ func TestServerConnected_SilentlyIgnored(t *testing.T) {
 // coordinator notifications; pass nil to use the package default.
 func newWorkerSidecar(t *testing.T, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -2064,6 +2068,8 @@ func TestNotifyCoordinator_NoNotificationOnInterrupted(t *testing.T) {
 }
 
 func TestNotifyCoordinator_SelfNotificationSkipped(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	// Use a coordinator sidecar (session name matches "<repo>@main").
 	d := openTestDB(t)
 	clk := newTestClock()
@@ -2399,6 +2405,8 @@ func TestNotifyCoordinator_EndedCoordinatorSkipped(t *testing.T) {
 //
 // This is the primary regression test for issue #817.
 func TestNotifyCoordinator_ReviewAgentSuppressed(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-review-suppressed"
@@ -2648,6 +2656,8 @@ func TestIsCoordinatorSession(t *testing.T) {
 // (e.g. from an SSE inference race) does NOT receive a self-notification when
 // transitioning to finished. The @main heuristic must win over the stale value.
 func TestNotifyCoordinator_SelfNotificationSkipped_StaleRootAgentName(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -3921,6 +3931,8 @@ func TestSubagentFinish_NoRootAgent_NoSpuriousFinished(t *testing.T) {
 // message. This is the fix for #555.
 func newWorkerSidecarWithRole(t *testing.T, d *db.DB, httpClient *http.Client, role string) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -4107,6 +4119,8 @@ func TestRootAgentPreset_MultipleReviewRounds(t *testing.T) {
 // (rootAgent="coordinator") that invokes subagents transitions to finished
 // correctly when the coordinator writes its final message.
 func TestRootAgentPreset_CoordinatorSession(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -4351,6 +4365,8 @@ func TestSubagentFinish_ToolOnlyFinalTurn_IdlePathStillWorks(t *testing.T) {
 // verifies COALESCE semantics: subsequent state transitions must not overwrite
 // the already-set values.
 func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	t.Run("seeded when AgentRole is set", func(t *testing.T) {
 		clk := newTestClock()
 		d := openTestDB(t)
@@ -4504,6 +4520,8 @@ func TestRootAgentName_SeededFromAgentRole(t *testing.T) {
 // COALESCE(excluded.root_agent_name, root_agent_name) with the sidecar value
 // taking precedence.
 func TestRootAgentName_SelfCorrectedFromSSEInference(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	d := openTestDB(t)
 	cfg := Config{
@@ -8198,6 +8216,8 @@ func TestBuildNotifyPromptBody_IncludesTextAndModel(t *testing.T) {
 // and HTTP client with the parent worker.
 func newReviewAgentSidecar(t *testing.T, parentSession string, d *db.DB, httpClient *http.Client) (*Sidecar, *testClock) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	clk := newTestClock()
 	reviewSession := parentSession + "~review-1-review-goal"
 	cfg := Config{
@@ -8597,6 +8617,8 @@ func (b *blockingHarness) Subscribe(ctx context.Context) (<-chan harness.Harness
 // no parent row exists — that's fine for these tests).
 func newBwrapSidecarWithTimeout(t *testing.T, timeout time.Duration) (*Sidecar, *db.DB) {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	cfg := Config{
 		SessionName:           "test-repo@feature~review-1-review-goal",
@@ -8653,6 +8675,8 @@ func TestStartupConnectTimeout_FiresWhenFirstEventNeverReceived(t *testing.T) {
 // first SSE event has been received (firstEventLogged = true), the timeout
 // goroutine is a no-op — even if the connection later drops and retries.
 func TestStartupConnectTimeout_DoesNotFireAfterFirstEvent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	// Use a real sidecar with a very short timeout to ensure the goroutine runs.
 	const timeout = 20 * time.Millisecond
 
@@ -9573,6 +9597,8 @@ func TestHostAPI_Review_PreEmptiveWriteBestEffortOnMissingRow(t *testing.T) {
 // the markers must be sourced from "whatever signal the bwrap sidecar uses
 // to detect opencode readiness" — for bwrap that is the first SSE event.
 func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -9609,6 +9635,8 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 // the first SSE event. AC #4 (#1052): mirrors the existing podman line at
 // sidecar.go:489 so the bwrap and podman timelines have the same shape.
 func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	cfg := Config{
 		SessionName:   "test-repo@feature",
@@ -9637,6 +9665,8 @@ func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
 // gated on InitialPrompt != "" because there is no prompt to attribute time
 // to in that case — emitting the line would be misleading.
 func TestBwrapTimingMarkers_NoPromptDelivered(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	cfg := Config{
 		SessionName: "test-repo@feature",
@@ -9665,6 +9695,8 @@ func TestBwrapTimingMarkers_NoPromptDelivered(t *testing.T) {
 // events must NOT emit duplicate markers — this would otherwise pollute the
 // log on every reconnect and make the timeline ambiguous.
 func TestBwrapTimingMarkers_OnlyOnFirstEvent(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	cfg := Config{
 		SessionName: "test-repo@feature",

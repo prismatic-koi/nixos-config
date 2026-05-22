@@ -22,6 +22,8 @@ import (
 // caller supplies the script body (which is wrapped in a `#!/bin/sh` header).
 func newSidecarWithCleanupStub(t *testing.T, sessionName, repo, role, scriptBody string) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
 	if err := os.WriteFile(stubPath, []byte("#!/bin/sh\n"+scriptBody+"\n"), 0o755); err != nil {
