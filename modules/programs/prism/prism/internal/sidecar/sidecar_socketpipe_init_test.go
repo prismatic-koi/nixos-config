@@ -21,6 +21,8 @@ import (
 // a PI coordinator session.
 func newSocketPipeCoordinatorSidecar(t *testing.T, sockPath string) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{
@@ -42,6 +44,8 @@ func newSocketPipeCoordinatorSidecar(t *testing.T, sockPath string) *Sidecar {
 // testing with AgentRole=worker. This matches a PI worker session.
 func newSocketPipeWorkerSidecar(t *testing.T, sockPath string) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{

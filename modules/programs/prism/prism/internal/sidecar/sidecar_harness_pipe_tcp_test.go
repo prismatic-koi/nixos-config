@@ -51,6 +51,8 @@ func allocateFreePort(t *testing.T) int {
 // path).
 func newTCPPortSidecar(t *testing.T, port int) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	d := openTestDB(t)
 	clk := newTestClock()
 	cfg := Config{

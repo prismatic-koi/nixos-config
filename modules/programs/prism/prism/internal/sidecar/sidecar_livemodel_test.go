@@ -32,6 +32,8 @@ import (
 // harnessNameForSession can return "pi".
 func newPISidecar(t *testing.T, sockPath, sessionName, agentRole string, d *db.DB) *Sidecar {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
 	if d == nil {
 		d = openTestDB(t)
 	}

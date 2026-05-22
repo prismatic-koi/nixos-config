@@ -17,6 +17,13 @@ import (
 // event has already informed the coordinator and a finished notification
 // would be a duplicate, false signal.
 func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
+	// Redirect XDG_STATE_HOME so any sidecar writes (touchDashboardSentinel,
+	// socket paths, etc.) stay within a temp directory and never touch the
+	// developer's real prism state. Also activate the host-API socket guard
+	// so promptdelivery refuses to dial any real host socket.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+
 	d := openTestDB(t)
 
 	coordSID := "coord-sid-escalated-suppressed"
