@@ -260,7 +260,11 @@ in
                   leaf = "border";
                   enabled = true;
                   speed = 2;
-                  bezier = "default";
+                  # hyprlang implicitly provided a `default` bezier; the lua
+                  # API doesn't — referencing an undefined curve here drops
+                  # Hyprland into a safe state with no keybinds at startup.
+                  # Fall back to the `linear` curve we define explicitly.
+                  bezier = "linear";
                 }
                 {
                   leaf = "borderangle";
@@ -273,7 +277,7 @@ in
                   leaf = "fade";
                   enabled = true;
                   speed = 2;
-                  bezier = "default";
+                  bezier = "linear";
                 }
                 {
                   leaf = "workspaces";
