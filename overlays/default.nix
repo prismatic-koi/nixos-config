@@ -100,6 +100,12 @@ rec {
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
+      # battery-notifier: Linux-only Go daemon (UPower + sysfs +
+      # session-bus notifications). See pkgs/battery-notifier.nix and
+      # modules/services/battery-notifier/DESIGN.md.
+      battery-notifier =
+        if final.stdenv.isLinux then final.callPackage ../pkgs/battery-notifier.nix { } else null;
+
       _macronTypePkg =
         if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;
