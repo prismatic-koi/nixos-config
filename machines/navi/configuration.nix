@@ -19,9 +19,6 @@
     deviceLocation = "office";
     desktop = {
       theme = "everforest";
-      hyprland = {
-        layout = "dwindle";
-      };
       waybar.enable = false;
       wallpaper.variant = "enso-6colour";
     };
@@ -120,7 +117,6 @@
     monitor = [
       "DP-3,5120x1440@239.76Hz,0x0,1"
     ];
-    plugin.hy3.autotile.trigger_width = 1280;
   };
 
   # List packages installed in system profile. To search, run:

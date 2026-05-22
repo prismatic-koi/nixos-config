@@ -19,20 +19,9 @@ in
       enable = lib.mkEnableOption "enable the Hyprland desktop module" // {
         default = true;
       };
-      layout = lib.mkOption {
-        type = lib.types.enum [
-          "dwindle"
-          "hy3"
-        ];
-        default = "dwindle";
-        description = "sets the default layout for Hyprland";
-      };
     };
   };
   config = lib.mkIf pkgs.stdenv.isLinux (
-    let
-      layout = config.nx.desktop.hyprland.layout;
-    in
     lib.mkMerge [
       {
         # enable for system
@@ -68,6 +57,7 @@ in
           in
           {
             enable = true;
+            configType = "hyprlang";
             settings = {
               exec-once =
                 let
@@ -142,14 +132,7 @@ in
                   in
                   "${lib.concatStringsSep " " rgbaColors} 45deg";
                 "col.inactive_border" = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
-                layout = layout;
-              };
-              plugin = {
-                hy3 = lib.mkIf (layout == "hy3") {
-                  autotile = {
-                    enable = true;
-                  };
-                };
+                layout = "dwindle";
               };
               cursor = {
                 inactive_timeout = 5;
@@ -226,9 +209,6 @@ in
                 "SUPER SHIFT, J, movewindow, d"
                 "SUPER SHIFT, K, movewindow, u"
                 "SUPER SHIFT, L, movewindow, r"
-                # hy3
-                (lib.mkIf (layout == "hy3") "SUPER SHIFT, B, exec, hyprctl dispatch hy3:makegroup h")
-                (lib.mkIf (layout == "hy3") "SUPER SHIFT, V, exec, hyprctl dispatch hy3:makegroup v")
                 # switch workspace
                 "SUPER, 1, workspace, 1"
                 "SUPER, 2, workspace, 2"
@@ -349,9 +329,6 @@ in
               enable = true;
             };
             xwayland.enable = true;
-            plugins = [
-              (lib.mkIf (layout == "hy3") pkgs.hyprlandPlugins.hy3)
-            ];
           };
       }
       {
