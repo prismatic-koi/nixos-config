@@ -26,8 +26,10 @@ package sidecar
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -309,4 +311,161 @@ func TestReviewRecoveryWatcher_IdempotentAcrossMultipleTicks(t *testing.T) {
 	if final != first {
 		t.Fatalf("after reviewingInFlight cleared: want %d deliveries (unchanged), got %d", first, final)
 	}
+}
+
+// ── SQLITE_BUSY retry tests ────────────────────────────────────────────────
+
+// busyThenSucceedQuerier is a fake reviewRecoveryQuerier whose
+// LatestGroupForParent and GroupCompleted methods return SQLITE_BUSY for the
+// first busyCalls invocations and then delegate to the real DB. This
+// simulates a transient write-lock held by the socket-pipe reader goroutine.
+type busyThenSucceedQuerier struct {
+	real      *db.DB
+	busyCalls int // total BUSY responses left across all method calls
+	calls     atomic.Int64
+}
+
+var errSQLiteBusy = errors.New("database is locked (5) (SQLITE_BUSY)")
+
+func (q *busyThenSucceedQuerier) LatestGroupForParent(parent string) (*db.GroupInfo, error) {
+	n := q.calls.Add(1)
+	if int(n) <= q.busyCalls {
+		return nil, errSQLiteBusy
+	}
+	return q.real.LatestGroupForParent(parent)
+}
+
+func (q *busyThenSucceedQuerier) GroupCompleted(groupID string) (bool, error) {
+	n := q.calls.Add(1)
+	if int(n) <= q.busyCalls {
+		return false, errSQLiteBusy
+	}
+	return q.real.GroupCompleted(groupID)
+}
+
+// TestReviewRecoveryWatcher_BusyRetry_SuccessAfterNRetries verifies that the
+// watcher recovers correctly when LatestGroupForParent returns SQLITE_BUSY
+// for the first N calls but succeeds on the (N+1)th — within the 3-attempt
+// retry budget. The grace window must remain anchored at the first-seen
+// timestamp; it must NOT be pushed out by the BUSY ticks. (#1854)
+func TestReviewRecoveryWatcher_BusyRetry_SuccessAfterNRetries(t *testing.T) {
+	fix := setupStuckReviewGroup(t, "busy-retry-lgfp")
+	s := newWorkerSidecarForRecovery(t, fix)
+
+	// 2 BUSY calls before LatestGroupForParent succeeds — within the 3-attempt
+	// budget (attempts 1 and 2 return BUSY, attempt 3 succeeds).
+	fakeQ := &busyThenSucceedQuerier{real: fix.bus.DB, busyCalls: 2}
+	s.SetRecoveryQuerierForTest(fakeQ)
+
+	const grace = 90 * time.Second
+	now := time.Now()
+
+	// Tick 1: LatestGroupForParent retries through BUSY and succeeds.
+	// This is the first observation of complete; records first-seen, no delivery.
+	s.ReviewRecoveryTickForTest(grace, now)
+	if got := len(fix.bus.CopyBodies()); got != 0 {
+		t.Fatalf("busy-retry tick 1: want 0 deliveries, got %d", got)
+	}
+	firstSeen := s.ReviewRecoveryFirstSeenForTest()
+	if _, ok := firstSeen[fix.groupID]; !ok {
+		t.Fatalf("busy-retry tick 1: want first-seen entry for group %s, missing", fix.groupID)
+	}
+
+	// Tick 2 past grace: should deliver (BUSY budget already consumed above).
+	s.ReviewRecoveryTickForTest(grace, now.Add(grace+time.Second))
+	bodies := fix.bus.CopyBodies()
+	if len(bodies) != 1 {
+		t.Fatalf("busy-retry tick 2 past grace: want 1 delivery, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "Review complete: PR #"+fix.prNumber) {
+		t.Errorf("delivery body missing review-complete header; got: %s", bodies[0])
+	}
+}
+
+// TestReviewRecoveryWatcher_BusyRetry_FirstSeenNotReset verifies that the
+// grace window is anchored at the FIRST tick that observes the group
+// complete — NOT re-anchored on ticks where BUSY retries were needed.
+// Concretely: if tick-1 observes BUSY (then succeeds), records first-seen T,
+// then tick-2 at T+grace-1 also hits BUSY (then succeeds), the grace window
+// must still expire relative to T, not to the tick-2 timestamp. (#1854)
+func TestReviewRecoveryWatcher_BusyRetry_FirstSeenNotReset(t *testing.T) {
+	fix := setupStuckReviewGroup(t, "busy-first-seen")
+	s := newWorkerSidecarForRecovery(t, fix)
+
+	// Each tick will hit BUSY once then succeed. The first-seen timestamp from
+	// tick-1 must be preserved across tick-2.
+	const grace = 60 * time.Second
+	now := time.Now()
+
+	// Tick 1: 1 BUSY call, then succeed. First-seen = now.
+	fakeQ1 := &busyThenSucceedQuerier{real: fix.bus.DB, busyCalls: 1}
+	s.SetRecoveryQuerierForTest(fakeQ1)
+	s.ReviewRecoveryTickForTest(grace, now)
+	fs1 := s.ReviewRecoveryFirstSeenForTest()
+	if _, ok := fs1[fix.groupID]; !ok {
+		t.Fatalf("tick 1: first-seen not recorded")
+	}
+
+	// Tick 2 inside grace: another BUSY then succeed. first-seen must be unchanged.
+	insideGrace := now.Add(grace / 2)
+	fakeQ2 := &busyThenSucceedQuerier{real: fix.bus.DB, busyCalls: 1}
+	s.SetRecoveryQuerierForTest(fakeQ2)
+	s.ReviewRecoveryTickForTest(grace, insideGrace)
+	fs2 := s.ReviewRecoveryFirstSeenForTest()
+	t1, _ := fs1[fix.groupID]
+	t2, ok2 := fs2[fix.groupID]
+	if !ok2 {
+		t.Fatalf("tick 2: first-seen entry dropped unexpectedly")
+	}
+	if !t1.Equal(t2) {
+		t.Errorf("first-seen timestamp changed: tick1=%v tick2=%v; want same (grace window must not shift)", t1, t2)
+	}
+	if got := len(fix.bus.CopyBodies()); got != 0 {
+		t.Fatalf("inside grace: want 0 deliveries, got %d", got)
+	}
+
+	// Tick 3 past grace: should deliver.
+	postGrace := now.Add(grace + time.Second)
+	s.ReviewRecoveryTickForTest(grace, postGrace)
+	if got := len(fix.bus.CopyBodies()); got != 1 {
+		t.Fatalf("past grace: want 1 delivery, got %d", got)
+	}
+}
+
+// TestReviewRecoveryWatcher_BusyRetry_GenuineErrorTerminates verifies that a
+// genuine (non-BUSY) error from LatestGroupForParent is not retried and
+// causes the tick to return without recording a first-seen entry (preserving
+// today's log-and-continue behaviour). (#1854 regression guard)
+func TestReviewRecoveryWatcher_BusyRetry_GenuineErrorTerminates(t *testing.T) {
+	fix := setupStuckReviewGroup(t, "genuine-error")
+	s := newWorkerSidecarForRecovery(t, fix)
+
+	// Fake that always returns a non-BUSY error.
+	genuineErr := errors.New("db: some unrecoverable schema error")
+	s.SetRecoveryQuerierForTest(&alwaysErrQuerier{err: genuineErr})
+
+	const grace = 90 * time.Second
+	now := time.Now()
+
+	s.ReviewRecoveryTickForTest(grace, now)
+	// No delivery, no first-seen entry.
+	if got := len(fix.bus.CopyBodies()); got != 0 {
+		t.Fatalf("want 0 deliveries on genuine error, got %d", got)
+	}
+	if seen := s.ReviewRecoveryFirstSeenForTest(); len(seen) != 0 {
+		t.Errorf("want empty first-seen map on genuine error, got %v", seen)
+	}
+}
+
+// alwaysErrQuerier is a reviewRecoveryQuerier that always returns err.
+type alwaysErrQuerier struct {
+	err error
+}
+
+func (q *alwaysErrQuerier) LatestGroupForParent(string) (*db.GroupInfo, error) {
+	return nil, q.err
+}
+
+func (q *alwaysErrQuerier) GroupCompleted(string) (bool, error) {
+	return false, q.err
 }

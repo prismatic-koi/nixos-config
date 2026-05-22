@@ -1276,24 +1276,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		} else if status == nil {
 			s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — no agent_status row for session %q", s.cfg.SessionName)
 		} else {
-			var lastUpsertErr error
-			for attempt := range reviewingWriteAttempts {
-				lastUpsertErr = s.cfg.DB.UpsertStatus(s.cfg.SessionName, status.Repo, status.Worktree, string(agent.StateReviewing), nil, nil)
-				if lastUpsertErr == nil {
-					break
+			// Retry on SQLITE_BUSY using the shared helper. See the block comment
+			// above for why 3 attempts × 10 ms is the right budget here.
+			var attempt int
+			upsertErr := db.WithBusyRetry(reviewingWriteAttempts, reviewingWriteBackoff, func() error {
+				err := s.cfg.DB.UpsertStatus(s.cfg.SessionName, status.Repo, status.Worktree, string(agent.StateReviewing), nil, nil)
+				if err != nil && db.IsSQLiteBusy(err) {
+					s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, err)
 				}
-				if !isSQLiteBusy(lastUpsertErr) {
-					// Non-transient error — no point retrying.
-					break
-				}
-				s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, lastUpsertErr)
-				if attempt < reviewingWriteAttempts-1 {
-					time.Sleep(reviewingWriteBackoff)
-				}
-			}
-			if lastUpsertErr != nil {
-				s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, lastUpsertErr)
-				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", lastUpsertErr))
+				attempt++
+				return err
+			})
+			if upsertErr != nil {
+				s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write failed after %d attempt(s): %v", reviewingWriteAttempts, upsertErr)
+				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", upsertErr))
 				return
 			}
 			// Set the in-memory flag atomically now that the DB write succeeded.
