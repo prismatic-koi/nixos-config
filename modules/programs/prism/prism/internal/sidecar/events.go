@@ -108,12 +108,17 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		s.handleMessagePartUpdated(evt)
 	default:
 		// Gap 6: log unknown event types once per unique type.
+		// Fast-path: once the cap has been reached, skip the map lookup
+		// and len() call entirely. A misbehaving harness emitting unknown
+		// event types at high frequency would otherwise pay that cost on
+		// every event.
+		if s.seenUnknownCapReached {
+			return
+		}
 		if !s.seenUnknown[eventType] {
 			if len(s.seenUnknown) >= seenUnknownCap {
-				if !s.seenUnknownCapReached {
-					s.seenUnknownCapReached = true
-					s.logger().Printf("sidecar: unknown-event log cap reached")
-				}
+				s.seenUnknownCapReached = true
+				s.logger().Printf("sidecar: unknown-event log cap reached")
 			} else {
 				s.seenUnknown[eventType] = true
 				s.logger().Printf("sidecar: event: %s (unhandled — unknown event type)", eventType)

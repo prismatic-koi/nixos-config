@@ -8155,6 +8155,52 @@ func TestUnknownEventType_CapReachedOnce(t *testing.T) {
 	}
 }
 
+// TestUnknownEventType_PostCapFastPath verifies that once
+// seenUnknownCapReached is set, further unknown events do not mutate the
+// seenUnknown map. This pins the post-cap fast-path: the handler returns
+// before touching the map, so its size and contents are frozen at the
+// moment the cap was tripped.
+func TestUnknownEventType_PostCapFastPath(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+
+	// Fill until the cap is tripped. The flag flips on the first new type
+	// that arrives after the map is full, so send cap+1 unique types.
+	for i := range seenUnknownCap + 1 {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("pre.cap.%d", i), map[string]any{}))
+	}
+	if !sc.seenUnknownCapReached {
+		t.Fatalf("expected seenUnknownCapReached=true after %d unique types", seenUnknownCap+1)
+	}
+
+	// Snapshot the map: post-cap events must not mutate it.
+	snapshotLen := len(sc.seenUnknown)
+	snapshot := make(map[string]bool, snapshotLen)
+	for k, v := range sc.seenUnknown {
+		snapshot[k] = v
+	}
+
+	// Hammer the handler with both already-seen and brand-new unknown
+	// types. The fast-path must short-circuit before any map access.
+	for i := range 100 {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("post.cap.new.%d", i), map[string]any{}))
+		sc.HandleEvent(makeSSE("pre.cap.0", map[string]any{})) // already-seen
+	}
+
+	if got := len(sc.seenUnknown); got != snapshotLen {
+		t.Errorf("seenUnknown size changed post-cap: got %d, want %d", got, snapshotLen)
+	}
+	for k, v := range sc.seenUnknown {
+		if snapshot[k] != v {
+			t.Errorf("seenUnknown[%q] mutated post-cap: got %v, want %v", k, v, snapshot[k])
+		}
+	}
+	for k := range snapshot {
+		if _, ok := sc.seenUnknown[k]; !ok {
+			t.Errorf("seenUnknown[%q] removed post-cap", k)
+		}
+	}
+}
+
 // TestBuildNotifyPromptBody_IncludesTextAndModel verifies that the notification
 // body still carries the prompt text and, when a model is known, the split
 // provider/model identifiers. Model is preferred from RootModelID, falling
