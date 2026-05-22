@@ -8155,6 +8155,78 @@ func TestUnknownEventType_CapReachedOnce(t *testing.T) {
 	}
 }
 
+// TestUnknownEventType_PostCapFastPath verifies that once seenUnknownCapReached
+// is set to true, subsequent unknown events do not mutate the seenUnknown map
+// or emit further log lines — the early-return fast-path is taken.
+func TestUnknownEventType_PostCapFastPath(t *testing.T) {
+	sc, _ := newTestSidecar(t)
+	getLogs := captureLog(sc)
+
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+
+	// Fill exactly to cap so the next unique event will flip seenUnknownCapReached.
+	for i := range seenUnknownCap {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("fastpath.fill.%d", i), map[string]any{}))
+	}
+	if sc.seenUnknownCapReached {
+		t.Fatalf("seenUnknownCapReached set prematurely after %d unique types", seenUnknownCap)
+	}
+	if len(sc.seenUnknown) != seenUnknownCap {
+		t.Fatalf("seenUnknown len = %d after fill, want %d", len(sc.seenUnknown), seenUnknownCap)
+	}
+
+	// One more unique type — this trips the cap.
+	sc.HandleEvent(makeSSE("fastpath.trip", map[string]any{}))
+	if !sc.seenUnknownCapReached {
+		t.Fatalf("seenUnknownCapReached not set after exceeding cap")
+	}
+	mapLenAfterTrip := len(sc.seenUnknown)
+	if mapLenAfterTrip != seenUnknownCap {
+		t.Fatalf("seenUnknown len = %d after trip, want %d (no write on trip event)", mapLenAfterTrip, seenUnknownCap)
+	}
+
+	// Snapshot the unknown-event-specific log counts at this point. Subsequent
+	// unknown events must not append further "unhandled" or "cap reached" lines.
+	// (HandleEvent always emits a generic "sidecar: event: <type>" trace line
+	// before the switch — that is not part of the unknown-event handler and is
+	// expected to grow on every call.)
+	logsAfterTrip := getLogs()
+	unhandledBefore := strings.Count(logsAfterTrip, "unhandled — unknown event type")
+	capLinesBefore := strings.Count(logsAfterTrip, "sidecar: unknown-event log cap reached")
+
+	// Fire many more unknown events — both repeats of seen types and brand-new types.
+	// The fast-path must take all of them: no map mutation, no unknown-event log output.
+	for i := range 100 {
+		sc.HandleEvent(makeSSE(fmt.Sprintf("fastpath.post.%d", i), map[string]any{}))
+		sc.HandleEvent(makeSSE("fastpath.fill.0", map[string]any{})) // repeat of seen
+	}
+
+	// Map state must be unchanged — the early-return skipped both the lookup
+	// and the write path.
+	if len(sc.seenUnknown) != mapLenAfterTrip {
+		t.Errorf("seenUnknown len = %d after post-cap events, want %d (no mutation expected)",
+			len(sc.seenUnknown), mapLenAfterTrip)
+	}
+	if _, ok := sc.seenUnknown["fastpath.post.0"]; ok {
+		t.Errorf("post-cap event type fastpath.post.0 was written into seenUnknown; fast-path not taken")
+	}
+
+	// The unknown-event handler must have emitted nothing further: the "unhandled"
+	// and "cap reached" line counts are unchanged from the snapshot taken right
+	// after the cap was tripped.
+	logsAfterPostEvents := getLogs()
+	unhandledAfter := strings.Count(logsAfterPostEvents, "unhandled — unknown event type")
+	capLinesAfter := strings.Count(logsAfterPostEvents, "sidecar: unknown-event log cap reached")
+	if unhandledAfter != unhandledBefore {
+		t.Errorf("'unhandled' log lines grew after cap: before=%d after=%d (fast-path should not log)",
+			unhandledBefore, unhandledAfter)
+	}
+	if capLinesAfter != capLinesBefore {
+		t.Errorf("'cap reached' log lines grew after cap: before=%d after=%d (must fire exactly once)",
+			capLinesBefore, capLinesAfter)
+	}
+}
+
 // TestBuildNotifyPromptBody_IncludesTextAndModel verifies that the notification
 // body still carries the prompt text and, when a model is known, the split
 // provider/model identifiers. Model is preferred from RootModelID, falling
