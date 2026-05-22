@@ -2434,13 +2434,38 @@ func (s *Sidecar) flushPendingReplay() {
 		return
 	}
 	s.logger().Printf("sidecar: flushing %d pending-replay delivery(ies) after handshake", len(pending))
+	// flushDedup tracks delivery_ids forwarded during this flush pass so that
+	// if the buffer somehow contains two entries with the same id (a defensive
+	// invariant: the /prompt handler's dedup should prevent this, but if a bug
+	// allows it the flush should still produce exactly one frame per id).
+	// This is a local pass-level set, distinct from the global promptDedup
+	// (which marks IDs as seen on first /prompt handler invocation — using it
+	// here would always drop legitimate buffered entries whose id was already
+	// recorded by the handler when it accepted and buffered the delivery).
+	flushDedup := make(map[string]bool)
+
 	var requeue []pendingReplayDelivery
 	for _, d := range pending {
+		// Dedup check within this flush pass: if the same delivery_id appears
+		// more than once in the buffer (F6/#1885 defence-in-depth), only
+		// forward the first occurrence and log+drop subsequent copies.
+		if d.DeliveryID != "" {
+			if flushDedup[d.DeliveryID] {
+				s.logger().Printf("sidecar: flushPendingReplay: dropping duplicate delivery_id=%s (already forwarded in this flush pass)", d.DeliveryID)
+				// Drop this entry — do not re-enqueue.
+				continue
+			}
+		}
 		if !s.deliverPromptFrame(d.Text, d.DeliverAs, true) {
 			// Outbound channel not yet live or another disconnect raced us.
 			// Re-buffer so the next handshake picks it up.
 			requeue = append(requeue, d)
 			continue
+		}
+		// Record this delivery_id as forwarded within this flush pass so
+		// that a duplicate entry later in the buffer is detected and dropped.
+		if d.DeliveryID != "" {
+			flushDedup[d.DeliveryID] = true
 		}
 		// Successful re-enqueue: if this entry was the monitor's
 		// review-complete delivery, clear reviewingInFlight now — the

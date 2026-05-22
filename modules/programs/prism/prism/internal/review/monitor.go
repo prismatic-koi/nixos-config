@@ -216,7 +216,13 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 
 	// Deliver to worker via prism prompt with bounded retry.
-	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath)
+	// Use the same deterministic delivery_id as the recovery path so that if
+	// the worker-sidecar recovery watcher (internal/sidecar/review_recovery.go)
+	// races us to deliver for the same group, the sidecar's /prompt dedup set
+	// (#1685) drops whichever copy arrives second. See recovery.go and
+	// RecoveryDeliveryID for the shared-dedup-ID contract.
+	monitorDeliveryID := RecoveryDeliveryID(opts.GroupID)
+	deliverErr := deliverWithRetry(opts.WorkerSession, deliveryText, maxRetries, retryBackoff, dbPath, monitorDeliveryID)
 	if deliverErr != nil {
 		// Delivery failed after all retries — write fallback file.
 		fallbackPath := fmt.Sprintf("/tmp/prism-review-%s-round-%d-result.md", sanitisePRNumber(opts.PRNumber), opts.Round)
@@ -443,7 +449,9 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 // deliverWithRetry attempts to deliver text to workerSession via `prism prompt`,
 // retrying up to maxRetries times with exponential backoff starting from baseBackoff.
 // dbPath is passed through to deliverPrompt for DB access.
-func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff time.Duration, dbPath string) error {
+// deliveryID is forwarded to the host-API /prompt handler for dedup; all retry
+// attempts use the same ID so the sidecar treats them as one delivery.
+func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff time.Duration, dbPath, deliveryID string) error {
 	var lastErr error
 	backoff := baseBackoff
 
@@ -458,7 +466,7 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 			}
 		}
 
-		err := deliverPrompt(workerSession, text, dbPath)
+		err := deliverPrompt(workerSession, text, dbPath, deliveryID)
 		if err == nil {
 			return nil
 		}
@@ -472,7 +480,10 @@ func deliverWithRetry(workerSession, text string, maxRetries int, baseBackoff ti
 // helper. For pi sessions (TransportSocketPipe), it routes through the
 // session's host-API Unix socket. For HTTP-harness sessions, it uses the
 // harness HTTP API (prompt_async).
-func deliverPrompt(workerSession, text, dbPath string) error {
+// deliveryID is forwarded to the host-API /prompt handler; pass
+// RecoveryDeliveryID(groupID) so the sidecar's dedup set (#1685) can
+// collapse a concurrent recovery-watcher delivery to exactly one prompt.
+func deliverPrompt(workerSession, text, dbPath, deliveryID string) error {
 	if dbPath == "" {
 		dbPath = defaultDBPath()
 	}
@@ -493,7 +504,7 @@ func deliverPrompt(workerSession, text, dbPath string) error {
 		return fmt.Errorf("session %q has ended — cannot deliver review results", workerSession)
 	}
 
-	return promptdelivery.DeliverToSession(workerSession, status, text, buildPromptBodyForMonitor, "review-complete", "")
+	return promptdelivery.DeliverToSessionWithID(workerSession, status, text, buildPromptBodyForMonitor, "review-complete", "", deliveryID)
 }
 
 // buildPromptBodyForMonitor constructs the HTTP request body for prompt_async.

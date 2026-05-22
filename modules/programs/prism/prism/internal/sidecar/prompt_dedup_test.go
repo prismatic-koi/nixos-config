@@ -373,16 +373,26 @@ func TestPromptDedup_PartitionDoesNotProduceDuplicateReplayMarkers(t *testing.T)
 }
 
 // TestPromptDedup_ReplayedFrameStillDedups verifies that flushPendingReplay
-// does not bypass the dedup set: if the same delivery_id is somehow buffered
-// twice (programmatic error path) the flush still produces only one frame.
-// This is a defence-in-depth check on the buffer+flush interaction.
+// uses a per-pass dedup set to prevent forwarding the same delivery_id twice
+// in a single flush. If the buffer somehow contains two entries with the same
+// delivery_id (a defensive invariant — the /prompt handler's dedup should
+// prevent this, but if a bug allows it the flush must still produce exactly
+// one frame). Issue #1885 F6.
+//
+// Implementation note: flushPendingReplay uses a local pass-level set (not
+// the global promptDedup) so that legitimate buffered entries are not
+// suppressed. The /prompt handler's markSeen call marks the ID when it
+// accepts and buffers a delivery; using markSeen again in flush would
+// therefore always drop the legitimate entry. Instead, flush tracks which
+// IDs it has already forwarded in the current pass via a local map.
 func TestPromptDedup_ReplayedFrameStillDedups(t *testing.T) {
 	d := openTestDB(t)
 	sc := newDedupTestSidecar(t, "prism-test@coord-doublebuf", d)
 
 	// Directly seed the buffer with two copies of the same delivery_id —
 	// this can only happen via a bug elsewhere, but flush should still
-	// produce only one frame (the dedup set guards on first enqueue).
+	// produce exactly one frame (the per-pass dedup set deduplicates within
+	// the flush iteration).
 	sc.mu.Lock()
 	sc.pendingReplayDeliveries = []pendingReplayDelivery{
 		{DeliveryID: "dd-001", Text: "x", DeliverAs: "followUp"},
@@ -390,36 +400,71 @@ func TestPromptDedup_ReplayedFrameStillDedups(t *testing.T) {
 	}
 	sc.mu.Unlock()
 
-	// Pre-seed the dedup set with the ID so the first flush also dedups.
-	// (Alternative: rely on flush to mark-seen as it enqueues. We do not
-	// add that to flush directly to keep the contract surface minimal —
-	// the /prompt handler is the single dedup point. This test therefore
-	// pre-records the ID, which is the realistic shape: by the time the
-	// buffer is flushed, the /prompt handler has already markSeen-ed the
-	// ID when it accepted the original delivery.)
-	sc.promptDedup.markSeen("dd-001")
-
 	pipeCh := make(chan []byte, 16)
 	sc.mu.Lock()
 	sc.harnessPipeOutCh = pipeCh
 	sc.mu.Unlock()
 
-	// Note: flushPendingReplay does not currently consult promptDedup —
-	// it trusts the /prompt handler to have deduped before buffering. The
-	// realistic test of the contract is the partition test above. This
-	// test instead asserts that the buffer drains cleanly without
-	// errors / panics under the unusual double-entry path.
+	// flushPendingReplay tracks each delivered delivery_id in a local pass
+	// set. The first entry is forwarded; the second is a duplicate within
+	// the same pass and is dropped — exactly one frame forwarded to PI.
 	sc.flushPendingReplay()
 	time.Sleep(10 * time.Millisecond)
 
-	// Both frames will land (no per-flush dedup), but neither will be
-	// _spurious_ in the production path. This test exists to lock the
-	// behaviour so a future change that adds per-flush dedup is an
-	// intentional, reviewed change.
 	frames := drainFrames(pipeCh)
-	if len(frames) < 1 || len(frames) > 2 {
-		t.Fatalf("unexpected frame count %d for double-buffered flush: %v",
+	if len(frames) != 1 {
+		t.Fatalf("flushPendingReplay: expected exactly 1 frame for double-buffered same delivery_id (per-pass dedup), got %d: %v",
 			len(frames), framesForLog(frames))
+	}
+}
+
+// TestFlushPendingReplay_DuplicateDeliveryIDDropsSecond buffers two pending
+// replay entries with the same delivery_id (the F6/#1885 scenario: both
+// monitor and recovery watcher buffered an entry during a PI disconnect).
+// After flushPendingReplay, only the first entry is forwarded; the second
+// is dropped by the per-flush dedup check.
+func TestFlushPendingReplay_DuplicateDeliveryIDDropsSecond(t *testing.T) {
+	d := openTestDB(t)
+	sc := newDedupTestSidecar(t, "prism-test@coord-f6-dedup", d)
+
+	// Seed the buffer with two entries sharing the same delivery_id.
+	// The first entry is the monitor's delivery; the second is the recovery
+	// watcher's delivery. Both arrived during a PI disconnect window.
+	sc.mu.Lock()
+	sc.pendingReplayDeliveries = []pendingReplayDelivery{
+		{DeliveryID: "f6-group-abc", Text: "monitor delivery", DeliverAs: "followUp", Source: "review-complete"},
+		{DeliveryID: "f6-group-abc", Text: "recovery delivery", DeliverAs: "followUp", Source: "review-complete"},
+	}
+	sc.mu.Unlock()
+
+	// Neither ID has been seen yet (the /prompt handler never ran for
+	// these in this test scenario — they were injected directly into the
+	// buffer). flushPendingReplay uses a local per-pass dedup map: the first
+	// entry is forwarded and recorded in the pass map; the second entry has
+	// the same delivery_id, which is now in the pass map, so it is dropped.
+	pipeCh := make(chan []byte, 16)
+	sc.mu.Lock()
+	sc.harnessPipeOutCh = pipeCh
+	sc.mu.Unlock()
+
+	sc.flushPendingReplay()
+	time.Sleep(10 * time.Millisecond)
+
+	frames := drainFrames(pipeCh)
+	if len(frames) != 1 {
+		t.Fatalf("flushPendingReplay with duplicate delivery_id: want 1 frame (first forwarded, second dropped), got %d: %v",
+			len(frames), framesForLog(frames))
+	}
+	if !strings.Contains(string(frames[0]), "monitor delivery") {
+		t.Errorf("first frame = %q, want it to contain first entry's text", frames[0])
+	}
+
+	// Buffer must be empty after flush.
+	sc.mu.Lock()
+	nAfter := len(sc.pendingReplayDeliveries)
+	sc.mu.Unlock()
+	if nAfter != 0 {
+		t.Errorf("pendingReplayDeliveries after flush = %d, want 0", nAfter)
 	}
 }
 
