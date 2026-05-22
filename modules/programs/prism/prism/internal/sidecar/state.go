@@ -128,6 +128,12 @@ func (s *Sidecar) currentDBState() agent.AgentState {
 	return agent.AgentState(st.State)
 }
 
+// upsertState writes the session's current state (and optional title /
+// harness session ID) to the DB. Must be called with s.mu held.
+//
+// Writes (s.mu-protected fields): s.lastTitle (when title is non-nil and
+// non-empty). All other persistence happens via s.cfg.DB and is not
+// s.mu-protected struct state.
 func (s *Sidecar) upsertState(state agent.AgentState, title *string, harnessSessionID *string) {
 	// Track the most recently seen title for dashboard push events.
 	if title != nil && *title != "" {
