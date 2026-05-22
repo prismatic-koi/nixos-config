@@ -40,6 +40,11 @@ type fakeHostAPIServer struct {
 	// {"error": failError}.
 	failStatus int
 	failError  string
+	// byPRRow, when non-nil, is the row returned by /merges/by-pr. When
+	// nil the endpoint returns 404 — the shape proxyWaitProbe.Merge
+	// interprets as "no row". Used to stage re-entry scenarios for
+	// observeExistingMergeRow over the proxy path (#1875).
+	byPRRow map[string]any
 }
 
 type recordedRequest struct {
@@ -81,6 +86,19 @@ func (s *fakeHostAPIServer) handler() http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(merges)
+	})
+	mux.HandleFunc("/merges/by-pr", func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		s.requests = append(s.requests, recordedRequest{Path: "/merges/by-pr", URL: r.URL.String()})
+		row := s.byPRRow
+		s.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if row == nil {
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "not found"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(row)
 	})
 	mux.HandleFunc("/merges/cancel", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -174,13 +192,23 @@ func TestRunMerge_ProxiesToHostAPIWhenSet(t *testing.T) {
 	if len(server.requests) == 0 {
 		t.Fatal("server received no requests — proxy did not fire")
 	}
-	got := server.requests[0]
-	if got.Path != "/merge" {
-		t.Errorf("first request path = %q, want /merge", got.Path)
+	// The re-entry short-circuit (#1875) probes /merges/by-pr before the
+	// /merge POST, so the recorded requests now start with the probe. The
+	// fundamental assertion is that /merge fired with the right body —
+	// scan for it rather than pinning request index 0.
+	var mergePost *recordedRequest
+	for i := range server.requests {
+		if server.requests[i].Path == "/merge" {
+			mergePost = &server.requests[i]
+			break
+		}
+	}
+	if mergePost == nil {
+		t.Fatalf("no /merge POST recorded; got requests=%v", server.requests)
 	}
 	// Body must include the PR number; title may be the stubbed value.
-	if !strings.Contains(got.Body, `"pr":42`) {
-		t.Errorf("request body %q does not include pr=42", got.Body)
+	if !strings.Contains(mergePost.Body, `"pr":42`) {
+		t.Errorf("request body %q does not include pr=42", mergePost.Body)
 	}
 }
 
