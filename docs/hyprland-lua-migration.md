@@ -78,12 +78,52 @@ The motivation for doing it *now*, rather than letting it drift, is:
 
 ### In scope for PR 2
 
+The `wayland.windowManager.hyprland.settings` option is contributed to
+from **twelve** files across this repo, not just the main module — every
+one of them must be translated, because string-form entries become
+invalid lua under `configType = "lua"`. The complete list (verified by
+`rg 'wayland\.windowManager\.hyprland\.settings' --type nix`):
+
+**Primary module:**
+
 - `modules/desktop/hyprland/default.nix` — the main module that defines
   `wayland.windowManager.hyprland.{settings,extraConfig,plugins,…}`.
+  Sections 4 and 6 cover this file's contents directively.
+
+**Per-machine `monitor` contributions:**
+
 - `machines/navi/configuration.nix` — adds a per-machine
-  `wayland.windowManager.hyprland.settings.monitor` entry.
-- `machines/tui/configuration.nix` — same, with a different monitor
-  string.
+  `wayland.windowManager.hyprland.settings.monitor` entry (section 4.12,
+  7.2).
+- `machines/tui/configuration.nix` — same, different monitor string.
+
+**Per-app `windowrule` contributions** (all `lib.mkIf …enable`-gated,
+all use the v2 `match:`-style syntax):
+
+- `modules/gaming/prismlauncher.nix` — `tile on, match:class PrismLauncher`.
+- `modules/gaming/steam.nix` — `sync_fullscreen 0, match:class steam`.
+- `modules/programs/chromium.nix` — `tile on, match:class Chromium-browser`.
+- `modules/programs/darktable.nix` — two rules (splash float,
+  suppress-fullscreen).
+- `modules/programs/discord.nix` — `workspace 2 silent, match:class discord`.
+- `modules/programs/libreoffice.nix` — `sync_fullscreen 0, match:class libreoffice-writer`.
+- `modules/programs/qutebrowser/default.nix` — seven rules (filepicker /
+  editor floats with sizing, fake-fullscreen for qutebrowser windows).
+
+**Per-app `bind` contributions** (also `lib.mkIf …enable`-gated):
+
+- `modules/programs/home-automation.nix` — three binds:
+  `SUPER, Prior, exec, …openBlinds`,
+  `SUPER, Next, exec, …closeBlinds`,
+  `ALT, h, exec, …${newwindow} https://$HASS_DOMAIN`.
+- `modules/programs/voice-to-text.nix` — two binds tied to
+  `cfg.keybind`: hold-to-talk + cancel.
+- `modules/programs/voice-to-text-daemon.nix` — two binds, same shape
+  as `voice-to-text.nix`.
+
+Section 4.18 below covers the translation for these contributing
+modules. Section 9's checklist now has a dedicated step (step 11) for
+walking each one.
 
 ### Out of scope (separate HM modules, untouched)
 
@@ -435,7 +475,7 @@ ordering as today's hyprlang output.
 
 | Current | Lua (target) | Notes |
 |---|---|---|
-| `windowrule = [ ];` | **rename to `window_rule = [ ];`** (or omit) | wiki uses `hl.window_rule({ match = { class = "..." }, … })`. Underscore, singular. We currently have an empty list — easiest to just omit it. If we ever add one, the shape is `{ match = { class = "kitty"; }; border_size = 2; }`. |
+| `windowrule = [ ];` (in `modules/desktop/hyprland/default.nix`) | **rename to `window_rule = [ ];`** (or omit) | wiki uses `hl.window_rule({ match = { class = "..." }, … })`. Underscore, singular. The default in the main module is empty, but **ten other modules append entries via `lib.mkIf …enable`** — see section 4.18 for the full translation table. The attribute key rename from `windowrule` to `window_rule` must apply in every contributing file. |
 
 ### 4.15 `env`
 
@@ -507,7 +547,7 @@ see section 7), so they simply disappear when the condition is false.
 > in the module's `let` block would keep the call site readable. PR 2
 > should add it.
 
-### 4.17 `bind`, `bindl`, `bindrt`, `bindm`
+### 4.17 `bind`, `bindl`, `bindrt`, `bindm` (in `modules/desktop/hyprland/default.nix`)
 
 In hyprlang these are four separate directives. In lua they collapse to
 **one** `hl.bind` function whose third argument is a flag table. From
@@ -701,6 +741,116 @@ Renders as `hl.bind("SUPER + mouse:272", hl.dsp.window.drag(), { mouse = true })
 > `hl.dsp.window.resize()` for "resize by dragging". Our hyprlang names
 > are `movewindow` / `resizewindow`. Verify in the spike — there's a
 > renamed-dispatcher table in the wiki.
+
+### 4.18 `windowrule` and `bind` contributions from non-hyprland modules
+
+The twelve-file list in section 2 includes ten files outside
+`modules/desktop/hyprland/` that contribute string-form entries to
+`wayland.windowManager.hyprland.settings.{windowrule,bind}` via the
+standard nix module list-merge semantics. Under
+`configType = "hyprlang"` these render fine as extra `windowrule = …`
+and `bind = …` lines. Under `configType = "lua"` they would render as
+`hl.windowrule("tile on, match:class PrismLauncher")` etc. — calls to
+a function that doesn't exist, plus string arguments that the lua API
+wouldn't parse even if it did. The lua API uses `hl.window_rule({
+match = {...}, ... })` (note **underscore + singular**) with a
+structured match table, per
+[wiki Window Rules](https://wiki.hypr.land/Configuring/Basics/Window-Rules/).
+
+**Translation shape for windowrules.** The current new-syntax entries
+like `"tile on, match:class PrismLauncher"` parse as `<property
+value>, match:<key> <value>`. The lua form keys the match into a
+`match = {...}` table and the rule's property as a sibling field:
+
+| Current (hyprlang v2) | Lua (target, nix) |
+|---|---|
+| `"tile on, match:class PrismLauncher"` | `{ match.class = "PrismLauncher"; tile = true; }` |
+| `"sync_fullscreen 0, match:class steam"` | `{ match.class = "steam"; sync_fullscreen = false; }` |
+| `"tile on, match:class Chromium-browser"` | `{ match.class = "Chromium-browser"; tile = true; }` |
+| `"float on, match:title darktable starting"` | `{ match.title = "darktable starting"; float = true; }` |
+| `"suppress_event fullscreen, match:class darktable"` | `{ match.class = "darktable"; suppress_event = "fullscreen"; }` |
+| `"workspace 2 silent, match:class discord"` | `{ match.class = "discord"; workspace = "2 silent"; }` |
+| `"sync_fullscreen 0, match:class libreoffice-writer"` | `{ match.class = "libreoffice-writer"; sync_fullscreen = false; }` |
+| `"float on, match:class qute-filepicker"` | `{ match.class = "qute-filepicker"; float = true; }` |
+| `"size 800 480, match:class qute-filepicker"` | `{ match.class = "qute-filepicker"; size = "800 480"; }` |
+| `"stay_focused on, match:class qute-filepicker"` | `{ match.class = "qute-filepicker"; stay_focused = true; }` |
+| (qute-editor: same triple) | (same shape with `match.class = "qute-editor"`) |
+| `"sync_fullscreen 0, match:class org.qutebrowser.qutebrowser"` | `{ match.class = "org.qutebrowser.qutebrowser"; sync_fullscreen = false; }` |
+
+Each entry becomes a single `hl.window_rule({...})` call. **The
+attribute key on `settings` also changes — from `windowrule` to
+`window_rule`.** A worker walking these files in PR 2 must rename the
+key in every contributing file, not just translate the value.
+
+> **Open question (section 8.10):** the `workspace 2 silent` value
+> packs two things — a workspace identifier and a `silent` modifier.
+> Whether the lua API takes that as a single composite string
+> (`workspace = "2 silent"`) or as a structured table
+> (`workspace = { id = 2; silent = true; }`) is not obvious from the
+> wiki examples we've scraped. Resolve in the PR 2 spike.
+
+**Translation shape for `bind` contributions from non-hyprland modules.**
+The binds in `home-automation.nix`, `voice-to-text.nix`, and
+`voice-to-text-daemon.nix` translate exactly the same way as binds in
+the main hyprland module — `{ _args = [ keys (mkLuaInline dispatcher)
+]; }` per section 4.17. A worked example for the
+`home-automation.nix` blinds binds:
+
+```nix
+# Current (modules/programs/home-automation.nix:186–197)
+bind = [
+  "SUPER, ${pageup}, exec, ${homeDir}/.local/scripts/home.office.openBlinds"
+  "SUPER, ${pagedown}, exec, ${homeDir}/.local/scripts/home.office.closeBlinds"
+  "ALT, h, exec, ${newwindow} https://$HASS_DOMAIN"
+];
+
+# Target
+bind = [
+  { _args = [
+      "SUPER + ${pageup}"
+      (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${homeDir}/.local/scripts/home.office.openBlinds")'')
+    ];
+  }
+  { _args = [
+      "SUPER + ${pagedown}"
+      (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${homeDir}/.local/scripts/home.office.closeBlinds")'')
+    ];
+  }
+  { _args = [
+      "ALT + h"
+      (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${newwindow} https://$HASS_DOMAIN")'')
+    ];
+  }
+];
+```
+
+The `voice-to-text*.nix` binds use `${cfg.keybind}` — a string
+like `"SUPER, v"` defined in the option default. The lua form needs
+the single ` + `-joined keys string; the option's stored value may
+need reformatting or, more conservatively, a one-liner helper that
+rewrites `"<mod>, <key>"` to `"<mod> + <key>"` in the module. The
+cleanest path is to change the `cfg.keybind` option's documented
+format to the lua form directly (e.g. default `"SUPER + v"`) — note
+this is a user-visible option change and should be called out in PR
+2's commit message. Less invasively: keep the `"SUPER, v"` format and
+split/rejoin inside the binding expression.
+
+**Why this matters — silent regression risk.** Under
+`configType = "lua"`, an untranslated `windowrule = [ "…" ]`
+contribution from (say) `modules/programs/qutebrowser/default.nix`
+renders as `hl.windowrule("float on, match:class qute-filepicker")` —
+Hyprland's lua runtime errors on the call (no such function) and the
+rule silently doesn't apply. The session keeps working; the user only
+notices when they next open a qute-filepicker and it tiles instead of
+floating. Same for the home-automation binds: `SUPER+PgUp/PgDn` simply
+stop working and you don't notice until the next time you try to open
+the blinds. The 24-hour soak in section 9 step 18 is unlikely to
+exercise every contributing module, so we cannot rely on it to catch a
+missed file.
+
+This is exactly the failure class the review-context agent surfaced in
+PR 1 review round 1, and is the reason section 9 step 11 is a separate
+explicit step rather than rolled into the main hyprland module work.
 
 ---
 
@@ -1194,7 +1344,53 @@ commit message so a reviewer can sanity-check it. The Hyprland-shipped
 lua stubs at `${cfg.finalPackage}/share/hypr/stubs/` are the
 authoritative reference.
 
-### 8.10 Should `extraConfig` really be empty?
+### 8.10 `workspace 2 silent` — composite string vs structured table
+
+The `discord.nix` windowrule sets `"workspace 2 silent, match:class
+discord"`. In hyprlang the rule's RHS is a free-form string that
+Hyprland parses internally; the `silent` modifier is appended after
+the workspace id with a space. In the lua API it's unclear whether
+that translates to:
+
+- A single composite string: `workspace = "2 silent"`, or
+- A structured table: `workspace = { id = 2; silent = true; }`.
+
+The wiki [Window Rules](https://wiki.hypr.land/Configuring/Basics/Window-Rules/)
+examples we scraped lean toward structured values for most fields, but
+the `workspace` field specifically wasn't covered with a `silent`
+modifier in any of the examples I read.
+
+**Resolution: source-read** the lua stubs at
+`${cfg.finalPackage}/share/hypr/stubs/` (the auto-loaded
+`.luarc.json` config from HM:461–467 points there) for the
+`window_rule.workspace` field type, or test both forms in the spike.
+Low risk either way — the worst case is one wrong form that fails on
+reload with a clear error.
+
+### 8.11 `voice-to-text` keybind format option
+
+The `nx.programs.voice-to-text.keybind` (and `voice-to-text-daemon`)
+option's default value is currently in hyprlang `"<mod>, <key>"`
+format. Section 4.18 proposes changing the documented format to the
+lua `"<mod> + <key>"` form. This is a user-visible breaking change
+for anyone overriding the option.
+
+**Resolution:** decide during PR 2. Two reasonable answers:
+
+- **Change the format.** Cleaner long-term, but requires a one-line
+  change in each consumer's machine config if they override it. Look
+  for overrides with
+  `rg 'nx\.programs\.voice-to-text(-daemon)?\.keybind'` before
+  deciding — if there are zero non-default overrides, just change it.
+- **Keep the format, translate inside the module.** Add a tiny helper
+  (`luaKeybind = s: lib.replaceStrings [ ", " ] [ " + " ] s;`) and
+  use it at the bind call site. No user-visible change.
+
+My current lean: change the format, because the cleaner option's
+blast radius is one or two files at most and it removes a layer of
+indirection.
+
+### 8.12 Should `extraConfig` really be empty?
 
 Section 6.5 claims `extraConfig = "";` post-migration. If the spike
 finds something that doesn't model cleanly in `submaps` (or any other
@@ -1241,15 +1437,34 @@ The order matters — each step is independently verifiable.
     `bind = [...]` list.** Walk each entry; produce the
     `{ _args = [keys dispatcher flags?]; }` shape per section 4.17 and
     the section 8.9 dispatcher-rename table.
-11. **Migrate `extraConfig` submaps into `submaps.resize` /
+11. **Walk every non-hyprland module that contributes to
+    `wayland.windowManager.hyprland.settings`** per section 4.18 and
+    section 2's in-scope list. The current set (verify before
+    starting with
+    `rg 'wayland\.windowManager\.hyprland\.settings' --type nix`):
+    - `modules/gaming/prismlauncher.nix` (1 windowrule)
+    - `modules/gaming/steam.nix` (1 windowrule)
+    - `modules/programs/chromium.nix` (1 windowrule)
+    - `modules/programs/darktable.nix` (2 windowrules)
+    - `modules/programs/discord.nix` (1 windowrule — see open question 8.10)
+    - `modules/programs/libreoffice.nix` (1 windowrule)
+    - `modules/programs/qutebrowser/default.nix` (7 windowrules)
+    - `modules/programs/home-automation.nix` (3 binds — `SUPER+PgUp/PgDn`, `ALT+h`)
+    - `modules/programs/voice-to-text.nix` (2 binds — see open question 8.11)
+    - `modules/programs/voice-to-text-daemon.nix` (2 binds — see open question 8.11)
+
+    For each: rename `windowrule` → `window_rule`, translate every
+    string entry to the attrset form, and `home-manager build` after
+    each file to confirm no lua syntax errors.
+12. **Migrate `extraConfig` submaps into `submaps.resize` /
     `submaps.exit`** per section 6, using the `hl.timer` idiom from
     section 6.4 for auto-reset.
-12. **Collapse the three `SUPER_L` release-bind copies into one
+13. **Collapse the three `SUPER_L` release-bind copies into one
     top-level `submap_universal = true` entry** per section 8.5.
-13. **Set `extraConfig = "";`** (or remove the key entirely).
-14. **Build:** `nix flake check`, `nh switch --flake .#navi` on navi,
+14. **Set `extraConfig = "";`** (or remove the key entirely).
+15. **Build:** `nix flake check`, `nh switch --flake .#navi` on navi,
     then on tui. Both must succeed without errors.
-15. **Visual smoke-test on each machine:**
+16. **Visual smoke-test on each machine:**
     - Launch a terminal with `ALT+Return` — confirms the simplest
       `exec` bind path.
     - Switch workspaces with `SUPER+1..9` — confirms workspace
@@ -1275,15 +1490,35 @@ The order matters — each step is independently verifiable.
     - Press and release `SUPER_L` alone — confirms the waybar /
       quickshell show/hide pulse still works, both globally and
       inside the resize / exit submaps (per section 8.5).
-16. **Commit, push, open PR with `gh pr create`.** Title:
+    - **Exercise every contributing module's binds and windowrules**
+      (per step 11 list — otherwise the 24-hour soak below cannot
+      catch a missed translation):
+      - Open Prism Launcher — confirms the gaming windowrule.
+      - Launch Steam — confirms the steam `sync_fullscreen` rule.
+      - Open Chromium — confirms the chromium tile rule.
+      - Open Darktable, observe splash float + no maximise.
+      - Open Discord, confirm it lands on workspace 2 silently.
+      - Open a LibreOffice writer document, try fullscreen.
+      - Open qutebrowser, open a file picker dialog (e.g. via
+        `Ctrl+O` in a form), confirm float + sizing; same for an
+        edit-in-external-editor flow.
+      - Hit `SUPER+PgUp` and `SUPER+PgDn` — confirms
+        home-automation blinds binds (only meaningful where the
+        HA endpoint is reachable).
+      - Hit `ALT+h` — confirms the HA-dashboard bind.
+      - Hit `${cfg.keybind}` on a voice-to-text-enabled machine —
+        confirms the voice-to-text binds (only meaningful on
+        machines where it's enabled, namely those with the
+        daemon variant).
+17. **Commit, push, open PR with `gh pr create`.** Title:
     `hyprland: migrate from hyprlang to lua`. Body links back to this
     design doc and to PR 0.
-17. **Run `prism review`** on the PR. Address findings.
-18. **Leave the PR open for at least 24 h** before merging — Ben
+18. **Run `prism review`** on the PR. Address findings.
+19. **Leave the PR open for at least 24 h** before merging — Ben
     should sit on the running config for a day to make sure no
     secondary bind behaviour has silently regressed (e.g. obscure
     media keys, the long-press-vs-tap interaction on
-    `XF86AudioNext`).
+    `XF86AudioNext`, app windowrules from the step-11 modules).
 
 ---
 
