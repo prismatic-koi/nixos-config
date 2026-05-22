@@ -782,8 +782,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Issue #1685.
 			DeliveryID string `json:"delivery_id,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /prompt uses the bumped 16 MiB body cap (issue #1848): worker spawn
+		// prompts may legitimately embed file attachments and large context
+		// blobs, so the default 1 MiB ceiling is too tight for this surface.
+		if status, err := decodeRequestJSON(w, r, &req, promptMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -1024,10 +1027,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
 		}
-		dec := json.NewDecoder(r.Body)
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /spawn body cap: default 1 MiB (issue #1848). DisallowUnknownFields
+		// is applied via decodeRequestJSON — already strict on this endpoint.
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 
@@ -1365,8 +1368,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Timeout  string   `json:"timeout"`
 			Rebase   bool     `json:"rebase"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /review body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.PRNumber == "" {
@@ -1556,8 +1560,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Yes     bool   `json:"yes"`
 			JSON    bool   `json:"json"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /cleanup body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -1644,8 +1649,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /switch body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -1707,8 +1713,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			PR    int     `json:"pr"`
 			Title *string `json:"title"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /merge body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.PR <= 0 {
@@ -1791,8 +1798,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			PR int `json:"pr"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /merges/cancel body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.PR <= 0 {
@@ -1864,8 +1872,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Session string            `json:"session"`
 			Args    map[string]string `json:"args"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /event body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 
@@ -1947,8 +1956,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		var entry feedback.Entry
-		if err := json.NewDecoder(r.Body).Decode(&entry); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /feedback body cap: default 1 MiB (issue #1848). DisallowUnknownFields
+		// is enabled because feedback.Entry is a closed schema co-owned by this
+		// repo (cmd/feedback.go and internal/feedback) — no external producers.
+		if status, err := decodeRequestJSON(w, r, &entry, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if strings.TrimSpace(entry.Text) == "" {
@@ -2130,8 +2142,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			To     string `json:"to,omitempty"`
 			From   string `json:"from,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /escalate body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if strings.TrimSpace(req.Prompt) == "" {
@@ -2201,8 +2214,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			From   string `json:"from,omitempty"`
 			Name   string `json:"name,omitempty"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /investigate body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if strings.TrimSpace(req.Prompt) == "" {
@@ -2271,8 +2285,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Model    string `json:"model"`
 			Thinking string `json:"thinking"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /set-model body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -2337,8 +2352,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Scope   string `json:"scope"`
 			Session string `json:"session"` // only for scope=session
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /apply-profile body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Profile == "" {
@@ -2472,8 +2488,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Scope   string         `json:"scope"`
 			Session string         `json:"session"` // only for scope=session
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /register-provider body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Name == "" {
@@ -2576,8 +2593,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Name    string         `json:"name"`
 			Config  map[string]any `json:"config"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /register-provider-direct body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -2618,8 +2636,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Session string   `json:"session"`
 			Tools   []string `json:"tools"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /set-active-tools body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {
@@ -2661,8 +2680,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		var req struct {
 			Session string `json:"session"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		// /abort body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
 			return
 		}
 		if req.Session == "" {

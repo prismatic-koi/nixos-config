@@ -2,12 +2,68 @@ package sidecar
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+)
+
+// ── host-API request decoding ────────────────────────────────────────────────
+//
+// decodeRequestJSON wraps r.Body in an http.MaxBytesReader sized to maxBytes,
+// constructs a json.Decoder with DisallowUnknownFields enabled, and decodes
+// the body into req. It is the single entry point used by every POST handler
+// in host_api.go so that body-size caps and strict-field decoding are applied
+// consistently across the surface (issue #1848).
+//
+// On success it returns (0, nil) and the caller proceeds with req.
+//
+// On failure it returns one of:
+//
+//   - (http.StatusRequestEntityTooLarge, err) when the body exceeds maxBytes.
+//     Detected via errors.As against *http.MaxBytesError, which the Go runtime
+//     surfaces from the wrapped reader.
+//   - (http.StatusBadRequest, err) for every other decode failure (malformed
+//     JSON, type mismatch, unknown field with DisallowUnknownFields, etc.).
+//
+// 413 vs 400 trade-off (AC #3): when DisallowUnknownFields is enabled we can
+// always tell a body-cap overflow from any other decode error because the
+// runtime wraps the cap-exceeded condition in *http.MaxBytesError before the
+// decoder ever sees it. We therefore return 413 on cap overflow and 400 on
+// every other parse error — the two are distinguishable, so we use the more
+// informative status.
+//
+// allowUnknownFields, when true, disables DisallowUnknownFields. This is for
+// the rare handler that must accept forward-compatible trailing fields; every
+// such call site must justify the deviation in a code comment (AC #4).
+func decodeRequestJSON(w http.ResponseWriter, r *http.Request, req any, maxBytes int64, allowUnknownFields bool) (int, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+	dec := json.NewDecoder(r.Body)
+	if !allowUnknownFields {
+		dec.DisallowUnknownFields()
+	}
+	if err := dec.Decode(req); err != nil {
+		var mbe *http.MaxBytesError
+		if errors.As(err, &mbe) {
+			return http.StatusRequestEntityTooLarge, err
+		}
+		return http.StatusBadRequest, err
+	}
+	return 0, nil
+}
+
+// Body-size caps for host-API POST handlers (issue #1848). 1 MiB is the
+// default for every endpoint; /prompt is bumped to 16 MiB because prompts may
+// legitimately carry file attachments and worker-spawn context (see
+// the call site at mux.HandleFunc("/prompt", ...)). Any other deviation must
+// be justified in a code comment at the call site.
+const (
+	defaultMaxBodyBytes int64 = 1 << 20  // 1 MiB
+	promptMaxBodyBytes  int64 = 16 << 20 // 16 MiB
 )
 
 func strPtr(s string) *string {

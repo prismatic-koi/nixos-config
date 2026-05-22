@@ -95,12 +95,19 @@ func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 	}
 }
 
-// TestHostAPI_Merge_ClientIdentityIsIgnored verifies that the proxy contract
-// is "trust the sidecar, not the client": the request body intentionally has
-// no session_name / instance_id field, so even if a misbehaving client tried
-// to set them, the sidecar would still use its own values. (Asserted
-// indirectly by passing an arbitrary title and verifying that DB identity
-// matches the sidecar config.)
+// TestHostAPI_Merge_ClientIdentityIsIgnored verifies the proxy contract
+// "trust the sidecar, not the client": the request body has no
+// session_name / instance_id field on the schema, so the sidecar always uses
+// its own values when writing the pending_merges row. Verified by posting a
+// minimal valid body and asserting the DB row's identity matches the
+// sidecar's own config.
+//
+// Note: as of issue #1848, all host-API POST handlers run with
+// DisallowUnknownFields, so a body that *did* contain stray identity fields
+// (the pre-#1848 spoof attempt) would now be rejected with 400 before it ever
+// reached the merge logic — the identity-spoof property is preserved
+// (strengthened, in fact) by strict decoding. The companion test
+// TestHostAPI_Merge_StrayClientFields_Rejected covers that path explicitly.
 func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 	d := openTestDB(t)
 	const (
@@ -109,10 +116,8 @@ func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 	)
 	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
-	// Body contains stray fields that are not part of the schema; they must
-	// be ignored.
 	rr := doHostAPI(t, sc, http.MethodPost, "/merge",
-		`{"pr": 99, "title": null, "session_name": "evil@spoofed", "instance_id": "spoofed"}`)
+		`{"pr": 99, "title": null}`)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
 	}
@@ -121,8 +126,36 @@ func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
 	if row == nil || row.SessionName != sess || row.InstanceID != instance {
-		t.Errorf("row identity = (%v, %v), want (%q, %q) — sidecar must ignore client-supplied identity",
+		t.Errorf("row identity = (%v, %v), want (%q, %q) — sidecar must use its own identity",
 			row.SessionName, row.InstanceID, sess, instance)
+	}
+}
+
+// TestHostAPI_Merge_StrayClientFields_Rejected verifies the strict-decoding
+// contract added in issue #1848: a /merge request body that contains stray
+// fields (e.g. an attempt to spoof session_name or instance_id) is rejected
+// with HTTP 400 by DisallowUnknownFields before any merge work happens.
+func TestHostAPI_Merge_StrayClientFields_Rejected(t *testing.T) {
+	d := openTestDB(t)
+	const (
+		sess     = "test-repo@main"
+		instance = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+	)
+	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/merge",
+		`{"pr": 99, "title": null, "session_name": "evil@spoofed", "instance_id": "spoofed"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %q, want 400", rr.Code, rr.Body.String())
+	}
+	// And: the malformed-spoof request must NOT have caused a DB row to be
+	// written under either the real or spoofed identity.
+	row, err := d.PendingMergeByPR(99)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row != nil {
+		t.Errorf("PendingMergeByPR(99) = %+v, want nil — rejected request must not write a row", row)
 	}
 }
 
