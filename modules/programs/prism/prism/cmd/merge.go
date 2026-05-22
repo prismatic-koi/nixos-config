@@ -65,16 +65,34 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	waitFlag, _ := cmd.Flags().GetBool("wait")
 	jsonFlag, _ := cmd.Flags().GetBool("json")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
-	// Idempotent observation: if the PR already has a terminal row in the
-	// DB, --wait must return immediately with the recorded status. We check
-	// this BEFORE the proxy/host-API enqueue path so an already-merged PR
-	// short-circuits without a round-trip. The check uses a read-only DB
-	// open and is best-effort: any error falls through to the normal enqueue
-	// path so the user still gets a sensible behaviour.
-	if waitFlag {
-		if done, watErr := observeAlreadyTerminal(pr, jsonFlag); done {
-			return watErr
-		}
+
+	// Re-entry short-circuit (#1875). Probe the merge ledger BEFORE running
+	// the `gh pr view` preflight or hitting the sidecar /merge endpoint.
+	// This is the cmd/-layer side of the DB-level idempotence in
+	// EnqueueMerge: the DB does the right thing on duplicate inserts, but
+	// the user-facing behaviour was misleading (a second `prism merge N`
+	// reported "enqueued" as if it were fresh) and gratuitous network cost
+	// was paid on every re-entry (one `gh pr view` round-trip per call).
+	//
+	//   - Terminal row, status == "merged" — short-circuit and print the
+	//     recorded status. This is a true no-op: the PR is done.
+	//   - Terminal row, status in {failed, cancelled, abandoned} — fall
+	//     through. These are documented retry points in the coordinator
+	//     flow (on CI failure / merge conflicts / closed-without-merging,
+	//     the coordinator re-runs `prism merge <pr>` after the worker
+	//     fixes the underlying issue). The DB layer's EnqueueMerge then
+	//     treats the terminal row as gone and inserts a fresh `watching`
+	//     row via its ON CONFLICT branch.
+	//   - Non-terminal row (watching/...) — skip preflight, skip the
+	//     duplicate enqueue, and print an "already in queue" message that is
+	//     distinguishable from the fresh-enqueue line.
+	//   - No row — fall through to the normal enqueue path.
+	//
+	// Uses newWaitProbe() so the lookup works on both the host (direct DB)
+	// and inside a sandbox (host-API proxy); a probe failure falls through
+	// rather than erroring so the user still gets a sensible behaviour.
+	if done, reentryErr := observeExistingMergeRow(pr, waitFlag, jsonFlag, timeoutFlag); done {
+		return reentryErr
 	}
 
 	// Inside a bwrap sandbox: proxy the enqueue to the host sidecar (#1043).
@@ -207,6 +225,76 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 	fmt.Println()
 	fmt.Println("Track progress with: prism merges")
 	return nil
+}
+
+// observeExistingMergeRow is the cmd/-layer re-entry short-circuit for
+// `prism merge` (#1875). It probes the pending_merges ledger before any
+// `gh pr view` preflight or sidecar round-trip and decides whether the
+// caller can be served entirely from the existing row.
+//
+// Returns (true, err) when the caller should return immediately with err
+// (which may be nil for a successful no-op). Returns (false, nil) when the
+// caller should continue with the normal preflight + enqueue path.
+//
+// On any probe error or open-DB failure, returns (false, nil) — this is a
+// best-effort short-circuit, never a hard failure. Falling through means
+// the caller pays the gh round-trip but still gets a correct outcome via
+// the idempotent DB layer.
+func observeExistingMergeRow(pr int, waitFlag, jsonMode bool, timeout time.Duration) (bool, error) {
+	probe, err := newWaitProbe()
+	if err != nil {
+		return false, nil
+	}
+	defer probe.Close()
+	row, err := probe.Merge(pr)
+	if err != nil || row == nil {
+		return false, nil
+	}
+	if row.Status == "merged" {
+		// Already merged: this is a true no-op. Print the recorded
+		// status (sharing emitMergeWaitTerminal with --wait so the
+		// human / JSON output shape is identical) and return.
+		return true, emitMergeWaitTerminal(row, jsonMode)
+	}
+	if isMergeTerminalStatus(row.Status) {
+		// Other terminal states (failed / cancelled / abandoned) are
+		// retry points in the documented coordinator flow: on CI
+		// failure, merge conflicts, or a closed-without-merging row,
+		// the coordinator prompts the worker to fix and then re-runs
+		// `prism merge <pr>` to re-enqueue. Falling through here lets
+		// the normal preflight + EnqueueMerge path run — EnqueueMerge
+		// treats a terminal row as gone (per its ON CONFLICT branch)
+		// and inserts a fresh `watching` row.
+		return false, nil
+	}
+	// Non-terminal: the PR is already in the queue. Skip preflight and the
+	// duplicate-enqueue round-trip. With --wait, drop straight into the
+	// poll loop. Without --wait, print an "already in queue" message that
+	// is distinguishable from the fresh-enqueue line.
+	quietStdout := waitFlag && jsonMode
+	if !quietStdout {
+		fmt.Printf("PR #%d already in queue (queue_position=%d, status=%s)\n", row.PR, row.QueuePosition, row.Status)
+		if row.Title != nil && *row.Title != "" {
+			fmt.Printf("  %s\n", *row.Title)
+		}
+	}
+	if waitFlag {
+		return true, waitForMergeTerminal(pr, jsonMode, timeout)
+	}
+	return true, nil
+}
+
+// isMergeTerminalStatus mirrors internal/db.isMergeTerminal at the cmd
+// layer so the short-circuit in observeExistingMergeRow does not need to
+// import an unexported predicate. The set is small and stable; if a new
+// terminal status is added to the DB layer, this list must be updated to
+// match.
+func isMergeTerminalStatus(status string) bool {
+	switch status {
+	case "merged", "failed", "cancelled", "abandoned":
+		return true
+	}
+	return false
 }
 
 // observeAlreadyTerminal returns (true, err) when the given PR has an
