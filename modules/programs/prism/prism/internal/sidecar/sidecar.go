@@ -290,6 +290,19 @@ type Config struct {
 	// MiB). Set to a small value in tests to exercise boundary behaviour
 	// without allocating 16 MiB of test data.
 	PipeMaxLineBytes int
+	// DashboardSink, when non-nil, is the test-isolation hook used by
+	// writeStateChangeWithSID to perform the two dashboard side-effects
+	// (socket push and sentinel touch). When nil, New() installs the
+	// production sink (productionDashboardSink), which preserves the
+	// historical behaviour exactly: PushEvent dispatches a fire-and-forget
+	// goroutine that dials $XDG_STATE_HOME/prism/bus/dashboard.sock, and
+	// TouchSentinel runs an inline os.MkdirAll+os.Chtimes pair.
+	//
+	// sidecartest.NewIsolated installs NoopDashboardSink() so that tests
+	// constructed via the isolation helper never touch $XDG_STATE_HOME-derived
+	// paths, even when $HOME is unwritable (e.g. /homeless-shelter in the nix
+	// sandbox). See dashboard.go and issue #1851 for the footgun analysis.
+	DashboardSink DashboardSink
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -547,6 +560,21 @@ func New(cfg Config) *Sidecar {
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = defaultNotifyHTTPClient
+	}
+	if cfg.DashboardSink == nil {
+		// Auto-install the no-op sink when the test-mode guard is active. The
+		// guard env var (sidecartest.EnvRestrictHostAPI = "PRISM_TEST_MODE_
+		// RESTRICT_HOSTAPI") is set by sidecartest.NewIsolated so any Sidecar
+		// constructed within an isolated test automatically skips the
+		// dashboard side-effects — even if the test forgets to set
+		// DashboardSink explicitly. Production callers do not set this env
+		// var and so receive the unchanged productionDashboardSink behaviour.
+		// See issue #1851 for the homeless-shelter footgun this closes.
+		if os.Getenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI") != "" {
+			cfg.DashboardSink = noopDashboardSink{}
+		} else {
+			cfg.DashboardSink = productionDashboardSink{}
+		}
 	}
 	s := &Sidecar{
 		cfg:             cfg,

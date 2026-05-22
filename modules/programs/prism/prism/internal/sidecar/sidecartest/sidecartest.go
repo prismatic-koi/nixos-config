@@ -12,6 +12,12 @@
 //     host socket — a guard env var (PRISM_TEST_MODE_RESTRICT_HOSTAPI) is set
 //     automatically, causing DeliverToSession to refuse socket paths outside
 //     the test's tempdir.
+//   - The dashboard side-effects on state change (sidecar.touchDashboardSentinel
+//     and sidecar.pushDashboardEvent, both of which derive paths from
+//     $XDG_STATE_HOME / $HOME) are suppressed: sidecar.New() consults the same
+//     PRISM_TEST_MODE_RESTRICT_HOSTAPI guard set by NewIsolated and installs a
+//     no-op DashboardSink when it is set. See issue #1851 for the
+//     homeless-shelter footgun this closes.
 //
 // Session names used in test fixtures must NOT use real coordinator slugs
 // (e.g. "nixos-config@main"). Use "prism-test@invoker-<testname>" instead so
@@ -34,12 +40,20 @@ import (
 )
 
 // EnvRestrictHostAPI is the environment variable name that, when set to any
-// non-empty value, causes promptdelivery.deliverViaSidecarSocket to refuse to
-// dial any socket path that does not reside under the process's
-// $XDG_STATE_HOME directory. It is set automatically by NewIsolated.
+// non-empty value:
+//
+//   - causes promptdelivery.deliverViaSidecarSocket to refuse to dial any
+//     socket path that does not reside under the process's $XDG_STATE_HOME
+//     directory; and
+//   - causes sidecar.New() to install a no-op DashboardSink when
+//     Config.DashboardSink is nil, so writeStateChangeWithSID does not touch
+//     $XDG_STATE_HOME-derived paths (issue #1851).
+//
+// It is set automatically by NewIsolated.
 //
 // This is a test-mode guard that prevents future regressions where new
-// transport paths accidentally escape the test's tempdir isolation.
+// transport paths or state-change side-effects accidentally escape the test's
+// tempdir isolation.
 const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 
 // Bus is the in-process test bus for a single isolated sidecar test. It
