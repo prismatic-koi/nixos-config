@@ -2,13 +2,18 @@ package promptdelivery_test
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi" // register pi harness for ShapeOf("pi") in tests
@@ -250,6 +255,255 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 				if got := gotBody["deliver_as"]; got != tc.want {
 					t.Errorf("deliver_as = %q, want %q", got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+
+// TestDeliverToSession_StaleTombstoneSocket verifies that when the host-API
+// socket file exists on disk but no process is listening on it (the "stale
+// tombstone" case left by a sidecar that exited abnormally without cleanup),
+// DeliverToSession surfaces the differentiated diagnostic error rather than a
+// generic dial failure. This is the operator's primary diagnostic surface for
+// crashed-sidecar scenarios — a regression here would silently degrade the
+// operator experience.
+//
+// The tombstone is constructed at the syscall level (bind + listen + close-fd
+// without unlink) — net.Listener.Close() unlinks the file, which would not
+// reproduce the abnormal-exit shape. The same technique is used by
+// internal/sidecar/sidecar_hostapi_bind_test.go for the sidecar-side check.
+func TestDeliverToSession_StaleTombstoneSocket(t *testing.T) {
+	// Use a short prefix (not t.TempDir) to keep the resulting sun_path
+	// under the 108-byte Linux limit — t.TempDir embeds the test name.
+	xdgTmp, err := os.MkdirTemp("", "prism-pd-tomb-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+	t.Setenv("XDG_STATE_HOME", xdgTmp)
+
+	sessionName := "myrepo@tomb"
+	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	if err != nil {
+		t.Fatalf("resolve socket path: %v", err)
+	}
+	if mkErr := os.MkdirAll(filepath.Dir(sockPath), 0o700); mkErr != nil {
+		t.Fatalf("mkdir socket dir: %v", mkErr)
+	}
+
+	// Bind + listen + close-fd-without-unlink leaves a socket inode on disk
+	// that produces ECONNREFUSED on connect (the tombstone shape).
+	fd, sErr := syscall.Socket(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if sErr != nil {
+		t.Fatalf("syscall.Socket: %v", sErr)
+	}
+	if bErr := syscall.Bind(fd, &syscall.SockaddrUnix{Name: sockPath}); bErr != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("syscall.Bind(%s): %v", sockPath, bErr)
+	}
+	if lErr := syscall.Listen(fd, 1); lErr != nil {
+		_ = syscall.Close(fd)
+		t.Fatalf("syscall.Listen: %v", lErr)
+	}
+	_ = syscall.Close(fd) // leave the inode on disk — the tombstone
+
+	if _, statErr := os.Stat(sockPath); statErr != nil {
+		t.Fatalf("expected tombstone socket on disk, got: %v", statErr)
+	}
+
+	// Sanity-check the platform actually returns ECONNREFUSED on this
+	// shape. On Linux and Darwin it does; on exotic platforms a different
+	// errno would prevent isStaleTombstoneSocket from triggering and the
+	// test should skip rather than flake.
+	if _, dialErr := net.DialTimeout("unix", sockPath, time.Second); dialErr == nil {
+		t.Fatal("unexpected successful dial of tombstone socket")
+	} else if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		t.Skipf("platform returned %v (not ECONNREFUSED) for tombstone socket; skipping", dialErr)
+	}
+
+	piHarness := "pi"
+	status := &db.Status{
+		SessionName: sessionName,
+		Harness:     &piHarness,
+	}
+
+	err = promptdelivery.DeliverToSession(sessionName, status, "hello", nil, "", "")
+	if err == nil {
+		t.Fatal("expected error for stale tombstone socket, got nil")
+	}
+	// Documented diagnostic from promptdelivery.go newUnixClient DialContext:
+	//   "host-API socket at %s is a stale tombstone — sidecar has exited
+	//    without cleanup (ECONNREFUSED on existing socket file): %w"
+	if !strings.Contains(err.Error(), "stale tombstone") {
+		t.Errorf("error %q should contain 'stale tombstone' diagnostic", err.Error())
+	}
+}
+
+// TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG verifies that when
+// PRISM_TEST_MODE_RESTRICT_HOSTAPI is set, DeliverToSession refuses to dial a
+// host-API socket whose path is not under $XDG_STATE_HOME, and surfaces the
+// documented guard error without attempting any dial.
+//
+// Because deliverViaSidecarSocket computes its sockPath from XDG_STATE_HOME
+// and then compares it against the same XDG_STATE_HOME, the guard branch
+// cannot be exercised end-to-end without an injection seam. The seam
+// (SetSidecarHostAPIPathFn) is documented in export_test.go and exists
+// purely to make this branch testable — keep its use limited to this test.
+func TestDeliverToSession_RestrictHostapiGuard_RefusesOutOfXDG(t *testing.T) {
+	xdgTmp, err := os.MkdirTemp("", "prism-pd-guard-xdg-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(xdgTmp) })
+	t.Setenv("XDG_STATE_HOME", xdgTmp)
+	t.Setenv(promptdelivery.EnvRestrictHostAPI, "1")
+
+	// Stand up a real Unix-socket listener at an outside path. If the guard
+	// fails to fire and a dial is attempted, this listener will record the
+	// connection and the test will detect it.
+	outside, err := os.MkdirTemp("", "prism-pd-guard-outside-*")
+	if err != nil {
+		t.Fatalf("create outside dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(outside) })
+
+	outsideSock := filepath.Join(outside, "hostapi.sock")
+	var dialed bool
+	lns, listenErr := net.Listen("unix", outsideSock)
+	if listenErr != nil {
+		t.Fatalf("listen on outside socket: %v", listenErr)
+	}
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			dialed = true
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+	go func() { _ = srv.Serve(lns) }()
+	t.Cleanup(func() { _ = srv.Close() })
+
+	// Inject a resolver that points at the outside socket — outside the
+	// current XDG_STATE_HOME. This is exactly the shape the guard exists
+	// to refuse.
+	restore := promptdelivery.SetSidecarHostAPIPathFn(func(_ string) (string, error) {
+		return outsideSock, nil
+	})
+	t.Cleanup(restore)
+
+	piHarness := "pi"
+	status := &db.Status{
+		SessionName: "myrepo@guard",
+		Harness:     &piHarness,
+	}
+
+	err = promptdelivery.DeliverToSession("myrepo@guard", status, "hello", nil, "", "")
+	if err == nil {
+		t.Fatal("expected guard error, got nil")
+	}
+	// Documented guard message from promptdelivery.go deliverViaSidecarSocket:
+	//   "test-mode isolation guard: refusing to dial host-API socket at %s
+	//    — path is outside XDG_STATE_HOME=%s (set
+	//    PRISM_TEST_MODE_RESTRICT_HOSTAPI only in tests)"
+	wantSubstrings := []string{
+		"test-mode isolation guard",
+		"refusing to dial",
+		outsideSock,
+		xdgTmp,
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing expected substring %q", err.Error(), want)
+		}
+	}
+
+	if dialed {
+		t.Error("guard fired but a dial was still attempted (listener was contacted)")
+	}
+}
+
+// TestDeliverToSession_HTTPNon2xx_SurfacesStatus verifies that when the HTTP
+// fallback delivery path receives a non-2xx response, the returned error
+// includes the status code and the URL — per the documented error format in
+// promptdelivery.go (deliverViaHTTP: "http status %d from %s").
+func TestDeliverToSession_HTTPNon2xx_SurfacesStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+	}{
+		{name: "4xx", status: http.StatusBadRequest},
+		{name: "5xx", status: http.StatusInternalServerError},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.status)
+			}))
+			defer srv.Close()
+
+			port := srv.Listener.Addr().(*net.TCPAddr).Port
+			emptyHarness := ""
+			sid := "session-nonok"
+			status := &db.Status{
+				SessionName:      "myrepo@feature",
+				Harness:          &emptyHarness,
+				HarnessPort:      &port,
+				HarnessSessionID: &sid,
+			}
+
+			err := promptdelivery.DeliverToSession("myrepo@feature", status, "hi", nil, "", "")
+			if err == nil {
+				t.Fatalf("expected non-2xx error for status %d, got nil", tc.status)
+			}
+			// Documented format: "http status %d from %s".
+			wantStatus := fmt.Sprintf("http status %d", tc.status)
+			if !strings.Contains(err.Error(), wantStatus) {
+				t.Errorf("error %q should contain %q", err.Error(), wantStatus)
+			}
+			wantURL := fmt.Sprintf("http://localhost:%d/session/%s/prompt_async", port, sid)
+			if !strings.Contains(err.Error(), wantURL) {
+				t.Errorf("error %q should contain URL %q", err.Error(), wantURL)
+			}
+		})
+	}
+}
+
+// TestHasPathPrefix is a table-driven test for the hasPathPrefix helper that
+// gates the PRISM_TEST_MODE_RESTRICT_HOSTAPI guard. The helper must correctly
+// distinguish a true sub-path from a prefix-of-prefix coincidence (e.g.
+// "/a/bc" is NOT a child of "/a/b" even though the bytes match), and must
+// handle trailing-slash normalisation and exact-match equality.
+func TestHasPathPrefix(t *testing.T) {
+	tests := []struct {
+		name   string
+		path   string
+		prefix string
+		want   bool
+	}{
+		{name: "exact match", path: "/a/b", prefix: "/a/b", want: true},
+		{name: "identical paths with file", path: "/a/b/c", prefix: "/a/b/c", want: true},
+		{name: "prefix with trailing slash", path: "/a/b/c", prefix: "/a/b/", want: true},
+		{name: "path with trailing slash, plain prefix", path: "/a/b/", prefix: "/a/b", want: true},
+		{name: "true sub-path", path: "/a/b/c/d", prefix: "/a/b", want: true},
+		{name: "prefix-of-prefix non-match", path: "/a/bc", prefix: "/a/b", want: false},
+		{name: "prefix-of-prefix non-match deeper", path: "/foo/barbaz", prefix: "/foo/bar", want: false},
+		{name: "completely different", path: "/x/y", prefix: "/a/b", want: false},
+		// filepath.Clean("") == ".", filepath.Clean("/") == "/" — they
+		// don't match, and "/" doesn't start with "." + "/", so an empty
+		// prefix does not silently match absolute paths. This is the
+		// security-relevant property: an empty XDG_STATE_HOME must not
+		// silently authorise every socket path.
+		{name: "empty prefix vs root path", path: "/", prefix: "", want: false},
+		{name: "empty prefix vs file path", path: "/a", prefix: "", want: false},
+		{name: "both empty", path: "", prefix: "", want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := promptdelivery.HasPathPrefix(tc.path, tc.prefix)
+			if got != tc.want {
+				t.Errorf("HasPathPrefix(%q, %q) = %v, want %v", tc.path, tc.prefix, got, tc.want)
 			}
 		})
 	}
