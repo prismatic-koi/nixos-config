@@ -193,11 +193,17 @@ func (s *Sidecar) writeStateChangeWithSID(state agent.AgentState, harnessSession
 	s.lastState = state
 	// Push to the persistent dashboard socket (fire-and-forget, non-blocking).
 	// Also touch the sentinel for the popup dashboard which still polls it.
+	//
+	// Both calls are routed through s.cfg.DashboardSink so test setups (via
+	// sidecartest.NewIsolated) can install a no-op sink and avoid touching
+	// $XDG_STATE_HOME-derived paths. Production sessions get the default
+	// productionDashboardSink which preserves the historical fire-and-forget
+	// goroutine for PushEvent and the inline TouchSentinel. See issue #1851.
 	sessionName := s.cfg.SessionName
 	title := s.lastTitle
 	stateStr := string(state)
-	go pushDashboardEvent(sessionName, stateStr, title)
-	touchDashboardSentinel()
+	s.cfg.DashboardSink.PushEvent(sessionName, stateStr, title)
+	s.cfg.DashboardSink.TouchSentinel()
 }
 
 func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *string) {
