@@ -21,14 +21,14 @@ func TestListSessions_DefaultScope_HidesOtherRepoWorkers(t *testing.T) {
 	d := openStatsTestDB(t) // also unsets PRISM_HOST_API and sets testDBPath
 
 	// repoA sessions.
-	if err := d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName repoA@main: %v", err)
 	}
 	if err := d.UpsertStatus("repoA@feature", "repoA", "/wA/feat", "active", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus repoA@feature: %v", err)
 	}
 	// repoB sessions.
-	if err := d.UpsertStatusSeedRootAgentName("repoB@main", "repoB", "/wB/main", "active", nil, nil, "coordinator", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repoB@main", "repoB", "/wB/main", "active", nil, nil, "coordinator", "pi", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName repoB@main: %v", err)
 	}
 	if err := d.UpsertStatus("repoB@feature", "repoB", "/wB/feat", "active", nil, nil); err != nil {
@@ -100,9 +100,9 @@ func TestListSessions_DefaultScope_RunE_Output(t *testing.T) {
 	d := openStatsTestDB(t) // unsets PRISM_HOST_API, sets testDBPath
 
 	// Seed sessions for two repos.
-	_ = d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi")
+	_ = d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi", "")
 	_ = d.UpsertStatus("repoA@feature", "repoA", "/wA/feat", "active", nil, nil)
-	_ = d.UpsertStatusSeedRootAgentName("repoB@main", "repoB", "/wB/main", "active", nil, nil, "coordinator", "pi")
+	_ = d.UpsertStatusSeedRootAgentName("repoB@main", "repoB", "/wB/main", "active", nil, nil, "coordinator", "pi", "")
 	_ = d.UpsertStatus("repoB@feature", "repoB", "/wB/feat", "active", nil, nil)
 
 	// Simulate CWD inside repoA by setting PRISM_SPAWN_PATH.
@@ -166,7 +166,7 @@ func TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer(t *testing.T) {
 	insert := func(sessionName, repo, rootAgent string) {
 		t.Helper()
 		if rootAgent != "" {
-			if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, "/wt/"+sessionName, "active", nil, nil, rootAgent, "pi"); err != nil {
+			if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, "/wt/"+sessionName, "active", nil, nil, rootAgent, "pi", ""); err != nil {
 				t.Fatalf("UpsertStatusSeedRootAgentName %s: %v", sessionName, err)
 			}
 		} else {

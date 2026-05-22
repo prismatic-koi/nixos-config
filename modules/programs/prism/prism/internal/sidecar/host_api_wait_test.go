@@ -115,7 +115,7 @@ func TestHostAPI_GroupsPoll_CompletedTrueAfterAllTerminal(t *testing.T) {
 		t.Fatalf("RegisterGroup: %v", err)
 	}
 	const sess = "repo@pr-1500~review-1-review-goal"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "repo", "/wt", "finished", nil, nil, "review-goal", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "repo", "/wt", "finished", nil, nil, "review-goal", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	// Link to group via raw SQL (mirrors the pattern in db_test.go).

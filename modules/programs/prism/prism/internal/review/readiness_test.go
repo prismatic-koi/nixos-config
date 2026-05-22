@@ -47,7 +47,7 @@ func openGateTestDB(t *testing.T) *db.DB {
 // to exist so CurrentStatus / QueryEvents return cleanly.
 func seedAgentRow(t *testing.T, d *db.DB, sess string) {
 	t.Helper()
-	if err := d.UpsertStatusSeedRootAgentName(sess, "test", "/tmp", "idle", nil, nil, "review-x", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "test", "/tmp", "idle", nil, nil, "review-x", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", sess, err)
 	}
 }

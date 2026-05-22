@@ -510,9 +510,9 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		}
 	}
 
-	// Step 1: Seed agent_status with root_agent_name. Idempotent; later
-	// writes by the sidecar and by tmux-session-start COALESCE-preserve the
-	// value written here.
+	// Step 1: Seed agent_status with root_agent_name and isolation_mode.
+	// Idempotent; later writes by the sidecar and by tmux-session-start
+	// COALESCE-preserve the values written here.
 	//
 	// Resolve effective harness for DB seeding. Pi is the sole harness;
 	// if HarnessName is blank fall back to "pi" (#1612).
@@ -520,13 +520,17 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	if effectiveHarness == "" {
 		effectiveHarness = "pi"
 	}
+	// Pass the resolved isolation mode so the row is born with isolation_mode
+	// set — eliminating the NULL window between seed and SetIsolationMode
+	// (issue #1866). ActiveSessionCountForMode counts this row correctly from
+	// the moment the seed returns.
 	if err := d.UpsertStatusSeedRootAgentName(
-		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness,
+		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness, mode,
 	); err != nil {
 		startup.log("spawn-session: seed status FAILED: %v", err)
 		return fmt.Errorf("spawn session: seed status: %w", err)
 	}
-	startup.log("spawn-session: agent_status seeded (state=idle)")
+	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q)", mode)
 
 	// Step 2: Write group_id when set (hook for Issue E — single-session
 	// spawns leave GroupID empty and this is a no-op).

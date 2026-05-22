@@ -979,7 +979,7 @@ func TestIsCoordinatorFromDB(t *testing.T) {
 	}
 
 	// Post-migration coordinator on the conventional @main branch.
-	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/main", "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/main", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed coordinator @main: %v", err)
 	}
 
@@ -987,12 +987,12 @@ func TestIsCoordinatorFromDB(t *testing.T) {
 	// root_agent_name = "coordinator" must be the deciding factor, not the
 	// branch name. This is the primary motivation for the DB-backed migration.
 	// Use a different repo name to avoid the unique-active-coordinator-per-repo constraint.
-	if err := d.UpsertStatusSeedRootAgentName("custom-repo@custom-branch", "custom-repo", "/code/custom", "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("custom-repo@custom-branch", "custom-repo", "/code/custom", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed coordinator on custom branch: %v", err)
 	}
 
 	// Post-migration worker on @main-named branch (should not be detected as coordinator).
-	if err := d.UpsertStatusSeedRootAgentName("otherwork@main", "otherwork", "/code/other/main", "active", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("otherwork@main", "otherwork", "/code/other/main", "active", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("seed worker @main: %v", err)
 	}
 

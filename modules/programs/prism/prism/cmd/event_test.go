@@ -692,7 +692,7 @@ func TestEventTmuxSessionStart_AgentRole_PreservesExisting(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	// Pre-seed a row with root_agent_name already set.
-	if err := d.UpsertStatusSeedRootAgentName(session, "myrepo", worktree, "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "myrepo", worktree, "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	d.Close()

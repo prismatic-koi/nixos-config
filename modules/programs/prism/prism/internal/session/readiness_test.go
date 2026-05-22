@@ -38,7 +38,7 @@ func openReadinessTestDB(t *testing.T) *db.DB {
 // SpawnSession's UpsertStatusSeedRootAgentName writes at spawn time.
 func seedSession(t *testing.T, d *db.DB, sessionName string) {
 	t.Helper()
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, "test", "/tmp", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "test", "/tmp", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", sessionName, err)
 	}
 }

@@ -132,7 +132,15 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 // so that the DB row has a non-NULL root_agent_name from the first moment.
 // The sidecar will later write the same value idempotently via
 // UpsertStatusWithRootAgent (COALESCE preserves the already-set value).
-func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, rootAgentName string, harnessName string) error {
+//
+// Invariant (isolation_mode NULL window): when isolationMode is non-empty, it
+// is written atomically with the INSERT/UPDATE so the row is never observable
+// with isolation_mode IS NULL after this call returns. This prevents
+// ActiveSessionCountForMode from undercounting when a concurrent spawn races
+// the per-mode cap check between the seed and a separate SetIsolationMode call.
+// Callers that do not know the mode (e.g. tmux-session-start hook, prism
+// switch) pass an empty string, which leaves the existing value unchanged.
+func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, rootAgentName string, harnessName string, isolationMode string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusSeedRootAgentName")
 	now := time.Now().UnixMilli()
 	// When rootAgentName is empty, fall back to leaving root_agent_name as-is
@@ -159,9 +167,23 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	if harnessName != "" {
 		harnessNamePtr = &harnessName
 	}
+	// isolationMode follows the same CASE pattern as harnessName: when the
+	// caller supplies a non-empty value it is written atomically; when empty
+	// the existing DB value is preserved (NULL on a fresh INSERT, existing mode
+	// on UPDATE). This eliminates the isolation_mode NULL window described in
+	// issue #1866: the row is born with the mode set and ActiveSessionCountForMode
+	// will never undercount a session that is still being set up.
+	var isolationModePtr *string
+	if isolationMode != "" {
+		isolationModePtr = &isolationMode
+	}
+	// For a fresh INSERT, use the provided isolation mode (may be NULL — callers
+	// that don't know the mode leave it unset, which is acceptable for non-spawn
+	// paths like the tmux-session-start hook).
+	insertIsolationMode := isolationModePtr
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id, isolation_mode)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
@@ -170,8 +192,9 @@ ON CONFLICT(session_name) DO UPDATE SET
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
   harness            = CASE WHEN ? IS NOT NULL THEN ? ELSE harness END,
-  harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, insertHarness, harnessSessionID, harnessNamePtr, harnessNamePtr)
+  harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id),
+  isolation_mode     = CASE WHEN ? IS NOT NULL THEN ? ELSE isolation_mode END`
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, insertHarness, harnessSessionID, insertIsolationMode, harnessNamePtr, harnessNamePtr, isolationModePtr, isolationModePtr)
 	if err != nil {
 		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
 	}

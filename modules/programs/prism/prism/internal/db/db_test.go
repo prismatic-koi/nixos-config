@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -4025,7 +4026,7 @@ func TestConsecutiveSidecarFailures_TieBreaker(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_Insert(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -4054,7 +4055,7 @@ func TestUpsertStatusSeedRootAgentName_Insert(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_EmptyRole(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName (empty role): %v", err)
 	}
 
@@ -4079,12 +4080,12 @@ func TestUpsertStatusSeedRootAgentName_Idempotent(t *testing.T) {
 	d := openTestDB(t)
 
 	// First call: seed with "review-code".
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", "", ""); err != nil {
 		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
 	}
 
 	// Second call: write the same role — must be a no-op for root_agent_name.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "review-code", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "review-code", "", ""); err != nil {
 		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -4111,12 +4112,12 @@ func TestUpsertStatusSeedRootAgentName_PreservesExisting(t *testing.T) {
 	d := openTestDB(t)
 
 	// Seed with a known role.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	// Update with empty role — existing root_agent_name must survive.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "active", nil, nil, "", "", ""); err != nil {
 		t.Fatalf("update with empty role: %v", err)
 	}
 
@@ -4140,7 +4141,7 @@ func TestUpsertStatusSeedRootAgentName_SidecarWriteIdempotent(t *testing.T) {
 	d := openTestDB(t)
 
 	// Spawn-time seed: root_agent_name = "review-code", agent_name = nil.
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/repo/main", "idle", nil, nil, "review-code", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -4181,11 +4182,11 @@ func TestCoordinatorForRepo(t *testing.T) {
 	defer d.Close()
 
 	// Seed a coordinator row with root_agent_name = "coordinator".
-	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@main", "myrepo", "/code/myrepo/main", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
 	// Seed a worker row.
-	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("myrepo@feature", "myrepo", "/code/myrepo/feature", "active", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 
@@ -4269,7 +4270,7 @@ func TestRootAgentName(t *testing.T) {
 	}
 
 	// Post-migration row: root_agent_name is populated — returns (name, true, nil).
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/code/main", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed coordinator: %v", err)
 	}
 	nameCoord, rowExistsCoord, err := d.RootAgentName("repo@main")
@@ -4290,7 +4291,7 @@ func TestIsGroupMember(t *testing.T) {
 	defer d.Close()
 
 	// Seed a session and a group.
-	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker", "repo", "/code/worker", "active", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 	groupID, err := d.RegisterGroup("repo@worker")
@@ -4299,7 +4300,7 @@ func TestIsGroupMember(t *testing.T) {
 	}
 
 	// Seed a review agent session and assign it to the group.
-	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@worker~review-1-review-goal", "repo", "/code/worker", "active", nil, nil, "review-goal", "", ""); err != nil {
 		t.Fatalf("seed review agent: %v", err)
 	}
 	if err := d.SetGroupID("repo@worker~review-1-review-goal", groupID); err != nil {
@@ -4476,10 +4477,10 @@ func TestUpsertStatusWithAgent_WorktreeUpdatedOnConflict(t *testing.T) {
 func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
 	d := openTestDB(t)
 
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/old/worktree", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/old/worktree", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("first UpsertStatusSeedRootAgentName: %v", err)
 	}
-	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/new/worktree", "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName("repo@main", "repo", "/new/worktree", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -7699,6 +7700,99 @@ func TestActiveSessionsForMode_ReturnsList(t *testing.T) {
 	}
 }
 
+// TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed verifies the
+// fix for issue #1866: UpsertStatusSeedRootAgentName now accepts an
+// isolationMode argument and writes it atomically with the row insert. The
+// test simulates the race by doing what a concurrent spawn would do:
+//
+//  1. Goroutine A calls UpsertStatusSeedRootAgentName with a mode — this is the
+//     fixed seed that no longer leaves isolation_mode NULL.
+//  2. Goroutine B calls ActiveSessionCountForMode during the window that used to
+//     be between the old seed and the subsequent SetIsolationMode call.
+//  3. The count must include A's row because the seed already set the mode.
+//
+// Previously the seed did NOT write isolation_mode, so B would return 0.
+// After the fix, B returns 1.
+func TestActiveSessionCountForMode_SeedSetsMode_NullWindowClosed(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	// Goroutine A: seed a bwrap session — with the fix, isolation_mode is set
+	// atomically by UpsertStatusSeedRootAgentName (no separate SetIsolationMode
+	// needed for the count to be correct).
+	if err := d.UpsertStatusSeedRootAgentName(
+		"repo@race-test", "repo", "/code/repo/race-test", "idle", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	// Goroutine B: query the count in the window between seed and (hypothetical)
+	// SetIsolationMode. With the fix, isolation_mode is already set so the count
+	// must be 1.
+	count, err := d.ActiveSessionCountForMode("bwrap")
+	if err != nil {
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("ActiveSessionCountForMode = %d, want 1: isolation_mode must be set atomically by UpsertStatusSeedRootAgentName (issue #1866)", count)
+	}
+
+	// Confirm that a second SetIsolationMode (idempotent) does not double-count.
+	if err := d.SetIsolationMode("repo@race-test", "bwrap"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	countAfter, err := d.ActiveSessionCountForMode("bwrap")
+	if err != nil {
+		t.Fatalf("ActiveSessionCountForMode after SetIsolationMode: %v", err)
+	}
+	if countAfter != 1 {
+		t.Errorf("ActiveSessionCountForMode after SetIsolationMode = %d, want 1 (must not double-count)", countAfter)
+	}
+}
+
+// TestActiveSessionCountForMode_ConcurrentSeedAndCount exercises the fix under
+// real goroutine concurrency (issue #1866 race detector check). Two goroutines
+// run in parallel: one seeds a row with isolation_mode set, the other queries
+// the count. The -race detector should find no data races.
+func TestActiveSessionCountForMode_ConcurrentSeedAndCount(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+
+	// Seed 5 sessions concurrently and count in parallel.
+	const n = 5
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			sessName := fmt.Sprintf("repo@race-%d", i)
+			_ = d.UpsertStatusSeedRootAgentName(
+				sessName, "repo", "/code/repo/"+sessName, "idle", nil, nil, "worker", "pi", "sandbox-exec",
+			)
+		}(i)
+	}
+	// Concurrent reader goroutine.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, _ = d.ActiveSessionCountForMode("sandbox-exec")
+	}()
+	close(start)
+	wg.Wait()
+
+	// After all seeds complete, every row must be counted.
+	count, err := d.ActiveSessionCountForMode("sandbox-exec")
+	if err != nil {
+		t.Fatalf("ActiveSessionCountForMode: %v", err)
+	}
+	if count != n {
+		t.Errorf("ActiveSessionCountForMode = %d, want %d", count, n)
+	}
+}
+
 // TestAbtestPairsForSessions verifies that AbtestPairsForSessions returns a
 // map of session_name → abtest_pair_id for sessions that have a non-NULL
 // abtest_pair_id in spawn_inputs, and excludes sessions without one.
@@ -7782,7 +7876,7 @@ func TestUpsertStatus_PreservesHarness(t *testing.T) {
 	// Seed a row with harness='pi' via UpsertStatusSeedRootAgentName (the
 	// same path used by SpawnSession).
 	const session = "repo@pi-worker"
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -7848,13 +7942,13 @@ func TestUpsertStatusSeedRootAgentName_OverridesStaleHarness(t *testing.T) {
 	const session = "repo@override-branch"
 
 	// Seed the row with harness='pi' (simulating a pre-reset ended row).
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	// Simulate allocatePortForSession falling through to UpsertStatusSeedRootAgentName
 	// with the new harness ('pi') from the active profile.
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi", ""); err != nil {
 		t.Fatalf("override upsert: %v", err)
 	}
 
@@ -7883,12 +7977,12 @@ func TestUpsertStatusSeedRootAgentName_PreservesHarness(t *testing.T) {
 	const session = "repo@pi-branch"
 
 	// Seed the row with harness='pi' (as SpawnSession does).
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi"); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "pi", ""); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	// Simulate the tmux-session-start event hook calling with empty harnessName.
-	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session, "repo", "/wt", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("second UpsertStatusSeedRootAgentName: %v", err)
 	}
 

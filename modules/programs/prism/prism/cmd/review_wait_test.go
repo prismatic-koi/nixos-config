@@ -82,7 +82,7 @@ func TestEmitReviewWaitTerminal_AllPass(t *testing.T) {
 	const s1 = "repo@pr-1500~review-1-review-goal"
 	const s2 = "repo@pr-1500~review-1-review-code"
 	for _, s := range []string{s1, s2} {
-		if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "finished", nil, nil, "review", ""); err != nil {
+		if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "finished", nil, nil, "review", "", ""); err != nil {
 			t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 		}
 		linkAgentToGroup(t, d, s, groupID)
@@ -106,13 +106,13 @@ func TestEmitReviewWaitTerminal_AnyFailReturnsTerminalFail(t *testing.T) {
 	groupID, _ := d.RegisterGroup("repo@pr-1500")
 	const s1 = "repo@pr-1500~review-1-review-goal"
 	const s2 = "repo@pr-1500~review-1-review-code"
-	if err := d.UpsertStatusSeedRootAgentName(s1, "repo", "/wt", "finished", nil, nil, "review", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(s1, "repo", "/wt", "finished", nil, nil, "review", "", ""); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	linkAgentToGroup(t, d, s1, groupID)
 	writeAssistantEvent(t, d, s1, "<verdict>PASS</verdict>")
 
-	if err := d.UpsertStatusSeedRootAgentName(s2, "repo", "/wt", "finished", nil, nil, "review", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(s2, "repo", "/wt", "finished", nil, nil, "review", "", ""); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	linkAgentToGroup(t, d, s2, groupID)
@@ -138,7 +138,7 @@ func TestEmitReviewWaitTerminal_JSONShape(t *testing.T) {
 	d := openReviewWaitTestDB(t)
 	groupID, _ := d.RegisterGroup("repo@pr-1500")
 	const s = "repo@pr-1500~review-1-review-goal"
-	if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "finished", nil, nil, "review", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "finished", nil, nil, "review", "", ""); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	linkAgentToGroup(t, d, s, groupID)
@@ -181,7 +181,7 @@ func TestWaitForReviewTerminal_PollsUntilGroupCompleted(t *testing.T) {
 	d := openReviewWaitTestDB(t)
 	groupID, _ := d.RegisterGroup("repo@pr-1500")
 	const s = "repo@pr-1500~review-1-review-goal"
-	if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "active", nil, nil, "review", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(s, "repo", "/wt", "active", nil, nil, "review", "", ""); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	linkAgentToGroup(t, d, s, groupID)

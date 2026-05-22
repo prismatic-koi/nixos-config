@@ -58,7 +58,7 @@ func openTestDB(t *testing.T) *db.DB {
 func TestIsCoordinatorSession_DBBackedCoordinator(t *testing.T) {
 	d := openTestDB(t)
 	const sess = "nixos-config@main"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	if !IsCoordinatorSession(sess, d) {
@@ -74,7 +74,7 @@ func TestIsCoordinatorSession_DBBackedWorker(t *testing.T) {
 	d := openTestDB(t)
 	// A worker session on a non-@main branch — DB value must cause false.
 	const sess = "nixos-config@feature-worker"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/feature-worker", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/feature-worker", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	if IsCoordinatorSession(sess, d) {
@@ -87,7 +87,7 @@ func TestIsCoordinatorSession_DBBackedWorker(t *testing.T) {
 func TestIsCoordinatorSession_DBBackedWorkerBranch(t *testing.T) {
 	d := openTestDB(t)
 	const sess = "nixos-config@feature-branch"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/feature-branch", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/worktree/feature-branch", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	if IsCoordinatorSession(sess, d) {
@@ -156,7 +156,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_MainHeuristicWins(t *testing.T)
 
 	sess := "nixos-config@main"
 	// Seed the session with a stale root_agent_name of "worker".
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/main", "active", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/main", "active", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("seed stale worker: %v", err)
 	}
 
@@ -172,7 +172,7 @@ func TestIsCoordinatorSession_StaleRootAgentName_NonMain(t *testing.T) {
 	d := openTestDB(t)
 
 	sess := "nixos-config@feature"
-	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/feature", "active", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sess, "nixos-config", "/code/feature", "active", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("seed worker: %v", err)
 	}
 

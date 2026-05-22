@@ -539,7 +539,7 @@ func TestDefaultAgentForSession_DBHappyPath(t *testing.T) {
 	}
 	defer d.Close()
 
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -560,7 +560,7 @@ func TestDefaultAgentForSession_ExplicitOverridesDB(t *testing.T) {
 	}
 	defer d.Close()
 
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, "testrepo", "/worktrees/main", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
