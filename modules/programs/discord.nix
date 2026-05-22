@@ -24,9 +24,12 @@
       wayland.windowManager.hyprland.settings =
         lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
           {
-            windowrule = [
+            window_rule = [
               # silently open on workspace 2
-              "workspace 2 silent, match:class discord"
+              {
+                match.class = "discord";
+                workspace = "2 silent";
+              }
             ];
           };
     };

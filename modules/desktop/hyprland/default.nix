@@ -7,6 +7,7 @@
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
   theme = config.theme;
+  inherit (lib.generators) mkLuaInline;
 in
 {
   imports = [
@@ -54,51 +55,89 @@ in
             openshoppinglist = "${newwindow} https://www.notion.so/ph3nx/Shopping-List-92d98ac3dc86460285a399c0b1176fc5";
             # configuration
             enableAudioControls = config.nx.externalAudio.enable == false;
+
+            # Helpers for translating hyprlang-style binds into the lua
+            # `hl.bind(...)` call shape that HM's lua renderer expects.
+            #
+            # `mkBind keys dispatcher` produces `hl.bind(keys, dispatcher)`.
+            # `mkBindFlags keys dispatcher flags` adds a flag table as the
+            # third arg (e.g. `{ locked = true; }`, `{ release = true;
+            # transparent = true; }`).
+            #
+            # `dispatcher` is a string of raw lua (e.g.
+            # `''hl.dsp.exec_cmd("kitty")''`) that we wrap in mkLuaInline so
+            # the renderer emits it verbatim rather than quoting it.
+            mkBind = keys: dispatcher: {
+              _args = [
+                keys
+                (mkLuaInline dispatcher)
+              ];
+            };
+            mkBindFlags = keys: dispatcher: flags: {
+              _args = [
+                keys
+                (mkLuaInline dispatcher)
+                flags
+              ];
+            };
+            # `mkExec keys cmd` is shorthand for the (very common) bind that
+            # exec's a shell command. `cmd` is passed through
+            # `lib.generators.toLua` so any special characters in the string
+            # are escaped correctly into the lua source.
+            mkExec = keys: cmd: mkBind keys "hl.dsp.exec_cmd(${lib.generators.toLua { } cmd})";
+            mkExecFlags =
+              keys: cmd: flags:
+              mkBindFlags keys "hl.dsp.exec_cmd(${lib.generators.toLua { } cmd})" flags;
           in
           {
             enable = true;
-            configType = "hyprlang";
+            # Lua renderer (Hyprland's preferred config language since 0.55).
+            # See docs/hyprland-lua-migration.md for the design.
+            configType = "lua";
             settings = {
-              exec-once =
-                let
-                  resolution = config.nx.desktop.wallpaper.resolution;
-                in
-                [
-                  (lib.mkIf config.nx.desktop.wallpaper.enable "swaybg -i ${homeDir}/.config/wallpaper-${resolution}.png --mode fill")
-                  # (lib.mkIf (config.theme.name == "everforest") "swaybg -i ${homeDir}/.config/wallpaper_everforest-${resolution}.png --mode fill")
-                  # (lib.mkIf (config.theme.name == "github-light") "swaybg -i ${homeDir}/.config/wallpaper_github_light-${resolution}.png --mode fill")
-                  # "swaybg --color ${builtins.substring 1 6 (theme.bg_dim)}"
-                  "hypridle"
-                  (lib.mkIf (config.nx.isLaptop == false) "steam -silent -no-cef-sandbox") # couldn't figure out xdg-autostart
-                  "${scriptsDir}/game.inputRemapper.defaults"
-                  # default to 70% brightness
-                  (lib.mkIf config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl s 70%")
-                  # default to keyboard backlight off
-                  (lib.mkIf config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0")
-                  "${scriptsDir}/cli.hyprland.switchWorkspaceOnWindowClose"
-                  "waybar"
-
-                ];
-              debug = {
-                disable_logs = false;
+              # ---- general ----------------------------------------------------
+              general = {
+                gaps_in = 5;
+                gaps_out = 5;
+                border_size = 3;
+                # Gradient borders use the structured table form under lua
+                # (`{ colors = { ... }, angle = 45 }`); the legacy
+                # whitespace-separated string + "45deg" suffix isn't accepted
+                # by the lua `hl.config` API — the upstream example config
+                # ships exclusively in the table form (see
+                # /share/hypr/hyprland.lua bundled with hyprland).
+                col = {
+                  active_border =
+                    let
+                      # rainbow border colors in order
+                      colors = with theme; [
+                        red
+                        orange
+                        yellow
+                        green
+                        aqua
+                        blue
+                        purple
+                      ];
+                      toRgba = color: "rgba(${builtins.substring 1 6 color}ff)";
+                    in
+                    {
+                      colors = map toRgba colors;
+                      angle = 45;
+                    };
+                  inactive_border = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
+                };
+                layout = "dwindle";
               };
-              ecosystem = {
-                # don't show update notifications each boot
-                no_update_news = true;
-              };
-              exec = [
-                # restart waybar, if for some reason it died
-                "pkill waybar && hyprctl dispatch exec waybar"
-                "${scriptsDir}/cli.system.setHyprGaps"
-              ];
+              # ---- input -----------------------------------------------------
               input = {
                 # Te Reo Macrons
                 kb_layout = "nz";
                 kb_variant = "mao";
                 kb_options = "lv3:rwin_switch";
-                # keyrepeat settings
-                repeat_delay = "225";
-                repeat_rate = "60";
+                # keyrepeat settings (lua wants ints, not strings)
+                repeat_delay = 225;
+                repeat_rate = 60;
                 follow_mouse = 2;
                 sensitivity = -0.8;
                 touchpad = {
@@ -106,37 +145,7 @@ in
                   natural_scroll = true;
                 };
               };
-              gestures = {
-                # was removed in a recent version of hyprland, didn't use it much anyway
-                # workspace_swipe = lib.mkIf config.nx.isLaptop true;
-              };
-              general = {
-                gaps_in = 5;
-                gaps_out = 5;
-                border_size = 3;
-                "col.active_border" =
-                  let
-                    # rainbow border colors in order
-                    colors = with theme; [
-                      red
-                      orange
-                      yellow
-                      green
-                      aqua
-                      blue
-                      purple
-                    ];
-                    # convert hex colors to rgba format (remove # and add ff for alpha)
-                    toRgba = color: "rgba(${builtins.substring 1 6 color}ff)";
-                    rgbaColors = map toRgba colors;
-                  in
-                  "${lib.concatStringsSep " " rgbaColors} 45deg";
-                "col.inactive_border" = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
-                layout = "dwindle";
-              };
-              cursor = {
-                inactive_timeout = 5;
-              };
+              # ---- decoration ------------------------------------------------
               decoration = {
                 rounding = 5;
                 blur.enabled = true;
@@ -144,26 +153,13 @@ in
                   enabled = false;
                 };
               };
-              bezier = [
-                "myBezier,0.05,0.9,0.1,1.0"
-                "linear,0,0,1,1"
-              ];
-              animations = {
-                enabled = true;
-                animation = [
-                  "windows, 1, 3, myBezier"
-                  "windowsOut, 1, 2, myBezier, popin 90%"
-                  "windowsIn, 1, 2, myBezier, popin 90%"
-                  "border, 1, 2, default"
-                  "borderangle, 1, 50, linear, loop"
-                  "fade, 1, 2, default"
-                  "workspaces,1,1, myBezier, slidevert"
-                ];
-              };
+              # ---- dwindle ---------------------------------------------------
               dwindle = {
-                preserve_split = "yes";
+                # lua wants bool, not "yes"/"no"
+                preserve_split = true;
                 force_split = 2;
               };
+              # ---- misc ------------------------------------------------------
               misc = {
                 disable_hyprland_logo = true;
                 disable_splash_rendering = true;
@@ -175,6 +171,128 @@ in
                 # suppress start-hyprland warning when not using the watchdog wrapper
                 disable_watchdog_warning = true;
               };
+              # ---- cursor ----------------------------------------------------
+              cursor = {
+                inactive_timeout = 5;
+              };
+              # ---- debug -----------------------------------------------------
+              debug = {
+                disable_logs = false;
+              };
+              # ---- ecosystem -------------------------------------------------
+              ecosystem = {
+                # don't show update notifications each boot
+                no_update_news = true;
+              };
+              # ---- curves (bezier renamed in lua) ----------------------------
+              # `curve` is in importantPrefixes so renders before `animation`.
+              curve = [
+                {
+                  _args = [
+                    "myBezier"
+                    {
+                      type = "bezier";
+                      points = [
+                        [
+                          0.05
+                          0.9
+                        ]
+                        [
+                          0.1
+                          1.0
+                        ]
+                      ];
+                    }
+                  ];
+                }
+                {
+                  _args = [
+                    "linear"
+                    {
+                      type = "bezier";
+                      points = [
+                        [
+                          0
+                          0
+                        ]
+                        [
+                          1
+                          1
+                        ]
+                      ];
+                    }
+                  ];
+                }
+              ];
+              # ---- animations ------------------------------------------------
+              # master switch
+              animations = {
+                enabled = true;
+              };
+              # per-leaf animation definitions; top-level list (not nested
+              # under `animations`), one `hl.animation(...)` call per entry.
+              # The curve-reference field is named `bezier` (matching the
+              # upstream-shipped example at /share/hypr/hyprland.lua), not
+              # `curve` — different curve types use different field names
+              # (`bezier = "..."` vs `spring = "..."`).
+              animation = [
+                {
+                  leaf = "windows";
+                  enabled = true;
+                  speed = 3;
+                  bezier = "myBezier";
+                }
+                {
+                  leaf = "windowsOut";
+                  enabled = true;
+                  speed = 2;
+                  bezier = "myBezier";
+                  style = "popin 90%";
+                }
+                {
+                  leaf = "windowsIn";
+                  enabled = true;
+                  speed = 2;
+                  bezier = "myBezier";
+                  style = "popin 90%";
+                }
+                {
+                  leaf = "border";
+                  enabled = true;
+                  speed = 2;
+                  bezier = "default";
+                }
+                {
+                  leaf = "borderangle";
+                  enabled = true;
+                  speed = 50;
+                  bezier = "linear";
+                  style = "loop";
+                }
+                {
+                  leaf = "fade";
+                  enabled = true;
+                  speed = 2;
+                  bezier = "default";
+                }
+                {
+                  leaf = "workspaces";
+                  enabled = true;
+                  speed = 1;
+                  bezier = "myBezier";
+                  style = "slidevert";
+                }
+              ];
+              # ---- monitor ---------------------------------------------------
+              monitor = [
+                {
+                  output = "";
+                  mode = "preferred";
+                  position = "auto";
+                  scale = 1;
+                }
+              ];
+              # ---- device ----------------------------------------------------
               device = [
                 {
                   # reduce touchpad sensitivity
@@ -182,149 +300,270 @@ in
                   sensitivity = 0.5;
                 }
               ];
-              # where possible, window rules should live with the app config
-              windowrule = [ ];
-              monitor = [
-                ",preferred,auto,auto"
+              # ---- env -------------------------------------------------------
+              env = [
+                {
+                  _args = [
+                    "XDG_CURRENT_DESKTOP"
+                    "Hyprland"
+                  ];
+                }
+                {
+                  _args = [
+                    "XDG_SESSION_TYPE"
+                    "wayland"
+                  ];
+                }
+                {
+                  _args = [
+                    "XDG_SESSION_DESKTOP"
+                    "Hyprland"
+                  ];
+                }
+                {
+                  _args = [
+                    "GDK_BACKEND"
+                    "wayland,x11"
+                  ];
+                }
+                # "SDL_VIDEODRIVER,wayland" # removed: causes stutter in Proton games, let Steam/Proton pick the backend
+                {
+                  _args = [
+                    "_JAVA_AWT_WM_NONREPARENTING"
+                    "1"
+                  ];
+                }
+                {
+                  _args = [
+                    "QT_QPA_PLATFORM"
+                    "wayland"
+                  ];
+                }
               ];
-              bindrt = [
-                # hide waybar + quickshell widgets on SUPER_L keyup
-                "SUPER, SUPER_L, exec, pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide"
-              ];
-              bindl = [
-                # suspend (works even when locked)
-                "SUPER, s, exec, ${scriptsDir}/cli.system.suspend"
-              ];
+              # ---- startup hook ----------------------------------------------
+              # Replaces hyprlang `exec-once` and `exec`. `hl.on("hyprland.start", ...)`
+              # is the lua-idiomatic equivalent: run these commands once at
+              # session start. We fold both lists into one hook (`exec`'s
+              # per-reload semantics aren't relied on by anything here — both
+              # entries are idempotent restart-style commands).
+              #
+              # `lib.mkIf <false> { ... }` entries are stripped by the module
+              # system before they reach the renderer, so the function body
+              # only contains the actually-active commands per machine.
+              # `lib.optional <bool> <x>` evaluates to `[ <x> ]` or `[]` —
+              # cleaner than `lib.mkIf` here because we're building a plain
+              # list in let-scope, not contributing to an option, so the
+              # module system's `mkIf`-stripping pass never runs.
+              on =
+                let
+                  startupCmds =
+                    lib.optional config.nx.desktop.wallpaper.enable "swaybg -i ${homeDir}/.config/wallpaper-${config.nx.desktop.wallpaper.resolution}.png --mode fill"
+                    ++ [
+                      "hypridle"
+                    ]
+                    ++ lib.optional (config.nx.isLaptop == false) "steam -silent -no-cef-sandbox"
+                    ++ [
+                      "${scriptsDir}/game.inputRemapper.defaults"
+                    ]
+                    # default to 70% brightness on laptops
+                    ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl s 70%"
+                    # default to keyboard backlight off on laptops
+                    ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0"
+                    ++ [
+                      "${scriptsDir}/cli.hyprland.switchWorkspaceOnWindowClose"
+                      "waybar"
+                      # ex-`exec` entries (now also once-per-session):
+                      "pkill waybar && hyprctl dispatch exec waybar"
+                      "${scriptsDir}/cli.system.setHyprGaps"
+                    ];
+                in
+                {
+                  _args = [
+                    "hyprland.start"
+                    (mkLuaInline ''
+                      function()
+                      ${lib.concatMapStringsSep "\n" (cmd: "  hl.exec_cmd(${lib.generators.toLua { } cmd})") startupCmds}
+                      end
+                    '')
+                  ];
+                };
+              # ---- window rules (lua name: window_rule, underscore) ----------
+              # The main module contributes nothing; per-app rules merge in
+              # from gaming/, programs/qutebrowser/, etc. via list-merge.
+              window_rule = [ ];
+              # ---- binds -----------------------------------------------------
+              # In lua, `bind` / `bindl` / `bindrt` / `bindm` collapse into a
+              # single `hl.bind(keys, dispatcher, flags?)` call; flag tables
+              # encode the variant (`{ locked = true; }`, etc.).
+              # Key strings use the lua " + "-joined form (e.g. "SUPER + h"),
+              # not the hyprlang "MOD, KEY" comma form. No-mod binds drop the
+              # leading comma entirely (e.g. "XF86AudioPlay", not ",
+              # XF86AudioPlay"). The format matches the canonical example
+              # config shipped at /share/hypr/hyprland.lua.
               bind = [
                 # show waybar + quickshell widgets on SUPER_L keydown
-                ", SUPER_L, exec, pkill -SIGUSR1 waybar; hyprctl dispatch event quickshell:show"
+                (mkExec "SUPER_L" "pkill -SIGUSR1 waybar; hyprctl dispatch event quickshell:show")
+                # hide waybar + quickshell widgets on SUPER_L keyup. Single
+                # top-level entry with `submap_universal = true` replaces the
+                # previous three copies (top-level + inside `resize` + inside
+                # `exit` submap) — see docs section 8.5.
+                (mkBindFlags "SUPER_L"
+                  ''hl.dsp.exec_cmd("pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide")''
+                  {
+                    release = true;
+                    transparent = true;
+                    submap_universal = true;
+                  }
+                )
                 # Motions
                 # focus window
-                "SUPER, h, movefocus, l"
-                "SUPER, j, movefocus, d"
-                "SUPER, k, movefocus, u"
-                "SUPER, l, movefocus, r"
+                (mkBind "SUPER + h" ''hl.dsp.focus({ direction = "l" })'')
+                (mkBind "SUPER + j" ''hl.dsp.focus({ direction = "d" })'')
+                (mkBind "SUPER + k" ''hl.dsp.focus({ direction = "u" })'')
+                (mkBind "SUPER + l" ''hl.dsp.focus({ direction = "r" })'')
                 # move window
-                "SUPER SHIFT, H, movewindow, l"
-                "SUPER SHIFT, J, movewindow, d"
-                "SUPER SHIFT, K, movewindow, u"
-                "SUPER SHIFT, L, movewindow, r"
+                (mkBind "SUPER + SHIFT + H" ''hl.dsp.window.move({ direction = "l" })'')
+                (mkBind "SUPER + SHIFT + J" ''hl.dsp.window.move({ direction = "d" })'')
+                (mkBind "SUPER + SHIFT + K" ''hl.dsp.window.move({ direction = "u" })'')
+                (mkBind "SUPER + SHIFT + L" ''hl.dsp.window.move({ direction = "r" })'')
                 # switch workspace
-                "SUPER, 1, workspace, 1"
-                "SUPER, 2, workspace, 2"
-                "SUPER, 3, workspace, 3"
-                "SUPER, 4, workspace, 4"
-                "SUPER, 5, workspace, 5"
-                "SUPER, 6, workspace, 6"
-                "SUPER, 7, workspace, 7"
-                "SUPER, 8, workspace, 8"
-                "SUPER, 9, workspace, 9"
-                "SUPER, TAB, workspace, previous"
-                # move active window to workspace
-                "SUPER SHIFT, 1, movetoworkspacesilent, 1"
-                "SUPER SHIFT, 2, movetoworkspacesilent, 2"
-                "SUPER SHIFT, 3, movetoworkspacesilent, 3"
-                "SUPER SHIFT, 4, movetoworkspacesilent, 4"
-                "SUPER SHIFT, 5, movetoworkspacesilent, 5"
-                "SUPER SHIFT, 6, movetoworkspacesilent, 6"
-                "SUPER SHIFT, 7, movetoworkspacesilent, 7"
-                "SUPER SHIFT, 8, movetoworkspacesilent, 8"
-                "SUPER SHIFT, 9, movetoworkspacesilent, 9"
+                (mkBind "SUPER + 1" "hl.dsp.workspace(1)")
+                (mkBind "SUPER + 2" "hl.dsp.workspace(2)")
+                (mkBind "SUPER + 3" "hl.dsp.workspace(3)")
+                (mkBind "SUPER + 4" "hl.dsp.workspace(4)")
+                (mkBind "SUPER + 5" "hl.dsp.workspace(5)")
+                (mkBind "SUPER + 6" "hl.dsp.workspace(6)")
+                (mkBind "SUPER + 7" "hl.dsp.workspace(7)")
+                (mkBind "SUPER + 8" "hl.dsp.workspace(8)")
+                (mkBind "SUPER + 9" "hl.dsp.workspace(9)")
+                (mkBind "SUPER + TAB" ''hl.dsp.workspace("previous")'')
+                # move active window to workspace (silent — no follow)
+                (mkBind "SUPER + SHIFT + 1" "hl.dsp.window.move({ workspace = 1, silent = true })")
+                (mkBind "SUPER + SHIFT + 2" "hl.dsp.window.move({ workspace = 2, silent = true })")
+                (mkBind "SUPER + SHIFT + 3" "hl.dsp.window.move({ workspace = 3, silent = true })")
+                (mkBind "SUPER + SHIFT + 4" "hl.dsp.window.move({ workspace = 4, silent = true })")
+                (mkBind "SUPER + SHIFT + 5" "hl.dsp.window.move({ workspace = 5, silent = true })")
+                (mkBind "SUPER + SHIFT + 6" "hl.dsp.window.move({ workspace = 6, silent = true })")
+                (mkBind "SUPER + SHIFT + 7" "hl.dsp.window.move({ workspace = 7, silent = true })")
+                (mkBind "SUPER + SHIFT + 8" "hl.dsp.window.move({ workspace = 8, silent = true })")
+                (mkBind "SUPER + SHIFT + 9" "hl.dsp.window.move({ workspace = 9, silent = true })")
                 # floating
-                "SUPER SHIFT, space, togglefloating"
-                # example special workspace TODO more
-                "SUPER, X, togglespecialworkspace, magic"
-                "SUPER SHIFT, X, movetoworkspacesilent, special:magic"
+                (mkBind "SUPER + SHIFT + space" ''hl.dsp.window.float({ action = "toggle" })'')
+                # special workspace
+                (mkBind "SUPER + X" ''hl.dsp.workspace.toggle_special("magic")'')
+                (mkBind "SUPER + SHIFT + X" ''hl.dsp.window.move({ workspace = "special:magic", silent = true })'')
                 # scroll through existing workspaces
-                "SUPER, mouse_down, workspace, e+1"
-                "SUPER, mouse_up, workspace, e-1"
+                (mkBind "SUPER + mouse_down" ''hl.dsp.workspace("e+1")'')
+                (mkBind "SUPER + mouse_up" ''hl.dsp.workspace("e-1")'')
                 # window shortcuts
-                "SUPER, q, killactive"
-                "SUPER SHIFT, C, exec, hyprctl reload"
-                "SUPER, period, exec, ${emojipicker}"
-                "SUPER, Space, exec, ${runscripts}"
-                "SUPER, c, exec, ${calculator}"
-                "SUPER SHIFT, F, fullscreen"
-                "SUPER, i, exec, ${scriptsDir}/cli.system.inhibitIdle toggle"
+                (mkBind "SUPER + q" "hl.dsp.window.close()")
+                (mkExec "SUPER + SHIFT + C" "hyprctl reload")
+                (mkExec "SUPER + period" emojipicker)
+                (mkExec "SUPER + Space" runscripts)
+                (mkExec "SUPER + c" calculator)
+                (mkBind "SUPER + SHIFT + F" "hl.dsp.window.fullscreen()")
+                (mkExec "SUPER + i" "${scriptsDir}/cli.system.inhibitIdle toggle")
                 # Notification Center
-                "SUPER, n, exec, ${pkgs.swaynotificationcenter}/bin/swaync-client -t -sw"
-                "SUPER SHIFT, N, exec, ${pkgs.swaynotificationcenter}/bin/swaync-client --close-all && ${pkgs.swaynotificationcenter}/bin/swaync-client --close-panel"
+                (mkExec "SUPER + n" "${pkgs.swaynotificationcenter}/bin/swaync-client -t -sw")
+                (mkExec "SUPER + SHIFT + N" "${pkgs.swaynotificationcenter}/bin/swaync-client --close-all && ${pkgs.swaynotificationcenter}/bin/swaync-client --close-panel")
                 # application shortcuts
-                "ALT, Return, exec, ${terminal}"
-                "AlT, Space, exec, ${applicationlauncher}"
-                "ALT, a, exec, anki"
-                "ALT, b, exec, ${browser}"
-                "ALT, c, exec, ${calendar}"
-                "ALT, f, exec, ${filemanager}"
-                "ALT, m, exec, ${musicplayer}"
-                "ALT, t, exec, ${addtodailytodo}"
-                "ALT, l, exec, ${addtoshoppinglist}"
-                "ALT SHIFT, l, exec, ${openshoppinglist}"
-                "ALT, o, exec, ${prismLauncher} --path ${homeDir}/documents/obsidian"
-                "ALT, n, exec, ${prismLauncher} --path ${homeDir}/code/nixos-config/main"
-                "ALT, p, exec, ${prismLauncher}"
+                (mkExec "ALT + Return" terminal)
+                (mkExec "ALT + Space" applicationlauncher)
+                (mkExec "ALT + a" "anki")
+                (mkExec "ALT + b" browser)
+                (mkExec "ALT + c" calendar)
+                (mkExec "ALT + f" filemanager)
+                (mkExec "ALT + m" musicplayer)
+                (mkExec "ALT + t" addtodailytodo)
+                (mkExec "ALT + l" addtoshoppinglist)
+                (mkExec "ALT + SHIFT + l" openshoppinglist)
+                (mkExec "ALT + o" "${prismLauncher} --path ${homeDir}/documents/obsidian")
+                (mkExec "ALT + n" "${prismLauncher} --path ${homeDir}/code/nixos-config/main")
+                (mkExec "ALT + p" prismLauncher)
+                # submap entries — schedule auto-reset via hl.timer (ms) at
+                # the same time as we dispatch the submap, removing the need
+                # for the old `sleep N && hyprctl dispatch submap reset`
+                # shell-out. `hl.bind` accepts either an `hl.dsp.*` dispatcher
+                # value or a plain lua function as its second argument; we
+                # use a function here so the timer is scheduled in the same
+                # call as the submap entry.
+                (mkBind "SUPER + R" ''
+                  function()
+                    hl.dispatch(hl.dsp.submap("resize"))
+                    hl.timer(function()
+                      hl.dispatch(hl.dsp.submap("reset"))
+                    end, { timeout = 10000, type = "oneshot" })
+                  end
+                '')
+                (mkBind "SUPER + SHIFT + E" ''
+                  function()
+                    hl.dispatch(hl.dsp.submap("exit"))
+                    hl.timer(function()
+                      hl.dispatch(hl.dsp.submap("reset"))
+                    end, { timeout = 3000, type = "oneshot" })
+                  end
+                '')
                 # media controls
-                ", XF86AudioMute, exec, ${toggleMute}"
-                (lib.mkIf enableAudioControls ", XF86AudioRaiseVolume, exec, ${volumeUp}")
-                (lib.mkIf enableAudioControls ", XF86AudioLowerVolume, exec, ${volumeDown}")
-                ", XF86AudioPlay, exec, ${pkgs.playerctl}/bin/playerctl play-pause"
-                ", Pause, exec, ${pkgs.playerctl}/bin/playerctl play-pause"
-                ", Scroll_Lock, exec, ${pkgs.playerctl}/bin/playerctl stop" # this is fn+k on my asus laptop
-                ", XF86AudioStop, exec, ${pkgs.playerctl}/bin/playerctl stop"
-                ", XF86AudioNext, exec, ${pkgs.playerctl}/bin/playerctl next"
-                ", XF86AudioPrev, exec, ${pkgs.playerctl}/bin/playerctl previous"
-                (lib.mkIf config.nx.isLaptop ", XF86MonBrightnessUp, exec, ${brightnessUp}")
-                (lib.mkIf config.nx.isLaptop ", XF86MonBrightnessDown, exec, ${brightnessDown}")
+                (mkExec "XF86AudioMute" toggleMute)
+                (lib.mkIf enableAudioControls (mkExec "XF86AudioRaiseVolume" volumeUp))
+                (lib.mkIf enableAudioControls (mkExec "XF86AudioLowerVolume" volumeDown))
+                (mkExec "XF86AudioPlay" "${pkgs.playerctl}/bin/playerctl play-pause")
+                (mkExec "Pause" "${pkgs.playerctl}/bin/playerctl play-pause")
+                # fn+k on my asus laptop
+                (mkExec "Scroll_Lock" "${pkgs.playerctl}/bin/playerctl stop")
+                (mkExec "XF86AudioStop" "${pkgs.playerctl}/bin/playerctl stop")
+                (mkExec "XF86AudioNext" "${pkgs.playerctl}/bin/playerctl next")
+                (mkExec "XF86AudioPrev" "${pkgs.playerctl}/bin/playerctl previous")
+                (lib.mkIf config.nx.isLaptop (mkExec "XF86MonBrightnessUp" brightnessUp))
+                (lib.mkIf config.nx.isLaptop (mkExec "XF86MonBrightnessDown" brightnessDown))
                 # The Asus laptop firmware maps the touchpad toggle Fn key to Super+P.
-                (lib.mkIf config.nx.isLaptop "SUPER, p, exec, ${toggleTouchpad}")
+                (lib.mkIf config.nx.isLaptop (mkExec "SUPER + p" toggleTouchpad))
                 # print screen
-                ", Print, exec, ${scriptsDir}/application.grim.fullScreenshotToFile"
-              ];
-              bindm = [
-                "SUPER, mouse:272, movewindow"
-                "SUPER, mouse:273, resizewindow"
-              ];
-              # bindl = [
-              #   ", switch:on:Lid Switch, exec, ${scriptsDir}/cli.system.suspend"
-              # ];
-              env = [
-                "XDG_CURRENT_DESKTOP,Hyprland"
-                "XDG_SESSION_TYPE,wayland"
-                "XDG_SESSION_DESKTOP,Hyprland"
-                "GDK_BACKEND,wayland,x11"
-                # "SDL_VIDEODRIVER,wayland" # removed: causes stutter in Proton games, let Steam/Proton pick the backend
-                "_JAVA_AWT_WM_NONREPARENTING,1"
-                "QT_QPA_PLATFORM,wayland"
+                (mkExec "Print" "${scriptsDir}/application.grim.fullScreenshotToFile")
+                # mouse (formerly bindm). `mouse = true` flag matches the
+                # upstream-shipped example at /share/hypr/hyprland.lua.
+                (mkBindFlags "SUPER + mouse:272" "hl.dsp.window.drag()" { mouse = true; })
+                (mkBindFlags "SUPER + mouse:273" "hl.dsp.window.resize()" { mouse = true; })
+                # locked (formerly bindl) — suspend works even when locked
+                (mkBindFlags "SUPER + s" ''hl.dsp.exec_cmd("${scriptsDir}/cli.system.suspend")'' { locked = true; })
               ];
             };
-            extraConfig = ''
-              # resize submap (with auto reset after 10 sec)
-              bind=SUPER,R,exec,sleep 10 && hyprctl dispatch submap reset
-              bind=SUPER,R,submap,resize
-              submap=resize
-              binde=,h,resizeactive,-10 0
-              binde=,j,resizeactive,0 10
-              binde=,k,resizeactive,0 -10
-              binde=,l,resizeactive,10 0
-              bind=,escape,submap,reset
-              bindrt=SUPER,SUPER_L,exec,pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide
-              submap=reset
-              # exit submap (with auto reset after 3 sec)
-              bind=SUPER SHIFT,E,exec,sleep 3 && hyprctl dispatch submap reset
-              bind=SUPER SHIFT,E,submap,exit
-              submap=exit
-              # lock
-              binde=,l,exec, hyprlock
-              # logout
-              bind=SHIFT,L,exec, loginctl terminate-user $USER
-              # shutdown
-              binde=,s,exec, systemctl poweroff
-              # reboot
-              binde=,r,exec, systemctl reboot
-              bind=,escape,submap,reset
-              bindrt=SUPER,SUPER_L,exec,pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide
-              submap=reset
-            '';
+            # ---- submaps -----------------------------------------------------
+            # Migrated from extraConfig. `extraConfig` is now empty.
+            #
+            # The `SUPER_L` release-hide bind that used to be duplicated in
+            # each submap is replaced by the single top-level entry above with
+            # `{ submap_universal = true; release = true; transparent = true; }`
+            # — see docs section 8.5.
+            submaps = {
+              resize = {
+                settings.bind = [
+                  (mkBindFlags "h" "hl.dsp.window.resize({ x = -10, y = 0, relative = true })" {
+                    repeating = true;
+                  })
+                  (mkBindFlags "j" "hl.dsp.window.resize({ x = 0, y = 10, relative = true })" {
+                    repeating = true;
+                  })
+                  (mkBindFlags "k" "hl.dsp.window.resize({ x = 0, y = -10, relative = true })" {
+                    repeating = true;
+                  })
+                  (mkBindFlags "l" "hl.dsp.window.resize({ x = 10, y = 0, relative = true })" {
+                    repeating = true;
+                  })
+                  (mkBind "escape" ''hl.dsp.submap("reset")'')
+                ];
+              };
+              exit = {
+                settings.bind = [
+                  (mkExec "l" "hyprlock")
+                  (mkExec "SHIFT + L" "loginctl terminate-user $USER")
+                  (mkExec "s" "systemctl poweroff")
+                  (mkExec "r" "systemctl reboot")
+                  (mkBind "escape" ''hl.dsp.submap("reset")'')
+                ];
+              };
+            };
+            extraConfig = "";
             systemd = {
               enable = true;
             };

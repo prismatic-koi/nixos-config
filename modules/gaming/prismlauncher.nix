@@ -33,8 +33,11 @@
           wayland.windowManager.hyprland.settings =
             lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
               {
-                windowrule = [
-                  "tile on, match:class PrismLauncher"
+                window_rule = [
+                  {
+                    match.class = "PrismLauncher";
+                    tile = true;
+                  }
                 ];
               };
         };

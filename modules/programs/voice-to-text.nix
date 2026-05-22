@@ -407,8 +407,12 @@ in
 
       keybind = lib.mkOption {
         type = lib.types.str;
-        default = "SUPER, V";
-        description = "Keybind for toggle voice recording (hold to talk, release to transcribe)";
+        default = "SUPER + V";
+        description = ''
+          Keybind for toggle voice recording (hold to talk, release to
+          transcribe). Format follows Hyprland's lua-API `hl.bind` keys
+          string (mods + key joined with ` + `).
+        '';
       };
 
       notificationSound = lib.mkOption {
@@ -440,9 +444,19 @@ in
       # Add Hyprland keybinding
       wayland.windowManager.hyprland.settings.bind = [
         # Hold to talk: press to start recording, release to transcribe
-        "${cfg.keybind}, exec, voice-to-text toggle"
+        {
+          _args = [
+            cfg.keybind
+            (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text toggle")'')
+          ];
+        }
         # Cancel recording
-        "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
+        {
+          _args = [
+            "${cfg.keybind} + SHIFT"
+            (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text cancel")'')
+          ];
+        }
       ];
 
       # Persist configuration and model cache

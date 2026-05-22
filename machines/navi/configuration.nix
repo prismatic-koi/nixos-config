@@ -115,7 +115,12 @@
   # display settigs for hyprland
   home-manager.users.ben.wayland.windowManager.hyprland.settings = {
     monitor = [
-      "DP-3,5120x1440@239.76Hz,0x0,1"
+      {
+        output = "DP-3";
+        mode = "5120x1440@239.76Hz";
+        position = "0x0";
+        scale = 1;
+      }
     ];
   };
 

@@ -118,7 +118,12 @@
 
   # display settigs for hyprland
   home-manager.users.ben.wayland.windowManager.hyprland.settings.monitor = [
-    "eDP-1,2880x1800@120.00000,0x0,1.5"
+    {
+      output = "eDP-1";
+      mode = "2880x1800@120.00000";
+      position = "0x0";
+      scale = 1.5;
+    }
   ];
 
   # List packages installed in system profile. To search, run:
