@@ -556,6 +556,18 @@ type Sidecar struct {
 	// that simulates SQLITE_BUSY sequences without needing a real locked DB.
 	// Must be set before the first call to reviewRecoveryTick.
 	reviewRecoveryQuerierOverride reviewRecoveryQuerier
+
+	// notifyCoordinatorDeliverFn, when non-nil, is used by notifyCoordinator
+	// in place of promptdelivery.DeliverToSession. This is a narrow test seam
+	// (issue #1856) — the only purpose is to let tests force a delivery
+	// failure so the WriteBusMessageFailed audit-row path can be asserted on,
+	// without requiring a SIGTERMed coordinator to vanish mid-flight in real
+	// time. Production code leaves this nil and the real promptdelivery call
+	// is used. Set before invoking notifyCoordinator; not safe to mutate
+	// concurrently with notifyCoordinator. Scope is intentionally limited to
+	// the coordinator notify path — do not extend this to other
+	// notify* methods without a separate justification.
+	notifyCoordinatorDeliverFn func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery
