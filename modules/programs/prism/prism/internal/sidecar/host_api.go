@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +25,37 @@ import (
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
+
+// statusClientClosedRequest is the de-facto HTTP status code (popularised by
+// nginx and HAProxy) returned when the client closes the connection before
+// the server has finished processing the request. Issue #1847 documents this
+// as the response status when a host-API handler's context is cancelled
+// because the caller disconnected (as opposed to the per-endpoint timeout
+// firing, which uses 504 Gateway Timeout).
+const statusClientClosedRequest = 499
+
+// contextErrStatus reports, for a context that has fired, the HTTP status code
+// that the host-API handler should return. It distinguishes a per-endpoint
+// timeout (deadline exceeded → 504 Gateway Timeout) from a client disconnect
+// or other cancellation (→ 499 Client Closed Request). The boolean is false
+// when the context has not fired — in that case the caller falls through to
+// the normal subprocess-failure path so it can surface the underlying error.
+//
+// This helper is used by the host-API handlers that wrap r.Context() with
+// context.WithTimeout and exec.CommandContext (issue #1847). When the child
+// is killed by context cancellation, os/exec returns an error like
+// "signal: killed" which says nothing about *why*; the caller's ctx.Err() is
+// the authoritative signal.
+func contextErrStatus(ctx context.Context) (int, bool) {
+	err := ctx.Err()
+	if err == nil {
+		return 0, false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return http.StatusGatewayTimeout, true
+	}
+	return statusClientClosedRequest, true
+}
 
 // hostAPIServeLogsTail writes the last n lines of the log file to w.
 // When n == 0, the response body is empty.
@@ -923,9 +955,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// Deliver via prism prompt on the host.
 		args := []string{"prompt", req.Session, "--prompt", req.Prompt}
 		s.logger().Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 5 min. `prism prompt` writes one bus event and
+		// (in pi-harness mode) waits for the harness side to ACK delivery; the
+		// host side can stall on a wedged tmux/pi pipe, but 5 min is a generous
+		// outer bound that still surfaces a true hang. On timeout we return
+		// 504 Gateway Timeout; on client disconnect we return 499 (the de-facto
+		// "client closed request" code used by nginx/HAProxy).
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /prompt: context fired (%v): killed child after %v", ctx.Err(), 5*time.Minute)
+				writeError(w, status, fmt.Sprintf("prompt delivery aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /prompt: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prompt delivery failed: %v", err))
 			return
@@ -1164,9 +1210,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		logArgs = append(logArgs, "--repo", ownRepo)
 		s.logger().Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 10 min. `prism spawn` can legitimately take a
+		// while — it creates a git worktree, sets up a tmux session, and may
+		// pull a container image on first use. 10 min is the documented outer
+		// bound (issue #1847). On timeout returns 504 Gateway Timeout; on
+		// client disconnect returns 499 ("client closed request").
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /spawn: context fired (%v): killed child after %v", ctx.Err(), 10*time.Minute)
+				writeError(w, status, fmt.Sprintf("spawn aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /spawn: %v: %s", err, out)
 			msg := fmt.Sprintf("spawn failed: %v", err)
 			if trimmed := strings.TrimSpace(string(out)); trimmed != "" {
@@ -1532,7 +1591,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		s.logger().Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 5 min. `prism cleanup` removes git worktrees,
+		// archives session state, and may run `git` operations that touch the
+		// network on detached worktrees. 5 min is a comfortable upper bound;
+		// anything longer is a hang. On timeout returns 504 Gateway Timeout;
+		// on client disconnect returns 499.
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		var stdoutBuf, stderrBuf bytes.Buffer
 		cmd.Stdout = &stdoutBuf
 		cmd.Stderr = &stderrBuf
@@ -1540,6 +1607,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		stdoutStr := stdoutBuf.String()
 		stderrStr := stderrBuf.String()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /cleanup: context fired (%v): killed child after %v", ctx.Err(), 5*time.Minute)
+				writeJSON(w, status, map[string]any{
+					"error":  fmt.Sprintf("cleanup aborted: %v", ctx.Err()),
+					"stdout": stdoutStr,
+					"stderr": stderrStr,
+				})
+				return
+			}
 			s.logger().Printf("sidecar: host-API /cleanup: %v: stdout=%q stderr=%q", err, stdoutStr, stderrStr)
 			// Forward stdout and stderr alongside the error so the caller can
 			// surface the underlying cause (e.g. archive collision) instead of
@@ -1587,9 +1663,21 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		args := []string{"switch", "--path", worktreePath}
 		s.logger().Printf("sidecar: host-API /switch: prism %s", strings.Join(args, " "))
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 30 s. `prism switch` issues a single tmux
+		// switch-client command and exits — it should complete in well under
+		// a second. 30 s is the documented outer bound (issue #1847). On
+		// timeout returns 504 Gateway Timeout; on client disconnect returns 499.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		out, switchErr := cmd.CombinedOutput()
 		if switchErr != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /switch: context fired (%v): killed child after %v", ctx.Err(), 30*time.Second)
+				writeError(w, status, fmt.Sprintf("switch aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /switch: %v: %s", switchErr, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("switch failed: %v", switchErr))
 			return
@@ -1808,11 +1896,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		s.logger().Printf("sidecar: host-API /event: kind=%s session=%s", req.Kind, req.Session)
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 30 s. `prism event` writes one row to the host
+		// DB and exits — it should complete in well under a second. 30 s is
+		// the documented outer bound (issue #1847). On timeout returns 504
+		// Gateway Timeout; on client disconnect returns 499.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		// Propagate PRISM_SESSION_NAME so that any internal lookup resolves correctly.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+req.Session)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /event: context fired (%v): killed child after %v", ctx.Err(), 30*time.Second)
+				writeError(w, status, fmt.Sprintf("event write aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /event: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("event write failed: %v\n%s", err, strings.TrimSpace(string(out))))
 			return
@@ -2058,13 +2158,25 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--to", req.To)
 		}
 		s.logger().Printf("sidecar: host-API /escalate: from=%s to=%s", fromSession, req.To)
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 30 s. `prism escalate` writes one bus event
+		// and may best-effort prompt the coordinator; it should return well
+		// inside a second. 30 s is the documented outer bound (issue #1847).
+		// On timeout returns 504 Gateway Timeout; on client disconnect returns 499.
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		// PRISM_SESSION_NAME tells the host-side `prism escalate` which session
 		// is calling, bypassing the CWD walk that would otherwise resolve to
 		// the sidecar's own working directory.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /escalate: context fired (%v): killed child after %v", ctx.Err(), 30*time.Second)
+				writeError(w, status, fmt.Sprintf("escalate aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /escalate: %v: %s", err, out)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("escalate failed: %v\n%s", err, strings.TrimSpace(string(out))))
 			return
@@ -2113,12 +2225,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			args = append(args, "--name", req.Name)
 		}
 		s.logger().Printf("sidecar: host-API /investigate: from=%s", fromSession)
-		cmd := exec.Command(prismBinary(), args...)
+
+		// Per-endpoint timeout: 10 min. `prism investigate` spawns a new
+		// session — same shape as /spawn, so the bound matches. On timeout
+		// returns 504 Gateway Timeout; on client disconnect returns 499.
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
 		// PRISM_SESSION_NAME tells the host-side `prism investigate` which session
 		// is invoking, bypassing the CWD walk.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
 		out, err := cmd.Output()
 		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /investigate: context fired (%v): killed child after %v", ctx.Err(), 10*time.Minute)
+				writeError(w, status, fmt.Sprintf("investigate aborted: %v", ctx.Err()))
+				return
+			}
 			s.logger().Printf("sidecar: host-API /investigate: %v", err)
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("investigate failed: %v", err))
 			return
