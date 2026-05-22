@@ -459,12 +459,22 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
 	// Capture the real XDG_STATE_HOME *before* NewIsolated redirects it.
 	// We need to record this now so we can verify it's untouched after the test.
+	//
+	// Unlike the other tests in this file, this one *intentionally* references
+	// the real host path: its whole purpose is to prove that NewIsolated
+	// prevents writes from leaking to ~/.local/state/prism/ on the developer's
+	// host (the exact failure mode of issue #1608). Refactoring this to
+	// t.TempDir() would degenerate the test into "an empty temp dir stays
+	// empty", which proves nothing about the host-leak invariant.
+	//
+	// In sandboxed environments where XDG_STATE_HOME is unset (notably the
+	// nix-build sandbox where HOME=/homeless-shelter), there is no meaningful
+	// host path to protect — skip rather than fall back to UserHomeDir, which
+	// would resolve to /homeless-shelter/.local/state and reintroduce the
+	// inconsistency this test was meant to guard against (see issue #1857).
 	realXDGStateHome := os.Getenv("XDG_STATE_HOME")
 	if realXDGStateHome == "" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			realXDGStateHome = home + "/.local/state"
-		}
+		t.Skip("test requires XDG_STATE_HOME to be set; it verifies that NewIsolated does not leak writes to the real host state directory, which is only meaningful when a real host path exists")
 	}
 	realPrismDir := realXDGStateHome + "/prism"
 
