@@ -237,44 +237,82 @@ WHERE group_id = ? AND ended_at IS NULL`
 		return nil, fmt.Errorf("db: group results: iterate statuses: %w", err)
 	}
 
-	// For each member, fetch the last msg_assistant event payload.
-	for name, r := range results {
-		const msgQ = `
-SELECT payload FROM agent_events
-WHERE session_name = ? AND type = 'msg_assistant'
-ORDER BY created_at DESC, rowid DESC
-LIMIT 1`
-		var payload string
-		err := d.conn.QueryRow(msgQ, name).Scan(&payload)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("db: group results: last message for %q: %w", name, err)
-		}
-		r.LastMessage = payload
+	if len(results) == 0 {
+		return results, nil
+	}
 
-		// Fetch the startup_error event reason when present. This is written by
-		// writeStartupError in the sidecar when WaitHealthy or CreateSession
-		// fails, allowing the review monitor to distinguish a no-start failure
-		// from a mid-run crash (#1222).
-		const startupErrQ = `
-SELECT payload FROM agent_events
-WHERE session_name = ? AND type = 'startup_error'
-ORDER BY created_at DESC, rowid DESC
-LIMIT 1`
-		var startupErrPayload string
-		seErr := d.conn.QueryRow(startupErrQ, name).Scan(&startupErrPayload)
-		if seErr == nil && startupErrPayload != "" {
-			// Extract the "reason" field from the JSON payload.
-			var p struct {
-				Reason string `json:"reason"`
-			}
-			if jsonErr := json.Unmarshal([]byte(startupErrPayload), &p); jsonErr == nil && p.Reason != "" {
-				r.StartupError = p.Reason
-			} else {
-				r.StartupError = startupErrPayload
+	// Batched event fetch: pull every msg_assistant and startup_error event
+	// for the entire member set in a single query, ordered so that the most
+	// recent row per (session_name, type) comes first. The Go-side reduction
+	// below keeps only that first row per pair (#1868 F7 — replaces the
+	// previous N+1 shape of 2 QueryRow calls per member).
+	names := make([]string, 0, len(results))
+	for name := range results {
+		names = append(names, name)
+	}
+	placeholders := strings.Repeat("?,", len(names))
+	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+	eventQ := `
+SELECT session_name, type, payload
+FROM agent_events
+WHERE session_name IN (` + placeholders + `)
+  AND type IN ('msg_assistant', 'startup_error')
+ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
+	args := make([]any, 0, len(names))
+	for _, n := range names {
+		args = append(args, n)
+	}
+	eventRows, err := d.conn.Query(eventQ, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: group results: query events: %w", err)
+	}
+	defer eventRows.Close()
+
+	// seenLatest tracks which (session_name, type) pairs we have already
+	// recorded the most-recent row for. ORDER BY puts the most recent first
+	// within each (session_name, type) partition, so we accept the first row
+	// we see for each pair and ignore the rest.
+	seenLatest := make(map[string]struct{}, 2*len(names))
+	for eventRows.Next() {
+		var sessName, evtType, payload string
+		if err := eventRows.Scan(&sessName, &evtType, &payload); err != nil {
+			return nil, fmt.Errorf("db: group results: scan event: %w", err)
+		}
+		key := sessName + "\x00" + evtType
+		if _, seen := seenLatest[key]; seen {
+			continue
+		}
+		seenLatest[key] = struct{}{}
+
+		r, ok := results[sessName]
+		if !ok {
+			// Defensive: should be impossible because the IN list is built
+			// from the results keys.
+			continue
+		}
+		switch evtType {
+		case "msg_assistant":
+			r.LastMessage = payload
+		case "startup_error":
+			// Extract the "reason" field from the JSON payload. This is
+			// written by writeStartupError in the sidecar when WaitHealthy
+			// or CreateSession fails, allowing the review monitor to
+			// distinguish a no-start failure from a mid-run crash (#1222).
+			if payload != "" {
+				var p struct {
+					Reason string `json:"reason"`
+				}
+				if jsonErr := json.Unmarshal([]byte(payload), &p); jsonErr == nil && p.Reason != "" {
+					r.StartupError = p.Reason
+				} else {
+					r.StartupError = payload
+				}
 			}
 		}
-
-		results[name] = r
+		results[sessName] = r
+	}
+	if err := eventRows.Err(); err != nil {
+		return nil, fmt.Errorf("db: group results: iterate events: %w", err)
 	}
 
 	return results, nil
@@ -459,28 +497,60 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 		return nil, fmt.Errorf("db: review groups list: iterate: %w", err)
 	}
 
-	// Populate members for each group. Doing this as a second per-group
-	// query rather than a single JOIN keeps the row-construction logic in
-	// queryStatuses untouched and the ledger query simple.
+	// Initialise per-group slices so groups with zero members still produce
+	// non-nil empty Members / AgentStates (preserving the prior shape).
 	for i := range out {
-		members, mErr := d.GroupMembersForGroup(out[i].GroupID)
-		if mErr != nil {
-			return nil, fmt.Errorf("db: review groups list: members for %s: %w", out[i].GroupID, mErr)
+		out[i].Members = []string{}
+		out[i].AgentStates = []string{}
+	}
+
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	// Batched member fetch: pull every agent_status row for the full group
+	// set in one query (#1868 F8 — replaces the previous per-group
+	// GroupMembersForGroup loop). The IN-list approach is used in lieu of
+	// a JOIN so the row-construction logic in queryStatuses is reusable
+	// unchanged. Ordered by group_id, session_name so the per-group slices
+	// below are stable.
+	idxByGroup := make(map[string]int, len(out))
+	nonTerminalByGroup := make(map[string]int, len(out))
+	groupIDs := make([]any, 0, len(out))
+	for i := range out {
+		idxByGroup[out[i].GroupID] = i
+		groupIDs = append(groupIDs, out[i].GroupID)
+	}
+	placeholders := strings.Repeat("?,", len(groupIDs))
+	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+	memberQ := `
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+FROM agent_status
+WHERE group_id IN (` + placeholders + `)
+ORDER BY group_id ASC, session_name ASC`
+	members, mErr := d.queryStatuses(memberQ, groupIDs...)
+	if mErr != nil {
+		return nil, fmt.Errorf("db: review groups list: batched members: %w", mErr)
+	}
+	for _, m := range members {
+		if m.GroupID == nil {
+			continue // defensive: should not happen given the WHERE clause
 		}
-		out[i].Members = make([]string, 0, len(members))
-		out[i].AgentStates = make([]string, 0, len(members))
-		nonTerminal := 0
-		for _, m := range members {
-			out[i].Members = append(out[i].Members, m.SessionName)
-			out[i].AgentStates = append(out[i].AgentStates, m.State)
-			if !isTerminalState(m.State) && m.EndedAt == nil {
-				nonTerminal++
-			}
+		idx, ok := idxByGroup[*m.GroupID]
+		if !ok {
+			continue
 		}
+		out[idx].Members = append(out[idx].Members, m.SessionName)
+		out[idx].AgentStates = append(out[idx].AgentStates, m.State)
+		if !isTerminalState(m.State) && m.EndedAt == nil {
+			nonTerminalByGroup[*m.GroupID]++
+		}
+	}
+	for i := range out {
 		switch {
-		case len(members) == 0:
+		case len(out[i].Members) == 0:
 			out[i].GroupState = "empty"
-		case nonTerminal == 0:
+		case nonTerminalByGroup[out[i].GroupID] == 0:
 			out[i].GroupState = "completed"
 		default:
 			out[i].GroupState = "in-progress"

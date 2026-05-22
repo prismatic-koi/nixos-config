@@ -7857,7 +7857,7 @@ func TestTransitionCause_RootAgentIdleDebounce(t *testing.T) {
 		},
 	})
 	// Seed text so the message write proceeds.
-	sc.textByMessage["msg-001"] = "hello"
+	sc.textByMessage.set("msg-001", "hello")
 	sc.HandleEvent(evt)
 
 	timer := clk.LastTimer()

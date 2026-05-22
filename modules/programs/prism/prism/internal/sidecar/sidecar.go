@@ -320,20 +320,31 @@ type Sidecar struct {
 	manualDenial    bool
 	compacting      bool
 	harnessSessionID string
-	writtenMessages map[string]bool // dedup message.updated writes
-	textByMessage   map[string]string
+	// writtenMessages dedupes message.updated writes. Bounded LRU
+	// (messageTrackingCap entries) — coordinator sidecars run for days, so
+	// the previous unbounded map leaked entries linearly with message volume
+	// (issue #1846). Entries are never explicitly deleted, only evicted on
+	// overflow in strict insertion order.
+	writtenMessages *boundedMap[bool]
+	// textByMessage accumulates streamed text-part updates for an in-flight
+	// assistant or user message; the entry is consumed and deleted when the
+	// message completes. Bounded LRU (messageTrackingCap entries) so that
+	// messages abandoned mid-turn (agent interrupted, tool-only turns that
+	// hit the text=="" early return) cannot accumulate without bound. The
+	// cap is sized so a normal conversation's working set is never evicted.
+	textByMessage *boundedMap[string]
 	// msgCreatedAtMs tracks the time.created timestamp (ms since epoch) for
 	// in-flight assistant messages. Used to compute TTFT when the first text
 	// part arrives. Keyed by message ID; entries are deleted when the message
-	// is written (same lifecycle as textByMessage). Messages abandoned mid-turn
-	// (e.g. agent interrupted) are not cleaned up; this matches the existing
-	// textByMessage behaviour and is acceptable for short-lived sidecar processes.
-	msgCreatedAtMs map[string]float64
+	// is written (same lifecycle as textByMessage). Bounded LRU
+	// (messageTrackingCap entries) — see textByMessage for the leak class
+	// this closes (issue #1846).
+	msgCreatedAtMs *boundedMap[float64]
 	// ttftByMessage tracks the computed TTFT (ms) for each assistant message,
 	// set when the first text part with a time.start timestamp arrives.
 	// Zero means "not yet seen" or "unavailable". Keyed by message ID.
-	// Same lifecycle / leak characteristics as msgCreatedAtMs above.
-	ttftByMessage map[string]int64
+	// Same lifecycle as msgCreatedAtMs above, same bounded-LRU treatment.
+	ttftByMessage *boundedMap[int64]
 	// container is set when running in container mode.
 	// Protected by mu.
 	container *containerMgr
@@ -540,10 +551,10 @@ func New(cfg Config) *Sidecar {
 	s := &Sidecar{
 		cfg:             cfg,
 		harness:         cfg.Harness,
-		writtenMessages: make(map[string]bool),
-		textByMessage:   make(map[string]string),
-		msgCreatedAtMs:  make(map[string]float64),
-		ttftByMessage:   make(map[string]int64),
+		writtenMessages: newBoundedMap[bool](messageTrackingCap),
+		textByMessage:   newBoundedMap[string](messageTrackingCap),
+		msgCreatedAtMs:  newBoundedMap[float64](messageTrackingCap),
+		ttftByMessage:   newBoundedMap[int64](messageTrackingCap),
 		seenUnknown:     make(map[string]bool),
 		promptDedup:     newDeliveryDedup(deliveryDedupCapacity),
 	}
