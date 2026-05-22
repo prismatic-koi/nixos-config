@@ -493,6 +493,13 @@ type Sidecar struct {
 	// group_id; entries are dropped when the group transitions away or
 	// reviewingInFlight clears. Protected by mu.
 	reviewRecoveryFirstSeenComplete map[string]time.Time
+
+	// reviewRecoveryQuerierOverride, when non-nil, is used by
+	// reviewRecoveryTick instead of cfg.DB for the LatestGroupForParent and
+	// GroupCompleted calls. Tests set this field to inject a fake querier
+	// that simulates SQLITE_BUSY sequences without needing a real locked DB.
+	// Must be set before the first call to reviewRecoveryTick.
+	reviewRecoveryQuerierOverride reviewRecoveryQuerier
 }
 
 // defaultReviewRecoveryInterval is how often the worker-sidecar recovery

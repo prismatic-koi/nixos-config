@@ -35,8 +35,17 @@ import (
 	"context"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
 )
+
+// reviewRecoveryQuerier is the narrow interface used by reviewRecoveryTick
+// for its two DB calls. The concrete implementation is *db.DB; tests may
+// substitute a fake that simulates SQLITE_BUSY sequences.
+type reviewRecoveryQuerier interface {
+	LatestGroupForParent(parentSession string) (*db.GroupInfo, error)
+	GroupCompleted(groupID string) (bool, error)
+}
 
 // startReviewRecoveryWatcher launches the recovery goroutine for this
 // sidecar. It is a no-op (returns nil cancel) when the watcher is disabled
@@ -112,10 +121,15 @@ func (s *Sidecar) reviewRecoveryTick(grace time.Duration, now time.Time) {
 	// Fast path: no review in flight from this session's perspective.
 	s.mu.Lock()
 	inFlight := s.reviewingInFlight
+	qdb := s.reviewRecoveryQuerierOverride
 	s.mu.Unlock()
 	if !inFlight {
 		s.clearReviewRecoveryFirstSeen()
 		return
+	}
+	// Use the test override if present; fall back to the real DB.
+	if qdb == nil {
+		qdb = s.cfg.DB
 	}
 
 	// LatestGroupForParent (#1709 reopen) is the right query: while
@@ -125,8 +139,21 @@ func (s *Sidecar) reviewRecoveryTick(grace time.Duration, now time.Time) {
 	// "has any non-terminal member" criterion which is exactly the case the
 	// recovery watcher is designed to handle the OPPOSITE of: the stuck-but-
 	// complete group has ZERO non-terminal members by definition.
-	groupInfo, err := s.cfg.DB.LatestGroupForParent(s.cfg.SessionName)
-	if err != nil {
+	//
+	// Retry on SQLITE_BUSY: the socket-pipe reader's turn_start upsert may
+	// hold the write lock at the same instant the tick fires. Three attempts
+	// × 10 ms matches the backoff used by the /review pre-emptive write
+	// (host_api.go). See #1854.
+	const (
+		recoveryDBAttempts = 3
+		recoveryDBBackoff  = 10 * time.Millisecond
+	)
+	var groupInfo *db.GroupInfo
+	if err := db.WithBusyRetry(recoveryDBAttempts, recoveryDBBackoff, func() error {
+		var err error
+		groupInfo, err = qdb.LatestGroupForParent(s.cfg.SessionName)
+		return err
+	}); err != nil {
 		s.logger().Printf("sidecar: review-recovery: LatestGroupForParent: %v", err)
 		return
 	}
@@ -140,8 +167,12 @@ func (s *Sidecar) reviewRecoveryTick(grace time.Duration, now time.Time) {
 	}
 	groupID := groupInfo.GroupID
 
-	done, err := s.cfg.DB.GroupCompleted(groupID)
-	if err != nil {
+	var done bool
+	if err := db.WithBusyRetry(recoveryDBAttempts, recoveryDBBackoff, func() error {
+		var err error
+		done, err = qdb.GroupCompleted(groupID)
+		return err
+	}); err != nil {
 		s.logger().Printf("sidecar: review-recovery: GroupCompleted(%s): %v", groupID, err)
 		return
 	}
@@ -251,5 +282,14 @@ func (s *Sidecar) ReviewRecoveryFirstSeenForTest() map[string]time.Time {
 // deterministically without spinning a goroutine.
 func (s *Sidecar) ReviewRecoveryTickForTest(grace time.Duration, now time.Time) {
 	s.reviewRecoveryTick(grace, now)
+}
+
+// SetRecoveryQuerierForTest replaces the DB querier used by
+// reviewRecoveryTick with the given fake. Call before the first tick.
+// Only for use in tests.
+func (s *Sidecar) SetRecoveryQuerierForTest(q reviewRecoveryQuerier) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviewRecoveryQuerierOverride = q
 }
 
