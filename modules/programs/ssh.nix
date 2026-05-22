@@ -8,10 +8,10 @@ let
   username = config.nx.username;
   homeDir = config.home-manager.users.${username}.home.homeDirectory;
   cloudflaredBlock = {
-    proxyCommand = "${pkgs.cloudflared}/bin/cloudflared access ssh --hostname %h.$CLOUDFLARED_DOMAIN";
-    user = username;
-    port = 22;
-    identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+    ProxyCommand = "${pkgs.cloudflared}/bin/cloudflared access ssh --hostname %h.$CLOUDFLARED_DOMAIN";
+    User = username;
+    Port = 22;
+    IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
   };
 in
 {
@@ -40,18 +40,14 @@ in
             enable = true;
             # https://github.com/nix-community/home-manager/blob/77f348da3176dc68b20a73dab94852a417daf361/modules/programs/ssh.nix#L633C17-L641
             enableDefaultConfig = false; # deprecated, setting to false silences warning
-            matchBlocks = {
+            settings = {
               "*" = lib.mkMerge [
                 {
                   # don't ask to check host key for new hosts
-                  extraOptions = {
-                    StrictHostKeyChecking = "accept-new";
-                  };
+                  StrictHostKeyChecking = "accept-new";
                 }
                 (lib.mkIf config.nx.programs.ssh.enableWorkKeys {
-                  extraOptions = {
-                    Include = "${homeDir}/.ssh/workconfig";
-                  };
+                  Include = "${homeDir}/.ssh/workconfig";
                 })
               ];
               "node0" = cloudflaredBlock;
@@ -59,10 +55,10 @@ in
               "node2" = cloudflaredBlock;
               "node3" = cloudflaredBlock;
               "nas0" = {
-                hostname = "10.87.42.200";
-                port = 220;
-                user = username;
-                identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+                HostName = "10.87.42.200";
+                Port = 220;
+                User = username;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
             };
           };

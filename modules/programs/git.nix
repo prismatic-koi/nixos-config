@@ -25,18 +25,18 @@ in
         home-manager.users.${username} = {
           programs.ssh = {
             enable = true;
-            matchBlocks = {
+            settings = {
               "github.com" = {
-                user = "git";
-                hostname = "github.com";
-                port = 22;
-                identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+                User = "git";
+                HostName = "github.com";
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
               "gitlab.com" = {
-                user = "git";
-                hostname = "gitlab.com";
-                port = 22;
-                identityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
+                User = "git";
+                HostName = "gitlab.com";
+                Port = 22;
+                IdentityFile = "${homeDir}/.ssh/prismatic-koi-ed25519";
               };
             };
           };
