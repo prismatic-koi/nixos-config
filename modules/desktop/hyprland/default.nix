@@ -224,10 +224,25 @@ in
                   ];
                 }
               ];
-              # ---- animations ------------------------------------------------
-              # master switch
-              animations = {
-                enabled = true;
+              # ---- animations master switch ----------------------------------
+              # The lua API exposes `hl.animation(...)` (singular, per-leaf)
+              # but NOT `hl.animations(...)` — a standalone
+              # `animations = { enabled = true; }` setting would render as
+              # `hl.animations({ enabled = true })` and fail at startup with
+              # "attempt to call a nil value (field 'animations')".
+              #
+              # The master switch is set via `hl.config({ animations = {
+              # enabled = true } })` instead, matching the upstream-shipped
+              # example at /share/hypr/hyprland.lua. We invoke `hl.config`
+              # explicitly via the `_args` shape.
+              config = {
+                _args = [
+                  {
+                    animations = {
+                      enabled = true;
+                    };
+                  }
+                ];
               };
               # per-leaf animation definitions; top-level list (not nested
               # under `animations`), one `hl.animation(...)` call per entry.
