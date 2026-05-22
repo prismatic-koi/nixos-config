@@ -8110,3 +8110,2088 @@ func TestQuerySessionEventsBeforeRowID(t *testing.T) {
 		t.Errorf("missing-session result len = %d, want 0", len(missing))
 	}
 }
+
+// ── Migration v10→v11 (drop legacy opencode_port / opencode_sid, #849) ───────
+
+// seedV10DB creates a raw SQLite database seeded at schema_version=10. This
+// is the agent_status shape with both the legacy opencode_* columns and the
+// post-v8 harness_* columns coexisting, plus the v9→v10 isolation_mode
+// column. The v10→v11 migration back-fills the harness_* columns from the
+// legacy columns and then drops the legacy columns.
+func seedV10DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v10 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, opencode_sid TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT, opencode_sid TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  opencode_port INTEGER, host_mode INTEGER NOT NULL DEFAULT 0,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (10);
+
+		-- legacy-only: harness_session_id/harness_port NULL, opencode_sid/opencode_port set.
+		-- v10→v11 back-fill must copy the legacy values into the harness columns
+		-- before dropping the legacy columns.
+		INSERT INTO agent_status (session_name, repo, worktree, state, opencode_sid, opencode_port, last_seen)
+		  VALUES ('legacy-only', 'repo1', '/wt1', 'finished', 'sid-legacy', 14001, 1000);
+
+		-- harness-only: harness_* set, opencode_* NULL → must remain unchanged.
+		INSERT INTO agent_status (session_name, repo, worktree, state, harness_session_id, harness_port, last_seen)
+		  VALUES ('harness-only', 'repo2', '/wt2', 'active', 'sid-harness', 14002, 2000);
+
+		-- both-set: both columns set → harness_* must win (back-fill guards on NULL).
+		INSERT INTO agent_status (session_name, repo, worktree, state, opencode_sid, opencode_port, harness_session_id, harness_port, last_seen)
+		  VALUES ('both-set', 'repo3', '/wt3', 'active', 'sid-legacy-2', 14003, 'sid-harness-2', 14004, 3000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v10 db: %v", err)
+	}
+}
+
+// TestMigration_V10ToV11_DropsLegacyOpencodeColumns verifies that the v10→v11
+// migration back-fills harness_session_id / harness_port from the legacy
+// opencode_* columns where the harness columns are NULL, and then drops the
+// legacy columns from agent_status.
+func TestMigration_V10ToV11_DropsLegacyOpencodeColumns(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v10_drop_legacy.db")
+	seedV10DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v10 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// opencode_sid and opencode_port must be gone from agent_status.
+	for _, col := range []string{"opencode_sid", "opencode_port"} {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info for %q: %v", col, err)
+		}
+		if n != 0 {
+			t.Errorf("agent_status.%s still present after v10→v11 migration: got %d, want 0", col, n)
+		}
+	}
+
+	// legacy-only row: harness_session_id / harness_port must have been back-filled.
+	s, err := d.CurrentStatus("legacy-only")
+	if err != nil {
+		t.Fatalf("CurrentStatus legacy-only: %v", err)
+	}
+	if s == nil {
+		t.Fatal("legacy-only row missing after migration")
+	}
+	if s.HarnessSessionID == nil || *s.HarnessSessionID != "sid-legacy" {
+		t.Errorf("legacy-only harness_session_id: got %v, want %q (back-filled)", s.HarnessSessionID, "sid-legacy")
+	}
+	if s.HarnessPort == nil || *s.HarnessPort != 14001 {
+		t.Errorf("legacy-only harness_port: got %v, want 14001 (back-filled)", s.HarnessPort)
+	}
+
+	// harness-only row: harness columns must remain unchanged.
+	s2, err := d.CurrentStatus("harness-only")
+	if err != nil {
+		t.Fatalf("CurrentStatus harness-only: %v", err)
+	}
+	if s2 == nil || s2.HarnessSessionID == nil || *s2.HarnessSessionID != "sid-harness" {
+		t.Errorf("harness-only harness_session_id: got %v, want %q", func() any {
+			if s2 != nil {
+				return s2.HarnessSessionID
+			}
+			return nil
+		}(), "sid-harness")
+	}
+
+	// both-set row: harness_* values must win (back-fill only updates when harness_* IS NULL).
+	s3, err := d.CurrentStatus("both-set")
+	if err != nil {
+		t.Fatalf("CurrentStatus both-set: %v", err)
+	}
+	if s3 == nil || s3.HarnessSessionID == nil || *s3.HarnessSessionID != "sid-harness-2" {
+		t.Errorf("both-set harness_session_id: got %v, want %q (must not overwrite)", func() any {
+			if s3 != nil {
+				return s3.HarnessSessionID
+			}
+			return nil
+		}(), "sid-harness-2")
+	}
+}
+
+// TestMigration_V10ToV11_Idempotent verifies that opening a DB already at v11
+// (or later) is a no-op: the columns remain dropped and back-filled values
+// remain stable.
+func TestMigration_V10ToV11_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v10_idem.db")
+	seedV10DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after second open: got %d, want 33", version)
+	}
+
+	// Columns must remain dropped.
+	var n int
+	if err := d2.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name IN ('opencode_sid','opencode_port')`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info on second open: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("legacy opencode columns reappeared after idempotent open: got %d, want 0", n)
+	}
+
+	// Back-filled values must remain stable.
+	s, err := d2.CurrentStatus("legacy-only")
+	if err != nil {
+		t.Fatalf("CurrentStatus legacy-only on second open: %v", err)
+	}
+	if s == nil || s.HarnessSessionID == nil || *s.HarnessSessionID != "sid-legacy" {
+		t.Errorf("legacy-only harness_session_id after idempotent open: drifted")
+	}
+}
+
+// ── Migration v11→v12 (unique active coordinator per repo, §6.1 #849) ────────
+
+// seedV11DBWithDuplicateCoordinators creates a raw SQLite database seeded at
+// schema_version=11 with two ACTIVE coordinator rows for the same repo. The
+// v11→v12 migration creates a partial UNIQUE INDEX over
+// (repo) WHERE root_agent_name='coordinator' AND ended_at IS NULL — so this
+// fixture is designed to trigger the constraint failure path.
+func seedV11DBWithDuplicateCoordinators(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v11 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (11);
+
+		-- Two ACTIVE coordinator rows for the same repo — violates the
+		-- partial UNIQUE INDEX that v11→v12 creates.
+		INSERT INTO agent_status (session_name, repo, worktree, state, root_agent_name, last_seen, ended_at)
+		  VALUES ('dup-repo@main', 'dup-repo', '/wt', 'active', 'coordinator', 1000, NULL);
+		INSERT INTO agent_status (session_name, repo, worktree, state, root_agent_name, last_seen, ended_at)
+		  VALUES ('dup-repo@other', 'dup-repo', '/wt', 'active', 'coordinator', 1000, NULL);
+	`)
+	if err != nil {
+		t.Fatalf("seed v11 dup-coordinator db: %v", err)
+	}
+}
+
+// TestMigration_V11ToV12_DuplicateCoordinatorClearError verifies that when a
+// v11 database contains pre-existing duplicate active-coordinator rows for the
+// same repo, db.Open fails with an error that clearly identifies the failing
+// migration step (so an operator can diagnose the conflict) rather than just
+// surfacing a bare SQLite "constraint failed" message with no migration context.
+func TestMigration_V11ToV12_DuplicateCoordinatorClearError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v11_dup.db")
+	seedV11DBWithDuplicateCoordinators(t, dbPath)
+
+	_, err := db.Open(dbPath)
+	if err == nil {
+		t.Fatal("db.Open: got nil, want error from duplicate coordinator rows")
+	}
+	msg := err.Error()
+	// The migration wraps the SQLite error with "db: migration v11→v12:" so
+	// the operator can tell which migration failed. Assert that prefix is
+	// present (not just a bare "UNIQUE constraint failed: ...").
+	if !strings.Contains(msg, "v11\u2192v12") {
+		t.Errorf("error message does not identify migration step: %q\nwant substring %q", msg, "v11\u2192v12")
+	}
+	// And the underlying SQLite cause should still be reported (so the
+	// operator can see what kind of failure it was).
+	if !strings.Contains(strings.ToLower(msg), "unique") && !strings.Contains(strings.ToLower(msg), "constraint") {
+		t.Errorf("error message does not surface the underlying constraint cause: %q", msg)
+	}
+}
+
+// TestMigration_V11ToV12_CreatesIndex verifies the happy-path: a v11 DB with
+// no duplicate active-coordinator rows is migrated successfully and the new
+// partial UNIQUE INDEX is present.
+func TestMigration_V11ToV12_CreatesIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v11_ok.db")
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (11);
+
+		-- One active coordinator, one ENDED coordinator (same repo, partial index
+		-- excludes ended rows so this must not conflict).
+		INSERT INTO agent_status (session_name, repo, worktree, state, root_agent_name, last_seen, ended_at)
+		  VALUES ('ok-repo@main', 'ok-repo', '/wt', 'active', 'coordinator', 1000, NULL);
+		INSERT INTO agent_status (session_name, repo, worktree, state, root_agent_name, last_seen, ended_at)
+		  VALUES ('ok-repo@prev', 'ok-repo', '/wt', 'finished', 'coordinator', 1000, 2000);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v11 happy db: %v", err)
+	}
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v11 happy db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// Index must exist after migration.
+	var idxName string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_active_coordinator_per_repo'`,
+	).Scan(&idxName); err != nil {
+		t.Fatalf("expected idx_active_coordinator_per_repo to exist after v11→v12: %v", err)
+	}
+}
+
+// TestMigration_V11ToV12_Idempotent verifies that re-opening a DB already at
+// v12+ (where the partial UNIQUE INDEX already exists) is a safe no-op.
+func TestMigration_V11ToV12_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v11_idem.db")
+	// Use the happy-path fixture to get to v33.
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (11);
+	`)
+	rawConn.Close()
+	if err != nil {
+		t.Fatalf("seed v11 idem db: %v", err)
+	}
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after second open: got %d, want 33", version)
+	}
+
+	var idxName string
+	if err := d2.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_active_coordinator_per_repo'`,
+	).Scan(&idxName); err != nil {
+		t.Errorf("idx_active_coordinator_per_repo missing after idempotent open: %v", err)
+	}
+}
+
+// ── Migration v16→v17 (noop bridge for the merge-queue PR slot) ──────────────
+
+// seedV16DB creates a raw SQLite database seeded at schema_version=16. The
+// v16→v17 migration is a noop bridge whose only side-effect is bumping
+// schema_version. This fixture verifies that the bridge runs without error
+// and leaves the schema otherwise untouched.
+func seedV16DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v16 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (16);
+
+		-- One representative session row so we can assert it is unmodified.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-v16', 'repo@main', 'repo', '/wt', 'pi', 1700000000000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v16 db: %v", err)
+	}
+}
+
+// TestMigration_V16ToV17_BumpsVersion verifies that the v16→v17 noop bridge
+// advances schema_version without altering any other state.
+func TestMigration_V16ToV17_BumpsVersion(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v16_noop.db")
+	seedV16DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v16 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// The pre-existing sessions row must be unchanged.
+	var startedAt int64
+	if err := d.QueryRow(`SELECT started_at FROM sessions WHERE instance_id = 'iid-v16'`).Scan(&startedAt); err != nil {
+		t.Fatalf("query sessions row: %v", err)
+	}
+	if startedAt != 1700000000000 {
+		t.Errorf("sessions row mutated by noop migration: started_at=%d, want 1700000000000", startedAt)
+	}
+}
+
+// TestMigration_V16ToV17_Idempotent verifies that running the noop bridge a
+// second time (by re-opening the DB) is safe.
+func TestMigration_V16ToV17_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v16_idem.db")
+	seedV16DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after second open: got %d, want 33", version)
+	}
+}
+
+// ── Migration v18→v19 (introduce pending_merges table, #783) ─────────────────
+
+// seedV18DB creates a raw SQLite database seeded at schema_version=18 WITHOUT
+// the pending_merges table. The v18→v19 migration is responsible for creating
+// it. (The declarative schema block in db.go also creates pending_merges via
+// CREATE TABLE IF NOT EXISTS, but the seed proves that even a DB which truly
+// did not have the table — e.g. a real v18 database in the wild before the
+// declarative block was added — reaches the same end state.)
+func seedV18DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v18 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (18);
+	`)
+	if err != nil {
+		t.Fatalf("seed v18 db: %v", err)
+	}
+}
+
+// TestMigration_V18ToV19_CreatesPendingMerges verifies that pending_merges and
+// idx_pending_merges_status_instance exist after migration.
+func TestMigration_V18ToV19_CreatesPendingMerges(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v18_pending_merges.db")
+	seedV18DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v18 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var tname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='pending_merges'`,
+	).Scan(&tname); err != nil {
+		t.Fatalf("pending_merges table missing after v18→v19: %v", err)
+	}
+
+	var iname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_instance'`,
+	).Scan(&iname); err != nil {
+		t.Fatalf("idx_pending_merges_status_instance missing after v18→v19: %v", err)
+	}
+
+	// Required columns must be present.
+	for _, col := range []string{"pr", "session_name", "instance_id", "queue_position", "status", "queued_at"} {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('pending_merges') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info %s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("pending_merges.%s missing", col)
+		}
+	}
+}
+
+// TestMigration_V18ToV19_Idempotent verifies that re-opening a DB already at
+// v19+ does not error and the table remains.
+func TestMigration_V18ToV19_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v18_idem.db")
+	seedV18DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var tname string
+	if err := d2.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='pending_merges'`,
+	).Scan(&tname); err != nil {
+		t.Errorf("pending_merges missing after idempotent open: %v", err)
+	}
+}
+
+// ── Migration v19→v20 (add idx_pending_merges_status_session, #1039) ─────────
+
+// seedV19DB creates a v19 DB with pending_merges but WITHOUT the
+// idx_pending_merges_status_session index. The v19→v20 migration adds it.
+func seedV19DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v19 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr INTEGER PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT NOT NULL,
+		  queue_position INTEGER NOT NULL, status TEXT NOT NULL, title TEXT, error TEXT,
+		  queued_at INTEGER NOT NULL, last_checked_at INTEGER, merged_at INTEGER, ended_at INTEGER
+		);
+		CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (19);
+	`)
+	if err != nil {
+		t.Fatalf("seed v19 db: %v", err)
+	}
+}
+
+// TestMigration_V19ToV20_AddsStatusSessionIndex verifies the v19→v20 migration
+// creates idx_pending_merges_status_session.
+func TestMigration_V19ToV20_AddsStatusSessionIndex(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v19_status_session.db")
+	seedV19DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v19 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var iname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_session'`,
+	).Scan(&iname); err != nil {
+		t.Errorf("idx_pending_merges_status_session missing after v19→v20: %v", err)
+	}
+
+	// The pre-existing instance-keyed index must still be present (the
+	// migration adds a sibling index, it does not replace).
+	var iname2 string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_instance'`,
+	).Scan(&iname2); err != nil {
+		t.Errorf("idx_pending_merges_status_instance missing after v19→v20: %v", err)
+	}
+}
+
+// TestMigration_V19ToV20_Idempotent verifies re-opening a v20+ DB is a no-op.
+func TestMigration_V19ToV20_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v19_idem.db")
+	seedV19DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var iname string
+	if err := d2.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pending_merges_status_session'`,
+	).Scan(&iname); err != nil {
+		t.Errorf("idx_pending_merges_status_session missing after idempotent open: %v", err)
+	}
+}
+
+// ── Migration v24→v25 (introduce spawn_inputs table, C.1/C.4 §4.1) ───────────
+
+// seedV24DB creates a v24 DB without spawn_inputs. The v24→v25 migration
+// creates that table plus two indexes.
+func seedV24DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v24 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr INTEGER PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT NOT NULL,
+		  queue_position INTEGER NOT NULL, status TEXT NOT NULL, title TEXT, error TEXT,
+		  queued_at INTEGER NOT NULL, last_checked_at INTEGER, merged_at INTEGER, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS spawn_outcome (
+		    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+		    end_state              TEXT,
+		    exit_code              INTEGER,
+		    duration_ms            INTEGER,
+		    interrupted_count      INTEGER NOT NULL DEFAULT 0,
+		    compaction_count       INTEGER NOT NULL DEFAULT 0,
+		    error_event_count      INTEGER NOT NULL DEFAULT 0,
+		    permission_ask_count   INTEGER NOT NULL DEFAULT 0,
+		    permission_denied_count INTEGER NOT NULL DEFAULT 0,
+		    doom_loop_count        INTEGER NOT NULL DEFAULT 0,
+		    pr_number              INTEGER,
+		    pr_merged_at           INTEGER,
+		    review_group_id        TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		    review_verdict         TEXT,
+		    review_pass_count      INTEGER,
+		    review_fail_count      INTEGER,
+		    review_none_count      INTEGER,
+		    rubric_verdict         TEXT,
+		    rubric_score           REAL,
+		    rubric_breakdown       TEXT,
+		    rubric_grader          TEXT,
+		    tokens_input_total       INTEGER NOT NULL DEFAULT 0,
+		    tokens_output_total      INTEGER NOT NULL DEFAULT 0,
+		    tokens_cache_read_total  INTEGER NOT NULL DEFAULT 0,
+		    tokens_cache_write_total INTEGER NOT NULL DEFAULT 0,
+		    cost_usd_total           REAL    NOT NULL DEFAULT 0,
+		    tool_call_count          INTEGER NOT NULL DEFAULT 0,
+		    tool_error_count         INTEGER NOT NULL DEFAULT 0,
+		    msg_assistant_count      INTEGER NOT NULL DEFAULT 0,
+		    time_to_first_event_ms   INTEGER,
+		    time_to_finished_ms      INTEGER,
+		    computed_at            INTEGER NOT NULL,
+		    schema_version         INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (24);
+	`)
+	if err != nil {
+		t.Fatalf("seed v24 db: %v", err)
+	}
+}
+
+// TestMigration_V24ToV25_CreatesSpawnInputs verifies that the v24→v25 migration
+// adds the spawn_inputs table with the expected columns and indexes.
+func TestMigration_V24ToV25_CreatesSpawnInputs(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v24_spawn_inputs.db")
+	seedV24DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v24 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var tname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='spawn_inputs'`,
+	).Scan(&tname); err != nil {
+		t.Fatalf("spawn_inputs missing after v24→v25: %v", err)
+	}
+
+	// Required columns from the v24→v25 migration body.
+	wantCols := []string{
+		"instance_id", "profile_name", "model_flag", "variant_flag", "agent_flag",
+		"harness_flag", "isolation_flag", "host_mode_flag", "pr_number", "branch_flag",
+		"ignore_concurrency_cap", "model_variant_overrides", "skills_manifest_hash",
+		"prompt_template_hash", "agent_prompt_hash", "prompt_text", "prompt_source",
+		"extras", "created_at",
+	}
+	for _, col := range wantCols {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info %s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("spawn_inputs.%s missing", col)
+		}
+	}
+
+	// Indexes from the migration body.
+	for _, idx := range []string{"idx_spawn_inputs_profile", "idx_spawn_inputs_harness_profile"} {
+		var iname string
+		if err := d.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='index' AND name = ?`, idx,
+		).Scan(&iname); err != nil {
+			t.Errorf("index %s missing after v24→v25: %v", idx, err)
+		}
+	}
+}
+
+// TestMigration_V24ToV25_Idempotent verifies that re-opening a v25+ DB is a
+// no-op for the spawn_inputs introduction.
+func TestMigration_V24ToV25_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v24_idem.db")
+	seedV24DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var tname string
+	if err := d2.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='spawn_inputs'`,
+	).Scan(&tname); err != nil {
+		t.Errorf("spawn_inputs missing after idempotent open: %v", err)
+	}
+}
+
+// ── Migration v25→v26 (drop host_mode from agent_status, #1137) ──────────────
+
+// seedV25DB creates a v25 DB with agent_status still carrying the host_mode
+// column. The fixture includes the critical case for AC #4:
+//
+//	host_mode=1, isolation_mode=NULL → after migration: isolation_mode='podman'
+//
+// This is what the v25→v26 migration's INSERT...SELECT
+// COALESCE(isolation_mode, 'podman') guarantees when copying rows into the
+// rebuilt table. (The COALESCE replaces NULL with 'podman' regardless of
+// host_mode — the host_mode signal is intentionally discarded by this
+// migration; v22→v23 was already responsible for translating it into
+// isolation_mode='host' before this point. The AC explicitly calls out the
+// host_mode=1+isolation_mode=NULL → 'podman' round-trip as the case to
+// cover.)
+func seedV25DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v25 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		-- v25 agent_status still has host_mode.
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  host_mode INTEGER NOT NULL DEFAULT 0, isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr INTEGER PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT NOT NULL,
+		  queue_position INTEGER NOT NULL, status TEXT NOT NULL, title TEXT, error TEXT,
+		  queued_at INTEGER NOT NULL, last_checked_at INTEGER, merged_at INTEGER, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS spawn_inputs (
+		    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+		    profile_name TEXT, model_flag TEXT, variant_flag TEXT, agent_flag TEXT,
+		    harness_flag TEXT, isolation_flag TEXT, host_mode_flag INTEGER NOT NULL DEFAULT 0,
+		    pr_number INTEGER, branch_flag TEXT, ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+		    model_variant_overrides TEXT, skills_manifest_hash TEXT, prompt_template_hash TEXT,
+		    agent_prompt_hash TEXT, prompt_text TEXT, prompt_source TEXT, extras TEXT,
+		    created_at INTEGER NOT NULL
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (25);
+
+		-- CRITICAL AC #4 case: host_mode=1 but isolation_mode IS NULL.
+		-- v25→v26 must end with isolation_mode='podman' for this row
+		-- (the COALESCE(isolation_mode,'podman') in the INSERT...SELECT
+		-- of the rebuilt table is what guarantees no NULL survives, and
+		-- 'podman' is the default for any pre-existing NULL).
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('host1-nullmode', 'repo-h1', '/wt', 'finished', 1, NULL, 1000, 2000);
+
+		-- host_mode=0 + isolation_mode NULL → 'podman' (COALESCE default).
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('host0-nullmode', 'repo-h0', '/wt', 'finished', 0, NULL, 1000, 2000);
+
+		-- isolation_mode already 'bwrap' → must survive untouched (COALESCE returns first non-NULL).
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('bwrap-set', 'repo-bw', '/wt', 'finished', 0, 'bwrap', 1000, 2000);
+
+		-- isolation_mode already 'host' → must survive untouched.
+		INSERT INTO agent_status (session_name, repo, worktree, state, host_mode, isolation_mode, last_seen, ended_at)
+		  VALUES ('host-set', 'repo-hs', '/wt', 'finished', 1, 'host', 1000, 2000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v25 db: %v", err)
+	}
+}
+
+// TestMigration_V25ToV26_DropsHostModeAndBackfillsPodman verifies the v25→v26
+// migration:
+//  1. drops the host_mode column from agent_status,
+//  2. populates isolation_mode='podman' for any row that had it NULL — including
+//     the host_mode=1 row (AC #4),
+//  3. preserves rows that already had a non-NULL isolation_mode,
+//  4. preserves the partial UNIQUE INDEX after the table rebuild.
+func TestMigration_V25ToV26_DropsHostModeAndBackfillsPodman(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v25_host_mode_drop.db")
+	seedV25DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v25 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// host_mode column must be gone.
+	var hmCount int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'host_mode'`,
+	).Scan(&hmCount); err != nil {
+		t.Fatalf("pragma_table_info host_mode: %v", err)
+	}
+	if hmCount != 0 {
+		t.Errorf("agent_status.host_mode still present after v25→v26: got %d, want 0", hmCount)
+	}
+
+	// AC #4: host_mode=1 + isolation_mode=NULL row must end with 'podman'.
+	var iso1 string
+	if err := d.QueryRow(`SELECT isolation_mode FROM agent_status WHERE session_name = 'host1-nullmode'`).Scan(&iso1); err != nil {
+		t.Fatalf("query host1-nullmode: %v", err)
+	}
+	if iso1 != "podman" {
+		t.Errorf("host1-nullmode isolation_mode (AC #4): got %q, want %q", iso1, "podman")
+	}
+
+	// host_mode=0 + isolation_mode=NULL row also backfilled to 'podman'.
+	var iso0 string
+	if err := d.QueryRow(`SELECT isolation_mode FROM agent_status WHERE session_name = 'host0-nullmode'`).Scan(&iso0); err != nil {
+		t.Fatalf("query host0-nullmode: %v", err)
+	}
+	if iso0 != "podman" {
+		t.Errorf("host0-nullmode isolation_mode: got %q, want %q", iso0, "podman")
+	}
+
+	// Already-set rows must be untouched.
+	var isoBw string
+	if err := d.QueryRow(`SELECT isolation_mode FROM agent_status WHERE session_name = 'bwrap-set'`).Scan(&isoBw); err != nil {
+		t.Fatalf("query bwrap-set: %v", err)
+	}
+	if isoBw != "bwrap" {
+		t.Errorf("bwrap-set isolation_mode: got %q, want %q (must not change)", isoBw, "bwrap")
+	}
+
+	var isoHs string
+	if err := d.QueryRow(`SELECT isolation_mode FROM agent_status WHERE session_name = 'host-set'`).Scan(&isoHs); err != nil {
+		t.Fatalf("query host-set: %v", err)
+	}
+	if isoHs != "host" {
+		t.Errorf("host-set isolation_mode: got %q, want %q (must not change)", isoHs, "host")
+	}
+
+	// No NULL isolation_mode rows must remain.
+	var nullCount int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agent_status WHERE isolation_mode IS NULL`).Scan(&nullCount); err != nil {
+		t.Fatalf("count NULL isolation_mode rows: %v", err)
+	}
+	if nullCount != 0 {
+		t.Errorf("rows with NULL isolation_mode after v25→v26: got %d, want 0", nullCount)
+	}
+
+	// Partial UNIQUE INDEX must survive the table rebuild.
+	var idxName string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name='idx_active_coordinator_per_repo'`,
+	).Scan(&idxName); err != nil {
+		t.Errorf("idx_active_coordinator_per_repo missing after v25→v26 rebuild: %v", err)
+	}
+
+	// All four rows must still be present (data preservation).
+	var rowCount int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agent_status`).Scan(&rowCount); err != nil {
+		t.Fatalf("count agent_status rows: %v", err)
+	}
+	if rowCount != 4 {
+		t.Errorf("agent_status row count after migration: got %d, want 4", rowCount)
+	}
+}
+
+// TestMigration_V25ToV26_Idempotent verifies that re-opening a v26+ DB
+// (host_mode column already dropped) is a no-op for the rebuild.
+func TestMigration_V25ToV26_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v25_idem.db")
+	seedV25DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after second open: got %d, want 33", version)
+	}
+
+	var hmCount int
+	if err := d2.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'host_mode'`,
+	).Scan(&hmCount); err != nil {
+		t.Fatalf("pragma_table_info host_mode on second open: %v", err)
+	}
+	if hmCount != 0 {
+		t.Errorf("host_mode reappeared after idempotent open: got %d, want 0", hmCount)
+	}
+
+	// Backfilled values must remain stable.
+	var iso1 string
+	if err := d2.QueryRow(`SELECT isolation_mode FROM agent_status WHERE session_name = 'host1-nullmode'`).Scan(&iso1); err != nil {
+		t.Fatalf("query host1-nullmode on second open: %v", err)
+	}
+	if iso1 != "podman" {
+		t.Errorf("host1-nullmode isolation_mode after idempotent open: got %q, want %q", iso1, "podman")
+	}
+}
+
+// ── Migration v26→v27 (introduce harness_frames table, #1218) ────────────────
+
+// seedV26DB creates a v26 DB without harness_frames. The v26→v27 migration
+// creates it plus two indexes.
+func seedV26DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v26 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr INTEGER PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT NOT NULL,
+		  queue_position INTEGER NOT NULL, status TEXT NOT NULL, title TEXT, error TEXT,
+		  queued_at INTEGER NOT NULL, last_checked_at INTEGER, merged_at INTEGER, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS spawn_inputs (
+		    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+		    profile_name TEXT, model_flag TEXT, variant_flag TEXT, agent_flag TEXT,
+		    harness_flag TEXT, isolation_flag TEXT, host_mode_flag INTEGER NOT NULL DEFAULT 0,
+		    pr_number INTEGER, branch_flag TEXT, ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+		    model_variant_overrides TEXT, skills_manifest_hash TEXT, prompt_template_hash TEXT,
+		    agent_prompt_hash TEXT, prompt_text TEXT, prompt_source TEXT, extras TEXT,
+		    created_at INTEGER NOT NULL
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (26);
+	`)
+	if err != nil {
+		t.Fatalf("seed v26 db: %v", err)
+	}
+}
+
+// TestMigration_V26ToV27_CreatesHarnessFrames verifies that the v26→v27
+// migration creates the harness_frames table and its two indexes.
+func TestMigration_V26ToV27_CreatesHarnessFrames(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v26_harness_frames.db")
+	seedV26DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v26 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var tname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='harness_frames'`,
+	).Scan(&tname); err != nil {
+		t.Fatalf("harness_frames table missing after v26→v27: %v", err)
+	}
+
+	for _, col := range []string{"id", "session_name", "instance_id", "direction", "type", "payload", "created_at"} {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('harness_frames') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info %s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("harness_frames.%s missing", col)
+		}
+	}
+
+	for _, idx := range []string{"idx_harness_frames_session", "idx_harness_frames_session_dir"} {
+		var iname string
+		if err := d.QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='index' AND name = ?`, idx,
+		).Scan(&iname); err != nil {
+			t.Errorf("index %s missing after v26→v27: %v", idx, err)
+		}
+	}
+}
+
+// TestMigration_V26ToV27_Idempotent verifies that re-opening a v27+ DB is a
+// no-op for the harness_frames introduction.
+func TestMigration_V26ToV27_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v26_idem.db")
+	seedV26DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var tname string
+	if err := d2.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='harness_frames'`,
+	).Scan(&tname); err != nil {
+		t.Errorf("harness_frames missing after idempotent open: %v", err)
+	}
+}
+
+// ── Migration v27→v28 (pragma-guarded: add spawn_inputs.abtest_pair_id) ──────
+
+// seedV27DB creates a v27 DB. If withAbtest is true, spawn_inputs already has
+// the abtest_pair_id column (simulates a DB whose declarative schema added it
+// — the migration's pragma guard must detect this and skip the ALTER TABLE).
+// If withAbtest is false, spawn_inputs does not have the column yet — the
+// migration's body must add it.
+func seedV27DB(t *testing.T, dbPath string, withAbtest bool) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v27 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	abtestCol := ""
+	if withAbtest {
+		abtestCol = "abtest_pair_id TEXT,"
+	}
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE TABLE IF NOT EXISTS pending_merges (
+		  pr INTEGER PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT NOT NULL,
+		  queue_position INTEGER NOT NULL, status TEXT NOT NULL, title TEXT, error TEXT,
+		  queued_at INTEGER NOT NULL, last_checked_at INTEGER, merged_at INTEGER, ended_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS spawn_inputs (
+		    instance_id TEXT PRIMARY KEY REFERENCES sessions(instance_id) ON DELETE CASCADE,
+		    profile_name TEXT, model_flag TEXT, variant_flag TEXT, agent_flag TEXT,
+		    harness_flag TEXT, isolation_flag TEXT, host_mode_flag INTEGER NOT NULL DEFAULT 0,
+		    pr_number INTEGER, branch_flag TEXT, ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+		    model_variant_overrides TEXT, skills_manifest_hash TEXT, prompt_template_hash TEXT,
+		    agent_prompt_hash TEXT, prompt_text TEXT, prompt_source TEXT, ` + abtestCol + `
+		    extras TEXT,
+		    created_at INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS harness_frames (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, instance_id TEXT,
+		  direction TEXT NOT NULL, type TEXT, payload TEXT NOT NULL, created_at INTEGER NOT NULL
+		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_active_coordinator_per_repo
+		   ON agent_status (repo)
+		   WHERE root_agent_name = 'coordinator' AND ended_at IS NULL;
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (27);
+	`)
+	if err != nil {
+		t.Fatalf("seed v27 db: %v", err)
+	}
+}
+
+// TestMigration_V27ToV28_BodyRuns_AddsAbtestPairID exercises the branch where
+// the spawn_inputs.abtest_pair_id column does NOT yet exist — the migration's
+// pragma_table_info guard returns 0 and the ALTER TABLE ADD COLUMN runs.
+func TestMigration_V27ToV28_BodyRuns_AddsAbtestPairID(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v27_body_runs.db")
+	seedV27DB(t, dbPath, false /*withAbtest*/)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// abtest_pair_id must exist on spawn_inputs.
+	var n int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'abtest_pair_id'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info abtest_pair_id: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("spawn_inputs.abtest_pair_id missing after v27→v28 (body-runs branch): got %d, want 1", n)
+	}
+
+	// Index from the migration body must exist.
+	var iname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_spawn_inputs_abtest_pair'`,
+	).Scan(&iname); err != nil {
+		t.Errorf("idx_spawn_inputs_abtest_pair missing after v27→v28: %v", err)
+	}
+}
+
+// TestMigration_V27ToV28_BodySkips_PreExistingColumn exercises the branch where
+// the spawn_inputs.abtest_pair_id column ALREADY exists at v27 — the migration's
+// pragma_table_info guard returns 1 and the ALTER TABLE ADD COLUMN is skipped.
+// (This mirrors a DB that picked up the column via the declarative schema
+// before runMigrations executed.) The end state must still be v33 with the
+// column present.
+func TestMigration_V27ToV28_BodySkips_PreExistingColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v27_body_skips.db")
+	seedV27DB(t, dbPath, true /*withAbtest*/)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// The column must still be present — exactly one (not duplicated by a
+	// re-ADD).
+	var n int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'abtest_pair_id'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info abtest_pair_id: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("spawn_inputs.abtest_pair_id count after v27→v28 (body-skips branch): got %d, want 1", n)
+	}
+}
+
+// TestMigration_V27ToV28_Idempotent verifies that re-opening a DB already at
+// v28+ does not error and the column remains.
+func TestMigration_V27ToV28_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v27_idem.db")
+	seedV27DB(t, dbPath, false)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var n int
+	if err := d2.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'abtest_pair_id'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info on second open: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("abtest_pair_id count after idempotent open: got %d, want 1", n)
+	}
+}
+
+// ── Migration v28→v29 (noop version-counter bump) ────────────────────────────
+
+// seedV28DB creates a v28 DB. The v28→v29 migration only bumps the version.
+func seedV28DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v28 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_name ON sessions(session_name, started_at DESC);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (28);
+
+		-- Sentinel session row: must not be mutated by the noop bump.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-v28', 'repo@main', 'repo', '/wt', 'pi', 1700000000000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v28 db: %v", err)
+	}
+}
+
+// TestMigration_V28ToV29_BumpsVersion verifies the noop v28→v29 bump.
+func TestMigration_V28ToV29_BumpsVersion(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v28_noop.db")
+	seedV28DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v28 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var startedAt int64
+	if err := d.QueryRow(`SELECT started_at FROM sessions WHERE instance_id = 'iid-v28'`).Scan(&startedAt); err != nil {
+		t.Fatalf("query sessions row: %v", err)
+	}
+	if startedAt != 1700000000000 {
+		t.Errorf("sentinel sessions row mutated by noop migration: got %d", startedAt)
+	}
+}
+
+// TestMigration_V28ToV29_Idempotent verifies the v28→v29 noop is repeatable.
+func TestMigration_V28ToV29_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v28_idem.db")
+	seedV28DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var version int
+	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version on second open: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after second open: got %d, want 33", version)
+	}
+}
+
+// ── Migration v29→v30 (pragma-guarded: add sessions.parent_session) ──────────
+
+// seedV29DB creates a v29 DB. If withParent is true, sessions already has
+// the parent_session column (body-skips branch). Otherwise it does not
+// (body-runs branch).
+func seedV29DB(t *testing.T, dbPath string, withParent bool) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v29 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	parentCol := ""
+	if withParent {
+		parentCol = "parent_session TEXT,"
+	}
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT,
+		  ` + parentCol + `
+		  __filler           INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (29);
+
+		-- Sentinel session row.
+		INSERT INTO sessions (instance_id, session_name, repo, worktree, harness, started_at)
+		  VALUES ('iid-v29', 'repo@main', 'repo', '/wt', 'pi', 1700000000000);
+	`)
+	if err != nil {
+		t.Fatalf("seed v29 db: %v", err)
+	}
+}
+
+// TestMigration_V29ToV30_BodyRuns_AddsParentSession exercises the branch where
+// sessions.parent_session does NOT exist at v29 — the migration's pragma guard
+// returns 0 and the ALTER TABLE ADD COLUMN runs.
+func TestMigration_V29ToV30_BodyRuns_AddsParentSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v29_body_runs.db")
+	seedV29DB(t, dbPath, false /*withParent*/)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	var n int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info parent_session: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("sessions.parent_session missing after v29→v30 (body-runs): got %d, want 1", n)
+	}
+
+	var iname string
+	if err := d.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='index' AND name = 'idx_sessions_parent_session'`,
+	).Scan(&iname); err != nil {
+		t.Errorf("idx_sessions_parent_session missing after v29→v30: %v", err)
+	}
+}
+
+// TestMigration_V29ToV30_BodySkips_PreExistingColumn exercises the branch where
+// sessions.parent_session ALREADY exists at v29 — the pragma guard returns 1
+// and the ALTER TABLE is skipped. The end state must still be v33 with the
+// column present.
+func TestMigration_V29ToV30_BodySkips_PreExistingColumn(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v29_body_skips.db")
+	seedV29DB(t, dbPath, true /*withParent*/)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	// Exactly one parent_session column — not duplicated by re-ADD.
+	var n int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info parent_session: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("sessions.parent_session count after v29→v30 (body-skips): got %d, want 1", n)
+	}
+}
+
+// TestMigration_V29ToV30_Idempotent verifies that re-opening a v30+ DB is a
+// no-op.
+func TestMigration_V29ToV30_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v29_idem.db")
+	seedV29DB(t, dbPath, false)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	var n int
+	if err := d2.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'parent_session'`,
+	).Scan(&n); err != nil {
+		t.Fatalf("pragma_table_info parent_session on second open: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("parent_session count after idempotent open: got %d, want 1", n)
+	}
+}
+
+// ── Migration v30→v31 (add session_groups.pr_number and round, #1709) ────────
+
+// seedV30DB creates a v30 DB with session_groups missing pr_number/round.
+// The v30→v31 migration adds both columns via pragma_table_info guards.
+func seedV30DB(t *testing.T, dbPath string) {
+	t.Helper()
+	rawConn, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("raw open v30 db: %v", err)
+	}
+	defer rawConn.Close()
+
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS agent_events (
+		  id TEXT PRIMARY KEY, session_name TEXT NOT NULL, repo TEXT NOT NULL,
+		  worktree TEXT NOT NULL, harness_session_id TEXT, type TEXT NOT NULL,
+		  payload TEXT NOT NULL, created_at INTEGER NOT NULL,
+		  instance_id TEXT
+		);
+		-- v30 session_groups: only group_id / parent_session / created_at.
+		CREATE TABLE IF NOT EXISTS session_groups (
+		  group_id TEXT PRIMARY KEY,
+		  parent_session TEXT NOT NULL,
+		  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS agent_status (
+		  session_name TEXT PRIMARY KEY, repo TEXT NOT NULL, worktree TEXT NOT NULL,
+		  state TEXT NOT NULL, title TEXT,
+		  agent_name TEXT, model_id TEXT, root_agent_name TEXT, root_model_id TEXT,
+		  isolation_mode TEXT,
+		  instance_id TEXT, last_seen INTEGER NOT NULL, ended_at INTEGER,
+		  harness TEXT NOT NULL DEFAULT 'pi',
+		  harness_session_id TEXT, harness_port INTEGER,
+		  group_id TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+		);
+		CREATE TABLE IF NOT EXISTS bus_messages (
+		  id TEXT PRIMARY KEY, from_session TEXT NOT NULL, to_session TEXT NOT NULL,
+		  to_instance_id TEXT,
+		  repo TEXT NOT NULL, text TEXT NOT NULL, urgency TEXT NOT NULL DEFAULT 'normal',
+		  sent_at INTEGER NOT NULL, delivered_at INTEGER, failed_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS sessions (
+		  instance_id        TEXT PRIMARY KEY,
+		  session_name       TEXT NOT NULL,
+		  agent_role         TEXT,
+		  root_agent_name    TEXT,
+		  repo               TEXT NOT NULL,
+		  worktree           TEXT NOT NULL,
+		  harness            TEXT NOT NULL,
+		  harness_session_id TEXT,
+		  group_id           TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+		  started_at         INTEGER NOT NULL,
+		  ended_at           INTEGER,
+		  end_state          TEXT,
+		  archive_path       TEXT,
+		  prism_version      TEXT,
+		  parent_session     TEXT
+		);
+		CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
+		INSERT INTO schema_version (version) VALUES (30);
+
+		-- Pre-existing session_groups row: must survive with NULL pr_number/round.
+		INSERT INTO session_groups (group_id, parent_session)
+		  VALUES ('grp-v30', 'repo@main');
+	`)
+	if err != nil {
+		t.Fatalf("seed v30 db: %v", err)
+	}
+}
+
+// TestMigration_V30ToV31_AddsPRNumberAndRound verifies that the v30→v31
+// migration adds pr_number (TEXT) and round (INTEGER) columns to session_groups.
+func TestMigration_V30ToV31_AddsPRNumberAndRound(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v30_pr_round.db")
+	seedV30DB(t, dbPath)
+
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open on v30 db: %v", err)
+	}
+	defer d.Close()
+
+	var version int
+	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		t.Fatalf("read schema_version: %v", err)
+	}
+	if version != 33 {
+		t.Errorf("schema_version after migration: got %d, want 33", version)
+	}
+
+	for _, col := range []string{"pr_number", "round"} {
+		var n int
+		if err := d.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('session_groups') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info %s: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("session_groups.%s missing after v30→v31: got %d, want 1", col, n)
+		}
+	}
+
+	// Pre-existing row must survive with NULL pr_number / round.
+	var prNumber, roundVal *string
+	if err := d.QueryRow(
+		`SELECT pr_number, CAST(round AS TEXT) FROM session_groups WHERE group_id = 'grp-v30'`,
+	).Scan(&prNumber, &roundVal); err != nil {
+		t.Fatalf("query pre-existing session_groups row: %v", err)
+	}
+	if prNumber != nil {
+		t.Errorf("grp-v30 pr_number: got %v, want NULL", *prNumber)
+	}
+	if roundVal != nil {
+		t.Errorf("grp-v30 round: got %v, want NULL", *roundVal)
+	}
+}
+
+// TestMigration_V30ToV31_Idempotent verifies that re-opening a v31+ DB is a
+// no-op (pragma guards skip both ALTER TABLEs the second time around).
+func TestMigration_V30ToV31_Idempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "v30_idem.db")
+	seedV30DB(t, dbPath)
+
+	d1, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("first db.Open: %v", err)
+	}
+	d1.Close()
+
+	d2, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("second db.Open: %v", err)
+	}
+	defer d2.Close()
+
+	for _, col := range []string{"pr_number", "round"} {
+		var n int
+		if err := d2.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('session_groups') WHERE name = ?`, col,
+		).Scan(&n); err != nil {
+			t.Fatalf("pragma_table_info %s on second open: %v", col, err)
+		}
+		if n != 1 {
+			t.Errorf("session_groups.%s count after idempotent open: got %d, want 1", col, n)
+		}
+	}
+}
