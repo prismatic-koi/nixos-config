@@ -32,6 +32,7 @@ package sidecar
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -71,6 +72,16 @@ const IdleDebounce = 2 * time.Second
 // writeStartupError. This mirrors the WaitHealthy/CreateSession timeout
 // mechanism added in #1011 for the podman path.
 const DefaultStartupConnectTimeout = 5 * time.Minute
+
+// DefaultShutdownDrainTimeout is the upper bound on how long Shutdown waits
+// for the socket-pipe writer goroutine to flush the final abort frame onto
+// the wire before tearing down the connection. On a healthy connection the
+// writer signals completion within a single scheduler tick (well under 10ms);
+// the bound only matters when the writer is blocked (e.g. the PI extension
+// has stopped reading from its end of the socket).
+//
+// Configurable via Config.ShutdownDrainTimeout (issue #1849).
+const DefaultShutdownDrainTimeout = 250 * time.Millisecond
 
 // ReconnectRecoveryDelay is the window the sidecar waits after a reconnect
 // (detected via server.connected while in active state) before concluding
@@ -236,6 +247,14 @@ type Config struct {
 	// to pipeDisconnectTimeout (30s) when zero. Set to a small value in tests
 	// to avoid real wall-clock waits on the reconnect path.
 	PipeReconnectTimeout time.Duration
+	// ShutdownDrainTimeout is the upper bound Shutdown waits for the socket-pipe
+	// writer goroutine to flush the final abort frame to the PI extension before
+	// tearing down the connection. On a healthy connection the ack fires within
+	// a scheduler tick, so this bound only applies when the writer is blocked
+	// (e.g. the extension stopped reading). Defaults to DefaultShutdownDrainTimeout
+	// (250ms) when zero. Set to a small value in tests to assert the bounded
+	// fallback path (issue #1849).
+	ShutdownDrainTimeout time.Duration
 	// ActivityTimeout is the duration of inbound-frame silence after which the
 	// sidecar force-transitions the session to StateError with note="inactivity
 	// timeout" (#1709). The watchdog is reset on every inbound frame received
@@ -441,6 +460,14 @@ type Sidecar struct {
 	// on set (before the goroutine starts); after that only the writer goroutine
 	// reads from it; callers enqueue via enqueueHarnessPipeFrame.
 	harnessPipeOutCh chan []byte
+	// harnessPipeAbortAck, when non-nil, is closed by the socket-pipe writer
+	// goroutine immediately after processing an abort frame (i.e. after the
+	// write attempt completes, whether or not the underlying conn was healthy).
+	// Shutdown installs this channel before enqueueing the final abort frame so
+	// it can wait for the actual flush instead of sleeping unconditionally
+	// (issue #1849). The writer clears it back to nil after closing so a
+	// second close cannot occur. Protected by s.mu.
+	harnessPipeAbortAck chan struct{}
 
 	// pipeAccum accumulates msg_assistant text fragments between turn_start and
 	// turn_end for the socket-pipe transport. On turn_end, the accumulated text
@@ -1134,18 +1161,52 @@ func (s *Sidecar) Shutdown() {
 	s.harnessPipeConn = nil
 	s.mu.Unlock()
 	if pipeOutCh != nil {
-		abortFrame := []byte(`{"type":"abort"}` + "\n")
+		// Install an ack channel before enqueueing the abort frame so the
+		// writer goroutine can signal completion. The writer closes (and
+		// nils) harnessPipeAbortAck after the abort frame's write attempt
+		// finishes — see runStartupSocketPipe's writer loop. Issue #1849.
+		ackCh := make(chan struct{})
+		s.mu.Lock()
+		s.harnessPipeAbortAck = ackCh
+		s.mu.Unlock()
+		drainTimeout := s.cfg.ShutdownDrainTimeout
+		if drainTimeout <= 0 {
+			drainTimeout = DefaultShutdownDrainTimeout
+		}
 		select {
-		case pipeOutCh <- abortFrame:
-			// Give the writer goroutine a brief moment to flush the frame
-			// onto the wire before the connection is torn down. Bounded so
-			// shutdown never blocks longer than a couple of seconds even if
-			// the extension is unresponsive.
-			time.Sleep(100 * time.Millisecond)
+		case pipeOutCh <- abortFrameBytes:
+			// Wait for the writer goroutine to flush the abort frame onto
+			// the wire (it closes ackCh after the write attempt completes,
+			// regardless of whether the underlying conn was healthy). Bound
+			// the wait by ShutdownDrainTimeout so an unresponsive writer
+			// (e.g. blocked on a stalled conn) cannot stall Shutdown longer
+			// than the documented budget.
+			select {
+			case <-ackCh:
+				// Healthy path — writer acked the flush.
+			case <-time.After(drainTimeout):
+				s.logger().Printf("sidecar: Shutdown: abort-frame flush timed out after %s; tearing down connection anyway", drainTimeout)
+				// Clear the ack channel so a late writer iteration does not
+				// attempt to close a channel we have already abandoned. We
+				// don't close ackCh ourselves — it just becomes garbage.
+				s.mu.Lock()
+				if s.harnessPipeAbortAck == ackCh {
+					s.harnessPipeAbortAck = nil
+				}
+				s.mu.Unlock()
+			}
 		default:
 			// Outbound queue full or no longer accepting — fall through to
 			// the connection close. handlePipeFrame's connection-dropped
 			// handler will mark the session error if PI exits unexpectedly.
+			// The ack channel was installed speculatively; clear it so a
+			// stray writer iteration on an unrelated abort frame does not
+			// close it under us.
+			s.mu.Lock()
+			if s.harnessPipeAbortAck == ackCh {
+				s.harnessPipeAbortAck = nil
+			}
+			s.mu.Unlock()
 		}
 	}
 	if pipeConn != nil {
@@ -1675,6 +1736,12 @@ const pipeDisconnectTimeout = 30 * time.Second
 // Config.PipeMaxLineBytes (used in tests to avoid 16 MiB allocations).
 const socketPipeMaxLineBytes = 16 * 1024 * 1024
 
+// abortFrameBytes is the canonical wire encoding of the abort frame. Both
+// Shutdown's clean-shutdown path and the /abort host-API endpoint serialise to
+// these exact bytes; the socket-pipe writer goroutine compares against this
+// value to detect when an ack on harnessPipeAbortAck is owed (issue #1849).
+var abortFrameBytes = []byte(`{"type":"abort"}` + "\n")
+
 // acceptOutcome enumerates the reasons an Accept attempt in
 // runStartupSocketPipe returned without a live connection. It is required
 // (instead of a plain bool) so that the caller can distinguish a startup
@@ -1858,13 +1925,26 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			connMu.Lock()
 			c := activeConn
 			connMu.Unlock()
-			if c == nil {
-				continue
+			if c != nil {
+				if _, err := c.Write(frame); err != nil {
+					s.logger().Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
+					// Don't return — the reader loop will detect the drop and
+					// reconnect. The writer stays alive for the next connection.
+				}
 			}
-			if _, err := c.Write(frame); err != nil {
-				s.logger().Printf("sidecar: runStartupSocketPipe: write outbound frame: %v", err)
-				// Don't return — the reader loop will detect the drop and
-				// reconnect. The writer stays alive for the next connection.
+			// If this was an abort frame (either from Shutdown or from a
+			// /abort host-API call), signal any waiter on harnessPipeAbortAck.
+			// We close-and-clear under s.mu so a second consumer can install a
+			// fresh ack channel for a subsequent abort and so the close cannot
+			// race with a concurrent Shutdown installing a new channel.
+			// Issue #1849.
+			if bytes.Equal(frame, abortFrameBytes) {
+				s.mu.Lock()
+				if s.harnessPipeAbortAck != nil {
+					close(s.harnessPipeAbortAck)
+					s.harnessPipeAbortAck = nil
+				}
+				s.mu.Unlock()
 			}
 		}
 	}()
