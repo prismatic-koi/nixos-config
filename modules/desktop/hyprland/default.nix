@@ -434,28 +434,36 @@ in
                     submap_universal = true;
                   }
                 )
-                # Motions
+                # Motions — direction values use the full word form
+                # (`"left"`/`"right"`/`"up"`/`"down"`) per the upstream
+                # example at /share/hypr/hyprland.lua, not the hyprlang
+                # single-letter shorthand (`l`/`r`/`u`/`d`).
                 # focus window
-                (mkBind "SUPER + h" ''hl.dsp.focus({ direction = "l" })'')
-                (mkBind "SUPER + j" ''hl.dsp.focus({ direction = "d" })'')
-                (mkBind "SUPER + k" ''hl.dsp.focus({ direction = "u" })'')
-                (mkBind "SUPER + l" ''hl.dsp.focus({ direction = "r" })'')
+                (mkBind "SUPER + h" ''hl.dsp.focus({ direction = "left" })'')
+                (mkBind "SUPER + j" ''hl.dsp.focus({ direction = "down" })'')
+                (mkBind "SUPER + k" ''hl.dsp.focus({ direction = "up" })'')
+                (mkBind "SUPER + l" ''hl.dsp.focus({ direction = "right" })'')
                 # move window
-                (mkBind "SUPER + SHIFT + H" ''hl.dsp.window.move({ direction = "l" })'')
-                (mkBind "SUPER + SHIFT + J" ''hl.dsp.window.move({ direction = "d" })'')
-                (mkBind "SUPER + SHIFT + K" ''hl.dsp.window.move({ direction = "u" })'')
-                (mkBind "SUPER + SHIFT + L" ''hl.dsp.window.move({ direction = "r" })'')
-                # switch workspace
-                (mkBind "SUPER + 1" "hl.dsp.workspace(1)")
-                (mkBind "SUPER + 2" "hl.dsp.workspace(2)")
-                (mkBind "SUPER + 3" "hl.dsp.workspace(3)")
-                (mkBind "SUPER + 4" "hl.dsp.workspace(4)")
-                (mkBind "SUPER + 5" "hl.dsp.workspace(5)")
-                (mkBind "SUPER + 6" "hl.dsp.workspace(6)")
-                (mkBind "SUPER + 7" "hl.dsp.workspace(7)")
-                (mkBind "SUPER + 8" "hl.dsp.workspace(8)")
-                (mkBind "SUPER + 9" "hl.dsp.workspace(9)")
-                (mkBind "SUPER + TAB" ''hl.dsp.workspace("previous")'')
+                (mkBind "SUPER + SHIFT + H" ''hl.dsp.window.move({ direction = "left" })'')
+                (mkBind "SUPER + SHIFT + J" ''hl.dsp.window.move({ direction = "down" })'')
+                (mkBind "SUPER + SHIFT + K" ''hl.dsp.window.move({ direction = "up" })'')
+                (mkBind "SUPER + SHIFT + L" ''hl.dsp.window.move({ direction = "right" })'')
+                # switch workspace. `hl.dsp.workspace` is a namespace TABLE
+                # (holding `toggle_special`, `move`, `swap_monitors`,
+                # `rename`) — not a callable dispatcher. The actual
+                # workspace-switch dispatcher is `hl.dsp.focus({ workspace =
+                # N })`, per the upstream example at
+                # /share/hypr/hyprland.lua lines 277-280.
+                (mkBind "SUPER + 1" "hl.dsp.focus({ workspace = 1 })")
+                (mkBind "SUPER + 2" "hl.dsp.focus({ workspace = 2 })")
+                (mkBind "SUPER + 3" "hl.dsp.focus({ workspace = 3 })")
+                (mkBind "SUPER + 4" "hl.dsp.focus({ workspace = 4 })")
+                (mkBind "SUPER + 5" "hl.dsp.focus({ workspace = 5 })")
+                (mkBind "SUPER + 6" "hl.dsp.focus({ workspace = 6 })")
+                (mkBind "SUPER + 7" "hl.dsp.focus({ workspace = 7 })")
+                (mkBind "SUPER + 8" "hl.dsp.focus({ workspace = 8 })")
+                (mkBind "SUPER + 9" "hl.dsp.focus({ workspace = 9 })")
+                (mkBind "SUPER + TAB" ''hl.dsp.focus({ workspace = "previous" })'')
                 # move active window to workspace (silent — no follow)
                 (mkBind "SUPER + SHIFT + 1" "hl.dsp.window.move({ workspace = 1, silent = true })")
                 (mkBind "SUPER + SHIFT + 2" "hl.dsp.window.move({ workspace = 2, silent = true })")
@@ -471,9 +479,10 @@ in
                 # special workspace
                 (mkBind "SUPER + X" ''hl.dsp.workspace.toggle_special("magic")'')
                 (mkBind "SUPER + SHIFT + X" ''hl.dsp.window.move({ workspace = "special:magic", silent = true })'')
-                # scroll through existing workspaces
-                (mkBind "SUPER + mouse_down" ''hl.dsp.workspace("e+1")'')
-                (mkBind "SUPER + mouse_up" ''hl.dsp.workspace("e-1")'')
+                # scroll through existing workspaces (same dispatcher-rename
+                # as the numbered switches above).
+                (mkBind "SUPER + mouse_down" ''hl.dsp.focus({ workspace = "e+1" })'')
+                (mkBind "SUPER + mouse_up" ''hl.dsp.focus({ workspace = "e-1" })'')
                 # window shortcuts
                 (mkBind "SUPER + q" "hl.dsp.window.close()")
                 (mkExec "SUPER + SHIFT + C" "hyprctl reload")
