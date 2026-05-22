@@ -95,94 +95,114 @@ in
             # See docs/hyprland-lua-migration.md for the design.
             configType = "lua";
             settings = {
-              # ---- general ----------------------------------------------------
-              general = {
-                gaps_in = 5;
-                gaps_out = 5;
-                border_size = 3;
-                # Gradient borders use the structured table form under lua
-                # (`{ colors = { ... }, angle = 45 }`); the legacy
-                # whitespace-separated string + "45deg" suffix isn't accepted
-                # by the lua `hl.config` API — the upstream example config
-                # ships exclusively in the table form (see
-                # /share/hypr/hyprland.lua bundled with hyprland).
-                col = {
-                  active_border =
-                    let
-                      # rainbow border colors in order
-                      colors = with theme; [
-                        red
-                        orange
-                        yellow
-                        green
-                        aqua
-                        blue
-                        purple
-                      ];
-                      toRgba = color: "rgba(${builtins.substring 1 6 color}ff)";
-                    in
-                    {
-                      colors = map toRgba colors;
-                      angle = 45;
+              # ---- section settings via hl.config({...}) ---------------------
+              # The lua API only exposes a discrete set of top-level functions
+              # (`hl.bind`, `hl.monitor`, `hl.device`, `hl.curve`,
+              # `hl.animation`, `hl.window_rule`, `hl.env`, `hl.on`, etc.).
+              # "Section" settings — `general`, `input`, `decoration`,
+              # `dwindle`, `misc`, `cursor`, `debug`, `ecosystem`,
+              # `animations` (master switch), etc. — are NOT individual
+              # functions; setting them at the top level of `settings` would
+              # render as `hl.general(...)`, `hl.input(...)`, etc. and crash
+              # Hyprland with "attempt to call a nil value" at startup.
+              #
+              # All section settings must instead be passed inside a single
+              # `hl.config({...})` call. We emit that explicitly via the
+              # `_args` shape. Reference: the HM lua-config test fixture at
+              # nixpkgs/.../tests/modules/services/hyprland/lua-config.nix
+              # nests every section under `settings.config = {...}`, and the
+              # upstream-shipped example at /share/hypr/hyprland.lua does the
+              # same.
+              config = {
+                _args = [
+                  {
+                    general = {
+                      gaps_in = 5;
+                      gaps_out = 5;
+                      border_size = 3;
+                      # Gradient borders use the structured table form under
+                      # lua (`{ colors = { ... }, angle = 45 }`); the legacy
+                      # whitespace-separated string + "45deg" suffix isn't
+                      # accepted by the lua `hl.config` API — the upstream
+                      # example ships exclusively in the table form.
+                      col = {
+                        active_border =
+                          let
+                            # rainbow border colors in order
+                            colors = with theme; [
+                              red
+                              orange
+                              yellow
+                              green
+                              aqua
+                              blue
+                              purple
+                            ];
+                            toRgba = color: "rgba(${builtins.substring 1 6 color}ff)";
+                          in
+                          {
+                            colors = map toRgba colors;
+                            angle = 45;
+                          };
+                        inactive_border = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
+                      };
+                      layout = "dwindle";
                     };
-                  inactive_border = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
-                };
-                layout = "dwindle";
-              };
-              # ---- input -----------------------------------------------------
-              input = {
-                # Te Reo Macrons
-                kb_layout = "nz";
-                kb_variant = "mao";
-                kb_options = "lv3:rwin_switch";
-                # keyrepeat settings (lua wants ints, not strings)
-                repeat_delay = 225;
-                repeat_rate = 60;
-                follow_mouse = 2;
-                sensitivity = -0.8;
-                touchpad = {
-                  # feels right for a touchpad
-                  natural_scroll = true;
-                };
-              };
-              # ---- decoration ------------------------------------------------
-              decoration = {
-                rounding = 5;
-                blur.enabled = true;
-                shadow = {
-                  enabled = false;
-                };
-              };
-              # ---- dwindle ---------------------------------------------------
-              dwindle = {
-                # lua wants bool, not "yes"/"no"
-                preserve_split = true;
-                force_split = 2;
-              };
-              # ---- misc ------------------------------------------------------
-              misc = {
-                disable_hyprland_logo = true;
-                disable_splash_rendering = true;
-                vrr = 1;
-                # when opening another program from terminal, swallow the terminal
-                enable_swallow = false;
-                swallow_regex = "^(kitty|lf)$";
-                swallow_exception_regex = "^(wev)$";
-                # suppress start-hyprland warning when not using the watchdog wrapper
-                disable_watchdog_warning = true;
-              };
-              # ---- cursor ----------------------------------------------------
-              cursor = {
-                inactive_timeout = 5;
-              };
-              # ---- debug -----------------------------------------------------
-              debug = {
-                disable_logs = false;
-              };
-              # ---- ecosystem -------------------------------------------------
-              ecosystem = {
-                # don't show update notifications each boot
-                no_update_news = true;
+                    input = {
+                      # Te Reo Macrons
+                      kb_layout = "nz";
+                      kb_variant = "mao";
+                      kb_options = "lv3:rwin_switch";
+                      # keyrepeat settings (lua wants ints, not strings)
+                      repeat_delay = 225;
+                      repeat_rate = 60;
+                      follow_mouse = 2;
+                      sensitivity = -0.8;
+                      touchpad = {
+                        # feels right for a touchpad
+                        natural_scroll = true;
+                      };
+                    };
+                    decoration = {
+                      rounding = 5;
+                      blur.enabled = true;
+                      shadow = {
+                        enabled = false;
+                      };
+                    };
+                    dwindle = {
+                      # lua wants bool, not "yes"/"no"
+                      preserve_split = true;
+                      force_split = 2;
+                    };
+                    misc = {
+                      disable_hyprland_logo = true;
+                      disable_splash_rendering = true;
+                      vrr = 1;
+                      # when opening another program from terminal, swallow it
+                      enable_swallow = false;
+                      swallow_regex = "^(kitty|lf)$";
+                      swallow_exception_regex = "^(wev)$";
+                      # suppress start-hyprland warning when not using the watchdog wrapper
+                      disable_watchdog_warning = true;
+                    };
+                    cursor = {
+                      inactive_timeout = 5;
+                    };
+                    debug = {
+                      disable_logs = false;
+                    };
+                    ecosystem = {
+                      # don't show update notifications each boot
+                      no_update_news = true;
+                    };
+                    # animations master switch (per-leaf `enabled` still set
+                    # on each entry of the top-level `animation` list below).
+                    animations = {
+                      enabled = true;
+                    };
+                  }
+                ];
               };
               # ---- curves (bezier renamed in lua) ----------------------------
               # `curve` is in importantPrefixes so renders before `animation`.
@@ -224,26 +244,6 @@ in
                   ];
                 }
               ];
-              # ---- animations master switch ----------------------------------
-              # The lua API exposes `hl.animation(...)` (singular, per-leaf)
-              # but NOT `hl.animations(...)` — a standalone
-              # `animations = { enabled = true; }` setting would render as
-              # `hl.animations({ enabled = true })` and fail at startup with
-              # "attempt to call a nil value (field 'animations')".
-              #
-              # The master switch is set via `hl.config({ animations = {
-              # enabled = true } })` instead, matching the upstream-shipped
-              # example at /share/hypr/hyprland.lua. We invoke `hl.config`
-              # explicitly via the `_args` shape.
-              config = {
-                _args = [
-                  {
-                    animations = {
-                      enabled = true;
-                    };
-                  }
-                ];
-              };
               # per-leaf animation definitions; top-level list (not nested
               # under `animations`), one `hl.animation(...)` call per entry.
               # The curve-reference field is named `bezier` (matching the

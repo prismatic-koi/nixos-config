@@ -492,21 +492,40 @@ in
         };
       };
 
-      # Hyprland keybinding
-      wayland.windowManager.hyprland.settings.bind = [
-        {
-          _args = [
-            cfg.keybind
-            (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text toggle")'')
-          ];
-        }
-        {
-          _args = [
-            "${cfg.keybind} + SHIFT"
-            (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text cancel")'')
-          ];
-        }
-      ];
+      # Hyprland keybinding.
+      #
+      # Inject SHIFT before the final key token of `cfg.keybind` for the
+      # cancel bind — `hl.bind` treats the last `+`-separated token as the
+      # key, so `"SUPER + V + SHIFT"` would bind SHIFT with mods SUPER+V
+      # (where V is not a valid mod). See voice-to-text.nix for the same
+      # treatment.
+      wayland.windowManager.hyprland.settings.bind =
+        let
+          tokens = lib.splitString " + " cfg.keybind;
+          mods = lib.init tokens;
+          key = lib.last tokens;
+          cancelKeys = lib.concatStringsSep " + " (
+            mods
+            ++ [
+              "SHIFT"
+              key
+            ]
+          );
+        in
+        [
+          {
+            _args = [
+              cfg.keybind
+              (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text toggle")'')
+            ];
+          }
+          {
+            _args = [
+              cancelKeys
+              (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text cancel")'')
+            ];
+          }
+        ];
 
       # Persist configuration and cache
       home.persistence."/persist" = {
