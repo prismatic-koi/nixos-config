@@ -5,9 +5,11 @@ package cmd
 // Covers:
 //   - applyInitialPromptEnvVar: reads PRISM_INITIAL_PROMPT and populates Config
 //   - minimalBwrapExecEnv: filters the host env to a minimal allow-list
-//   - forwardSignalsToBwrap: delivers SIGTERM/SIGINT/SIGHUP/SIGWINCH to the child group
 //   - openPTY / getWinsize / setWinsize: PTY pair creation and window-size ioctls
 //   - teePTYMaster: copies master PTY output to pane and log file
+//
+// SuperviseChild (the bwrap + sandbox-exec signal/PTY supervisor) is
+// covered separately in cmd/supervise_test.go.
 
 import (
 	"io"
@@ -224,88 +226,6 @@ func TestMinimalBwrapExecEnv_MalformedPairsSkipped(t *testing.T) {
 	}
 	if out[0] != "PATH=/usr/bin" {
 		t.Errorf("expected PATH=/usr/bin, got %q", out[0])
-	}
-}
-
-// ── forwardSignalsToBwrap ─────────────────────────────────────────────────────
-
-// TestForwardSignalsToBwrap_SIGTERMReachesChild verifies that forwardSignalsToBwrap
-// delivers SIGTERM to a long-running child process within 1 second. The child
-// is a simple "sleep" process; when it receives SIGTERM it exits with a non-zero
-// code (or the process is killed), allowing the test to confirm receipt.
-//
-// This test is Linux-only because it relies on process groups and SIGTERM
-// behaviour that differs across platforms.
-func TestForwardSignalsToBwrap_SIGTERMReachesChild(t *testing.T) {
-	// Start a child process (sleep 30) that would otherwise run for 30 seconds.
-	cmd := exec.Command("sleep", "30")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start child: %v", err)
-	}
-
-	doneCh := make(chan struct{})
-	go forwardSignalsToBwrap(cmd.Process, doneCh, nil)
-
-	// Send SIGTERM to agent-run's own process (us). forwardSignalsToBwrap
-	// should forward it to the child process group.
-	// We do this by signalling the child directly via its PID to simulate what
-	// happens when forwardSignalsToBwrap receives a signal.
-	//
-	// Instead of signalling ourselves (which would terminate the test), we
-	// directly invoke the forwarding by sending the signal channel a value.
-	// Since we can't inject into the goroutine's signal channel easily, we
-	// instead verify the observable effect: kill the child externally and
-	// confirm Wait returns quickly.
-	//
-	// Alternative approach: send SIGTERM directly to the child's process group
-	// to simulate forwarding, then verify it exits within 1 second.
-	waitDone := make(chan error, 1)
-	go func() {
-		waitDone <- cmd.Wait()
-	}()
-
-	// Send SIGTERM to the child's process group directly (negative PID = PGID).
-	// This simulates what forwardSignalsToBwrap does when it receives SIGTERM.
-	if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); err != nil {
-		// Process may have already exited; not fatal.
-		t.Logf("kill PGID %d: %v", cmd.Process.Pid, err)
-	}
-
-	select {
-	case <-waitDone:
-		// Child exited — signal was delivered successfully.
-	case <-time.After(2 * time.Second):
-		t.Error("child process did not exit within 2s after SIGTERM to process group")
-		// Cleanup: force-kill the child.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-
-	close(doneCh)
-}
-
-// TestForwardSignalsToBwrap_ExitsWhenDoneClosed verifies that the goroutine
-// terminates cleanly when doneCh is closed (no goroutine leak after bwrap exits).
-func TestForwardSignalsToBwrap_ExitsWhenDoneClosed(t *testing.T) {
-	// Create a dummy process entry (nil is safe — the goroutine guards against it).
-	doneCh := make(chan struct{})
-
-	// Launch the goroutine with a nil process (will not forward signals, but
-	// must exit cleanly when doneCh is closed).
-	finished := make(chan struct{})
-	go func() {
-		forwardSignalsToBwrap(nil, doneCh, nil)
-		close(finished)
-	}()
-
-	// Close doneCh immediately; the goroutine should exit within 1 second.
-	close(doneCh)
-
-	select {
-	case <-finished:
-		// Goroutine exited cleanly.
-	case <-time.After(time.Second):
-		t.Error("forwardSignalsToBwrap goroutine did not exit within 1s after doneCh closed")
 	}
 }
 
