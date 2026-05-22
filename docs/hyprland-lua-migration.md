@@ -79,10 +79,12 @@ The motivation for doing it *now*, rather than letting it drift, is:
 ### In scope for PR 2
 
 The `wayland.windowManager.hyprland.settings` option is contributed to
-from **twelve** files across this repo, not just the main module — every
-one of them must be translated, because string-form entries become
-invalid lua under `configType = "lua"`. The complete list (verified by
-`rg 'wayland\.windowManager\.hyprland\.settings' --type nix`):
+from **thirteen** files across this repo, not just the main module —
+every one of them must be translated, because string-form entries
+become invalid lua under `configType = "lua"`. The complete list
+(verified by `rg 'hyprland\.(settings|extraConfig|submaps|plugins)' --type nix`
+— see the note immediately below about why a narrower regex is
+unsafe):
 
 **Primary module:**
 
@@ -110,8 +112,16 @@ all use the v2 `match:`-style syntax):
 - `modules/programs/qutebrowser/default.nix` — seven rules (filepicker /
   editor floats with sizing, fake-fullscreen for qutebrowser windows).
 
-**Per-app `bind` contributions** (also `lib.mkIf …enable`-gated):
+**Per-app `bind` contributions** (gated, but `screenshot.nix` defaults
+to enabled, so on both navi and tui it is live by default):
 
+- `modules/desktop/screenshot.nix` — one bind:
+  `SUPER SHIFT, S, exec, …/application.grim.screenshotToClipboard`.
+  Gated on `nx.desktop.screenshot.enable` which defaults to `true` on
+  Linux. Note this file uses the **nested-attribute style**
+  (`wayland.windowManager = { hyprland.settings.bind = […]; }`),
+  which a naive `rg 'wayland\.windowManager\.hyprland\.settings'`
+  *misses* — see the warning below.
 - `modules/programs/home-automation.nix` — three binds:
   `SUPER, Prior, exec, …openBlinds`,
   `SUPER, Next, exec, …closeBlinds`,
@@ -124,6 +134,20 @@ all use the v2 `match:`-style syntax):
 Section 4.18 below covers the translation for these contributing
 modules. Section 9's checklist now has a dedicated step (step 11) for
 walking each one.
+
+> **Warning — don't use the narrower regex.** It is tempting to grep
+> with `rg 'wayland\.windowManager\.hyprland\.settings' --type nix`,
+> but that pattern misses any module that opens
+> `wayland.windowManager = { hyprland.settings.<…> = …; };` as a
+> nested attrset across multiple lines.
+> `modules/desktop/screenshot.nix` is the current example (and was
+> missed by the PR-1 round-2 audit — the round-3 review-context agent
+> caught it). PR 2's verification step must use the broader pattern
+> `rg 'hyprland\.(settings|extraConfig|submaps|plugins)' --type nix`,
+> which catches both styles and currently returns exactly the
+> thirteen files listed above. The narrow pattern will recur as a
+> footgun if any new module adopts the nested style; the broad
+> pattern won't.
 
 ### Out of scope (separate HM modules, untouched)
 
@@ -475,7 +499,7 @@ ordering as today's hyprlang output.
 
 | Current | Lua (target) | Notes |
 |---|---|---|
-| `windowrule = [ ];` (in `modules/desktop/hyprland/default.nix`) | **rename to `window_rule = [ ];`** (or omit) | wiki uses `hl.window_rule({ match = { class = "..." }, … })`. Underscore, singular. The default in the main module is empty, but **ten other modules append entries via `lib.mkIf …enable`** — see section 4.18 for the full translation table. The attribute key rename from `windowrule` to `window_rule` must apply in every contributing file. |
+| `windowrule = [ ];` (in `modules/desktop/hyprland/default.nix`) | **rename to `window_rule = [ ];`** (or omit) | wiki uses `hl.window_rule({ match = { class = "..." }, … })`. Underscore, singular. The default in the main module is empty, but **seven other modules append entries via `lib.mkIf …enable`** — see section 4.18 for the full translation table. The attribute key rename from `windowrule` to `window_rule` must apply in every contributing file. |
 
 ### 4.15 `env`
 
@@ -744,10 +768,10 @@ Renders as `hl.bind("SUPER + mouse:272", hl.dsp.window.drag(), { mouse = true })
 
 ### 4.18 `windowrule` and `bind` contributions from non-hyprland modules
 
-The twelve-file list in section 2 includes ten files outside
-`modules/desktop/hyprland/` that contribute string-form entries to
-`wayland.windowManager.hyprland.settings.{windowrule,bind}` via the
-standard nix module list-merge semantics. Under
+The thirteen-file list in section 2 includes **eleven** files outside
+`modules/desktop/hyprland/default.nix` that contribute string-form
+entries to `wayland.windowManager.hyprland.settings.{windowrule,bind}`
+via the standard nix module list-merge semantics. Under
 `configType = "hyprlang"` these render fine as extra `windowrule = …`
 and `bind = …` lines. Under `configType = "lua"` they would render as
 `hl.windowrule("tile on, match:class PrismLauncher")` etc. — calls to
@@ -790,11 +814,23 @@ key in every contributing file, not just translate the value.
 > wiki examples we've scraped. Resolve in the PR 2 spike.
 
 **Translation shape for `bind` contributions from non-hyprland modules.**
-The binds in `home-automation.nix`, `voice-to-text.nix`, and
-`voice-to-text-daemon.nix` translate exactly the same way as binds in
-the main hyprland module — `{ _args = [ keys (mkLuaInline dispatcher)
-]; }` per section 4.17. A worked example for the
-`home-automation.nix` blinds binds:
+The binds in `screenshot.nix`, `home-automation.nix`,
+`voice-to-text.nix`, and `voice-to-text-daemon.nix` translate exactly
+the same way as binds in the main hyprland module —
+`{ _args = [ keys (mkLuaInline dispatcher) ]; }` per section 4.17.
+
+All bind contributions in one place, for easy walking in PR 2:
+
+| File | Current (hyprlang) | Lua (target, nix) |
+|---|---|---|
+| `modules/desktop/screenshot.nix:60` | `"SUPER SHIFT, S, exec, ${screenshotToClipboard}"` | `{ _args = [ "SUPER + SHIFT + S" (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${screenshotToClipboard}")'') ]; }` |
+| `modules/programs/home-automation.nix:194` | `"SUPER, ${pageup}, exec, …openBlinds"` | `{ _args = [ "SUPER + ${pageup}" (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("…openBlinds")'') ]; }` |
+| `modules/programs/home-automation.nix:195` | `"SUPER, ${pagedown}, exec, …closeBlinds"` | (same shape with `pagedown`) |
+| `modules/programs/home-automation.nix:196` | `"ALT, h, exec, ${newwindow} https://$HASS_DOMAIN"` | `{ _args = [ "ALT + h" (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${newwindow} https://$HASS_DOMAIN")'') ]; }` |
+| `modules/programs/voice-to-text.nix:443–445` | `"${cfg.keybind}, exec, voice-to-text toggle"` + cancel | depends on open question 8.11 |
+| `modules/programs/voice-to-text-daemon.nix:493–494` | (same shape as `voice-to-text.nix`) | depends on open question 8.11 |
+
+A worked example for the `home-automation.nix` blinds binds:
 
 ```nix
 # Current (modules/programs/home-automation.nix:186–197)
@@ -1440,8 +1476,9 @@ The order matters — each step is independently verifiable.
 11. **Walk every non-hyprland module that contributes to
     `wayland.windowManager.hyprland.settings`** per section 4.18 and
     section 2's in-scope list. The current set (verify before
-    starting with
-    `rg 'wayland\.windowManager\.hyprland\.settings' --type nix`):
+    starting with the broad regex — see the warning in section 4.18,
+    and the second paragraph of this step:
+    `rg 'hyprland\.(settings|extraConfig|submaps|plugins)' --type nix`):
     - `modules/gaming/prismlauncher.nix` (1 windowrule)
     - `modules/gaming/steam.nix` (1 windowrule)
     - `modules/programs/chromium.nix` (1 windowrule)
@@ -1449,6 +1486,7 @@ The order matters — each step is independently verifiable.
     - `modules/programs/discord.nix` (1 windowrule — see open question 8.10)
     - `modules/programs/libreoffice.nix` (1 windowrule)
     - `modules/programs/qutebrowser/default.nix` (7 windowrules)
+    - `modules/desktop/screenshot.nix` (1 bind — `SUPER SHIFT + S`; nested-attribute style, see section 4.18 warning)
     - `modules/programs/home-automation.nix` (3 binds — `SUPER+PgUp/PgDn`, `ALT+h`)
     - `modules/programs/voice-to-text.nix` (2 binds — see open question 8.11)
     - `modules/programs/voice-to-text-daemon.nix` (2 binds — see open question 8.11)
@@ -1456,6 +1494,15 @@ The order matters — each step is independently verifiable.
     For each: rename `windowrule` → `window_rule`, translate every
     string entry to the attrset form, and `home-manager build` after
     each file to confirm no lua syntax errors.
+
+    **Use the broad regex when re-verifying the file list.** Run
+    `rg 'hyprland\.(settings|extraConfig|submaps|plugins)' --type nix`
+    — not the narrower `rg 'wayland\.windowManager\.hyprland\.settings'`
+    pattern, which silently misses any module that opens
+    `wayland.windowManager = { hyprland.settings.<…> = …; };` as a
+    nested attrset. The narrow form is exactly how
+    `modules/desktop/screenshot.nix` is written today, and it slipped
+    through PR 1's round-2 audit for that reason.
 12. **Migrate `extraConfig` submaps into `submaps.resize` /
     `submaps.exit`** per section 6, using the `hl.timer` idiom from
     section 6.4 for auto-reset.
@@ -1502,6 +1549,13 @@ The order matters — each step is independently verifiable.
       - Open qutebrowser, open a file picker dialog (e.g. via
         `Ctrl+O` in a form), confirm float + sizing; same for an
         edit-in-external-editor flow.
+      - Hit `SUPER SHIFT+S` and confirm a screenshot lands on the
+        clipboard (paste into a kitty terminal or a chat input to
+        verify) — confirms `modules/desktop/screenshot.nix`'s bind.
+      - Hit `Print` and confirm the full-screen file capture still
+        works — confirms the older `,Print,exec,…fullScreenshotToFile`
+        bind in the main module survived migration. (Distinct from
+        the `SUPER SHIFT+S` bind above.)
       - Hit `SUPER+PgUp` and `SUPER+PgDn` — confirms
         home-automation blinds binds (only meaningful where the
         HA endpoint is reachable).
