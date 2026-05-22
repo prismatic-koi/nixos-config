@@ -3181,3 +3181,200 @@ func TestControlPlane_QueueFull_RegisterProviderDirect(t *testing.T) {
 		t.Errorf("expected queue-full log, got: %s", logs)
 	}
 }
+
+// ── readLineLimited / maxLineBytes cap tests ──────────────────────────────────
+
+// testMaxLineBytes is the per-test per-frame byte cap used by the _LineCap_
+// tests below. 256 bytes is large enough to accommodate the hello frame used
+// by dialAndHandshake (~82 bytes) while still being far below the 16 MiB
+// default, keeping test allocations tiny and execution fast.
+const testMaxLineBytes = 256
+
+// newSocketPipeSidecarWithLineCap creates a Sidecar configured for socket-pipe
+// testing with Config.PipeMaxLineBytes set to cap. This avoids any global
+// state mutation and is safe for parallel tests.
+func newSocketPipeSidecarWithLineCap(t *testing.T, sockPath string, cap int) *Sidecar {
+	t.Helper()
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           "testrepo@main",
+		Repo:                  "testrepo",
+		Worktree:              t.TempDir(),
+		DB:                    d,
+		Clock:                 clk,
+		AgentRole:             "worker",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		PipeMaxLineBytes:      cap,
+		Harness:               pih.New("", "", ""),
+	}
+	return New(cfg)
+}
+
+// TestSocketPipe_LineCap_OversizedFrameClosesConnection verifies that a frame
+// of PipeMaxLineBytes+1 bytes (no newline) causes the sidecar to close the
+// connection and emit a clearly-tagged log line.
+func TestSocketPipe_LineCap_OversizedFrameClosesConnection(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecarWithLineCap(t, sockPath, testMaxLineBytes)
+	getLogs := captureLog(sc)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Send a blob of testMaxLineBytes+1 bytes with no newline — exceeds the
+	// cap and must trigger a protocol-violation close.
+	oversized := make([]byte, testMaxLineBytes+1)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+	if _, err := conn.Write(oversized); err != nil {
+		t.Fatalf("write oversized frame: %v", err)
+	}
+
+	// The sidecar must close the connection. Detect this by waiting for a
+	// read on our side to return an error (EOF / connection reset).
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	readBuf := make([]byte, 1)
+	_, readErr := conn.Read(readBuf)
+	if readErr == nil {
+		t.Error("expected connection to be closed by sidecar after oversized frame, but Read returned nil error")
+	}
+	conn.Close()
+
+	// After connection closed, reconnect and send session_shutdown so sidecar exits.
+	conn2, _ := dialAndHandshake(t, sockPath)
+	sendJSON(t, conn2, map[string]any{"type": "session_shutdown"})
+	conn2.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	// The violation log line must have been emitted.
+	logs := getLogs()
+	if !strings.Contains(logs, "frame exceeded maxLineBytes") {
+		t.Errorf("expected 'frame exceeded maxLineBytes' in logs, got: %s", logs)
+	}
+	if !strings.Contains(logs, "closing connection") {
+		t.Errorf("expected 'closing connection' in logs, got: %s", logs)
+	}
+}
+
+// TestSocketPipe_LineCap_BoundaryFrameAccepted verifies that a frame of
+// exactly PipeMaxLineBytes bytes terminated by a newline is accepted and
+// processed normally (the cap is a strict greater-than comparison).
+func TestSocketPipe_LineCap_BoundaryFrameAccepted(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecarWithLineCap(t, sockPath, testMaxLineBytes)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Build a valid JSON frame of exactly testMaxLineBytes bytes (including
+	// the trailing newline). We use {"type":"unknown_cap_test","p":"<pad>"}
+	// and pad to fill exactly testMaxLineBytes bytes.
+	const frameType = "unknown_cap_test"
+	// Skeleton (no padding): {"type":"unknown_cap_test","p":""}\n
+	skeleton := `{"type":"` + frameType + `","p":"` + `"}` + "\n"
+	padLen := testMaxLineBytes - len(skeleton)
+	if padLen < 0 {
+		t.Fatalf("skeleton frame (%d bytes) already exceeds testMaxLineBytes (%d)", len(skeleton), testMaxLineBytes)
+	}
+	padding := strings.Repeat("a", padLen)
+	frame := `{"type":"` + frameType + `","p":"` + padding + `"}` + "\n"
+	if len(frame) != testMaxLineBytes {
+		t.Fatalf("frame length = %d, want %d", len(frame), testMaxLineBytes)
+	}
+
+	if _, err := conn.Write([]byte(frame)); err != nil {
+		t.Fatalf("write boundary frame: %v", err)
+	}
+
+	// Send session_shutdown and wait for clean exit.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error on boundary frame: %v", err)
+	}
+
+	// The boundary frame must have been persisted as an event (unknown types
+	// are stored for forward-compatibility).
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	found := false
+	for _, ev := range events {
+		if ev.Type == frameType {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("boundary frame of type %q not found in agent_events", frameType)
+	}
+}
+
+// TestSocketPipe_LineCap_HelloOversizedClosesConnection verifies that the
+// hello-handshake reader also enforces the cap: an oversized hello frame
+// causes the connection to be closed and a violation log line is emitted.
+func TestSocketPipe_LineCap_HelloOversizedClosesConnection(t *testing.T) {
+	// Use a cap that is smaller than the hello frame (~82 bytes) so that the
+	// very first read on the connection triggers the cap-exceeded path.
+	const helloCap = 64
+
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecarWithLineCap(t, sockPath, helloCap)
+	getLogs := captureLog(sc)
+	wait := runSocketPipeSidecar(sc)
+
+	// Wait for the socket to appear (sidecar may still be binding).
+	deadline := time.Now().Add(3 * time.Second)
+	var conn net.Conn
+	var err error
+	for {
+		conn, err = net.Dial("unix", sockPath)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for socket %s: %v", sockPath, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Send an oversized hello (no newline) — exceeds the cap before a valid
+	// hello frame can be parsed.
+	oversized := make([]byte, helloCap+1)
+	for i := range oversized {
+		oversized[i] = 'x'
+	}
+	if _, err := conn.Write(oversized); err != nil {
+		t.Fatalf("write oversized hello: %v", err)
+	}
+
+	// The sidecar must close the connection.
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	readBuf := make([]byte, 1)
+	_, readErr := conn.Read(readBuf)
+	if readErr == nil {
+		t.Error("expected connection to be closed by sidecar after oversized hello, but Read returned nil error")
+	}
+	conn.Close()
+
+	// After connection closed, reconnect the sidecar with helloCap=0 (fall back
+	// to the default 16 MiB cap) for the cleanup handshake is not needed —
+	// the sidecar will wait for a new connection within PipeReconnectTimeout
+	// (200 ms). The test just needs to wait for runStartupSocketPipe to exit
+	// (it will time out waiting for reconnect).
+	_ = wait()
+
+	// The violation log line must have been emitted.
+	logs := getLogs()
+	if !strings.Contains(logs, "frame exceeded maxLineBytes") {
+		t.Errorf("expected 'frame exceeded maxLineBytes' in logs, got: %s", logs)
+	}
+	if !strings.Contains(logs, "closing connection") {
+		t.Errorf("expected 'closing connection' in logs, got: %s", logs)
+	}
+}
