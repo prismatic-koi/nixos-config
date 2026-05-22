@@ -191,10 +191,8 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 // noise — 5 notifications per review round, none of which the coordinator
 // needs to act on.
 //
-// Retry policy: up to 3 POST attempts with exponential backoff (500ms, 1s).
-// SID validation (GET /session) is performed before each attempt. If GET /session
-// returns an empty list, delivery fails immediately (no retry). If GET /session
-// fails with a network or non-200 error, the retry policy applies.
+// Delivery is a single attempt via promptdelivery.DeliverToSession; there is
+// no retry loop or backoff in this function.
 func (s *Sidecar) notifyCoordinator() {
 	// Self-notification guard: if this session IS the coordinator, skip.
 	// DB-backed: check root_agent_name == "coordinator" for self.
