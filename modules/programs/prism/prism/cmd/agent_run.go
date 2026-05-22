@@ -48,7 +48,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"syscall"
@@ -392,7 +391,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// the entire group (bwrap + any children it spawns). When the tmux pane
 	// dies, the kernel sends SIGHUP to agent-run (which inherits the pane's
 	// controlling terminal); agent-run then forwards it to the bwrap process
-	// group via forwardSignalsToBwrap.
+	// group via SuperviseChild (see cmd/supervise.go).
 	bwrapCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	// `[timing] bwrap exec`: total wall time from agent-run entry to the
@@ -438,7 +437,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// Supervise the child: foreground the pgid, forward signals (including
 	// SIGWINCH for the bwrap path so resizes propagate to the sandbox), and
 	// wait. The shared SuperviseChild helper (supervise.go, A2.SUP) replaces
-	// the previous open-coded tcsetpgrpForeground / forwardSignalsToBwrap /
+	// the previous open-coded tcsetpgrpForeground / signal-forwarder /
 	// cmd.Wait / tcsetpgrpRestore sequence — same behaviour, single
 	// implementation across the bwrap and sandbox-exec dispatch paths.
 	waitErr := SuperviseChild(bwrapCmd, int(os.Stdin.Fd()), SuperviseOpts{
@@ -498,40 +497,6 @@ func tcsetpgrpRestore(fd int, pgid int) error {
 		return errno
 	}
 	return nil
-}
-
-// forwardSignalsToBwrap forwards SIGTERM, SIGINT, SIGHUP, and SIGWINCH to the
-// bwrap child process group until doneCh is closed. onWinch is called on each
-// SIGWINCH so the caller can resize the PTY slave to match the new host size.
-func forwardSignalsToBwrap(proc *os.Process, doneCh <-chan struct{}, onWinch func()) {
-	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGWINCH)
-	defer signal.Stop(sigCh)
-
-	for {
-		select {
-		case <-doneCh:
-			return
-		case sig := <-sigCh:
-			if sig == syscall.SIGWINCH {
-				if onWinch != nil {
-					onWinch()
-				}
-				// Also forward SIGWINCH to the bwrap process group so that
-				// any process inside the sandbox that has registered for it
-				// (e.g. a shell) is notified too.
-				if proc != nil {
-					_ = syscall.Kill(-proc.Pid, syscall.SIGWINCH)
-				}
-				continue
-			}
-			if proc == nil {
-				continue
-			}
-			// Send to the process group (negative PGID = group of bwrap).
-			_ = syscall.Kill(-proc.Pid, sig.(syscall.Signal))
-		}
-	}
 }
 
 // minimalBwrapExecEnv filters a hostEnv slice (K=V pairs, as returned by

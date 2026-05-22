@@ -65,6 +65,9 @@ func TestMain(m *testing.M) {
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
+	if os.Getenv(superviseHelperEnvVar) == "1" {
+		os.Exit(runSuperviseHelper())
+	}
 
 	// Register a SIGTERM handler that cleans up orphaned tmux test servers.
 	sigCh := make(chan os.Signal, 1)

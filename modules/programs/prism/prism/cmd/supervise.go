@@ -36,7 +36,7 @@ import (
 //
 // ForwardWinch controls whether SIGWINCH is forwarded to the child's process
 // group. The bwrap path sets this to true (matching the pre-A2.SUP
-// forwardSignalsToBwrap behaviour, which subscribed SIGWINCH and forwarded
+// signal-forwarder behaviour, which subscribed SIGWINCH and forwarded
 // it to the child pgid). The sandbox-exec path sets it to false (matching
 // the pre-A2.SUP behaviour, which did not subscribe SIGWINCH at all — the
 // kernel still delivers it directly to the foreground process group). The
