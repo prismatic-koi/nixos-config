@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
+	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	pih "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -3115,6 +3116,49 @@ func TestControlPlane_HappyPath_Abort(t *testing.T) {
 	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
 	conn.Close()
 	_ = wait()
+}
+
+// TestControlPlane_QueueFull_ApplyProfile verifies that /apply-profile returns
+// 503 when the outbound channel of a target session is full.
+func TestControlPlane_QueueFull_ApplyProfile(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	// apply-profile is coordinator-only for scope=session targeting own session
+	// when the caller is a worker — override to coordinator so the handler proceeds.
+	sc.cfg.AgentRole = "coordinator"
+	getLogs := captureLog(sc)
+
+	// Insert a DB row for the session so resolveRoleForSession can look up the role.
+	_ = sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, "active", nil, nil)
+	_ = sc.cfg.DB.SetHarness(sc.cfg.SessionName, "pi")
+
+	// Stub the profile loader so the test doesn't need a real profiles file.
+	origLoader := hostAPILoadProfiles
+	hostAPILoadProfiles = func() (*config.ProfilesFile, error) {
+		return &config.ProfilesFile{
+			Default: "base",
+			Profiles: map[string]config.ProfileEntry{
+				"base": {
+					"worker":      {Provider: "anthropic", Model: "claude-sonnet", Thinking: "none"},
+					"coordinator": {Provider: "anthropic", Model: "claude-sonnet", Thinking: "none"},
+				},
+			},
+		}, nil
+	}
+	defer func() { hostAPILoadProfiles = origLoader }()
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/apply-profile", map[string]any{
+		"profile": "base",
+		"scope":   "session",
+		"session": sc.cfg.SessionName,
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
 }
 
 // TestControlPlane_QueueFull_RegisterProviderDirect verifies that

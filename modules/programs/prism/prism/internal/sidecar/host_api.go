@@ -2297,6 +2297,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Status  string `json:"status"`
 		}
 		results := make([]sessionResult, 0, len(targets))
+		applyAnyQueueFull := false
 		for _, targetSess := range targets {
 			// Look up role to find the correct slot.
 			role, status := resolveRoleForSession(s, targetSess)
@@ -2317,9 +2318,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 			deliveryStatus := liveModelSwapForSession(s, targetSess, slot.Provider, slot.Model, slot.Thinking)
 			results = append(results, sessionResult{Session: targetSess, Status: deliveryStatus})
+			if deliveryStatus == "error:queue-full" {
+				applyAnyQueueFull = true
+			}
 		}
 
-		writeJSON(w, http.StatusOK, map[string]any{"results": results})
+		// When any target's outbound channel was full, return 503 so the caller
+		// knows at least one set_model frame was dropped. Issue #1844.
+		applyHTTPStatus := http.StatusOK
+		if applyAnyQueueFull {
+			applyHTTPStatus = http.StatusServiceUnavailable
+		}
+		writeJSON(w, applyHTTPStatus, map[string]any{"results": results})
 	})
 
 	// POST /register-provider
