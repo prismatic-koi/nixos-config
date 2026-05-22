@@ -285,6 +285,11 @@ type Config struct {
 	// path (which uses host.containers.internal), sandbox-exec runs directly on
 	// the host, so loopback-only is both correct and more secure.
 	HarnessPipeTCPPort int
+	// PipeMaxLineBytes overrides the per-frame byte cap enforced by the
+	// socket-pipe inbound reader. Zero means use socketPipeMaxLineBytes (16
+	// MiB). Set to a small value in tests to exercise boundary behaviour
+	// without allocating 16 MiB of test data.
+	PipeMaxLineBytes int
 }
 
 // seenUnknownCap is the maximum number of unique unknown event types tracked
@@ -1603,6 +1608,13 @@ const piWireProtocolVersion = 2
 // connection drop before marking the session as error. See P2.WIRE §7.2.
 const pipeDisconnectTimeout = 30 * time.Second
 
+// socketPipeMaxLineBytes is the default maximum byte length of a single JSONL
+// frame accepted from the PI extension on the socket-pipe transport. A frame
+// that exceeds this cap is treated as a protocol violation: the connection is
+// closed and a log line is emitted. Per-sidecar overrides are set via
+// Config.PipeMaxLineBytes (used in tests to avoid 16 MiB allocations).
+const socketPipeMaxLineBytes = 16 * 1024 * 1024
+
 // acceptOutcome enumerates the reasons an Accept attempt in
 // runStartupSocketPipe returned without a live connection. It is required
 // (instead of a plain bool) so that the caller can distinguish a startup
@@ -1806,7 +1818,45 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	// After a non-shutdown drop it switches to pipeDisconnectTimeout.
 	acceptTimeout := startupTimeout
 
-	const maxLineBytes = 16 * 1024 * 1024
+	// effectiveMaxLineBytes is the per-frame byte cap for this connection.
+	// Config.PipeMaxLineBytes, when non-zero, overrides the package default
+	// (socketPipeMaxLineBytes = 16 MiB). Tests set this to a small value to
+	// exercise boundary behaviour without allocating large buffers.
+	effectiveMaxLineBytes := s.cfg.PipeMaxLineBytes
+	if effectiveMaxLineBytes <= 0 {
+		effectiveMaxLineBytes = socketPipeMaxLineBytes
+	}
+
+	// errFrameTooLong is returned by readLineLimited when a single frame
+	// exceeds effectiveMaxLineBytes — a distinct sentinel lets callers
+	// distinguish protocol violations from clean disconnect (io.EOF).
+	errFrameTooLong := errors.New("frame exceeded maxLineBytes")
+
+	// readLineLimited reads one newline-terminated line from br, enforcing a
+	// hard cap of effectiveMaxLineBytes on the frame length. It uses ReadSlice
+	// in a loop to avoid bufio.Reader growing without bound. On cap-exceeded
+	// it returns nil, errFrameTooLong; on clean disconnect it returns nil,
+	// io.EOF.
+	readLineLimited := func(br *bufio.Reader) ([]byte, error) {
+		var buf []byte
+		for {
+			slice, err := br.ReadSlice('\n')
+			buf = append(buf, slice...)
+			if len(buf) > effectiveMaxLineBytes {
+				return nil, errFrameTooLong
+			}
+			if err == nil {
+				// Found newline — done.
+				return buf, nil
+			}
+			if err == bufio.ErrBufferFull {
+				// Internal buffer is full but no newline yet; keep reading.
+				continue
+			}
+			// Any other error (io.EOF, net.OpError, etc.) — return what we have.
+			return buf, err
+		}
+	}
 
 	for {
 		// --- Wait for the extension to connect ----------------------------
@@ -1856,11 +1906,14 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		reader := bufio.NewReader(conn)
 
 		_ = conn.SetReadDeadline(time.Now().Add(startupTimeout))
-		helloLine, err := reader.ReadBytes('\n')
+		helloLine, err := readLineLimited(reader)
 		_ = conn.SetReadDeadline(time.Time{})
 		if err != nil {
-			err2 := fmt.Errorf("sidecar: runStartupSocketPipe: reading hello: %w", err)
-			s.logger().Printf("%v", err2)
+			if errors.Is(err, errFrameTooLong) {
+				s.logger().Printf("sidecar: socket-pipe: hello frame exceeded maxLineBytes (> %d) — closing connection", effectiveMaxLineBytes)
+			} else {
+				s.logger().Printf("sidecar: runStartupSocketPipe: reading hello: %v", err)
+			}
 			_ = conn.Close()
 			connMu.Lock()
 			activeConn = nil
@@ -1991,13 +2044,19 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		// --- Inbound frame loop -------------------------------------------
 		cleanShutdown := false
 		for {
-			line, readErr := reader.ReadBytes('\n')
+			line, readErr := readLineLimited(reader)
+			if errors.Is(readErr, errFrameTooLong) {
+				s.logger().Printf("sidecar: socket-pipe: frame exceeded maxLineBytes (> %d) — closing connection", effectiveMaxLineBytes)
+				s.mu.Lock()
+				s.flushPipeAccum()
+				s.mu.Unlock()
+				break
+			}
 			if len(line) > 0 {
 				if len(line) > 1 && line[len(line)-2] == '\r' {
 					line = append(line[:len(line)-2], '\n')
 				}
 				frameBytes := line[:len(line)-1]
-				_ = maxLineBytes
 				s.archiveInboundFrame(frameBytes)
 				if s.handlePipeFrame(frameBytes) {
 					cleanShutdown = true
