@@ -34,7 +34,7 @@ func newSidecarCoordinatorWithInstance(t *testing.T, sessionName, repo, instance
 	}
 	// Seed the DB so isCoordinatorSession() recognises this session as a
 	// coordinator (the merge handlers go through requireCoordinator).
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, "/tmp/"+sessionName, "active", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, "/tmp/"+sessionName, "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed coordinator status: %v", err)
 	}
 	return New(cfg)

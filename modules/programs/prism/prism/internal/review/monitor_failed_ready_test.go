@@ -59,7 +59,7 @@ func TestMonitor_FailedReadyAgent_DoesNotBlockGroupCompleted(t *testing.T) {
 
 	// Both agents start at state=idle (the seed state UpsertStatusSeedRootAgentName writes).
 	for _, sess := range []string{sessReady, sessFailed} {
-		if err := d.UpsertStatusSeedRootAgentName(sess, "test", "/tmp", "idle", nil, nil, "review-x", ""); err != nil {
+		if err := d.UpsertStatusSeedRootAgentName(sess, "test", "/tmp", "idle", nil, nil, "review-x", "", ""); err != nil {
 			t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", sess, err)
 		}
 		if err := d.SetGroupID(sess, groupID); err != nil {

@@ -1663,7 +1663,7 @@ func TestRun_SeedsRootAgentNameAtSpawnTime(t *testing.T) {
 	for _, ag := range agents {
 		agentSession := roundPrefix + ag.Name
 		// This mirrors what review.Run does synchronously at spawn time.
-		if err := d.UpsertStatusSeedRootAgentName(agentSession, "nixos-config", worktree, "idle", nil, nil, ag.Name, ""); err != nil {
+		if err := d.UpsertStatusSeedRootAgentName(agentSession, "nixos-config", worktree, "idle", nil, nil, ag.Name, "", ""); err != nil {
 			t.Fatalf("UpsertStatusSeedRootAgentName(%q): %v", ag.Name, err)
 		}
 	}

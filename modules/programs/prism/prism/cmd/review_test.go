@@ -465,7 +465,7 @@ func TestRejectIfCoordinator_BlocksCoordinatorSession(t *testing.T) {
 	d := openReviewTestDB(t)
 
 	const coordSession = "nixos-config@main"
-	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(coordSession, "nixos-config", "/worktree/main", "idle", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 
@@ -492,7 +492,7 @@ func TestRejectIfCoordinator_AllowsWorkerSession(t *testing.T) {
 	d := openReviewTestDB(t)
 
 	const workerSession = "nixos-config@feature-branch"
-	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature-branch", "idle", nil, nil, "worker", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature-branch", "idle", nil, nil, "worker", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 

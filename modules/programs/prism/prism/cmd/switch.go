@@ -264,7 +264,7 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 			repo = sessionName[:idx]
 		}
 	}
-	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, directory, "idle", nil, nil, "", harnessName); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, directory, "idle", nil, nil, "", harnessName, ""); err != nil {
 		return 0, fmt.Errorf("upsert status: %w", err)
 	}
 

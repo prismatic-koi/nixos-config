@@ -72,7 +72,7 @@ func TestReviewsList_PopulatesJSON(t *testing.T) {
 		t.Fatalf("RegisterGroup: %v", err)
 	}
 	const session1 = "nixos-config@pr-1500~review-1-review-goal"
-	if err := d.UpsertStatusSeedRootAgentName(session1, "nixos-config", "/wt", "finished", nil, nil, "review-goal", ""); err != nil {
+	if err := d.UpsertStatusSeedRootAgentName(session1, "nixos-config", "/wt", "finished", nil, nil, "review-goal", "", ""); err != nil {
 		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
 	}
 	// Link the agent_status row to the group via raw SQL (mirrors the
