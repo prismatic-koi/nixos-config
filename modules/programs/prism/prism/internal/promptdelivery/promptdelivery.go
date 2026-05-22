@@ -137,8 +137,15 @@ func DeliverToSessionWithID(sessionName string, status *db.Status, text string, 
 // socket paths outside the current XDG_STATE_HOME — see package-level comment.
 const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 
+// sidecarHostAPIPathFn resolves a session name to its host-API socket path.
+// Defaults to session.SidecarHostAPIPath; tests may override this to inject a
+// path outside $XDG_STATE_HOME so they can exercise the test-mode isolation
+// guard. Keep this seam minimal — it exists only to make the guard branch
+// testable via the public API (issue #1883).
+var sidecarHostAPIPathFn = session.SidecarHostAPIPath
+
 func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID string) error {
-	sockPath, err := session.SidecarHostAPIPath(sessionName)
+	sockPath, err := sidecarHostAPIPathFn(sessionName)
 	if err != nil {
 		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
 	}
