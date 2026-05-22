@@ -602,6 +602,27 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	s.spawnTime = time.Now()
 	s.mu.Unlock()
 
+	// Duplicate-start guard (#1936). Before doing ANY work that would touch
+	// the database or the socket files, check whether another sidecar process
+	// is already alive and listening on this session's Unix socket paths. If
+	// so, refuse to start: do not os.Remove the socket, do not write to the
+	// DB, do not affect the live sidecar in any way. Just log the duplicate-
+	// start error and exit non-zero.
+	//
+	// We check both sockets even though in practice a live sidecar owns both
+	// — a partial liveness (one socket alive, the other gone) is an unusual
+	// state, but checking both is cheap (one fast dial each) and gives us
+	// defence-in-depth.
+	logf := func(format string, args ...any) { s.logger().Printf(format, args...) }
+	if err := checkNoLiveSidecar(s.cfg.HostAPISockPath, s.cfg.SessionName, "hostapi.sock", logf); err != nil {
+		s.logger().Printf("%v", err)
+		return err
+	}
+	if err := checkNoLiveSidecar(s.cfg.HarnessPipeSockPath, s.cfg.SessionName, "pipe.sock", logf); err != nil {
+		s.logger().Printf("%v", err)
+		return err
+	}
+
 	// Start the host-API Unix socket server (AC-1, AC-9).
 	// This runs for ALL harness types — any session with HostAPISockPath set
 	// needs the Unix socket so the sandboxed agent can proxy prism CLI calls
