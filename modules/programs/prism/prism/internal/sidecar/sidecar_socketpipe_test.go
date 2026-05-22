@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2866,3 +2867,273 @@ func TestSocketPipe_FailedRetryReview_StateChangeDoesNotFinish(t *testing.T) {
 
 // Ensure db import is used.
 var _ *db.DB
+
+// ── Issue #1844: control-plane backpressure tests ─────────────────────────────
+//
+// These tests verify that when the outbound channel (harnessPipeOutCh, buffered
+// to 64) is full, each control-plane HTTP handler returns a non-200 response
+// instead of silently accepting 200 OK.
+//
+// The full-channel state is simulated by directly setting harnessPipeOutCh to a
+// pre-filled channel (all 64 slots occupied). This is the package-internal
+// equivalent of "block the writer goroutine with a hung mock connection" because
+// the HTTP-level invariant under test is identical regardless of how the channel
+// became full.
+
+// fillOutboundChannel pre-fills s.harnessPipeOutCh to capacity with dummy frames
+// so that the next enqueueHarnessPipeFrame call returns false. The sidecar's
+// pipe-loop need not be running — we set the channel directly so isPipeConnected
+// returns true while the channel is already at capacity.
+func fillOutboundChannel(s *Sidecar) {
+	ch := make(chan []byte, 64)
+	dummy := []byte(`{"type":"noop"}` + "\n")
+	for i := 0; i < 64; i++ {
+		ch <- dummy
+	}
+	s.mu.Lock()
+	s.harnessPipeOutCh = ch
+	s.mu.Unlock()
+}
+
+// newQueueFullSidecar creates a sidecar whose outbound channel is pre-filled
+// to capacity. The pipe loop is NOT running; the test operates purely through
+// the HTTP handler surface.
+func newQueueFullSidecar(t *testing.T) *Sidecar {
+	t.Helper()
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	sc.cfg.HarnessName = "pi"
+	sc.cfg.AgentRole = "worker"
+	fillOutboundChannel(sc)
+	return sc
+}
+
+// TestControlPlane_QueueFull_SetModel verifies that /set-model returns 503
+// when the outbound channel is full and the failure is logged.
+func TestControlPlane_QueueFull_SetModel(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	getLogs := captureLog(sc)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/set-model", map[string]any{
+		"session":  sc.cfg.SessionName,
+		"provider": "anthropic",
+		"model":    "claude-3-7-sonnet",
+		"thinking": "",
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
+}
+
+// TestControlPlane_HappyPath_SetModel verifies that /set-model returns 200 OK
+// when the outbound channel has space (regression guard for the queue-full change).
+func TestControlPlane_HappyPath_SetModel(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	sc.cfg.HarnessName = "pi"
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	rd := bufio.NewReader(conn)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/set-model", map[string]any{
+		"session":  sc.cfg.SessionName,
+		"provider": "anthropic",
+		"model":    "claude-3-7-sonnet",
+		"thinking": "",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// The extension should receive the frame.
+	frame := readFrameWithDeadline(t, rd, conn)
+	if got := frame["type"]; got != "set_model" {
+		t.Errorf("frame type = %v, want set_model", got)
+	}
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestControlPlane_QueueFull_RegisterProvider verifies that /register-provider
+// returns 503 when the outbound channel is full and the failure is logged.
+func TestControlPlane_QueueFull_RegisterProvider(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	getLogs := captureLog(sc)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/register-provider", map[string]any{
+		"session": sc.cfg.SessionName,
+		"name":    "my-provider",
+		"config":  map[string]any{"apiKey": "test"},
+		"scope":   "session",
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
+}
+
+// TestControlPlane_HappyPath_RegisterProvider verifies that /register-provider
+// returns 200 OK when the outbound channel has space.
+func TestControlPlane_HappyPath_RegisterProvider(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	sc.cfg.HarnessName = "pi"
+	sc.cfg.AgentRole = "worker"
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	rd := bufio.NewReader(conn)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/register-provider", map[string]any{
+		"session": sc.cfg.SessionName,
+		"name":    "my-provider",
+		"config":  map[string]any{"apiKey": "test"},
+		"scope":   "session",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// The extension should receive the frame.
+	frame := readFrameWithDeadline(t, rd, conn)
+	if got := frame["type"]; got != "register_provider" {
+		t.Errorf("frame type = %v, want register_provider", got)
+	}
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestControlPlane_QueueFull_SetActiveTools verifies that /set-active-tools
+// returns 503 when the outbound channel is full and the failure is logged.
+func TestControlPlane_QueueFull_SetActiveTools(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	getLogs := captureLog(sc)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/set-active-tools", map[string]any{
+		"session": sc.cfg.SessionName,
+		"tools":   []string{"bash", "read"},
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
+}
+
+// TestControlPlane_HappyPath_SetActiveTools verifies that /set-active-tools
+// returns 200 OK when the outbound channel has space.
+func TestControlPlane_HappyPath_SetActiveTools(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	sc.cfg.HarnessName = "pi"
+	sc.cfg.AgentRole = "worker"
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	rd := bufio.NewReader(conn)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/set-active-tools", map[string]any{
+		"session": sc.cfg.SessionName,
+		"tools":   []string{"bash", "read"},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// The extension should receive the frame.
+	frame := readFrameWithDeadline(t, rd, conn)
+	if got := frame["type"]; got != "set_active_tools" {
+		t.Errorf("frame type = %v, want set_active_tools", got)
+	}
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestControlPlane_QueueFull_Abort verifies that /abort returns 503 when the
+// outbound channel is full and the failure is logged.
+func TestControlPlane_QueueFull_Abort(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	getLogs := captureLog(sc)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/abort", map[string]any{
+		"session": sc.cfg.SessionName,
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
+}
+
+// TestControlPlane_HappyPath_Abort verifies that /abort returns 200 OK when
+// the outbound channel has space.
+func TestControlPlane_HappyPath_Abort(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	sc.cfg.HarnessName = "pi"
+	sc.cfg.AgentRole = "worker"
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+	rd := bufio.NewReader(conn)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/abort", map[string]any{
+		"session": sc.cfg.SessionName,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// The extension should receive the frame.
+	frame := readFrameWithDeadline(t, rd, conn)
+	if got := frame["type"]; got != "abort" {
+		t.Errorf("frame type = %v, want abort", got)
+	}
+	// Clean shutdown.
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	_ = wait()
+}
+
+// TestControlPlane_QueueFull_RegisterProviderDirect verifies that
+// /register-provider-direct returns 503 when the outbound channel is full.
+func TestControlPlane_QueueFull_RegisterProviderDirect(t *testing.T) {
+	sc := newQueueFullSidecar(t)
+	getLogs := captureLog(sc)
+
+	handler := sc.hostAPIHandler()
+	rr := postJSON(t, handler, "/register-provider-direct", map[string]any{
+		"session": sc.cfg.SessionName,
+		"name":    "my-provider",
+		"config":  map[string]any{"apiKey": "test"},
+	})
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	// Failure must be logged.
+	if logs := getLogs(); !strings.Contains(logs, "queue full") {
+		t.Errorf("expected queue-full log, got: %s", logs)
+	}
+}

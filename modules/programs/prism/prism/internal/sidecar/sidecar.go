@@ -2503,7 +2503,16 @@ func (s *Sidecar) flushPendingReplay() {
 
 // enqueueHarnessPipeFrame enqueues a JSONL frame for delivery to the PI
 // extension via the outbound writer goroutine. The frame must already be
-// terminated with '\n'. Returns false if no active pipe connection is open.
+// terminated with '\n'.
+//
+// Returns false when:
+//   - no active pipe connection is open (harnessPipeOutCh is nil), or
+//   - the outbound channel is full (buffered to 64) and the frame was dropped.
+//
+// Callers MUST check the return value or handle failure explicitly; this
+// function never blocks the writer. A false return means the control-plane
+// frame was NOT delivered — the caller is responsible for propagating that
+// failure to its own caller (e.g. returning a non-200 HTTP response). Issue #1844.
 func (s *Sidecar) enqueueHarnessPipeFrame(frame []byte) bool {
 	s.mu.Lock()
 	ch := s.harnessPipeOutCh
@@ -2567,7 +2576,10 @@ func (s *Sidecar) deliverPromptFrame(text, deliverAs string, replay bool) bool {
 // SetModel enqueues a set_model control frame to the PI extension.
 // Stub for P3.LIVE — the sidecar does not yet act on this internally;
 // it only forwards the frame.
-func (s *Sidecar) SetModel(provider, model, thinking string) {
+//
+// Returns false if the frame could not be enqueued (no active connection or
+// outbound channel full). Callers should propagate this as a non-200 response.
+func (s *Sidecar) SetModel(provider, model, thinking string) bool {
 	frame := struct {
 		Type     string `json:"type"`
 		Provider string `json:"provider"`
@@ -2581,12 +2593,15 @@ func (s *Sidecar) SetModel(provider, model, thinking string) {
 	}
 	b, _ := json.Marshal(frame)
 	b = append(b, '\n')
-	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+	return s.enqueueHarnessPipeFrame(b)
 }
 
 // RegisterProvider enqueues a register_provider frame to the PI extension.
 // Stub for P3.LIVE.
-func (s *Sidecar) RegisterProvider(name string, cfg map[string]any) {
+//
+// Returns false if the frame could not be enqueued (no active connection or
+// outbound channel full). Callers should propagate this as a non-200 response.
+func (s *Sidecar) RegisterProvider(name string, cfg map[string]any) bool {
 	frame := struct {
 		Type   string         `json:"type"`
 		Name   string         `json:"name"`
@@ -2598,12 +2613,15 @@ func (s *Sidecar) RegisterProvider(name string, cfg map[string]any) {
 	}
 	b, _ := json.Marshal(frame)
 	b = append(b, '\n')
-	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+	return s.enqueueHarnessPipeFrame(b)
 }
 
 // SetActiveTools enqueues a set_active_tools frame to the PI extension.
 // Stub for P3.LIVE.
-func (s *Sidecar) SetActiveTools(tools []string) {
+//
+// Returns false if the frame could not be enqueued (no active connection or
+// outbound channel full). Callers should propagate this as a non-200 response.
+func (s *Sidecar) SetActiveTools(tools []string) bool {
 	frame := struct {
 		Type  string   `json:"type"`
 		Tools []string `json:"tools"`
@@ -2613,18 +2631,21 @@ func (s *Sidecar) SetActiveTools(tools []string) {
 	}
 	b, _ := json.Marshal(frame)
 	b = append(b, '\n')
-	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+	return s.enqueueHarnessPipeFrame(b)
 }
 
 // Abort enqueues an abort frame to the PI extension.
 // Stub for P3.LIVE.
-func (s *Sidecar) Abort() {
+//
+// Returns false if the frame could not be enqueued (no active connection or
+// outbound channel full). Callers should propagate this as a non-200 response.
+func (s *Sidecar) Abort() bool {
 	frame := struct {
 		Type string `json:"type"`
 	}{Type: "abort"}
 	b, _ := json.Marshal(frame)
 	b = append(b, '\n')
-	s.enqueueHarnessPipeFrame(b) //nolint:errcheck
+	return s.enqueueHarnessPipeFrame(b)
 }
 
 // buildStdioHarnessCmd constructs the exec.Cmd used to launch the stdio
