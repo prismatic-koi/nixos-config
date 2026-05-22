@@ -412,6 +412,13 @@ WHERE  instance_id IN (
 // It is used by `prism reset` to atomically close all live sessions in one
 // query rather than iterating over them individually.
 //
+// MarkAllEnded is intentionally narrow: it only stamps ended_at / end_state.
+// It does NOT clear harness_session_id — the per-session pi conversation
+// resume pointer is wiped by the sibling method ClearAllResumePointers,
+// which `prism reset` calls immediately after MarkAllEnded. Keeping the two
+// concerns separate means MarkAllEnded can be reused by any future caller
+// that wants to bulk-end rows without altering resume semantics (issue #1947).
+//
 // Returns the number of agent_status rows updated and any database error.
 // When there are no rows with ended_at IS NULL, returns (0, nil) — not an error.
 func (d *DB) MarkAllEnded() (int64, error) {
@@ -457,6 +464,44 @@ WHERE  instance_id IN (
 
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("db: mark all ended: commit: %w", err)
+	}
+	return n, nil
+}
+
+// ClearAllResumePointers clears the per-session pi conversation resume
+// pointer (agent_status.harness_session_id) on every row in agent_status.
+// It is the FS-companion-free, DB-side half of the `prism reset` resume-wipe
+// (issue #1947): after this call, no row carries a UUID that would cause
+// the next `prism switch` / `prism agent-run` to append `--session <uuid>`
+// to the pi invocation (see internal/container/pi_invocation.go).
+//
+// Relationship to MarkAllEnded:
+//   - MarkAllEnded stamps ended_at / end_state (it ends sessions).
+//   - ClearAllResumePointers wipes harness_session_id (it forgets conversations).
+//
+// `prism reset` calls MarkAllEnded then ClearAllResumePointers — the order
+// does not matter (the columns are independent), but the call site documents
+// reset's intent: end every session, then forget the resume pointer.
+//
+// The column is set to NULL (rather than the empty string) so that the
+// COALESCE in UpsertStatusSeedRootAgentName treats it as "no override" on
+// the next upsert — exactly mirroring the pre-#1838 "fresh row" semantics.
+// CurrentStatus / scanStatus already map a NULL column to a nil *string in
+// the Status struct.
+//
+// Returns the number of rows whose harness_session_id was actually cleared
+// (i.e. previously non-NULL) and any database error. Rows that were already
+// NULL are not counted. Returns (0, nil) on an empty / all-NULL table.
+func (d *DB) ClearAllResumePointers() (int64, error) {
+	res, err := d.conn.Exec(
+		"UPDATE agent_status SET harness_session_id = NULL WHERE harness_session_id IS NOT NULL",
+	)
+	if err != nil {
+		return 0, fmt.Errorf("db: clear all resume pointers: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("db: clear all resume pointers: rows affected: %w", err)
 	}
 	return n, nil
 }
