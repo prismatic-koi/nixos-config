@@ -47,14 +47,6 @@ in
           screenshotToClipboard = "${homeDir}/.local/scripts/application.grim.screenshotToClipboard";
         in
         {
-          # shortcuts for sway
-          sway.config.keybindings =
-            let
-              super = "Mod4";
-            in
-            {
-              "${super}+Shift+s" = "exec ${screenshotToClipboard}";
-            };
           # shortcuts for hyprland
           hyprland.settings.bind = [
             {
