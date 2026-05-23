@@ -27,6 +27,46 @@ let
   daemonConfigFile = pkgs.writeText "battery-notifier-config.json" daemonConfigJSON;
 
   anyDeviceEnabled = enabledDevices != { };
+
+  anyRazerDevice = lib.any (d: d.enable && d.kind == "razer") (lib.attrValues cfg.devices);
+
+  # openrazer's shipped udev rule (99-razer.rules) sets GROUP:=openrazer on
+  # the usb|input|hid device nodes, but the razermouse kernel module creates
+  # the per-attribute files (charge_level, charge_status) inside the device's
+  # sysfs directory as root:root 0440. Those files are what battery-notifier
+  # reads — and because the user (in the openrazer group) is not the owner
+  # and the group is root, every read returns EACCES.
+  #
+  # This wrapper runs from a udev RUN+= when an idVendor==1532 hid device
+  # appears and walks the sysfs directory chgrp/chmod'ing any battery-related
+  # attribute files that exist. Using a wrapper rather than inlining the
+  # commands into RUN+= avoids the well-known fragility of shell escaping
+  # and %p expansion inside udev rule strings (see issue #1972).
+  #
+  # The script is defensive: it tolerates the attributes being absent (not
+  # every razer device exposes a battery) and tolerates udev firing the rule
+  # before the kernel module has created the sysfs files (a short retry loop
+  # handles the race).
+  razerFixPermsScript = pkgs.writeShellScript "razer-fix-charge-perms" ''
+    # $DEVPATH is exported by udev, e.g. /devices/pci0000:00/.../0003:1532:00B7.0007
+    sysfs="/sys$DEVPATH"
+    # Try a few times in case the kernel module hasn't created the
+    # attribute files yet when udev fires this rule.
+    for _ in 1 2 3 4 5; do
+      if [ -e "$sysfs/charge_level" ] || [ -e "$sysfs/charge_status" ]; then
+        for f in "$sysfs"/charge_level "$sysfs"/charge_status; do
+          [ -e "$f" ] || continue
+          ${pkgs.coreutils}/bin/chgrp openrazer "$f" || true
+          ${pkgs.coreutils}/bin/chmod g+r "$f"     || true
+        done
+        exit 0
+      fi
+      ${pkgs.coreutils}/bin/sleep 0.2
+    done
+    # No battery attributes appeared — not an error (most razer devices
+    # don't have a battery).
+    exit 0
+  '';
 in
 {
   options.nx.services.batteryNotifier = {
@@ -97,12 +137,18 @@ in
     # /sys/bus/hid/devices/*1532*/ which the daemon reads directly —
     # no Polychromatic-CLI subprocess. openrazer's own batteryNotifier
     # is left disabled because we own that responsibility now.
-    hardware.openrazer =
-      lib.mkIf (lib.any (d: d.enable && d.kind == "razer") (lib.attrValues cfg.devices))
-        {
-          enable = true;
-          batteryNotifier.enable = false;
-        };
+    hardware.openrazer = lib.mkIf anyRazerDevice {
+      enable = true;
+      batteryNotifier.enable = false;
+    };
+
+    # Fix sysfs perms on razer battery attribute files. See the comment on
+    # `razerFixPermsScript` above for the root-cause explanation. Gated on
+    # the same condition as `hardware.openrazer.enable` so hosts with no
+    # razer device declared get no extra udev rule.
+    services.udev.extraRules = lib.mkIf anyRazerDevice ''
+      ACTION=="add", SUBSYSTEM=="hid", ATTRS{idVendor}=="1532", RUN+="${razerFixPermsScript}"
+    '';
 
     home-manager.users.${config.nx.username} = lib.mkIf anyDeviceEnabled {
       # polychromatic is intentionally NOT installed — the Go daemon
