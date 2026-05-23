@@ -6,7 +6,6 @@
 }:
 {
   imports = [
-    ./lutris.nix
     ./mednafen.nix
     ./pcsx2.nix
     ./prismlauncher.nix
