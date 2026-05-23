@@ -45,8 +45,6 @@
     ./ssh.nix
     ./vimiv.nix
     ./virt-manager.nix
-    ./voice-to-text-daemon.nix
-    ./waydroid.nix
     ./wgnord.nix
     ./discord.nix
     ./zathura.nix
