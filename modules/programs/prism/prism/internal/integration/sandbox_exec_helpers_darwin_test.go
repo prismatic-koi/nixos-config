@@ -99,6 +99,13 @@ func newProfileManager(t *testing.T) *container.Manager {
 		SessionName: "integ-sandbox-exec-profile-test",
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
+		// Required since #1960: writeGitconfig refuses to start a
+		// session without [user] in the gitconfig. The integration
+		// suite does not care about identity, so we inject a sentinel
+		// matching the default used by newSandboxExecManager in the
+		// container package's own tests.
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	}
 	return container.New(cfg)
 }
@@ -145,6 +152,9 @@ func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
 		BareRoot:    bareRoot,
+		// Required since #1960 — see newProfileManager.
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	}
 	return container.New(cfg)
 }

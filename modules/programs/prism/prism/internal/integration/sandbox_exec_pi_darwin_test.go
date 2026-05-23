@@ -45,6 +45,12 @@ func newPIProfileManager(t *testing.T, sockPath string) *container.Manager {
 		InstanceID:      instanceID,
 		Worktree:        t.TempDir(),
 		HostAPISockPath: sockPath,
+		// Required since #1960: writeGitconfig refuses to start a
+		// session without [user] in the gitconfig. See
+		// newProfileManager (sandbox_exec_helpers_darwin_test.go) for
+		// the full rationale.
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	}
 	return container.New(cfg)
 }
