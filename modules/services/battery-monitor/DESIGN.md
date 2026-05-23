@@ -1,10 +1,10 @@
-# battery-notifier — design
+# battery-monitor — design
 
 A long-running user daemon that watches one or more batteries and emits
 freedesktop notifications when they cross configured low / full
 thresholds. This document records the architecture and the bugs the
 rewrite is leaving behind. The source lives next to this file in
-`./battery-notifier/` (Go module).
+`./battery-monitor/` (Go module).
 
 ## Background — the bugs we are leaving behind
 
@@ -32,20 +32,20 @@ One systemd user service, one Go binary, no timer, no udev, no shell-outs, no JS
 
 | Concern              | Implementation                                                                                                                                                                                                                                                                                                                |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Process model        | Single long-running `battery-notifier` user-scope systemd service. `Restart=on-failure`, `After=graphical-session.target`, `PartOf=graphical-session.target`. One service covers every enabled device — fewer units to monitor and `journalctl --user -u battery-notifier` shows everything.                                  |
+| Process model        | Single long-running `battery-monitor` user-scope systemd service. `Restart=on-failure`, `After=graphical-session.target`, `PartOf=graphical-session.target`. One service covers every enabled device — fewer units to monitor and `journalctl --user -u battery-monitor` shows everything.                                  |
 | Laptop battery       | Subscribe to `org.freedesktop.UPower` `PropertiesChanged` on the laptop battery device on the system bus. UPower already owns the kernel event handling; we react to its signals. No polling, no udev, no `machinectl`.                                                                                                  |
 | Mouse battery        | Read `/sys/bus/hid/devices/*1532*/charge_level` (0..255, scaled to 0..100) and `charge_status` (0 = discharging, 1 = charging) on an internal 1-minute ticker. The mouse goes to sleep without notice and there is no kernel uevent to wake on; polling at the same cadence as the old timer keeps the user experience identical. |
 | Notifications        | Direct `org.freedesktop.Notifications.Notify` calls on the session bus via `github.com/godbus/dbus/v5`. `replaces_id` is threaded through for low-battery updates so the bubble updates in place; `CloseNotification` closes it on dismiss. No `dunstify` subprocess.                                                       |
-| State                | In-memory only — kills the atomic-write, locking, and `XDG_RUNTIME_DIR` wipe bugs. The cost is that a service restart loses the "we already notified at low" memory; the daemon re-notifies once on restart if the device is still in the low state. The user sees one extra bubble after a `systemctl --user restart battery-notifier`. Acceptable. |
+| State                | In-memory only — kills the atomic-write, locking, and `XDG_RUNTIME_DIR` wipe bugs. The cost is that a service restart loses the "we already notified at low" memory; the daemon re-notifies once on restart if the device is still in the low state. The user sees one extra bubble after a `systemctl --user restart battery-monitor`. Acceptable. |
 | Config               | The Nix module emits a JSON config into the nix store and passes `--config <path>` on the systemd `ExecStart`. A NixOS rebuild restarts the unit; no live reload.                                                                                                                                                            |
-| Logging              | `log/slog` with `--log-format=text\|json` (default `text`). The text handler renders attributes as `key=value`, preserving the existing `device=… event=…` greppable shape. `journalctl --user -u battery-notifier --output=json \| jq` works directly with `--log-format=json`.                                          |
+| Logging              | `log/slog` with `--log-format=text\|json` (default `text`). The text handler renders attributes as `key=value`, preserving the existing `device=… event=…` greppable shape. `journalctl --user -u battery-monitor --output=json \| jq` works directly with `--log-format=json`.                                          |
 
 ### Package layout
 
 ```
-modules/services/battery-notifier/
+modules/services/battery-monitor/
 ├── DESIGN.md                                  # this file
-└── battery-notifier/                          # Go module (mirrors prism/prism/)
+└── battery-monitor/                          # Go module (mirrors prism/prism/)
     ├── go.mod / go.sum
     ├── main.go                                # CLI entrypoint, slog wiring
     └── internal/
@@ -102,17 +102,17 @@ When the Razer sysfs path is missing (mouse asleep or unpaired), the source emit
 The AC allows either choice. We pick one service because:
 
 - The shared session-bus connection (for notifications) is best owned by a single process. Two services would each open a session-bus socket.
-- One service is one unit in `systemctl --user status`, one log stream in `journalctl --user -u battery-notifier`. Operationally simpler.
+- One service is one unit in `systemctl --user status`, one log stream in `journalctl --user -u battery-monitor`. Operationally simpler.
 - Per-device goroutines inside one process are cheap; OS-level isolation between devices buys nothing because they share the same Nix configuration anyway.
 
 ### Build & CI
 
-`pkgs/battery-notifier.nix` mirrors `pkgs/prism.nix`:
+`pkgs/battery-monitor.nix` mirrors `pkgs/prism.nix`:
 
-- Default `runChecks = false` so `nh switch` and `nix build .#battery-notifier` are fast.
-- `nix build --impure --no-link --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.battery-notifier.override { runChecks = true; }'` runs the Go suite inside the nix sandbox ($HOME=/homeless-shelter).
+- Default `runChecks = false` so `nh switch` and `nix build .#battery-monitor` are fast.
+- `nix build --impure --no-link --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.battery-monitor.override { runChecks = true; }'` runs the Go suite inside the nix sandbox ($HOME=/homeless-shelter).
 
-`.github/workflows/pr-gate.yml` adds two jobs: `go-tests-battery-notifier` and `nix-build-battery-notifier-checked`, fanned into the `pr-gate` gate alongside the existing prism jobs. The path filter scopes them to `modules/services/battery-notifier/**`, `pkgs/battery-notifier.nix`, `modules/services/battery-notifier.nix`, the new `go.mod`/`go.sum`, and the workflow file itself.
+`.github/workflows/pr-gate.yml` adds two jobs: `go-tests-battery-monitor` and `nix-build-battery-monitor-checked`, fanned into the `pr-gate` gate alongside the existing prism jobs. The path filter scopes them to `modules/services/battery-monitor/**`, `pkgs/battery-monitor.nix`, `modules/services/battery-monitor.nix`, the new `go.mod`/`go.sum`, and the workflow file itself.
 
 ## References
 

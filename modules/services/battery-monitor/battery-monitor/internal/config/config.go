@@ -1,7 +1,7 @@
 // Package config defines the on-disk JSON configuration consumed by the
-// battery-notifier daemon and emitted by the Nix module.
+// battery-monitor daemon and emitted by the Nix module.
 //
-// The Nix module (modules/services/battery-notifier.nix) writes a single
+// The Nix module (modules/services/battery-monitor.nix) writes a single
 // JSON file into the nix store and passes its path on the systemd
 // ExecStart line as `--config <path>`. The daemon reads it once at
 // startup; there is no live reload (a NixOS rebuild restarts the unit).
@@ -30,7 +30,7 @@ const (
 type Device struct {
 	// Name is the human-readable identifier used in notifications and
 	// in slog `device=<name>` fields. Matches the attribute name in
-	// `nx.services.batteryNotifier.devices.<name>`.
+	// `nx.services.batteryMonitor.devices.<name>`.
 	Name string `json:"name"`
 
 	// Kind selects the data source (laptop UPower vs Razer sysfs).

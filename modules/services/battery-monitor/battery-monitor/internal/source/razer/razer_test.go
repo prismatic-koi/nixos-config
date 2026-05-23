@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prismatic-koi/battery-notifier/internal/state"
+	"github.com/prismatic-koi/battery-monitor/internal/state"
 )
 
 func TestScaleLevel(t *testing.T) {

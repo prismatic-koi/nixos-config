@@ -5,12 +5,12 @@
   ...
 }:
 let
-  cfg = config.nx.services.batteryNotifier;
+  cfg = config.nx.services.batteryMonitor;
 
   enabledDevices = lib.filterAttrs (_: d: d.enable) cfg.devices;
 
   # Emit a single JSON config describing every enabled device. The
-  # daemon (battery-notifier --config <path>) reads this once at
+  # daemon (battery-monitor --config <path>) reads this once at
   # startup; a NixOS rebuild restarts the user unit so live reload
   # is unnecessary.
   daemonConfigJSON = builtins.toJSON {
@@ -24,7 +24,7 @@ let
     }) enabledDevices;
   };
 
-  daemonConfigFile = pkgs.writeText "battery-notifier-config.json" daemonConfigJSON;
+  daemonConfigFile = pkgs.writeText "battery-monitor-config.json" daemonConfigJSON;
 
   anyDeviceEnabled = enabledDevices != { };
 
@@ -33,7 +33,7 @@ let
   # openrazer's shipped udev rule (99-razer.rules) sets GROUP:=openrazer on
   # the usb|input|hid device nodes, but the razermouse kernel module creates
   # the per-attribute files (charge_level, charge_status) inside the device's
-  # sysfs directory as root:root 0440. Those files are what battery-notifier
+  # sysfs directory as root:root 0440. Those files are what battery-monitor
   # reads — and because the user (in the openrazer group) is not the owner
   # and the group is root, every read returns EACCES.
   #
@@ -69,14 +69,14 @@ let
   '';
 in
 {
-  options.nx.services.batteryNotifier = {
+  options.nx.services.batteryMonitor = {
     devices = lib.mkOption {
       type = lib.types.attrsOf (
         lib.types.submodule (
           { name, ... }:
           {
             options = {
-              enable = lib.mkEnableOption "this battery notifier";
+              enable = lib.mkEnableOption "this battery monitor";
 
               # `kind` selects the data source the Go daemon uses.
               # "laptop" → UPower on the system bus (PropertiesChanged
@@ -126,7 +126,7 @@ in
         Go-daemon rewrite. The "fully charged" notification now fires
         once per Discharging→Charging transition rather than gating on a
         re-notify percentage. See
-        modules/services/battery-notifier/DESIGN.md for the rationale.
+        modules/services/battery-monitor/DESIGN.md for the rationale.
       '';
     };
   };
@@ -137,6 +137,9 @@ in
     # /sys/bus/hid/devices/*1532*/ which the daemon reads directly —
     # no Polychromatic-CLI subprocess. openrazer's own batteryNotifier
     # is left disabled because we own that responsibility now.
+    # NOTE: `batteryNotifier.enable` below is the upstream openrazer
+    # module's option name and must NOT be renamed when our daemon is
+    # renamed battery-notifier -> battery-monitor.
     hardware.openrazer = lib.mkIf anyRazerDevice {
       enable = true;
       batteryNotifier.enable = false;
@@ -163,15 +166,15 @@ in
       # machinectl wrapper. Restart=on-failure means a crash gets a
       # fresh process; PartOf=graphical-session.target ties the
       # daemon's lifetime to the user's desktop session.
-      systemd.user.services.battery-notifier = {
+      systemd.user.services.battery-monitor = {
         Unit = {
-          Description = "Battery notifier (Go daemon: UPower + sysfs)";
+          Description = "Battery monitor (Go daemon: UPower + sysfs)";
           After = [ "graphical-session.target" ];
           PartOf = [ "graphical-session.target" ];
         };
         Service = {
           Type = "simple";
-          ExecStart = "${pkgs.battery-notifier}/bin/battery-notifier --config ${daemonConfigFile} --log-format text";
+          ExecStart = "${pkgs.battery-monitor}/bin/battery-monitor --config ${daemonConfigFile} --log-format text";
           Restart = "on-failure";
           RestartSec = 5;
         };
@@ -182,8 +185,8 @@ in
     };
 
     # Default device definitions for this machine. Consumers can
-    # override per-device settings via `nx.services.batteryNotifier.devices.*`.
-    nx.services.batteryNotifier.devices = {
+    # override per-device settings via `nx.services.batteryMonitor.devices.*`.
+    nx.services.batteryMonitor.devices = {
       laptop = {
         enable = config.nx.isLaptop;
         kind = "laptop";

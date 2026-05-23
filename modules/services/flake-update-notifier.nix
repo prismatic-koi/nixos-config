@@ -30,7 +30,7 @@ let
 
   # System-level wrapper that dispatches the user service on wake from sleep.
   # Uses machinectl to bridge the system suspend event into the user session,
-  # matching the pattern established in battery-notifier.nix.
+  # matching the pattern established in battery-monitor.nix.
   wake-dispatcher = pkgs.writeShellScript "flake-update-notifier-wake" ''
     ${pkgs.coreutils}/bin/sleep 10
     ${pkgs.systemd}/bin/machinectl shell \

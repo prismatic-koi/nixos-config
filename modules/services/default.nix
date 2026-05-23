@@ -1,7 +1,7 @@
 { pkgs, lib, ... }:
 {
   imports = [
-    ./battery-notifier.nix
+    ./battery-monitor.nix
     ./blocky.nix
     ./flake-update-notifier.nix
     ./greetd.nix
