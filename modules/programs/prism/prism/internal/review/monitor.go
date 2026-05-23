@@ -606,6 +606,22 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 // completed) review group for parentSession, or "" when none exists.
 // It is used to detect duplicate `prism review` invocations for the same
 // parent session.
+//
+// A group member counts as terminal here when EITHER:
+//
+//   - its state is in {finished, error, deleted} — aligned with
+//     db.terminalStates so a "deleted" sibling does not block the guard; OR
+//   - its ended_at is non-NULL — the row has been closed by `prism cleanup`,
+//     `prism reset`, or any other lifecycle path that calls SetEnded, even
+//     if the state string is still "interrupted" or "active" (#1962
+//     primary fix: closes the dead-sidecar gap where cleanup runs but the
+//     state flip to "deleted" never happens because the sidecar is gone).
+//
+// An "interrupted" row whose ended_at is still NULL is intentionally NOT
+// terminal here: the sidecar is alive and the user may still redirect the
+// agent via `prism prompt`, eventually reaching finished/error (#1495).
+// Only once cleanup (or any other SetEnded path) closes the row does the
+// ended_at arm trip and the guard release.
 func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) {
 	members, err := d.GroupMembersForParent(parentSession)
 	if err != nil {
@@ -623,7 +639,7 @@ func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) 
 			continue
 		}
 		gid := *m.GroupID
-		if !isTerminalState(m.State) {
+		if !isTerminalForGuard(m) {
 			groupStates[gid] = true
 		} else if _, exists := groupStates[gid]; !exists {
 			groupStates[gid] = false
@@ -636,6 +652,32 @@ func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) 
 		}
 	}
 	return "", nil
+}
+
+// isTerminalForGuard reports whether a group member should be treated as
+// terminal for the purpose of the `prism review` in-progress guard
+// (ActiveReviewGroupForParent). See the comment on ActiveReviewGroupForParent
+// for the full rationale. The two arms are intentionally OR-ed:
+//
+//  1. state-based: {finished, error, deleted}
+//  2. ended_at-based: ended_at IS NOT NULL
+//
+// Arm 2 is the "ended_at wins" check from #1962: any row whose session has
+// been closed by `prism cleanup` (which calls SetEnded) is terminal here
+// regardless of what the state string says, because the sidecar that would
+// have updated the state to "deleted" is already gone. This is what makes
+// the user's escape hatch — `prism cleanup --yes --session <agent>` —
+// actually release the in-progress guard, even when the cleanup happened
+// against a dead-sidecar row that still reads state="interrupted".
+func isTerminalForGuard(m db.Status) bool {
+	if m.EndedAt != nil {
+		return true
+	}
+	switch m.State {
+	case "finished", "error", "deleted":
+		return true
+	}
+	return false
 }
 
 // currentCycleProducedVerdicts reports whether the current group's
