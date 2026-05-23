@@ -12,7 +12,7 @@ Does anybody even read the readme for nix repos? The code speaks for itself.
 - [Impermanence](https://github.com/nix-community/impermanence)
 - Initial disk formatting and setup (btrfs) with [disko](https://github.com/nix-community/disko)
 - Secret encryption and management with [sops-nix](https://github.com/Mic92/sops-nix)
-- Extensively configured wayland environments (sway and hyprland) and editor (neovim)
+- Extensively configured wayland environment (hyprland) and editor (neovim)
 - A homespun theming system usually using [everforest](https://github.com/sainnhe/everforest)
 - A dynamic wallpaper based on theme, created from a svg with theme colours inserted at build time.
 - Due to the above, I am able to do remote installs using [nixos-anywhere](https://github.com/nix-community/nixos-anywhere)

@@ -480,24 +480,6 @@
       description = "Stub for programs.hyprland (darwin compatibility)";
     };
 
-    # Stub for darwin compatibility: programs.sway
-    programs.sway = lib.mkOption {
-      type = lib.types.submodule {
-        options = {
-          enable = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-          };
-          extraPackages = lib.mkOption {
-            type = lib.types.listOf lib.types.anything;
-            default = [ ];
-          };
-        };
-      };
-      default = { };
-      description = "Stub for programs.sway (darwin compatibility)";
-    };
-
     # Stub for darwin compatibility: programs.steam
     programs.steam = lib.mkOption {
       type = lib.types.submodule {

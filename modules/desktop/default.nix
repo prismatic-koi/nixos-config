@@ -9,7 +9,6 @@
     ./quickshell
     ./rofi
     ./screenshot.nix
-    ./sway
     ./swaync.nix
     ./wallpaper
   ]

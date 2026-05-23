@@ -161,25 +161,6 @@ in
                 https://''${HASS_DOMAIN}/api/services/switch/turn_off
             '';
           };
-          # relevant home automation keyboard shortcuts in sway
-          wayland.windowManager.sway.config =
-            lib.mkIf config.home-manager.users.${username}.wayland.windowManager.sway.enable
-              {
-                keybindings =
-                  let
-                    super = "Mod4";
-                    alt = "Mod1";
-                    pageup = "Prior";
-                    pagedown = "Next";
-                    newwindow = config.nx.programs.defaultWebBrowserSettings.newWindowCmd;
-                    homeDir = config.home-manager.users.${username}.home.homeDirectory;
-                  in
-                  {
-                    "${super}+${pageup}" = "exec ${homeDir}/.local/scripts/home.office.openBlinds";
-                    "${super}+${pagedown}" = "exec ${homeDir}/.local/scripts/home.office.closeBlinds";
-                    "${alt}+h" = "exec ${newwindow} https://$HASS_DOMAIN";
-                  };
-              };
           wayland.windowManager.hyprland.settings =
             lib.mkIf config.home-manager.users.${username}.wayland.windowManager.hyprland.enable
               {
