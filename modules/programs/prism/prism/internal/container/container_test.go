@@ -875,3 +875,165 @@ func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
 // Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --env KEY=VALUE in the
 // podman run arg list, while KUBECONFIG and AWS_CONFIG_FILE are suppressed
 // because those files are bind-mounted at their canonical default paths.
+// ── issue #1960: git identity must be hard-required ─────────────────────────
+//
+// writeGitconfig must refuse to write a gitconfig without [user] in every
+// isolation mode. The previous behaviour (warn and skip [user]) caused git
+// inside the sandbox to fall back to `<sandbox-user>@<sandbox-host>` (e.g.
+// `worker <bot@local>`); GitHub then aggregated that synthetic identity into
+// a `Co-authored-by:` trailer on squash merge. See issue #1960 for the full
+// inventory of historical noisy trailers.
+
+// gitconfigIdentityModes is the per-mode matrix exercised by the regression
+// tests below. Each entry names the mode constant used by writeGitconfig and
+// a label used in error messages. Podman is intentionally NOT covered here —
+// the podman path is no longer reachable in the spawn lifecycle, but the same
+// writeGitconfig codepath gates it, so the bwrap/sandbox-exec coverage below
+// proves the invariant for all three modes.
+var gitconfigIdentityModes = []struct {
+	name string
+	mode isolationMode
+}{
+	{"bwrap", isolationBwrap},
+	{"sandbox-exec", isolationSandboxExec},
+}
+
+// TestWriteGitconfig_AllModes_UserSectionRequired asserts the AC: the staged
+// gitconfig produced by writeGitconfig contains a [user] section with the
+// configured name and email for every isolation mode.
+func TestWriteGitconfig_AllModes_UserSectionRequired(t *testing.T) {
+	for _, tc := range gitconfigIdentityModes {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeHome := t.TempDir()
+			t.Setenv("HOME", fakeHome)
+
+			const wantName = "prismatic-koi"
+			const wantEmail = "ben@tinfoilforest.nz"
+
+			m := New(Config{
+				SessionName:   "repo@feat",
+				AllocatedPort: 14000,
+				GitUserName:   wantName,
+				GitUserEmail:  wantEmail,
+			})
+			if err := m.writeGitconfig(tc.mode); err != nil {
+				t.Fatalf("writeGitconfig(%s): %v", tc.name, err)
+			}
+			t.Cleanup(func() {
+				_ = os.Remove(m.gitconfigFilePath())
+				_ = os.Remove(m.allowedSignersFilePath())
+			})
+
+			data, err := os.ReadFile(m.gitconfigFilePath())
+			if err != nil {
+				t.Fatalf("read gitconfig: %v", err)
+			}
+			content := string(data)
+
+			// [user] header must be present.
+			if !strings.Contains(content, "[user]\n") {
+				t.Errorf("mode=%s: gitconfig is missing the [user] header; content:\n%s",
+					tc.name, content)
+			}
+			// name and email lines must be present with the configured values.
+			wantNameLine := "name = " + wantName
+			if !strings.Contains(content, wantNameLine) {
+				t.Errorf("mode=%s: gitconfig is missing %q; content:\n%s",
+					tc.name, wantNameLine, content)
+			}
+			wantEmailLine := "email = " + wantEmail
+			if !strings.Contains(content, wantEmailLine) {
+				t.Errorf("mode=%s: gitconfig is missing %q; content:\n%s",
+					tc.name, wantEmailLine, content)
+			}
+		})
+	}
+}
+
+// TestWriteGitconfig_AllModes_EmptyIdentityRefused asserts the AC: missing
+// identity is a hard error, not a silent omission. The combinations covered
+// are (name="", email=""), (name="x", email=""), and (name="", email="x") —
+// any empty field is sufficient to refuse.
+func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
+	cases := []struct {
+		label string
+		name  string
+		email string
+	}{
+		{"both-empty", "", ""},
+		{"name-empty", "", "ben@tinfoilforest.nz"},
+		{"email-empty", "prismatic-koi", ""},
+	}
+	for _, mode := range gitconfigIdentityModes {
+		for _, c := range cases {
+			t.Run(mode.name+"/"+c.label, func(t *testing.T) {
+				fakeHome := t.TempDir()
+				t.Setenv("HOME", fakeHome)
+
+				m := New(Config{
+					SessionName:   "repo@feat",
+					AllocatedPort: 14000,
+					GitUserName:   c.name,
+					GitUserEmail:  c.email,
+				})
+				err := m.writeGitconfig(mode.mode)
+				if err == nil {
+					t.Fatalf("mode=%s name=%q email=%q: writeGitconfig returned nil, want error",
+						mode.name, c.name, c.email)
+				}
+				// Error must name the problem clearly so the operator can
+				// fix it. The message threads through to the spawn error
+				// path, so it is what the user actually sees.
+				msg := err.Error()
+				for _, want := range []string{"git identity missing", "[user]"} {
+					if !strings.Contains(msg, want) {
+						t.Errorf("mode=%s name=%q email=%q: error %q must mention %q",
+							mode.name, c.name, c.email, msg, want)
+					}
+				}
+
+				// The gitconfig file must NOT have been written. The
+				// previous behaviour wrote a [user]-less gitconfig and
+				// returned nil, which is the exact regression we want to
+				// catch.
+				if _, statErr := os.Stat(m.gitconfigFilePath()); statErr == nil {
+					t.Errorf("mode=%s name=%q email=%q: gitconfig at %s should not exist after refusal",
+						mode.name, c.name, c.email, m.gitconfigFilePath())
+					_ = os.Remove(m.gitconfigFilePath())
+				}
+			})
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_EmptyIdentityAborts asserts that the failure
+// from writeGitconfig propagates up through PrepareSandboxExecHome (the
+// sandbox-exec staging entry point) so the session does not start. The
+// previous behaviour logged the error and continued, which is what allowed
+// the bug to surface only post-merge.
+func TestPrepareSandboxExecHome_EmptyIdentityAborts(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// PrepareSandboxExecHome requires the various host dirs that newFakeHome
+	// creates for the broader sandbox-exec test suite. Re-create the minimal
+	// subset here so the test stands on its own.
+	for _, d := range []string{".ssh", ".config/pi", ".cache/nix"} {
+		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	m := New(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "empty-identity-test",
+		// Explicitly leave GitUserName and GitUserEmail unset to exercise
+		// the refusal path.
+	})
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err == nil {
+		t.Fatalf("PrepareSandboxExecHome returned stagingHome=%q nil error, want error", stagingHome)
+	}
+	if !strings.Contains(err.Error(), "git identity missing") {
+		t.Errorf("PrepareSandboxExecHome error %q must mention 'git identity missing'", err.Error())
+	}
+}

@@ -15,7 +15,20 @@ import (
 // newSandboxExecManager creates a Manager and injects a sandboxExecIsolator
 // so tests can drive BuildArgs/PrepareSandboxExec end-to-end without a real
 // macOS host.
+//
+// Default git identity is auto-populated when the caller leaves
+// GitUserName / GitUserEmail empty so the per-mode `writeGitconfig` hard
+// error from issue #1960 (refuse to start without [user]) does not
+// retroactively break every pre-existing sandbox-exec test that does not
+// itself care about git identity. Tests that exercise the empty-identity
+// path explicitly set these fields back to "".
 func newSandboxExecManager(cfg Config) *Manager {
+	if cfg.GitUserName == "" {
+		cfg.GitUserName = "test-user"
+	}
+	if cfg.GitUserEmail == "" {
+		cfg.GitUserEmail = "test@example.com"
+	}
 	m := New(cfg)
 	m.isolator = newSandboxExecIsolator(m.name)
 	return m

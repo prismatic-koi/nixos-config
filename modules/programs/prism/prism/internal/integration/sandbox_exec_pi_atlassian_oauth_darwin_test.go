@@ -61,6 +61,10 @@ func newPIOAuthPersistenceManager(t *testing.T) *container.Manager {
 		Worktree:    t.TempDir(),
 		Harness:     "pi",
 		BareRoot:    t.TempDir(), // needed for the BareRoot-ancestor allow block
+		// Required since #1960 — see newProfileManager
+		// (sandbox_exec_helpers_darwin_test.go).
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	}
 	return container.New(cfg)
 }
