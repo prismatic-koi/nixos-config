@@ -81,58 +81,37 @@
           result="$(check_vpn)"
           status=$?
 
-          if [ "$1" = "json" ]; then
-            # JSON output for waybar
-            server_ip="$(sudo ${pkgs.wireguard-tools}/bin/wg show wgnord endpoints 2>/dev/null \
-              | ${pkgs.gawk}/bin/awk '{print $2}' \
-              | ${pkgs.coreutils}/bin/cut -d: -f1)"
-            if [ $status -eq 0 ]; then
-              printf '{"text": "󰌾", "class": "connected", "tooltip": "VPN Connected: %s"}' "$server_ip"
-            else
-              case "$result" in
-                no_interface)   tooltip="VPN Disconnected" ;;
-                no_endpoint)    tooltip="Interface up but no endpoint" ;;
-                no_handshake)   tooltip="No WireGuard handshake yet" ;;
-                stale_handshake:*) age="''${result#stale_handshake:}"; tooltip="Handshake stale (''${age}s ago) — reconnecting?" ;;
-                ping_failed)    tooltip="Interface up but traffic not routing through VPN" ;;
-                *)              tooltip="VPN status unknown" ;;
-              esac
-              if [ "$result" = "no_interface" ]; then
-                printf '{"text": "󰌿", "class": "disconnected", "tooltip": "%s"}' "$tooltip"
-              else
-                printf '{"text": "󰌾", "class": "error", "tooltip": "%s"}' "$tooltip"
-              fi
-            fi
+          # Human-readable output. A JSON output branch previously emitted by
+          # this script for an external status-bar consumer has been removed —
+          # quickshell detects VPN state directly via `nmcli` and does not
+          # consume this script. See issue #1956.
+          if [ $status -eq 0 ]; then
+            server_ip="''${result#ok:}"
+            printf "\033[32mConnected to: %s\n\033[0m" "$server_ip"
+            exit 0
           else
-            # Human-readable output
-            if [ $status -eq 0 ]; then
-              server_ip="''${result#ok:}"
-              printf "\033[32mConnected to: %s\n\033[0m" "$server_ip"
-              exit 0
-            else
-              case "$result" in
-                no_interface)
-                  printf "\033[31mNo active VPN connection\n\033[0m"
-                  ;;
-                no_endpoint)
-                  printf "\033[33mInterface up but no endpoint configured\n\033[0m"
-                  ;;
-                no_handshake)
-                  printf "\033[33mNo WireGuard handshake established yet\n\033[0m"
-                  ;;
-                stale_handshake:*)
-                  age="''${result#stale_handshake:}"
-                  printf "\033[33mHandshake stale (%ss ago) — likely lost connectivity\n\033[0m" "$age"
-                  ;;
-                ping_failed)
-                  printf "\033[31mInterface up but traffic is NOT routing through VPN\n\033[0m"
-                  ;;
-                *)
-                  printf "\033[31mVPN status unknown\n\033[0m"
-                  ;;
-              esac
-              exit 1
-            fi
+            case "$result" in
+              no_interface)
+                printf "\033[31mNo active VPN connection\n\033[0m"
+                ;;
+              no_endpoint)
+                printf "\033[33mInterface up but no endpoint configured\n\033[0m"
+                ;;
+              no_handshake)
+                printf "\033[33mNo WireGuard handshake established yet\n\033[0m"
+                ;;
+              stale_handshake:*)
+                age="''${result#stale_handshake:}"
+                printf "\033[33mHandshake stale (%ss ago) — likely lost connectivity\n\033[0m" "$age"
+                ;;
+              ping_failed)
+                printf "\033[31mInterface up but traffic is NOT routing through VPN\n\033[0m"
+                ;;
+              *)
+                printf "\033[31mVPN status unknown\n\033[0m"
+                ;;
+            esac
+            exit 1
           fi
         '';
       };

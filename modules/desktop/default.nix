@@ -12,7 +12,6 @@
     ./sway
     ./swaync.nix
     ./wallpaper
-    ./waybar
   ]
   ++ (if isLinux then [ ./fonts-linux.nix ] else [ ./fonts-darwin.nix ]);
 }

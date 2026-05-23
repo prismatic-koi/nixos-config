@@ -7,7 +7,7 @@
 
 Everything is hidden or minimal at rest. When invoked — a submap, a launcher, a dialog — it arrives with purpose, then disappears cleanly. The interface does not demand attention. It responds to intention.
 
-This is expressed most clearly in the waybar: two strips, hidden until `Super` is held, then revealed. This pattern extends to all UI elements. Ambient surfaces are quiet. Invoked surfaces are expressive.
+This is expressed most clearly in the quickshell strips: two strips, hidden until `Super` is held, then revealed. This pattern extends to all UI elements. Ambient surfaces are quiet. Invoked surfaces are expressive.
 
 The enso brushstroke wallpaper (which adapts per machine/colourscheme) is the visual north star. The UI should feel **drawn, not rendered** — intentional but imperfect, organic but precise. Think ink on wood.
 
@@ -57,7 +57,7 @@ Transparency is used sparingly and with clear intent. It connects surfaces to th
 | Surface | Opacity | Rationale |
 |---|---|---|
 | Terminal (kitty) | 0.80 | Embedded in environment, connected to wallpaper |
-| Waybar strips | 0.85–0.90 | Ambient, slightly embedded |
+| Quickshell strips | 0.85–0.90 | Ambient, slightly embedded |
 | Notifications | 1.00 | Transience expressed through animation, not opacity |
 | Dialogs / launcher / submap indicator | 1.00 | Fully present and invoked; rainbow border does the work |
 
@@ -125,7 +125,7 @@ When applied, the scrim uses `scrim` (`bg_dim`) at **40–50% opacity**, coverin
 | Submap indicator | Full border — submap *has* the keyboard |
 | Dialogs | Full border — invoked surface |
 | Notifications | No rainbow — single semantic colour instead |
-| Waybar (ambient) | No rainbow — ambient, not invoked |
+| Quickshell strips (ambient) | No rainbow — ambient, not invoked |
 
 ---
 
@@ -164,7 +164,7 @@ When applied, the scrim uses `scrim` (`bg_dim`) at **40–50% opacity**, coverin
 - **Dimming:** high-stakes submaps (e.g. exit) apply a `scrim` overlay at ~40–50% opacity behind the pill; utility submaps (e.g. resize) do not dim — see Dimming rule above
 - Disappears on submap exit (scales down and fades)
 
-### Waybar (top + bottom strips)
+### Quickshell strips (top + bottom)
 - Hidden at rest, revealed on `Super` hold
 - Slight transparency (0.85–0.90), no border
 - Top strip: workspace switcher (left), window title (centre), system tray (right)
@@ -176,7 +176,7 @@ When applied, the scrim uses `scrim` (`bg_dim`) at **40–50% opacity**, coverin
 - Inactive segments: `muted` or `bg3`
 - Active segment: filled with rainbow gradient
 - Switching animates the gradient moving to the new segment
-- Lives in top-left of waybar
+- Lives in top-left of the top strip
 - Implemented in QML (quickshell) for animation capability
 
 ### Notifications
