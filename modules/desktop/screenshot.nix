@@ -57,7 +57,12 @@ in
             };
           # shortcuts for hyprland
           hyprland.settings.bind = [
-            "SUPER SHIFT, S, exec, ${screenshotToClipboard}"
+            {
+              _args = [
+                "SUPER + SHIFT + S"
+                (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${screenshotToClipboard}")'')
+              ];
+            }
           ];
         };
     };

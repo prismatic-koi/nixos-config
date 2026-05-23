@@ -8,33 +8,16 @@
   config = lib.mkIf (config.nx.desktop.hyprland.enable && pkgs.stdenv.isLinux) {
     home-manager.users.${config.nx.username} = {
       home.sessionPath = [ "$HOME/.local/scripts" ];
-      home.file.".local/scripts/cli.system.setHyprGaps" = {
-        executable = true;
-        text =
-          # bash
-          ''
-            #!/bin/sh
-            # Get monitor width with error handling
-            width=$(hyprctl monitors -j 2>/dev/null | jq -r '.[0].width // empty' 2>/dev/null)
-
-            # Check if we got a valid width
-            if [ -z "$width" ] || [ "$width" = "null" ]; then
-              echo "Error: Could not get monitor width" >&2
-              exit 1
-            fi
-
-            # Check if running in super-ultrawide
-            if [ "$width" -gt 5000 ]; then
-              hyprctl keyword workspace "w[t1], gapsout:5 $((width / 4))" || echo "Warning: Failed to set workspace gaps" >&2
-              hyprctl keyword workspace "s[true], gapsout:50 $((width / 4))" || echo "Warning: Failed to set workspace gaps" >&2
-            else
-              # unsetting is not possible, for now set to default
-              # https://github.com/hyprwm/Hyprland/issues/5691
-              hyprctl keyword workspace "w[t1], gapsout:5 5" || echo "Warning: Failed to set workspace gaps" >&2
-              hyprctl keyword workspace "s[true], gapsout:50 50" || echo "Warning: Failed to set workspace gaps" >&2
-            fi
-          '';
-      };
+      # NOTE: `cli.system.setHyprGaps` previously lived here and ran on
+      # session start to install workspace gap rules via `hyprctl keyword
+      # workspace ...`. Under the lua parser that command fails with
+      # "keyword can't work with non-legacy parsers. Use eval." — so the
+      # rules now live declaratively in the hyprland module instead:
+      #   - module:  modules/desktop/hyprland/default.nix (workspace_rule
+      #              extension point)
+      #   - per-host overrides (e.g. the ultrawide on navi):
+      #              machines/navi/configuration.nix
+      # See the matching comment block in default.nix near `workspace_rule`.
       home.file.".local/scripts/system.inputs.toggleTouchpad" = lib.mkIf config.nx.isLaptop {
         executable = true;
         text =
@@ -43,22 +26,28 @@
             #!/bin/sh
             export STATUS_FILE="$XDG_RUNTIME_DIR/touchpad_status"
 
+            # NOTE: `hyprctl keyword` is broken under the lua parser
+            # ("keyword can't work with non-legacy parsers. Use eval."),
+            # so the device-enable/disable lines below silently no-op.
+            # The OSD events still fire via the lua-compatible
+            # `hl.dsp.event(...)` form. Touchpad enable/disable itself is
+            # tracked as a separate follow-up.
             if ! [ -f "$STATUS_FILE" ]; then
               # disable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
               touch "$STATUS_FILE"
               echo "disabled" > "$STATUS_FILE"
-              hyprctl dispatch event "quickshell:osd:touchpad:off" > /dev/null
+              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "enabled" ]; then
               # disable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
               echo "disabled" > "$STATUS_FILE"
-              hyprctl dispatch event "quickshell:osd:touchpad:off" > /dev/null
+              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "disabled" ]; then
               # enable touchpad
               hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' true > /dev/null
               echo "enabled" > "$STATUS_FILE"
-              hyprctl dispatch event "quickshell:osd:touchpad:on" > /dev/null
+              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:on")' > /dev/null
             fi
           '';
       };
@@ -75,7 +64,7 @@
             volume=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print int($2 * 100)}')
 
             # Fire OSD event
-            hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
+            hyprctl dispatch 'hl.dsp.event("quickshell:osd:volume:'"''${volume}"'")' > /dev/null
           '';
       };
       home.file.".local/scripts/system.audio.volumeDown" = {
@@ -91,7 +80,7 @@
             volume=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ | awk '{print int($2 * 100)}')
 
             # Fire OSD event
-            hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
+            hyprctl dispatch 'hl.dsp.event("quickshell:osd:volume:'"''${volume}"'")' > /dev/null
           '';
       };
       home.file.".local/scripts/system.audio.toggleMute" = {
@@ -108,10 +97,10 @@
 
             # Fire OSD event
             if echo "$mute_status" | grep -q "MUTED"; then
-              hyprctl dispatch event "quickshell:osd:volume:muted" > /dev/null
+              hyprctl dispatch 'hl.dsp.event("quickshell:osd:volume:muted")' > /dev/null
             else
               volume=$(echo "$mute_status" | awk '{print int($2 * 100)}')
-              hyprctl dispatch event "quickshell:osd:volume:''${volume}" > /dev/null
+              hyprctl dispatch 'hl.dsp.event("quickshell:osd:volume:'"''${volume}"'")' > /dev/null
             fi
           '';
       };
@@ -130,7 +119,7 @@
             brightness_percent=$(( brightness * 100 / max_brightness ))
 
             # Fire OSD event
-            hyprctl dispatch event "quickshell:osd:brightness:''${brightness_percent}" > /dev/null
+            hyprctl dispatch 'hl.dsp.event("quickshell:osd:brightness:'"''${brightness_percent}"'")' > /dev/null
           '';
       };
       home.file.".local/scripts/system.display.brightnessDown" = lib.mkIf config.nx.isLaptop {
@@ -148,7 +137,7 @@
             brightness_percent=$(( brightness * 100 / max_brightness ))
 
             # Fire OSD event
-            hyprctl dispatch event "quickshell:osd:brightness:''${brightness_percent}" > /dev/null
+            hyprctl dispatch 'hl.dsp.event("quickshell:osd:brightness:'"''${brightness_percent}"'")' > /dev/null
           '';
       };
       home.file.".local/scripts/cli.system.batteryStatus" = lib.mkIf config.nx.isLaptop {
@@ -228,7 +217,14 @@
                   if [[ "$windows_count" -eq 0 ]]; then
                     echo "$windows_count"
                     echo "Empty workspace detected"
-                    hyprctl dispatch workspace m-1 || echo "Warning: Failed to switch workspace" >&2
+                    # Under the lua parser, hyprctl dispatch evaluates its
+                    # args as lua source, so the legacy `workspace m-1`
+                    # shorthand fails to parse. We pass the dispatcher as
+                    # an explicit `hl.dsp.focus(...)` call instead, using
+                    # the "previous" workspace selector (last-focused) —
+                    # semantically equivalent to the original intent and
+                    # independent of workspace numbering / monitor layout.
+                    hyprctl dispatch 'hl.dsp.focus({ workspace = "previous" })' || echo "Warning: Failed to switch workspace" >&2
                   fi
                 fi
               fi
@@ -266,7 +262,7 @@
 
             # Start hyprlock if not already running
             if ! pgrep -x hyprlock > /dev/null; then
-              hyprctl dispatch exec hyprlock
+              hyprctl dispatch 'hl.dsp.exec_cmd("hyprlock")'
 
               # Wait for hyprlock to actually start (check for process)
               for i in {1..20}; do
@@ -316,7 +312,7 @@
 
                 systemd-inhibit --what=idle --why="Preventing idle for a task" sleep infinity &
                 echo $! > "$LOCKFILE"
-                hyprctl dispatch event quickshell:inhibit-on >/dev/null 2>&1 || true
+                hyprctl dispatch 'hl.dsp.event("quickshell:inhibit-on")' >/dev/null 2>&1 || true
             }
 
             stop_inhibit() {
@@ -332,7 +328,7 @@
                     fi
                     rm -f "$LOCKFILE"
                 fi
-                hyprctl dispatch event quickshell:inhibit-off >/dev/null 2>&1 || true
+                hyprctl dispatch 'hl.dsp.event("quickshell:inhibit-off")' >/dev/null 2>&1 || true
             }
 
             status_inhibit() {

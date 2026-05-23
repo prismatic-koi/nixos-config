@@ -49,9 +49,12 @@
           wayland.windowManager.hyprland.settings =
             lib.mkIf (config.home-manager.users.${config.nx.username}.wayland.windowManager.hyprland.enable)
               {
-                windowrule = [
+                window_rule = [
                   # fake fullscreen, good store videos
-                  "sync_fullscreen 0, match:class steam"
+                  {
+                    match.class = "steam";
+                    sync_fullscreen = false;
+                  }
                 ];
               };
         };

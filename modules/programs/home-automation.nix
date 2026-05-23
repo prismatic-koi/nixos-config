@@ -189,11 +189,17 @@ in
                     pagedown = "Next";
                     homeDir = config.home-manager.users.${username}.home.homeDirectory;
                     newwindow = config.nx.programs.defaultWebBrowserSettings.newWindowCmd;
+                    mkExec = keys: cmd: {
+                      _args = [
+                        keys
+                        (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("${cmd}")'')
+                      ];
+                    };
                   in
                   [
-                    "SUPER, ${pageup}, exec, ${homeDir}/.local/scripts/home.office.openBlinds"
-                    "SUPER, ${pagedown}, exec, ${homeDir}/.local/scripts/home.office.closeBlinds"
-                    "ALT, h, exec, ${newwindow} https://$HASS_DOMAIN"
+                    (mkExec "SUPER + ${pageup}" "${homeDir}/.local/scripts/home.office.openBlinds")
+                    (mkExec "SUPER + ${pagedown}" "${homeDir}/.local/scripts/home.office.closeBlinds")
+                    (mkExec "ALT + h" "${newwindow} https://$HASS_DOMAIN")
                   ];
               };
           # This script turns off the grow lights

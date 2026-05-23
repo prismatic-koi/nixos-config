@@ -407,8 +407,12 @@ in
 
       keybind = lib.mkOption {
         type = lib.types.str;
-        default = "SUPER, V";
-        description = "Keybind for toggle voice recording (hold to talk, release to transcribe)";
+        default = "SUPER + V";
+        description = ''
+          Keybind for toggle voice recording (hold to talk, release to
+          transcribe). Format follows Hyprland's lua-API `hl.bind` keys
+          string (mods + key joined with ` + `).
+        '';
       };
 
       notificationSound = lib.mkOption {
@@ -437,13 +441,44 @@ in
         pkgs.pulseaudio # for paplay notification sound
       ];
 
-      # Add Hyprland keybinding
-      wayland.windowManager.hyprland.settings.bind = [
-        # Hold to talk: press to start recording, release to transcribe
-        "${cfg.keybind}, exec, voice-to-text toggle"
-        # Cancel recording
-        "${cfg.keybind} SHIFT, exec, voice-to-text cancel"
-      ];
+      # Add Hyprland keybinding.
+      #
+      # The cancel-bind adds SHIFT to the user's keybind. Hyprland's lua
+      # `hl.bind` parses the last `+`-separated token of the keys string as
+      # the key and everything before it as mods — so we cannot append
+      # "+ SHIFT" after the key (`"SUPER + V + SHIFT"` would bind SHIFT as
+      # the key with mods `SUPER + V`, and V is not a valid mod). Inject
+      # SHIFT *before* the final token instead: `"SUPER + V"` →
+      # `"SUPER + SHIFT + V"`.
+      wayland.windowManager.hyprland.settings.bind =
+        let
+          tokens = lib.splitString " + " cfg.keybind;
+          mods = lib.init tokens;
+          key = lib.last tokens;
+          cancelKeys = lib.concatStringsSep " + " (
+            mods
+            ++ [
+              "SHIFT"
+              key
+            ]
+          );
+        in
+        [
+          # Hold to talk: press to start recording, release to transcribe
+          {
+            _args = [
+              cfg.keybind
+              (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text toggle")'')
+            ];
+          }
+          # Cancel recording
+          {
+            _args = [
+              cancelKeys
+              (lib.generators.mkLuaInline ''hl.dsp.exec_cmd("voice-to-text cancel")'')
+            ];
+          }
+        ];
 
       # Persist configuration and model cache
       home.persistence."/persist" = {
