@@ -1,4 +1,4 @@
-module github.com/prismatic-koi/battery-notifier
+module github.com/prismatic-koi/battery-monitor
 
 go 1.26.1
 

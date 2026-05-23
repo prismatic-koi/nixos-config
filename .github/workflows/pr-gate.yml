@@ -21,25 +21,25 @@ jobs:
     needs:
       - go-tests
       - nix-build-prism-checked
-      - go-tests-battery-notifier
-      - nix-build-battery-notifier-checked
+      - go-tests-battery-monitor
+      - nix-build-battery-monitor-checked
     if: always()
     steps:
       - name: Check upstream job results
         env:
           GO_TESTS_RESULT: ${{ needs.go-tests.result }}
           NIX_BUILD_PRISM_CHECKED_RESULT: ${{ needs.nix-build-prism-checked.result }}
-          GO_TESTS_BN_RESULT: ${{ needs.go-tests-battery-notifier.result }}
-          NIX_BUILD_BN_CHECKED_RESULT: ${{ needs.nix-build-battery-notifier-checked.result }}
+          GO_TESTS_BM_RESULT: ${{ needs.go-tests-battery-monitor.result }}
+          NIX_BUILD_BM_CHECKED_RESULT: ${{ needs.nix-build-battery-monitor-checked.result }}
         run: |
           echo "go-tests: $GO_TESTS_RESULT"
           echo "nix-build-prism-checked: $NIX_BUILD_PRISM_CHECKED_RESULT"
-          echo "go-tests-battery-notifier: $GO_TESTS_BN_RESULT"
-          echo "nix-build-battery-notifier-checked: $NIX_BUILD_BN_CHECKED_RESULT"
+          echo "go-tests-battery-monitor: $GO_TESTS_BM_RESULT"
+          echo "nix-build-battery-monitor-checked: $NIX_BUILD_BM_CHECKED_RESULT"
           if [ "$GO_TESTS_RESULT" != "success" ] \
              || [ "$NIX_BUILD_PRISM_CHECKED_RESULT" != "success" ] \
-             || [ "$GO_TESTS_BN_RESULT" != "success" ] \
-             || [ "$NIX_BUILD_BN_CHECKED_RESULT" != "success" ]; then
+             || [ "$GO_TESTS_BM_RESULT" != "success" ] \
+             || [ "$NIX_BUILD_BM_CHECKED_RESULT" != "success" ]; then
             echo "pr-gate: one or more required jobs did not succeed" >&2
             exit 1
           fi
@@ -168,82 +168,82 @@ jobs:
         if: steps.changes.outputs.prism != 'true'
         run: echo "no prism-relevant paths touched; skipping nix-build-prism-checked"
 
-  # Full Go test suite for battery-notifier with -race. Mirrors the
-  # `go-tests` job above. Path-filtered so non-battery-notifier PRs
+  # Full Go test suite for battery-monitor with -race. Mirrors the
+  # `go-tests` job above. Path-filtered so non-battery-monitor PRs
   # short-circuit to a single echo step.
-  go-tests-battery-notifier:
-    name: go-tests-battery-notifier
+  go-tests-battery-monitor:
+    name: go-tests-battery-monitor
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Detect battery-notifier-relevant changes
+      - name: Detect battery-monitor-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
         with:
           filters: |
-            bn:
-              - 'modules/services/battery-notifier/**'
-              - 'pkgs/battery-notifier.nix'
-              - 'modules/services/battery-notifier.nix'
+            bm:
+              - 'modules/services/battery-monitor/**'
+              - 'pkgs/battery-monitor.nix'
+              - 'modules/services/battery-monitor.nix'
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/pr-gate.yml'
       - name: Set up Go
-        if: steps.changes.outputs.bn == 'true'
+        if: steps.changes.outputs.bm == 'true'
         uses: actions/setup-go@v6
         with:
-          go-version-file: modules/services/battery-notifier/battery-notifier/go.mod
-          cache-dependency-path: modules/services/battery-notifier/battery-notifier/go.sum
+          go-version-file: modules/services/battery-monitor/battery-monitor/go.mod
+          cache-dependency-path: modules/services/battery-monitor/battery-monitor/go.sum
       - name: go build
-        if: steps.changes.outputs.bn == 'true'
-        working-directory: modules/services/battery-notifier/battery-notifier
+        if: steps.changes.outputs.bm == 'true'
+        working-directory: modules/services/battery-monitor/battery-monitor
         run: go build ./...
       - name: go test ./... -race
-        if: steps.changes.outputs.bn == 'true'
-        working-directory: modules/services/battery-notifier/battery-notifier
+        if: steps.changes.outputs.bm == 'true'
+        working-directory: modules/services/battery-monitor/battery-monitor
         run: go test -v ./... -race
-      - name: No battery-notifier-relevant changes
-        if: steps.changes.outputs.bn != 'true'
-        run: echo "no battery-notifier-relevant paths touched; skipping go-tests-battery-notifier"
+      - name: No battery-monitor-relevant changes
+        if: steps.changes.outputs.bm != 'true'
+        run: echo "no battery-monitor-relevant paths touched; skipping go-tests-battery-monitor"
 
-  # Builds battery-notifier with doCheck=true so the homeless-shelter
+  # Builds battery-monitor with doCheck=true so the homeless-shelter
   # sandbox signal ($HOME=/homeless-shelter) is preserved in the PR
   # pipeline. Mirrors nix-build-prism-checked above.
-  nix-build-battery-notifier-checked:
-    name: nix-build-battery-notifier-checked
+  nix-build-battery-monitor-checked:
+    name: nix-build-battery-monitor-checked
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Detect battery-notifier-relevant changes
+      - name: Detect battery-monitor-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
         with:
           filters: |
-            bn:
-              - 'modules/services/battery-notifier/**'
-              - 'pkgs/battery-notifier.nix'
-              - 'modules/services/battery-notifier.nix'
+            bm:
+              - 'modules/services/battery-monitor/**'
+              - 'pkgs/battery-monitor.nix'
+              - 'modules/services/battery-monitor.nix'
               - '**/go.mod'
               - '**/go.sum'
               - '.github/workflows/pr-gate.yml'
       - uses: cachix/install-nix-action@v31
-        if: steps.changes.outputs.bn == 'true'
+        if: steps.changes.outputs.bm == 'true'
         with:
           extra_nix_config: |-
             accept-flake-config = true
             access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
           nix_path: nixpkgs=channel:nixos-unstable
       - uses: cachix/cachix-action@v17
-        if: steps.changes.outputs.bn == 'true'
+        if: steps.changes.outputs.bm == 'true'
         with:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: nix build battery-notifier with runChecks=true
-        if: steps.changes.outputs.bn == 'true'
+      - name: nix build battery-monitor with runChecks=true
+        if: steps.changes.outputs.bm == 'true'
         run: |
           nix build --print-build-logs --impure --no-link \
-            --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.battery-notifier.override { runChecks = true; }'
-      - name: No battery-notifier-relevant changes
-        if: steps.changes.outputs.bn != 'true'
-        run: echo "no battery-notifier-relevant paths touched; skipping nix-build-battery-notifier-checked"
+            --expr '(builtins.getFlake (toString ./.)).packages.x86_64-linux.battery-monitor.override { runChecks = true; }'
+      - name: No battery-monitor-relevant changes
+        if: steps.changes.outputs.bm != 'true'
+        run: echo "no battery-monitor-relevant paths touched; skipping nix-build-battery-monitor-checked"

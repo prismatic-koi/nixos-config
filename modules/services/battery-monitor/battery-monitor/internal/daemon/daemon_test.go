@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prismatic-koi/battery-notifier/internal/config"
-	"github.com/prismatic-koi/battery-notifier/internal/notify"
-	"github.com/prismatic-koi/battery-notifier/internal/source"
-	"github.com/prismatic-koi/battery-notifier/internal/state"
+	"github.com/prismatic-koi/battery-monitor/internal/config"
+	"github.com/prismatic-koi/battery-monitor/internal/notify"
+	"github.com/prismatic-koi/battery-monitor/internal/source"
+	"github.com/prismatic-koi/battery-monitor/internal/state"
 )
 
 // fakeNotifier records every call for assertion in tests.

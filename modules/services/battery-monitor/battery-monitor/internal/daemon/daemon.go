@@ -37,10 +37,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prismatic-koi/battery-notifier/internal/config"
-	"github.com/prismatic-koi/battery-notifier/internal/notify"
-	"github.com/prismatic-koi/battery-notifier/internal/source"
-	"github.com/prismatic-koi/battery-notifier/internal/state"
+	"github.com/prismatic-koi/battery-monitor/internal/config"
+	"github.com/prismatic-koi/battery-monitor/internal/notify"
+	"github.com/prismatic-koi/battery-monitor/internal/source"
+	"github.com/prismatic-koi/battery-monitor/internal/state"
 )
 
 // DefaultDebounce is the coalesce window for status flips. 3 seconds
@@ -66,7 +66,7 @@ func (o Options) withDefaults() Options {
 		o.Debounce = DefaultDebounce
 	}
 	if o.AppName == "" {
-		o.AppName = "battery-notifier"
+		o.AppName = "battery-monitor"
 	}
 	return o
 }

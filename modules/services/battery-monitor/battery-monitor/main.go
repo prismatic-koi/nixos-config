@@ -1,11 +1,11 @@
-// battery-notifier is a long-running user daemon that watches one or
+// battery-monitor is a long-running user daemon that watches one or
 // more batteries (laptop via UPower, Razer mouse via sysfs) and emits
 // freedesktop notifications when they cross configured low / full
 // thresholds.
 //
 // The daemon is configured by a JSON file path passed via --config.
 // The Nix module emits that file into the nix store; see
-// modules/services/battery-notifier.nix and DESIGN.md.
+// modules/services/battery-monitor.nix and DESIGN.md.
 package main
 
 import (
@@ -17,17 +17,17 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/prismatic-koi/battery-notifier/internal/config"
-	"github.com/prismatic-koi/battery-notifier/internal/daemon"
-	"github.com/prismatic-koi/battery-notifier/internal/notify"
-	"github.com/prismatic-koi/battery-notifier/internal/source"
-	"github.com/prismatic-koi/battery-notifier/internal/source/razer"
-	"github.com/prismatic-koi/battery-notifier/internal/source/upower"
+	"github.com/prismatic-koi/battery-monitor/internal/config"
+	"github.com/prismatic-koi/battery-monitor/internal/daemon"
+	"github.com/prismatic-koi/battery-monitor/internal/notify"
+	"github.com/prismatic-koi/battery-monitor/internal/source"
+	"github.com/prismatic-koi/battery-monitor/internal/source/razer"
+	"github.com/prismatic-koi/battery-monitor/internal/source/upower"
 )
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "battery-notifier:", err)
+		fmt.Fprintln(os.Stderr, "battery-monitor:", err)
 		os.Exit(1)
 	}
 }
@@ -70,7 +70,7 @@ func run() error {
 
 	d := daemon.New(notifier, daemon.Options{
 		Logger:  logger,
-		AppName: "battery-notifier",
+		AppName: "battery-monitor",
 	})
 
 	sources := make([]source.Source, 0, len(cfg.Devices))
@@ -89,13 +89,13 @@ func run() error {
 		syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	logger.Info("battery-notifier starting",
+	logger.Info("battery-monitor starting",
 		"event", "startup",
 		"devices", len(cfg.Devices))
 	if err := d.Run(ctx, cfg.Devices, sources); err != nil && err != context.Canceled {
 		return err
 	}
-	logger.Info("battery-notifier exiting",
+	logger.Info("battery-monitor exiting",
 		"event", "shutdown")
 	return nil
 }

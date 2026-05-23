@@ -17,7 +17,7 @@ package source
 import (
 	"context"
 
-	"github.com/prismatic-koi/battery-notifier/internal/state"
+	"github.com/prismatic-koi/battery-monitor/internal/state"
 )
 
 // Source produces Samples for one device.

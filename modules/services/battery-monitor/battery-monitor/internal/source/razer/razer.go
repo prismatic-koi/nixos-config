@@ -30,7 +30,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prismatic-koi/battery-notifier/internal/state"
+	"github.com/prismatic-koi/battery-monitor/internal/state"
 )
 
 // PollInterval is the cadence at which the mouse sysfs is read. The

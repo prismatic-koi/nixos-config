@@ -151,11 +151,11 @@
         # `runChecks = true` (see pkgs/prism.nix).
         prism = pkgs.callPackage ./pkgs/prism.nix { };
 
-        # Default battery-notifier build — same `runChecks` split as
+        # Default battery-monitor build — same `runChecks` split as
         # prism. Used by nixosConfigurations and local `nh switch`.
-        # The `nix-build-battery-notifier-checked` CI job overrides
+        # The `nix-build-battery-monitor-checked` CI job overrides
         # `runChecks = true` to preserve the homeless-shelter signal.
-        battery-notifier = pkgs.callPackage ./pkgs/battery-notifier.nix { };
+        battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
       });
 
       devShells = forEachSystem (pkgs: {
