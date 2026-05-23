@@ -52,6 +52,10 @@ func newPIOAuthProfileManager(t *testing.T) *container.Manager {
 		InstanceID:  instanceID,
 		Worktree:    t.TempDir(),
 		Harness:     "pi",
+		// Required since #1960 — see newProfileManager
+		// (sandbox_exec_helpers_darwin_test.go).
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	}
 	return container.New(cfg)
 }

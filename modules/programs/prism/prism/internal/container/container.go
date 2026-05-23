@@ -534,13 +534,19 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 // the sandbox, where $HOME depends on the isolation mode (see isolationMode).
 //
 // Sections included:
-//   - [user] — only when GitUserName and GitUserEmail are both non-empty;
-//     includes signingKey when the signing public key can be resolved.
+//   - [user] — always; name and email come from cfg.GitUserName /
+//     cfg.GitUserEmail. Includes signingKey when the signing public key can
+//     be resolved.
 //   - [commit] / [gpg] — only when the signing keys are available.
 //   - [push] — autoSetupRemote = true (always).
 //   - [init] — defaultBranch = main (always).
 //
-// Missing identity → [user] section omitted, warning logged (AC-14).
+// Missing identity → return error, refuse to write the gitconfig (issue
+// #1960). The previous behaviour of "warn and skip [user]" caused git inside
+// the sandbox to fall back to OS-level identity guessing
+// (`<sandbox-user>@<sandbox-host>`), which GitHub then aggregated into noisy
+// `Co-authored-by:` trailers on squash merge.
+//
 // Missing signing keys → signing sections omitted, warning logged (AC-13).
 //
 // The mode argument controls the paths embedded in the generated file:
@@ -603,24 +609,33 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 	sandboxSigningKeyPub := filepath.Join(sandboxSshDir, "signing-key.pub")
 	sandboxAllowedSigners := filepath.Join(sandboxSshDir, "allowed_signers")
 
-	// [user] section — only when identity is present.
-	if m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
-		sb.WriteString("[user]\n")
-		sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
-		sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
-		if hasSigning {
-			sb.WriteString("    signingKey = " + sandboxSigningKeyPub + "\n")
-		}
-	} else {
-		log.Printf("container: git identity (name=%q, email=%q) missing; omitting [user] section from gitconfig",
-			m.cfg.GitUserName, m.cfg.GitUserEmail)
+	// [user] section — required. Missing identity is a hard error (issue
+	// #1960): without a configured [user] section, git falls back to
+	// OS-level identity guessing inside the sandbox (e.g. `worker@prism`,
+	// `bot@local`), and any commit produced by the session is authored as
+	// that synthetic identity. GitHub then aggregates the synthetic
+	// identity into a `Co-authored-by:` trailer when the PR is squash
+	// merged. Refusing to write the gitconfig forces the operator to fix
+	// the upstream config (nix → prism-tui.nix extractor → config.json) at
+	// session-start time rather than discovering the noise post-merge.
+	if m.cfg.GitUserName == "" || m.cfg.GitUserEmail == "" {
+		return fmt.Errorf(
+			"container: git identity missing (name=%q, email=%q): refusing to start session without [user] in gitconfig — "+
+				"set git_user_name and git_user_email in ~/.config/prism/config.json (Nix users: ensure programs.git.includes[].contents.user.name and .email are set; "+
+				"prism-tui.nix extracts these into config.json at switch time)",
+			m.cfg.GitUserName, m.cfg.GitUserEmail,
+		)
+	}
+	sb.WriteString("[user]\n")
+	sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
+	sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
+	if hasSigning {
+		sb.WriteString("    signingKey = " + sandboxSigningKeyPub + "\n")
 	}
 
-	// [commit] and [gpg] sections — only when signing keys are available AND
-	// identity is present. Without identity the [user] section is omitted, which
-	// means signingKey is never set; writing gpgsign=true in that case would
-	// cause every git commit to fail.
-	if hasSigning && m.cfg.GitUserName != "" && m.cfg.GitUserEmail != "" {
+	// [commit] and [gpg] sections — only when signing keys are available.
+	// (Identity is now guaranteed present by the check above.)
+	if hasSigning {
 		// Read the signing public key content to build the allowed_signers file.
 		// Only write [gpg "ssh"] allowedSignersFile when the file was actually
 		// produced — if it can't be written, podman must not be given a

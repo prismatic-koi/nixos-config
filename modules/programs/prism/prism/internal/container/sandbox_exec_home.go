@@ -340,8 +340,14 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// Use the existing writeGitconfig helper with a synthetic isolationMode
 	// that uses the staging HOME as $HOME. We write the gitconfig to the
 	// staging path directly.
+	//
+	// A failure here is fatal — return the error so the session does not
+	// start with a missing or broken gitconfig. Previously we logged and
+	// continued, which is what let issue #1960 (missing [user] section →
+	// synthetic in-sandbox identity → noisy Co-authored-by trailer) sneak
+	// through unnoticed.
 	if err := m.writeGitconfigToDir(stagingHome); err != nil {
-		log.Printf("container: sandbox-exec: write staging .gitconfig: %v", err)
+		return "", fmt.Errorf("container: sandbox-exec: write staging .gitconfig: %w", err)
 	}
 
 	// ── .nix-profile symlink ──────────────────────────────────────────────────
