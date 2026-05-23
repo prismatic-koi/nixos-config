@@ -198,67 +198,14 @@
             echo "''${icon} ''${capacity}%"
           '';
       };
-      home.file.".local/scripts/cli.hyprland.switchWorkspaceOnWindowClose" = {
-        executable = true;
-        text =
-          # bash
-          ''
-            #!/bin/sh
-
-            # Cleanup function
-            cleanup() {
-              echo "Script interrupted, cleaning up..."
-              exit 0
-            }
-
-            # Trap signals for clean exit
-            trap cleanup INT TERM
-
-            function handle {
-              if [[ "$1" == closewindow* ]]; then
-                echo "Close Window detected"
-
-                # Get workspace info with error handling
-                active_workspace=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id // empty' 2>/dev/null)
-                if [ -z "$active_workspace" ] || [ "$active_workspace" = "null" ]; then
-                  echo "Warning: Could not get active workspace" >&2
-                  return
-                fi
-
-                if [[ "$active_workspace" -ne 1 ]]; then
-                  windows_count=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.windows // empty' 2>/dev/null)
-                  if [ -z "$windows_count" ] || [ "$windows_count" = "null" ]; then
-                    echo "Warning: Could not get window count" >&2
-                    return
-                  fi
-
-                  if [[ "$windows_count" -eq 0 ]]; then
-                    echo "$windows_count"
-                    echo "Empty workspace detected"
-                    # Under the lua parser, hyprctl dispatch evaluates its
-                    # args as lua source, so the legacy `workspace m-1`
-                    # shorthand fails to parse. We pass the dispatcher as
-                    # an explicit `hl.dsp.focus(...)` call instead, using
-                    # the "previous" workspace selector (last-focused) —
-                    # semantically equivalent to the original intent and
-                    # independent of workspace numbering / monitor layout.
-                    hyprctl dispatch 'hl.dsp.focus({ workspace = "previous" })' || echo "Warning: Failed to switch workspace" >&2
-                  fi
-                fi
-              fi
-            }
-
-            # Main loop with error recovery
-            while true; do
-              if ! ${pkgs.socat}/bin/socat - "UNIX-CONNECT:$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock" 2>/dev/null | while read -r line; do handle "$line"; done; then
-                echo "Socket connection lost, retrying in 5 seconds..." >&2
-                sleep 5
-              else
-                break
-              fi
-            done
-          '';
-      };
+      # NOTE: `cli.hyprland.switchWorkspaceOnWindowClose` previously lived
+      # here — a long-running socat daemon that watched the hyprland
+      # event socket and dispatched a workspace switch when the last
+      # window on a non-1 workspace closed. Under the lua parser the
+      # whole thing collapses into a native `hl.on("window.close", ...)`
+      # handler in the hyprland config; see the matching entry in
+      # `modules/desktop/hyprland/default.nix` under the `on` list.
+      # (issue #1961)
       home.file.".local/scripts/cli.system.suspend" = {
         executable = true;
         text =
