@@ -68,16 +68,14 @@
               })
               (lib.mkIf screenCfg.enable {
                 timeout = screenCfg.duration;
-                # KNOWN BROKEN UNDER LUA: `hyprctl dispatch dpms off|on`
-                # fails to parse under the lua dispatch wrapper. The
-                # lua-call form `hl.dsp.dpms(...)` is the likely
-                # replacement but the exact arg shape needs to be
-                # verified against hyprland source — testing live risks
-                # leaving the display in DPMS-off with no recovery path,
-                # so this is deferred to a follow-up. For now,
-                # screen-off-on-idle is silently broken.
-                on-timeout = "hyprctl dispatch dpms off";
-                on-resume = "hyprctl dispatch dpms on";
+                # Under the lua parser `hl.dsp.dpms` takes a table with
+                # an `action` field — see
+                # `src/config/lua/bindings/LuaBindingsDispatchers.cpp`
+                # (`hlDpms` → `Internal::tableToggleAction`) and
+                # `parseToggleStr` in `LuaBindingsInternal.cpp`, which
+                # accepts "on"/"off"/"enable"/"disable"/"toggle".
+                on-timeout = ''hyprctl dispatch 'hl.dsp.dpms({ action = "off" })' '';
+                on-resume = ''hyprctl dispatch 'hl.dsp.dpms({ action = "on" })' '';
               })
               (lib.mkIf suspendCfg.enable {
                 timeout = suspendCfg.duration;
