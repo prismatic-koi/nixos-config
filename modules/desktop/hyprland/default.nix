@@ -371,13 +371,15 @@ in
                   ];
                 }
               ];
-              # ---- startup hook ----------------------------------------------
-              # Replaces hyprlang `exec-once`. `hl.on("hyprland.start", ...)`
-              # fires once when the compositor starts and runs each
-              # registered command via `hl.exec_cmd`. (The lua API also
-              # exposes a separate `config.reloaded` event for the
-              # per-reload `exec` equivalent — we don't currently use it,
-              # so no second handler is registered.)
+              # ---- event handlers --------------------------------------------
+              # Each entry renders as one `hl.on(eventName, handler)` call.
+              # The list shape is required because we register more than
+              # one handler (startup commands + the empty-workspace
+              # autoswitch); HM's lua renderer accepts either a single
+              # attrset or a list of them and emits one `hl.<name>(...)`
+              # call per entry (see
+              # nixpkgs/modules/services/window-managers/hyprland.nix
+              # `renderCalls`).
               #
               # `lib.optional <bool> <x>` evaluates to `[ <x> ]` or `[]` —
               # cleaner than `lib.mkIf` here because we're building a plain
@@ -385,6 +387,13 @@ in
               # module system's `mkIf`-stripping pass never runs.
               on =
                 let
+                  # Replaces hyprlang `exec-once`. `hl.on("hyprland.start",
+                  # ...)` fires once when the compositor starts and runs
+                  # each registered command via `hl.exec_cmd`. (The lua
+                  # API also exposes a separate `config.reloaded` event
+                  # for the per-reload `exec` equivalent — we don't
+                  # currently use it, so no second handler is registered
+                  # here.)
                   startCmds =
                     lib.optional config.nx.desktop.wallpaper.enable "swaybg -i ${homeDir}/.config/wallpaper-${config.nx.desktop.wallpaper.resolution}.png --mode fill"
                     ++ [
@@ -394,21 +403,64 @@ in
                     # default to 70% brightness on laptops
                     ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl s 70%"
                     # default to keyboard backlight off on laptops
-                    ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0"
-                    ++ [
-                      "${scriptsDir}/cli.hyprland.switchWorkspaceOnWindowClose"
-                    ];
+                    ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0";
+                  # NB: the old startup list also exec'd the
+                  # `cli.hyprland.switchWorkspaceOnWindowClose` socat
+                  # daemon, which has been replaced by the native
+                  # `window.close` handler registered below (issue #1961).
                 in
-                {
-                  _args = [
-                    "hyprland.start"
-                    (mkLuaInline ''
-                      function()
-                      ${lib.concatMapStringsSep "\n" (cmd: "  hl.exec_cmd(${lib.generators.toLua { } cmd})") startCmds}
-                      end
-                    '')
-                  ];
-                };
+                [
+                  {
+                    _args = [
+                      "hyprland.start"
+                      (mkLuaInline ''
+                        function()
+                        ${lib.concatMapStringsSep "\n" (cmd: "  hl.exec_cmd(${lib.generators.toLua { } cmd})") startCmds}
+                        end
+                      '')
+                    ];
+                  }
+                  # When the last window on a non-1 workspace closes,
+                  # switch focus back to the previously-focused workspace.
+                  # Lua-native replacement for the previous socat-based
+                  # daemon (`cli.hyprland.switchWorkspaceOnWindowClose`)
+                  # which polled the hyprland event socket and shelled
+                  # out to `hyprctl activeworkspace -j | jq` for each
+                  # close event. Same observable behaviour, no daemon,
+                  # no socat, no per-event subprocess fork.
+                  #
+                  # Event name and workspace introspection verified
+                  # against the type stubs shipped with hyprland 0.55.1:
+                  #   - `HL.EventName` includes "window.close" (the lua
+                  #     binding of the legacy `closewindow` IPC event)
+                  #     in `share/hypr/stubs/hl.meta.lua`.
+                  #   - `hl.get_active_workspace()` returns an
+                  #     `HL.Workspace` with `id : integer` and
+                  #     `is_empty : boolean` fields. Per the type stubs,
+                  #     `is_empty` is true iff the workspace has no
+                  #     tracked windows — equivalent to the original
+                  #     script's `windows == 0` check via the IPC JSON.
+                  #   - The workspace-switch dispatcher is
+                  #     `hl.dsp.focus({ workspace = "previous" })`, the
+                  #     same form used by every numbered-workspace
+                  #     keybind above (see comment near `SUPER + 1`).
+                  #     `"previous"` matches the existing script's
+                  #     post-#1954 dispatch and is monitor-/numbering-
+                  #     independent (last-focused workspace, not `m-1`).
+                  {
+                    _args = [
+                      "window.close"
+                      (mkLuaInline ''
+                        function()
+                          local ws = hl.get_active_workspace()
+                          if ws ~= nil and ws.id ~= 1 and ws.is_empty then
+                            hl.dispatch(hl.dsp.focus({ workspace = "previous" }))
+                          end
+                        end
+                      '')
+                    ];
+                  }
+                ];
               # ---- window rules (lua name: window_rule, underscore) ----------
               # The main module contributes nothing; per-app rules merge in
               # from gaming/, programs/qutebrowser/, etc. via list-merge.
