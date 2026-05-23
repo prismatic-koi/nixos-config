@@ -237,7 +237,7 @@ PanelWindow {
         return "󰾅";
     }
 
-    // Battery icon — tiered icons matching the waybar script
+    // Battery icon — tiered capacity icons
     function batteryIcon(text, charging) {
         if (charging) return "󰂄";
         var cap = parseInt(text, 10);

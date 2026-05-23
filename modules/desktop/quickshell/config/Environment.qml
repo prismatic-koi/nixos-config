@@ -377,7 +377,7 @@ PanelWindow {
             width: root.cardWidth
             height: root.cardHeight
 
-            // resting position: top-right corner with margin (waybar is 40px + 30px margin = 70px offset)
+            // resting position: top-right corner with margin (top strip is 40px + 30px margin = 70px offset)
             x: parent.width - root.cardWidth - root.cardMargin
             y: root.cardMargin + 40 + root.cardMargin
 

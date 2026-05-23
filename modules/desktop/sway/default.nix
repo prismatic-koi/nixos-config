@@ -186,11 +186,6 @@ in
                   "Escape" = "mode default";
                 };
               };
-              bars = [
-                {
-                  command = "${pkgs.waybar}/bin/waybar";
-                }
-              ];
               window = {
                 border = 3;
                 titlebar = false;

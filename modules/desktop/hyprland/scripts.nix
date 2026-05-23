@@ -297,8 +297,6 @@
               sleep 0.2
             fi
 
-            pkill -SIGUSR2 waybar
-
             # Add a small delay before suspending to let everything settle
             sleep 0.3
             systemctl suspend

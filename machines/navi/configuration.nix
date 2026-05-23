@@ -19,7 +19,6 @@
     deviceLocation = "office";
     desktop = {
       theme = "everforest";
-      waybar.enable = false;
       wallpaper.variant = "enso-6colour";
     };
     programs = {
