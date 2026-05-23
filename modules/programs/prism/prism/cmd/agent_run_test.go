@@ -445,6 +445,11 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14010,
+		// Required since #1960: writeGitconfig refuses to start a session
+		// without [user] in the gitconfig (otherwise git falls back to
+		// `<sandbox-user>@<sandbox-host>` inside the sandbox).
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	})
 	t.Cleanup(func() {
 		// PrepareSandboxExec writes the profile to a temp file; remove it
@@ -469,6 +474,9 @@ func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
 	m := container.New(container.Config{
 		SessionName:   "repo@gone",
 		AllocatedPort: 14011,
+		// Required since #1960 — see TestValidateSandboxExecArgs_OK.
+		GitUserName:  "test-user",
+		GitUserEmail: "test@example.com",
 	})
 	args, err := m.PrepareSandboxExec()
 	if err != nil {
