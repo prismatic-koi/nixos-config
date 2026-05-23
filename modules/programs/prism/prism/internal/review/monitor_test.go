@@ -456,6 +456,199 @@ func TestActiveReviewGroupForParent_InProgressRound(t *testing.T) {
 	}
 }
 
+// TestActiveReviewGroupForParent_InterruptedWithEndedAtIsTerminal is the
+// primary regression test for #1962 Bug A.
+//
+// Reproducer shape: a review group has one member in state "interrupted"
+// whose sidecar has already exited (ended_at is non-NULL, simulating what
+// `prism cleanup --yes --session <agent>` does via SetEnded). Before #1962
+// this row was treated as non-terminal forever, permanently blocking the
+// next `prism review` invocation. After the fix, ActiveReviewGroupForParent
+// must treat the ended_at-non-NULL row as terminal regardless of state
+// string and return "" (no active group).
+func TestActiveReviewGroupForParent_InterruptedWithEndedAtIsTerminal(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@interrupted-cleaned"
+
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// Round 3 review-goal is "interrupted" with ended_at set (sidecar
+	// already exited; cleanup ran but did not flip state to "deleted"
+	// because the sidecar was already gone).
+	interruptedSess := parent + "~review-3-review-goal"
+	if err := d.UpsertStatus(interruptedSess, "nixos-config", "/wt", "interrupted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus interrupted: %v", err)
+	}
+	if err := d.SetGroupID(interruptedSess, groupID); err != nil {
+		t.Fatalf("SetGroupID interrupted: %v", err)
+	}
+	if err := d.SetEnded(interruptedSess); err != nil {
+		t.Fatalf("SetEnded interrupted: %v", err)
+	}
+
+	// Sibling agents finished cleanly.
+	for _, agent := range []string{"review-code", "review-security", "review-qa", "review-context"} {
+		sess := parent + "~review-3-" + agent
+		if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+			t.Fatalf("UpsertStatus %s: %v", agent, err)
+		}
+		if err := d.SetGroupID(sess, groupID); err != nil {
+			t.Fatalf("SetGroupID %s: %v", agent, err)
+		}
+	}
+
+	gid, err := review.ActiveReviewGroupForParent(d, parent)
+	if err != nil {
+		t.Fatalf("ActiveReviewGroupForParent: %v", err)
+	}
+	if gid != "" {
+		t.Errorf("ActiveReviewGroupForParent = %q, want \"\" (interrupted member with ended_at must be terminal; #1962 Bug A)", gid)
+	}
+}
+
+// TestActiveReviewGroupForParent_InterruptedWithLiveSidecarStillBlocks is the
+// edge-case test for #1962 AC #4: when the in-progress guard fires for a
+// genuinely active round (a live sidecar with a not-yet-terminal agent), the
+// existing refusal behaviour is preserved unchanged.
+//
+// "Genuinely active" here means an interrupted row whose ended_at is still
+// NULL — the sidecar is alive and the user may still redirect the agent via
+// `prism prompt` (#1495). This row must NOT be treated as terminal.
+func TestActiveReviewGroupForParent_InterruptedWithLiveSidecarStillBlocks(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@interrupted-live"
+
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	// review-goal is interrupted but sidecar is still alive (ended_at NULL).
+	interruptedSess := parent + "~review-1-review-goal"
+	if err := d.UpsertStatus(interruptedSess, "nixos-config", "/wt", "interrupted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus interrupted: %v", err)
+	}
+	if err := d.SetGroupID(interruptedSess, groupID); err != nil {
+		t.Fatalf("SetGroupID interrupted: %v", err)
+	}
+	// Note: deliberately NOT calling SetEnded — the sidecar is alive.
+
+	gid, err := review.ActiveReviewGroupForParent(d, parent)
+	if err != nil {
+		t.Fatalf("ActiveReviewGroupForParent: %v", err)
+	}
+	if gid != groupID {
+		t.Errorf("ActiveReviewGroupForParent = %q, want %q (live-sidecar interrupted must still block; #1962 AC #4)", gid, groupID)
+	}
+}
+
+// TestActiveReviewGroupForParent_DeletedIsTerminal verifies that a
+// state="deleted" member is treated as terminal by the in-progress guard.
+// This aligns with db.terminalStates and closes the second arm of the
+// divergence noted in groups.go: a deleted row should never block a new
+// review round.
+func TestActiveReviewGroupForParent_DeletedIsTerminal(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@deleted-member"
+
+	groupID, err := d.RegisterGroup(parent)
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	deletedSess := parent + "~review-1-review-goal"
+	if err := d.UpsertStatus(deletedSess, "nixos-config", "/wt", "deleted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus deleted: %v", err)
+	}
+	if err := d.SetGroupID(deletedSess, groupID); err != nil {
+		t.Fatalf("SetGroupID deleted: %v", err)
+	}
+
+	gid, err := review.ActiveReviewGroupForParent(d, parent)
+	if err != nil {
+		t.Fatalf("ActiveReviewGroupForParent: %v", err)
+	}
+	if gid != "" {
+		t.Errorf("ActiveReviewGroupForParent = %q, want \"\" (deleted member must be terminal)", gid)
+	}
+}
+
+// TestRunAsync_InProgressGuardReportsCorrectRound is the regression test for
+// #1962 Bug B: the in-progress-guard error message must report the round of
+// the actually-stuck group, not the lowest-numbered round across all groups
+// for this parent.
+//
+// Reproducer shape: three prior rounds for the same parent, only round 3
+// has a non-terminal (live-sidecar interrupted) member. The guard must fire
+// with "round 3" in the message, not "round 1".
+func TestRunAsync_InProgressGuardReportsCorrectRound(t *testing.T) {
+	dbDir := t.TempDir()
+	dbPath := filepath.Join(dbDir, "prism.db")
+	d, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	t.Cleanup(func() { d.Close() })
+	parent := "nixos-config@multi-round"
+
+	// Rounds 1 and 2 — every member terminal (finished).
+	for _, round := range []int{1, 2} {
+		gid, gErr := d.RegisterGroupWithPR(parent, "42", round)
+		if gErr != nil {
+			t.Fatalf("RegisterGroupWithPR round %d: %v", round, gErr)
+		}
+		for _, agent := range []string{"review-goal", "review-code"} {
+			sess := fmt.Sprintf("%s~review-%d-%s", parent, round, agent)
+			if err := d.UpsertStatus(sess, "nixos-config", "/wt", "finished", nil, nil); err != nil {
+				t.Fatalf("UpsertStatus: %v", err)
+			}
+			if err := d.SetGroupID(sess, gid); err != nil {
+				t.Fatalf("SetGroupID: %v", err)
+			}
+		}
+	}
+
+	// Round 3 — review-goal is interrupted with a live sidecar (ended_at
+	// NULL), which blocks the guard. This is the "genuinely stuck" group.
+	round3ID, err := d.RegisterGroupWithPR(parent, "42", 3)
+	if err != nil {
+		t.Fatalf("RegisterGroupWithPR round 3: %v", err)
+	}
+	stuckSess := parent + "~review-3-review-goal"
+	if err := d.UpsertStatus(stuckSess, "nixos-config", "/wt", "interrupted", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus stuck: %v", err)
+	}
+	if err := d.SetGroupID(stuckSess, round3ID); err != nil {
+		t.Fatalf("SetGroupID stuck: %v", err)
+	}
+
+	opts := review.Opts{
+		ParentSession: parent,
+		WorkerSession: parent,
+		Worktree:      t.TempDir(),
+		DBPath:        dbPath,
+		Agents:        []review.Agent{{Name: "review-goal"}},
+		PRNumber:      "42",
+	}
+	_, err = review.RunAsync(opts, "")
+	if err == nil {
+		t.Fatalf("RunAsync: expected in-progress-guard error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "round 3 is already in progress") {
+		t.Errorf("in-progress guard error = %q, want substring \"round 3 is already in progress\" (#1962 Bug B)", msg)
+	}
+	if !strings.Contains(msg, round3ID) {
+		t.Errorf("in-progress guard error = %q, want substring %q (the stuck group's ID)", msg, round3ID)
+	}
+	if strings.Contains(msg, "round 1 is already in progress") {
+		t.Errorf("in-progress guard error = %q, must NOT mention round 1 (round 1 is terminal)", msg)
+	}
+}
+
 // ── buildMonitorResults ───────────────────────────────────────────────────────
 
 // TestBuildMonitorResults_MissingSession verifies that a session not in

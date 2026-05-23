@@ -387,9 +387,20 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		// Non-fatal: log and proceed (better to allow duplicate than block falsely).
 		proglog.Warnf("[prism review] warning: could not check for active review group: %v\n", activeErr)
 	} else if activeGroupID != "" {
-		// Determine the round number for a useful error message.
-		members, _ := d.GroupMembersForParent(opts.ParentSession)
-		activeRound := ReviewRoundForGroup(members)
+		// Determine the round number for a useful error message. Filter
+		// members to just the active group's rows before extracting the
+		// round — without this filter, ReviewRoundForGroup returns the
+		// first round it encounters across ALL groups for this parent,
+		// which is almost always round 1 even when the stuck group is
+		// round N>1 (#1962 Bug B).
+		allMembers, _ := d.GroupMembersForParent(opts.ParentSession)
+		activeMembers := make([]db.Status, 0, len(allMembers))
+		for _, m := range allMembers {
+			if m.GroupID != nil && *m.GroupID == activeGroupID {
+				activeMembers = append(activeMembers, m)
+			}
+		}
+		activeRound := ReviewRoundForGroup(activeMembers)
 		if activeRound > 0 {
 			return nil, fmt.Errorf("prism review: round %d is already in progress for this PR (group %s).\n"+
 				"Wait for it to complete or cancel the sessions with `prism cleanup`.",
