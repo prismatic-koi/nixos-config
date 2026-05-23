@@ -122,6 +122,34 @@
         scale = 1;
       }
     ];
+    # Outer-margin workspace rules for the 5120-wide ultrawide. The
+    # monitor is wide enough that a single tiled window stretched edge
+    # to edge is unreadable, so on workspaces with exactly one tiled
+    # window (`w[t1]`) and on special workspaces (`s[true]`) we reserve
+    # 1280px (5120 / 4) of outer gap on each side. `gaps_out` accepts a
+    # CSS-shorthand structured form `{ top, right, bottom, left }`
+    # mirroring the hyprlang `gapsout:5 1280` two-value shorthand
+    # (top/bottom 5, left/right 1280).
+    workspace_rule = [
+      {
+        workspace = "w[t1]";
+        gaps_out = {
+          top = 5;
+          bottom = 5;
+          left = 1280;
+          right = 1280;
+        };
+      }
+      {
+        workspace = "s[true]";
+        gaps_out = {
+          top = 50;
+          bottom = 50;
+          left = 1280;
+          right = 1280;
+        };
+      }
+    ];
   };
 
   # List packages installed in system profile. To search, run:

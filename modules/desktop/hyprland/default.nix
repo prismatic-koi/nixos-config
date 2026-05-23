@@ -196,11 +196,17 @@ in
                       # don't show update notifications each boot
                       no_update_news = true;
                     };
-                    # animations master switch (per-leaf `enabled` still set
-                    # on each entry of the top-level `animation` list below).
-                    animations = {
-                      enabled = true;
-                    };
+                    # NB: the animations master switch (`animations.enabled`)
+                    # is intentionally NOT set here. Including it in
+                    # `hl.config({...})` re-initialises the animation
+                    # manager *after* the `hl.curve(...)` / `hl.animation(...)`
+                    # calls have already run (config renders after both,
+                    # alphabetically), which clobbers each leaf's `bezier`
+                    # reference back to the engine default and visibly drops
+                    # the snappy `myBezier` curve we define above. Animations
+                    # default to enabled in Hyprland, and the per-leaf
+                    # `enabled = true` on each `hl.animation(...)` entry
+                    # below is sufficient.
                   }
                 ];
               };
@@ -275,11 +281,14 @@ in
                   leaf = "border";
                   enabled = true;
                   speed = 2;
-                  # hyprlang implicitly provided a `default` bezier; the lua
-                  # API doesn't — referencing an undefined curve here drops
-                  # Hyprland into a safe state with no keybinds at startup.
-                  # Fall back to the `linear` curve we define explicitly.
-                  bezier = "linear";
+                  # The original hyprlang config used `default` here, which
+                  # hyprlang implicitly defined as a snappy ease-out (closer
+                  # in feel to `myBezier`). The lua API has no implicit
+                  # `default` curve — referencing an undefined name drops
+                  # Hyprland into a safe state with no keybinds at startup
+                  # — so we use `myBezier` explicitly, which matches the
+                  # original perceived snappiness better than `linear`.
+                  bezier = "myBezier";
                 }
                 {
                   leaf = "borderangle";
@@ -292,7 +301,10 @@ in
                   leaf = "fade";
                   enabled = true;
                   speed = 2;
-                  bezier = "linear";
+                  # Same reasoning as `border` above — original was `default`,
+                  # which felt much snappier than `linear`. `linear` here
+                  # is what caused the sluggish floating-window fade-in.
+                  bezier = "myBezier";
                 }
                 {
                   leaf = "workspaces";
@@ -360,40 +372,31 @@ in
                 }
               ];
               # ---- startup hook ----------------------------------------------
-              # Replaces hyprlang `exec-once` and `exec`. `hl.on("hyprland.start", ...)`
-              # is the lua-idiomatic equivalent: run these commands once at
-              # session start. We fold both lists into one hook (`exec`'s
-              # per-reload semantics aren't relied on by anything here — both
-              # entries are idempotent restart-style commands).
+              # Replaces hyprlang `exec-once`. `hl.on("hyprland.start", ...)`
+              # fires once when the compositor starts and runs each
+              # registered command via `hl.exec_cmd`. (The lua API also
+              # exposes a separate `config.reloaded` event for the
+              # per-reload `exec` equivalent — we don't currently use it,
+              # so no second handler is registered.)
               #
-              # `lib.mkIf <false> { ... }` entries are stripped by the module
-              # system before they reach the renderer, so the function body
-              # only contains the actually-active commands per machine.
               # `lib.optional <bool> <x>` evaluates to `[ <x> ]` or `[]` —
               # cleaner than `lib.mkIf` here because we're building a plain
               # list in let-scope, not contributing to an option, so the
               # module system's `mkIf`-stripping pass never runs.
               on =
                 let
-                  startupCmds =
+                  startCmds =
                     lib.optional config.nx.desktop.wallpaper.enable "swaybg -i ${homeDir}/.config/wallpaper-${config.nx.desktop.wallpaper.resolution}.png --mode fill"
                     ++ [
                       "hypridle"
                     ]
                     ++ lib.optional (config.nx.isLaptop == false) "steam -silent -no-cef-sandbox"
-                    ++ [
-                      "${scriptsDir}/game.inputRemapper.defaults"
-                    ]
                     # default to 70% brightness on laptops
                     ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl s 70%"
                     # default to keyboard backlight off on laptops
                     ++ lib.optional config.nx.isLaptop "${pkgs.brightnessctl}/bin/brightnessctl --device='asus::kbd_backlight' set 0"
                     ++ [
                       "${scriptsDir}/cli.hyprland.switchWorkspaceOnWindowClose"
-                      "waybar"
-                      # ex-`exec` entries (now also once-per-session):
-                      "pkill waybar && hyprctl dispatch exec waybar"
-                      "${scriptsDir}/cli.system.setHyprGaps"
                     ];
                 in
                 {
@@ -401,7 +404,7 @@ in
                     "hyprland.start"
                     (mkLuaInline ''
                       function()
-                      ${lib.concatMapStringsSep "\n" (cmd: "  hl.exec_cmd(${lib.generators.toLua { } cmd})") startupCmds}
+                      ${lib.concatMapStringsSep "\n" (cmd: "  hl.exec_cmd(${lib.generators.toLua { } cmd})") startCmds}
                       end
                     '')
                   ];
@@ -410,6 +413,22 @@ in
               # The main module contributes nothing; per-app rules merge in
               # from gaming/, programs/qutebrowser/, etc. via list-merge.
               window_rule = [ ];
+              # ---- workspace rules (lua name: workspace_rule, underscore) ----
+              # Each entry renders as one `hl.workspace_rule({...})` call,
+              # matching the upstream-shipped example at
+              # /share/hypr/hyprland.lua. Per-host overrides (e.g. wide outer
+              # margins on the ultrawide monitor in machines/navi) merge in
+              # via list-merge.
+              #
+              # Lua-native replacement for the previous shell script
+              # `cli.system.setHyprGaps`, which used `hyprctl keyword
+              # workspace ...` at session start to install these rules
+              # imperatively. That approach was incompatible with the lua
+              # parser — `hyprctl keyword` refuses to run against a
+              # non-legacy parser ("keyword can't work with non-legacy
+              # parsers. Use eval.") — so the rules now live declaratively
+              # in the config itself.
+              workspace_rule = [ ];
               # ---- binds -----------------------------------------------------
               # In lua, `bind` / `bindl` / `bindrt` / `bindm` collapse into a
               # single `hl.bind(keys, dispatcher, flags?)` call; flag tables
@@ -420,20 +439,29 @@ in
               # XF86AudioPlay"). The format matches the canonical example
               # config shipped at /share/hypr/hyprland.lua.
               bind = [
-                # show waybar + quickshell widgets on SUPER_L keydown
-                (mkExec "SUPER_L" "pkill -SIGUSR1 waybar; hyprctl dispatch event quickshell:show")
-                # hide waybar + quickshell widgets on SUPER_L keyup. Single
+                # show quickshell widgets on SUPER_L keydown. We're in lua
+                # already, so call `hl.dsp.event(...)` directly rather
+                # than shelling out via `hl.dsp.exec_cmd("hyprctl dispatch
+                # ...")` — same effect, no fork, no parser round-trip.
+                #
+                # Modifier state for SUPER_L (the left Super key itself):
+                # at keydown the modifier isn't held yet from hyprland's
+                # perspective, so the bind matches no-mod + `SUPER_L`.
+                # At keyup the modifier IS held (briefly, by release
+                # physics), so the release-firing hide bind needs the
+                # `SUPER + SUPER_L` form to match. This split mirrors the
+                # original hyprlang config (`, SUPER_L, ...` for show /
+                # `SUPER, SUPER_L, ...` for hide).
+                (mkBind "SUPER_L" ''hl.dsp.event("quickshell:show")'')
+                # hide quickshell widgets on SUPER_L keyup. Single
                 # top-level entry with `submap_universal = true` replaces the
                 # previous three copies (top-level + inside `resize` + inside
                 # `exit` submap) — see docs section 8.5.
-                (mkBindFlags "SUPER_L"
-                  ''hl.dsp.exec_cmd("pkill -SIGUSR2 waybar; hyprctl dispatch event quickshell:hide")''
-                  {
-                    release = true;
-                    transparent = true;
-                    submap_universal = true;
-                  }
-                )
+                (mkBindFlags "SUPER + SUPER_L" ''hl.dsp.event("quickshell:hide")'' {
+                  release = true;
+                  transparent = true;
+                  submap_universal = true;
+                })
                 # Motions — direction values use the full word form
                 # (`"left"`/`"right"`/`"up"`/`"down"`) per the upstream
                 # example at /share/hypr/hyprland.lua, not the hyprlang

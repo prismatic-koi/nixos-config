@@ -54,22 +54,35 @@
           enable = true;
           settings = {
             general = {
-              lock_cmd = "hyprctl dispatch exec hyprlock";
+              # `hyprctl dispatch` under the lua parser evaluates args as
+              # lua source, so legacy `exec hyprlock` fails to parse.
+              # Pass the lua-call form instead, matching the pattern in
+              # the upstream-shipped example at /share/hypr/hyprland.lua
+              # (line ~260): `hyprctl dispatch 'hl.dsp.exit()'`.
+              lock_cmd = ''hyprctl dispatch 'hl.dsp.exec_cmd("hyprlock")' '';
             };
             listener = [
               (lib.mkIf lockCfg.enable {
                 timeout = lockCfg.duration;
-                on-timeout = "hyprctl dispatch exec hyprlock";
+                on-timeout = ''hyprctl dispatch 'hl.dsp.exec_cmd("hyprlock")' '';
               })
               (lib.mkIf screenCfg.enable {
                 timeout = screenCfg.duration;
+                # KNOWN BROKEN UNDER LUA: `hyprctl dispatch dpms off|on`
+                # fails to parse under the lua dispatch wrapper. The
+                # lua-call form `hl.dsp.dpms(...)` is the likely
+                # replacement but the exact arg shape needs to be
+                # verified against hyprland source — testing live risks
+                # leaving the display in DPMS-off with no recovery path,
+                # so this is deferred to a follow-up. For now,
+                # screen-off-on-idle is silently broken.
                 on-timeout = "hyprctl dispatch dpms off";
                 on-resume = "hyprctl dispatch dpms on";
               })
               (lib.mkIf suspendCfg.enable {
                 timeout = suspendCfg.duration;
                 on-timeout = "systemctl suspend";
-                on-resume = "hyprctl dispatch exec hyprlock";
+                on-resume = ''hyprctl dispatch 'hl.dsp.exec_cmd("hyprlock")' '';
               })
             ];
           };
