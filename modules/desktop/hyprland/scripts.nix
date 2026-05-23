@@ -26,26 +26,44 @@
             #!/bin/sh
             export STATUS_FILE="$XDG_RUNTIME_DIR/touchpad_status"
 
-            # NOTE: `hyprctl keyword` is broken under the lua parser
-            # ("keyword can't work with non-legacy parsers. Use eval."),
-            # so the device-enable/disable lines below silently no-op.
-            # The OSD events still fire via the lua-compatible
-            # `hl.dsp.event(...)` form. Touchpad enable/disable itself is
-            # tracked as a separate follow-up.
+            # Mutating `device[...]:enabled` at runtime under the lua
+            # parser. `hyprctl keyword` is rejected by the lua parser
+            # ("keyword can't work with non-legacy parsers. Use eval.")
+            # and `hyprctl eval` does not exist as a subcommand on
+            # hyprland 0.55.1 — so we drive the device API directly via
+            # `hyprctl dispatch '<lua>'`.
+            #
+            # `hyprctl dispatch` evaluates its argument as a lua
+            # expression and feeds the result to `hl.dispatch(...)`,
+            # whose typedef is `fun(dispatcher: HL.Dispatcher|function)`
+            # — so passing a `function() ... end` literal lets us run
+            # arbitrary lua side-effects (here: `hl.device({...})`)
+            # without needing the result to be a dispatcher value. The
+            # device API's `enabled` field is the lua-native replacement
+            # for the hyprlang `device[NAME]:enabled` keyword and is
+            # declared in the type stubs at
+            # `share/hypr/stubs/hl.meta.lua` (`HL.DeviceSpec.enabled`).
+            set_touchpad() {
+              # $1 is the lua boolean literal (`true` or `false`).
+              hyprctl dispatch \
+                "function() hl.device({ name = \"asup1415:00-093a:300c-touchpad\", enabled = $1 }) end" \
+                > /dev/null
+            }
+
             if ! [ -f "$STATUS_FILE" ]; then
               # disable touchpad
-              hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
+              set_touchpad false
               touch "$STATUS_FILE"
               echo "disabled" > "$STATUS_FILE"
               hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "enabled" ]; then
               # disable touchpad
-              hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' false > /dev/null
+              set_touchpad false
               echo "disabled" > "$STATUS_FILE"
               hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
             elif [ "$(cat $STATUS_FILE)" = "disabled" ]; then
               # enable touchpad
-              hyprctl keyword 'device[asup1415:00-093a:300c-touchpad]:enabled' true > /dev/null
+              set_touchpad true
               echo "enabled" > "$STATUS_FILE"
               hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:on")' > /dev/null
             fi
