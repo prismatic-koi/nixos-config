@@ -103,7 +103,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".ssh"),
 		filepath.Join(stagingHome, ".aws"),
 		filepath.Join(stagingHome, ".kube"),
-		filepath.Join(stagingHome, ".config", "pi"),
 		filepath.Join(stagingHome, ".cache"),
 		filepath.Join(stagingHome, ".pi"),
 	}
@@ -294,26 +293,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(home, ".npm"),
 		filepath.Join(stagingHome, ".npm"),
 	)
-
-	// ── .config/pi/ ───────────────────────────────────────────────────────────
-	// Mirror the pi config directory into staging so pi finds its configuration.
-	// agents/ is role-conditional: excluded for review-* agents because those
-	// containers receive their role prompt inline via the system prompt rather
-	// than via the agents/ directory.
-	piConfigDir := filepath.Join(home, ".config", "pi")
-	piAllowlist := []string{
-		"settings.json",
-		"AGENTS.md",
-		"skills",
-	}
-	if !strings.HasPrefix(m.cfg.AgentRole, "review-") {
-		piAllowlist = append(piAllowlist, "agents")
-	}
-	for _, entry := range piAllowlist {
-		src := filepath.Join(piConfigDir, entry)
-		dst := filepath.Join(stagingHome, ".config", "pi", entry)
-		symlinkIfExists(src, dst)
-	}
 
 	// ── .cache/ ───────────────────────────────────────────────────────────────
 
@@ -745,7 +724,7 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// Scan the top-level staging HOME and all immediate subdirectories that
 	// the staging HOME builder creates (one level deep).
 	scanDir("")
-	subDirs := []string{".ssh", ".aws", ".kube", ".config/pi", ".cache", ".pi"}
+	subDirs := []string{".ssh", ".aws", ".kube", ".cache", ".pi"}
 	for _, sub := range subDirs {
 		scanDir(sub)
 	}

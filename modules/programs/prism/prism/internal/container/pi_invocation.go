@@ -356,9 +356,15 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		_ = symlinkIdempotent(authTarget, authLink)
 	}
 
-	// Copy settings.json and themes/ from ~/.pi/agent/ into the staging
-	// directory. Each copy is best-effort and silent when the source does
-	// not exist — PI can start without them.
+	// Copy settings.json, themes/, and AGENTS.md from ~/.pi/agent/ into the
+	// staging directory. Each copy is best-effort and silent when the source
+	// does not exist — PI can start without them.
+	//
+	// AGENTS.md is copied (not symlinked) so the staging dir is self-contained:
+	// a `nh switch` mid-session must not change the AGENTS.md content that an
+	// active PI session reads. copyFileIfExists overwrites any existing
+	// destination, so re-running on the same staging dir picks up updated
+	// host content (idempotent for re-spawn).
 	if home, err := os.UserHomeDir(); err == nil {
 		piAgentSrc := filepath.Join(home, ".pi", "agent")
 		src := filepath.Join(piAgentSrc, "settings.json")
@@ -367,6 +373,9 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		themeSrc := filepath.Join(piAgentSrc, "themes")
 		themeDst := filepath.Join(stagingDir, "themes")
 		_ = copyDirIfExists(themeSrc, themeDst)
+		agentsSrc := filepath.Join(piAgentSrc, "AGENTS.md")
+		agentsDst := filepath.Join(stagingDir, "AGENTS.md")
+		_ = copyFileIfExists(agentsSrc, agentsDst)
 	}
 
 	// Symlink skills/ from the staging dir to the resolved target of
