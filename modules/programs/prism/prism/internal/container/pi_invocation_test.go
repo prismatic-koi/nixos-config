@@ -805,12 +805,121 @@ func TestStagePIAgentConfigDir_MissingHostFiles(t *testing.T) {
 		t.Errorf("auth.json must be a symlink; mode = %v", info.Mode())
 	}
 
-	// settings.json and themes/ must be absent (no copy when source absent).
+	// settings.json, themes/, and AGENTS.md must be absent (no copy when source absent).
 	if _, statErr := os.Stat(filepath.Join(hostDir, "settings.json")); statErr == nil {
 		t.Errorf("settings.json must not exist when source is absent")
 	}
 	if _, statErr := os.Stat(filepath.Join(hostDir, "themes")); statErr == nil {
 		t.Errorf("themes/ must not exist when source is absent")
+	}
+	// AGENTS.md must be absent entirely — no file, no dangling symlink, no
+	// empty file. Lstat (not Stat) so we also catch any stray symlink.
+	if _, lstatErr := os.Lstat(filepath.Join(hostDir, "AGENTS.md")); lstatErr == nil {
+		t.Errorf("AGENTS.md must not exist when source is absent (no copy, no symlink, no empty file)")
+	}
+}
+
+// AGENTS.md must be **copied** (not symlinked) from ~/.pi/agent/AGENTS.md into
+// the per-session staging dir. The copy is required so that an `nh switch`
+// mid-session does not change the AGENTS.md content that an active PI session
+// reads — the staging dir is self-contained for this file. See issue #1978.
+func TestStagePIAgentConfigDir_CopiesAGENTSMd(t *testing.T) {
+	// When ~/.pi/agent/AGENTS.md exists on the host, StagePIAgentConfigDir
+	// must copy its byte content into <staging-dir>/AGENTS.md as a regular
+	// file (not a symlink).
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	agentsContent := "# Global AGENTS.md\n\nProject conventions go here.\n"
+	if err := os.WriteFile(filepath.Join(piAgentDir, "AGENTS.md"), []byte(agentsContent), 0o600); err != nil {
+		t.Fatalf("write AGENTS.md: %v", err)
+	}
+
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-test")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir: %v", err)
+	}
+
+	stagedPath := filepath.Join(hostDir, "AGENTS.md")
+
+	// Byte content must equal the host file.
+	got, readErr := os.ReadFile(stagedPath)
+	if readErr != nil {
+		t.Fatalf("read staged AGENTS.md: %v", readErr)
+	}
+	if string(got) != agentsContent {
+		t.Errorf("staged AGENTS.md content = %q, want %q", string(got), agentsContent)
+	}
+
+	// Must be a regular file, not a symlink — otherwise an `nh switch`
+	// mid-session would change what the running PI session reads. This is
+	// also the AC asserted by-construction for the sandbox-exec (Darwin)
+	// path: agent_run_sandbox_exec_darwin.go collapses
+	// PIAgentConfigSandboxDir = PIAgentConfigHostDir, so the staging dir path
+	// produced here is the same path $PI_CODING_AGENT_DIR resolves to inside
+	// the sandbox-exec'd process.
+	info, lstatErr := os.Lstat(stagedPath)
+	if lstatErr != nil {
+		t.Fatalf("lstat staged AGENTS.md: %v", lstatErr)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("staged AGENTS.md must be a regular file, not a symlink; mode = %v", info.Mode())
+	}
+	if !info.Mode().IsRegular() {
+		t.Errorf("staged AGENTS.md must be a regular file; mode = %v", info.Mode())
+	}
+}
+
+func TestStagePIAgentConfigDir_AGENTSMdIdempotentOnReSpawn(t *testing.T) {
+	// Re-running StagePIAgentConfigDir on the same staging dir must overwrite
+	// any previously copied AGENTS.md with the current host content. This is
+	// the re-spawn case: a coordinator may re-stage a session and the host
+	// AGENTS.md may have changed in the meantime.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
+	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
+		t.Fatalf("mkdir ~/.pi/agent: %v", err)
+	}
+	hostAgentsPath := filepath.Join(piAgentDir, "AGENTS.md")
+
+	// First stage with content A.
+	contentA := "# AGENTS.md v1\n"
+	if err := os.WriteFile(hostAgentsPath, []byte(contentA), 0o600); err != nil {
+		t.Fatalf("write AGENTS.md (v1): %v", err)
+	}
+	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-idempotent")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
+	}
+	got, _ := os.ReadFile(filepath.Join(hostDir, "AGENTS.md"))
+	if string(got) != contentA {
+		t.Fatalf("after first call: AGENTS.md content = %q, want %q", string(got), contentA)
+	}
+
+	// Mutate the host AGENTS.md and re-stage. The staging copy must reflect
+	// the new host content.
+	contentB := "# AGENTS.md v2 — updated conventions\n"
+	if err := os.WriteFile(hostAgentsPath, []byte(contentB), 0o600); err != nil {
+		t.Fatalf("write AGENTS.md (v2): %v", err)
+	}
+	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-idempotent")
+	if err != nil {
+		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
+	}
+	got, readErr := os.ReadFile(filepath.Join(hostDir, "AGENTS.md"))
+	if readErr != nil {
+		t.Fatalf("read staged AGENTS.md after second call: %v", readErr)
+	}
+	if string(got) != contentB {
+		t.Errorf("after second call: AGENTS.md content = %q, want %q (re-stage must overwrite with current host content)", string(got), contentB)
 	}
 }
 
