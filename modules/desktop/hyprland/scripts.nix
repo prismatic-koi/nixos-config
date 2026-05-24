@@ -158,6 +158,15 @@
             hyprctl dispatch 'hl.dsp.event("quickshell:osd:brightness:'"''${brightness_percent}"'")' > /dev/null
           '';
       };
+      # Live caller: modules/desktop/hyprland/hyprlock.nix renders the battery
+      # icon + percentage on the lockscreen via a `cmd[update:5000]` label in
+      # the laptop-only block, polling this script every 5 seconds.
+      #
+      # Intentionally kept (not orphaned): the survey in closed issue #1961
+      # flagged this script as potentially unused after battery-notifier was
+      # rewritten as a Go daemon in #1955, but the hyprlock label above is a
+      # live dependency. See issue #1980 for the reachability check and
+      # decision to retain.
       home.file.".local/scripts/cli.system.batteryStatus" = lib.mkIf config.nx.isLaptop {
         executable = true;
         text =
