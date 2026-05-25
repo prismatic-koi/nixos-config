@@ -21,7 +21,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 - Two concurrent `prism spawn` calls for the same session name in the same prism process serialise through an in-process lock; the second caller sees the live row and exits non-zero with `"is already alive ... concurrent spawn rejected"`.
 - `prism spawn --branch <name>` without `--reuse` fails when an active session already exists on that branch; with `--reuse` it returns the existing session's name, port, and agent and exits 0.
 - `prism spawn --wait` blocks until the spawned session's first turn reaches `finished`, `error`, `interrupted`, or `deleted`, with a default timeout of `10m`.
-- `prism spawn` enforces a per-isolator concurrency cap for `bwrap` and `sandbox-exec` (compiled-in default `20` each; configurable via `bwrap_concurrency_cap` / `sandbox_exec_concurrency_cap` in `~/.config/prism/config.json`) and refuses to start a new session over the cap unless `--ignore-concurrency-cap` is passed; `host` mode is uncapped.
+- `prism spawn` enforces a per-isolator concurrency cap for `bwrap` and `sandbox-exec` (compiled-in default `50` each; configurable via `bwrap_concurrency_cap` / `sandbox_exec_concurrency_cap` in `~/.config/prism/config.json`) and refuses to start a new session over the cap unless `--ignore-concurrency-cap` is passed; `host` mode is uncapped.
 - Spawning onto `main` in a bare+worktree repo (where `<repo>/main/` already exists as a worktree) fails with a git error rather than creating a second worktree on the same branch.
 - The default isolation mode for a new session is the machine-level `default_isolation_mode` from `~/.config/prism/config.json` (default `host`), optionally overridden per-path by `project_isolation_overrides`.
 

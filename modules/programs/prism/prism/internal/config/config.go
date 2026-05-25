@@ -108,14 +108,14 @@ type Config struct {
 	// BwrapConcurrencyCap is the maximum number of active bwrap sessions
 	// (agent_status rows with ended_at IS NULL AND isolation_mode = 'bwrap')
 	// before new bwrap spawns are refused. Zero means uncapped (not "cap of
-	// zero"). The default of 20 is conservative enough for any machine without
+	// zero"). The default of 50 is conservative enough for any machine without
 	// an explicit per-machine override.
 	BwrapConcurrencyCap int `json:"bwrap_concurrency_cap"`
 
 	// SandboxExecConcurrencyCap is the maximum number of active sandbox-exec
 	// sessions (agent_status rows with ended_at IS NULL AND
 	// isolation_mode = 'sandbox-exec') before new sandbox-exec spawns are
-	// refused. Zero means uncapped (not "cap of zero"). The default of 20
+	// refused. Zero means uncapped (not "cap of zero"). The default of 50
 	// mirrors BwrapConcurrencyCap. Can be overridden per-machine via the Nix
 	// sandboxExecConcurrencyCap option (written to config.json). Darwin only.
 	SandboxExecConcurrencyCap int `json:"sandbox_exec_concurrency_cap"`
@@ -181,18 +181,18 @@ type parsedConfig struct {
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
-// concurrent bwrap sessions. A value of 20 is conservative enough for any
+// concurrent bwrap sessions. A value of 50 is conservative enough for any
 // machine without an explicit override. The cap can be raised per-machine
 // via the Nix bwrapConcurrencyCap option (written to config.json).
 // Zero means uncapped.
-const DefaultBwrapConcurrencyCap = 20
+const DefaultBwrapConcurrencyCap = 50
 
 // DefaultSandboxExecConcurrencyCap is the compiled-in default maximum number
 // of concurrent sandbox-exec sessions. Mirrors DefaultBwrapConcurrencyCap —
-// 20 is conservative enough for any Darwin machine without an explicit
+// 50 is conservative enough for any Darwin machine without an explicit
 // override. The cap can be raised per-machine via the Nix
 // sandboxExecConcurrencyCap option (written to config.json). Zero means uncapped.
-const DefaultSandboxExecConcurrencyCap = 20
+const DefaultSandboxExecConcurrencyCap = 50
 
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.
