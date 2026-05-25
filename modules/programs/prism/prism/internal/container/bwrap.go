@@ -563,7 +563,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// appendPIBwrapMounts (called below), so a dedicated --bind of
 	// ~/.pi/agent/sessions onto its own host path is no longer needed — pi
 	// inside the sandbox reaches the host directory via PI_CODING_AGENT_DIR,
-	// not via the host home path. See #1985.────
+	// not via the host home path. See #1985.
+	//
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.
 	if cfg.Harness == "pi" {

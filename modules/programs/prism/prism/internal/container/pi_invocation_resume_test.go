@@ -195,9 +195,10 @@ func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 }
 
 // TestPIResumeSessionsRoot_AllModes verifies that the mode-aware resolver
-// covers all three isolation modes pi can run in (AC6):
+// covers the isolation modes pi can run in (AC6). Post-#1985 the bwrap
+// branch collapses into the host default (overlay-bound at launch):
 //   - host:         <home>/.pi/agent/sessions
-//   - bwrap:        <XDG_STATE_HOME>/prism/run/<dirHash>/pi-agent/sessions
+//   - bwrap:        <home>/.pi/agent/sessions  (same root as host)
 //   - sandbox-exec: <stagingHome>/.pi/agent/sessions
 func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 	home := t.TempDir()
