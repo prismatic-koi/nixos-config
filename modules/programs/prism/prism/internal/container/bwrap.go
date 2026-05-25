@@ -557,24 +557,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
-	// ── PI session persistence dir (read-write, conditional, pi only) ────────
-	// PI stores OAuth session state at ~/.pi/agent/sessions/. This directory
-	// must be bind-mounted read-write so that PI can load existing OAuth tokens
-	// inside the sandbox and write back refreshed tokens. Without the mount,
-	// PI's anthropic-oauth extension receives null from getApiKey and the
-	// session fails with "No Anthropic auth available."
-	//
-	// Conditional: only emitted when the directory exists on the host. When
-	// absent (e.g. a fresh install before any PI session has run), the mount is
-	// silently omitted and the session starts normally.
-	if cfg.Harness == "pi" {
-		piSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
-		if _, err := os.Stat(piSessionsDir); err == nil {
-			args = append(args, "--bind", piSessionsDir, piSessionsDir)
-		}
-	}
-
-	// ── PI-specific bind mounts (harness=pi only) ────────────────────────────
+	// ── PI-specific bind mounts (harness=pi only) ────────────────────────
+	// Note: the host's ~/.pi/agent/sessions/ directory is now overlaid onto
+	// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by
+	// appendPIBwrapMounts (called below), so a dedicated --bind of
+	// ~/.pi/agent/sessions onto its own host path is no longer needed — pi
+	// inside the sandbox reaches the host directory via PI_CODING_AGENT_DIR,
+	// not via the host home path. See #1985.────
 	// These must be appended before the "--" terminator so bwrap processes
 	// them as namespace arguments rather than as parts of the inner command.
 	if cfg.Harness == "pi" {

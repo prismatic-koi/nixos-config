@@ -9,7 +9,6 @@ import (
 
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 	"github.com/prismatic-koi/prism/internal/harness/pi"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // encodePiCWDForTest mirrors the encodePiCWD logic in archive.go for use in
@@ -469,14 +468,23 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 	}
 }
 
-// stageBwrapSession writes a fake pi JSONL file at the bwrap layout path and
-// returns (filePath, content). It assumes $XDG_STATE_HOME has already been
-// redirected to a temp dir by the caller (t.Setenv("XDG_STATE_HOME", t.TempDir())).
-func stageBwrapSession(t *testing.T, stateHome, sessionName, worktree, harnessSessionID string) (string, string) {
+// stageBwrapSession writes a fake pi JSONL file at the post-#1985 bwrap
+// layout path — the host's global ~/.pi/agent/sessions/ tree, same as host
+// mode — and returns (filePath, content). It assumes $HOME has already been
+// redirected by the caller (t.Setenv("HOME", t.TempDir())).
+//
+// Pre-#1985 this helper planted files under
+// <XDG_STATE_HOME>/prism/run/<dirHash>/pi-agent/sessions/. That staging-dir
+// layout was torn down with the prism session, taking the per-cwd history
+// with it. The host-side path is now identical to host mode.
+func stageBwrapSession(t *testing.T, _ /*stateHome*/, _ /*sessionName*/, worktree, harnessSessionID string) (string, string) {
 	t.Helper()
-	dirHash := session.SessionDirName(sessionName)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("stageBwrapSession: resolve HOME: %v", err)
+	}
 	encodedCWD := encodePiCWDForTest(worktree)
-	sessDir := filepath.Join(stateHome, "prism", "run", dirHash, "pi-agent", "sessions", encodedCWD)
+	sessDir := filepath.Join(home, ".pi", "agent", "sessions", encodedCWD)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -491,12 +499,14 @@ func stageBwrapSession(t *testing.T, stateHome, sessionName, worktree, harnessSe
 
 // TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile verifies that under
 // bwrap mode, SourcePath locates the JSONL inside
-// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/<encoded-cwd>/
-// and returns the matching file path (AC #1, #2, #5).
+// <home>/.pi/agent/sessions/<encoded-cwd>/ and returns the matching file
+// path. Post-#1985 the bwrap branch resolves to the same host-global path as
+// host mode (the sandbox overlays it onto $PI_CODING_AGENT_DIR/sessions/).
 func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
 	// Redirect both $HOME and $XDG_STATE_HOME so no real-host paths are
 	// touched (works in both dev shell and Nix sandbox).
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
@@ -520,21 +530,20 @@ func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
 		t.Errorf("SourcePath (bwrap): got %q, want %q", got, wantPath)
 	}
 
-	// The path must be under the run/<sessionDirHash>/pi-agent/sessions/<encoded-cwd>/
-	// layout — not under ~/.pi/agent/sessions/ — and the sessionDirHash must
-	// match session.SessionDirName(sessionName) byte-for-byte.
+	// The path must be under the host-global ~/.pi/agent/sessions/<encoded-cwd>/
+	// layout — the same root host mode uses.
 	wantPrefix := filepath.Join(
-		stateHome, "prism", "run",
-		session.SessionDirName(sessionName),
-		"pi-agent", "sessions",
+		fakeHome, ".pi", "agent", "sessions",
 		encodePiCWDForTest(worktree),
 	)
 	if !strings.HasPrefix(got, wantPrefix) {
 		t.Errorf("SourcePath (bwrap): got %q, expected prefix %q", got, wantPrefix)
 	}
-	// Defensive: must not point into the ~/.pi/agent/ tree.
-	if strings.Contains(got, filepath.Join(".pi", "agent")) {
-		t.Errorf("SourcePath (bwrap) returned path under .pi/agent/: %q", got)
+	// Defensive: must NOT point under the old per-session staging dir.
+	oldStaging := filepath.Join(stateHome, "prism", "run")
+	if strings.HasPrefix(got, oldStaging) {
+		t.Errorf("SourcePath (bwrap) %q must not point under the pre-#1985 per-session staging dir %q",
+			got, oldStaging)
 	}
 }
 
@@ -582,10 +591,11 @@ func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName verifies that when
-// IsolationMode is "bwrap" but SessionName is empty (the bwrap branch cannot
-// compute a sessionDirHash), SourcePath returns a path that Archive treats as
-// a no-op — matching the existing fallback contract for the other modes
-// (AC #6).
+// IsolationMode is "bwrap" but SessionName is empty, SourcePath still
+// resolves (post-#1985 the bwrap branch no longer needs the SessionName —
+// it resolves to ~/.pi/agent/sessions/ like host mode). Archive on the
+// resulting sentinel must still be a no-op when no matching transcript
+// exists, matching the contract for the other modes.
 func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -593,7 +603,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 
 	a := pi.NewArchiveAdapter()
 	p := harnessarchive.SourceParams{
-		SessionName:      "", // empty — bwrap branch cannot compute dirHash
+		SessionName:      "", // empty — post-#1985 bwrap no longer needs dirHash
 		IsolationMode:    "bwrap",
 		HarnessSessionID: "ses_01HQXY",
 		Worktree:         "/tmp/test-no-session-name",
@@ -603,7 +613,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 		t.Fatalf("SourcePath (bwrap empty SessionName): %v", err)
 	}
 
-	// Archive on that sentinel must be a no-op (the dir does not exist).
+	// Archive on that sentinel must be a no-op (no matching transcript exists).
 	rawDir := t.TempDir()
 	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
 		t.Fatalf("Archive on bwrap-empty-SessionName sentinel: %v", err)
@@ -617,21 +627,20 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 // TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile verifies that when the
 // bwrap encoded-cwd directory exists but contains no file matching
 // *_<HarnessSessionID>.jsonl, SourcePath returns a sentinel path inside the
-// encoded-cwd dir and Archive on that sentinel is a no-op (AC #7).
+// encoded-cwd dir and Archive on that sentinel is a no-op.
 func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	const sessionName = "nixos-config@bwrap-nomatch"
 	const worktree = "/tmp/test-bwrap-nomatch-worktree"
 	const harnessSessionID = "ses_NOTPRESENT"
 
-	// Create the encoded-cwd dir but with a file that does NOT match the
-	// HarnessSessionID suffix — so the scan succeeds but finds no match.
-	dirHash := session.SessionDirName(sessionName)
+	// Post-#1985: bwrap pi sessions write to the host's ~/.pi/agent/sessions/
+	// tree. Create the encoded-cwd dir there, with a non-matching transcript.
 	encodedCWD := encodePiCWDForTest(worktree)
-	sessDir := filepath.Join(stateHome, "prism", "run", dirHash, "pi-agent", "sessions", encodedCWD)
+	sessDir := filepath.Join(fakeHome, ".pi", "agent", "sessions", encodedCWD)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -670,10 +679,14 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 	}
 }
 
-// TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that with
-// identical SessionName + Worktree + HarnessSessionID, the three isolation
-// modes (bwrap, host, sandbox-exec) return paths that differ along the
-// documented dimensions — no cross-contamination (AC #9).
+// TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that
+// SourcePath produces paths anchored in the right per-mode root:
+//
+//   - host and bwrap collapse to the SAME ~/.pi/agent/sessions/ root
+//     (post-#1985, bwrap overlays this dir onto the sandbox path so the
+//     host-side resolution is identical).
+//   - sandbox-exec is anchored in the per-instance staging HOME and must
+//     NOT collide with the host/bwrap path.
 func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -714,9 +727,11 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 		t.Fatalf("SourcePath (sandbox-exec): %v", err)
 	}
 
-	// All three must differ.
-	if hostPath == bwrapPath {
-		t.Errorf("host and bwrap returned the same path: %q", hostPath)
+	// host and bwrap now collapse to the same root (#1985). sandbox-exec
+	// must still differ.
+	if hostPath != bwrapPath {
+		t.Errorf("host and bwrap should collapse to the same root post-#1985; host=%q bwrap=%q",
+			hostPath, bwrapPath)
 	}
 	if hostPath == sandboxPath {
 		t.Errorf("host and sandbox-exec returned the same path: %q", hostPath)
@@ -731,20 +746,17 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 		t.Errorf("host path %q does not have prefix %q", hostPath, hostPrefix)
 	}
 
-	// bwrap: under <stateHome>/prism/run/<dirHash>/pi-agent/sessions/, and
-	// MUST NOT touch .pi/agent.
-	bwrapPrefix := filepath.Join(
-		stateHome, "prism", "run",
-		session.SessionDirName(sessionName),
-		"pi-agent", "sessions",
-	)
-	if !strings.HasPrefix(bwrapPath, bwrapPrefix) {
-		t.Errorf("bwrap path %q does not have prefix %q", bwrapPath, bwrapPrefix)
+	// bwrap: also under <fakeHome>/.pi/agent/sessions/ (post-#1985).
+	// MUST NOT point under the pre-#1985 per-prism-session staging dir.
+	if !strings.HasPrefix(bwrapPath, hostPrefix) {
+		t.Errorf("bwrap path %q does not have prefix %q (post-#1985 collapses to host root)",
+			bwrapPath, hostPrefix)
 	}
-	if strings.Contains(bwrapPath, filepath.Join(".pi", "agent")) {
-		t.Errorf("bwrap path %q must not contain .pi/agent", bwrapPath)
+	oldBwrapPrefix := filepath.Join(stateHome, "prism", "run")
+	if strings.HasPrefix(bwrapPath, oldBwrapPrefix) {
+		t.Errorf("bwrap path %q must not point under pre-#1985 staging dir %q",
+			bwrapPath, oldBwrapPrefix)
 	}
-
 	// sandbox-exec: under <fakeHome>/.local/state/prism/sessions/<instanceID>/home/.pi/agent/sessions/
 	sandboxPrefix := filepath.Join(
 		fakeHome, ".local", "state", "prism", "sessions", instanceID, "home",

@@ -189,7 +189,9 @@ func piResolveResumeSession(cfg Config) bool {
 // The three branches mirror internal/harness/pi/archive.go::piSessionsRoot:
 //
 //	host         → <home>/.pi/agent/sessions
-//	bwrap        → <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions
+//	bwrap        → <home>/.pi/agent/sessions  (overlay-mounted into the sandbox
+//	                                            at $PI_CODING_AGENT_DIR/sessions;
+//	                                            see appendPIBwrapMounts and #1985)
 //	sandbox-exec → <stagingHome>/.pi/agent/sessions
 //
 // Mode is inferred from cfg fields rather than carried explicitly:
@@ -198,8 +200,10 @@ func piResolveResumeSession(cfg Config) bool {
 //     PIAgentConfigSandboxDir == PIAgentConfigHostDir (sandbox-exec shares the
 //     host FS, so populatePIConfig deliberately collapses the two paths).
 //   - bwrap is identified by SessionName being set AND
-//     PIAgentConfigSandboxDir != PIAgentConfigHostDir (bwrap remaps the staging
-//     dir to /run/prism/pi-agent inside the sandbox).
+//     PIAgentConfigSandboxDir != PIAgentConfigHostDir. As of #1985 bwrap
+//     overlays the host's ~/.pi/agent/sessions/ directly under the
+//     in-sandbox $PI_CODING_AGENT_DIR, so the host-side resolution is the
+//     same as host mode — collapsed into the fallback branch below.
 //   - host is the fallback when neither condition matches.
 //
 // Returns ok=false only when host-mode resolution fails (no home dir).
@@ -214,25 +218,12 @@ func piResumeSessionsRoot(cfg Config) (string, bool) {
 		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), true
 	}
 
-	// bwrap: per-session staging dir under XDG_STATE_HOME.
-	if cfg.SessionName != "" && cfg.PIAgentConfigSandboxDir != "" &&
-		cfg.PIAgentConfigSandboxDir != cfg.PIAgentConfigHostDir {
-		stateHome := os.Getenv("XDG_STATE_HOME")
-		if stateHome == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return "", false
-			}
-			stateHome = filepath.Join(home, ".local", "state")
-		}
-		return filepath.Join(
-			stateHome, "prism", "run",
-			sessionDirName(cfg.SessionName),
-			"pi-agent", "sessions",
-		), true
-	}
-
-	// host (and unhandled fallbacks): real home directory.
+	// bwrap and host: both resolve to the real home's ~/.pi/agent/sessions/.
+	// (Before #1985 bwrap pointed at <XDG_STATE_HOME>/prism/run/<hash>/pi-agent/
+	// sessions/; that directory disappeared on `prism cleanup`, taking the
+	// history with it. The sessions subtree is now overlay-bound from the
+	// host's ~/.pi/agent/sessions/ in appendPIBwrapMounts so writes persist
+	// across prism-session lifetimes.)
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", false
@@ -591,6 +582,32 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		args = append(args, "--dir", agentConfigSandboxDir)
 		args = append(args, "--bind", agentConfigHostDir, agentConfigSandboxDir)
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
+
+		// ── PI sessions overlay (read-write, global, #1985) ─────────────────
+		// Overlay the host's ~/.pi/agent/sessions/ onto
+		// <agentConfigSandboxDir>/sessions/ so pi-written JSONL transcripts
+		// land in the user's global per-cwd history directory rather than the
+		// per-prism-session staging dir (which disappears on `prism cleanup`).
+		//
+		// This bind MUST be emitted after the staging-dir bind above so that
+		// bwrap applies it as an overlay (later --bind entries take effect on
+		// top of earlier ones at the same mount point). The staging dir keeps
+		// providing APPEND_SYSTEM.md / settings.json / themes / AGENTS.md /
+		// skills / auth.json; only the `sessions/` subdirectory is redirected.
+		//
+		// We create the host directory if it does not exist so a fresh install
+		// (no prior pi history) does not fail the spawn — bwrap requires the
+		// bind source to exist. Best-effort: if MkdirAll fails (e.g. read-only
+		// home), we skip the overlay rather than aborting the launch — pi will
+		// fall back to writing into the staging dir, matching pre-#1985
+		// behaviour for that one session.
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			hostSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
+			if mkErr := os.MkdirAll(hostSessionsDir, 0o700); mkErr == nil {
+				sandboxSessionsDir := filepath.Join(agentConfigSandboxDir, "sessions")
+				args = append(args, "--bind", hostSessionsDir, sandboxSessionsDir)
+			}
+		}
 	}
 
 	// ── PI auth.json bind-mount (read-write) ─────────────────────────────
