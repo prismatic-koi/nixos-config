@@ -297,23 +297,33 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 
 // sidecarProcessExists reports whether the given PID is still running
 // (excluding zombies, which have already exited and are just awaiting reap).
-// On Linux it reads /proc/<pid>/status; on other platforms it falls back to
-// kill(pid, 0).
+//
+// On Linux it reads /proc/<pid>/status for accurate zombie detection:
+// a process in state Z has already exited and is just waiting to be reaped.
+//
+// On other platforms (e.g. Darwin), it falls back to kill(pid, 0): signal 0
+// is never delivered but the kernel validates that the PID exists and is
+// owned by the same user — ESRCH means the process is gone, nil means it
+// is still running. kill(pid, 0) cannot distinguish zombies from live
+// processes, but on Darwin sidecars run with Setsid so they are adopted
+// by init (PID 1) after prism releases them — init reaps them promptly
+// after SIGTERM, so the zombie window is negligible.
 func sidecarProcessExists(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
 	// Linux path: /proc gives accurate zombie detection.
 	statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		// No /proc entry → process is gone.
-		return false
+	if err == nil {
+		// A zombie ("State:\tZ") has already exited; treat as gone.
+		if strings.Contains(string(statusData), "State:\tZ") {
+			return false
+		}
+		return true
 	}
-	// A zombie ("State:\tZ") has already exited body; treat as gone.
-	if strings.Contains(string(statusData), "State:\tZ") {
-		return false
-	}
-	return true
+	// Non-Linux (or /proc unavailable): use kill(pid, 0).
+	// ESRCH → process is gone; any other result (nil, EPERM) → still running.
+	return syscall.Kill(pid, 0) != syscall.ESRCH
 }
 
 // StartSidecarOpts holds optional parameters for launching a sidecar process.

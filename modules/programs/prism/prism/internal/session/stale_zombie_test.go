@@ -91,7 +91,17 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 		t.Skip("test uses /proc/<pid>/status and PRISM_TEST_STUB_WITH_SOCKET — Linux only")
 	}
 
-	tmp := t.TempDir()
+	// Use a short-prefix MkdirTemp (not t.TempDir) for XDG_STATE_HOME so the
+	// derived socket path stays under Linux's 108-byte sun_path limit.
+	// t.TempDir() embeds the full test function name which on GitHub Actions
+	// produces a path like /tmp/TestKillSidecarAndWait_StaleZombie_…<N>/
+	// that, combined with the per-session hash subdir and "hostapi.sock",
+	// exceeds 108 bytes and causes bind(2) to fail with EINVAL. See #1050.
+	tmp, err := os.MkdirTemp("", "pst-")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmp) })
 	t.Setenv("XDG_STATE_HOME", tmp)
 
 	const sessionName = "prism-test@stale-zombie-regression"
