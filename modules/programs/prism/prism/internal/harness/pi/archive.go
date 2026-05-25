@@ -49,7 +49,6 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/container"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
-	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // piArchiveAdapter implements harness/archive.ArchiveAdapter for PI.
@@ -83,15 +82,15 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // encoded-cwd is derived from p.Worktree in both cases. Bug #1538 fix: only
 // the home base differs for sandbox-exec sessions.
 //
-// For bwrap sessions (IsolationMode == "bwrap"), PI writes into the per-session
-// pi-agent staging directory bind-mounted into the sandbox at
-// $PI_CODING_AGENT_DIR — on the host that resolves to
-// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/. Pi defaults
-// --session-dir to <PI_CODING_AGENT_DIR>/sessions/, so the JSONL lands at
-// <run>/pi-agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl — note there is no
-// ".pi/agent" join under the run dir (the staging dir IS the agent dir). The
-// session-dir hash is computed via session.SessionDirName (sha256 prefix). See
-// bug #1814 for the analysis.
+// For bwrap sessions (IsolationMode == "bwrap"), PI writes into the host's
+// ~/.pi/agent/sessions/ directory the same way as host mode. The sandbox
+// overlays that host directory onto $PI_CODING_AGENT_DIR/sessions/ inside
+// the namespace (see container.appendPIBwrapMounts), so writes pass through
+// to <home>/.pi/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl on the host.
+// This is the #1985 fix that restored the global per-cwd history users
+// expect; before that fix bwrap pointed at
+// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/ which was
+// torn down with the prism session (see bugs #1538 / #1814 for context).
 //
 // See docs/pi-rpc-interface.md Q5 for the authoritative path specification.
 func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, error) {
@@ -134,15 +133,19 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 }
 
 // piSessionsRoot returns the per-mode sessions directory — the directory under
-// which pi creates one subdirectory per encoded CWD. The three branches are:
+// which pi creates one subdirectory per encoded CWD. The two distinct branches
+// are:
 //
-//	host         → <home>/.pi/agent/sessions
-//	bwrap        → <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions
+//	host / bwrap → <home>/.pi/agent/sessions
 //	sandbox-exec → <stagingHome>/.pi/agent/sessions
 //
-// The bwrap branch falls through to the host branch when SessionName is empty
-// (no way to derive a sessionDirHash), matching the no-op contract used by
-// SourcePath when HarnessSessionID or Worktree is empty.
+// Before #1985 bwrap pointed at
+// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/, but that
+// directory was torn down with the prism session, taking the per-cwd history
+// with it. The bwrap launch now overlay-mounts the host's
+// ~/.pi/agent/sessions/ onto $PI_CODING_AGENT_DIR/sessions/ inside the
+// sandbox (see container.appendPIBwrapMounts), so the host-side root is the
+// same as host mode and the bwrap branch collapses into the default.
 func piSessionsRoot(p harnessarchive.SourceParams) (string, error) {
 	switch {
 	case p.IsolationMode == "sandbox-exec" && p.InstanceID != "":
@@ -155,28 +158,9 @@ func piSessionsRoot(p harnessarchive.SourceParams) (string, error) {
 		}
 		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), nil
 
-	case p.IsolationMode == "bwrap" && p.SessionName != "":
-		// bwrap: PI writes into the per-session pi-agent staging dir at
-		// <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/.
-		// There is no .pi/agent join — the staging dir IS the agent dir.
-		stateHome := os.Getenv("XDG_STATE_HOME")
-		if stateHome == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return "", fmt.Errorf("pi archive: resolve home for bwrap state dir: %w", err)
-			}
-			stateHome = filepath.Join(home, ".local", "state")
-		}
-		return filepath.Join(
-			stateHome, "prism", "run",
-			session.SessionDirName(p.SessionName),
-			"pi-agent", "sessions",
-		), nil
-
 	default:
-		// host (and any fallback — empty IsolationMode, podman, or a
-		// bwrap/sandbox-exec session missing its identifier): use the real
-		// home directory.
+		// host, bwrap, podman, empty IsolationMode — all resolve to the
+		// real home directory's ~/.pi/agent/sessions/.
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", fmt.Errorf("pi archive: resolve home: %w", err)

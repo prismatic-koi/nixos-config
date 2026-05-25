@@ -2242,11 +2242,27 @@ func TestHelpers_HasSetenv(t *testing.T) {
 	}
 }
 
-// ── PI session persistence dir bind mount ────────────────────────────────────
+// ── PI session persistence: global per-cwd history overlay (#1985) ───────────
+//
+// The host's ~/.pi/agent/sessions/ directory is overlay-mounted onto
+// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by appendPIBwrapMounts
+// (called from BuildArgs when Harness == "pi"). The tests below pin that
+// contract: the overlay --bind must appear in the arg list, must use the
+// in-sandbox sessions path as its destination (NOT the host path), must come
+// AFTER the staging-dir bind (so bwrap applies it as an overlay on top), and
+// must appear before the "--" terminator.
+//
+// Pre-#1985 these tests verified a separate --bind of
+// ~/.pi/agent/sessions onto its own host path, motivated by an OAuth-tokens
+// comment. That mount was dead code in the bwrap path (pi inside the sandbox
+// only writes to PI_CODING_AGENT_DIR, never to the host home path), so it was
+// removed during the #1985 consolidation.
 
 // bwrapPIFixture extends bwrapFixture with the minimum PI-specific config
 // needed to exercise the pi harness code path in BuildArgs. It creates a fake
-// PI binary and extension directory and returns a Config with Harness="pi" set.
+// PI binary, extension directory, AND PI agent config staging directory, and
+// returns a Config with Harness="pi" plus the PIAgentConfigHostDir set so the
+// sessions-overlay bind path in appendPIBwrapMounts is exercised.
 func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) {
 	t.Helper()
 
@@ -2259,100 +2275,137 @@ func bwrapPIFixture(t *testing.T) (m *Manager, fakeHome string, cleanup func()) 
 	if err := os.WriteFile(filepath.Join(extDir, "prism.ts"), []byte("// ext"), 0o644); err != nil {
 		t.Fatalf("bwrapPIFixture: write pi extension: %v", err)
 	}
+	// Stage a PI agent config dir so appendPIBwrapMounts takes the
+	// PIAgentConfigHostDir != "" branch and emits the sessions overlay.
+	agentCfgDir := t.TempDir()
 
 	m, fakeHome, cleanup = bwrapFixture(t, Config{
-		SessionName:        "repo@pi",
-		Worktree:           t.TempDir(),
-		AllocatedPort:      14010,
-		Harness:            "pi",
-		PIBinaryPath:       fakePIBin,
-		PIExtensionHostDir: extDir,
+		SessionName:             "repo@pi",
+		Worktree:                t.TempDir(),
+		AllocatedPort:           14010,
+		Harness:                 "pi",
+		PIBinaryPath:            fakePIBin,
+		PIExtensionHostDir:      extDir,
+		PIAgentConfigHostDir:    agentCfgDir,
+		PIAgentConfigSandboxDir: "/run/prism/pi-agent",
 	})
 	return m, fakeHome, cleanup
 }
 
-// TestBwrapBuildArgs_PISessionsDirBoundWhenExists verifies that when
-// ~/.pi/agent/sessions exists on the host and cfg.Harness == "pi",
-// BuildArgs emits --bind SRC SRC for the directory (read-write).
-func TestBwrapBuildArgs_PISessionsDirBoundWhenExists(t *testing.T) {
+// findBindPairs returns every (src, dst) --bind pair in args, in order.
+func findBindPairs(args []string) [][2]string {
+	var pairs [][2]string
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] == "--bind" {
+			pairs = append(pairs, [2]string{args[i+1], args[i+2]})
+		}
+	}
+	return pairs
+}
+
+// TestBwrapBuildArgs_PISessionsOverlay_BindsHostOntoSandbox verifies that the
+// host's ~/.pi/agent/sessions/ directory is bind-mounted onto the in-sandbox
+// $PI_CODING_AGENT_DIR/sessions/ path (NOT its host path) — the core #1985
+// fix that restores global per-cwd history persistence.
+func TestBwrapBuildArgs_PISessionsOverlay_BindsHostOntoSandbox(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
-	// Create the PI sessions directory under the fake HOME.
-	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
-	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll pi sessions dir: %v", err)
-	}
-
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	if !hasBind(args, piSessionsDir) {
-		t.Errorf("PI sessions dir %q not found as --bind SRC SRC in args: %v", piSessionsDir, args)
+	wantSrc := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	wantDst := "/run/prism/pi-agent/sessions"
+
+	found := false
+	for _, p := range findBindPairs(args) {
+		if p[0] == wantSrc && p[1] == wantDst {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --bind %q %q (host pi sessions overlaid onto sandbox PI_CODING_AGENT_DIR/sessions); args=%v",
+			wantSrc, wantDst, args)
 	}
 }
 
-// TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent verifies that when
-// ~/.pi/agent/sessions does not exist on the host, BuildArgs does NOT
-// emit --bind for it — the session must start without error.
-func TestBwrapBuildArgs_PISessionsDirOmittedWhenAbsent(t *testing.T) {
+// TestBwrapBuildArgs_PISessionsOverlay_CreatesHostDirIfMissing verifies AC8
+// edge case: the spawn does not fail when ~/.pi/agent/ does not yet exist on
+// the host. The overlay code creates the host directory before emitting the
+// bind, so pi can write to it from inside the sandbox.
+func TestBwrapBuildArgs_PISessionsOverlay_CreatesHostDirIfMissing(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
-	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
-	// Do NOT create piSessionsDir — it should be absent from args.
-
-	b := &bwrapIsolator{name: m.name}
-	args := b.BuildArgs(m)
-
-	if hasBind(args, piSessionsDir) {
-		t.Errorf("absent PI sessions dir %q should be omitted but found as --bind in args: %v", piSessionsDir, args)
-	}
-}
-
-// TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI verifies that when
-// cfg.Harness != "pi", the PI sessions directory is NOT bound even when it
-// exists on the host — this is a PI-only concern.
-func TestBwrapBuildArgs_PISessionsDirNotBoundForNonPI(t *testing.T) {
-	m, fakeHome, cleanup := bwrapFixture(t, Config{
-		SessionName:   "repo@main",
-		Worktree:      t.TempDir(),
-		AllocatedPort: 14010,
-		Harness:       "pi", // not "pi"
-	})
-	defer cleanup()
-
-	// Create the PI sessions directory so the stat() would succeed if the
-	// code were wrong.
-	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
-	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	hostSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	// Pre-condition: directory does NOT exist (the fixture does not create it).
+	if _, err := os.Stat(hostSessionsDir); !os.IsNotExist(err) {
+		t.Fatalf("pre-condition: %q must not exist (stat err=%v)", hostSessionsDir, err)
 	}
 
 	b := &bwrapIsolator{name: m.name}
-	args := b.BuildArgs(m)
+	_ = b.BuildArgs(m)
 
-	if hasBind(args, piSessionsDir) {
-		t.Errorf("PI sessions dir %q must not be bound for non-pi harness; found as --bind in args: %v", piSessionsDir, args)
+	// Post-condition: BuildArgs created the host sessions dir as a side-effect
+	// of preparing the overlay bind, so the subsequent bwrap exec will succeed
+	// (bwrap requires the bind source to exist).
+	if info, err := os.Stat(hostSessionsDir); err != nil {
+		t.Errorf("expected BuildArgs to create %q; stat err=%v", hostSessionsDir, err)
+	} else if !info.IsDir() {
+		t.Errorf("expected %q to be a directory; got mode=%v", hostSessionsDir, info.Mode())
 	}
 }
 
-// TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator verifies that the PI
-// sessions directory bind mount appears before the "--" terminator in the arg
-// list. bwrap requires all namespace flags to appear before the "--" separator.
-func TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator(t *testing.T) {
+// TestBwrapBuildArgs_PISessionsOverlay_AfterStagingDirBind verifies that the
+// host-sessions overlay --bind appears AFTER the staging-dir --bind in the
+// arg list — bwrap applies binds in argument order, so the overlay only
+// takes effect when it comes second.
+func TestBwrapBuildArgs_PISessionsOverlay_AfterStagingDirBind(t *testing.T) {
 	m, fakeHome, cleanup := bwrapPIFixture(t)
 	defer cleanup()
 
-	piSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
-	if err := os.MkdirAll(piSessionsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	hostSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	sandboxSessionsDir := "/run/prism/pi-agent/sessions"
+	sandboxAgentDir := "/run/prism/pi-agent"
+
+	stagingIdx, overlayIdx := -1, -1
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] != "--bind" {
+			continue
+		}
+		if args[i+2] == sandboxAgentDir && stagingIdx < 0 {
+			stagingIdx = i
+		}
+		if args[i+1] == hostSessionsDir && args[i+2] == sandboxSessionsDir {
+			overlayIdx = i
+		}
 	}
+	if stagingIdx < 0 {
+		t.Fatalf("staging-dir --bind onto %q not found in args=%v", sandboxAgentDir, args)
+	}
+	if overlayIdx < 0 {
+		t.Fatalf("sessions overlay --bind onto %q not found in args=%v", sandboxSessionsDir, args)
+	}
+	if overlayIdx <= stagingIdx {
+		t.Errorf("sessions overlay --bind (idx=%d) must come AFTER staging-dir --bind (idx=%d); args=%v",
+			overlayIdx, stagingIdx, args)
+	}
+}
+
+// TestBwrapBuildArgs_PISessionsOverlay_BeforeTerminator verifies that the
+// sessions overlay bind appears before the "--" terminator. bwrap requires
+// all namespace flags to precede the separator.
+func TestBwrapBuildArgs_PISessionsOverlay_BeforeTerminator(t *testing.T) {
+	m, fakeHome, cleanup := bwrapPIFixture(t)
+	defer cleanup()
 
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Find the -- separator index.
 	sepIdx := -1
 	for i, a := range args {
 		if a == "--" {
@@ -2364,16 +2417,47 @@ func TestBwrapBuildArgs_PISessionsDirBindBeforeTerminator(t *testing.T) {
 		t.Fatalf("-- separator not found in args: %v", args)
 	}
 
-	// Verify the PI sessions --bind appears before the separator.
+	wantSrc := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	wantDst := "/run/prism/pi-agent/sessions"
 	found := false
-	for i := 0; i < sepIdx-2; i++ {
-		if args[i] == "--bind" && args[i+1] == piSessionsDir && args[i+2] == piSessionsDir {
+	for i := 0; i+2 < sepIdx; i++ {
+		if args[i] == "--bind" && args[i+1] == wantSrc && args[i+2] == wantDst {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Errorf("PI sessions dir --bind %q %q not found before -- terminator in args: %v",
-			piSessionsDir, piSessionsDir, args)
+		t.Errorf("sessions overlay --bind %q %q not found before -- terminator in args: %v",
+			wantSrc, wantDst, args)
+	}
+}
+
+// TestBwrapBuildArgs_PISessionsOverlay_OmittedForNonPI verifies that the
+// host-sessions overlay is NOT emitted when Harness != "pi" — the entire PI
+// bind-mount block (including the staging-dir bind that the overlay depends
+// on) is gated on cfg.Harness == "pi".
+func TestBwrapBuildArgs_PISessionsOverlay_OmittedForNonPI(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		Harness:       "anthropic",
+	})
+	defer cleanup()
+
+	// Even with the host dir present, the non-pi path must not bind it.
+	hostSessionsDir := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	if err := os.MkdirAll(hostSessionsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll pi sessions dir: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for _, p := range findBindPairs(args) {
+		if p[0] == hostSessionsDir {
+			t.Errorf("non-pi harness must not --bind %q; got pair %v in args=%v",
+				hostSessionsDir, p, args)
+		}
 	}
 }

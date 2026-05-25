@@ -1,24 +1,31 @@
 package cmd
 
-// End-to-end seam test for the issue #1947 fix.
+// End-to-end seam test for the issue #1947 fix, updated for #1985.
 //
 // Pins the post-reset invariant: given a DB row with a non-empty
-// harness_session_id AND a transcript JSONL on disk (bwrap layout), after the
-// `prism reset` DB + FS code paths run, neither half of pi_invocation.go's
-// `--session <id>` injection trigger remains:
+// harness_session_id AND a transcript JSONL on disk, after the
+// `prism reset` DB + FS code paths run, the `--session <id>` injection
+// trigger in pi_invocation.go no longer fires — via the DB-side guard alone.
+//
+// Post-#1985 update: bwrap pi sessions now write into the host's global
+// ~/.pi/agent/sessions/ tree (the per-prism-session staging dir was removed
+// to restore cross-session per-cwd history). `resetClearPiTranscripts` does
+// NOT touch that global tree — same intentional skip as host mode, because
+// the dir holds state belonging to non-prism pi invocations too. The FS
+// transcript therefore survives the reset; the DB-side `HarnessSessionID =
+// nil` clear is what prevents the resume.
+//
+// Invariants pinned here:
 //
 //   (1) DB:  CurrentStatus.HarnessSessionID is nil (so cmd/agent_run.go feeds
 //       the empty string into container.Config.HarnessSessionID).
-//   (2) FS:  the transcript JSONL is gone (so piResolveResumeSession returns
-//       false even when called with a stale UUID).
+//   (2) FS:  the transcript JSONL survives by design (matches host mode).
 //   (3) PIInvocation: with HarnessSessionID="" the helper short-circuits and
-//       does not append --session at all (issue #1838 contract).
+//       does not append --session at all (issue #1838 contract) — this is
+//       the load-bearing half of the reset guard now.
 //
-// Host-mode is pinned separately: it does not consume harness_session_id from
-// the DB on the spawn/switch paths (internal/session/session.go:181-182), so
-// the reset code path is a no-op for it w.r.t. the resume pointer \u2014 covered
-// by TestResetClearPiTranscripts_NoSubtreeUnderHashIsNoOp (no bwrap subtree
-// for a host-mode session means nothing is touched).
+// Host-mode behaviour has not changed and is pinned separately by
+// TestReset_E2E_HostModeUnchanged below.
 
 import (
 	"os"
@@ -65,10 +72,12 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	}
 	d.Close()
 
-	// ---- Seed FS (bwrap layout) ----
-	// <stateHome>/prism/run/<sessionDirHash>/pi-agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl
-	hash := prismSession.SessionDirName(sessionName)
-	transcriptDir := filepath.Join(stateHome, "prism", "run", hash, "pi-agent", "sessions",
+	// ---- Seed FS (post-#1985 bwrap layout: host-global ~/.pi/agent/sessions/) ----
+	// Pi inside the bwrap sandbox writes to $PI_CODING_AGENT_DIR/sessions/,
+	// which is overlay-bound to the host's ~/.pi/agent/sessions/. So the
+	// host-side transcript path matches host mode.
+	home := os.Getenv("HOME")
+	transcriptDir := filepath.Join(home, ".pi", "agent", "sessions",
 		"--home-user-code-myrepo-feature--")
 	if err := os.MkdirAll(transcriptDir, 0o700); err != nil {
 		t.Fatalf("mkdir transcriptDir: %v", err)
@@ -77,8 +86,14 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	if err := os.WriteFile(transcript, []byte(`{"type":"session"}`), 0o600); err != nil {
 		t.Fatalf("write transcript: %v", err)
 	}
-	// Plant a sibling file under the hashDir that must survive the reset.
+	// Plant a sibling file under the legacy per-prism-session hash dir that
+	// must survive the reset — the run/<hash>/ subtree still holds
+	// agent-run.log, hostapi.sock, sidecar.pid etc.
+	hash := prismSession.SessionDirName(sessionName)
 	hashDir := filepath.Join(stateHome, "prism", "run", hash)
+	if err := os.MkdirAll(hashDir, 0o700); err != nil {
+		t.Fatalf("mkdir hashDir: %v", err)
+	}
 	siblingPath := filepath.Join(hashDir, "agent-run.log")
 	if err := os.WriteFile(siblingPath, []byte("keep me"), 0o600); err != nil {
 		t.Fatalf("write sibling: %v", err)
@@ -127,9 +142,13 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 		t.Errorf("post-reset DB EndedAt = nil, want non-nil")
 	}
 
-	// (2) FS: transcript JSONL gone, hashDir + sibling preserved.
-	if _, err := os.Stat(transcript); !os.IsNotExist(err) {
-		t.Errorf("transcript still present (stat err=%v)", err)
+	// (2) FS: post-#1985, the transcript JSONL SURVIVES the reset by design
+	//     (it lives in the user's global ~/.pi/agent/sessions/, which holds
+	//     state belonging to non-prism pi invocations too — same intentional
+	//     skip as host mode). The hashDir and its sibling files are also
+	//     preserved.
+	if _, err := os.Stat(transcript); err != nil {
+		t.Errorf("transcript was removed by reset; post-#1985 bwrap transcripts must survive: %v", err)
 	}
 	if _, err := os.Stat(hashDir); err != nil {
 		t.Errorf("hashDir removed: %v", err)
@@ -138,12 +157,14 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 		t.Errorf("sibling file removed: %v", err)
 	}
 
-	// (3) container.ResolvePIResumeSession returns false post-reset, even
-	//     when invoked with the stale UUID. This proves the FS half of the
-	//     guard: even if cmd/agent_run.go somehow forwarded a non-empty SID,
-	//     PIInvocation would skip --session because the transcript is gone.
-	if container.ResolvePIResumeSession(preCfg) {
-		t.Errorf("post-reset: ResolvePIResumeSession = true, want false")
+	// (3) container.ResolvePIResumeSession still returns true post-reset
+	//     when invoked with the stale UUID — the transcript is still there.
+	//     This is intentional: the reset guard is now the DB-side clear, not
+	//     the FS-side clear. The realistic path (next assertion) proves the
+	//     full chain is safe.
+	if !container.ResolvePIResumeSession(preCfg) {
+		t.Errorf("post-reset: ResolvePIResumeSession = false, want true " +
+			"(transcript intentionally survives reset; DB-side clear is the guard)")
 	}
 
 	// (4) The realistic post-reset path \u2014 cmd/agent_run.go feeds

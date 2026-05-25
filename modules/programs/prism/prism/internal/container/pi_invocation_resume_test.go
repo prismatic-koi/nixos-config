@@ -22,23 +22,24 @@ import (
 )
 
 // writeBwrapResumeSession writes a synthetic pi session JSONL file at the
-// bwrap-mode sessions root (<XDG_STATE_HOME>/prism/run/<hash>/pi-agent/sessions/
-// <encoded-cwd>/<ts>_<uuid>.jsonl) and returns the on-disk path.
+// post-#1985 bwrap-mode sessions root (<home>/.pi/agent/sessions/<encoded-cwd>/
+// <ts>_<uuid>.jsonl) and returns the on-disk path.
+//
+// Pre-#1985 this helper planted files under
+// <XDG_STATE_HOME>/prism/run/<hash>/pi-agent/sessions/; that staging-dir
+// layout is gone now — bwrap pi sessions write into the host's global
+// ~/.pi/agent/sessions/ tree (same as host mode), and the staging dir is
+// overlay-bound onto it inside the sandbox.
 //
 // The file content is not parsed by the test \u2014 PIInvocation only stats the
 // directory listing and matches on the filename suffix.
-func writeBwrapResumeSession(t *testing.T, sessionName, worktree, sessionID string) string {
+func writeBwrapResumeSession(t *testing.T, _ /*sessionName*/, worktree, sessionID string) string {
 	t.Helper()
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		t.Fatalf("writeBwrapResumeSession: XDG_STATE_HOME must be set by the caller")
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("writeBwrapResumeSession: resolve HOME: %v", err)
 	}
-	dir := filepath.Join(
-		stateHome, "prism", "run",
-		sessionDirName(sessionName),
-		"pi-agent", "sessions",
-		encodePiCWD(worktree),
-	)
+	dir := filepath.Join(home, ".pi", "agent", "sessions", encodePiCWD(worktree))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir resume session dir: %v", err)
 	}
@@ -67,6 +68,7 @@ func bwrapResumeCfg(sessionName, worktree, harnessSessionID string) Config {
 // InitialPrompt argument.
 func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
 	const worktree = "/home/user/code/myrepo/feature"
@@ -102,6 +104,7 @@ func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
 // when InitialPrompt is empty.
 func TestPIInvocation_Resume_AppendsSession_NoInitialPrompt(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
 	const worktree = "/home/user/code/myrepo/feature"
@@ -130,6 +133,7 @@ func TestPIInvocation_Resume_AppendsSession_NoInitialPrompt(t *testing.T) {
 func TestPIInvocation_Resume_OmitsSessionWhenFileMissing(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
 	const worktree = "/home/user/code/myrepo/feature"
@@ -168,6 +172,7 @@ func TestPIInvocation_Resume_OmitsSessionWhenFileMissing(t *testing.T) {
 func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
 	const worktree = "/home/user/code/myrepo/feature"
@@ -190,9 +195,10 @@ func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 }
 
 // TestPIResumeSessionsRoot_AllModes verifies that the mode-aware resolver
-// covers all three isolation modes pi can run in (AC6):
+// covers the isolation modes pi can run in (AC6). Post-#1985 the bwrap
+// branch collapses into the host default (overlay-bound at launch):
 //   - host:         <home>/.pi/agent/sessions
-//   - bwrap:        <XDG_STATE_HOME>/prism/run/<dirHash>/pi-agent/sessions
+//   - bwrap:        <home>/.pi/agent/sessions  (same root as host)
 //   - sandbox-exec: <stagingHome>/.pi/agent/sessions
 func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 	home := t.TempDir()
@@ -215,6 +221,9 @@ func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 	})
 
 	t.Run("bwrap", func(t *testing.T) {
+		// Post-#1985: bwrap sessions write to the host's ~/.pi/agent/sessions/
+		// (same as host mode); the per-session staging dir is overlay-bound
+		// onto the in-sandbox $PI_CODING_AGENT_DIR/sessions/ at launch.
 		const sessionName = "myrepo@feature"
 		cfg := Config{
 			SessionName:             sessionName,
@@ -225,9 +234,15 @@ func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 		if !ok {
 			t.Fatalf("piResumeSessionsRoot(bwrap): ok=false, want true")
 		}
-		want := filepath.Join(stateHome, "prism", "run", sessionDirName(sessionName), "pi-agent", "sessions")
+		want := filepath.Join(home, ".pi", "agent", "sessions")
 		if got != want {
 			t.Errorf("piResumeSessionsRoot(bwrap) = %q, want %q", got, want)
+		}
+		// Defensive: must NOT point under the old per-session staging dir.
+		oldStaging := filepath.Join(stateHome, "prism", "run")
+		if strings.HasPrefix(got, oldStaging) {
+			t.Errorf("piResumeSessionsRoot(bwrap) %q must not point under the per-session staging dir %q anymore (#1985)",
+				got, oldStaging)
 		}
 	})
 
