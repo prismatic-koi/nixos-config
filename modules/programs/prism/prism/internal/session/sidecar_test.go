@@ -11,10 +11,12 @@ package session
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -22,11 +24,20 @@ import (
 // TestMain intercepts execution when this test binary is re-invoked as a fake
 // sidecar subprocess (via PRISM_TEST_SUBPROCESS=1). In that case we just exit
 // successfully so that StartSidecar's cmd.Start() succeeds.
+//
+// When PRISM_TEST_STUB_LONG=1 the binary acts as a long-running stub that
+// sleeps for 60 seconds, interruptible by SIGTERM. This is used by tests that
+// exercise the KillSidecarAndWait wait path.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
 		// We are the child process acting as the sidecar stub.
 		// Sleep briefly so the parent can read the PID file, then exit.
 		time.Sleep(50 * time.Millisecond)
+		os.Exit(0)
+	}
+	if os.Getenv("PRISM_TEST_STUB_LONG") == "1" {
+		// Long-running stub: sleep 60s, interruptible by SIGTERM.
+		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -602,5 +613,171 @@ func TestSidecarHarnessPipePath_CoLocatesWithHostAPI(t *testing.T) {
 	if filepath.Dir(hostAPIPath) != filepath.Dir(pipePath) {
 		t.Errorf("host-API dir %q != pipe dir %q — bind-mount assumption violated",
 			filepath.Dir(hostAPIPath), filepath.Dir(pipePath))
+	}
+}
+
+// ── KillSidecarAndWait tests ────────────────────────────────────────────────────────────────────
+
+// startLongRunningStub re-invokes the current test binary with
+// PRISM_TEST_STUB_LONG=1 and a cmdline containing "sidecar --session <name>"
+// so that /proc/<pid>/cmdline satisfies the KillSidecar guard. The stub sleeps
+// for 60 seconds, interruptible by SIGTERM (see TestMain above).
+//
+// Returns the PID of the stub and a cleanup function that kills the process if
+// it is still running (belt-and-suspenders fallback).
+func startLongRunningStub(t *testing.T) (pid int, cleanup func()) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skip("KillSidecarAndWait wait path uses /proc/<pid>/status — Linux only")
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+
+	// Argv must contain both "sidecar" and "--session" to satisfy KillSidecar's
+	// cmdline guard.
+	cmd := exec.Command(self, "sidecar", "--session", "stub-session-long")
+	cmd.Env = append(os.Environ(), "PRISM_TEST_STUB_LONG=1")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start long-running stub: %v", err)
+	}
+
+	return cmd.Process.Pid, func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}
+}
+
+// TestKillSidecarAndWait_WaitsForExit verifies that KillSidecarAndWait sends
+// SIGTERM to a running process, removes the PID file, and returns nil only
+// after the process has exited.
+func TestKillSidecarAndWait_WaitsForExit(t *testing.T) {
+	pid, cleanupProc := startLongRunningStub(t)
+	t.Cleanup(cleanupProc)
+
+	// Let the stub start.
+	time.Sleep(30 * time.Millisecond)
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "prism-test@kill-and-wait"
+
+	// Write the PID file.
+	runDir := filepath.Join(tmp, "prism", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pidPath := filepath.Join(runDir, sessionName+"-sidecar.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		t.Fatalf("write PID file: %v", err)
+	}
+
+	err := KillSidecarAndWait(sessionName, 5*time.Second)
+
+	// KillSidecarAndWait must return nil (process exited within budget).
+	if err != nil {
+		t.Errorf("KillSidecarAndWait: unexpected error: %v", err)
+	}
+
+	// PID file must be removed.
+	if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+		t.Errorf("PID file still exists after KillSidecarAndWait")
+	}
+
+	// The process must no longer exist.
+	if sidecarProcessExists(pid) {
+		t.Errorf("process pid %d still running after KillSidecarAndWait returned nil", pid)
+	}
+}
+
+// TestKillSidecarAndWait_TimeoutError verifies that KillSidecarAndWait returns
+// a non-nil error when the process does not exit within the timeout budget.
+// We simulate this by using a very short timeout (5ms) against a process that
+// takes longer than that to die after SIGTERM.
+//
+// This test is inherently racy — if the system is fast enough the process can
+// exit within 5ms. We accept this with a skip rather than adding a
+// hard-to-control delay. In practice, a 5ms timeout fires before any user-
+// space process handles SIGTERM and calls exit().
+func TestKillSidecarAndWait_TimeoutError(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("test uses /proc/<pid>/status for liveness check — Linux only")
+	}
+
+	pid, cleanupProc := startLongRunningStub(t)
+	t.Cleanup(cleanupProc)
+
+	// Give the stub a moment to start.
+	time.Sleep(30 * time.Millisecond)
+
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "prism-test@kill-and-wait-timeout"
+
+	runDir := filepath.Join(tmp, "prism", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pidPath := filepath.Join(runDir, sessionName+"-sidecar.pid")
+	if err := os.WriteFile(pidPath, []byte(strconv.Itoa(pid)+"\n"), 0o644); err != nil {
+		t.Fatalf("write PID file: %v", err)
+	}
+
+	// 5ms timeout — short enough that the process will not have handled
+	// SIGTERM and exited yet on any realistic system.
+	err := KillSidecarAndWait(sessionName, 5*time.Millisecond)
+
+	if err == nil {
+		// The process exited within 5ms; this is not an error but the test
+		// cannot exercise the timeout path. Skip rather than failing, since
+		// this is a racy scenario by design.
+		t.Skip("process exited within 5ms timeout — cannot test timeout path on this run")
+	}
+
+	if !strings.Contains(err.Error(), "did not exit within") {
+		t.Errorf("expected timeout error containing \"did not exit within\", got: %v", err)
+	}
+}
+
+// TestKillSidecarAndWait_NoPIDFile verifies that KillSidecarAndWait returns nil
+// immediately when no PID file exists (the stale-zombie branch still proceeds).
+func TestKillSidecarAndWait_NoPIDFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	err := KillSidecarAndWait("prism-test@no-pid-wait", 2*time.Second)
+	if err != nil {
+		t.Errorf("KillSidecarAndWait with no PID file: unexpected error: %v", err)
+	}
+}
+
+// TestKillSidecarAndWait_CorruptPIDFile verifies that KillSidecarAndWait returns nil
+// and removes the corrupt file (same graceful handling as KillSidecar).
+func TestKillSidecarAndWait_CorruptPIDFile(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sessionName = "prism-test@corrupt-pid-wait"
+	runDir := filepath.Join(tmp, "prism", "run")
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	pidPath := filepath.Join(runDir, sessionName+"-sidecar.pid")
+	if err := os.WriteFile(pidPath, []byte("not-a-number\n"), 0o644); err != nil {
+		t.Fatalf("write corrupt PID file: %v", err)
+	}
+
+	err := KillSidecarAndWait(sessionName, 2*time.Second)
+	if err != nil {
+		t.Errorf("KillSidecarAndWait with corrupt PID file: unexpected error: %v", err)
+	}
+	// KillSidecar removes the corrupt file.
+	if _, statErr := os.Stat(pidPath); !os.IsNotExist(statErr) {
+		t.Errorf("corrupt PID file still exists after KillSidecarAndWait")
 	}
 }

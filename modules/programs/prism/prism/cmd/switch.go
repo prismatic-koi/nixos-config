@@ -23,6 +23,12 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
+// killSidecarTimeout is the bounded wait passed to session.KillSidecarAndWait
+// in the stale-zombie restart path. 2 seconds is enough for a well-behaved
+// sidecar to handle SIGTERM while still providing a fast failure signal on a
+// loaded system.
+const killSidecarTimeout = 2 * time.Second
+
 // ── session management ────────────────────────────────────────────────────────
 
 // applyPathIsolationOverride checks cfg.ProjectIsolationOverrides for path and,
@@ -184,6 +190,27 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		// Stale or zombie (no DB row, or last_seen ≥ 60s). Upgrade to
 		// ForceFresh=true so session.Create kills unconditionally without a
 		// second DB query that would see the freshly-written UpsertStatus row.
+		//
+		// Before falling through to session.Create (which kills the tmux
+		// session via tmux.KillSession), we must also SIGTERM the old sidecar
+		// process and wait for it to exit. Without this, the old sidecar
+		// keeps owning its host-API Unix socket and the new sidecar's
+		// duplicate-start guard (checkNoLiveSidecar) fires, causing the new
+		// sidecar to refuse to start and the PI extension to exhaust its
+		// connect-retry budget. See issue #1998.
+		//
+		// KillSidecarAndWait sends SIGTERM and polls until the process exits
+		// (or the 2-second budget is exhausted). Errors are logged but do not
+		// prevent the restart — the subsequent session.Create + sidecar start
+		// will surface its own clear error if the old sidecar is truly stuck.
+		//
+		// Note: this is NOT a session teardown. SetEnded and PurgeBusMessages
+		// are intentionally omitted — the DB row (instance_id, repo, worktree,
+		// harness_port) is reused across the restart.
+		proglog.Infof("[prism switch] stale-zombie session %q: killing old sidecar before restart\n", sessionName)
+		if waitErr := session.KillSidecarAndWait(sessionName, killSidecarTimeout); waitErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: %v\n", waitErr)
+		}
 		opts.ForceFresh = true
 	}
 

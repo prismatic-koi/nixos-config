@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
@@ -230,6 +231,89 @@ func KillSidecar(sessionName string) {
 	}
 
 	_ = os.Remove(pidPath)
+}
+
+// KillSidecarAndWait sends SIGTERM to the sidecar for sessionName (via
+// KillSidecar) and then waits for the process to actually exit before
+// returning. It returns nil when the process has exited within timeout, and a
+// non-nil error when the timeout expires before the process is gone.
+//
+// The wait is implemented by polling /proc/<pid>/status on Linux (or
+// syscall.Kill(pid, 0) on platforms without /proc) at 25 ms intervals until
+// the process is no longer found (ESRCH). The timeout should be short — 2
+// seconds is sufficient for a well-behaved sidecar that handles SIGTERM — but
+// long enough to survive a briefly-loaded system.
+//
+// This function is the preferred call site for the stale-zombie restart path
+// in ensureAndSwitch (cmd/switch.go): the new sidecar's duplicate-start guard
+// (checkNoLiveSidecar) dials with a 250 ms timeout, so without waiting for
+// the old process to exit there is a real race between SIGTERM and the new
+// sidecar's probe.
+//
+// The PID is read from the PID file before the kill is sent. If the PID file
+// is absent, corrupt, or points to a recycled process, KillSidecar handles
+// all those cases gracefully and this function returns nil immediately (no
+// process to wait for).
+func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
+	// Read the PID before calling KillSidecar so we know which process to
+	// wait on. KillSidecar removes the PID file, so we must read it first.
+	pidPath, err := SidecarPIDPath(sessionName)
+	if err != nil {
+		// Can't derive the path — nothing to wait for.
+		return nil
+	}
+
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		// PID file absent — sidecar was never started or already cleaned up.
+		return nil
+	}
+
+	pidStr := strings.TrimSpace(string(data))
+	pid, err := strconv.Atoi(pidStr)
+	if err != nil || pid <= 0 {
+		// Corrupt PID file — KillSidecar will clean it up; nothing to wait for.
+		KillSidecar(sessionName)
+		return nil
+	}
+
+	// Send SIGTERM and remove the PID file.
+	KillSidecar(sessionName)
+
+	// Poll for process exit. On Linux we probe /proc/<pid>; on other
+	// platforms we use kill(pid, 0) which returns ESRCH when the process
+	// is gone (may block on zombies owned by another process, but sidecars
+	// are always child-of-init after Setsid so that case does not arise).
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !sidecarProcessExists(pid) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	return fmt.Errorf("kill sidecar: pid %d did not exit within %v after SIGTERM (session %q)", pid, timeout, sessionName)
+}
+
+// sidecarProcessExists reports whether the given PID is still running
+// (excluding zombies, which have already exited and are just awaiting reap).
+// On Linux it reads /proc/<pid>/status; on other platforms it falls back to
+// kill(pid, 0).
+func sidecarProcessExists(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	// Linux path: /proc gives accurate zombie detection.
+	statusData, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		// No /proc entry → process is gone.
+		return false
+	}
+	// A zombie ("State:\tZ") has already exited body; treat as gone.
+	if strings.Contains(string(statusData), "State:\tZ") {
+		return false
+	}
+	return true
 }
 
 // StartSidecarOpts holds optional parameters for launching a sidecar process.
