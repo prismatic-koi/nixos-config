@@ -209,7 +209,11 @@ export function transformBody(
         if (typeof firstUser.content === "string") {
           firstUser.content = prefix + "\n\n" + firstUser.content
         } else if (Array.isArray(firstUser.content)) {
-          firstUser.content.unshift({ type: "text", text: prefix })
+          // Append "\n\n" to mirror the string-content branch — otherwise
+          // the moved system text glues directly onto the first user text
+          // block when adjacent text blocks are presented to the model
+          // (e.g. "...nixos-config/main" + "hi" → "mainhi"). See #1983.
+          firstUser.content.unshift({ type: "text", text: prefix + "\n\n" })
         }
       }
     }
