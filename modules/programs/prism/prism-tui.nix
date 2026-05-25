@@ -113,22 +113,22 @@ in
 
     nx.programs.prism.bwrapConcurrencyCap = lib.mkOption {
       type = lib.types.int;
-      default = 20;
+      default = 50;
       description = ''
         Maximum number of concurrent bwrap sessions (agent_status rows with
         ended_at IS NULL AND isolation_mode = 'bwrap') before new bwrap spawns
-        are refused. 0 means uncapped. Default of 20 is conservative enough for
+        are refused. 0 means uncapped. Default of 50 is conservative enough for
         any machine without an explicit per-machine override.
       '';
     };
 
     nx.programs.prism.sandboxExecConcurrencyCap = lib.mkOption {
       type = lib.types.int;
-      default = 20;
+      default = 50;
       description = ''
         Maximum number of concurrent sandbox-exec sessions (agent_status rows
         with ended_at IS NULL AND isolation_mode = 'sandbox-exec') before new
-        sandbox-exec spawns are refused. 0 means uncapped. Default of 20
+        sandbox-exec spawns are refused. 0 means uncapped. Default of 50
         mirrors bwrapConcurrencyCap. Darwin-only isolation mode; this option
         is rendered into config.json on all machines but only used on Darwin.
       '';
