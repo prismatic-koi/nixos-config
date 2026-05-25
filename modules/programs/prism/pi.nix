@@ -82,6 +82,7 @@
         cp -r ${./skills/acceptance-criteria}/* $out/acceptance-criteria/
         cp -r ${./skills/retro}/* $out/retro/
         cp -r ${./skills/atlassian}/* $out/atlassian/
+        cp -r ${./skills/grill-me}/* $out/grill-me/
       '';
 
       # Vendored pi extensions directory — built as a single derivation so it
