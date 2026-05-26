@@ -18,57 +18,16 @@
       #   - per-host overrides (e.g. the ultrawide on navi):
       #              machines/navi/configuration.nix
       # See the matching comment block in default.nix near `workspace_rule`.
-      home.file.".local/scripts/system.inputs.toggleTouchpad" = lib.mkIf config.nx.isLaptop {
-        executable = true;
-        text =
-          # bash
-          ''
-            #!/bin/sh
-            export STATUS_FILE="$XDG_RUNTIME_DIR/touchpad_status"
-
-            # Mutating `device[...]:enabled` at runtime under the lua
-            # parser. `hyprctl keyword` is rejected by the lua parser
-            # ("keyword can't work with non-legacy parsers. Use eval.")
-            # and `hyprctl eval` does not exist as a subcommand on
-            # hyprland 0.55.1 — so we drive the device API directly via
-            # `hyprctl dispatch '<lua>'`.
-            #
-            # `hyprctl dispatch` evaluates its argument as a lua
-            # expression and feeds the result to `hl.dispatch(...)`,
-            # whose typedef is `fun(dispatcher: HL.Dispatcher|function)`
-            # — so passing a `function() ... end` literal lets us run
-            # arbitrary lua side-effects (here: `hl.device({...})`)
-            # without needing the result to be a dispatcher value. The
-            # device API's `enabled` field is the lua-native replacement
-            # for the hyprlang `device[NAME]:enabled` keyword and is
-            # declared in the type stubs at
-            # `share/hypr/stubs/hl.meta.lua` (`HL.DeviceSpec.enabled`).
-            set_touchpad() {
-              # $1 is the lua boolean literal (`true` or `false`).
-              hyprctl dispatch \
-                "function() hl.device({ name = \"asup1415:00-093a:300c-touchpad\", enabled = $1 }) end" \
-                > /dev/null
-            }
-
-            if ! [ -f "$STATUS_FILE" ]; then
-              # disable touchpad
-              set_touchpad false
-              touch "$STATUS_FILE"
-              echo "disabled" > "$STATUS_FILE"
-              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
-            elif [ "$(cat $STATUS_FILE)" = "enabled" ]; then
-              # disable touchpad
-              set_touchpad false
-              echo "disabled" > "$STATUS_FILE"
-              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:off")' > /dev/null
-            elif [ "$(cat $STATUS_FILE)" = "disabled" ]; then
-              # enable touchpad
-              set_touchpad true
-              echo "enabled" > "$STATUS_FILE"
-              hyprctl dispatch 'hl.dsp.event("quickshell:osd:touchpad:on")' > /dev/null
-            fi
-          '';
-      };
+      # NOTE: `system.inputs.toggleTouchpad` previously lived here — a
+      # shell script bound to SUPER + p that toggled the laptop touchpad
+      # via `hyprctl dispatch` and tracked its intended state in
+      # `$XDG_RUNTIME_DIR/touchpad_status`. The status file outlived
+      # `hyprctl reload` while the device's runtime `enabled` flag did not,
+      # so the two desynced after every reload. The whole thing now lives
+      # as an inline lua closure inside the hyprland config; the closure's
+      # local `enabled` resets in lockstep with the device's config-default
+      # state. See the `SUPER + p` bind in
+      # `modules/desktop/hyprland/default.nix`. (issue #2000)
       home.file.".local/scripts/system.audio.volumeUp" = {
         executable = true;
         text =

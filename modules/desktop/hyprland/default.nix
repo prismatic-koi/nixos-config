@@ -36,7 +36,6 @@ in
             runscripts = "${scriptsDir}/application.scripts.launcher";
             calculator = "${scriptsDir}/application.rofi.calculator";
             applicationlauncher = "${scriptsDir}/application.launcher";
-            toggleTouchpad = "${scriptsDir}/system.inputs.toggleTouchpad";
             volumeUp = "${scriptsDir}/system.audio.volumeUp";
             volumeDown = "${scriptsDir}/system.audio.volumeDown";
             toggleMute = "${scriptsDir}/system.audio.toggleMute";
@@ -625,7 +624,31 @@ in
                 (lib.mkIf config.nx.isLaptop (mkExec "XF86MonBrightnessUp" brightnessUp))
                 (lib.mkIf config.nx.isLaptop (mkExec "XF86MonBrightnessDown" brightnessDown))
                 # The Asus laptop firmware maps the touchpad toggle Fn key to Super+P.
-                (lib.mkIf config.nx.isLaptop (mkExec "SUPER + p" toggleTouchpad))
+                # Inline lua closure (formerly the
+                # `system.inputs.toggleTouchpad` shell script in scripts.nix).
+                # The lua API is write-only for per-device `enabled`
+                # (`hl.device` is declared `fun(spec): nil`, and no
+                # `get_device` exists on `HL.API`), so the toggle has to
+                # track its own intended state. Holding that state in a
+                # closure inside the same lua VM as the device config means
+                # it resets in lockstep with `hyprctl reload` — fixing the
+                # desync the old shell script had where its status file in
+                # `$XDG_RUNTIME_DIR` outlived the device's config-default
+                # reset. Same IIFE-with-private-state pattern used by the
+                # submap auto-reset binds above.
+                (lib.mkIf config.nx.isLaptop (
+                  mkBind "SUPER + p" ''
+                    (function()
+                      local enabled = true
+                      local name = "asup1415:00-093a:300c-touchpad"
+                      return function()
+                        enabled = not enabled
+                        hl.device({ name = name, enabled = enabled })
+                        hl.dsp.event("quickshell:osd:touchpad:" .. (enabled and "on" or "off"))
+                      end
+                    end)()
+                  ''
+                ))
                 # print screen
                 (mkExec "Print" "${scriptsDir}/application.grim.fullScreenshotToFile")
                 # mouse (formerly bindm). `mouse = true` flag matches the
