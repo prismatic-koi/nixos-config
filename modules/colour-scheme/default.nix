@@ -7,6 +7,7 @@
   imports = [
     ./schema.nix
     ./catppuccin-latte.nix
+    ./edge.nix
     ./everforest.nix
     ./github-light.nix
     ./gruvbox.nix
@@ -18,6 +19,7 @@
       default = "everforest";
       type = lib.types.enum [
         "catppuccin-latte"
+        "edge"
         "everforest"
         "github-light"
         "gruvbox-dark"

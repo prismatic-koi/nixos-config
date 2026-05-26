@@ -18,7 +18,7 @@
     externalAudio.enable = true; # using external dac
     deviceLocation = "office";
     desktop = {
-      theme = "everforest";
+      theme = "edge";
       wallpaper.variant = "enso-6colour";
     };
     programs = {
