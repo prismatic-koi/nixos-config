@@ -1267,3 +1267,64 @@ func TestBuildDeliveryMessage_PureCodeFail(t *testing.T) {
 		t.Errorf("pure code fail: header should NOT mention 'infrastructure failure': %q", msg)
 	}
 }
+
+// TestBuildDeliveryMessage_RanButNoParseableVerdict pins the #1995 framing:
+// when at least one agent reached `finished` state but emitted no parseable
+// `<verdict>` tag, the delivery message must surface a dedicated branch
+// that is distinct from both the "all-no-start" and "mixed no-start"
+// branches. The text must (a) make clear this is NOT a code-quality FAIL
+// and (b) tell the worker to re-run.
+func TestBuildDeliveryMessage_RanButNoParseableVerdict(t *testing.T) {
+	sessGoal := "nixos-config@parent~review-1-review-goal"
+	sessCode := "nixos-config@parent~review-1-review-code"
+	sessSec := "nixos-config@parent~review-1-review-security"
+	groupData := map[string]db.GroupMemberResult{
+		// review-goal: finished without a parseable verdict (mid-analysis
+		// truncation — the #1993 root-cause shape).
+		sessGoal: {SessionName: sessGoal, State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`},
+		// review-code: finished with empty LastMessage (tool-only final
+		// turn — the other #1993 sub-case).
+		sessCode: {SessionName: sessCode, State: "finished", LastMessage: ""},
+		// review-security: ran fine and emitted a verdict.
+		sessSec: {SessionName: sessSec, State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessGoal, sessCode, sessSec})
+
+	if !findSubstring(msg, "no parseable verdict") {
+		t.Errorf("ran-but-no-parseable-verdict: header should mention 'no parseable verdict': %q", msg)
+	}
+	if !findSubstring(msg, "NOT a code-quality FAIL") {
+		t.Errorf("ran-but-no-parseable-verdict: header should clarify this is NOT a code-quality FAIL: %q", msg)
+	}
+	if !findSubstring(msg, "Re-run") && !findSubstring(msg, "re-run") {
+		t.Errorf("ran-but-no-parseable-verdict: header should instruct re-run: %q", msg)
+	}
+	if !findSubstring(msg, "does NOT count toward the 3-cycle limit") {
+		t.Errorf("ran-but-no-parseable-verdict: header should clarify this round does not count toward the 3-cycle limit: %q", msg)
+	}
+	// Must NOT use the no-start or mixed-no-start framings.
+	if findSubstring(msg, "infrastructure failure") {
+		t.Errorf("ran-but-no-parseable-verdict: header must NOT mention 'infrastructure failure' (the agents did run): %q", msg)
+	}
+	if findSubstring(msg, "failed to start") {
+		t.Errorf("ran-but-no-parseable-verdict: header must NOT mention 'failed to start' (the agents did start): %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_NoStartTakesPrecedenceOverNoVerdict pins the
+// ordering: when a round mixes no-start errors AND ran-but-no-verdict
+// agents, the existing mixed-no-start framing wins. Re-running addresses
+// both, and the no-start framing already covers the infrastructure half
+// of the signal.
+func TestBuildDeliveryMessage_NoStartTakesPrecedenceOverNoVerdict(t *testing.T) {
+	sessGoal := "nixos-config@parent~review-1-review-goal"
+	sessCode := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sessGoal: {SessionName: sessGoal, State: "error", StartupError: "health check timed out"},
+		sessCode: {SessionName: sessCode, State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessGoal, sessCode})
+	if !findSubstring(msg, "failed to start") {
+		t.Errorf("mixed no-start + no-verdict: existing mixed-no-start framing should win: %q", msg)
+	}
+}

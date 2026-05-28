@@ -7,9 +7,9 @@ package review_test
 // Invariants under test:
 //
 //   1. CompletedReviewCyclesForParent counts only groups that (a) are fully
-//      terminal AND (b) produced at least one finished member with a non-empty
-//      assistant message and no startup_error. Pure-infrastructure failures do
-//      not count.
+//      terminal AND (b) every member finished with a parseable `<verdict>`
+//      tag (#1995). Pure-infrastructure failures and rounds where any agent
+//      terminated without a parseable verdict do not count.
 //
 //   2. The LOOP-LIMIT footer is appended to the review-complete delivery body
 //      when the current cycle is itself verdict-producing AND the cumulative
@@ -60,12 +60,15 @@ func TestBuildLoopLimitFooter_HandlesEmptyPRNumber(t *testing.T) {
 
 // ── currentCycleProducedVerdicts ────────────────────────────────────────────
 
+// TestCurrentCycleProducedVerdicts_PositiveCase pins the happy-path single
+// member case: a finished member with a parseable `<verdict>FAIL</verdict>`
+// counts as verdict-producing.
 func TestCurrentCycleProducedVerdicts_PositiveCase(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-goal": {State: "finished", LastMessage: `{"text":"<verdict>FAIL</verdict>"}`},
 	}
 	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
-		t.Error("a finished member with a non-empty assistant message should count as verdict-producing")
+		t.Error("a finished member with a parseable <verdict> tag should count as verdict-producing")
 	}
 }
 
@@ -88,13 +91,117 @@ func TestCurrentCycleProducedVerdicts_FinishedButEmptyMessageIsNotVerdictProduci
 	}
 }
 
-func TestCurrentCycleProducedVerdicts_MixedIsVerdictProducing(t *testing.T) {
+// TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing replaces
+// the pre-#1995 lenient-contract assertion. Under the tightened contract a
+// group only counts as verdict-producing when EVERY member emitted a
+// parseable `<verdict>` tag; one no-start sibling alongside one PASS is no
+// longer sufficient.
+func TestCurrentCycleProducedVerdicts_MixedNoStartIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-goal": {State: "error", StartupError: "container failed to bind port"},
 		"a~review-1-review-code": {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
 	}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("a mixed group (one no-start + one PASS) must NOT count as verdict-producing under the #1995 contract")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_AllPassesIsVerdictProducing is the
+// regression guard for the happy path (AC #1995): a round where every
+// member emits a parseable `<verdict>PASS</verdict>` still counts.
+func TestCurrentCycleProducedVerdicts_AllPassesIsVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal":     {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-code":     {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-security": {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-qa":       {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-context":  {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+	}
 	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
-		t.Error("a mixed group with at least one finished verdict must count as verdict-producing")
+		t.Error("an all-PASS round must continue to count as verdict-producing")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_FourPassOneFailIsVerdictProducing is the
+// second regression guard (AC #1995): a round with 4 PASS + 1 parseable
+// FAIL is still verdict-producing — the FAIL is surfaced as a normal
+// review failure, not a no-verdict re-run signal.
+func TestCurrentCycleProducedVerdicts_FourPassOneFailIsVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal":     {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-code":     {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-security": {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-qa":       {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-context":  {State: "finished", LastMessage: `{"text":"<verdict>FAIL</verdict>"}`},
+	}
+	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("4-PASS + 1-FAIL round must still count as verdict-producing")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_NoVerdictTagIsNotVerdictProducing covers
+// AC #1995 case (a): finished + non-empty LastMessage + no parseable verdict
+// tag — NOT verdict-producing. This is the #1993 root-cause shape (model
+// truncated mid-analysis without emitting `<verdict>`).
+func TestCurrentCycleProducedVerdicts_NoVerdictTagIsNotVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal": {State: "finished", LastMessage: `{"text":"AC6: host mode is uncapped \u2014 the diff doesn't introduce a cap for host. ACHIEVED."}`},
+	}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("finished + non-empty LastMessage + no <verdict> tag must NOT count as verdict-producing (#1995)")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_ParseablePassIsVerdictProducing covers
+// AC #1995 case (b): finished + non-empty LastMessage + parseable
+// `<verdict>PASS</verdict>` — verdict-producing.
+func TestCurrentCycleProducedVerdicts_ParseablePassIsVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal": {State: "finished", LastMessage: `{"text":"All ACs verified.\n<verdict>PASS</verdict>"}`},
+	}
+	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("finished + parseable <verdict>PASS</verdict> must count as verdict-producing (#1995)")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_ParseableFailIsVerdictProducing covers
+// AC #1995 case (c): finished + non-empty LastMessage + parseable
+// `<verdict>FAIL</verdict>` — verdict-producing.
+func TestCurrentCycleProducedVerdicts_ParseableFailIsVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal": {State: "finished", LastMessage: `{"text":"Found a blocker.\n<verdict>FAIL</verdict>"}`},
+	}
+	if !review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("finished + parseable <verdict>FAIL</verdict> must count as verdict-producing (#1995)")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing
+// covers AC #1995 edge-case 6: a round where 3 agents produce parseable
+// verdicts and 2 terminate without parseable verdicts does NOT count as
+// verdict-producing. This is exactly the PR #1992 / #1993 shape.
+func TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-security": {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-qa":       {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-context":  {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+		"a~review-1-review-goal":     {State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`}, // no <verdict>
+		"a~review-1-review-code":     {State: "finished", LastMessage: ""},                          // empty
+	}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("3 parseable + 2 no-verdict round must NOT count as verdict-producing (the #1993 shape)")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_EmptyGroupIsNotVerdictProducing pins the
+// defensive case: an empty groupData (no members at all) must not be
+// treated as verdict-producing — otherwise the "every member emitted a
+// verdict" vacuous-truth would tick the cycle counter for a zero-agent
+// round.
+func TestCurrentCycleProducedVerdicts_EmptyGroupIsNotVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("an empty groupData must not count as verdict-producing")
 	}
 }
 
@@ -158,18 +265,18 @@ func TestBashSubstringFalseMatch_DoesNotIncrementCycles(t *testing.T) {
 }
 
 // TestCompletedReviewCyclesForParent_CountsVerdictProducingGroups verifies
-// the happy path: two prior groups, both fully terminal, both produced
-// verdicts → count = 2.
+// the happy path: two prior groups, both fully terminal, every member
+// produced a parseable `<verdict>` tag → count = 2.
 func TestCompletedReviewCyclesForParent_CountsVerdictProducingGroups(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@two-cycles"
 
-	// Round 1: two agents, both finished, both produced assistant messages.
+	// Round 1: two agents, both finished, both emitted parseable verdicts.
 	g1 := registerGroupAndSeedMembers(t, d, parent, 1,
 		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
 	)
-	// Round 2: same agents, both finished, both produced assistant messages.
+	// Round 2: same agents, both finished, both emitted parseable verdicts.
 	g2 := registerGroupAndSeedMembers(t, d, parent, 2,
 		memberSpec{role: "review-goal", state: "finished", text: `<verdict>PASS</verdict>`},
 		memberSpec{role: "review-code", state: "finished", text: `<verdict>FAIL</verdict>`},
@@ -184,13 +291,45 @@ func TestCompletedReviewCyclesForParent_CountsVerdictProducingGroups(t *testing.
 	}
 }
 
+// TestCompletedReviewCyclesForParent_ExcludesNoVerdictGroups is the
+// historical-cycle twin of
+// TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing
+// (#1995). A prior round where even one member terminated without a
+// parseable `<verdict>` tag must NOT count toward the cycle total — the
+// monitor will instead deliver the ran-but-no-parseable-verdict prompt and
+// expect the worker to re-run.
+func TestCompletedReviewCyclesForParent_ExcludesNoVerdictGroups(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@no-verdict"
+
+	// Round 1: real verdict-producing cycle, every member emits a verdict.
+	registerGroupAndSeedMembers(t, d, parent, 1,
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
+	)
+	// Round 2: review-goal terminated mid-analysis without a verdict tag
+	// (the #1993 shape) — must not count toward the total.
+	registerGroupAndSeedMembers(t, d, parent, 2,
+		memberSpec{role: "review-goal", state: "finished", text: "AC6: host mode is uncapped. ACHIEVED."},
+		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
+	)
+
+	n, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("count = %d, want 1 (round 2 had a no-verdict member and must not count)", n)
+	}
+}
+
 // TestCompletedReviewCyclesForParent_ExcludesAllNoStartGroups verifies the
 // AC: an "all agents failed to start" cycle does not count as a real cycle.
 func TestCompletedReviewCyclesForParent_ExcludesAllNoStartGroups(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@no-start"
 
-	// Round 1: real verdict-producing cycle.
+	// Round 1: real verdict-producing cycle (every member emits a verdict).
 	registerGroupAndSeedMembers(t, d, parent, 1,
 		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
@@ -217,7 +356,7 @@ func TestCompletedReviewCyclesForParent_ExcludesActiveGroups(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@in-flight"
 
-	// Round 1: terminated.
+	// Round 1: terminated with a parseable verdict.
 	registerGroupAndSeedMembers(t, d, parent, 1,
 		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
@@ -243,10 +382,10 @@ func TestCompletedReviewCyclesForParent_ExcludeGroupID(t *testing.T) {
 	parent := "nixos-config@exclude-test"
 
 	g1 := registerGroupAndSeedMembers(t, d, parent, 1,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 	g2 := registerGroupAndSeedMembers(t, d, parent, 2,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 
 	// Without exclude: 2.
@@ -295,14 +434,16 @@ func TestMonitorFunc_AppendsFooterOnThirdNonConvergedCycle(t *testing.T) {
 	d := openTestDB(t)
 	parent := "nixos-config@spam-repro"
 
-	// Seed two prior verdict-producing cycles on this parent.
+	// Seed two prior verdict-producing cycles on this parent. Each member
+	// emits a parseable `<verdict>` tag so the #1995 "every member must
+	// emit a verdict" predicate counts both rounds.
 	registerGroupAndSeedMembers(t, d, parent, 1,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
-		memberSpec{role: "review-code", state: "finished", text: "PASS output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
 	)
 	registerGroupAndSeedMembers(t, d, parent, 2,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
-		memberSpec{role: "review-code", state: "finished", text: "PASS output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+		memberSpec{role: "review-code", state: "finished", text: `<verdict>PASS</verdict>`},
 	)
 
 	// Round 3 is the in-flight cycle the monitor is delivering for.
@@ -331,10 +472,10 @@ func TestMonitorFunc_NoFooterOnConvergedThirdCycle(t *testing.T) {
 	parent := "nixos-config@converged-third"
 
 	registerGroupAndSeedMembers(t, d, parent, 1,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 	registerGroupAndSeedMembers(t, d, parent, 2,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 
 	// Round 3: passes. We assert the footer is NOT appended.
@@ -354,10 +495,10 @@ func TestMonitorFunc_NoFooterOnInfrastructureFailureCycle(t *testing.T) {
 	parent := "nixos-config@infra-third"
 
 	registerGroupAndSeedMembers(t, d, parent, 1,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 	registerGroupAndSeedMembers(t, d, parent, 2,
-		memberSpec{role: "review-goal", state: "finished", text: "FAIL output"},
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
 	)
 
 	// Round 3: all agents failed to start.
@@ -429,7 +570,7 @@ func seedStartupErrorEvent(t *testing.T, d *db.DB, sessionName, reason string) {
 func mockMonitorRound3(t *testing.T, d *db.DB, parent, prNumber string) string {
 	t.Helper()
 	gid := registerGroupAndSeedMembers(t, d, parent, 3,
-		memberSpec{role: "review-goal", state: "finished", text: "Goal FAIL details"},
+		memberSpec{role: "review-goal", state: "finished", text: "Goal FAIL details\n<verdict>FAIL</verdict>"},
 		memberSpec{role: "review-code", state: "finished", text: "<verdict>PASS</verdict>"},
 	)
 	return assembleDeliveryBody(t, d, parent, prNumber, 3, gid, false /* allPassed */, false /* infra */)

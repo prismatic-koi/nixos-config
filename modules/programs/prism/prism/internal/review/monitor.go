@@ -164,9 +164,12 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	// LOOP-LIMIT footer (#1512). Append the footer to the prompt body when
 	//   (a) the cycle has not converged (¬allPassed),
-	//   (b) THIS cycle is itself a verdict-producing cycle (otherwise the
-	//       "infrastructure failure" branch in buildDeliveryMessage already
-	//       tells the worker to re-run — it is not yet at the limit), AND
+	//   (b) THIS cycle is itself a verdict-producing cycle — i.e. every
+	//       member emitted a parseable `<verdict>` tag (#1995). When the
+	//       cycle is NOT verdict-producing, the relevant branch in
+	//       buildDeliveryMessage ("infrastructure failure" or
+	//       "ran but produced no parseable verdict") already tells the
+	//       worker to re-run — it is not yet at the limit, AND
 	//   (c) the total count of verdict-producing cycles for this parent
 	//       (including this one) is ≥ REVIEW_CYCLE_THRESHOLD.
 	//
@@ -408,15 +411,41 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		}
 	}
 
-	if allPassed {
+	// Count ran-but-no-parseable-verdict failures (#1995): agents that
+	// terminated in `finished` state with no startup_error, but whose
+	// LastMessage either is empty or does not contain a parseable
+	// `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag. These are
+	// distinct from no-start failures (the agent did run — the output is
+	// just unparseable) AND from FAIL verdicts (no code-quality signal was
+	// produced). The worker should re-run, not escalate, not treat as FAIL.
+	var noVerdictSessions []string
+	for _, sess := range agentSessions {
+		mr, ok := groupData[sess]
+		if !ok {
+			continue
+		}
+		if mr.StartupError != "" {
+			continue // already counted as no-start
+		}
+		if mr.State != "finished" {
+			continue // a non-finished state is surfaced via the unexpected-state branch in buildMonitorResults
+		}
+		if memberProducedParseableVerdict(mr) {
+			continue
+		}
+		noVerdictSessions = append(noVerdictSessions, sess)
+	}
+
+	switch {
+	case allPassed:
 		sb.WriteString("**All 5 review agents passed.** You may proceed with announcing completion.\n\n")
-	} else if len(noStartSessions) > 0 && len(noStartSessions) == len(agentSessions) {
+	case len(noStartSessions) > 0 && len(noStartSessions) == len(agentSessions):
 		// Every agent failed to start — pure infrastructure failure with no
 		// code-quality signal at all.
 		sb.WriteString("**All review agents failed to start (infrastructure failure).** ")
 		sb.WriteString("This is NOT a code-quality verdict — no agents ran. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
-	} else if len(noStartSessions) > 0 {
+	case len(noStartSessions) > 0:
 		// Mixed: some agents returned FAIL/PASS verdicts; others failed to start.
 		// Surface both signals so the coordinator knows to both fix code issues
 		// AND re-run for the agents that never ran.
@@ -424,7 +453,16 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
 		sb.WriteString("to cover the agents that failed to start (infrastructure failure). ")
 		sb.WriteString("Do not treat no-start errors as code-quality verdicts.\n\n")
-	} else {
+	case len(noVerdictSessions) > 0:
+		// One or more agents ran to `finished` but produced no parseable
+		// `<verdict>` tag (#1995). The signal is incomplete — not a
+		// code-quality FAIL — so the worker should re-run rather than
+		// treat this as a normal failed review.
+		sb.WriteString("**One or more review agents ran but produced no parseable verdict.** ")
+		sb.WriteString("This is NOT a code-quality FAIL — the agents reached `finished` state without emitting a `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag (e.g. truncated mid-analysis or ended on a tool-only turn). ")
+		sb.WriteString("Re-run `prism review` to retry; this round does NOT count toward the 3-cycle limit. ")
+		sb.WriteString("If any other agent surfaced blocking issues, address those before re-running.\n\n")
+	default:
 		sb.WriteString("**One or more review agents failed.** Fix the blocking issues and re-run `prism review`.\n\n")
 	}
 
@@ -680,19 +718,43 @@ func isTerminalForGuard(m db.Status) bool {
 	return false
 }
 
-// currentCycleProducedVerdicts reports whether the current group's
-// GroupResults contain at least one finished member with a non-empty
-// LastMessage and no startup_error — the same condition
-// CompletedReviewCyclesForParent applies to historical groups. Used by the
-// monitor to decide whether the in-flight cycle counts toward the LOOP-LIMIT
-// threshold.
+// currentCycleProducedVerdicts reports whether *every* member of the current
+// group produced a parseable `<verdict>` tag. Used by the monitor to decide
+// whether the in-flight cycle counts toward the LOOP-LIMIT threshold.
+//
+// Contract (#1995): a cycle is verdict-producing iff there is at least one
+// member AND every member is finished with a non-empty assistant message that
+// AssessPassed classifies as either VerdictPass or VerdictFail. If any member
+// is in a non-finished state, missing a LastMessage, had a startup_error, or
+// terminated without emitting a parseable `<verdict>` tag, the cycle is NOT
+// counted — the worker is expected to re-run.
+//
+// This is the same predicate `CompletedReviewCyclesForParent` applies to
+// historical groups; the two share the contract.
 func currentCycleProducedVerdicts(groupData map[string]db.GroupMemberResult) bool {
+	if len(groupData) == 0 {
+		return false
+	}
 	for _, mr := range groupData {
-		if mr.State == "finished" && mr.LastMessage != "" && mr.StartupError == "" {
-			return true
+		if !memberProducedParseableVerdict(mr) {
+			return false
 		}
 	}
-	return false
+	return true
+}
+
+// memberProducedParseableVerdict reports whether a single group member's
+// terminal state contains a parseable `<verdict>PASS</verdict>` or
+// `<verdict>FAIL</verdict>` marker. Shared by both the in-flight predicate
+// (currentCycleProducedVerdicts) and the historical predicate inside
+// CompletedReviewCyclesForParent so the contract is defined exactly once.
+func memberProducedParseableVerdict(mr db.GroupMemberResult) bool {
+	if mr.State != "finished" || mr.LastMessage == "" || mr.StartupError != "" {
+		return false
+	}
+	text := ExtractAssistantText(mr.LastMessage)
+	_, kind := AssessPassed(text)
+	return kind != VerdictNone
 }
 
 // REVIEW_CYCLE_THRESHOLD is the number of completed verdict-producing review
@@ -732,12 +794,17 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //
 //   1. Every member of the group is in a terminal state (so the group is no
 //      longer running), AND
-//   2. At least one member finished with a non-empty assistant message AND no
-//      startup_error event — i.e. the group produced real per-agent verdicts.
+//   2. Every member finished with a parseable `<verdict>PASS</verdict>` /
+//      `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
+//      of real per-agent verdicts (#1995). The per-member check is shared
+//      with the in-flight predicate via memberProducedParseableVerdict so
+//      the two callsites cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Pure-infrastructure failures (every member never bound its
-// port) are excluded by condition 2 — mirroring the documented contract in
+// port) AND ran-but-no-parseable-verdict rounds (any member terminated in
+// `finished` state without emitting a `<verdict>` tag — the #1993 shape)
+// are both excluded by condition 2 — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //   "Count re-run cycles from the first round that had a full set of agent
@@ -783,13 +850,20 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 			continue
 		}
 
-		// Condition 2: at least one member produced a verdict-shaped result.
-		// We use GroupResults to read the last assistant message and any
-		// startup_error — a member with non-empty LastMessage AND empty
-		// StartupError (and state == "finished") is treated as "produced a
-		// verdict". Even if the verdict body lacks an explicit PASS/FAIL
-		// marker (which AssessPassed would classify as VerdictNone), the
-		// agent still ran and produced output — that is a real cycle.
+		// Condition 2: every member produced a parseable `<verdict>` tag.
+		// We use GroupResults to read each member's last assistant message,
+		// startup_error, and state, and require AssessPassed to return
+		// VerdictPass or VerdictFail for every member (#1995). A group where
+		// any member terminated without a parseable verdict — empty
+		// LastMessage, startup_error, or mid-analysis truncation — is NOT
+		// counted: the worker is expected to re-run.
+		//
+		// Rationale: the lenient predicate ("at least one finished member
+		// with non-empty LastMessage") tripped the LOOP-LIMIT at cycle 3 in
+		// PR #1992 even though only 3 of 5 agents had actually emitted
+		// verdicts; the other two finished with no parseable `<verdict>` tag.
+		// See `docs/diagnoses/review-agent-no-verdict-1993.md` for the full
+		// trace; #1995 tightened both predicates to share this contract.
 		groupData, gErr := d.GroupResults(gid)
 		if gErr != nil {
 			// Be defensive: a bad row should not silently underreport cycle
@@ -799,10 +873,13 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 			proglog.Warnf("[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
 			continue
 		}
-		producedVerdict := false
+		if len(groupData) == 0 {
+			continue
+		}
+		producedVerdict := true
 		for _, mr := range groupData {
-			if mr.State == "finished" && mr.LastMessage != "" && mr.StartupError == "" {
-				producedVerdict = true
+			if !memberProducedParseableVerdict(mr) {
+				producedVerdict = false
 				break
 			}
 		}
