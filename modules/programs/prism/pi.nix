@@ -75,9 +75,7 @@
       skillsDir = pkgs.runCommand "pi-skills" { } ''
         mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian $out/grill-me
         cp -r ${./skills/prism}/* $out/prism/
-        ${lib.optionalString pkgs.stdenv.isLinux ''
-          cp -r ${./skills/playwright-cli} $out/playwright-cli
-        ''}
+        cp -r ${./skills/playwright-cli} $out/playwright-cli
         cp ${awsSkillFile} $out/aws/SKILL.md
         cp -r ${./skills/acceptance-criteria}/* $out/acceptance-criteria/
         cp -r ${./skills/retro}/* $out/retro/
@@ -217,15 +215,13 @@
       nx.programs.prism.piExtensionDir = "${prismExtensionDir}";
 
       home-manager.users.${config.nx.username} = {
-        home.packages =
-          with pkgs;
-          [
-            pi-coding-agent
-            fd
-            tsx # for testing pi extensions
-            mitmproxy # for testing
-          ]
-          ++ lib.optional pkgs.stdenv.isLinux playwright-cli;
+        home.packages = with pkgs; [
+          pi-coding-agent
+          fd
+          tsx # for testing pi extensions
+          mitmproxy # for testing
+          playwright-cli
+        ];
 
         programs.zsh.shellAliases = {
           pi =
