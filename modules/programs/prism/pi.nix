@@ -217,15 +217,13 @@
       nx.programs.prism.piExtensionDir = "${prismExtensionDir}";
 
       home-manager.users.${config.nx.username} = {
-        home.packages =
-          with pkgs;
-          [
-            pi-coding-agent
-            fd
-            tsx # for testing pi extensions
-            mitmproxy # for testing
-          ]
-          ++ lib.optional pkgs.stdenv.isLinux playwright-cli;
+        home.packages = with pkgs; [
+          pi-coding-agent
+          fd
+          tsx # for testing pi extensions
+          mitmproxy # for testing
+          playwright-cli
+        ];
 
         programs.zsh.shellAliases = {
           pi =
