@@ -94,9 +94,12 @@ rec {
           prev.direnv;
 
       # packages not yet in nixpkgs; use local definitions
-      # playwright-cli depends on chromium which is Linux-only
-      playwright-cli =
-        if final.stdenv.isLinux then final.callPackage ../pkgs/playwright-cli.nix { } else null;
+      # playwright-cli is cross-platform: on Linux it uses pkgs.chromium
+      # (the user's daily-driver browser, closure already paid for); on
+      # Darwin it uses pkgs.playwright-driver.browsers-chromium (the
+      # playwright-pinned "Google Chrome for Testing" build, identity-
+      # isolated from the user's Chrome.app).
+      playwright-cli = final.callPackage ../pkgs/playwright-cli.nix { };
 
       prism = final.callPackage ../pkgs/prism.nix { };
 
