@@ -2138,9 +2138,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Prompt string `json:"prompt"`
-			To     string `json:"to,omitempty"`
-			From   string `json:"from,omitempty"`
+			Prompt      string `json:"prompt"`
+			To          string `json:"to,omitempty"`
+			From        string `json:"from,omitempty"`
+			// JSON forwards the --json flag to the host-side `prism escalate`
+			// child so its stdout carries the JSON envelope (and stderr the
+			// human mirror). The proxy on the container side then writes the
+			// captured streams verbatim to its own stdout/stderr. See #2018.
+			JSON        bool   `json:"json,omitempty"`
+			// DedupWindow forwards the hidden --dedup-window flag for tests
+			// and operator overrides. Empty string falls back to the default.
+			DedupWindow string `json:"dedup_window,omitempty"`
 		}
 		// /escalate body cap: default 1 MiB (issue #1848).
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
@@ -2170,7 +2178,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.To != "" {
 			args = append(args, "--to", req.To)
 		}
-		s.logger().Printf("sidecar: host-API /escalate: from=%s to=%s", fromSession, req.To)
+		if req.JSON {
+			args = append(args, "--json")
+		}
+		if strings.TrimSpace(req.DedupWindow) != "" {
+			args = append(args, "--dedup-window", req.DedupWindow)
+		}
+		s.logger().Printf("sidecar: host-API /escalate: from=%s to=%s json=%v", fromSession, req.To, req.JSON)
 
 		// Per-endpoint timeout: 30 s. `prism escalate` writes one bus event
 		// and may best-effort prompt the coordinator; it should return well
@@ -2183,18 +2197,36 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// is calling, bypassing the CWD walk that would otherwise resolve to
 		// the sidecar's own working directory.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
-		out, err := cmd.CombinedOutput()
+		// Capture stdout and stderr separately so the proxy on the container
+		// side can re-emit them on the matching local streams. Using
+		// CombinedOutput would mash them together and break --json mode
+		// (which writes JSON to stdout and the human mirror to stderr).
+		// See issue #2018 review-context blocker.
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
+		err := cmd.Run()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
 				s.logger().Printf("sidecar: host-API /escalate: context fired (%v): killed child after %v", ctx.Err(), 30*time.Second)
 				writeError(w, status, fmt.Sprintf("escalate aborted: %v", ctx.Err()))
 				return
 			}
-			s.logger().Printf("sidecar: host-API /escalate: %v: %s", err, out)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("escalate failed: %v\n%s", err, strings.TrimSpace(string(out))))
+			combined := strings.TrimSpace(stdoutBuf.String() + "\n" + stderrBuf.String())
+			s.logger().Printf("sidecar: host-API /escalate: %v: %s", err, combined)
+			// Surface stdout + stderr alongside the error so the container
+			// caller can re-emit them locally (parity with /cleanup).
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":  fmt.Sprintf("escalate failed: %v", err),
+				"stdout": stdoutBuf.String(),
+				"stderr": stderrBuf.String(),
+			})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{})
+		writeJSON(w, http.StatusOK, map[string]string{
+			"stdout": stdoutBuf.String(),
+			"stderr": stderrBuf.String(),
+		})
 	})
 
 	// POST /investigate

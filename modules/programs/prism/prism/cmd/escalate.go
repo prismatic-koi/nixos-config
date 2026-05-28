@@ -28,6 +28,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -132,9 +134,16 @@ func runEscalate(cmd *cobra.Command, args []string) error {
 	// host-side prism CLI and DB are not directly accessible. Proxy to the
 	// host sidecar's /escalate endpoint, which shells back to `prism escalate`
 	// on the host with PRISM_HOST_API unset. The host-side invocation will
-	// produce the success line; we surface its body/error to the caller.
+	// produce the success line; the proxy forwards its stdout/stderr to the
+	// caller's streams so the OK signal reaches the container's bash tool.
+	// (Without this re-emit, the container caller would see no output on
+	// success — the exact symptom issue #2018 set out to eliminate.)
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		if err := proxyEscalate(apiURL, explicitTo, promptText); err != nil {
+		dedupArg := ""
+		if cmd.Flags().Changed("dedup-window") {
+			dedupArg = dedupWindow.String()
+		}
+		if err := proxyEscalate(apiURL, explicitTo, promptText, jsonOut, dedupArg); err != nil {
 			return escalateReportError(cmd, err)
 		}
 		return nil
@@ -660,13 +669,50 @@ func discoverLastReviewVerdicts(database *db.DB, fromSession string) []string {
 
 // proxyEscalate forwards the escalate request to the host sidecar. The
 // sidecar handler shells out to `prism escalate` on the host, where the
-// direct DB path runs.
-func proxyEscalate(apiURL, explicitTo, promptText string) error {
+// direct DB path runs. The host-side child's stdout and stderr are returned
+// in the response body and re-emitted on the local streams here so the
+// container caller sees the success/replay line (and — in --json mode — the
+// JSON envelope on stdout). Without this round-trip, the container path
+// would be silent on success, reproducing the symptom issue #2018 set out
+// to eliminate.
+func proxyEscalate(apiURL, explicitTo, promptText string, jsonOut bool, dedupWindow string) error {
+	return proxyEscalateWithWriters(apiURL, explicitTo, promptText, jsonOut, dedupWindow, os.Stdout, os.Stderr)
+}
+
+// escalateProxyResponse is the host-API /escalate response shape. stdout and
+// stderr are the captured byte streams of the host-side `prism escalate`
+// subprocess; the container-side caller writes them verbatim to its own
+// stdout/stderr so the byte content is identical to a host invocation
+// (modulo trailing whitespace). On failure error is non-empty; the streams
+// are still populated so partial-success progress lines survive.
+type escalateProxyResponse struct {
+	Stdout string `json:"stdout"`
+	Stderr string `json:"stderr"`
+	Error  string `json:"error,omitempty"`
+}
+
+// proxyEscalateWithWriters is the testable form of proxyEscalate: stdout and
+// stderr destinations are injectable so unit tests can capture forwarded
+// output without redirecting os.Stdout / os.Stderr.
+//
+// We do NOT route through proxyToHostAPI here because that helper short-
+// circuits the body on any HTTP >= 400, swallowing the stdout/stderr fields
+// the handler attaches to error responses. We need both streams forwarded
+// unconditionally so the caller sees partial output and the underlying
+// cause even when the host child failed. This is parity with
+// proxyCleanupToHostAPIWithWriters (issue #1527).
+func proxyEscalateWithWriters(apiURL, explicitTo, promptText string, jsonOut bool, dedupWindow string, stdout, stderr io.Writer) error {
 	body := map[string]any{
 		"prompt": promptText,
 	}
 	if explicitTo != "" {
 		body["to"] = explicitTo
+	}
+	if jsonOut {
+		body["json"] = true
+	}
+	if strings.TrimSpace(dedupWindow) != "" {
+		body["dedup_window"] = dedupWindow
 	}
 	// Pass our session name so the host can identify the calling session
 	// without the CWD walk (the host-side process spawned by the sidecar
@@ -674,7 +720,64 @@ func proxyEscalate(apiURL, explicitTo, promptText string) error {
 	if envSession := os.Getenv("PRISM_SESSION_NAME"); envSession != "" {
 		body["from"] = envSession
 	}
-	return proxyToHostAPI(apiURL, "/escalate", body, nil)
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("proxyEscalate: marshal request body: %w", err)
+	}
+
+	client, reqURL, err := newEscalateHostAPIClient(apiURL)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("proxyEscalate: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("host-API /escalate: read response: %w", readErr)
+	}
+
+	var parsed escalateProxyResponse
+	if len(respBody) > 0 {
+		if unmarshalErr := json.Unmarshal(respBody, &parsed); unmarshalErr != nil {
+			return fmt.Errorf("host-API /escalate: unmarshal response: %w (body=%s)", unmarshalErr, strings.TrimSpace(string(respBody)))
+		}
+	}
+	// Forward the host-side streams unconditionally — even on error.
+	if parsed.Stdout != "" {
+		_, _ = io.WriteString(stdout, parsed.Stdout)
+	}
+	if parsed.Stderr != "" {
+		_, _ = io.WriteString(stderr, parsed.Stderr)
+	}
+	if resp.StatusCode >= 400 {
+		if parsed.Error != "" {
+			return fmt.Errorf("host-API /escalate: %s", parsed.Error)
+		}
+		return fmt.Errorf("host-API /escalate: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// newEscalateHostAPIClient resolves an http.Client and request URL for the
+// /escalate endpoint, supporting both the unix:// and http:// PRISM_HOST_API
+// shapes used elsewhere in this package (parity with proxyToHostAPI).
+func newEscalateHostAPIClient(apiURL string) (*http.Client, string, error) {
+	if strings.HasPrefix(apiURL, "http://") {
+		return newTCPHostAPIClient(), apiURL + "/escalate", nil
+	}
+	sockPath, parseErr := parseUnixSocketURL(apiURL)
+	if parseErr != nil {
+		return nil, "", fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+	}
+	return newHostAPIClient(sockPath), "http://prism-hostapi/escalate", nil
 }
 
 // runCmdInDir runs name with args in dir and returns stdout. A non-zero exit

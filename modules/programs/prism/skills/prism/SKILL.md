@@ -751,6 +751,8 @@ The `--json` flag emits a single line to stdout instead:
 
 In `--json` mode the human-readable line is NOT emitted on stdout (mutual exclusion); it may still be mirrored to stderr for log capture. On error, `--json` emits `{"error": "<message>"}` to stderr and exits non-zero.
 
+The success signal reaches the caller identically from a direct-host invocation and from inside a bwrap / sandbox-exec / podman container: the container path's sidecar proxy captures the host-side child's stdout and stderr separately and re-emits them on the matching local streams, so the `OK` line lands on the container's stdout (and the mirror on stderr) byte-for-byte the same as a host invocation. `--json` is forwarded to the host child via the proxy request body, so the JSON envelope is also surfaced end-to-end.
+
 ### Sender-side idempotency — re-runs within 5 minutes are a no-op
 
 Running `prism escalate` a second time within 5 minutes with the same `(calling session, target, prompt text)` triple as a previously-delivered escalation is a **no-op that exits 0**. The replay invocation:
