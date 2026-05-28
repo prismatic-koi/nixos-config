@@ -10,9 +10,14 @@ package sidecar
 // PR #1524 round 1).
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/db"
 )
 
 // TestHostAPI_Escalate_WorkerCannotImpersonate verifies that a worker session
@@ -144,5 +149,185 @@ func TestHostAPI_Escalate_GetMethodRejected(t *testing.T) {
 
 	if rr.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rr.Code)
+	}
+}
+
+// newSidecarWithEscalateStub returns a Sidecar configured with a stub
+// `prism` binary that, when invoked with "escalate", writes a deterministic
+// success line to stdout and a mirror to stderr, then exits 0. This lets us
+// verify that the host-side /escalate handler captures both streams
+// separately and returns them in the JSON response body — the round-trip
+// the container proxy needs to re-emit the OK signal locally.
+func newSidecarWithEscalateStub(t *testing.T, sessionName, repo, role string, d *db.DB, stdoutLine, stderrLine string, exitCode int) *Sidecar {
+	t.Helper()
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Args: $1="escalate", rest=flags. We print fixed lines so tests can
+	// assert byte-for-byte equality; we don't try to parse the flags here.
+	stubScript := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"escalate\" ]; then\n" +
+		"  printf '%s' " + shellSingleQuote(stdoutLine) + "\n" +
+		"  printf '%s' " + shellSingleQuote(stderrLine) + " 1>&2\n" +
+		"  exit " + itoa(exitCode) + "\n" +
+		"fi\n" +
+		"exit 1\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub binary: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     sessionName,
+		Repo:            repo,
+		Worktree:        "/tmp/" + sessionName,
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       role,
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	return New(cfg)
+}
+
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// TestHostAPI_Escalate_SuccessReturnsStdoutAndStderr verifies that on a
+// successful host-side `prism escalate` invocation, the /escalate handler
+// returns the captured stdout AND stderr in the response body, with the
+// streams kept separate (NOT combined). The container-side proxy depends
+// on this to re-emit each stream locally. See PR #2019 review-context
+// blocker / issue #2018.
+func TestHostAPI_Escalate_SuccessReturnsStdoutAndStderr(t *testing.T) {
+	d := openTestDB(t)
+	const wantStdout = "prism escalate: OK delivered to myrepo@main (delivery_id=abc-123)\n"
+	const wantStderr = "prism escalate: OK delivered to myrepo@main (delivery_id=abc-123)\n"
+	sc := newSidecarWithEscalateStub(t, "myrepo@feature", "myrepo", "worker", d, wantStdout, wantStderr, 0)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/escalate", `{"prompt":"halp"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%q)", err, rr.Body.String())
+	}
+	if resp["stdout"] != wantStdout {
+		t.Errorf("response stdout = %q, want %q", resp["stdout"], wantStdout)
+	}
+	if resp["stderr"] != wantStderr {
+		t.Errorf("response stderr = %q, want %q", resp["stderr"], wantStderr)
+	}
+	// Streams must be kept separate (no merging). Verify by giving the
+	// stub distinct lines on each stream and asserting they round-trip
+	// to the correct response field.
+	sc2 := newSidecarWithEscalateStub(t, "myrepo@feature", "myrepo", "worker", d,
+		"STDOUT-only-line\n", "STDERR-only-line\n", 0)
+	rr2 := doHostAPI(t, sc2, http.MethodPost, "/escalate", `{"prompt":"halp"}`)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("split-streams status = %d, body = %q", rr2.Code, rr2.Body.String())
+	}
+	var resp2 map[string]string
+	if err := json.Unmarshal(rr2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("unmarshal split-streams response: %v", err)
+	}
+	if resp2["stdout"] != "STDOUT-only-line\n" {
+		t.Errorf("split-streams stdout = %q, want STDOUT-only-line", resp2["stdout"])
+	}
+	if resp2["stderr"] != "STDERR-only-line\n" {
+		t.Errorf("split-streams stderr = %q, want STDERR-only-line", resp2["stderr"])
+	}
+}
+
+// TestHostAPI_Escalate_FailureIncludesStdoutAndStderr verifies that on a
+// non-zero exit from the host-side child, the /escalate handler returns
+// 500 with stdout/stderr alongside the error message so the proxy can
+// re-emit partial-success output and surface the underlying cause.
+func TestHostAPI_Escalate_FailureIncludesStdoutAndStderr(t *testing.T) {
+	d := openTestDB(t)
+	const wantStdout = ""
+	const wantStderr = "prism escalate: deliver prompt to myrepo@main: connection refused\n"
+	sc := newSidecarWithEscalateStub(t, "myrepo@feature", "myrepo", "worker", d, wantStdout, wantStderr, 1)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/escalate", `{"prompt":"halp"}`)
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, body = %q, want 500", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%q)", err, rr.Body.String())
+	}
+	if !strings.Contains(resp["error"], "escalate failed") {
+		t.Errorf("error = %q, want substring 'escalate failed'", resp["error"])
+	}
+	if resp["stderr"] != wantStderr {
+		t.Errorf("failure stderr = %q, want %q", resp["stderr"], wantStderr)
+	}
+}
+
+// TestHostAPI_Escalate_ForwardsJSONAndDedupWindowFlags verifies that the
+// /escalate handler forwards json=true and dedup_window=<dur> to the
+// host-side child as --json and --dedup-window flags. The stub captures
+// its argv and prints it to stdout for the test to assert on.
+func TestHostAPI_Escalate_ForwardsJSONAndDedupWindowFlags(t *testing.T) {
+	d := openTestDB(t)
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// Echo the full argv to stdout so the test can assert flags.
+	stubScript := "#!/bin/sh\necho \"$@\"\nexit 0\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	sc := New(Config{
+		SessionName:     "myrepo@feature",
+		Repo:            "myrepo",
+		Worktree:        "/tmp/myrepo@feature",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "worker",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	})
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/escalate",
+		`{"prompt":"halp","json":true,"dedup_window":"10m"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	argv := resp["stdout"]
+	if !strings.Contains(argv, "--json") {
+		t.Errorf("argv %q missing --json", argv)
+	}
+	if !strings.Contains(argv, "--dedup-window 10m") {
+		t.Errorf("argv %q missing --dedup-window 10m", argv)
 	}
 }

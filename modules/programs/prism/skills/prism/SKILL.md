@@ -733,6 +733,47 @@ A same-repo coordinator candidate is any active (ended_at IS NULL) row in the sa
 - Payload carries: `source` (calling worker), `target` (coordinator session, empty when none), `prompt` (body), `pr_numbers` (open PRs whose head matches the worker's branch), `branch`, `head_sha`, `verdicts` (last review-cycle verdicts when discoverable), `occurred_at` (RFC3339).
 - The same payload is also written into the calling session's own event log as type `escalation` so `prism checkin <self>` shows the escalation context inline.
 
+### Success signal — the `OK` line is the verification
+
+On successful delivery `prism escalate` prints exactly one line to **stdout**, mirrored to **stderr** so combined-stream capture (e.g. a bash tool that merges both) always surfaces it:
+
+```
+prism escalate: OK delivered to <target> (delivery_id=<uuid>)
+```
+
+The `OK` token is the first whitespace-delimited word after `escalate: ` so callers can grep for it as the unambiguous success signal. **Do not re-run `prism escalate` to verify delivery** — the `OK` line is the verification. Re-running is the bug pattern issue #2018 fixed: a worker that interpreted a `(no output)` capture as failure and re-ran produced two distinct deliveries to the coordinator before the sender-side guard was added.
+
+The `--json` flag emits a single line to stdout instead:
+
+```json
+{"delivered_to": "<target>", "delivery_id": "<uuid>", "replayed": false}
+```
+
+In `--json` mode the human-readable line is NOT emitted on stdout (mutual exclusion); it may still be mirrored to stderr for log capture. On error, `--json` emits `{"error": "<message>"}` to stderr and exits non-zero.
+
+The success signal reaches the caller identically from a direct-host invocation and from inside a bwrap / sandbox-exec / podman container: the container path's sidecar proxy captures the host-side child's stdout and stderr separately and re-emits them on the matching local streams, so the `OK` line lands on the container's stdout (and the mirror on stderr) byte-for-byte the same as a host invocation. `--json` is forwarded to the host child via the proxy request body, so the JSON envelope is also surfaced end-to-end.
+
+### Sender-side idempotency — re-runs within 5 minutes are a no-op
+
+Running `prism escalate` a second time within 5 minutes with the same `(calling session, target, prompt text)` triple as a previously-delivered escalation is a **no-op that exits 0**. The replay invocation:
+
+- does NOT write a new `bus_messages` row
+- does NOT write new `escalation` or `session.escalated` rows to `agent_events`
+- does NOT re-deliver the prompt to the coordinator's sidecar
+- does NOT re-transition `agent_status.state` (it stays `escalated`)
+
+The replay emits a distinct success line so the operator/agent can tell it was deduped:
+
+```
+prism escalate: OK already delivered to <target> (delivery_id=<prior>, age=<duration>)
+```
+
+The `<duration>` is the time since the prior `sent_at`, formatted as `Ns` / `Nm` / `Nh`. The `--json` form is `{"delivered_to": "<target>", "delivery_id": "<prior>", "replayed": true, "age_seconds": <int>}`.
+
+The dedup query is scoped to `from_session = self` exactly. A different worker in the same repo sending the same prompt to the same coordinator is a distinct escalation and lands as normal.
+
+The dedup guard additionally requires the calling session's `current_state` to still be `escalated`. If an incoming turn_start unstuck the worker between the two invocations, the second call is a genuine re-escalation: it transitions back to `escalated` and re-delivers.
+
 ### Delivery guarantee — exactly-once with optional replay marker
 
 The escalation prompt is delivered to the coordinator's harness **exactly once** per `prism escalate` invocation. The sidecar's `/prompt` handler is idempotent: each delivery carries a `delivery_id` (UUID minted by the sender), and repeats whose ID has been seen recently are dropped before they reach the harness pipe — the dedup set is bounded (LRU, capacity 256, in-memory per sidecar). Senders that retry with the same `delivery_id` see `{"replayed":true}` in the response so the retry is observable, not silent.
@@ -741,7 +782,7 @@ The one path that produces a second copy is the reconnect-replay case for AC #7:
 
 **Coordinator-side handling.** Coordinators receiving `prism prompt`-style frames do not need to deduplicate — the sidecar guarantees exactly-once for the same delivery_id. If you see `replay: true` on a prompt frame (visible in the assistant-side prompt body once the PI runtime exposes it; for now, observable only in raw frame archives), the delivery is a buffered resume of a partition-window escalation. Treat it informationally: the original was already accepted, this is the post-reconnect notification of that earlier acceptance.
 
-This contract supersedes the pre-fix behaviour where `prism escalate` could deliver the same prompt body multiple times under load (issue #1685).
+This contract supersedes the pre-fix behaviour where `prism escalate` could deliver the same prompt body multiple times under load (issue #1685). Sender-side double-invocation (a worker re-running `prism escalate` because the success signal was unclear) is covered by the idempotency guard above; see issue #2018.
 
 ### When to use `prism escalate` vs `prism prompt`
 

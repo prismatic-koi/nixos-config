@@ -111,6 +111,41 @@ WHERE to_session = ?
 	return nil
 }
 
+// FindRecentEquivalentBusMessage returns the most recent bus_messages row
+// matching (fromSession, toSession, text) byte-equal whose sent_at is within
+// the given window (>= now - window). It returns (nil, nil) when no match
+// exists. failed_at must be NULL on the match — a previously-failed send is
+// not a valid prior delivery to dedup against; the caller is expected to
+// retry. delivered_at MAY be NULL (queued but not yet flushed) — that still
+// counts as a prior in-flight delivery the caller should not duplicate.
+//
+// This powers the sender-side idempotency guard in `prism escalate` so a
+// worker that re-runs the same `escalate` invocation within a short window
+// (default 5 minutes) does not produce a second delivery to the coordinator.
+// See issue #2018.
+func (d *DB) FindRecentEquivalentBusMessage(fromSession, toSession, text string, window time.Duration) (*BusMessage, error) {
+	threshold := time.Now().Add(-window).UnixMilli()
+	const q = `
+SELECT id, from_session, to_session, to_instance_id, repo, text, urgency, sent_at, delivered_at, failed_at
+FROM bus_messages
+WHERE from_session = ?
+  AND to_session = ?
+  AND text = ?
+  AND failed_at IS NULL
+  AND sent_at >= ?
+ORDER BY sent_at DESC
+LIMIT 1`
+	row := d.conn.QueryRow(q, fromSession, toSession, text, threshold)
+	m, err := scanBusMessage(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("db: find recent equivalent bus message: %w", err)
+	}
+	return &m, nil
+}
+
 // scanBusMessage scans a BusMessage from the given scanner.
 func scanBusMessage(s scanner) (BusMessage, error) {
 	var m BusMessage
