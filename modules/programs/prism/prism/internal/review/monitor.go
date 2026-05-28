@@ -794,12 +794,17 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //
 //   1. Every member of the group is in a terminal state (so the group is no
 //      longer running), AND
-//   2. At least one member finished with a non-empty assistant message AND no
-//      startup_error event — i.e. the group produced real per-agent verdicts.
+//   2. Every member finished with a parseable `<verdict>PASS</verdict>` /
+//      `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
+//      of real per-agent verdicts (#1995). The per-member check is shared
+//      with the in-flight predicate via memberProducedParseableVerdict so
+//      the two callsites cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Pure-infrastructure failures (every member never bound its
-// port) are excluded by condition 2 — mirroring the documented contract in
+// port) AND ran-but-no-parseable-verdict rounds (any member terminated in
+// `finished` state without emitting a `<verdict>` tag — the #1993 shape)
+// are both excluded by condition 2 — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //   "Count re-run cycles from the first round that had a full set of agent
