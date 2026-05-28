@@ -12,7 +12,7 @@
     primary = "#a0c980";
     secondary = "#6cb6eb";
     red = "#ec7279";
-    orange = "#deb974";
+    orange = "#e59676";
     yellow = "#deb974";
     green = "#a0c980";
     aqua = "#5dbbc1";
