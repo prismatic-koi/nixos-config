@@ -7,7 +7,7 @@ Skills exist to prevent context drift and ensure consistency, not just for when 
 
 ## Web Fetching
 
-When the webfetch tool fails with a 403 Forbidden error or similar access restrictions, use playwright-cli via the Bash tool to fetch the content with a real browser instead.
+Reach for bash-based HTTP utilities first — `curl`, `wget`, `gh api`, and the like. When those fail in ways a plain HTTP client cannot recover from (403 Forbidden, Cloudflare or similar anti-bot challenges, JS-rendered SPAs that ship no content in the initial HTML), fall back to `playwright-cli` via the Bash tool to fetch the content with a real browser instead.
 There is a skill for playwright-cli, activate it if you need it.
 
 After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
