@@ -221,6 +221,7 @@
           pi-coding-agent
           fd
           tsx # for testing pi extensions
+          mitmproxy # for testing
         ];
 
         programs.zsh.shellAliases = {

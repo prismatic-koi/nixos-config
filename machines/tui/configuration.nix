@@ -28,16 +28,12 @@
       prism.profile.default = "anthropic";
       chromium.enable = true;
       calibre.enable = true;
-      cura.enable = true;
       darktable.enable = true;
       firefox.hideUrlbar = true;
       gcalcli.enable = true;
       homeAutomation.enable = true;
-      libreoffice.enable = true;
       obsidian.enable = true;
       picard.enable = true;
-      plexamp.enable = true;
-      virt-manager.enable = true;
       wgnord.enable = true;
     };
     services = {

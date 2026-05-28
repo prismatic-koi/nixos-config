@@ -17,7 +17,7 @@ in
   ];
   options = {
     nx.programs.firefox.enable = lib.mkEnableOption "enables firefox" // {
-      default = true;
+      default = false;
     };
   };
   config = lib.mkIf config.nx.programs.firefox.enable {

@@ -28,7 +28,6 @@
     ./kitty.nix
     ./kubetools.nix
     ./lf.nix
-    ./libreoffice.nix
     ./mpv.nix
     ./ncmpcpp.nix
     ./nh.nix
