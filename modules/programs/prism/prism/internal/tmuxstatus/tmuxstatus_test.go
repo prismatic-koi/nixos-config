@@ -15,6 +15,52 @@ func testColors() Colors {
 		Green:   "#green",
 		Red:     "#red",
 		Primary: "#primary",
+		Bg0:     "#bg0",
+	}
+}
+
+// TestFormatSessionStatus_MutedRendersInvertedPurple asserts the AC: a muted
+// session's status segment includes a prominent inverted-purple MUTED token
+// (bg=palette.Purple, fg=palette.bg0) with no emoji.
+func TestFormatSessionStatus_MutedRendersInvertedPurple(t *testing.T) {
+	got := FormatSessionStatus(SessionStatus{Name: "repo@branch", Muted: true}, testColors())
+
+	for _, want := range []string{
+		"MUTED",
+		"bg=#purple",
+		"fg=#bg0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("muted session output must contain %q:\n  full: %q", want, got)
+		}
+	}
+	// AC: no emoji. The MUTED indicator is plain-text + inverted colour.
+	// A simple proof-of-concept guard: reject the common emoji codepoint range
+	// used by status-bar bells / mute glyphs (U+1F500–U+1F5FF, U+1F300–U+1F3FF,
+	// U+1F400–U+1F4FF). We just ensure no rune above the BMP makes it through.
+	for _, r := range got {
+		if r > 0xFFFF {
+			t.Errorf("MUTED indicator must not contain emoji-range codepoints, got rune U+%X in %q", r, got)
+			break
+		}
+	}
+}
+
+// TestFormatSessionStatus_UnmutedIsEmpty asserts the AC: unmuted sessions
+// render the empty string so the status bar does not waste real estate on a
+// "not muted" indicator.
+func TestFormatSessionStatus_UnmutedIsEmpty(t *testing.T) {
+	if got := FormatSessionStatus(SessionStatus{Name: "repo@branch", Muted: false}, testColors()); got != "" {
+		t.Errorf("unmuted session must render empty, got %q", got)
+	}
+}
+
+// TestFormatSessionStatus_EmptyNameIsEmpty asserts the graceful-degradation
+// contract: when no session is in play the segment vanishes. This matches
+// FormatWaiting's zero-waiting → empty pattern.
+func TestFormatSessionStatus_EmptyNameIsEmpty(t *testing.T) {
+	if got := FormatSessionStatus(SessionStatus{}, testColors()); got != "" {
+		t.Errorf("empty SessionStatus must render empty, got %q", got)
 	}
 }
 

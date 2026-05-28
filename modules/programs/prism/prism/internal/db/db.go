@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 33
+	currentSchemaVersion = 34
 )
 
 // DB wraps a SQLite connection.
@@ -111,7 +111,8 @@ CREATE TABLE IF NOT EXISTS agent_status (
   harness           TEXT NOT NULL DEFAULT 'pi',
   harness_session_id TEXT,
   harness_port      INTEGER,
-  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL
+  group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
+  muted             INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
@@ -629,6 +630,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV32ToV33(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV33ToV34(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -676,6 +680,35 @@ func runMigrations(conn *sql.DB) error {
 // The partial WHERE (harness_port IS NOT NULL AND ended_at IS NULL) excludes
 // both NULL/released ports and ended sessions, so that ended sessions' ports
 // can be reclaimed by new sessions without triggering a constraint error.
+// migrateV33ToV34 adds the `muted` column to agent_status (issue #2013).
+// The column is `INTEGER NOT NULL DEFAULT 0` so existing rows are
+// initialised as unmuted (false). The ALTER TABLE is guarded by a
+// pragma_table_info check so the migration is idempotent on fresh databases
+// where the declarative schema block above already includes the column.
+func migrateV33ToV34(conn *sql.DB, version *int) error {
+	if *version >= 34 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'muted'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v33\u2192v34: check muted column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE agent_status ADD COLUMN muted INTEGER NOT NULL DEFAULT 0`,
+		); err != nil {
+			return fmt.Errorf("db: migration v33\u2192v34: add muted: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 34`); err != nil {
+		return fmt.Errorf("db: migration v33\u2192v34: %w", err)
+	}
+	*version = 34
+	return nil
+}
+
 func migrateV32ToV33(conn *sql.DB, version *int) error {
 	if *version >= 33 {
 		return nil

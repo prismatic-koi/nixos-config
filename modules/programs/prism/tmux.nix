@@ -149,11 +149,13 @@ in
               set -g status-left-length 30
               set -g status-left " [#{session_name}] "
               # set -g status-right "#{?window_bigger,[#{window_offset_x}#,#{window_offset_y}] ,}#{=21:pane_title} "
-              # status-right composition: prism segment first, then the
-              # hostname. The prism segment emits an empty string when its
-              # daemon is down or has nothing waiting, so the visible bar
-              # collapses cleanly to just `#h ` in the steady state.
-              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#h "
+              # status-right composition: aggregate waiting count first, then
+              # the per-session status segment for the pane's session (currently
+              # the mute indicator). Each helper emits "" in the empty case so
+              # the visible bar collapses cleanly when nothing needs surfacing.
+              # PRISM_SESSION_NAME is set on prism panes and read by the
+              # session-status helper to know which session to render.
+              set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(PRISM_SESSION_NAME=#{session_name} ${prism} sessions session-status --tmux-format)"
               set -g status-style 'bg=${bg1} fg=${secondary}'
               set -g message-style 'bg=${primary} fg=${bg1}'
               set -g mode-style 'bg=${bg3} fg=${foreground}'
@@ -216,6 +218,16 @@ in
               bind-key q display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
               # restart prism (prefix+R)
               bind-key R run-shell '${prism} restart'
+              # toggle session mute (prefix+m). Operator escape hatch (see #2013):
+              # silences this session's outbound coordinator notifications until
+              # toggled off. The tmux session name doubles as the prism session
+              # name on prism-managed panes. The display-message fallback covers
+              # plain shell / dashboard panes (where the tmux session name does
+              # not correspond to a prism session) so a stray Prefix+m there
+              # does not crash tmux or surface a stack trace.
+              bind-key m if-shell '[ -n "#{session_name}" ]' \
+                'run-shell -b "${prism} mute #{session_name} || ${pkgs.tmux}/bin/tmux display-message \"prism mute: not a prism session\""' \
+                'display-message "prism mute: no current session"'
               # easy config reload
               bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
 

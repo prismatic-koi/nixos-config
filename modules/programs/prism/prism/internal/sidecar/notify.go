@@ -230,6 +230,18 @@ func (s *Sidecar) notifyCoordinator() {
 		return
 	}
 
+	// Muted guard: the operator has explicitly silenced this session's
+	// outbound coordinator notifications via `prism mute`. The flag is
+	// orthogonal to the agent state machine: lifecycle transitions and DB
+	// writes continue normally; only the bus-notification to the coordinator
+	// is suppressed. Missed notifications are dropped, not queued — if the
+	// session is unmuted after a finish, the coordinator does not receive a
+	// retroactive ping.
+	if selfStatusErr == nil && selfStatus != nil && selfStatus.Muted {
+		s.logger().Printf("sidecar: notifyCoordinator: suppressed (cause=muted)")
+		return
+	}
+
 	// DB-backed coordinator lookup: find the active coordinator for this repo.
 	coordStatus, err := s.cfg.DB.CoordinatorForRepo(s.cfg.Repo)
 	if err != nil {

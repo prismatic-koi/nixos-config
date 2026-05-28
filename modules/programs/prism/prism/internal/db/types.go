@@ -40,6 +40,14 @@ type Status struct {
 	// when this session is not part of a group. Populated by SpawnSession
 	// when opts.GroupID is non-empty (see #849 §3.1 and #859).
 	GroupID *string
+	// Muted, when true, suppresses outbound coordinator notifications
+	// emitted from this session (session.finished and session.escalated).
+	// DB writes (agent_status.state, last_seen, ended_at, agent_events rows)
+	// continue to fire as normal, and inbound delivery to this session is
+	// also unaffected. Toggled explicitly by the operator; never auto-cleared
+	// (a muted session that hits finished stays muted, and the missed
+	// notification is dropped, not queued).
+	Muted bool `json:"muted"`
 }
 
 // BusMessage represents a row in the bus_messages table.
