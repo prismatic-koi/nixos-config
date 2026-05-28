@@ -31,13 +31,27 @@ in
               clear-qutebrowser-history = pkgs.writeShellScript "clear-qutebrowser-history" ''
                 #!/bin/bash
 
+                # Skip if qutebrowser is currently running — avoid lock
+                # contention against its own DB connection. The next daily
+                # run will catch up.
+                if ${pkgs.procps}/bin/pgrep -x qutebrowser > /dev/null; then
+                  exit 0
+                fi
+
                 # Path to your SQLite database
                 DB_PATH="${homeDir}/.local/share/qutebrowser/history.sqlite"
 
-                # Delete entries older than 7 days
+                # Nothing to do if the DB does not exist yet (fresh install).
+                if [ ! -f "$DB_PATH" ]; then
+                  exit 0
+                fi
+
+                # Delete entries older than 7 days, then VACUUM to reclaim
+                # the freed pages so the file actually shrinks.
                 ${pkgs.sqlite}/bin/sqlite3 "$DB_PATH" <<EOF
                 DELETE FROM History WHERE atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
                 DELETE FROM CompletionHistory WHERE last_atime < CAST(strftime('%s', 'now', '-7 days') AS INTEGER);
+                VACUUM;
                 EOF
               '';
             in
@@ -56,10 +70,10 @@ in
             };
           systemd.user.timers.qutebrowser-clear-history-timer = {
             Unit = {
-              Description = "Run clear qutebrowser history task every 1 hour";
+              Description = "Run clear qutebrowser history task daily";
             };
             Timer = {
-              OnCalendar = "hourly";
+              OnCalendar = "daily";
               Persistent = true;
               Unit = "clear-qutebrowser-history.service";
             };
