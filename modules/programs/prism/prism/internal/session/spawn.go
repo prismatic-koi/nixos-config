@@ -225,6 +225,15 @@ type SpawnOpts struct {
 	// instead of a "session created" success line followed by an idle
 	// session that will never make progress (see #1051 widening comment).
 	ReadinessTimeout time.Duration
+
+	// AllowEmptyPrompt opts the caller out of the layer-4 empty-prompt guard
+	// for LayoutFull / LayoutAgentOnly (issue #2012). The tmux Prefix+a
+	// keybind invokes `prism spawn --attach` with no --prompt so the operator
+	// can type the initial prompt to the live agent after the popup attaches;
+	// `cmd/spawn.go` sets this field when `PRISM_SPAWN_PATH` is present and
+	// no prompt was supplied. All other callers should leave this false so
+	// the original "agent pane needs a prompt" guard (#1891) keeps firing.
+	AllowEmptyPrompt bool
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -264,7 +273,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// LayoutScratchpad are not agent panes — they are plain shells/dashboards
 	// — and legitimately have no prompt, so they must continue to accept
 	// an empty opts.Prompt.
-	if opts.Prompt == "" && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly) {
+	//
+	// opts.AllowEmptyPrompt opts the caller out of this guard — used by the
+	// keybind carve-out (issue #2012) where the operator types the initial
+	// prompt to the live agent after the popup attaches.
+	if opts.Prompt == "" && !opts.AllowEmptyPrompt && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly) {
 		return fmt.Errorf("spawn session: Prompt is required for layout %d (LayoutFull or LayoutAgentOnly) — an agent pane cannot start without a prompt", opts.Layout)
 	}
 
