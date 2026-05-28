@@ -106,22 +106,6 @@ in
               mode = "0600";
               sopsFile = sopsFile;
             };
-          }
-          // lib.optionalAttrs config.nx.programs.ssh.enableWorkKeys {
-            # Work SSH keys (opt-in)
-            "ssh/work-prismatic-koi-ed25519" = mkSecret "work-prismatic-koi-ed25519";
-            "ssh/work-prismatic-koi-ed25519.pub" = mkSecret "work-prismatic-koi-ed25519.pub";
-            "ssh/work-rsa" = mkSecret "work-rsa";
-            "ssh/work-rsa.pub" = mkSecret "work-rsa.pub";
-            "ssh/work-ed25519" = mkSecret "work-ed25519";
-            "ssh/work-ed25519.pub" = mkSecret "work-ed25519.pub";
-            "ssh/workconfig" = {
-              owner = username;
-              mode = "0600";
-              path = "${homeDir}/.ssh/workconfig";
-              format = "binary";
-              sopsFile = ./secrets/worksshconfig;
-            };
           };
 
         environment.sessionVariables = {
@@ -153,20 +137,6 @@ in
               "ssh/prismatic-koi-rsa.pub" = mkSecret "prismatic-koi-rsa.pub";
               "config/cloudflared_domain" = {
                 sopsFile = sopsFile;
-              };
-            }
-            // lib.optionalAttrs config.nx.programs.ssh.enableWorkKeys {
-              # Work SSH keys (opt-in)
-              "ssh/work-prismatic-koi-ed25519" = mkSecret "work-prismatic-koi-ed25519";
-              "ssh/work-prismatic-koi-ed25519.pub" = mkSecret "work-prismatic-koi-ed25519.pub";
-              "ssh/work-rsa" = mkSecret "work-rsa";
-              "ssh/work-rsa.pub" = mkSecret "work-rsa.pub";
-              "ssh/work-ed25519" = mkSecret "work-ed25519";
-              "ssh/work-ed25519.pub" = mkSecret "work-ed25519.pub";
-              "ssh/workconfig" = {
-                path = "${homeDir}/.ssh/workconfig";
-                format = "binary";
-                sopsFile = ./secrets/worksshconfig;
               };
             };
 
