@@ -378,19 +378,24 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
 	}
+	attachFlag, _ := cmd.Flags().GetBool("attach")
+	// headless when invoked from a shell/agent rather than the tmux keybinding.
+	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
+	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	// Reject an empty prompt at the operator boundary (issue #1891). When the
 	// hidden --prompt-source flag is set we are running as the child of the
 	// host-API /spawn handler, which has already validated that req.Prompt is
 	// non-empty (layer 3); skipping the check there keeps the proxy's own
 	// 400 surface as the source of truth for that path.
-	if promptText == "" && promptSource != "proxy-spawn" {
+	//
+	// Keybind carve-out (issue #2012): the tmux Prefix+a keybind invokes
+	// `prism spawn --attach` with no --prompt because the operator types the
+	// initial prompt to the live agent after the popup attaches. The keybind
+	// sets PRISM_SPAWN_PATH (the `fromKeybind` discriminator), so an empty
+	// prompt on that path is legitimate and must be allowed through.
+	if promptText == "" && promptSource != "proxy-spawn" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}
-
-	attachFlag, _ := cmd.Flags().GetBool("attach")
-	// headless when invoked from a shell/agent rather than the tmux keybinding.
-	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
-	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	cfg := config.Load()
 
 	// Resolve the effective isolation mode. This validates --isolation
@@ -652,6 +657,13 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// harness-specific string literals appear in the session package.
 	// harnessFlag was already validated above, so the error is unreachable.
 	h, _ := harness.New(harnessFlag, "", nil, "", "")
+	// Keybind carve-out (issue #2012): when the spawn was initiated by the
+	// tmux Prefix+a keybind and no prompt was supplied, opt out of the layer-4
+	// empty-prompt guard in SpawnSession. The operator types the initial
+	// prompt to the live agent after the popup attaches. Any other combination
+	// (non-keybind, or keybind with an explicit --prompt) keeps the original
+	// #1891 guard active.
+	allowEmptyPrompt := fromKeybind && promptText == ""
 	spawnOpts := session.SpawnOpts{
 		SessionName:      sessionName,
 		Repo:             deriveRepo(worktreePath),
@@ -667,6 +679,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		RuntimeEnvVars:   h.RuntimeEnv(),
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
+		AllowEmptyPrompt: allowEmptyPrompt,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
