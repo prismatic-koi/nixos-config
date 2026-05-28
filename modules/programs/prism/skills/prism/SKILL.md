@@ -271,10 +271,32 @@ catches drift in one fetch, before any agent spawns.
 **Cycle-counter contract.** Gate failures (behind-main refusal, fetch failure,
 missing `origin/main`, rebase conflict abort) **do not increment** the
 review-cycle counter. They are the same category as "round already in
-progress" / pure-infrastructure failures: no agents spawned, no verdicts
-produced. A worker that hits the gate three times in a row and then runs
-three real reviews still has all three real cycles available before the
-LOOP-LIMIT footer fires.
+progress" / pure-infrastructure failures / ran-but-no-parseable-verdict
+rounds (#1995): no full set of parseable verdicts was produced, so the
+round does not count. A worker that hits the gate three times in a row
+and then runs three real reviews still has all three real cycles
+available before the LOOP-LIMIT footer fires.
+
+Rounds that **do not count** toward the 3-cycle limit:
+
+- **Pre-flight gate refusals** — behind-main, fetch failure, missing
+  `origin/main`, rebase conflict abort. No agents spawned.
+- **Round-already-in-progress refusals** — a prior review is still
+  active for the same parent. No agents spawned.
+- **Pure-infrastructure failures** — every agent failed to start
+  (container never bound its port). Header mentions "infrastructure
+  failure".
+- **Ran-but-no-parseable-verdict rounds** (#1995) — one or more agents
+  reached `finished` state without emitting a parseable
+  `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag (e.g.
+  truncated mid-analysis or ended on a tool-only turn). Header says
+  **"One or more review agents ran but produced no parseable verdict"**
+  and explicitly tells the worker to re-run. This is NOT a code-quality
+  FAIL — re-run, do not escalate.
+
+In each of these cases the correct action is to re-run `prism review`
+(after fixing any orthogonal blocking issues another agent surfaced),
+not to escalate.
 
 **Design notes:**
 
@@ -305,6 +327,26 @@ Signs of a no-start error in the per-agent findings:
 - `**Verdict:** ERROR`
 - Output contains `ERROR: agent failed to start (no-start):`
 - The delivery message header mentions "infrastructure failure" and instructs you to re-run
+
+### Handling ran-but-no-parseable-verdict in review-complete prompts
+
+When a review-complete prompt says **"One or more review agents ran but
+produced no parseable verdict"** (#1995), treat it the same way you treat a
+no-start error: re-run `prism review <pr>` rather than escalate. The agents
+did run — the problem is that one or more of them terminated in `finished`
+state without emitting a parseable `<verdict>PASS</verdict>` /
+`<verdict>FAIL</verdict>` tag (e.g. truncated mid-analysis, ended on a
+tool-only turn). This is **not** a code-quality FAIL and the round **does
+not count** toward the 3-cycle limit.
+
+Signs of a ran-but-no-parseable-verdict round:
+- The per-agent output for at least one agent contains
+  `ERROR: no verdict found in agent output` or `ERROR: no output produced`
+- The delivery message header explicitly says the agent(s) ran but produced
+  no parseable verdict and instructs you to re-run
+
+If any other agent in the same round surfaced genuine blocking issues, fix
+those before re-running.
 
 If no review-complete prompt arrives within 30 minutes, check progress with:
 
