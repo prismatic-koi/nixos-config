@@ -48,6 +48,50 @@ type Colors struct {
 	Green   string // finished count
 	Red     string // error count
 	Primary string // trailing "| " separator
+	// Bg0 is the background-base colour, used as the foreground of inverted
+	// indicators (e.g. the MUTED token paints palette.Purple as background
+	// and palette.bg0 as foreground for prominent reverse-video contrast).
+	Bg0 string
+}
+
+// SessionStatus is the per-session status segment input for FormatSessionStatus.
+//
+// Only fields the formatter actively renders need be set. Name is included
+// for forward-compat (the renderer currently does not embed it; the tmux
+// status-left already shows the session name) but kept on the struct so a
+// future change can read it without touching callers.
+type SessionStatus struct {
+	Name  string
+	Muted bool
+}
+
+// FormatSessionStatus renders the per-session tmux status-right segment.
+//
+// Contract (matches the FormatWaiting graceful-degradation pattern):
+//
+//   - If s.Name is empty AND nothing else needs to render, return "" so the
+//     segment disappears from the status bar entirely.
+//   - When s.Muted is true, emit a prominent inverted-purple MUTED token
+//     using the bg=<Purple>,fg=<Bg0> reverse-video pattern. No emoji.
+//   - When s.Muted is false, the segment renders empty so an unmuted pane
+//     does not waste status-bar real estate on a "not muted" indicator.
+//
+// The current rendering set is intentionally narrow: today the only
+// per-session state the human operator wants surfaced is the muted flag.
+// Other future per-session indicators can be threaded through this same
+// formatter without changing the tmux-side wiring.
+func FormatSessionStatus(s SessionStatus, col Colors) string {
+	if s.Name == "" && !s.Muted {
+		return ""
+	}
+	if !s.Muted {
+		return ""
+	}
+	// Inverted purple block. The leading "#[default]" resets any inherited
+	// foreground/background so the bg paint is exact, the body sets bg+fg,
+	// and the trailing "#[default]" restores the status-right defaults so
+	// downstream segments are not affected by the leak-through.
+	return fmt.Sprintf("#[default]#[bg=%s,fg=%s,bold] MUTED #[default] ", col.Purple, col.Bg0)
 }
 
 // FormatWaiting renders the --waiting --tmux-format segment: a single

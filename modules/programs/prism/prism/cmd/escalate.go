@@ -195,6 +195,21 @@ func runEscalateForSession(database *db.DB, fromSession, explicitTo, promptText 
 		return nil
 	}
 
+	// Muted guard: when the calling session is muted, suppress the outbound
+	// coordinator escalation notification. The state transition and the
+	// session.escalated agent_events row are still written above so the
+	// dashboard reflects reality; only the bus delivery is skipped. This
+	// mirrors the notifyCoordinator suppression in internal/sidecar/notify.go
+	// for the finish-notification path — outbound to the coordinator is the
+	// suppression boundary, DB writes are unaffected. (#2013)
+	if selfStatus.Muted {
+		fmt.Fprintf(os.Stderr,
+			"prism escalate: session %q is muted; coordinator notification suppressed (state still transitioned to escalated, bus event still written).\n",
+			fromSession,
+		)
+		return nil
+	}
+
 	// Deliver via prism prompt machinery. We write the bus_messages row as
 	// "delivered" only on success; the sidecar's prompt path already does this
 	// for the audit trail, so we delegate by invoking the same code path that

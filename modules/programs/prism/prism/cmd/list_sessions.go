@@ -153,6 +153,7 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 		harness string
 		title   string
 		abtest  bool // true when this session is part of an --abtest pair
+		muted   bool // true when the session's notifications are muted
 	}
 
 	var rows []row
@@ -166,7 +167,7 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 			port = fmt.Sprintf("%d", *s.HarnessPort)
 		}
 		isAbtest := abtestPairs != nil && abtestPairs[s.SessionName] != ""
-		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title, abtest: isAbtest})
+		rows = append(rows, row{name: s.SessionName, state: s.State, port: port, harness: displayHarness(s.Harness), title: title, abtest: isAbtest, muted: s.Muted})
 	}
 
 	// Sort rows using the same parent-attribution logic as the dashboard's
@@ -278,10 +279,17 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 			nameStyle = styleName
 		}
 
-		// Build the display name: append ↔ indicator for abtest-paired sessions.
+		// Build the display name: append ↔ indicator for abtest-paired sessions
+		// and a (muted) suffix when notifications from this session are
+		// suppressed. The suffix is a plain marker (no colour) so it survives
+		// pipe-through-tee and other dumb-renderer callers; the prominent
+		// status-bar indicator lives in `prism sessions session-status`.
 		displayName := r.name
 		if r.abtest {
-			displayName = r.name + " ↔"
+			displayName = displayName + " ↔"
+		}
+		if r.muted {
+			displayName = displayName + " (muted)"
 		}
 
 		fmt.Printf("%s  %s  %s  %s  %s\n",

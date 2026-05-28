@@ -506,6 +506,60 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 	return n, nil
 }
 
+// SetMuted sets the muted flag for sessionName to muted (true = 1, false = 0).
+//
+// Returns (false, nil) when no agent_status row exists for sessionName so
+// callers (the `prism mute` CLI) can report a clear "session not found"
+// error without inserting a phantom row. Returns (true, nil) when the row
+// exists and the column was updated.
+//
+// The boolean does not indicate whether the value actually changed — calling
+// SetMuted twice with the same value is a no-op-on-state but still returns
+// (true, nil) so the CLI's idempotence path can be observed by the caller.
+func (d *DB) SetMuted(sessionName string, muted bool) (bool, error) {
+	val := 0
+	if muted {
+		val = 1
+	}
+	res, err := d.conn.Exec(
+		`UPDATE agent_status SET muted = ? WHERE session_name = ?`,
+		val, sessionName,
+	)
+	if err != nil {
+		return false, fmt.Errorf("db: set muted: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: set muted rows affected: %w", err)
+	}
+	return n > 0, nil
+}
+
+// IsMuted reports whether the session is currently muted. Returns
+// (false, false, nil) when no row exists or the row exists but the session
+// has already been ended (ended_at IS NOT NULL) — in both cases the mute
+// CLI treats the session as "not found" and refuses to toggle.
+//
+// Restricting the lookup to live (ended_at IS NULL) rows matches the AC for
+// `prism cleanup --session <name>` followed by `prism mute <name>`: after
+// cleanup, the row carries ended_at, so mute reports "session not found".
+// The flag column itself is not erased — it persists alongside ended_at for
+// audit — but the operator-facing surface treats the session as gone.
+func (d *DB) IsMuted(sessionName string) (bool, bool, error) {
+	var m int64
+	err := d.conn.QueryRow(
+		`SELECT muted FROM agent_status WHERE session_name = ? AND ended_at IS NULL`,
+		sessionName,
+	).Scan(&m)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("db: is muted: %w", err)
+	}
+	return m != 0, true, nil
+}
+
 // ClearEnded clears the ended_at timestamp for sessionName, making the session
 // visible again to AllActiveStatus and the dashboard (which both filter
 // WHERE ended_at IS NULL). Called when a session resumes from a terminal state
@@ -893,7 +947,7 @@ func (d *DB) HarnessSessionIDForInstance(instanceID string) (string, error) {
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -910,7 +964,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -941,7 +995,7 @@ func (d *DB) ActiveSessionCountForMode(mode string) (int, error) {
 // helpers; callable for any IsolationMode value.
 func (d *DB) ActiveSessionsForMode(mode string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL AND isolation_mode = ?`
 	return d.queryStatuses(q, mode)
@@ -950,7 +1004,7 @@ WHERE ended_at IS NULL AND isolation_mode = ?`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -973,7 +1027,7 @@ WHERE ended_at IS NULL AND repo = ?`
 // coordinators. Other-repo workers are hidden as noise.
 func (d *DB) AllActiveStatusForRepoAndOtherCoordinators(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL
   AND (
@@ -994,7 +1048,7 @@ WHERE ended_at IS NULL
 // exists. This is the natural-key dedupe check used by prism spawn --reuse.
 func (d *DB) ActiveStatusForRepoBranch(repo, branch string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ? AND worktree = ?
 LIMIT 1`
@@ -1020,7 +1074,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -1054,7 +1108,7 @@ func (d *DB) WaitingCount() (int, error) {
 // strict per-coordinator targeting is required.
 func (d *DB) ActivePISessionsForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', 'idle', 'waiting')`
 	return d.queryStatuses(q, repo)
@@ -1065,7 +1119,7 @@ WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', '
 // by the /apply-profile and /register-provider host-API endpoints (P3.LIVE, #1214).
 func (d *DB) AllActivePISessions() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiting')`
 	return d.queryStatuses(q)
@@ -1083,7 +1137,7 @@ WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiti
 // or more means the worker must specify --to explicitly.
 func (d *DB) CoordinatorCandidatesForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE repo = ? AND ended_at IS NULL
   AND (root_agent_name = 'coordinator' OR (root_agent_name IS NULL AND session_name = ? || '@main'))
@@ -1098,7 +1152,7 @@ ORDER BY last_seen DESC`
 // returned and a duplicate is silently tolerated.
 func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id
+SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted
 FROM agent_status
 WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
 ORDER BY last_seen DESC
@@ -1172,11 +1226,12 @@ func scanStatus(s scanner) (*Status, error) {
 	var harnessPort sql.NullInt64
 	var isolationMode sql.NullString
 	var groupID sql.NullString
+	var muted int64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
 		&st.Title, &st.AgentName, &st.ModelID,
 		&st.RootAgentName, &st.RootModelID, &isolationMode, &instanceID, &lastSeen, &endedAt,
-		&harness, &harnessSessionID, &harnessPort, &groupID,
+		&harness, &harnessSessionID, &harnessPort, &groupID, &muted,
 	)
 	if err != nil {
 		return nil, err
@@ -1210,6 +1265,7 @@ func scanStatus(s scanner) (*Status, error) {
 		hp := int(harnessPort.Int64)
 		st.HarnessPort = &hp
 	}
+	st.Muted = muted != 0
 	return &st, nil
 }
 
