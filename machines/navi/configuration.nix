@@ -29,18 +29,11 @@
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
       corectrl.enable = true;
-      cura.enable = true;
       darktable.enable = true;
-      firefox = {
-        enable = true;
-        hideUrlbar = true;
-      };
       gcalcli.enable = true;
       homeAutomation.enable = true;
-      libreoffice.enable = true;
       obsidian.enable = true;
       picard.enable = true;
-      plexamp.enable = true;
       rclone.enable = true;
       wgnord.enable = true;
     };
@@ -241,7 +234,6 @@
     mountOnMedia = true;
   };
 
-  # programs.virt-manager.enable = true;
   networking.firewall = {
     allowedTCPPorts = [
       6600 # mpd
