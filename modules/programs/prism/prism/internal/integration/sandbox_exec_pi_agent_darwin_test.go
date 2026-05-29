@@ -27,7 +27,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 )
 
@@ -116,7 +115,7 @@ func TestSandboxExecPI_AgentDirReadable(t *testing.T) {
 	// staging dir. We use a synthetic session name; XDG_STATE_HOME is not
 	// overridden so staging lands under the real state dir.
 	piStagingHostDir, _, stageErr := container.StagePIAgentConfigDir(
-		config.RoleSlot{}, "integration-test-1305@pi-agent-readable")
+		"integration-test-1305@pi-agent-readable")
 	if stageErr != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", stageErr)
 	}
@@ -175,7 +174,7 @@ func TestSandboxExecPI_AgentDirDeniedWithoutSubpathAllow(t *testing.T) {
 
 	// Create a minimal auth.json directly in a temp staging dir to test with.
 	piStagingHostDir, _, stageErr := container.StagePIAgentConfigDir(
-		config.RoleSlot{}, "integration-test-1305@pi-agent-denied")
+		"integration-test-1305@pi-agent-denied")
 	if stageErr != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", stageErr)
 	}
