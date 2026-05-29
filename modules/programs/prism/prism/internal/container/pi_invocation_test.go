@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/prismatic-koi/prism/internal/config"
 )
 
 // ── PIInvocation ─────────────────────────────────────────────────────────────
@@ -40,8 +38,9 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	if hasArg(args, "--no-session") {
 		t.Errorf("--no-session must not appear in PIInvocation args; got %v", args)
 	}
-	// --append-system-prompt must NOT appear — system prompt is delivered via
-	// PI_CODING_AGENT_DIR / APPEND_SYSTEM.md, not via a CLI flag.
+	// --append-system-prompt must NOT appear — the role system prompt is
+	// injected at runtime by the prism PI extension (before_agent_start), not
+	// via a CLI flag or a staged file (design #2031).
 	if hasArg(args, "--append-system-prompt") {
 		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", args)
 	}
@@ -139,26 +138,15 @@ func hasTriple(args []string, flag, val1, val2 string) bool {
 
 // ── StagePIAgentConfigDir ─────────────────────────────────────────────────────
 
-func TestStagePIAgentConfigDir_WritesAppendSystem(t *testing.T) {
-	// Prepare a source system-prompt file.
-	srcDir := t.TempDir()
-	srcFile := filepath.Join(srcDir, "agent-instructions.md")
-	content := "# System Prompt\nDo great things."
-	if err := os.WriteFile(srcFile, []byte(content), 0o600); err != nil {
-		t.Fatalf("write src: %v", err)
-	}
-
-	slot := config.RoleSlot{
-		Provider:         "anthropic",
-		Model:            "anthropic/claude-opus-4",
-		SystemPromptPath: srcFile,
-	}
-
-	// Override XDG_STATE_HOME so staging lands in t.TempDir().
+func TestStagePIAgentConfigDir_DoesNotWriteAppendSystem(t *testing.T) {
+	// PR2 of #2031: the role system-prompt is no longer staged as
+	// APPEND_SYSTEM.md. It is injected at runtime by the prism PI extension.
+	// StagePIAgentConfigDir must create the staging dir WITHOUT writing
+	// APPEND_SYSTEM.md.
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	hostDir, sandboxDir, err := StagePIAgentConfigDir(slot, "test-session@main")
+	hostDir, sandboxDir, err := StagePIAgentConfigDir("test-session@main")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -168,14 +156,15 @@ func TestStagePIAgentConfigDir_WritesAppendSystem(t *testing.T) {
 		t.Errorf("sandboxDir = %q, want %q", sandboxDir, piAgentConfigSandboxDefault)
 	}
 
-	// APPEND_SYSTEM.md must exist and contain the source content.
-	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
-	got, err := os.ReadFile(appendSystemPath)
-	if err != nil {
-		t.Fatalf("read APPEND_SYSTEM.md at %q: %v", appendSystemPath, err)
+	// APPEND_SYSTEM.md must NOT exist — the write path has been removed.
+	appendSystemPath := filepath.Join(hostDir, "APPEND_SYSTEM.md")
+	if _, statErr := os.Stat(appendSystemPath); statErr == nil {
+		t.Errorf("APPEND_SYSTEM.md must not be written (removed in PR2 of #2031)")
 	}
-	if string(got) != content {
-		t.Errorf("APPEND_SYSTEM.md content = %q, want %q", string(got), content)
+
+	// Staging dir must still exist.
+	if _, statErr := os.Stat(hostDir); statErr != nil {
+		t.Errorf("staging dir %q does not exist: %v", hostDir, statErr)
 	}
 
 	// hostDir must be a subdirectory named pi-agent under the run dir.
@@ -184,16 +173,18 @@ func TestStagePIAgentConfigDir_WritesAppendSystem(t *testing.T) {
 	}
 }
 
-func TestStagePIAgentConfigDir_EmptySystemPromptPath(t *testing.T) {
-	// When SystemPromptPath is empty, staging dir is created but APPEND_SYSTEM.md
-	// is omitted — no error (edge-case AC).
-	slot := config.RoleSlot{}
+func TestStagePIAgentConfigDir_NoRolePromptArtifact(t *testing.T) {
+	// Edge-case AC: a session whose role has no <role>.md file starts cleanly
+	// with PI's default prompt only. Since the prompt is injected by the
+	// extension (not staged), StagePIAgentConfigDir simply creates the dir and
+	// never errors regardless of role-prompt availability — and never writes
+	// APPEND_SYSTEM.md.
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	hostDir, sandboxDir, err := StagePIAgentConfigDir(slot, "test-session@main")
+	hostDir, sandboxDir, err := StagePIAgentConfigDir("test-session@main")
 	if err != nil {
-		t.Fatalf("expected no error for empty SystemPromptPath; got %v", err)
+		t.Fatalf("expected no error; got %v", err)
 	}
 	if hostDir == "" || sandboxDir == "" {
 		t.Fatalf("expected non-empty hostDir and sandboxDir; got %q, %q", hostDir, sandboxDir)
@@ -203,48 +194,19 @@ func TestStagePIAgentConfigDir_EmptySystemPromptPath(t *testing.T) {
 		t.Errorf("staging dir %q does not exist: %v", hostDir, statErr)
 	}
 	// APPEND_SYSTEM.md must NOT exist.
-	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
+	appendSystemPath := filepath.Join(hostDir, "APPEND_SYSTEM.md")
 	if _, statErr := os.Stat(appendSystemPath); statErr == nil {
-		t.Errorf("APPEND_SYSTEM.md should not exist when SystemPromptPath is empty")
-	}
-}
-
-func TestStagePIAgentConfigDir_MissingSourceFile(t *testing.T) {
-	// When SystemPromptPath points to a missing file, staging dir is created
-	// but APPEND_SYSTEM.md is omitted — no error (edge-case AC: non-fatal).
-	slot := config.RoleSlot{
-		SystemPromptPath: "/nonexistent/path/agent.md",
-	}
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
-
-	hostDir, _, err := StagePIAgentConfigDir(slot, "test-session@main")
-	if err != nil {
-		t.Fatalf("expected no error for missing source file; got %v", err)
-	}
-	// Staging dir must still exist.
-	if _, statErr := os.Stat(hostDir); statErr != nil {
-		t.Errorf("staging dir %q does not exist: %v", hostDir, statErr)
-	}
-	// APPEND_SYSTEM.md must NOT exist.
-	appendSystemPath := filepath.Join(hostDir, piAppendSystemFilename)
-	if _, statErr := os.Stat(appendSystemPath); statErr == nil {
-		t.Errorf("APPEND_SYSTEM.md should not exist when source file is missing")
+		t.Errorf("APPEND_SYSTEM.md should never be written")
 	}
 }
 
 func TestStagePIAgentConfigDir_IsolatedPerSession(t *testing.T) {
 	// Two concurrent spawns for different session names must use different
 	// staging dirs — no cross-session contamination (edge-case AC).
-	srcFile := filepath.Join(t.TempDir(), "prompt.md")
-	if err := os.WriteFile(srcFile, []byte("role prompt"), 0o600); err != nil {
-		t.Fatalf("write src: %v", err)
-	}
-	slot := config.RoleSlot{SystemPromptPath: srcFile}
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
-	dir1, _, err1 := StagePIAgentConfigDir(slot, "nixos-config@feature-a")
-	dir2, _, err2 := StagePIAgentConfigDir(slot, "nixos-config@feature-b")
+	dir1, _, err1 := StagePIAgentConfigDir("nixos-config@feature-a")
+	dir2, _, err2 := StagePIAgentConfigDir("nixos-config@feature-b")
 	if err1 != nil || err2 != nil {
 		t.Fatalf("StagePIAgentConfigDir errors: %v, %v", err1, err2)
 	}
@@ -672,7 +634,7 @@ func TestStagePIAgentConfigDir_SymlinksAuthJSON(t *testing.T) {
 		t.Fatalf("write auth.json: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@symlink-test")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@symlink-test")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -708,7 +670,7 @@ func TestStagePIAgentConfigDir_AuthJSONSymlinkDanglingWhenTargetAbsent(t *testin
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// Deliberately do NOT create ~/.pi/agent/auth.json.
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@dangling-auth")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@dangling-auth")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v (must not error even with dangling symlink)", err)
 	}
@@ -740,7 +702,7 @@ func TestStagePIAgentConfigDir_CopiesSettings(t *testing.T) {
 		t.Fatalf("write settings.json: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@settings-test")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@settings-test")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -769,7 +731,7 @@ func TestStagePIAgentConfigDir_CopiesThemesDir(t *testing.T) {
 		t.Fatalf("write theme file: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@themes-test")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@themes-test")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -792,7 +754,7 @@ func TestStagePIAgentConfigDir_MissingHostFiles(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// Deliberately do NOT create ~/.pi/agent.
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@missing-pi")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@missing-pi")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -840,7 +802,7 @@ func TestStagePIAgentConfigDir_CopiesAGENTSMd(t *testing.T) {
 		t.Fatalf("write AGENTS.md: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-test")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@agents-md-test")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -895,7 +857,7 @@ func TestStagePIAgentConfigDir_AGENTSMdIdempotentOnReSpawn(t *testing.T) {
 	if err := os.WriteFile(hostAgentsPath, []byte(contentA), 0o600); err != nil {
 		t.Fatalf("write AGENTS.md (v1): %v", err)
 	}
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-idempotent")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@agents-md-idempotent")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
 	}
@@ -910,7 +872,7 @@ func TestStagePIAgentConfigDir_AGENTSMdIdempotentOnReSpawn(t *testing.T) {
 	if err := os.WriteFile(hostAgentsPath, []byte(contentB), 0o600); err != nil {
 		t.Fatalf("write AGENTS.md (v2): %v", err)
 	}
-	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@agents-md-idempotent")
+	_, _, err = StagePIAgentConfigDir("test-session@agents-md-idempotent")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
 	}
@@ -998,7 +960,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_SymlinkedToNix(t *testing.T) {
 		t.Fatalf("symlink skills: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-nix")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@skills-nix")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -1046,7 +1008,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_RegularDir(t *testing.T) {
 		t.Fatalf("write skill file: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-regular")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@skills-regular")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -1081,7 +1043,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_Absent(t *testing.T) {
 		t.Fatalf("mkdir ~/.pi/agent: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-absent")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@skills-absent")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -1120,7 +1082,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_BrokenSymlink(t *testing.T) {
 	}
 
 	// Must not return an error despite the broken symlink.
-	_, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-broken")
+	_, _, err := StagePIAgentConfigDir("test-session@skills-broken")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir must not error on broken symlink; got: %v", err)
 	}
@@ -1128,7 +1090,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_BrokenSymlink(t *testing.T) {
 
 func TestStagePIAgentConfigDir_SkillsDoesNotAffectOtherEntries(t *testing.T) {
 	// Adding skills staging must not alter auth.json, settings.json, themes/,
-	// or APPEND_SYSTEM.md behaviour. Verify all four are still produced
+	// behaviour. Verify the non-prompt artifacts are still produced
 	// correctly when skills/ is also present.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -1154,14 +1116,7 @@ func TestStagePIAgentConfigDir_SkillsDoesNotAffectOtherEntries(t *testing.T) {
 		t.Fatalf("symlink skills: %v", err)
 	}
 
-	// Write a system prompt so APPEND_SYSTEM.md is produced.
-	promptFile := filepath.Join(t.TempDir(), "prompt.md")
-	if err := os.WriteFile(promptFile, []byte("role prompt"), 0o600); err != nil {
-		t.Fatalf("write prompt: %v", err)
-	}
-	slot := config.RoleSlot{SystemPromptPath: promptFile}
-
-	hostDir, _, err := StagePIAgentConfigDir(slot, "test-session@skills-combined")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@skills-combined")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir: %v", err)
 	}
@@ -1189,13 +1144,10 @@ func TestStagePIAgentConfigDir_SkillsDoesNotAffectOtherEntries(t *testing.T) {
 		t.Errorf("themes/t.json not accessible: %v", statErr)
 	}
 
-	// APPEND_SYSTEM.md must contain the prompt.
-	got, readErr := os.ReadFile(filepath.Join(hostDir, piAppendSystemFilename))
-	if readErr != nil {
-		t.Fatalf("APPEND_SYSTEM.md not in staging dir: %v", readErr)
-	}
-	if string(got) != "role prompt" {
-		t.Errorf("APPEND_SYSTEM.md = %q, want %q", string(got), "role prompt")
+	// APPEND_SYSTEM.md must NOT exist — the role prompt is injected by the
+	// extension, not staged (PR2 of #2031).
+	if _, statErr := os.Stat(filepath.Join(hostDir, "APPEND_SYSTEM.md")); statErr == nil {
+		t.Errorf("APPEND_SYSTEM.md must not be written")
 	}
 
 	// skills/ must be a symlink pointing to the resolved skillsTarget.
@@ -1236,7 +1188,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_UpdatesOnSecondCall(t *testing.T) {
 		t.Fatalf("symlink skills to oldTarget: %v", err)
 	}
 
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-update")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@skills-update")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
 	}
@@ -1264,7 +1216,7 @@ func TestStagePIAgentConfigDir_SkillsSymlink_UpdatesOnSecondCall(t *testing.T) {
 	}
 
 	// Second call (same session, same staging dir).
-	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@skills-update")
+	_, _, err = StagePIAgentConfigDir("test-session@skills-update")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
 	}
@@ -1297,7 +1249,7 @@ func TestStagePIAgentConfigDir_AuthJSONSymlink_UpdatesOnSecondCall(t *testing.T)
 	expectedTarget := filepath.Join(piAgentDir, "auth.json")
 
 	// First call.
-	hostDir, _, err := StagePIAgentConfigDir(config.RoleSlot{}, "test-session@auth-update")
+	hostDir, _, err := StagePIAgentConfigDir("test-session@auth-update")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (first call): %v", err)
 	}
@@ -1311,7 +1263,7 @@ func TestStagePIAgentConfigDir_AuthJSONSymlink_UpdatesOnSecondCall(t *testing.T)
 	}
 
 	// Second call: must not fail due to EEXIST and must leave symlink intact.
-	_, _, err = StagePIAgentConfigDir(config.RoleSlot{}, "test-session@auth-update")
+	_, _, err = StagePIAgentConfigDir("test-session@auth-update")
 	if err != nil {
 		t.Fatalf("StagePIAgentConfigDir (second call): %v", err)
 	}

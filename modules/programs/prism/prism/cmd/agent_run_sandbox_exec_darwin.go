@@ -303,8 +303,10 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
 	}
 
-	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers APPEND_SYSTEM.md
-	// from the per-session staging directory. On Darwin (sandbox-exec), the
+	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /
+	// themes / AGENTS.md / skills from the per-session staging directory. The
+	// role system-prompt is injected at runtime by the prism PI extension, not
+	// staged here (design #2031). On Darwin (sandbox-exec), the
 	// staging dir is on the host filesystem, so the "sandbox path" override set
 	// in populatePIConfig points at the host path directly.
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {

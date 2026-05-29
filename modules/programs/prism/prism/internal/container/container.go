@@ -291,7 +291,9 @@ type Config struct {
 	// ~/.local/state/prism/run/<hash>/pi-agent/). When non-empty and
 	// Harness == "pi", BuildArgs (bwrap) bind-mounts this directory read-only
 	// into the sandbox at PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR
-	// to that in-sandbox path. PI discovers APPEND_SYSTEM.md automatically.
+	// to that in-sandbox path so PI discovers settings.json / themes /
+	// AGENTS.md / skills. The role system-prompt is injected at runtime by the
+	// prism PI extension, not staged here (design #2031).
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent

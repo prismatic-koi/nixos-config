@@ -667,10 +667,10 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 //  1. Loads profiles.json and resolves the active profile.
 //  2. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
-//  3. Calls StagePIAgentConfigDir to create the per-session staging directory
-//     and write APPEND_SYSTEM.md (if a system prompt is configured). Records
-//     the host/sandbox paths on ctrCfg so bwrap can bind-mount the directory
-//     and set PI_CODING_AGENT_DIR.
+//  3. Calls StagePIAgentConfigDir to create the per-session staging directory.
+//     Records the host/sandbox paths on ctrCfg so bwrap can bind-mount the
+//     directory and set PI_CODING_AGENT_DIR. The role system-prompt is injected
+//     at runtime by the prism PI extension, not staged here (design #2031).
 //  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  5. Copies PIProvider, PIModel, PIThinking from the profile slot.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config) error {
@@ -697,9 +697,11 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	slot, _ := config.SlotForRole(pf, profileName, agentRole)
 
-	// Stage the PI agent config directory (and optionally APPEND_SYSTEM.md)
-	// before bwrap launches, so PI sees the file on its first read.
-	hostDir, sandboxDir, err := container.StagePIAgentConfigDir(slot, sessionName)
+	// Stage the PI agent config directory before bwrap launches. The role
+	// system-prompt is no longer staged here — it is injected at runtime by the
+	// prism PI extension (before_agent_start) from ~/.config/prism/agents/<role>.md
+	// (design #2031, PR2 #2033).
+	hostDir, sandboxDir, err := container.StagePIAgentConfigDir(sessionName)
 	if err != nil {
 		return fmt.Errorf("pi: stage agent config dir: %w", err)
 	}
