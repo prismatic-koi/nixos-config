@@ -87,6 +87,13 @@ it is more actively maintained and is the source of the PR #193 fix.
    MD5 approach (`t_<8hex>`) instead of griffinmartin main's `mcp_` PascalCase
    approach. This is intentional — see PR #193 for the rationale.
 
+8. **`getAnthropicModels` returns the runtime registry verbatim — no hardcoded
+   fallback**. leohenon's `index.ts` carried a `DEFAULT_OPUS_4_7` literal that
+   was pushed when the registry lacked opus-4-7. Since pi v0.77.0 the
+   `@earendil-works/pi-ai` model catalog ships `claude-opus-4-7`/`-4-8`
+   directly, so the fallback was dead code and was removed. Do **not**
+   re-introduce a hardcoded model object — rely entirely on the registry.
+
 ## Port procedure for future upstream fixes
 
 When griffinmartin ships a fix you want to port:
