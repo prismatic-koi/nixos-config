@@ -547,14 +547,64 @@ func generateProfile(m *Manager) string {
 	// process-info*  — required by AMFI when validating the certificate chain
 	//   of Apple-signed binaries (process-info-codesignature, process-info-pidinfo).
 	//   Without this, git and ssh abort with SIGABRT during dyld init. See F.1 §2.
-	// signal         — allow the sandboxed process to send signals to itself.
 	// mach-lookup    — bootstrap service lookups (logd, opendirectoryd, etc.).
 	// mach-register  — per-pid Mach name registration (pi IPC).
 	// sysctl-read    — system library init queries (kern.*, hw.*, machdep.*).
-	// NOTE: iokit-open is REMOVED in v3 (not needed, see F.1 §4.1 / §2 note).
+	// NOTE: signal is emitted as its own clause below so the (target ...)
+	//   qualifiers can be expressed cleanly — see §9a.
+	// NOTE: iokit-open is emitted as its own enumerated-class clause below —
+	//   see §9b (issue #2021).
 	// NOTE: ipc-posix-shm is REMOVED (unbound variable in v3 — replaced below).
-	sb.WriteString("(allow process-exec* process-fork process-info* signal mach-lookup mach-register\n")
+	sb.WriteString("(allow process-exec* process-fork process-info* mach-lookup mach-register\n")
 	sb.WriteString("       sysctl-read)\n")
+	sb.WriteString("\n")
+
+	// ── 9a. signal — self + children (issue #2021) ───────────────────────
+	// Self-signaling is required for normal exit and tcsetpgrp-style TTY
+	// management. Children-signaling is required for playwright-cli's
+	// node-side launcher to clean up its chromium grandchild (the launcher
+	// calls process.kill(child.pid) and fails with `kill EPERM` if it lacks
+	// signal rights over its child process group).
+	//
+	// (target children) permits signalling processes the sandboxed process
+	// spawned (transitively, including grandchildren). It does NOT widen the
+	// surface to other host PIDs — (target others) is deliberately NOT used.
+	sb.WriteString("(allow signal (target self) (target children))\n")
+	sb.WriteString("\n")
+
+	// ── 9b. iokit-open-user-client — Chromium user-client classes (#2021) ─
+	// Chromium / firefox / webkit require iokit access on a small set of
+	// IOKit user-client classes during framework init. Without this,
+	// chromium SIGSEGVs in IONotificationPortGetRunLoopSource at
+	// ChromeMain+~50ms — the canonical fingerprint of iokit denial.
+	//
+	// The v3 predicate is `iokit-open-user-client` (unbound in v1 as
+	// `iokit-open`; v3 split it into `iokit-open-user-client` for opening
+	// IOService user-client connections and the broader `iokit-open` for
+	// arbitrary opens, the latter being itself unbound in v3 — see
+	// /System/Library/Sandbox/Profiles/application.sb for Apple's own usage).
+	//
+	// The allow set is enumerated by class name rather than unqualified to
+	// preserve the deny-default posture for everything else (AppleAVE,
+	// IOBluetoothHCIController, etc.). Each class entry corresponds to a
+	// specific IOKit subsystem Chromium probes at startup:
+	//
+	//   IOSurfaceRoot                  — Metal / IOSurface framebuffer
+	//   IOHIDLibUserClient             — HID input (mouse, keyboard, trackpad)
+	//   IOAudioEngineUserClient        — AudioComponent init (no audio routing)
+	//   IOFramebufferSharedUserClient  — windowing system framebuffer
+	//   RootDomainUserClient           — power-management state notifications
+	//
+	// The unqualified form `(allow iokit-open-user-client)` MUST NOT be
+	// used — it would open the door to AppleAVE, AppleIOAccelerator, and
+	// Bluetooth-HCI user-client classes that are not needed by any
+	// sandboxed workload.
+	sb.WriteString("(allow iokit-open-user-client\n")
+	sb.WriteString("  (iokit-user-client-class \"IOSurfaceRoot\")\n")
+	sb.WriteString("  (iokit-user-client-class \"IOHIDLibUserClient\")\n")
+	sb.WriteString("  (iokit-user-client-class \"IOAudioEngineUserClient\")\n")
+	sb.WriteString("  (iokit-user-client-class \"IOFramebufferSharedUserClient\")\n")
+	sb.WriteString("  (iokit-user-client-class \"RootDomainUserClient\"))\n")
 	sb.WriteString("\n")
 
 	// ── 12. POSIX shared memory ────────────────────────────────────────────

@@ -210,11 +210,12 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			// Strip any existing HOME and XDG vars from the filtered env —
 			// we replace them all with staging-HOME-relative paths below.
 			xdgKeys := map[string]bool{
-				"HOME":            true,
-				"XDG_CACHE_HOME": true,
-				"XDG_DATA_HOME":  true,
-				"XDG_CONFIG_HOME": true,
-				"XDG_STATE_HOME": true,
+				"HOME":             true,
+				"XDG_CACHE_HOME":   true,
+				"XDG_DATA_HOME":    true,
+				"XDG_CONFIG_HOME":  true,
+				"XDG_STATE_HOME":   true,
+				"CFFIXED_USER_HOME": true,
 			}
 			filtered := make([]string, 0, len(env))
 			for _, kv := range env {
@@ -255,6 +256,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 				// store (both of which ARE in the SBPL profile's RW block).
 				"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
 				"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
+				// CFFIXED_USER_HOME redirects CoreFoundation's NSHomeDirectory()
+				// to the staging HOME so chromium (Google Chrome for Testing,
+				// invoked via playwright-cli) writes its crash database, code
+				// cache, profile, and SingletonLock under
+				//   <stagingHome>/Library/Application Support/Google/...
+				// rather than under the real ~/Library/Application Support/...
+				// which would either leak the daily-driver Chrome profile or
+				// EPERM on every xattr write. Chromium uses NSHomeDirectory()
+				// (CoreFoundation) and not getenv("HOME") for the user-data
+				// directory root — setting HOME alone is insufficient. Issue
+				// #2021.
+				"CFFIXED_USER_HOME="+stagingHome,
 			)
 		}
 	}

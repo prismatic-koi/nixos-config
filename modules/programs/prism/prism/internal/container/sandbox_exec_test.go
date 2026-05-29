@@ -145,7 +145,12 @@ func TestGenerateProfile_SensitiveSubtreeDenies(t *testing.T) {
 //
 // v3 changes vs v1:
 //   - process-info* added (AMFI cert chain validation)
-//   - iokit-open REMOVED (unbound/unnecessary in v3 — see F.1 §4.1)
+//   - iokit-open re-introduced as enumerated user-client classes for chromium
+//     framework init (issue #2021). The unqualified (allow iokit-open) form
+//     remains forbidden — only specific user-client classes are granted.
+//   - signal split into its own clause with (target self) (target children)
+//     so playwright-cli's node-side launcher can kill its chromium grandchild
+//     (issue #2021).
 //   - ipc-posix-shm REMOVED (unbound variable in v3 — replaced by split forms)
 //   - ipc-posix-shm-read* and ipc-posix-shm-write* added
 //   - syscall-unix syscall-mach added
@@ -159,10 +164,10 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 		"(allow process-exec*",
 		"process-fork",
 		"process-info*",
-		"signal",
 		"mach-lookup",
 		"mach-register",
 		"sysctl-read",
+		"(allow signal (target self) (target children))",
 		"(allow ipc-posix-shm-read* ipc-posix-shm-write*)",
 		"(allow syscall-unix syscall-mach)",
 		"(allow system-mac-syscall)",
@@ -174,9 +179,22 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 		}
 	}
 
-	// iokit-open must NOT be present (removed in v3 migration).
-	if strings.Contains(profile, "iokit-open") {
-		t.Errorf("profile must not contain iokit-open (removed in v3 migration); full profile:\n%s", profile)
+	// The unqualified (allow iokit-open) form MUST NOT be present — the
+	// chromium fix (issue #2021) deliberately enumerates user-client classes
+	// rather than opening the entire IOKit surface. Also assert the
+	// iokit-open-user-client form is not unqualified.
+	if strings.Contains(profile, "(allow iokit-open)") {
+		t.Errorf("profile must not contain unqualified (allow iokit-open) — enumerate iokit-user-client-class entries instead (issue #2021); full profile:\n%s", profile)
+	}
+	if strings.Contains(profile, "(allow iokit-open-user-client)") {
+		t.Errorf("profile must not contain unqualified (allow iokit-open-user-client) — enumerate iokit-user-client-class entries instead (issue #2021); full profile:\n%s", profile)
+	}
+
+	// The signal widening MUST NOT include (target others) — that would
+	// permit signalling arbitrary host PIDs. Only (target self) and
+	// (target children) are allowed (issue #2021).
+	if strings.Contains(profile, "(target others)") {
+		t.Errorf("profile must not contain (target others) for signal; only (target self) and (target children) are permitted (issue #2021); full profile:\n%s", profile)
 	}
 
 	// The bare ipc-posix-shm token must NOT appear (unbound variable in v3).
@@ -185,6 +203,34 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	// would indicate the bare form.
 	if strings.Contains(profile, "ipc-posix-shm)") || strings.Contains(profile, "(allow ipc-posix-shm)") {
 		t.Errorf("profile must not contain bare ipc-posix-shm (unbound variable in v3); full profile:\n%s", profile)
+	}
+}
+
+// TestGenerateProfile_IOKitChromiumClasses verifies the enumerated IOKit
+// user-client class allow set required for chromium framework init under
+// playwright-cli (issue #2021). Without these classes chromium SIGSEGVs in
+// IONotificationPortGetRunLoopSource at ChromeMain+~50ms.
+//
+// The five classes correspond to: Metal/IOSurface framebuffer (IOSurfaceRoot),
+// HID input (IOHIDLibUserClient), AudioComponent init (IOAudioEngineUserClient),
+// windowing-system framebuffer (IOFramebufferSharedUserClient), and power
+// management (RootDomainUserClient).
+func TestGenerateProfile_IOKitChromiumClasses(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	iokitBlock := extractClause(t, profile, "(allow iokit-open-user-client")
+	wantClasses := []string{
+		"(iokit-user-client-class \"IOSurfaceRoot\")",
+		"(iokit-user-client-class \"IOHIDLibUserClient\")",
+		"(iokit-user-client-class \"IOAudioEngineUserClient\")",
+		"(iokit-user-client-class \"IOFramebufferSharedUserClient\")",
+		"(iokit-user-client-class \"RootDomainUserClient\")",
+	}
+	for _, want := range wantClasses {
+		if !strings.Contains(iokitBlock, want) {
+			t.Errorf("iokit-open block missing required class %q; block:\n%s", want, iokitBlock)
+		}
 	}
 }
 
@@ -792,6 +838,83 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 		}
 	}
 }
+// TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs verifies that
+// PrepareSandboxExecHome creates empty, writable staging directories for
+// chromium's user-data layout under <stagingHome>/Library/Application
+// Support/Google and <stagingHome>/Library/Caches/Google (issue #2021).
+//
+// These directories must NOT be symlinks to the real ~/Library/Application
+// Support/Google/ — doing so would expose the daily-driver Chrome's profile
+// (cookies, sessions, password store) to the sandboxed chromium instance.
+//
+// Idempotency: calling PrepareSandboxExecHome a second time on the same
+// staging dir must NOT error and must leave existing contents intact.
+func TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("chromium staging dirs are Darwin-only")
+	}
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "chromium-staging-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	wantDirs := []string{
+		filepath.Join(stagingHome, "Library", "Application Support", "Google"),
+		filepath.Join(stagingHome, "Library", "Caches", "Google"),
+	}
+	for _, d := range wantDirs {
+		info, statErr := os.Lstat(d)
+		if statErr != nil {
+			t.Errorf("expected chromium staging dir %q to exist: %v", d, statErr)
+			continue
+		}
+		// Must be a real directory, NOT a symlink. Symlinking to the host
+		// ~/Library/Application Support/Google/ would leak the daily-driver
+		// Chrome profile contents to the sandboxed chromium instance.
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("chromium staging dir %q must be a real directory, not a symlink: mode=%v", d, info.Mode())
+		}
+		if !info.IsDir() {
+			t.Errorf("chromium staging dir %q must be a directory: mode=%v", d, info.Mode())
+		}
+	}
+
+	// Idempotency: plant a sentinel file under one of the staging dirs and
+	// call PrepareSandboxExecHome again. The sentinel must survive (no
+	// clobber, no permissions reset).
+	sentinelDir := filepath.Join(stagingHome, "Library", "Application Support", "Google", "Chrome for Testing")
+	if err := os.MkdirAll(sentinelDir, 0o700); err != nil {
+		t.Fatalf("mkdir sentinel dir: %v", err)
+	}
+	sentinelPath := filepath.Join(sentinelDir, "prism-2021-idempotency-sentinel")
+	const sentinelData = "prism-2021-idempotency"
+	if err := os.WriteFile(sentinelPath, []byte(sentinelData), 0o600); err != nil {
+		t.Fatalf("plant sentinel: %v", err)
+	}
+
+	stagingHome2, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("second PrepareSandboxExecHome (idempotency): %v", err)
+	}
+	if stagingHome2 != stagingHome {
+		t.Errorf("staging HOME changed across calls: %q -> %q", stagingHome, stagingHome2)
+	}
+	got, readErr := os.ReadFile(sentinelPath)
+	if readErr != nil {
+		t.Errorf("sentinel file disappeared after second PrepareSandboxExecHome: %v", readErr)
+	} else if string(got) != sentinelData {
+		t.Errorf("sentinel file contents clobbered: got %q, want %q", string(got), sentinelData)
+	}
+}
+
 // TestPrepareSandboxExecHome_NixCacheAlwaysIncluded verifies that
 // .cache/nix/ is always included as a symlink (matching bwrap.go:333-335
 // unconditional RW bind).
