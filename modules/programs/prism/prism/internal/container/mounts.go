@@ -238,11 +238,32 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			ReadOnly:          true,
 			OptionalIfMissing: true,
 		},
+
+		// ── prism agent role prompts (RO, conditional) ───────────────────
+		// Host: ~/.config/prism/agents/ (deployed via pi.nix:240 →
+		// xdg.configFile."prism/agents".source = ./agents). One markdown file
+		// per role (coordinator.md, worker.md, review-*.md). The prism PI
+		// extension reads <role>.md at before_agent_start and injects it as the
+		// role system prompt (issue #2032).
+		//
+		// Mounted UNCONDITIONALLY for every role, including review-*. The dir
+		// is pure markdown with no secrets, so there is no isolation value in
+		// hiding sibling role prompts from a review agent (locked decision on
+		// design #2031). Read-only — agents never write their own prompt.
+		//
+		// SandboxPath == HostPath: under bwrap sandboxHomeDir == hostHome, so
+		// the extension's XDG_CONFIG_HOME-else-$HOME/.config resolution lands
+		// on exactly this path inside the sandbox.
+		{
+			HostPath:          filepath.Join(hostHome, ".config", "prism", "agents"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".config", "prism", "agents"),
+			ReadOnly:          true,
+			OptionalIfMissing: true,
+		},
 	}
 
 	return specs
 }
-
 
 // appendPodmanVolume appends a podman --volume argument pair for the given
 // MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via

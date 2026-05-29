@@ -59,6 +59,9 @@
 // applied only on the wire copy; PI retains the full data internally.
 
 import * as net from "node:net"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -1527,6 +1530,173 @@ export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Role system-prompt injection (issue #2032 / design #2031).
+// ---------------------------------------------------------------------------
+//
+// The agent role prompt (coordinator / worker / review-*) is read at
+// `before_agent_start` from ~/.config/prism/agents/<role>.md and injected into
+// the system prompt. This is the runtime counterpart to the per-session
+// APPEND_SYSTEM.md staging file (StagePIAgentConfigDir, pi_invocation.go).
+//
+// Replace-vs-append semantics (verified against pi's agent-session.js):
+//   - Returning { systemPrompt } from before_agent_start REPLACES the whole
+//     prompt wholesale (`this.agent.state.systemPrompt = result.systemPrompt`).
+//   - The event carries the fully assembled default in `event.systemPrompt`
+//     (which the runtime passes as `this._baseSystemPrompt`).
+//   - To match today's APPEND semantics we therefore concatenate
+//     `event.systemPrompt + "\n\n" + rolePrompt` so the default prompt is
+//     preserved in addition to the role prompt (not clobbered).
+//
+// Per-turn re-fire:
+//   - before_agent_start fires once PER TURN, not once per session. Because the
+//     handler recomputes from the constant `event.systemPrompt` (always the
+//     base) each turn, returning `base + "\n\n" + rolePrompt` is idempotent —
+//     the role prompt never accumulates across turns. The file read is memoised
+//     so disk is touched at most once per session regardless.
+//
+// Double-injection with the still-present APPEND_SYSTEM.md:
+//   - This PR (PR1 of #2031) keeps APPEND_SYSTEM.md, whose content is already
+//     baked into `event.systemPrompt` by pi's resource loader. Appending the
+//     role prompt on top of that would inject it TWICE. To stay strictly
+//     additive and avoid observable double-injection on the default path, the
+//     extension injection is GATED behind PRISM_INJECT_ROLE_PROMPT and defaults
+//     OFF. PR2 (#2033) removes APPEND_SYSTEM.md and flips this on.
+
+/**
+ * Name of the env var that enables extension-driven role-prompt injection.
+ * Defaults OFF in PR1 because APPEND_SYSTEM.md is still written — see the
+ * double-injection note above. Any non-empty value other than "0"/"false"
+ * enables it.
+ */
+export const ROLE_PROMPT_INJECT_ENV = "PRISM_INJECT_ROLE_PROMPT"
+
+/**
+ * Returns true when extension-driven role-prompt injection is enabled.
+ * Mirrors the disable-flag idiom used elsewhere but inverted: this is an
+ * OPT-IN flag (default off) so the additive PR1 does not double-inject with
+ * the still-present APPEND_SYSTEM.md.
+ */
+export function roledPromptInjectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = env[ROLE_PROMPT_INJECT_ENV]
+  if (typeof v !== "string" || v.length === 0) {
+    return false
+  }
+  return v !== "0" && v.toLowerCase() !== "false"
+}
+
+/**
+ * Resolves the absolute path to the role prompt markdown file for `role`,
+ * mirroring the host-side prismAgentRolePath (cmd/spawn.go): respect
+ * XDG_CONFIG_HOME, else fall back to $HOME/.config. Returns "" when role is
+ * empty so callers can short-circuit to a no-op.
+ */
+export function prismAgentRolePath(role: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (typeof role !== "string" || role.length === 0) {
+    return ""
+  }
+  let base = env.XDG_CONFIG_HOME
+  if (typeof base !== "string" || base.length === 0) {
+    const home = env.HOME && env.HOME.length > 0 ? env.HOME : os.homedir()
+    base = path.join(home, ".config")
+  }
+  return path.join(base, "prism", "agents", role + ".md")
+}
+
+/**
+ * Reads the role prompt markdown for `role`, returning its contents or
+ * undefined when the role is empty, the path cannot be resolved, or the file
+ * does not exist / cannot be read. Trailing whitespace-only contents (e.g. an
+ * empty file) yield undefined so an empty file is treated as "no role prompt".
+ *
+ * Mirrors today's edge case where a missing systemPromptPath simply omits
+ * APPEND_SYSTEM.md (graceful no-op, no error).
+ */
+export function readRolePrompt(role: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const p = prismAgentRolePath(role, env)
+  if (p === "") {
+    return undefined
+  }
+  let content: string
+  try {
+    content = fs.readFileSync(p, "utf8")
+  } catch {
+    // Missing file or unreadable → graceful no-op (matches APPEND_SYSTEM.md).
+    return undefined
+  }
+  if (content.trim().length === 0) {
+    return undefined
+  }
+  return content
+}
+
+/**
+ * Composes the system prompt for a turn: preserves pi's default prompt
+ * (`baseSystemPrompt`) and appends the role prompt, matching APPEND_SYSTEM.md
+ * semantics. Returns undefined (caller returns no override, keeping the base)
+ * when there is no role prompt to inject. Trailing newline on the base is
+ * normalised so the separator is exactly one blank line.
+ */
+export function composeRoleSystemPrompt(
+  baseSystemPrompt: string,
+  rolePrompt: string | undefined,
+): string | undefined {
+  if (typeof rolePrompt !== "string" || rolePrompt.trim().length === 0) {
+    return undefined
+  }
+  const base = typeof baseSystemPrompt === "string" ? baseSystemPrompt : ""
+  if (base.length === 0) {
+    return rolePrompt
+  }
+  return base.replace(/\s+$/, "") + "\n\n" + rolePrompt
+}
+
+/** Mutable cache the before_agent_start handler threads through
+ * resolveRolePromptForTurn so the role file is read at most once per session. */
+export interface RolePromptCache {
+  /** true once the role file has been resolved (read or no-op). */
+  resolved: boolean
+  /** the role file contents, or undefined (no file / empty / read error). */
+  cached: string | undefined
+}
+
+/**
+ * Pure decision for one before_agent_start turn. Encapsulates the gating and
+ * latch logic so it is unit-testable independently of the PI runtime:
+ *
+ *   - Injection is gated on BOTH `enabled` (PRISM_INJECT_ROLE_PROMPT) AND
+ *     `handshakeComplete`. The handshake gate is load-bearing: `sessionRole`
+ *     is only populated by the async hello_ack handler, so resolving the
+ *     cache before the handshake would latch the session to "no role"
+ *     permanently. Pre-handshake turns return undefined WITHOUT latching.
+ *   - Once resolved, the file read is memoised (cache.resolved) so disk is
+ *     touched at most once per session.
+ *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
+ *     idempotent and never accumulates the role prompt across turns.
+ *
+ * Mutates `cache` in place (sets resolved/cached on first post-handshake call)
+ * and returns the systemPrompt override to send, or undefined to keep the base.
+ */
+export function resolveRolePromptForTurn(
+  opts: {
+    enabled: boolean
+    handshakeComplete: boolean
+    sessionRole: string
+    baseSystemPrompt: string
+  },
+  cache: RolePromptCache,
+  readRole: (role: string) => string | undefined = readRolePrompt,
+): string | undefined {
+  if (!opts.enabled || !opts.handshakeComplete) {
+    return undefined
+  }
+  if (!cache.resolved) {
+    cache.cached = readRole(opts.sessionRole)
+    cache.resolved = true
+  }
+  return composeRoleSystemPrompt(opts.baseSystemPrompt, cache.cached)
+}
+
+// ---------------------------------------------------------------------------
 // Connection guard helper (exported for testing).
 // ---------------------------------------------------------------------------
 
@@ -1598,6 +1768,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   // Session identity captured from hello_ack. Used for status bar display.
   let sessionRole = ""
+
+  // Role system-prompt injection cache (issue #2032). The role file is read
+  // once per session (load-once), then recomposed against event.systemPrompt
+  // on every before_agent_start. The cache is only latched once the handshake
+  // has completed (sessionRole known) — see resolveRolePromptForTurn.
+  const roleSystemPromptCache: RolePromptCache = { resolved: false, cached: undefined }
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
   let sessionIsolationMode = ""
 
@@ -2000,10 +2176,34 @@ export default function prismExtension(pi: ExtensionAPI): void {
     }
   })
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     lastCtx = ctx
     if (writer && handshakeComplete) {
       writer.write({ type: "state_change", state: "active" })
+    }
+
+    // Role system-prompt injection (issue #2032). Gated behind
+    // PRISM_INJECT_ROLE_PROMPT (default off) so PR1 stays additive and does
+    // not double-inject with the still-present APPEND_SYSTEM.md, whose content
+    // is already baked into event.systemPrompt. See the helpers above for the
+    // replace-vs-append and per-turn-fire analysis.
+    //
+    // resolveRolePromptForTurn gates on BOTH the flag AND handshakeComplete:
+    // sessionRole is only populated by the async hello_ack handler, so
+    // latching the cache before the handshake would pin the session to
+    // "no role" permanently. Pre-handshake turns return undefined without
+    // latching; the next turn resolves correctly.
+    const composed = resolveRolePromptForTurn(
+      {
+        enabled: roledPromptInjectionEnabled(),
+        handshakeComplete,
+        sessionRole,
+        baseSystemPrompt: event.systemPrompt,
+      },
+      roleSystemPromptCache,
+    )
+    if (composed !== undefined) {
+      return { systemPrompt: composed }
     }
     return undefined
   })
