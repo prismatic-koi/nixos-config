@@ -58,9 +58,7 @@ import {
   // Mid-tool heartbeat (issue #1761)
   startToolHeartbeat,
   TOOL_HEARTBEAT_INTERVAL_MS,
-  // Role system-prompt injection (issue #2032)
-  ROLE_PROMPT_INJECT_ENV,
-  roledPromptInjectionEnabled,
+  // Role system-prompt injection (issue #2032 / #2033)
   prismAgentRolePath,
   readRolePrompt,
   composeRoleSystemPrompt,
@@ -3664,28 +3662,6 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 // Role system-prompt injection (issue #2032)
 // ---------------------------------------------------------------------------
 
-describe("roledPromptInjectionEnabled", () => {
-  it("defaults OFF when the env var is unset (additive PR1 — no double-inject)", () => {
-    assert.equal(roledPromptInjectionEnabled({}), false)
-  })
-
-  it("is OFF when the env var is empty", () => {
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "" }), false)
-  })
-
-  it("is OFF for explicit disable values 0 / false", () => {
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "0" }), false)
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "false" }), false)
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "False" }), false)
-  })
-
-  it("is ON for any other non-empty value", () => {
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "1" }), true)
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "true" }), true)
-    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "yes" }), true)
-  })
-})
-
 describe("prismAgentRolePath — role→file resolution", () => {
   it("returns '' for an empty role (no-op short-circuit)", () => {
     assert.equal(prismAgentRolePath("", { HOME: "/home/u" }), "")
@@ -3811,21 +3787,21 @@ describe("composeRoleSystemPrompt — APPEND semantics preserved", () => {
 describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", () => {
   const newCache = (): RolePromptCache => ({ resolved: false, cached: undefined })
 
-  it("returns undefined and does NOT latch when the flag is disabled", () => {
+  it("injects unconditionally once the handshake completes (no gating flag — PR2 of #2031)", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { enabled: false, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => "ROLE",
     )
-    assert.equal(out, undefined)
-    assert.equal(cache.resolved, false) // not latched — flag off
+    assert.equal(out, "BASE\n\nROLE") // injected — no flag required
+    assert.equal(cache.resolved, true)
   })
 
   it("returns undefined and does NOT latch when the handshake is incomplete", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
+      { handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
       cache,
       () => "ROLE",
     )
@@ -3836,7 +3812,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
   it("injects once the handshake completes and the role is known", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       (role) => (role === "worker" ? "WORKER ROLE" : undefined),
     )
@@ -3855,7 +3831,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
 
     // Turn 1 fires BEFORE hello_ack: handshake incomplete, sessionRole still "".
     const turn1 = resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
+      { handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
       cache,
       readRole,
     )
@@ -3865,7 +3841,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
 
     // Turn 2 fires AFTER hello_ack populated sessionRole="worker".
     const turn2 = resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       readRole,
     )
@@ -3881,7 +3857,6 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
       return "ROLE"
     }
     const args = {
-      enabled: true,
       handshakeComplete: true,
       sessionRole: "worker",
       baseSystemPrompt: "BASE",
@@ -3899,7 +3874,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
     const cache = newCache()
     let reads = 0
     const out = resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => {
         reads++
@@ -3910,7 +3885,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
     assert.equal(cache.resolved, true) // latched after handshake even for no-op
     // A second turn does not re-read — the no-op is memoised.
     resolveRolePromptForTurn(
-      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => {
         reads++

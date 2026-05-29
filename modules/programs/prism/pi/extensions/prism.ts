@@ -1554,35 +1554,13 @@ export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
 //     the role prompt never accumulates across turns. The file read is memoised
 //     so disk is touched at most once per session regardless.
 //
-// Double-injection with the still-present APPEND_SYSTEM.md:
-//   - This PR (PR1 of #2031) keeps APPEND_SYSTEM.md, whose content is already
-//     baked into `event.systemPrompt` by pi's resource loader. Appending the
-//     role prompt on top of that would inject it TWICE. To stay strictly
-//     additive and avoid observable double-injection on the default path, the
-//     extension injection is GATED behind PRISM_INJECT_ROLE_PROMPT and defaults
-//     OFF. PR2 (#2033) removes APPEND_SYSTEM.md and flips this on.
-
-/**
- * Name of the env var that enables extension-driven role-prompt injection.
- * Defaults OFF in PR1 because APPEND_SYSTEM.md is still written — see the
- * double-injection note above. Any non-empty value other than "0"/"false"
- * enables it.
- */
-export const ROLE_PROMPT_INJECT_ENV = "PRISM_INJECT_ROLE_PROMPT"
-
-/**
- * Returns true when extension-driven role-prompt injection is enabled.
- * Mirrors the disable-flag idiom used elsewhere but inverted: this is an
- * OPT-IN flag (default off) so the additive PR1 does not double-inject with
- * the still-present APPEND_SYSTEM.md.
- */
-export function roledPromptInjectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = env[ROLE_PROMPT_INJECT_ENV]
-  if (typeof v !== "string" || v.length === 0) {
-    return false
-  }
-  return v !== "0" && v.toLowerCase() !== "false"
-}
+// Single source of truth (PR2 of #2031):
+//   - The per-session APPEND_SYSTEM.md staging file has been REMOVED
+//     (StagePIAgentConfigDir no longer writes it). The extension is now the
+//     SOLE source of the role prompt, so injection is unconditional — there is
+//     no PRISM_INJECT_ROLE_PROMPT gate any more. With APPEND_SYSTEM.md gone
+//     there is nothing for `event.systemPrompt` to double up against, so the
+//     double-injection risk the PR1 gate guarded against no longer exists.
 
 /**
  * Resolves the absolute path to the role prompt markdown file for `role`,
@@ -1660,14 +1638,16 @@ export interface RolePromptCache {
 }
 
 /**
- * Pure decision for one before_agent_start turn. Encapsulates the gating and
- * latch logic so it is unit-testable independently of the PI runtime:
+ * Pure decision for one before_agent_start turn. Encapsulates the latch logic
+ * so it is unit-testable independently of the PI runtime:
  *
- *   - Injection is gated on BOTH `enabled` (PRISM_INJECT_ROLE_PROMPT) AND
- *     `handshakeComplete`. The handshake gate is load-bearing: `sessionRole`
- *     is only populated by the async hello_ack handler, so resolving the
- *     cache before the handshake would latch the session to "no role"
- *     permanently. Pre-handshake turns return undefined WITHOUT latching.
+ *   - Injection is unconditional once the handshake completes — PR2 of #2031
+ *     removed APPEND_SYSTEM.md, so the extension is the sole source of the role
+ *     prompt and there is no gating flag any more.
+ *   - The handshake gate is load-bearing: `sessionRole` is only populated by
+ *     the async hello_ack handler, so resolving the cache before the handshake
+ *     would latch the session to "no role" permanently. Pre-handshake turns
+ *     return undefined WITHOUT latching.
  *   - Once resolved, the file read is memoised (cache.resolved) so disk is
  *     touched at most once per session.
  *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
@@ -1678,7 +1658,6 @@ export interface RolePromptCache {
  */
 export function resolveRolePromptForTurn(
   opts: {
-    enabled: boolean
     handshakeComplete: boolean
     sessionRole: string
     baseSystemPrompt: string
@@ -1686,7 +1665,7 @@ export function resolveRolePromptForTurn(
   cache: RolePromptCache,
   readRole: (role: string) => string | undefined = readRolePrompt,
 ): string | undefined {
-  if (!opts.enabled || !opts.handshakeComplete) {
+  if (!opts.handshakeComplete) {
     return undefined
   }
   if (!cache.resolved) {
@@ -2182,20 +2161,19 @@ export default function prismExtension(pi: ExtensionAPI): void {
       writer.write({ type: "state_change", state: "active" })
     }
 
-    // Role system-prompt injection (issue #2032). Gated behind
-    // PRISM_INJECT_ROLE_PROMPT (default off) so PR1 stays additive and does
-    // not double-inject with the still-present APPEND_SYSTEM.md, whose content
-    // is already baked into event.systemPrompt. See the helpers above for the
-    // replace-vs-append and per-turn-fire analysis.
+    // Role system-prompt injection (issue #2032 / #2033). PR2 of #2031 removed
+    // the per-session APPEND_SYSTEM.md staging file, so the extension is now
+    // the SOLE source of the role prompt and injection is unconditional — no
+    // gating flag. See the helpers above for the replace-vs-append and
+    // per-turn-fire analysis.
     //
-    // resolveRolePromptForTurn gates on BOTH the flag AND handshakeComplete:
-    // sessionRole is only populated by the async hello_ack handler, so
-    // latching the cache before the handshake would pin the session to
-    // "no role" permanently. Pre-handshake turns return undefined without
-    // latching; the next turn resolves correctly.
+    // resolveRolePromptForTurn still gates on handshakeComplete: sessionRole
+    // is only populated by the async hello_ack handler, so latching the cache
+    // before the handshake would pin the session to "no role" permanently.
+    // Pre-handshake turns return undefined without latching; the next turn
+    // resolves correctly.
     const composed = resolveRolePromptForTurn(
       {
-        enabled: roledPromptInjectionEnabled(),
         handshakeComplete,
         sessionRole,
         baseSystemPrompt: event.systemPrompt,

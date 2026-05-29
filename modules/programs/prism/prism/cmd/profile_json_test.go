@@ -56,15 +56,17 @@ func TestBuildProfileJSON_SnakeCaseAndActiveFlag(t *testing.T) {
 	}
 
 	coord := slots["coordinator"].(map[string]interface{})
-	for _, k := range []string{"provider", "model", "thinking", "system_prompt_path"} {
+	for _, k := range []string{"provider", "model", "thinking"} {
 		if _, ok := coord[k]; !ok {
 			t.Errorf("slots.coordinator missing snake_case key %q", k)
 		}
 	}
-	// Reject camelCase leftovers.
-	for _, badK := range []string{"systemPromptPath"} {
+	// The role system-prompt is no longer carried in the slot (design #2031):
+	// it is injected at runtime by the prism PI extension. Neither the
+	// snake_case nor the camelCase key should appear.
+	for _, badK := range []string{"system_prompt_path", "systemPromptPath"} {
 		if _, ok := coord[badK]; ok {
-			t.Errorf("slots.coordinator must not have camelCase key %q", badK)
+			t.Errorf("slots.coordinator must not have removed key %q", badK)
 		}
 	}
 }

@@ -286,12 +286,17 @@ type Config struct {
 	// BuildArgs to select the correct sandbox-terminator invocation.
 	Harness string
 
-	// PIAgentConfigHostDir is the absolute host path to the per-session
-	// PI agent config staging directory (e.g.
-	// ~/.local/state/prism/run/<hash>/pi-agent/). When non-empty and
-	// Harness == "pi", BuildArgs (bwrap) bind-mounts this directory read-only
-	// into the sandbox at PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR
-	// to that in-sandbox path. PI discovers APPEND_SYSTEM.md automatically.
+	// PIAgentConfigHostDir is the absolute host path to the shared PI agent
+	// config directory (~/.pi/agent), resolved by PIAgentConfigHostPath. As of
+	// design #2031 PR3 #2034 this is a single shared, home-manager-deployed
+	// directory — not a per-session staging dir — because its contents are
+	// identical across all roles/sessions. When non-empty and Harness == "pi",
+	// BuildArgs (bwrap) bind-mounts this directory READ-WRITE into the sandbox
+	// at PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR to that in-sandbox
+	// path so PI discovers settings.json / themes / AGENTS.md / skills /
+	// auth.json. RW is required so OAuth token refreshes write back to the host
+	// auth.json. The role system-prompt is injected at runtime by the prism PI
+	// extension, not staged here (design #2031).
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
