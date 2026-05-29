@@ -548,6 +548,15 @@ func generateProfile(m *Manager) string {
 	//   of Apple-signed binaries (process-info-codesignature, process-info-pidinfo).
 	//   Without this, git and ssh abort with SIGABRT during dyld init. See F.1 §2.
 	// mach-lookup    — bootstrap service lookups (logd, opendirectoryd, etc.).
+	//   The rule is intentionally UNQUALIFIED (no (global-name ...) filter), which
+	//   subsumes the WindowServer bootstrap port chromium connects to in headed
+	//   mode (com.apple.windowserver.active) called out as a separate clause in
+	//   issue #2021 §4. Tightening mach-lookup to an enumerated global-name set
+	//   is a defensible follow-up but requires empirically enumerating every name
+	//   dyld + AMFI + securityd + CFNetwork + libsystem_kernel + node + chromium
+	//   probe at startup — a much larger surface than the v1/v2 rule shape was
+	//   ever scoped to. The headed-mode WindowServer requirement from #2021 §4 is
+	//   already satisfied by the unqualified form.
 	// mach-register  — per-pid Mach name registration (pi IPC).
 	// sysctl-read    — system library init queries (kern.*, hw.*, machdep.*).
 	// NOTE: signal is emitted as its own clause below so the (target ...)

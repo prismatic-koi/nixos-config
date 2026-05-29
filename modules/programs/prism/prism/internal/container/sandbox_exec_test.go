@@ -206,6 +206,39 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_MachLookupCoversWindowServer verifies that the
+// mach-lookup allow rule is unqualified (no (global-name ...) filter),
+// which subsumes the WindowServer bootstrap port chromium connects to in
+// headed mode (com.apple.windowserver.active) called out in issue #2021
+// §4.
+//
+// If a future PR tightens mach-lookup to an enumerated (global-name ...)
+// set, this test catches the regression — either the WindowServer name
+// must be explicitly added to the enumerated set, or playwright-cli
+// (which ships PLAYWRIGHT_MCP_HEADLESS=false via pkgs/playwright-cli.nix)
+// will fail to connect to the WindowServer at startup. A failure here
+// without an accompanying enumerated WindowServer entry is the
+// regression signal.
+func TestGenerateProfile_MachLookupCoversWindowServer(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	// Look for the unqualified mach-lookup form. The current emission is
+	// inside the (allow process-exec* process-fork process-info* mach-lookup
+	// mach-register sysctl-read) clause — unqualified, no (global-name)
+	// predicate following it. The regex equivalent would be /mach-lookup[^\(]/
+	// but a substring search for " mach-lookup " (with a trailing space, not
+	// followed by a (global-name) predicate) is sufficient.
+	if !strings.Contains(profile, " mach-lookup ") {
+		t.Fatalf("profile is missing the unqualified mach-lookup form (issue #2021 §4).\n"+
+			"If mach-lookup was tightened to an enumerated (global-name ...) set,\n"+
+			"the WindowServer bootstrap port com.apple.windowserver.active must be\n"+
+			"explicitly added back — playwright-cli runs headed (HEADLESS=false in\n"+
+			"pkgs/playwright-cli.nix) and connects to WindowServer at chromium init.\n"+
+			"Full profile:\n%s", profile)
+	}
+}
+
 // TestGenerateProfile_IOKitChromiumClasses verifies the enumerated IOKit
 // user-client class allow set required for chromium framework init under
 // playwright-cli (issue #2021). Without these classes chromium SIGSEGVs in
