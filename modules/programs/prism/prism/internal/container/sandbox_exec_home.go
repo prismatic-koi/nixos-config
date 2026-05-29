@@ -247,6 +247,34 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".kube", "config"),
 	)
 
+	// ── Library/Application Support/Google + Library/Caches/Google (issue #2021) ─
+	// playwright-cli launches the Nix-built `Google Chrome for Testing` binary
+	// (chromium). Chromium reads NSHomeDirectory() (which the sandbox-exec
+	// dispatch in agent_run_sandbox_exec_darwin.go redirects to stagingHome via
+	// CFFIXED_USER_HOME) and writes its crash database, code cache, profile, and
+	// SingletonLock under <home>/Library/Application Support/Google/Chrome for
+	// Testing/ and <home>/Library/Caches/Google/Chrome for Testing/.
+	//
+	// We create empty, writable Google/ subdirectories under the staging Library
+	// so chromium has somewhere to land its writes. We deliberately do NOT
+	// symlink to the real ~/Library/Application Support/Google/ on the host —
+	// that path holds the daily-driver Chrome's profile (cookies, sessions,
+	// password store) and exposing it to a sandboxed chromium would be a
+	// material confidentiality leak. The staging directories are fresh per
+	// session and discarded when the staging HOME is cleaned up.
+	//
+	// MkdirAll is idempotent: if the directories already exist from a prior
+	// re-spawn the call is a no-op and existing contents are preserved.
+	if runtime.GOOS == "darwin" {
+		chromeAppSupport := filepath.Join(stagingHome, "Library", "Application Support", "Google")
+		chromeCaches := filepath.Join(stagingHome, "Library", "Caches", "Google")
+		for _, d := range []string{chromeAppSupport, chromeCaches} {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				log.Printf("container: sandbox-exec: create chromium staging dir %s: %v", d, err)
+			}
+		}
+	}
+
 	// ── Library/Keychains/login.keychain-db — symlink for Keychain API ──────
 	// On Darwin, opencode-claude-auth uses `security dump-keychain` and
 	// `security find-generic-password` to retrieve Claude credentials from the

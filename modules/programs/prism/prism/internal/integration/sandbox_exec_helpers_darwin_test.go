@@ -30,7 +30,10 @@ const sandboxExecPath = "/usr/bin/sandbox-exec"
 
 // requireSandboxExec skips the test when /usr/bin/sandbox-exec is not present
 // or when the test is running inside the Nix build sandbox (where sandbox-exec
-// is itself restricted and cannot apply SBPL profiles).
+// is itself restricted and cannot apply SBPL profiles). It also probes for
+// the nested-sandbox-exec case (running under an outer prism sandbox-exec
+// session): kqueue / sandbox_apply refuses to nest, producing the same
+// "sandbox_apply: Operation not permitted" symptom.
 func requireSandboxExec(t *testing.T) {
 	t.Helper()
 
@@ -45,6 +48,21 @@ func requireSandboxExec(t *testing.T) {
 
 	if _, err := os.Stat(sandboxExecPath); err != nil {
 		t.Skipf("sandbox-exec not found at %s: %v", sandboxExecPath, err)
+	}
+
+	// Detect the nested-sandbox case (test is running inside an outer
+	// prism sandbox-exec session). Probe with a permissive profile and
+	// /bin/echo — if sandbox_apply itself fails, every test in this
+	// file would fail for environmental reasons unrelated to the rule
+	// under test. Skip rather than emit a misleading red.
+	probeProfile := "(version 1)\n(allow default)\n"
+	probePath := filepath.Join(t.TempDir(), "probe.sb")
+	if err := os.WriteFile(probePath, []byte(probeProfile), 0o600); err != nil {
+		t.Skipf("cannot write sandbox-exec probe profile: %v", err)
+	}
+	probeCmd := exec.Command(sandboxExecPath, "-f", probePath, "/bin/echo", "probe-ok")
+	if out, err := probeCmd.CombinedOutput(); err != nil && strings.Contains(string(out), "sandbox_apply: Operation not permitted") {
+		t.Skipf("skipping sandbox-exec integration test — nested sandbox-exec is blocked in this environment (likely running inside an outer prism sandbox-exec session): %s", string(out))
 	}
 }
 
