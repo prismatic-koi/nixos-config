@@ -967,12 +967,23 @@ func TestStagePIAgentConfigDir_SkillsSymlink_SymlinkedToNix(t *testing.T) {
 	// When ~/.pi/agent/skills is a symlink to a Nix-store directory, the
 	// staging dir must contain a symlink named "skills" pointing to the resolved
 	// (real) Nix-store path, not to the intermediate home-manager symlink.
-	fakeHome := t.TempDir()
+	// Canonicalise the tempdirs so they match the production code, which resolves
+	// the skills symlink chain through filepath.EvalSymlinks. On Darwin
+	// t.TempDir() returns a /var/folders/... path that is a symlink into
+	// /private/var/folders/...; without this the readlink-target assertion (which
+	// sees the /private form) never matches. On Linux this is a no-op.
+	fakeHome, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
+	}
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	// Simulate a Nix-store derivation directory acting as the real skills dir.
-	nixStorePath := t.TempDir()
+	nixStorePath, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(nixStorePath, "my-skill.md"), []byte("# skill"), 0o644); err != nil {
 		t.Fatalf("write skill file: %v", err)
 	}

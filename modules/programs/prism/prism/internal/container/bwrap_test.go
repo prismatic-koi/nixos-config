@@ -85,7 +85,16 @@ func newBwrapManager(cfg Config) *Manager {
 func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanup func()) {
 	t.Helper()
 
-	fakeHome = t.TempDir()
+	// Canonicalise the tempdir so it matches the production code, which resolves
+	// home paths through filepath.EvalSymlinks before composing bind args. On
+	// Darwin t.TempDir() returns a /var/folders/... path that is a symlink into
+	// /private/var/folders/...; without this the bind-arg substring assertions
+	// (which see the /private form) never match. On Linux this is a no-op.
+	var err error
+	fakeHome, err = filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
+	}
 
 	// Pre-create directories that BuildArgs expects unconditionally.
 	dirs := []string{
