@@ -64,6 +64,8 @@ import {
   prismAgentRolePath,
   readRolePrompt,
   composeRoleSystemPrompt,
+  resolveRolePromptForTurn,
+  type RolePromptCache,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -3803,5 +3805,118 @@ describe("composeRoleSystemPrompt — APPEND semantics preserved", () => {
     const turn2 = composeRoleSystemPrompt(base, role)
     assert.equal(turn1, turn2)
     assert.equal(turn1, "BASE PROMPT\n\nROLE PROMPT")
+  })
+})
+
+describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", () => {
+  const newCache = (): RolePromptCache => ({ resolved: false, cached: undefined })
+
+  it("returns undefined and does NOT latch when the flag is disabled", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { enabled: false, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, false) // not latched — flag off
+  })
+
+  it("returns undefined and does NOT latch when the handshake is incomplete", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, false) // critical: must NOT latch pre-handshake
+  })
+
+  it("injects once the handshake completes and the role is known", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      (role) => (role === "worker" ? "WORKER ROLE" : undefined),
+    )
+    assert.equal(out, "BASE\n\nWORKER ROLE")
+    assert.equal(cache.resolved, true)
+    assert.equal(cache.cached, "WORKER ROLE")
+  })
+
+  it("first turn before handshake must not poison the cache (the review-code race)", () => {
+    const cache = newCache()
+    let reads = 0
+    const readRole = (role: string): string | undefined => {
+      reads++
+      return role === "worker" ? "WORKER ROLE" : undefined
+    }
+
+    // Turn 1 fires BEFORE hello_ack: handshake incomplete, sessionRole still "".
+    const turn1 = resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
+      cache,
+      readRole,
+    )
+    assert.equal(turn1, undefined)
+    assert.equal(cache.resolved, false)
+    assert.equal(reads, 0) // no read attempted pre-handshake
+
+    // Turn 2 fires AFTER hello_ack populated sessionRole="worker".
+    const turn2 = resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      readRole,
+    )
+    assert.equal(turn2, "BASE\n\nWORKER ROLE") // role IS injected, not poisoned
+    assert.equal(reads, 1)
+  })
+
+  it("memoises the file read across turns (disk touched at most once)", () => {
+    const cache = newCache()
+    let reads = 0
+    const readRole = (): string | undefined => {
+      reads++
+      return "ROLE"
+    }
+    const args = {
+      enabled: true,
+      handshakeComplete: true,
+      sessionRole: "worker",
+      baseSystemPrompt: "BASE",
+    }
+    const t1 = resolveRolePromptForTurn(args, cache, readRole)
+    const t2 = resolveRolePromptForTurn(args, cache, readRole)
+    const t3 = resolveRolePromptForTurn(args, cache, readRole)
+    assert.equal(reads, 1) // read once, reused thereafter
+    assert.equal(t1, "BASE\n\nROLE")
+    assert.equal(t1, t2) // idempotent across turns
+    assert.equal(t2, t3)
+  })
+
+  it("missing role file resolves to a no-op (undefined) and stays latched", () => {
+    const cache = newCache()
+    let reads = 0
+    const out = resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => {
+        reads++
+        return undefined
+      },
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, true) // latched after handshake even for no-op
+    // A second turn does not re-read — the no-op is memoised.
+    resolveRolePromptForTurn(
+      { enabled: true, handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => {
+        reads++
+        return undefined
+      },
+    )
+    assert.equal(reads, 1)
   })
 })

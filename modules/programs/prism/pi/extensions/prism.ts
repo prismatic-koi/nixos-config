@@ -1650,6 +1650,52 @@ export function composeRoleSystemPrompt(
   return base.replace(/\s+$/, "") + "\n\n" + rolePrompt
 }
 
+/** Mutable cache the before_agent_start handler threads through
+ * resolveRolePromptForTurn so the role file is read at most once per session. */
+export interface RolePromptCache {
+  /** true once the role file has been resolved (read or no-op). */
+  resolved: boolean
+  /** the role file contents, or undefined (no file / empty / read error). */
+  cached: string | undefined
+}
+
+/**
+ * Pure decision for one before_agent_start turn. Encapsulates the gating and
+ * latch logic so it is unit-testable independently of the PI runtime:
+ *
+ *   - Injection is gated on BOTH `enabled` (PRISM_INJECT_ROLE_PROMPT) AND
+ *     `handshakeComplete`. The handshake gate is load-bearing: `sessionRole`
+ *     is only populated by the async hello_ack handler, so resolving the
+ *     cache before the handshake would latch the session to "no role"
+ *     permanently. Pre-handshake turns return undefined WITHOUT latching.
+ *   - Once resolved, the file read is memoised (cache.resolved) so disk is
+ *     touched at most once per session.
+ *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
+ *     idempotent and never accumulates the role prompt across turns.
+ *
+ * Mutates `cache` in place (sets resolved/cached on first post-handshake call)
+ * and returns the systemPrompt override to send, or undefined to keep the base.
+ */
+export function resolveRolePromptForTurn(
+  opts: {
+    enabled: boolean
+    handshakeComplete: boolean
+    sessionRole: string
+    baseSystemPrompt: string
+  },
+  cache: RolePromptCache,
+  readRole: (role: string) => string | undefined = readRolePrompt,
+): string | undefined {
+  if (!opts.enabled || !opts.handshakeComplete) {
+    return undefined
+  }
+  if (!cache.resolved) {
+    cache.cached = readRole(opts.sessionRole)
+    cache.resolved = true
+  }
+  return composeRoleSystemPrompt(opts.baseSystemPrompt, cache.cached)
+}
+
 // ---------------------------------------------------------------------------
 // Connection guard helper (exported for testing).
 // ---------------------------------------------------------------------------
@@ -1725,11 +1771,9 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   // Role system-prompt injection cache (issue #2032). The role file is read
   // once per session (load-once), then recomposed against event.systemPrompt
-  // on every before_agent_start. roleSystemPromptResolved guards the read so
-  // disk is touched at most once; roleSystemPromptCached holds the file
-  // contents or undefined (no role file / empty / read error).
-  let roleSystemPromptResolved = false
-  let roleSystemPromptCached: string | undefined
+  // on every before_agent_start. The cache is only latched once the handshake
+  // has completed (sessionRole known) — see resolveRolePromptForTurn.
+  const roleSystemPromptCache: RolePromptCache = { resolved: false, cached: undefined }
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
   let sessionIsolationMode = ""
 
@@ -2143,20 +2187,23 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // not double-inject with the still-present APPEND_SYSTEM.md, whose content
     // is already baked into event.systemPrompt. See the helpers above for the
     // replace-vs-append and per-turn-fire analysis.
-    if (roledPromptInjectionEnabled()) {
-      // Memoise the file read across turns: before_agent_start fires per turn,
-      // but the role file is load-once. roleSystemPromptCached is undefined
-      // until first resolved (whether to a string or a sentinel no-op).
-      if (!roleSystemPromptResolved) {
-        roleSystemPromptCached = readRolePrompt(sessionRole)
-        roleSystemPromptResolved = true
-      }
-      // Recompose from event.systemPrompt (the base) every turn so the result
-      // is idempotent and never accumulates the role prompt across turns.
-      const composed = composeRoleSystemPrompt(event.systemPrompt, roleSystemPromptCached)
-      if (composed !== undefined) {
-        return { systemPrompt: composed }
-      }
+    //
+    // resolveRolePromptForTurn gates on BOTH the flag AND handshakeComplete:
+    // sessionRole is only populated by the async hello_ack handler, so
+    // latching the cache before the handshake would pin the session to
+    // "no role" permanently. Pre-handshake turns return undefined without
+    // latching; the next turn resolves correctly.
+    const composed = resolveRolePromptForTurn(
+      {
+        enabled: roledPromptInjectionEnabled(),
+        handshakeComplete,
+        sessionRole,
+        baseSystemPrompt: event.systemPrompt,
+      },
+      roleSystemPromptCache,
+    )
+    if (composed !== undefined) {
+      return { systemPrompt: composed }
     }
     return undefined
   })
