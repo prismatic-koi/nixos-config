@@ -103,7 +103,7 @@
             anthropic = profileFromSlots {
               coordinator = slot "coordinator" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               };
               _default = slot "worker" {
@@ -116,12 +116,12 @@
             anthropic-opus-medium = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               };
               coordinator = slot "coordinator" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               };
             };
@@ -129,12 +129,12 @@
             anthropic-opus = profileFromSlots {
               coordinator = slot "coordinator" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               };
               _default = slot "worker" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
               };
             };
 
