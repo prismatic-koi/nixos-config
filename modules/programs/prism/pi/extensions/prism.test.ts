@@ -58,6 +58,12 @@ import {
   // Mid-tool heartbeat (issue #1761)
   startToolHeartbeat,
   TOOL_HEARTBEAT_INTERVAL_MS,
+  // Role system-prompt injection (issue #2032)
+  ROLE_PROMPT_INJECT_ENV,
+  roledPromptInjectionEnabled,
+  prismAgentRolePath,
+  readRolePrompt,
+  composeRoleSystemPrompt,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -3649,5 +3655,153 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
         reject(new Error("timeout"))
       }, 1000).unref()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Role system-prompt injection (issue #2032)
+// ---------------------------------------------------------------------------
+
+describe("roledPromptInjectionEnabled", () => {
+  it("defaults OFF when the env var is unset (additive PR1 — no double-inject)", () => {
+    assert.equal(roledPromptInjectionEnabled({}), false)
+  })
+
+  it("is OFF when the env var is empty", () => {
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "" }), false)
+  })
+
+  it("is OFF for explicit disable values 0 / false", () => {
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "0" }), false)
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "false" }), false)
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "False" }), false)
+  })
+
+  it("is ON for any other non-empty value", () => {
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "1" }), true)
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "true" }), true)
+    assert.equal(roledPromptInjectionEnabled({ [ROLE_PROMPT_INJECT_ENV]: "yes" }), true)
+  })
+})
+
+describe("prismAgentRolePath — role→file resolution", () => {
+  it("returns '' for an empty role (no-op short-circuit)", () => {
+    assert.equal(prismAgentRolePath("", { HOME: "/home/u" }), "")
+  })
+
+  it("respects XDG_CONFIG_HOME when set", () => {
+    assert.equal(
+      prismAgentRolePath("worker", { XDG_CONFIG_HOME: "/xdg", HOME: "/home/u" }),
+      "/xdg/prism/agents/worker.md",
+    )
+  })
+
+  it("falls back to $HOME/.config when XDG_CONFIG_HOME is unset", () => {
+    assert.equal(
+      prismAgentRolePath("coordinator", { HOME: "/home/u" }),
+      "/home/u/.config/prism/agents/coordinator.md",
+    )
+  })
+
+  it("falls back to $HOME/.config when XDG_CONFIG_HOME is empty", () => {
+    assert.equal(
+      prismAgentRolePath("review-goal", { XDG_CONFIG_HOME: "", HOME: "/home/u" }),
+      "/home/u/.config/prism/agents/review-goal.md",
+    )
+  })
+
+  it("maps each canonical role to its matching <role>.md filename", () => {
+    const roles = [
+      "coordinator",
+      "worker",
+      "review-goal",
+      "review-code",
+      "review-security",
+      "review-qa",
+      "review-context",
+    ]
+    for (const role of roles) {
+      assert.equal(
+        prismAgentRolePath(role, { XDG_CONFIG_HOME: "/c", HOME: "/h" }),
+        `/c/prism/agents/${role}.md`,
+      )
+    }
+  })
+})
+
+describe("readRolePrompt — file read + missing-file no-op", () => {
+  it("reads the role file contents when present", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      const agentsDir = path.join(dir, "prism", "agents")
+      fs.mkdirSync(agentsDir, { recursive: true })
+      fs.writeFileSync(path.join(agentsDir, "worker.md"), "ROLE: worker prompt body")
+      assert.equal(
+        readRolePrompt("worker", { XDG_CONFIG_HOME: dir }),
+        "ROLE: worker prompt body",
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the role file does not exist (graceful no-op)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      assert.equal(readRolePrompt("worker", { XDG_CONFIG_HOME: dir }), undefined)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the role is empty", () => {
+    assert.equal(readRolePrompt("", { XDG_CONFIG_HOME: "/c" }), undefined)
+  })
+
+  it("returns undefined for an empty/whitespace-only role file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      const agentsDir = path.join(dir, "prism", "agents")
+      fs.mkdirSync(agentsDir, { recursive: true })
+      fs.writeFileSync(path.join(agentsDir, "worker.md"), "   \n\t\n")
+      assert.equal(readRolePrompt("worker", { XDG_CONFIG_HOME: dir }), undefined)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("composeRoleSystemPrompt — APPEND semantics preserved", () => {
+  it("appends the role prompt after the base, preserving the default", () => {
+    assert.equal(
+      composeRoleSystemPrompt("BASE PROMPT", "ROLE PROMPT"),
+      "BASE PROMPT\n\nROLE PROMPT",
+    )
+  })
+
+  it("normalises trailing whitespace on the base to exactly one blank line", () => {
+    assert.equal(
+      composeRoleSystemPrompt("BASE PROMPT\n\n  \n", "ROLE PROMPT"),
+      "BASE PROMPT\n\nROLE PROMPT",
+    )
+  })
+
+  it("returns the role prompt alone when the base is empty", () => {
+    assert.equal(composeRoleSystemPrompt("", "ROLE PROMPT"), "ROLE PROMPT")
+  })
+
+  it("returns undefined (no override → keep base) when there is no role prompt", () => {
+    assert.equal(composeRoleSystemPrompt("BASE", undefined), undefined)
+    assert.equal(composeRoleSystemPrompt("BASE", ""), undefined)
+    assert.equal(composeRoleSystemPrompt("BASE", "   \n  "), undefined)
+  })
+
+  it("is idempotent across turns: recomposing from the same base does not accumulate", () => {
+    const base = "BASE PROMPT"
+    const role = "ROLE PROMPT"
+    const turn1 = composeRoleSystemPrompt(base, role)
+    const turn2 = composeRoleSystemPrompt(base, role)
+    assert.equal(turn1, turn2)
+    assert.equal(turn1, "BASE PROMPT\n\nROLE PROMPT")
   })
 })

@@ -19,8 +19,10 @@ package container
 //     list) can locate the user's login keychain. The SBPL profile grants
 //     file-read* on the resolved path via (literal login.keychain-db) (#1487).
 //
-//  2. .config/prism/agents/ is role-conditional: included as a symlink for
-//     non-review roles, omitted for review-prefixed roles. Mirrors bwrap.go:447-448.
+//  2. .config/prism/agents/ is symlinked into the staging HOME for ALL roles
+//     (including review-*) so the prism PI extension can read <role>.md at
+//     before_agent_start. The dir is pure markdown with no secrets, so the
+//     former review-prefix exclusion was dropped (issue #2032; design #2031).
 //
 //  3. .cache/nix/ is included as an RW symlink to ~/.cache/nix (matches bwrap
 //     unconditional RW bind at bwrap.go:333-335).
@@ -76,8 +78,10 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 //   - Generated regular files (.gitconfig, .ssh/config, opencode.json) are
 //     written as regular files, not symlinks.
 //   - .cache/nix/ is always included as an RW symlink to ~/.cache/nix.
-//   - .config/prism/agents/ is only included when AgentRole does NOT start
-//     with "review-" (mirrors bwrap.go:447-448).
+//   - .config/prism/agents/ is symlinked in for ALL roles (including review-*)
+//     so the PI extension can read <role>.md (issue #2032). The former
+//     review-prefix exclusion was dropped — the dir is pure markdown with no
+//     secrets, so there is no isolation value in hiding sibling role prompts.
 //   - .claude/ is a symlink to host ~/.claude with a comment explaining the
 //     Darwin write-through behaviour.
 //
@@ -105,6 +109,7 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".kube"),
 		filepath.Join(stagingHome, ".cache"),
 		filepath.Join(stagingHome, ".pi"),
+		filepath.Join(stagingHome, ".config", "prism"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -242,6 +247,19 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// points at the stable intermediate (~/.config/kube/agents-config) rather
 	// than the fully-resolved sops concrete path that rotates on each
 	// darwin-rebuild switch (issue #1573).
+	// ── prism agent role prompts (issue #2032) ─────────────────────────
+	// Symlink ~/.config/prism/agents (deployed by pi.nix) into the staging
+	// HOME at the canonical XDG path so the prism PI extension can read
+	// <role>.md at before_agent_start. Included for ALL roles, including
+	// review-* — the dir is pure markdown with no secrets (locked decision on
+	// design #2031). collectStagingHomeSymlinkTargets scans .config/prism and
+	// emits the SBPL read-allow for the resolved target, so no manual
+	// generateProfile rule is needed.
+	symlinkIfExists(
+		filepath.Join(home, ".config", "prism", "agents"),
+		filepath.Join(stagingHome, ".config", "prism", "agents"),
+	)
+
 	symlinkIfExists(
 		filepath.Join(home, ".config", "kube", "agents-config"),
 		filepath.Join(stagingHome, ".kube", "config"),
@@ -583,6 +601,7 @@ type StagingSymlinkTarget struct {
 	//   RW: .cache/opencode, .cache/bun, .cache/nix,
 	//       .claude (write-through for credentials), .mcp-auth
 	//   RO: .ssh keys, .aws staged entries, .kube/config, .config/opencode/*,
+	//       .config/prism/agents (role prompts; issue #2032),
 	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
 	Writable bool
 }
@@ -682,8 +701,8 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		// against EKS also fails (its exec-credential plugin shells out to aws).
 		// Mirrors bwrap's --bind (RW) treatment — awsSSOReadOnly/awsCLIReadOnly
 		// are both false in mounts.go (issue #1558).
-		".aws/sso":                      true, // AWS SSO token refresh writes
-		".aws/cli":                      true, // AWS CLI STS token cache writes
+		".aws/sso": true, // AWS SSO token refresh writes
+		".aws/cli": true, // AWS CLI STS token cache writes
 	}
 
 	seen := map[string]bool{}
@@ -758,6 +777,8 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	}
 	// Also scan .cache/prism if it exists.
 	scanDir(".cache/prism")
+	// Scan .config/prism for the prism/agents role-prompt symlink (issue #2032).
+	scanDir(".config/prism")
 
 	return targets, nil
 }
