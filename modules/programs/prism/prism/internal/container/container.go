@@ -249,6 +249,15 @@ type Config struct {
 	// requires system-network sandbox rules). When empty, falls back to "ssh".
 	SshBin string
 
+	// GitHubTokenPath is the absolute path to the sops-decrypted GitHub token
+	// secret file on the host (e.g. ~/.config/sops-nix/secrets/github_token on
+	// Darwin). Used as a last-resort fallback by credentialEnvVars when neither
+	// the role-specific PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> var nor the inherited
+	// GITHUB_TOKEN yields a non-empty value — this rescues agents from a Darwin
+	// sops launchd decrypt race that freezes an empty GITHUB_TOKEN into the tmux
+	// server env (#2029). When empty, the file fallback is skipped.
+	GitHubTokenPath string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session
@@ -358,7 +367,7 @@ func containerName(sessionName string) string {
 	return NameForSession(sessionName)
 }
 
-	// Manager manages the lifecycle of a single agent session sandbox.
+// Manager manages the lifecycle of a single agent session sandbox.
 type Manager struct {
 	cfg            Config
 	name           string
@@ -819,4 +828,3 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 
 	return nil
 }
-

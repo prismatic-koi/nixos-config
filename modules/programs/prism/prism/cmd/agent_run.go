@@ -288,22 +288,23 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		harnessSessionID = *status.HarnessSessionID
 	}
 	ctrCfg := container.Config{
-		SessionName:       sessionName,
-		Worktree:          worktree,
-		BareRoot:          bareRoot,
-		WorktreeGitDir:    worktreeGitDir,
-		AllocatedPort:     port,
-		AgentRole:         agentRole,
-		GitUserName:       cfg.GitUserName,
-		GitUserEmail:      cfg.GitUserEmail,
-		SshAccessKeyName:  cfg.SshAccessKeyName,
-		SshSigningKeyName: cfg.SshSigningKeyName,
+		SessionName:         sessionName,
+		Worktree:            worktree,
+		BareRoot:            bareRoot,
+		WorktreeGitDir:      worktreeGitDir,
+		AllocatedPort:       port,
+		AgentRole:           agentRole,
+		GitUserName:         cfg.GitUserName,
+		GitUserEmail:        cfg.GitUserEmail,
+		SshAccessKeyName:    cfg.SshAccessKeyName,
+		SshSigningKeyName:   cfg.SshSigningKeyName,
+		GitHubTokenPath:     cfg.GitHubTokenPath,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
 		RuntimeEnv:          runtimeEnv,
-		AgentEnvVars:      agentEnvVars,
-		Harness:           harnessName,
-		HarnessSessionID:  harnessSessionID,
+		AgentEnvVars:        agentEnvVars,
+		Harness:             harnessName,
+		HarnessSessionID:    harnessSessionID,
 	}
 
 	// PI-harness: populate PI-specific config fields from the active profile slot.

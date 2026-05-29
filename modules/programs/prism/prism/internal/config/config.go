@@ -93,6 +93,13 @@ type Config struct {
 	// needing the system-network sandbox rules (dafsaData.bin etc.).
 	// When empty, GIT_SSH_COMMAND falls back to bare "ssh" (PATH lookup).
 	SshBin string `json:"ssh_bin"`
+	// GitHubTokenPath is the absolute path to the sops-decrypted GitHub token
+	// secret file on the host (e.g. ~/.config/sops-nix/secrets/github_token on
+	// Darwin). Threaded into container.Config so credentialEnvVars can read the
+	// token directly when the inherited GITHUB_TOKEN env var is empty — the
+	// Darwin sops launchd decrypt race freezes an empty value into the tmux
+	// server env (#2029). When empty, the file fallback is skipped.
+	GitHubTokenPath string `json:"github_token_path"`
 
 	// Restore behaviour.
 	// RestoreStaggerDelayMs is the delay in milliseconds inserted between
@@ -168,6 +175,7 @@ type parsedConfig struct {
 	SshAccessKeyName               string             `json:"ssh_access_key_name"`
 	SshSigningKeyName              string             `json:"ssh_signing_key_name"`
 	SshBin                         string             `json:"ssh_bin"`
+	GitHubTokenPath                string             `json:"github_token_path"`
 	PIExtensionDir                 string             `json:"pi_extension_dir"`
 	RestoreStaggerDelayMs          *int               `json:"restore_stagger_delay_ms"`
 	SidecarCircuitBreakerThreshold *int               `json:"sidecar_circuit_breaker_threshold"`
@@ -319,6 +327,9 @@ func load() Config {
 	}
 	if parsed.SshBin != "" {
 		cfg.SshBin = parsed.SshBin
+	}
+	if parsed.GitHubTokenPath != "" {
+		cfg.GitHubTokenPath = parsed.GitHubTokenPath
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir
