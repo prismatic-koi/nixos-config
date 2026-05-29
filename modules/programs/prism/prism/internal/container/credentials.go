@@ -145,7 +145,6 @@ func (m *Manager) CredentialEnvVars() []string {
 	return m.credentialEnvVars()
 }
 
-
 // credentialEnvVars returns the environment variable assignments to inject into
 // the container based on the agent role and current host environment.
 // Only vars that are set on the host are forwarded — unset vars are skipped.
@@ -160,7 +159,11 @@ func (m *Manager) CredentialEnvVars() []string {
 //	PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
 //
 // Falls back to host GITHUB_TOKEN if the specific token is not set
-// (supports host-mode, --host-mode spawns, and migration period).
+// (supports host-mode, --host-mode spawns, and migration period). When that
+// is also empty, falls back to reading the sops secret file at
+// m.cfg.GitHubTokenPath directly (rescues the Darwin sops decrypt race that
+// freezes an empty GITHUB_TOKEN into the tmux server env, #2029). Precedence:
+// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> > inherited GITHUB_TOKEN > file fallback.
 func (m *Manager) credentialEnvVars() []string {
 	var vars []string
 
@@ -210,6 +213,25 @@ func (m *Manager) credentialEnvVars() []string {
 	// Fallback: use host GITHUB_TOKEN (supports --host-mode and migration period).
 	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
 		vars = append(vars, "GITHUB_TOKEN="+tok)
+		return vars
+	}
+
+	// Last-resort fallback: read the sops secret file directly. On Darwin a
+	// darwin-rebuild switch tears down and re-bootstraps the sops-nix launchd
+	// agent, which re-decrypts asynchronously. A shell that sources
+	// hm-session-vars.sh during that window freezes GITHUB_TOKEN="" (empty, not
+	// unset) into the sticky tmux server env, so the inherited value above is
+	// empty. Reading the file directly makes the agent independent of a
+	// correctly populated inherited environment (#2029). A missing or empty
+	// file is treated as "no token" — we never inject an empty GITHUB_TOKEN=.
+	// The contents are added only to the returned env slice; they are never
+	// logged.
+	if m.cfg.GitHubTokenPath != "" {
+		if data, err := os.ReadFile(m.cfg.GitHubTokenPath); err == nil {
+			if tok := strings.TrimSpace(string(data)); tok != "" {
+				vars = append(vars, "GITHUB_TOKEN="+tok)
+			}
+		}
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and

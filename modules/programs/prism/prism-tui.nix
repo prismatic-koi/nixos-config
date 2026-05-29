@@ -6,6 +6,19 @@
 }:
 with config.theme;
 let
+  username = config.nx.username;
+  # Absolute path to the sops-decrypted GitHub token secret file. Threaded into
+  # config.json (github_token_path) so prism's credentialEnvVars can read the
+  # token directly when the inherited GITHUB_TOKEN env var is empty — the Darwin
+  # sops launchd decrypt race freezes an empty value into the tmux server env
+  # (#2029). Platform split mirrors modules/programs/git.nix:
+  #   Linux  — system sops secret.
+  #   Darwin — home-manager sops secret.
+  githubTokenPath =
+    if pkgs.stdenv.isDarwin then
+      config.home-manager.users.${username}.sops.secrets.github_token.path
+    else
+      config.sops.secrets.github_token.path;
   gitCfg = config.home-manager.users.${config.nx.username}.programs.git;
   # Extract the first includes entry that has user.name and user.email set.
   # This mirrors the values defined in modules/programs/git.nix.
@@ -62,6 +75,10 @@ let
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
     sandbox_exec_concurrency_cap = config.nx.programs.prism.sandboxExecConcurrencyCap;
     pi_extension_dir = config.nx.programs.prism.piExtensionDir;
+    # github_token_path: absolute path to the sops-decrypted GitHub token file.
+    # Last-resort fallback read by credentialEnvVars when the inherited
+    # GITHUB_TOKEN is empty (Darwin sops decrypt race, #2029).
+    github_token_path = githubTokenPath;
   };
 in
 {

@@ -138,6 +138,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		SshBin:            cfg.SshBin,
+		GitHubTokenPath:   cfg.GitHubTokenPath,
 		HostAPISockPath:   hostAPISockPath,
 		InstanceID:        instanceID,
 		RuntimeEnv:        sandboxRuntimeEnv,
@@ -210,11 +211,11 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			// Strip any existing HOME and XDG vars from the filtered env —
 			// we replace them all with staging-HOME-relative paths below.
 			xdgKeys := map[string]bool{
-				"HOME":             true,
-				"XDG_CACHE_HOME":   true,
-				"XDG_DATA_HOME":    true,
-				"XDG_CONFIG_HOME":  true,
-				"XDG_STATE_HOME":   true,
+				"HOME":              true,
+				"XDG_CACHE_HOME":    true,
+				"XDG_DATA_HOME":     true,
+				"XDG_CONFIG_HOME":   true,
+				"XDG_STATE_HOME":    true,
 				"CFFIXED_USER_HOME": true,
 			}
 			filtered := make([]string, 0, len(env))
