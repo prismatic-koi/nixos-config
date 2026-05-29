@@ -28,6 +28,49 @@ rec {
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
 
+      # openrazer userspace + kernel module: pinned to v3.12.3 to unblock
+      # builds on kernel 7.0+, which changed the `hid_report_raw_event`
+      # signature (5 args -> 6 args). openrazer 3.12.2 (still in our
+      # nixpkgs input via the nixos-unstable channel) calls it with 5
+      # args, so `razerkbd_driver.c` fails to compile against the latest
+      # kernel. v3.12.3 carries the fix.
+      #
+      # Upstream fix: https://github.com/openrazer/openrazer/pull/2809
+      # nixpkgs bump:  https://github.com/NixOS/nixpkgs/pull/523308
+      #                (merged as nixpkgs commit 99643def)
+      #
+      # The userspace packages (pylib + daemon) are pulled wholesale from
+      # `masterPkgs`. The kernel module is per-kernel and lives under
+      # `linuxPackages_latest` (both `tui` and `navi` use
+      # `pkgs.linuxPackages_latest`), so it gets `overrideAttrs`'d to swap
+      # in the v3.12.3 source.
+      #
+      # REMOVAL CONDITION: delete this block once our nixos-unstable
+      # channel pointer advances past nixpkgs commit 99643def
+      # (`python3Packages.openrazer: 3.12.2 -> 3.12.3`).
+      python3Packages = prev.python3Packages // {
+        openrazer = masterPkgs.python3Packages.openrazer;
+        openrazer-daemon = masterPkgs.python3Packages.openrazer-daemon;
+      };
+      # Use `.extend` (not attribute merging) on the kernel package set so
+      # that NixOS's `boot.kernelPackages.apply = kp: kp.extend (...)` hook
+      # preserves our override. A plain `prev.linuxPackages_latest // {...}`
+      # loses the override because NixOS re-extends from the underlying
+      # fixed-point.
+      linuxPackages_latest = prev.linuxPackages_latest.extend (
+        _kfinal: kprev: {
+          openrazer = kprev.openrazer.overrideAttrs (_old: {
+            version = "3.12.3-${kprev.kernel.version}";
+            src = prev.fetchFromGitHub {
+              owner = "openrazer";
+              repo = "openrazer";
+              tag = "v3.12.3";
+              hash = "sha256-X1NPqbugBdxD5Nt9wIwQADV4CuydGLpgKhlNazVdrIY=";
+            };
+          });
+        }
+      );
+
       # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
       # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
       # --raw` bogus-session regression (bitwarden/clients#20703, issue #1894).
