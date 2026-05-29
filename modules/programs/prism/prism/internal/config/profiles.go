@@ -44,13 +44,14 @@ import (
 //   - Model: model identifier for this role's session.
 //   - Thinking: reasoning level. Rendered as pi's `variant` field via
 //     variantFromThinking ("off" → "none").
-//   - SystemPromptPath: absolute path to the role's system prompt file,
-//     e.g. "/home/user/.config/prism/agents/worker.md".
+//
+// The role system-prompt is no longer carried in the slot: it is injected at
+// runtime by the prism PI extension (before_agent_start) from
+// ~/.config/prism/agents/<role>.md (design #2031).
 type RoleSlot struct {
-	Provider         string `json:"provider,omitempty"`
-	Model            string `json:"model"`
-	Thinking         string `json:"thinking,omitempty"`
-	SystemPromptPath string `json:"systemPromptPath,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking,omitempty"`
 }
 
 // ProfileEntry maps session role names ("coordinator", "worker", "review-goal",

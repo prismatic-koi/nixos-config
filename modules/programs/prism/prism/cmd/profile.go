@@ -492,10 +492,9 @@ func resolveCoordinatorSession(d *db.DB, coordinatorFlag string) (string, error)
 
 // profileSlotJSON is the snake_case JSON shape for a single role slot.
 type profileSlotJSON struct {
-	Provider         string `json:"provider"`
-	Model            string `json:"model"`
-	Thinking         string `json:"thinking"`
-	SystemPromptPath string `json:"system_prompt_path"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking"`
 }
 
 // profileJSON is the snake_case JSON shape for a single profile entry. The
@@ -512,10 +511,9 @@ func buildProfileJSON(name string, entry config.ProfileEntry, active string) pro
 	slots := make(map[string]profileSlotJSON, len(entry))
 	for role, slot := range entry {
 		slots[role] = profileSlotJSON{
-			Provider:         slot.Provider,
-			Model:            slot.Model,
-			Thinking:         slot.Thinking,
-			SystemPromptPath: slot.SystemPromptPath,
+			Provider: slot.Provider,
+			Model:    slot.Model,
+			Thinking: slot.Thinking,
 		}
 	}
 	return profileJSON{

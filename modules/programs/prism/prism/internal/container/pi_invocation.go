@@ -4,10 +4,12 @@ package container
 //
 // When a bwrap session has harness=pi, agent-run must:
 //  1. Stage a per-session PI agent config directory on the host before bwrap
-//     launches. If a system prompt is configured for the session's role, write
-//     APPEND_SYSTEM.md into that directory. PI discovers APPEND_SYSTEM.md
-//     automatically via the PI_CODING_AGENT_DIR environment variable — no
-//     --append-system-prompt CLI flag is needed.
+//     launches. This directory carries the auth.json symlink, settings.json,
+//     themes/, AGENTS.md, and skills/ — it no longer carries any role prompt.
+//     The role system-prompt is injected at runtime by the prism PI extension
+//     (pi/extensions/prism.ts, before_agent_start), which reads
+//     ~/.config/prism/agents/<role>.md; the former APPEND_SYSTEM.md file is no
+//     longer written (design #2031, PR2 #2033).
 //  2. Bind-mount the staging directory read-only into the bwrap sandbox at a
 //     fixed in-sandbox path and set PI_CODING_AGENT_DIR to that path.
 //  3. Bind-mount the prism PI extension directory read-only into the bwrap
@@ -16,8 +18,7 @@ package container
 //     terminator.
 //
 // This file provides PIInvocation (analogous to HarnessInvocation) and
-// StagePIAgentConfigDir which prepares the per-session staging directory and
-// optionally writes APPEND_SYSTEM.md.
+// StagePIAgentConfigDir which prepares the per-session staging directory.
 
 import (
 	"crypto/sha256"
@@ -27,25 +28,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/prismatic-koi/prism/internal/config"
 )
 
 const (
 	// piAgentConfigSandboxDefault is the in-sandbox directory path at which
 	// the per-session PI agent config directory is bind-mounted when the caller
 	// has not overridden PIAgentConfigSandboxDir. PI_CODING_AGENT_DIR is set to
-	// this path so PI discovers APPEND_SYSTEM.md automatically.
+	// this path so PI discovers settings.json / themes / AGENTS.md / skills.
 	piAgentConfigSandboxDefault = "/run/prism/pi-agent"
 
 	// piAgentConfigSubdir is the subdirectory name created under the per-session
 	// run directory to hold the PI agent config staging files.
 	piAgentConfigSubdir = "pi-agent"
-
-	// piAppendSystemFilename is the filename written into the PI agent config
-	// staging directory to append a role prompt to PI's default system prompt.
-	// PI discovers this file automatically when PI_CODING_AGENT_DIR is set.
-	piAppendSystemFilename = "APPEND_SYSTEM.md"
 
 	// piExtensionSandboxDefault is the in-sandbox directory path at which
 	// the PI extension directory is bind-mounted when the caller has not
@@ -70,10 +64,12 @@ const (
 //	                                       file exists — see piResolveResumeSession)
 //	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
 //
-// The system prompt is delivered via PI_CODING_AGENT_DIR (set in the bwrap
-// environment) pointing at the per-session staging directory that contains
-// APPEND_SYSTEM.md. No --append-system-prompt flag is needed — PI discovers
-// APPEND_SYSTEM.md automatically from its agent config directory.
+// The role system prompt is NOT delivered via this staging directory. It is
+// injected at runtime by the prism PI extension (pi/extensions/prism.ts,
+// before_agent_start), which reads ~/.config/prism/agents/<role>.md and
+// appends it to PI's default system prompt. The staging directory referenced
+// by PI_CODING_AGENT_DIR only carries settings.json / themes / AGENTS.md /
+// skills / auth.json.
 //
 // Conversation resume (issue #1838): when cfg.HarnessSessionID is non-empty,
 // PIInvocation looks up the on-disk session JSONL via
@@ -288,9 +284,8 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 }
 
 // StagePIAgentConfigDir prepares the per-session PI agent config staging
-// directory and, when a system prompt is configured, writes APPEND_SYSTEM.md
-// into it. It returns the host path to the staging directory and the canonical
-// in-sandbox path (piAgentConfigSandboxDefault).
+// directory. It returns the host path to the staging directory and the
+// canonical in-sandbox path (piAgentConfigSandboxDefault).
 //
 // The staging directory is created at:
 //
@@ -301,13 +296,16 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 // run-dir (subpath ...) rule on Darwin — no additional sandbox-exec profile
 // rule is required (confirmed issue #1285).
 //
-// If slot.SystemPromptPath is empty or the file does not exist, the staging
-// directory is still created but APPEND_SYSTEM.md is omitted — PI will start
-// without a role prompt rather than erroring (edge-case AC).
+// The directory carries auth.json (symlink), settings.json, themes/, AGENTS.md,
+// and skills/. It no longer carries any role prompt: the role system-prompt is
+// injected at runtime by the prism PI extension (pi/extensions/prism.ts,
+// before_agent_start) from ~/.config/prism/agents/<role>.md (design #2031).
+// A role with no <role>.md file simply starts with PI's default prompt — the
+// extension returns no override, no error (edge-case AC).
 //
 // The staging directory is isolated per session (via the sessionDirHash), so
 // two concurrent spawns for different roles never share a staging dir.
-func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, sandboxDir string, err error) {
+func StagePIAgentConfigDir(sessionName string) (hostDir, sandboxDir string, err error) {
 	runDir, err := sessionRunDir(sessionName)
 	if err != nil {
 		return "", "", fmt.Errorf("pi: session %q: resolve run dir: %w", sessionName, err)
@@ -318,22 +316,10 @@ func StagePIAgentConfigDir(slot config.RoleSlot, sessionName string) (hostDir, s
 		return "", "", fmt.Errorf("pi: session %q: create pi-agent staging dir %s: %w", sessionName, stagingDir, mkErr)
 	}
 
-	// Write APPEND_SYSTEM.md only when a system prompt path is configured and
-	// the file exists. Missing or empty SystemPromptPath is silently skipped —
-	// PI starts without the role prompt rather than failing.
-	if slot.SystemPromptPath != "" {
-		content, readErr := os.ReadFile(slot.SystemPromptPath)
-		if readErr != nil {
-			// Non-fatal: log a warning and skip writing APPEND_SYSTEM.md.
-			// The staging dir is still returned so PI gets PI_CODING_AGENT_DIR.
-			_ = readErr // PI will start without the role prompt.
-		} else {
-			dest := filepath.Join(stagingDir, piAppendSystemFilename)
-			if writeErr := os.WriteFile(dest, content, 0o600); writeErr != nil {
-				return "", "", fmt.Errorf("pi: session %q: write %s: %w", sessionName, dest, writeErr)
-			}
-		}
-	}
+	// The role system-prompt is no longer staged here. It is injected at runtime
+	// by the prism PI extension (before_agent_start) from
+	// ~/.config/prism/agents/<role>.md — see pi/extensions/prism.ts (design
+	// #2031, PR2 #2033). The former APPEND_SYSTEM.md write has been removed.
 
 	// Symlink auth.json from the staging dir to the real ~/.pi/agent/auth.json.
 	// This allows OAuth token refreshes performed inside the sandbox to be
@@ -545,7 +531,7 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 //
 //   - PI agent config directory: cfg.PIAgentConfigHostDir → cfg.PIAgentConfigSandboxDir
 //     (read-only). Sets PI_CODING_AGENT_DIR env var to the sandbox path so PI
-//     discovers APPEND_SYSTEM.md automatically.
+//     discovers settings.json / themes / AGENTS.md / skills.
 //   - Extension directory: cfg.PIExtensionHostDir → cfg.PIExtensionSandboxDir
 //     (read-only).
 //
@@ -568,7 +554,8 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	// ── PI agent config directory ────────────────────────────────────────────
 	// The staging directory is always created by StagePIAgentConfigDir before
 	// bwrap launches. Bind-mount it read-only and set PI_CODING_AGENT_DIR to
-	// the in-sandbox path so PI discovers APPEND_SYSTEM.md automatically.
+	// the in-sandbox path so PI discovers settings.json / themes / AGENTS.md /
+	// skills.
 	agentConfigHostDir := cfg.PIAgentConfigHostDir
 	agentConfigSandboxDir := cfg.PIAgentConfigSandboxDir
 	if agentConfigSandboxDir == "" {
@@ -592,8 +579,8 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		// This bind MUST be emitted after the staging-dir bind above so that
 		// bwrap applies it as an overlay (later --bind entries take effect on
 		// top of earlier ones at the same mount point). The staging dir keeps
-		// providing APPEND_SYSTEM.md / settings.json / themes / AGENTS.md /
-		// skills / auth.json; only the `sessions/` subdirectory is redirected.
+		// providing settings.json / themes / AGENTS.md / skills / auth.json;
+		// only the `sessions/` subdirectory is redirected.
 		//
 		// We create the host directory if it does not exist so a fresh install
 		// (no prior pi history) does not fail the spawn — bwrap requires the
