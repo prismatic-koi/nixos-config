@@ -37,18 +37,6 @@ import {
   parseSSEStream,
 } from "./stream.ts"
 
-const DEFAULT_OPUS_4_7: NonNullable<ProviderConfig["models"]>[number] = {
-  id: "claude-opus-4-7",
-  name: "Claude Opus 4.7",
-  api: "anthropic-messages",
-  reasoning: true,
-  input: ["text", "image"],
-  cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  contextWindow: 1000000,
-  maxTokens: 128000,
-  compat: undefined,
-}
-
 function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
   const modelRegistry = ModelRegistry.create(AuthStorage.inMemory())
   const models: NonNullable<ProviderConfig["models"]> = modelRegistry
@@ -65,10 +53,6 @@ function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
       maxTokens: model.maxTokens,
       compat: model.compat,
     }))
-
-  if (!models.some((model) => model.id === DEFAULT_OPUS_4_7.id)) {
-    models.push(DEFAULT_OPUS_4_7)
-  }
 
   return models
 }
