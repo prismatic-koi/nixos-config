@@ -606,6 +606,7 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 			mA.sandboxExecProfilePath(), mA.name)
 	}
 }
+
 // TestSandboxExecPrepare_StagingHomeFailurePropagated verifies that when
 // PrepareSandboxExecHome fails (e.g. because the staging-home path is
 // blocked by a pre-existing regular file), sandboxExecIsolator.Prepare
@@ -871,6 +872,7 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 		}
 	}
 }
+
 // TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs verifies that
 // PrepareSandboxExecHome creates empty, writable staging directories for
 // chromium's user-data layout under <stagingHome>/Library/Application
@@ -983,7 +985,6 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 // using the intermediate symlink means the staging HOME stays valid across sops
 // rotations (when secrets.d/<N>/ increments), whereas using the resolved path
 // would produce a dangling symlink after the rotation.
-//
 func TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1239,10 +1240,10 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	}
 
 	v1Files := map[string]string{
-		"ssh/access-key":   "access-key-v1",
-		"aws/config":       "aws-config-v1",
-		"aws/credentials":  "aws-credentials-v1",
-		"kube/config":      "kube-config-v1",
+		"ssh/access-key":  "access-key-v1",
+		"aws/config":      "aws-config-v1",
+		"aws/credentials": "aws-credentials-v1",
+		"kube/config":     "kube-config-v1",
 	}
 	for rel, content := range v1Files {
 		path := filepath.Join(sopsDir1, rel)
@@ -1258,10 +1259,10 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	// Each intermediate simulates the path that sops-nix keeps stable across
 	// rotations: e.g. ~/.ssh/prismatic-koi-ed25519 → secrets.d/<N>/...
 	intermediates := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir1, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir1, "aws", "config"),
-		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir1, "aws", "credentials"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir1, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):     filepath.Join(sopsDir1, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"): filepath.Join(sopsDir1, "aws", "config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"):     filepath.Join(sopsDir1, "aws", "credentials"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"):  filepath.Join(sopsDir1, "kube", "config"),
 	}
 	for intermediate, target := range intermediates {
 		_ = os.Remove(intermediate) // remove plain file from newFakeHome
@@ -1321,10 +1322,10 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	// ── rotate: update intermediates to v2, delete v1 ───────────────────────
 	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
 	v2Files := map[string]string{
-		"ssh/access-key":   "access-key-v2",
-		"aws/config":       "aws-config-v2",
-		"aws/credentials":  "aws-credentials-v2",
-		"kube/config":      "kube-config-v2",
+		"ssh/access-key":  "access-key-v2",
+		"aws/config":      "aws-config-v2",
+		"aws/credentials": "aws-credentials-v2",
+		"kube/config":     "kube-config-v2",
 	}
 	for rel, content := range v2Files {
 		path := filepath.Join(sopsDir2, rel)
@@ -1336,10 +1337,10 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 		}
 	}
 	v2Targets := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir2, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir2, "aws", "config"),
-		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir2, "aws", "credentials"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir2, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):     filepath.Join(sopsDir2, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"): filepath.Join(sopsDir2, "aws", "config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"):     filepath.Join(sopsDir2, "aws", "credentials"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"):  filepath.Join(sopsDir2, "kube", "config"),
 	}
 	for intermediate, newTarget := range v2Targets {
 		_ = os.Remove(intermediate)
@@ -1352,9 +1353,9 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	// ── verify reads through staging HOME still succeed after rotation ──────
 	v2Contents := map[string]string{
 		filepath.Join(stagingHome, ".ssh", "access-key"):  "access-key-v2",
-		filepath.Join(stagingHome, ".aws", "config"):       "aws-config-v2",
-		filepath.Join(stagingHome, ".aws", "credentials"):  "aws-credentials-v2",
-		filepath.Join(stagingHome, ".kube", "config"):      "kube-config-v2",
+		filepath.Join(stagingHome, ".aws", "config"):      "aws-config-v2",
+		filepath.Join(stagingHome, ".aws", "credentials"): "aws-credentials-v2",
+		filepath.Join(stagingHome, ".kube", "config"):     "kube-config-v2",
 	}
 	for link, wantContent := range v2Contents {
 		content, readErr := os.ReadFile(link)
@@ -1371,8 +1372,11 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_PiAgentDirNotSymlinked verifies that
-// PrepareSandboxExecHome no longer creates a ~/.pi/agent symlink — auth files
-// are now copied into the staging dir by StagePIAgentConfigDir instead.
+// PrepareSandboxExecHome does NOT create a ~/.pi/agent symlink. Under
+// sandbox-exec, PI_CODING_AGENT_DIR points at the shared host ~/.pi/agent
+// directly (design #2031, PR3 #2034) and the SBPL profile grants the targeted
+// read-write allow for ~/.pi/agent; the staging HOME must not blanket-symlink
+// ~/.pi (that would expose unrelated host ~/.pi contents).
 func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1392,11 +1396,12 @@ func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// No symlink must be created at <stagingHome>/.pi/agent — the staging dir
-	// approach copies files via StagePIAgentConfigDir instead.
+	// No symlink must be created at <stagingHome>/.pi/agent — PI_CODING_AGENT_DIR
+	// points at the shared host ~/.pi/agent directly under sandbox-exec
+	// (design #2031, PR3 #2034).
 	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
 	if _, err := os.Lstat(symlinkPath); err == nil {
-		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (files are copied by StagePIAgentConfigDir)")
+		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (PI_CODING_AGENT_DIR points at the shared host ~/.pi/agent directly)")
 	}
 }
 

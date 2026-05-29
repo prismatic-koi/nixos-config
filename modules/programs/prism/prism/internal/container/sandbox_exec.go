@@ -316,12 +316,10 @@ func generateProfile(m *Manager) string {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.BareRoot) + ")\n")
 		}
 		// Host-API socket directory — the sidecar's per-session socket dir.
-		// For PI sessions on Darwin (harness=pi), the per-session run directory
-		// also contains the pi-agent/ staging subdirectory written by
-		// StagePIAgentConfigDir (e.g. ~/.local/state/prism/run/<hash>/pi-agent/).
-		// Since the staging dir is a subdirectory of the run dir, this single
-		// (subpath ...) rule covers both — no separate PI SBPL rule is needed
-		// (issue #1285, confirmed no new rules required).
+		// For PI sessions on Darwin (harness=pi) there is no longer any
+		// per-session pi-agent staging subdirectory (design #2031, PR3 #2034
+		// collapsed it into the shared ~/.pi/agent mount). The read-write allow
+		// for ~/.pi/agent is emitted separately below (section 6a).
 		if m.cfg.HostAPISockPath != "" {
 			sockDir := filepath.Dir(m.cfg.HostAPISockPath)
 			sb.WriteString("  (subpath " + quoteSBPL(sockDir) + ")\n")

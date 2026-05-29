@@ -1,0 +1,8 @@
+prism: collapse per-session pi-agent staging dir to a shared ~/.pi/agent mount (PR3 of #2031)
+
+PR3 of design #2031 — the simplification payoff. With APPEND_SYSTEM.md gone
+(PR2 #2038), every item in the per-session pi-agent config dir is identical
+across roles/sessions, so the per-session staging dir collapses to a single
+shared read-only mount of ~/.pi/agent at /run/prism/pi-agent.
+
+Closes #2031

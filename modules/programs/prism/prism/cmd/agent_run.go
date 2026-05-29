@@ -667,10 +667,13 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 //  1. Loads profiles.json and resolves the active profile.
 //  2. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
-//  3. Calls StagePIAgentConfigDir to create the per-session staging directory.
-//     Records the host/sandbox paths on ctrCfg so bwrap can bind-mount the
-//     directory and set PI_CODING_AGENT_DIR. The role system-prompt is injected
-//     at runtime by the prism PI extension, not staged here (design #2031).
+//  3. Resolves the single shared PI agent config directory (~/.pi/agent) via
+//     SharedPIAgentConfigDir and records the host/sandbox paths on ctrCfg so
+//     bwrap can bind-mount the directory (read-only, with auth.json re-bound
+//     read-write) and set PI_CODING_AGENT_DIR. There is no per-session staging
+//     directory — every item is shared/identical across roles (design #2031,
+//     PR3 #2034). The role system-prompt is injected at runtime by the prism
+//     PI extension, not staged here (design #2031).
 //  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  5. Copies PIProvider, PIModel, PIThinking from the profile slot.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config) error {
@@ -697,13 +700,21 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	slot, _ := config.SlotForRole(pf, profileName, agentRole)
 
-	// Stage the PI agent config directory before bwrap launches. The role
-	// system-prompt is no longer staged here — it is injected at runtime by the
-	// prism PI extension (before_agent_start) from ~/.config/prism/agents/<role>.md
-	// (design #2031, PR2 #2033).
-	hostDir, sandboxDir, err := container.StagePIAgentConfigDir(sessionName)
+	// Resolve the single shared PI agent config directory (~/.pi/agent). It is
+	// bind-mounted read-only into the sandbox at /run/prism/pi-agent by
+	// appendPIBwrapMounts (with auth.json / atlassian-mcp-oauth.json re-bound
+	// read-write on top). There is no per-session staging directory — design
+	// #2031 (PR3 #2034) collapsed it because every remaining item is
+	// shared/identical across roles. The role system-prompt is injected at
+	// runtime by the prism PI extension (before_agent_start) from
+	// ~/.config/prism/agents/<role>.md (design #2031, PR2 #2033).
+	//
+	// sessionName is no longer needed to derive a per-session path; it is kept
+	// in the signature for symmetry with the rest of populatePIConfig.
+	_ = sessionName
+	hostDir, sandboxDir, err := container.SharedPIAgentConfigDir()
 	if err != nil {
-		return fmt.Errorf("pi: stage agent config dir: %w", err)
+		return fmt.Errorf("pi: resolve shared agent config dir: %w", err)
 	}
 	ctrCfg.PIAgentConfigHostDir = hostDir
 	ctrCfg.PIAgentConfigSandboxDir = sandboxDir
