@@ -3895,3 +3895,284 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
     assert.equal(reads, 1)
   })
 })
+
+// ---------------------------------------------------------------------------
+// #2050: review-guard release fix — sidecar-authoritative reviewing_state
+// ---------------------------------------------------------------------------
+//
+// Background. Before the #2050 fix the extension's pendingReviewCall guard
+// was set whenever a bash tool_call contained the substring "prism review".
+// That false-matched on any bash command that incidentally embedded the
+// literal text (a `gh pr comment` body, a `grep` over docs, an `echo` of a
+// commit message). A false-set after the genuine review-complete prompt had
+// cleared the flag re-latched the guard with no release path, suppressed
+// state_change:finished on the next turn_end, and stranded the worker as
+// `active` indefinitely — the exact incident captured in #2050.
+//
+// The fix drives pendingReviewCall solely from the inbound `reviewing_state`
+// frame the sidecar emits on every transition of its ledger-backed
+// reviewingInFlight flag plus once post-handshake. These tests assert the
+// three sequences called out in the AC:
+//
+//   A. no-review     — turn_end emits state_change:finished as today.
+//   B. mid-review    — turn_end during the reviewing window emits nothing
+//                       (the guard remains armed via reviewing_state{true}).
+//   C. completed-review — after reviewing_state{false} arrives the next
+//                       turn_end emits state_change:finished, even if no
+//                       inbound `prompt` frame followed (the regression
+//                       shape from the incident in #2050).
+
+const REVIEW_GUARD_HELLO_ACK = (sessionRole: string = "worker") =>
+  JSON.stringify({
+    type: "hello_ack",
+    protocol_version: 2,
+    session_name: "test@main",
+    session_role: sessionRole,
+    isolation_mode: "host",
+  }) + "\n"
+
+/**
+ * Spin up a fake sidecar server on a unix socket and the prism extension
+ * factory against a minimal mock pi. Returns the wired-up surface so each
+ * test can drive PI events, push inbound frames, and inspect frames received
+ * from the extension.
+ */
+function setupReviewGuardHarness(): Promise<{
+  trigger: (event: string, eventArg?: unknown, ctx?: unknown) => Promise<void>
+  /** Send an inbound frame from the (fake) sidecar to the extension. */
+  pushInbound: (frame: Record<string, unknown>) => void
+  /** Frames received from the extension on the socket, parsed as objects. */
+  received: () => Record<string, unknown>[]
+  /** Tear down server, restore env, remove tempdir. */
+  cleanup: () => void
+}> {
+  return new Promise((resolve, reject) => {
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2050-"))
+    const sockPath = path.join(sockDir, "pipe.sock")
+
+    const savedName = process.env.PRISM_SESSION_NAME
+    const savedPipe = process.env.PRISM_HARNESS_PIPE
+    process.env.PRISM_SESSION_NAME = "test@main"
+    process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+    const receivedLines: string[] = []
+    let serverConn: net.Socket | null = null
+
+    const cleanup = () => {
+      process.env.PRISM_SESSION_NAME = savedName
+      process.env.PRISM_HARNESS_PIPE = savedPipe
+      try { server.close() } catch {}
+      try { fs.rmSync(sockDir, { recursive: true, force: true }) } catch {}
+    }
+
+    const server = net.createServer((conn) => {
+      serverConn = conn
+      attachJsonlReader(conn, (line) => {
+        if (line.length === 0) return
+        receivedLines.push(line)
+        let f: Record<string, unknown>
+        try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+        if (f.type === "hello") {
+          conn.write(REVIEW_GUARD_HELLO_ACK())
+        }
+      })
+    })
+
+    const { pi, trigger } = makeMockPI1554()
+    // The doom-loop snapshot path that tool_execution_start calls into
+    // requires an appendEntry no-op.
+    ;(pi as unknown as { appendEntry: () => void }).appendEntry = () => {}
+    prismExtension(pi as never)
+
+    server.listen(sockPath, () => {
+      // Fire session_start to dial the socket and complete the handshake.
+      void trigger("session_start", {}, {}).then(async () => {
+        // Wait for the handshake to round-trip and post-handshake frames
+        // (including the sidecar's reviewing_state{in_flight:false}) to
+        // arrive at the server's read side.
+        await new Promise((r) => setTimeout(r, 50))
+        resolve({
+          trigger,
+          pushInbound: (frame) => {
+            if (!serverConn) throw new Error("server connection not yet established")
+            serverConn.write(JSON.stringify(frame) + "\n")
+          },
+          received: () => receivedLines.map((l) => {
+            try { return JSON.parse(l) as Record<string, unknown> } catch { return {} }
+          }),
+          cleanup,
+        })
+      }).catch((err) => {
+        cleanup()
+        reject(err)
+      })
+    })
+
+    server.on("error", (err) => {
+      cleanup()
+      reject(err)
+    })
+  })
+}
+
+describe("#2050: review-guard — sequence A (no review, turn_end → finished)", () => {
+  it("emits state_change:finished on turn_end when no review has been signalled", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // No reviewing_state{true} has been pushed: the guard is clear.
+      // A clean turn_end (stopReason=stop) must emit state_change:finished.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      // Allow the writer to flush across the socket.
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      // First frame should be the initial "active" emitted by before_agent_start
+      // — absent here because we did not fire that hook — so we expect exactly
+      // one state_change frame: the finished signal we are testing.
+      assert.equal(
+        stateChanges.length, 1,
+        `sequence A: expected exactly 1 state_change frame, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+      assert.equal(stateChanges[0].state, "finished")
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+describe("#2050: review-guard — sequence B (mid-review, turn_end suppressed)", () => {
+  it("suppresses state_change after the sidecar pushes reviewing_state{in_flight:true}", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // Sidecar signals that a review has started. The extension MUST set
+      // pendingReviewCall from this frame (replacing the bash-substring
+      // detection that #2050 removed).
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      // Let the inbound frame dispatch.
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Now turn_end fires (e.g. the worker took a brief idle turn while
+      // the review monitor pollled). state_change must NOT be emitted.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        stateChanges.length, 0,
+        `sequence B (mid-review): expected 0 state_change frames, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+describe("#2050: review-guard — sequence C (completed-review, turn_end → finished)", () => {
+  it("releases the guard via reviewing_state{in_flight:false} and emits finished on the next turn_end", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // Mid-review: guard is armed.
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Confirm a turn_end during this window emits nothing.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+      const midReviewSC = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        midReviewSC.length, 0,
+        `pre-clear turn_end leaked a state_change frame: ${JSON.stringify(midReviewSC)}`,
+      )
+
+      // Review monitor completes the round. The sidecar emits the cleared
+      // signal. Crucially, NO `prompt` inbound frame is pushed in this
+      // test — we want to prove the reviewing_state release path on its
+      // own, since the incident in #2050 showed that the prompt-frame
+      // clear can be lost while the bash-substring set-trigger
+      // (now removed) re-latched the guard.
+      h.pushInbound({ type: "reviewing_state", in_flight: false })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // The worker takes its final handing-off turn. turn_end must emit
+      // state_change:finished so the sidecar starts the finished debounce
+      // and the coordinator is notified.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const postClearSC = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        postClearSC.length, 1,
+        `sequence C: expected exactly 1 state_change frame after reviewing_state{false}, got ${postClearSC.length}: ${JSON.stringify(postClearSC)}`,
+      )
+      assert.equal(postClearSC[0].state, "finished")
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  it("also releases the guard via the prompt inbound frame (belt-and-braces clear path)", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Simulate the review-complete prompt arriving (the other release
+      // path the extension keeps as defence in depth).
+      h.pushInbound({ type: "prompt", text: "review complete!", deliver_as: "nextTurn" })
+      await new Promise((r) => setTimeout(r, 20))
+
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        stateChanges.length, 1,
+        `prompt-clear path: expected 1 state_change frame, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+      assert.equal(stateChanges[0].state, "finished")
+    } finally {
+      h.cleanup()
+    }
+  })
+})
+
+describe("#2050: bash-substring set-trigger has been removed from prism.ts", () => {
+  it("prism.ts source no longer contains the /\\bprism\\s+review\\b/ set-trigger for pendingReviewCall", () => {
+    // Source-level guard: the bash-substring detection was the root cause
+    // of the #2050 incident. If it is reintroduced anywhere that sets
+    // pendingReviewCall = true, the substring false-match returns and the
+    // stuck-active class is re-enabled.
+    const src = fs.readFileSync(path.join(__dirname, "prism.ts"), "utf8")
+    // Strip line-comments and the // halves of inline comments so that
+    // historical narrative inside comment blocks does not trip the guard.
+    // Block comments (/* ... */) are stripped first via a non-greedy match.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.replace(/\/\/.*$/, ""))
+    for (let i = 0; i < stripped.length; i++) {
+      const line = stripped[i]
+      if (/pendingReviewCall\s*=\s*true\b/.test(line)) {
+        const ctx = src.split("\n").slice(Math.max(0, i - 3), i + 4).join("\n")
+        assert.fail(
+          `prism.ts line ${i + 1}: pendingReviewCall is assigned true; the #2050 fix removed this set path entirely (sidecar is now authoritative via reviewing_state).\n\nContext:\n${ctx}`,
+        )
+      }
+    }
+  })
+})

@@ -1417,6 +1417,15 @@ export async function dispatchInboundFrame(
         break
       }
 
+      case "reviewing_state": {
+        // Handled directly in the attachJsonlReader callback above (the
+        // closure that owns pendingReviewCall). The case exists here so
+        // the forward-compat "unknown inbound frame type" warning at the
+        // bottom of the switch does not fire and clutter logs every time
+        // the sidecar pushes a reviewing-state transition (issue #2050).
+        break
+      }
+
       case "error": {
         // Sidecar-side error; log and disconnect is handled by the caller.
         // Per wire spec §7.4 the extension does not retry the handshake.
@@ -2079,9 +2088,27 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       // A prompt frame signals that the sidecar is delivering a message
       // (e.g. review-complete). Clear the reviewing-state guard so subsequent
-      // turns can emit state_change:idle normally.
+      // turns can emit state_change:idle normally. Belt-and-braces with the
+      // reviewing_state frame handler below: either clearing path is
+      // sufficient on its own; both are defence in depth.
       if (f.type === "prompt") {
         pendingReviewCall = false
+      }
+
+      // Authoritative reviewing-state signal from the sidecar (issue #2050).
+      // The sidecar tracks reviewingInFlight against its session-ledger and
+      // emits this frame on every transition plus immediately after
+      // handshake. We mirror it directly into pendingReviewCall, which is
+      // now driven solely from this signal — the previous bash-substring
+      // set-trigger ("/\bprism\s+review\b/") was removed because it false-
+      // matched on any bash command that incidentally contained the literal
+      // "prism review" (e.g. a `gh pr comment` body, a grep, an echo of a
+      // commit message). That re-latched the guard after the genuine
+      // review-complete prompt had cleared it, and the worker's next
+      // turn_end then suppressed state_change:finished forever — the exact
+      // shape of the stuck-active incident in #2050.
+      if (f.type === "reviewing_state") {
+        pendingReviewCall = f.in_flight === true
       }
 
       void dispatchInboundFrame(f, apiAdapter, sendError)
@@ -2395,15 +2422,22 @@ export default function prismExtension(pi: ExtensionAPI): void {
           pendingGitPushReminder = true
         }
 
-        // Reviewing-state guard: set flag when `prism review` is called so
-        // that the turn_end idle emission is suppressed until the
-        // review-complete prompt arrives. NOTE: this is intentionally a
-        // separate flag from cycle counting (the latter moved to the Go
-        // monitor in #1512). The reviewing-state flag's substring-detection
-        // class is tracked in #1519 and is out of scope here.
-        if (/\bprism\s+review\b/.test(command)) {
-          pendingReviewCall = true
-        }
+        // Reviewing-state guard set-path REMOVED in #2050. The previous
+        // implementation set pendingReviewCall = true whenever a bash
+        // command matched /\bprism\s+review\b/, which false-positived on
+        // any bash invocation that incidentally contained the literal
+        // "prism review" (gh pr comment bodies, grep over docs, echo of
+        // a commit message, etc.). A false-set after the genuine review-
+        // complete prompt had cleared the flag re-latched the guard with
+        // no release path, suppressing state_change:finished on the next
+        // turn_end and stranding the session as `active` indefinitely.
+        //
+        // The guard is now driven authoritatively by the sidecar via the
+        // `reviewing_state` inbound frame (see the attachJsonlReader
+        // callback above). The sidecar emits one on every transition of
+        // its ledger-backed `reviewingInFlight` flag plus once post-
+        // handshake, so the extension's pendingReviewCall is a faithful
+        // mirror of the sidecar's authoritative state.
       }
 
       // Persist guard state after each tool call so session resume can
