@@ -29,13 +29,8 @@ import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
 import { getModelBetas, getExcludedBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
-import {
-  buildAnthropicSystemPrompt,
-  convertPiMessagesToAnthropic,
-  convertPiToolsToAnthropic,
-  fromClaudeCodeToolName,
-  parseSSEStream,
-} from "./stream.ts"
+import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
+import { buildRequestBody } from "./request-body.ts"
 
 function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
   const modelRegistry = ModelRegistry.create(AuthStorage.inMemory())
@@ -130,7 +125,10 @@ export default function (pi: ExtensionAPI) {
               const creds = getCachedCredentials()
               const token = creds?.accessToken ?? apiKey
               const excluded = getExcludedBetas(model.id)
-              const betas = getModelBetas(model.id, excluded)
+              const betas = getModelBetas(model.id, excluded, {
+                forceAdaptiveThinking:
+                  model.compat?.forceAdaptiveThinking === true,
+              })
               headers.set("authorization", `Bearer ${token}`)
               headers.set("anthropic-version", "2023-06-01")
               headers.set("anthropic-beta", betas.join(","))
@@ -150,50 +148,12 @@ export default function (pi: ExtensionAPI) {
             return headers
           }
 
-          const maxTokens =
-            options?.maxTokens || Math.floor(model.maxTokens / 3)
-
-          const body: Record<string, unknown> = {
-            model: model.id,
-            max_tokens: maxTokens,
-            stream: true,
-          }
-
-          body.messages = convertPiMessagesToAnthropic(
-            context.messages,
-            isOAuth,
-          )
-
-          const system = buildAnthropicSystemPrompt(
-            context.systemPrompt,
-            isOAuth,
-          )
-          if (system) body.system = system
-
-          if (context.tools?.length) {
-            body.tools = convertPiToolsToAnthropic(context.tools, isOAuth)
-          }
-
-          if (options?.reasoning && model.reasoning && maxTokens > 1) {
-            const defaultBudgets: Record<string, number> = {
-              minimal: 1024,
-              low: 4096,
-              medium: 10240,
-              high: 20480,
-              xhigh: 32000,
-            }
-            const customBudget =
-              options.thinkingBudgets?.[
-                options.reasoning as keyof typeof options.thinkingBudgets
-              ]
-            const requestedBudget =
-              customBudget ?? defaultBudgets[options.reasoning] ?? 10240
-            body.thinking = {
-              type: "enabled",
-              budget_tokens: Math.min(requestedBudget, maxTokens - 1),
-            }
-          }
-
+          const body = buildRequestBody(model, context, options, isOAuth)
+          // NOTE: temperature is intentionally not set anywhere in body —
+          // Anthropic rejects extended-thinking requests that also pass
+          // temperature with a 400. Mirrors pi-ai's guard
+          // (`anthropic.ts` ~937-940). If a future change adds a
+          // temperature path, gate it on `!body.thinking`.
           const bodyStr = JSON.stringify(body)
           const transformedBody = isOAuth ? transformBody(bodyStr) : bodyStr
           const headers = buildHeaders()
