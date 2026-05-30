@@ -16,6 +16,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -234,26 +235,44 @@ func KillSidecar(sessionName string) {
 }
 
 // KillSidecarAndWait sends SIGTERM to the sidecar for sessionName (via
-// KillSidecar) and then waits for the process to actually exit before
-// returning. It returns nil when the process has exited within timeout, and a
-// non-nil error when the timeout expires before the process is gone.
+// KillSidecar) and then waits for the process to actually exit AND for its
+// host-API listener socket to be torn down before returning. It returns nil
+// when both conditions hold within timeout, and a non-nil error when the
+// timeout expires before either is observed.
 //
-// The wait is implemented by polling /proc/<pid>/status on Linux (or
-// syscall.Kill(pid, 0) on platforms without /proc) at 25 ms intervals until
-// the process is no longer found (ESRCH). The timeout should be short — 2
-// seconds is sufficient for a well-behaved sidecar that handles SIGTERM — but
-// long enough to survive a briefly-loaded system.
+// The process-exit wait is implemented by polling /proc/<pid>/status on Linux
+// (or syscall.Kill(pid, 0) on platforms without /proc) at 25 ms intervals
+// until the process is no longer found (ESRCH or zombie). The timeout should
+// be short — 2 seconds is sufficient for a well-behaved sidecar that handles
+// SIGTERM — but long enough to survive a briefly-loaded system.
+//
+// **Socket teardown is the load-bearing invariant.** When SIGTERM is
+// delivered to a Go runtime under default disposition, the kernel marks the
+// task as zombie *before* the listener Unix socket has been fully released
+// from the kernel's unix_socket_table — a connect(2) to the bound path can
+// still succeed for a brief window after /proc/<pid>/status reports
+// State:Z. To close this race (issue #2047 / #1998 regression), once the
+// process is gone we:
+//
+//  1. Best-effort unlink the host-API and harness pipe socket paths so any
+//     subsequent path-based dial gets ENOENT regardless of the kernel's
+//     internal listener state. This is the primary close-signal.
+//  2. Poll-dial the host-API socket with a short additional budget to
+//     confirm it is observably no longer accepting (belt-and-braces against
+//     an exotic case where the inode is gone but the listener is still
+//     reachable by some other means).
 //
 // This function is the preferred call site for the stale-zombie restart path
 // in ensureAndSwitch (cmd/switch.go): the new sidecar's duplicate-start guard
 // (checkNoLiveSidecar) dials with a 250 ms timeout, so without waiting for
-// the old process to exit there is a real race between SIGTERM and the new
-// sidecar's probe.
+// the old socket to be observably down there is a real race between SIGTERM
+// and the new sidecar's probe.
 //
 // The PID is read from the PID file before the kill is sent. If the PID file
 // is absent, corrupt, or points to a recycled process, KillSidecar handles
 // all those cases gracefully and this function returns nil immediately (no
-// process to wait for).
+// process to wait for and no socket to clean up beyond what KillSidecar
+// already does).
 func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 	// Read the PID before calling KillSidecar so we know which process to
 	// wait on. KillSidecar removes the PID file, so we must read it first.
@@ -284,15 +303,79 @@ func KillSidecarAndWait(sessionName string, timeout time.Duration) error {
 	// platforms we use kill(pid, 0) which returns ESRCH when the process
 	// is gone (may block on zombies owned by another process, but sidecars
 	// are always child-of-init after Setsid so that case does not arise).
+	//
+	// Critical ordering note (#2047): the per-session socket files are NOT
+	// unlinked here — only after the process is confirmed gone. If we
+	// unlinked them up-front (e.g. in a defer at the top of the function),
+	// we would mask a hypothetical regression of #1998 in which SIGTERM was
+	// never sent: the listener would still be alive on its FD, but the
+	// path-based dial used by the stale-zombie regression test would get
+	// ENOENT and falsely report success. Unlinking AFTER process exit
+	// preserves the test's regression-guard semantics while still closing
+	// the post-exit kernel race that motivates this fix.
 	deadline := time.Now().Add(timeout)
+	processGone := false
 	for time.Now().Before(deadline) {
 		if !sidecarProcessExists(pid) {
-			return nil
+			processGone = true
+			break
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
+	if !processGone {
+		return fmt.Errorf("kill sidecar: pid %d did not exit within %v after SIGTERM (session %q)", pid, timeout, sessionName)
+	}
 
-	return fmt.Errorf("kill sidecar: pid %d did not exit within %v after SIGTERM (session %q)", pid, timeout, sessionName)
+	// Process is gone. Unlink the per-session socket files so any
+	// subsequent path-based dial gets ENOENT regardless of the kernel's
+	// internal listener state (see fn-level doc for the race).
+	unlinkSidecarSockets(sessionName)
+
+	// Belt-and-braces: wait until the host-API listener socket is observably
+	// no longer accepting, within whatever budget is left from the original
+	// timeout. The unlink above is the primary kill switch; this loop is
+	// defence in depth in case some exotic scenario leaves the listener
+	// reachable after the inode is gone.
+	sockPath, sockErr := SidecarHostAPIPath(sessionName)
+	if sockErr != nil {
+		return nil
+	}
+	waitForSocketGone(sockPath, deadline)
+	return nil
+}
+
+// unlinkSidecarSockets removes the host-API and harness pipe socket files for
+// the given session, ignoring errors. Called from KillSidecarAndWait *after*
+// the sidecar process has been confirmed gone, so that a dial by path then
+// gets ENOENT regardless of the kernel's internal listener state. This closes
+// the race observed in issue #2047 where /proc/<pid>/status reports State:Z
+// (so sidecarProcessExists returns false) before the kernel has fully torn
+// down the bound Unix socket from its listener table. Importantly, the unlink
+// is NOT a defer at the top of KillSidecarAndWait — see the call site for why
+// ordering matters for preserving the #1998 regression guard.
+func unlinkSidecarSockets(sessionName string) {
+	if sockPath, err := SidecarHostAPIPath(sessionName); err == nil {
+		_ = os.Remove(sockPath)
+	}
+	if pipePath, err := SidecarHarnessPipePath(sessionName); err == nil {
+		_ = os.Remove(pipePath)
+	}
+}
+
+// waitForSocketGone polls the given Unix socket path with short dials until
+// either a dial returns an error (the listener is gone) or the deadline is
+// reached. Errors are intentionally swallowed — this function is best-effort
+// defence in depth; the primary close-signal is the os.Remove of the socket
+// path in unlinkSidecarSockets, which the caller has already arranged.
+func waitForSocketGone(sockPath string, deadline time.Time) {
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("unix", sockPath, 25*time.Millisecond)
+		if dialErr != nil {
+			return
+		}
+		conn.Close()
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // sidecarProcessExists reports whether the given PID is still running
