@@ -262,7 +262,7 @@
         # Note: ~/.pi/agent/system-prompt.md and coordinator-system-prompt.md
         # were removed in the #2064 cleanup. They were staged by the pre-#2031
         # mechanism (when prism wrote a per-session APPEND_SYSTEM.md staging
-        # file), but pi 0.77 has no native loader for either filename — it
+        # file), but pi 0.78 has no native loader for either filename — it
         # only auto-discovers SYSTEM.md / APPEND_SYSTEM.md per dist/core/
         # resource-loader.js. Confirmed inert from #2038 onwards (when the
         # APPEND_SYSTEM.md staging path was removed); role-prompt injection
