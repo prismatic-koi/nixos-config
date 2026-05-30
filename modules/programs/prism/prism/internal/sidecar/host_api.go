@@ -57,6 +57,22 @@ func contextErrStatus(ctx context.Context) (int, bool) {
 	return statusClientClosedRequest, true
 }
 
+// filterEnv returns a copy of env with any entry whose key matches name
+// removed. Used to control specific environment variables passed to a child
+// process (e.g. unsetting PRISM_SPAWN_PATH so the child does not inherit the
+// sidecar process's own value — see the /spawn handler and issue #2063).
+func filterEnv(env []string, name string) []string {
+	prefix := name + "="
+	out := env[:0:0]
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // hostAPIServeLogsTail writes the last n lines of the log file to w.
 // When n == 0, the response body is empty.
 func hostAPIServeLogsTail(w http.ResponseWriter, logPath string, n int) {
@@ -1032,6 +1048,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Reuse                 bool     `json:"reuse"`
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
+			// FromKeybind discriminates a tmux Prefix+a (keybind) spawn from
+			// an arbitrary HTTP caller. When true, an empty prompt is
+			// permitted — the operator types the initial prompt to the live
+			// agent after the popup attaches. The proxySpawn CLI path sets
+			// this when PRISM_SPAWN_PATH is set in its own environment. See
+			// issues #2012 (host-side carve-out) and #2063 (proxy parity).
+			FromKeybind bool `json:"from_keybind"`
 		}
 		// /spawn body cap: default 1 MiB (issue #1848). DisallowUnknownFields
 		// is applied via decodeRequestJSON — already strict on this endpoint.
@@ -1060,7 +1083,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// a malformed or alternate client that POSTs {"prompt":""} would otherwise
 		// produce a session that comes up successfully but sits idle forever
 		// because no --prompt argument is forwarded to the host-side prism spawn.
-		if req.Prompt == "" {
+		//
+		// Keybind carve-out (issue #2063): when the request carries
+		// from_keybind=true the empty prompt is intentional and the spawn
+		// proceeds. The carve-out fires only on this explicit discriminator,
+		// so arbitrary HTTP callers that omit the field still hit this guard.
+		if req.Prompt == "" && !req.FromKeybind {
 			writeError(w, http.StatusBadRequest, "prompt is required — the request body must include a non-empty \"prompt\" field")
 			return
 		}
@@ -1228,6 +1256,47 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+		// Issue #2063: when the request was initiated by the tmux Prefix+a
+		// keybind AND no prompt was supplied, propagate the discriminator to
+		// the host-side prism spawn via PRISM_SPAWN_PATH. The host-side
+		// runSpawn already reads that env var to recognise a keybind spawn
+		// (`fromKeybind`) and skip the empty-prompt guard — reusing it here
+		// keeps a single discriminator across both code paths instead of
+		// inventing a parallel CLI flag.
+		//
+		// Narrow the propagation to `req.Prompt == ""` to match the proxy
+		// side. fromKeybind on the host also flips runSpawn's
+		// `headless := !fromKeybind && !attachFlag` from true to false, which
+		// for a NON-empty-prompt invocation would make the child call
+		// session.Attach against whatever tmux client this sidecar inherited
+		// — a behavioural change the empty-prompt carve-out does not need.
+		// Restricting to the empty-prompt case keeps the supplied-prompt path
+		// byte-identical to the pre-PR behaviour.
+		//
+		// IMPORTANT: control the env value explicitly in BOTH branches.
+		// Without an explicit unset, the child inherits the sidecar process's
+		// own PRISM_SPAWN_PATH — which can happen if this sidecar itself was
+		// launched from a shell with PRISM_SPAWN_PATH already set (e.g. a
+		// developer running prism manually for testing). Always overwriting
+		// PRISM_SPAWN_PATH (either to the keybind value or to empty) makes the
+		// child's view of the discriminator a pure function of the request,
+		// independent of the sidecar's launch environment.
+		//
+		// runSpawn only checks `os.Getenv("PRISM_SPAWN_PATH") != ""`, so any
+		// non-empty value enables the carve-out. Prefer the sidecar's own
+		// worktree path when populated so any downstream consumer that
+		// resolves the path lands on a real directory; fall back to a
+		// sentinel marker if it is unset (defence in depth — production
+		// sidecars always have Worktree populated).
+		spawnPathEnv := "PRISM_SPAWN_PATH="
+		if req.FromKeybind && req.Prompt == "" {
+			spawnPath := s.cfg.Worktree
+			if spawnPath == "" {
+				spawnPath = "keybind"
+			}
+			spawnPathEnv = "PRISM_SPAWN_PATH=" + spawnPath
+		}
+		cmd.Env = append(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), spawnPathEnv)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
@@ -2150,14 +2219,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Prompt      string `json:"prompt"`
-			To          string `json:"to,omitempty"`
-			From        string `json:"from,omitempty"`
+			Prompt string `json:"prompt"`
+			To     string `json:"to,omitempty"`
+			From   string `json:"from,omitempty"`
 			// JSON forwards the --json flag to the host-side `prism escalate`
 			// child so its stdout carries the JSON envelope (and stderr the
 			// human mirror). The proxy on the container side then writes the
 			// captured streams verbatim to its own stdout/stderr. See #2018.
-			JSON        bool   `json:"json,omitempty"`
+			JSON bool `json:"json,omitempty"`
 			// DedupWindow forwards the hidden --dedup-window flag for tests
 			// and operator overrides. Empty string falls back to the default.
 			DedupWindow string `json:"dedup_window,omitempty"`
@@ -2961,8 +3030,6 @@ func isPipeConnected(s *Sidecar) bool {
 	s.mu.Unlock()
 	return ch != nil
 }
-
-
 
 // resolveRoleForSession returns the root_agent_name (role) for targetSess, or
 // a non-empty skipStatus string when the session should be skipped.

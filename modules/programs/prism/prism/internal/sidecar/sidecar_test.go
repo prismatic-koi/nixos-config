@@ -5572,6 +5572,158 @@ func TestHostAPI_Spawn_EmptyPromptReturns400(t *testing.T) {
 	}
 }
 
+// TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted verifies the issue
+// #2063 carve-out: when the request carries {"from_keybind":true}, an
+// empty prompt must NOT be rejected at layer 3 — the proxy has signalled
+// that this is a tmux Prefix+a invocation and the operator will type the
+// initial prompt to the live agent after the popup attaches.
+//
+// The stub records its env so we can assert that PRISM_SPAWN_PATH is
+// propagated to the host-side prism spawn child. That env var is the
+// discriminator runSpawn uses for its own carve-out — if the sidecar
+// failed to set it, the host-side child would still reject the empty
+// prompt and the popup would flash-close.
+func TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	// The stub writes its PRISM_SPAWN_PATH env to a file then prints the
+	// canonical session-created line so the handler's parse succeeds.
+	stubScript := `#!/bin/sh
+echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}" > ` + envFile + `
+echo "session \"test-repo@keybind-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	// Empty prompt + from_keybind:true — must be accepted (200) instead of 400.
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"keybind-branch","prompt":"","from_keybind":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 for empty prompt + from_keybind:true; body = %s",
+			rr.Code, rr.Body.String())
+	}
+
+	// Verify PRISM_SPAWN_PATH was propagated to the host-side child with the
+	// sidecar's own worktree path — not whatever the sidecar process
+	// happened to inherit at launch. The handler explicitly filters and
+	// overwrites PRISM_SPAWN_PATH so the child's view is a pure function of
+	// the request, independent of the sidecar's environment.
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	envLine := strings.TrimSpace(string(capturedEnv))
+	wantLine := "PRISM_SPAWN_PATH=" + cfg.Worktree
+	if envLine != wantLine {
+		t.Errorf("captured env %q, want %q (host-side child must see the sidecar's worktree, not whatever PRISM_SPAWN_PATH this sidecar process inherited)",
+			envLine, wantLine)
+	}
+}
+
+// TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv verifies the
+// narrowing fix surfaced by review-context on the first review round: when
+// from_keybind:true arrives alongside a NON-empty prompt, the sidecar must
+// NOT set PRISM_SPAWN_PATH on the host-side prism spawn child. Doing so
+// would flip the child's `headless := !fromKeybind && !attachFlag` from
+// true to false and cause it to call session.Attach against whatever tmux
+// client the sidecar inherited — a behavioural change for ordinary
+// container worker-spawn flows that the empty-prompt carve-out does not
+// need to enable.
+//
+// In practice the narrowed proxy will not send from_keybind:true alongside
+// a non-empty prompt, but the layer-3 handler's behaviour must be safe
+// even if a malformed client does.
+func TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}" > ` + envFile + `
+echo "session \"test-repo@some-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"some-branch","prompt":"hello","from_keybind":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	envLine := strings.TrimSpace(string(capturedEnv))
+	// The harness MUST NOT have inherited PRISM_SPAWN_PATH from this sidecar.
+	// The stub captures `PRISM_SPAWN_PATH=<value>`; for a clean child the
+	// value half is empty. We accept either "PRISM_SPAWN_PATH=" or no line at
+	// all in case the stub never wrote the file for any reason.
+	if envLine != "PRISM_SPAWN_PATH=" && envLine != "" {
+		t.Errorf("captured env %q: PRISM_SPAWN_PATH must NOT be set on the child when from_keybind:true arrives with a non-empty prompt (would flip headless and side-effect session.Attach)",
+			envLine)
+	}
+}
+
+// TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected verifies the
+// security AC for issue #2063: the layer-3 empty-prompt guard still fires
+// for arbitrary HTTP callers that do NOT carry from_keybind:true. The
+// relaxation lives in the prism CLI proxy path only — not in the public
+// /spawn handler for everyone else.
+func TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+
+	// Empty prompt, from_keybind absent (or explicit false) — must still 400.
+	for _, body := range []string{
+		`{"branch":"feature","prompt":""}`,
+		`{"branch":"feature","prompt":"","from_keybind":false}`,
+	} {
+		rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("body %q: status = %d, want 400 (carve-out must fire only on from_keybind:true)",
+				body, rr.Code)
+			continue
+		}
+		var errResp map[string]string
+		decodeJSONBody(t, rr, &errResp)
+		if !strings.Contains(errResp["error"], "prompt is required") {
+			t.Errorf("body %q: error %q should mention 'prompt is required'", body, errResp["error"])
+		}
+	}
+}
+
 // TestHostAPI_Spawn_SidecarNoAtSign_Returns500 verifies AC edge case: if the
 // sidecar's own session name contains no "@", /spawn returns 500 with a
 // message indicating the repo cannot be derived, and no spawn is attempted.
