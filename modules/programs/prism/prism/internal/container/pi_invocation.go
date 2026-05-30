@@ -237,6 +237,71 @@ func piResumeSessionsRoot(cfg Config) (string, bool) {
 	return filepath.Join(home, ".pi", "agent", "sessions"), true
 }
 
+// RemovePiResumeJSONL deletes any pi session-transcript JSONL file under the
+// resolved sessions root whose basename ends in `_<HarnessSessionID>.jsonl`,
+// for the encoded-cwd subdirectory derived from cfg.Worktree.
+//
+// This is the FS-side companion to db.ClearHarnessSessionID: together they
+// sever the pi resume linkage so that re-spawning a NEW session on the SAME
+// branch name does not resume the cleaned session's pi conversation
+// (issue #2035). DB-side severance alone is sufficient for the bug —
+// PIInvocation only appends `--session <id>` when HarnessSessionID is
+// non-empty AND ResolvePIResumeSession finds a matching JSONL — but
+// removing the on-disk transcript closes the second path explicitly and
+// keeps ~/.pi/agent/sessions/ from accumulating dead conversations across
+// reused branch names.
+//
+// Resolution mirrors piResumeSessionsRoot (sandbox-exec staging home vs.
+// host/bwrap `~/.pi/agent/sessions/`). For sandbox-exec the JSONL also lives
+// inside the staging HOME that RemoveSandboxExecStagingHome subsequently
+// wipes — calling RemovePiResumeJSONL first is therefore redundant for that
+// mode but harmless (the targeted delete is a no-op when the broader wipe
+// has already run, and vice-versa).
+//
+// Best-effort and non-fatal:
+//
+//   - Returns nil silently when HarnessSessionID or Worktree is empty (caller
+//     contract: nothing to scope to).
+//   - Returns nil silently when the sessions root cannot be resolved
+//     (e.g. no home dir on the host) — cleanup must still succeed.
+//   - Returns nil silently when the encoded-cwd directory does not exist
+//     (fresh-session-then-cleanup, sandbox already torn down, etc.).
+//   - An error is returned only when a matching file was found but
+//     os.Remove failed for some reason other than "not exist" — the caller
+//     may log and continue.
+//
+// The function deliberately scopes by `_<HarnessSessionID>.jsonl` suffix
+// rather than wiping the whole encoded-cwd dir: other sibling sessions on
+// the same worktree path (e.g. the legitimate-resume case in #1838 where a
+// still-active session is being restarted) must not be touched.
+func RemovePiResumeJSONL(cfg Config) error {
+	if cfg.HarnessSessionID == "" || cfg.Worktree == "" {
+		return nil
+	}
+	root, ok := piResumeSessionsRoot(cfg)
+	if !ok {
+		return nil
+	}
+	cwdDir := filepath.Join(root, encodePiCWD(cfg.Worktree))
+	entries, err := os.ReadDir(cwdDir)
+	if err != nil {
+		// Missing dir / unreadable — nothing to do. Cleanup is best-effort.
+		return nil
+	}
+	suffix := "_" + cfg.HarnessSessionID + ".jsonl"
+	var firstErr error
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
+			continue
+		}
+		path := filepath.Join(cwdDir, e.Name())
+		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) && firstErr == nil {
+			firstErr = fmt.Errorf("remove pi resume jsonl %s: %w", path, rmErr)
+		}
+	}
+	return firstErr
+}
+
 // encodePiCWD mirrors internal/harness/pi.EncodePiCWD: pi's session-dir naming
 // formula (`--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`).
 //
