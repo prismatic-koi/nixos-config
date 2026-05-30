@@ -118,14 +118,28 @@
           anthropicExtraUsage = false;
         };
 
-        # Vendored extensions registered in settings.json. The prism PI
-        # extension is included here as defence-in-depth alongside the
-        # `--extension` CLI flag that prism passes per session (issue #2064
-        # Phase 3) — if a future code path forgets to pass the flag, the
-        # extension still loads from settings, so the role-prompt injection
-        # surface degrades gracefully instead of silently disappearing.
+        # Vendored extensions registered in settings.json.
         #
-        # The first entry (anthropic-oauth) replaces the previous
+        # NOTE: the prism PI extension is intentionally NOT listed here.
+        # It is loaded via the `--extension` CLI flag emitted by prism's
+        # Go side at spawn time:
+        #   - internal/container/pi_invocation.go (bwrap / sandbox-exec)
+        #   - internal/session/session.go::buildDirectAgentCmd (host mode, #2065)
+        #
+        # An earlier iteration of #2068 also registered prism.ts here as
+        # defence-in-depth, on the assumption that pi's resource-loader
+        # de-dupes extension paths by canonicalised realpath. That holds
+        # in host mode but FAILS under bwrap: inside the sandbox, the
+        # `--extension` flag uses the bind-mount path
+        # (~/.config/prism/pi-extensions/prism.ts) while settings.json
+        # carries the raw nix-store path, and bwrap bind mounts mask the
+        # underlying realpath so canonicalisation returns two distinct
+        # absolute paths. The extension then loaded twice, pi flagged
+        # "--agent" as a conflicting flag registration, and the entire
+        # prism↔pi integration surface broke on every bwrap session.
+        # See the post-mortem for #2068 for the full diagnosis.
+        #
+        # The anthropic-oauth entry below replaces the previous
         # npm:pi-anthropic-oauth@0.1.9 package. All extensions are stored
         # in the nix store as plain TypeScript files and loaded by pi's
         # jiti-based extension loader at runtime.
@@ -133,15 +147,6 @@
         #   modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md
         extensions = [
           "${piExtensionsDir}/anthropic-oauth/index.ts"
-          # prism PI extension — sidecar bridge, status bar, doom-loop
-          # guard, role system-prompt injection (issue #2032 / #2064).
-          # The same file is also passed via --extension at spawn time by
-          # internal/container/pi_invocation.go (container modes) and
-          # internal/session/session.go::buildDirectAgentCmd (host mode,
-          # #2065). Registering it here too means pi loads it exactly
-          # once (the loader de-dupes by resolved path) but neither call
-          # path is load-bearing on its own.
-          "${prismExtensionDir}/prism.ts"
         ]
         ++
           lib.optional config.nx.programs.prism.pi.atlassian.enable
