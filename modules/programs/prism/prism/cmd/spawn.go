@@ -131,15 +131,29 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	// Keybind carve-out (issue #2063 — parity with the host-side carve-out
 	// added for issue #2012). The tmux Prefix+a keybind invokes `prism spawn
 	// --attach` with no --prompt because the operator types the initial
-	// prompt to the live agent after the popup attaches. The keybind sets
-	// PRISM_SPAWN_PATH (the `fromKeybind` discriminator), so an empty prompt
-	// on that path is legitimate and must be allowed through the proxy too.
+	// prompt to the live agent after the popup attaches.
 	//
-	// Without this, every Prefix+a popup launched from a tmux server whose
-	// environment contains PRISM_HOST_API hits proxySpawn and flash-closes
-	// on the empty-prompt reject below — exactly the symptom #2012 reported
-	// and #2016 fixed only on the host-side runSpawn path.
-	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
+	// The host-side runSpawn uses `PRISM_SPAWN_PATH != ""` as the keybind
+	// discriminator, but inside a container PRISM_SPAWN_PATH is set
+	// UNCONDITIONALLY by every sandbox (bwrap.go:496-503,
+	// agent_run_sandbox_exec_darwin.go:284) — it is documented as a
+	// working-directory hint, not a sandbox sentinel
+	// (internal/sandboxenv/sandboxenv.go). Using it as the sole discriminator
+	// here would fire on every container-originated `prism spawn`, not just
+	// keybind spawns, and the resulting `from_keybind: true` would flip the
+	// host-side child's `headless := !fromKeybind && !attachFlag` from true
+	// to false on every container worker-spawn flow — causing the host child
+	// to call session.Attach against whatever tmux client the sidecar
+	// inherited.
+	//
+	// Narrow the carve-out to the only case where it materially matters: an
+	// EMPTY prompt. That is the exact symptom #2012/#2063 set out to fix
+	// (Prefix+a popup flash-close from an unconditional empty-prompt reject),
+	// and it cannot break a non-empty-prompt invocation because the
+	// non-empty path is byte-identical to today. A coordinator/worker that
+	// passes `--prompt "X"` from inside a container hits the same code path
+	// it did pre-PR.
+	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != "" && promptFlag == ""
 	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
 	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
 	// stdin produces a session that is created successfully on every

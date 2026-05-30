@@ -5619,14 +5619,79 @@ echo "session \"test-repo@keybind-branch\" created"
 			rr.Code, rr.Body.String())
 	}
 
-	// Verify PRISM_SPAWN_PATH was propagated to the host-side child.
+	// Verify PRISM_SPAWN_PATH was propagated to the host-side child with the
+	// sidecar's own worktree path — not whatever the sidecar process
+	// happened to inherit at launch. The handler explicitly filters and
+	// overwrites PRISM_SPAWN_PATH so the child's view is a pure function of
+	// the request, independent of the sidecar's environment.
 	capturedEnv, err := os.ReadFile(envFile)
 	if err != nil {
 		t.Fatalf("read captured env: %v", err)
 	}
 	envLine := strings.TrimSpace(string(capturedEnv))
-	if envLine == "PRISM_SPAWN_PATH=" || envLine == "" {
-		t.Errorf("captured env %q: PRISM_SPAWN_PATH was not set on the child; host-side runSpawn will still reject the empty prompt",
+	wantLine := "PRISM_SPAWN_PATH=" + cfg.Worktree
+	if envLine != wantLine {
+		t.Errorf("captured env %q, want %q (host-side child must see the sidecar's worktree, not whatever PRISM_SPAWN_PATH this sidecar process inherited)",
+			envLine, wantLine)
+	}
+}
+
+// TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv verifies the
+// narrowing fix surfaced by review-context on the first review round: when
+// from_keybind:true arrives alongside a NON-empty prompt, the sidecar must
+// NOT set PRISM_SPAWN_PATH on the host-side prism spawn child. Doing so
+// would flip the child's `headless := !fromKeybind && !attachFlag` from
+// true to false and cause it to call session.Attach against whatever tmux
+// client the sidecar inherited — a behavioural change for ordinary
+// container worker-spawn flows that the empty-prompt carve-out does not
+// need to enable.
+//
+// In practice the narrowed proxy will not send from_keybind:true alongside
+// a non-empty prompt, but the layer-3 handler's behaviour must be safe
+// even if a malformed client does.
+func TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}" > ` + envFile + `
+echo "session \"test-repo@some-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"some-branch","prompt":"hello","from_keybind":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	envLine := strings.TrimSpace(string(capturedEnv))
+	// The harness MUST NOT have inherited PRISM_SPAWN_PATH from this sidecar.
+	// The stub captures `PRISM_SPAWN_PATH=<value>`; for a clean child the
+	// value half is empty. We accept either "PRISM_SPAWN_PATH=" or no line at
+	// all in case the stub never wrote the file for any reason.
+	if envLine != "PRISM_SPAWN_PATH=" && envLine != "" {
+		t.Errorf("captured env %q: PRISM_SPAWN_PATH must NOT be set on the child when from_keybind:true arrives with a non-empty prompt (would flip headless and side-effect session.Attach)",
 			envLine)
 	}
 }

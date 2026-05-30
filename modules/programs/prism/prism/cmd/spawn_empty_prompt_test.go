@@ -213,11 +213,24 @@ func TestProxySpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
 	}
 }
 
-// TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded verifies the
-// edge-case AC: when BOTH PRISM_SPAWN_PATH and --prompt are set, the
-// supplied prompt is forwarded verbatim (the carve-out does not swallow
-// it). from_keybind is still set true so the host knows the call origin.
-func TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded(t *testing.T) {
+// TestProxySpawn_ContainerSpawnWithPrompt_DoesNotSetFromKeybind verifies
+// the missed-context regression flagged on the first review round of #2063:
+// PRISM_SPAWN_PATH is set UNCONDITIONALLY inside every bwrap / sandbox-exec
+// sandbox (internal/container/bwrap.go:496-503, documented in
+// internal/sandboxenv/sandboxenv.go as a working-directory hint, not a
+// sandbox sentinel). If the proxy treated `PRISM_SPAWN_PATH != ""` as the
+// sole keybind discriminator, every ordinary container worker-spawn flow
+// (… e.g. a coordinator calling `prism spawn --prompt "X"` from inside its
+// container) would forward `from_keybind: true`, and the host-API handler
+// would then set PRISM_SPAWN_PATH on the host-side prism spawn child —
+// flipping its `headless := !fromKeybind && !attachFlag` from true to
+// false and causing it to call session.Attach against whatever tmux
+// client the sidecar inherited.
+//
+// The narrowing fix gates the carve-out on `PRISM_SPAWN_PATH != "" &&
+// promptFlag == ""`. This test pins that down: a container spawn with a
+// supplied prompt must NOT carry `from_keybind: true`.
+func TestProxySpawn_ContainerSpawnWithPrompt_DoesNotSetFromKeybind(t *testing.T) {
 	type spawnReq struct {
 		Prompt      string `json:"prompt"`
 		FromKeybind bool   `json:"from_keybind"`
@@ -235,10 +248,12 @@ func TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded(t *testing.T) {
 	})
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	// Simulate the bwrap-sandbox state: PRISM_SPAWN_PATH set to the
+	// container's worktree path even though this is NOT a keybind spawn.
 	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
 
 	cmd := buildSpawnCmdForEmptyPromptTest(t)
-	_ = cmd.Flags().Set("prompt", "explicit prompt from keybind")
+	_ = cmd.Flags().Set("prompt", "explicit prompt from container worker")
 
 	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
 		t.Fatalf("proxySpawn: %v", err)
@@ -246,12 +261,12 @@ func TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded(t *testing.T) {
 
 	select {
 	case req := <-reqCh:
-		if req.Prompt != "explicit prompt from keybind" {
-			t.Errorf("prompt = %q, want %q (carve-out must not swallow a supplied prompt)",
-				req.Prompt, "explicit prompt from keybind")
+		if req.Prompt != "explicit prompt from container worker" {
+			t.Errorf("prompt = %q, want %q (supplied prompt must be forwarded verbatim)",
+				req.Prompt, "explicit prompt from container worker")
 		}
-		if !req.FromKeybind {
-			t.Errorf("from_keybind = false, want true (discriminator forwarded whenever PRISM_SPAWN_PATH set)")
+		if req.FromKeybind {
+			t.Errorf("from_keybind = true; want false — a container spawn with a supplied prompt must NOT trigger the keybind carve-out (would flip the host-side child's headless flag and side-effect session.Attach)")
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for /spawn request")
