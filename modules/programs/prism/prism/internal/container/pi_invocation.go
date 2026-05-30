@@ -70,6 +70,11 @@ const (
 //	--model    <cfg.PIModel>              (when non-empty)
 //	--thinking <cfg.PIThinking>           (when non-empty)
 //	--extension <extensionPath>           (always; path is derived from cfg)
+//	--agent    <cfg.AgentRole>            (when non-empty; consumed by the
+//	                                       prism PI extension via
+//	                                       pi.registerFlag("agent") to source
+//	                                       the role system prompt at
+//	                                       before_agent_start — issue #2064)
 //	--session  <cfg.HarnessSessionID>     (when non-empty AND on-disk session
 //	                                       file exists — see piResolveResumeSession)
 //	<cfg.InitialPrompt>                   (bare positional arg, when non-empty)
@@ -114,6 +119,16 @@ func PIInvocation(cfg Config) []string {
 	}
 	extensionSandboxPath := filepath.Join(extensionSandboxDir, piExtensionFilename)
 	args = append(args, "--extension", extensionSandboxPath)
+
+	// --agent <role> for the prism PI extension's role-prompt injection
+	// (issue #2064). pi has no native concept of agents — the extension
+	// registers --agent via pi.registerFlag at factory entry and reads the
+	// bound value synchronously in its before_agent_start handler. Skipping
+	// this flag when AgentRole is empty matches the edge-case AC: a session
+	// with no role file falls back to pi's base system prompt unchanged.
+	if cfg.AgentRole != "" {
+		args = append(args, "--agent", cfg.AgentRole)
+	}
 
 	// --session <id> for conversation resume (#1838). Skipped silently when
 	// HarnessSessionID is empty (fresh session); on missing-file the helper
@@ -466,6 +481,25 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 		dir = piExtensionSandboxDefault
 	}
 	return filepath.Join(dir, piExtensionFilename)
+}
+
+// PIExtensionHostPath returns the host-side absolute path to the prism PI
+// extension file given the extension directory (i.e. cfg.PIExtensionDir as
+// populated from prism's config.json by Nix). Returns "" when hostDir is
+// empty so the host-mode launch path can fall back to a no-flag invocation
+// rather than emit a stray --extension argument with no value.
+//
+// Used by the host-mode pi launch in internal/session/session.go to close
+// the gap fixed by #2065 — host-mode previously emitted `pi --agent worker`
+// with no --extension, so the prism extension never loaded and role-prompt
+// injection (plus the sidecar bridge, status bar, doom-loop guard, etc.)
+// silently no-op'd. The container path already appends --extension via
+// PIInvocation above.
+func PIExtensionHostPath(hostDir string) string {
+	if hostDir == "" {
+		return ""
+	}
+	return filepath.Join(hostDir, piExtensionFilename)
 }
 
 // appendPIBwrapMounts appends the bwrap bind-mount args needed for a PI

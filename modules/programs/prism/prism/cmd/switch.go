@@ -369,6 +369,11 @@ var switchCmd = &cobra.Command{
 			ConfigEnvVarName: switchHarness.ConfigEnvVar(),
 			RuntimeEnvVars:   switchHarness.RuntimeEnv(),
 			HarnessName:      switchHarnessName,
+			// PIExtensionDir for host-mode pi launches (#2065). The container
+			// path appends --extension via container.PIInvocation, so this is
+			// load-bearing only for isolation=host — buildDirectAgentCmd skips
+			// the flag when PIExtensionDir is empty.
+			PIExtensionDir: cfg.PIExtensionDir,
 		}
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
 		// receive env vars via podman --env flags in the sidecar (podman) or

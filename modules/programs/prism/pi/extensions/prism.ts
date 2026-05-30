@@ -1572,13 +1572,29 @@ export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
 //     double-injection risk the PR1 gate guarded against no longer exists.
 
 /**
+ * Whitelist-validates a role name. Roles flow from pi.getFlag("agent") which
+ * is bound from the CLI's --agent flag, ultimately set by prism Go-side at
+ * spawn time. The host side is trusted, but a stray path-traversal or null
+ * byte in cfg.AgentRole would otherwise concatenate into the role file path
+ * and read an attacker-chosen file. The whitelist matches the host-side
+ * validator at cmd/spawn.go (prism agent names: ASCII letters, digits,
+ * hyphens, underscores).
+ *
+ * Exported for unit testing only.
+ */
+export function isValidRoleName(role: string): boolean {
+  return typeof role === "string" && role.length > 0 && /^[A-Za-z0-9_-]+$/.test(role)
+}
+
+/**
  * Resolves the absolute path to the role prompt markdown file for `role`,
  * mirroring the host-side prismAgentRolePath (cmd/spawn.go): respect
  * XDG_CONFIG_HOME, else fall back to $HOME/.config. Returns "" when role is
- * empty so callers can short-circuit to a no-op.
+ * empty or contains characters outside the role-name whitelist (defence in
+ * depth against path traversal via a malicious flag value).
  */
 export function prismAgentRolePath(role: string, env: NodeJS.ProcessEnv = process.env): string {
-  if (typeof role !== "string" || role.length === 0) {
+  if (!isValidRoleName(role)) {
     return ""
   }
   let base = env.XDG_CONFIG_HOME
@@ -1650,35 +1666,48 @@ export interface RolePromptCache {
  * Pure decision for one before_agent_start turn. Encapsulates the latch logic
  * so it is unit-testable independently of the PI runtime:
  *
- *   - Injection is unconditional once the handshake completes — PR2 of #2031
- *     removed APPEND_SYSTEM.md, so the extension is the sole source of the role
- *     prompt and there is no gating flag any more.
- *   - The handshake gate is load-bearing: `sessionRole` is only populated by
- *     the async hello_ack handler, so resolving the cache before the handshake
- *     would latch the session to "no role" permanently. Pre-handshake turns
- *     return undefined WITHOUT latching.
- *   - Once resolved, the file read is memoised (cache.resolved) so disk is
- *     touched at most once per session.
- *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
- *     idempotent and never accumulates the role prompt across turns.
+ *   - The role identity is sourced from `agentRole`, which the caller reads
+ *     synchronously from `pi.getFlag("agent")`. pi binds extension flags at
+ *     `applyExtensionFlagValues` time (agent-session-services.js), which runs
+ *     during `resourceLoader.reload()` BEFORE any `before_agent_start` event
+ *     fires. There is therefore no handshake race — the role is available on
+ *     the very first turn.
  *
- * Mutates `cache` in place (sets resolved/cached on first post-handshake call)
+ *     This replaces the pre-#2064 design which sourced the role from the
+ *     async hello_ack handshake. That source was load-bearing on the wrong
+ *     ordering: hello_ack arrived AFTER the first turn's before_agent_start
+ *     fired (the handshake races over the sidecar's Unix socket; the agent
+ *     hook fires inline on the pi side), so on a fresh bwrap session the
+ *     first turn's role prompt was always missed. See PR for the full
+ *     diagnosis chain.
+ *
+ *   - When `agentRole` is empty (host-mode pi launches that did not pass
+ *     --agent, or a session running outside prism), the handler returns
+ *     undefined and pi keeps its base system prompt unchanged.
+ *
+ *   - The file read is memoised (cache.resolved) so disk is touched at most
+ *     once per session.
+ *
+ *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
+ *     idempotent and never accumulates the role prompt across turns even
+ *     though before_agent_start fires per-turn (pi 0.77).
+ *
+ * Mutates `cache` in place (sets resolved/cached on first valid-role call)
  * and returns the systemPrompt override to send, or undefined to keep the base.
  */
 export function resolveRolePromptForTurn(
   opts: {
-    handshakeComplete: boolean
-    sessionRole: string
+    agentRole: string
     baseSystemPrompt: string
   },
   cache: RolePromptCache,
   readRole: (role: string) => string | undefined = readRolePrompt,
 ): string | undefined {
-  if (!opts.handshakeComplete) {
+  if (!isValidRoleName(opts.agentRole)) {
     return undefined
   }
   if (!cache.resolved) {
-    cache.cached = readRole(opts.sessionRole)
+    cache.cached = readRole(opts.agentRole)
     cache.resolved = true
   }
   return composeRoleSystemPrompt(opts.baseSystemPrompt, cache.cached)
@@ -1757,11 +1786,27 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // Session identity captured from hello_ack. Used for status bar display.
   let sessionRole = ""
 
-  // Role system-prompt injection cache (issue #2032). The role file is read
-  // once per session (load-once), then recomposed against event.systemPrompt
-  // on every before_agent_start. The cache is only latched once the handshake
-  // has completed (sessionRole known) — see resolveRolePromptForTurn.
+  // Role system-prompt injection cache (issue #2032 / #2064). The role file
+  // is read once per session (load-once), then recomposed against
+  // event.systemPrompt on every before_agent_start. The role identity is
+  // sourced synchronously from pi.getFlag("agent") in the handler, not from
+  // the async hello_ack handshake (which was the #2064 regression source).
   const roleSystemPromptCache: RolePromptCache = { resolved: false, cached: undefined }
+
+  // Register --agent as an extension-owned CLI flag. pi has no native
+  // concept of agents (prism owns the agent system), so pi parses --agent
+  // into its `unknownFlags` map; pi.registerFlag binds that entry into
+  // `runtime.flagValues` during applyExtensionFlagValues, which runs after
+  // all extensions load and BEFORE any hook fires. pi.getFlag("agent") is
+  // therefore synchronous and available from the first before_agent_start.
+  //
+  // Canonical example: pi 0.77 examples/extensions/plan-mode/index.ts which
+  // registers --plan in the same shape.
+  pi.registerFlag("agent", {
+    description:
+      "Primary agent identity (worker, coordinator, review-*, etc.) — selects the role system prompt appended to pi's base prompt at before_agent_start.",
+    type: "string",
+  })
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
   let sessionIsolationMode = ""
 
@@ -2188,21 +2233,24 @@ export default function prismExtension(pi: ExtensionAPI): void {
       writer.write({ type: "state_change", state: "active" })
     }
 
-    // Role system-prompt injection (issue #2032 / #2033). PR2 of #2031 removed
-    // the per-session APPEND_SYSTEM.md staging file, so the extension is now
-    // the SOLE source of the role prompt and injection is unconditional — no
-    // gating flag. See the helpers above for the replace-vs-append and
-    // per-turn-fire analysis.
+    // Role system-prompt injection (issue #2032 / #2033 / #2064 fix).
     //
-    // resolveRolePromptForTurn still gates on handshakeComplete: sessionRole
-    // is only populated by the async hello_ack handler, so latching the cache
-    // before the handshake would pin the session to "no role" permanently.
-    // Pre-handshake turns return undefined without latching; the next turn
-    // resolves correctly.
+    // Source the role from pi.getFlag("agent") rather than the async
+    // hello_ack-derived sessionRole. The flag is bound by pi BEFORE any
+    // before_agent_start fires (see applyExtensionFlagValues in
+    // pi's agent-session-services.js), so this is race-free — unlike the
+    // pre-#2064 design which lost the first turn's role prompt because the
+    // handshake socket-receive races behind the agent-start hook.
+    //
+    // getFlag returns `string | boolean | undefined`; we registered the flag
+    // as type="string" so the runtime value is always a string when present.
+    // Defensive narrowing keeps the handler safe if a future pi version
+    // changes the contract or a missing-flag returns the registered default.
+    const flagValue = pi.getFlag("agent")
+    const agentRole = typeof flagValue === "string" ? flagValue : ""
     const composed = resolveRolePromptForTurn(
       {
-        handshakeComplete,
-        sessionRole,
+        agentRole,
         baseSystemPrompt: event.systemPrompt,
       },
       roleSystemPromptCache,

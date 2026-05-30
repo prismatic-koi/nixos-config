@@ -234,6 +234,13 @@ type SpawnOpts struct {
 	// no prompt was supplied. All other callers should leave this false so
 	// the original "agent pane needs a prompt" guard (#1891) keeps firing.
 	AllowEmptyPrompt bool
+
+	// PIExtensionDir is the host-side absolute path to the directory that
+	// contains the prism PI extension file. Forwarded to Opts.PIExtensionDir
+	// so buildDirectAgentCmd can emit --extension <dir>/prism.ts on the
+	// host-mode pi launch (#2065). Empty value falls back to no --extension
+	// flag on host mode.
+	PIExtensionDir string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -822,6 +829,7 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		HarnessName:         opts.HarnessName,
 		HarnessPipeSockPath: opts.HarnessPipeSockPath,
 		ModelsByRole:        opts.ModelsByRole,
+		PIExtensionDir:      opts.PIExtensionDir,
 	}
 }
 
@@ -977,6 +985,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		PluginHostPath:   opts.PluginHostPath,
 		ConfigEnvVarName: opts.ConfigEnvVarName,
 		RuntimeEnvVars:   opts.RuntimeEnvVars,
+		PIExtensionDir:   opts.PIExtensionDir,
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}

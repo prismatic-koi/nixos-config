@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -237,6 +238,100 @@ func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 	if !strings.Contains(cmd, "pi") {
 		t.Errorf("empty IsolationMode: cmd does not contain 'pi': %q", cmd)
 	}
+}
+
+// TestBuildDirectAgentCmd_PIExtensionFlag verifies that host-mode pi launch
+// appends --extension <PIExtensionDir>/prism.ts when the harness is pi (or
+// empty, which defaults to pi). This is the #2065 fix bundled into the
+// #2064 PR: without it, host-mode sessions launch pi with no --extension,
+// and the prism PI extension never loads — silently disabling role-prompt
+// injection, the sidecar bridge, and the status bar.
+func TestBuildDirectAgentCmd_PIExtensionFlag(t *testing.T) {
+	t.Run("pi harness emits --extension when PIExtensionDir is set", func(t *testing.T) {
+		opts := Opts{
+			HarnessName:    "pi",
+			Agent:          "worker",
+			PIExtensionDir: "/nix/store/abc-prism-extension",
+		}
+		cmd := buildDirectAgentCmd(opts)
+		if !strings.Contains(cmd, "--extension '/nix/store/abc-prism-extension/prism.ts'") {
+			t.Errorf("expected --extension '/nix/store/abc-prism-extension/prism.ts' in cmd; got: %q", cmd)
+		}
+	})
+
+	t.Run("empty harness defaults to pi and emits --extension", func(t *testing.T) {
+		opts := Opts{
+			HarnessName:    "",
+			Agent:          "worker",
+			PIExtensionDir: "/nix/store/abc-prism-extension",
+		}
+		cmd := buildDirectAgentCmd(opts)
+		if !strings.Contains(cmd, "--extension '/nix/store/abc-prism-extension/prism.ts'") {
+			t.Errorf("expected --extension on empty-harness cmd; got: %q", cmd)
+		}
+	})
+
+	t.Run("pi harness with empty PIExtensionDir omits --extension (no stray flag with no value)", func(t *testing.T) {
+		opts := Opts{
+			HarnessName:    "pi",
+			Agent:          "worker",
+			PIExtensionDir: "",
+		}
+		cmd := buildDirectAgentCmd(opts)
+		if strings.Contains(cmd, "--extension") {
+			t.Errorf("empty PIExtensionDir must not emit --extension; got: %q", cmd)
+		}
+	})
+
+	t.Run("non-pi harness must NOT receive --extension (pi-specific flag)", func(t *testing.T) {
+		opts := Opts{
+			HarnessName:    "opencode",
+			Agent:          "worker",
+			PIExtensionDir: "/nix/store/abc-prism-extension",
+		}
+		cmd := buildDirectAgentCmd(opts)
+		if strings.Contains(cmd, "--extension") {
+			t.Errorf("non-pi harness must not receive --extension; got: %q", cmd)
+		}
+	})
+}
+
+// TestBuildDirectAgentCmd_AgentFlag confirms that --agent <role> is always
+// emitted for pi (and empty=pi) when Agent is non-empty. This is the host-
+// mode complement to TestPIInvocation_AgentFlag in the container package —
+// together they guarantee the prism PI extension's pi.getFlag("agent")
+// receives a value on every code path.
+func TestBuildDirectAgentCmd_AgentFlag(t *testing.T) {
+	for _, harnessName := range []string{"pi", ""} {
+		t.Run("harness="+harnessName, func(t *testing.T) {
+			opts := Opts{
+				HarnessName: harnessName,
+				Agent:       "coordinator",
+			}
+			cmd := buildDirectAgentCmd(opts)
+			if !strings.Contains(cmd, "--agent coordinator") {
+				t.Errorf("expected --agent coordinator in cmd; got: %q", cmd)
+			}
+		})
+	}
+}
+
+// TestPIExtensionHostPath verifies the helper that buildDirectAgentCmd uses
+// to resolve the on-disk extension file path. Empty dir must return empty
+// so the caller falls back to no flag rather than emitting a stray
+// `--extension /prism.ts` against the filesystem root.
+func TestPIExtensionHostPath(t *testing.T) {
+	t.Run("non-empty dir resolves to dir/prism.ts", func(t *testing.T) {
+		got := container.PIExtensionHostPath("/nix/store/abc-prism-extension")
+		if got != "/nix/store/abc-prism-extension/prism.ts" {
+			t.Errorf("expected dir/prism.ts; got %q", got)
+		}
+	})
+	t.Run("empty dir returns empty", func(t *testing.T) {
+		if got := container.PIExtensionHostPath(""); got != "" {
+			t.Errorf("expected empty for empty dir; got %q", got)
+		}
+	})
 }
 
 // TestBuildDirectAgentCmd_AgentEnvVars_ValuesQuoted verifies that env var

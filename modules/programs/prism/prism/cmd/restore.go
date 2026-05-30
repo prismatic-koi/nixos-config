@@ -354,6 +354,8 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		ConfigEnvVarName: restoreHarness.ConfigEnvVar(),
 		RuntimeEnvVars:   restoreHarness.RuntimeEnv(),
 		HarnessName:      restoreHarnessName,
+		// PIExtensionDir for host-mode pi launches (#2065).
+		PIExtensionDir: cfg.PIExtensionDir,
 	}
 	// Propagate the persisted harness session ID so the sandbox launcher can
 	// ask pi to resume the prior conversation (issue #1838). Empty pointer

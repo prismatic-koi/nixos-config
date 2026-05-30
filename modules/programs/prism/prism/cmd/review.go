@@ -347,6 +347,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 		HarnessExplicit: cmd.Flags().Changed("harness"),
 		Timeout:        timeoutFlag,
 		PluginHostPath: cfg.SidecarPluginPath,
+		PIExtensionDir: cfg.PIExtensionDir,
 		IsolationMode:  string(isoMode),
 		OnProgress:     progressLine,
 		PRCtx:          &prCtx,

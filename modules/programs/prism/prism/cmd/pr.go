@@ -226,6 +226,8 @@ var prCmd = &cobra.Command{
 			ConfigEnvVarName: prHarness.ConfigEnvVar(),
 			RuntimeEnvVars:   prHarness.RuntimeEnv(),
 			ModelsByRole:     modelsByRole,
+			// PIExtensionDir for host-mode pi launches (#2065).
+			PIExtensionDir: cfg.PIExtensionDir,
 			// ForceFresh=true: prism pr creates a new worktree; if a session
 			// with the same name exists it is a stale zombie and should be
 			// killed, matching the same semantics as prism spawn.

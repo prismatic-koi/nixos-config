@@ -59,7 +59,8 @@ import {
   // Mid-tool heartbeat (issue #1761)
   startToolHeartbeat,
   TOOL_HEARTBEAT_INTERVAL_MS,
-  // Role system-prompt injection (issue #2032 / #2033)
+  // Role system-prompt injection (issue #2032 / #2033 / #2064)
+  isValidRoleName,
   prismAgentRolePath,
   readRolePrompt,
   composeRoleSystemPrompt,
@@ -1974,8 +1975,18 @@ describe("shouldAttemptConnect", () => {
 // correctly waits for completion.
 
 /** Minimal mock of ExtensionAPI — only `on` is needed for these tests. */
-function makeMockPI1554() {
+function makeMockPI1554(
+  options: { flagValues?: Record<string, string | boolean> } = {},
+) {
   const handlers: Record<string, ((...args: unknown[]) => unknown)[]> = {}
+  // Extension-registered flag values. The prism extension now calls
+  // pi.registerFlag("agent", ...) at factory entry (issue #2064 fix); the
+  // mock pi binds the matching value here so before_agent_start sees the
+  // role synchronously, mirroring pi's applyExtensionFlagValues path in
+  // agent-session-services.js.
+  const flagValues: Map<string, string | boolean> = new Map(
+    Object.entries(options.flagValues ?? {}),
+  )
   const pi = {
     on: (event: string, handler: (...args: unknown[]) => unknown) => {
       if (!handlers[event]) handlers[event] = []
@@ -1986,13 +1997,26 @@ function makeMockPI1554() {
     setThinkingLevel: () => {},
     registerProvider: () => {},
     setActiveTools: () => {},
+    registerFlag: (
+      _name: string,
+      _opts: { description?: string; type: "boolean" | "string"; default?: boolean | string },
+    ) => {
+      // No-op: the mock records the registration only to the extent that
+      // it does not throw. `flagValues` is the test fixture's source of
+      // truth, populated via options.flagValues.
+    },
+    getFlag: (name: string): string | boolean | undefined => {
+      return flagValues.get(name)
+    },
   }
   const trigger = async (event: string, eventArg: unknown = {}, ctx: unknown = {}) => {
     for (const h of handlers[event] ?? []) {
       await h(eventArg, ctx)
     }
   }
-  return { pi, trigger }
+  // Expose the flagValues map so individual tests can mutate it after factory
+  // entry if they need to simulate pi binding flags between sessions.
+  return { pi, trigger, flagValues }
 }
 
 /** Minimal sidecar responder: on `hello`, writes hello_ack. Returns frame list. */
@@ -3769,9 +3793,66 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 // Role system-prompt injection (issue #2032)
 // ---------------------------------------------------------------------------
 
+describe("isValidRoleName — path-traversal defence (#2064 security AC)", () => {
+  it("accepts canonical prism role names", () => {
+    const roles = [
+      "coordinator",
+      "worker",
+      "review-goal",
+      "review-code",
+      "review-security",
+      "review-qa",
+      "review-context",
+      "a",
+      "a_b",
+      "A-1",
+    ]
+    for (const r of roles) {
+      assert.ok(isValidRoleName(r), `expected ${JSON.stringify(r)} to be a valid role name`)
+    }
+  })
+
+  it("rejects empty / non-string values", () => {
+    assert.equal(isValidRoleName(""), false)
+    assert.equal(isValidRoleName(undefined as unknown as string), false)
+    assert.equal(isValidRoleName(null as unknown as string), false)
+    assert.equal(isValidRoleName(123 as unknown as string), false)
+  })
+
+  it("rejects path-traversal / shell-meta / null-byte attempts", () => {
+    const evil = [
+      "../etc/passwd",
+      "./worker",
+      "/etc/passwd",
+      "worker/../coordinator",
+      "worker\u0000",
+      "worker.md",
+      "worker$",
+      "worker;rm -rf /",
+      "worker space",
+      "·",
+      "é",
+    ]
+    for (const r of evil) {
+      assert.equal(isValidRoleName(r), false, `expected ${JSON.stringify(r)} to be rejected`)
+    }
+  })
+})
+
 describe("prismAgentRolePath — role→file resolution", () => {
   it("returns '' for an empty role (no-op short-circuit)", () => {
     assert.equal(prismAgentRolePath("", { HOME: "/home/u" }), "")
+  })
+
+  it("returns '' when role contains path-traversal (defence-in-depth)", () => {
+    assert.equal(
+      prismAgentRolePath("../etc/passwd", { XDG_CONFIG_HOME: "/xdg", HOME: "/home/u" }),
+      "",
+    )
+    assert.equal(
+      prismAgentRolePath("worker/../coordinator", { HOME: "/home/u" }),
+      "",
+    )
   })
 
   it("respects XDG_CONFIG_HOME when set", () => {
@@ -3891,69 +3972,58 @@ describe("composeRoleSystemPrompt — APPEND semantics preserved", () => {
   })
 })
 
-describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", () => {
+describe("resolveRolePromptForTurn — flag-sourced role, idempotency", () => {
   const newCache = (): RolePromptCache => ({ resolved: false, cached: undefined })
 
-  it("injects unconditionally once the handshake completes (no gating flag — PR2 of #2031)", () => {
+  // The pre-#2064 design accepted a `handshakeComplete` boolean and gated
+  // resolution on it. That gate dropped the first turn's role prompt on every
+  // bwrap session (the hello_ack handshake fires AFTER the agent-start hook).
+  // The new design sources the role from `pi.getFlag("agent")` which pi binds
+  // synchronously before the first hook fires, so there is no handshake gate.
+
+  it("injects the role prompt on the very first call when agentRole is valid", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => "ROLE",
     )
-    assert.equal(out, "BASE\n\nROLE") // injected — no flag required
+    assert.equal(out, "BASE\n\nROLE") // first-turn injection — no handshake required
     assert.equal(cache.resolved, true)
   })
 
-  it("returns undefined and does NOT latch when the handshake is incomplete", () => {
+  it("returns undefined and does NOT latch when agentRole is empty (host-mode launch without --agent)", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
+      { agentRole: "", baseSystemPrompt: "BASE" },
       cache,
       () => "ROLE",
     )
     assert.equal(out, undefined)
-    assert.equal(cache.resolved, false) // critical: must NOT latch pre-handshake
+    assert.equal(cache.resolved, false) // empty role must NOT poison the cache
   })
 
-  it("injects once the handshake completes and the role is known", () => {
+  it("returns undefined and does NOT latch when agentRole fails whitelist (path-traversal defence)", () => {
     const cache = newCache()
     const out = resolveRolePromptForTurn(
-      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { agentRole: "../etc/passwd", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, false)
+  })
+
+  it("resolves the matching role file when agentRole is a known prism role", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       (role) => (role === "worker" ? "WORKER ROLE" : undefined),
     )
     assert.equal(out, "BASE\n\nWORKER ROLE")
     assert.equal(cache.resolved, true)
     assert.equal(cache.cached, "WORKER ROLE")
-  })
-
-  it("first turn before handshake must not poison the cache (the review-code race)", () => {
-    const cache = newCache()
-    let reads = 0
-    const readRole = (role: string): string | undefined => {
-      reads++
-      return role === "worker" ? "WORKER ROLE" : undefined
-    }
-
-    // Turn 1 fires BEFORE hello_ack: handshake incomplete, sessionRole still "".
-    const turn1 = resolveRolePromptForTurn(
-      { handshakeComplete: false, sessionRole: "", baseSystemPrompt: "BASE" },
-      cache,
-      readRole,
-    )
-    assert.equal(turn1, undefined)
-    assert.equal(cache.resolved, false)
-    assert.equal(reads, 0) // no read attempted pre-handshake
-
-    // Turn 2 fires AFTER hello_ack populated sessionRole="worker".
-    const turn2 = resolveRolePromptForTurn(
-      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
-      cache,
-      readRole,
-    )
-    assert.equal(turn2, "BASE\n\nWORKER ROLE") // role IS injected, not poisoned
-    assert.equal(reads, 1)
   })
 
   it("memoises the file read across turns (disk touched at most once)", () => {
@@ -3964,8 +4034,7 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
       return "ROLE"
     }
     const args = {
-      handshakeComplete: true,
-      sessionRole: "worker",
+      agentRole: "worker",
       baseSystemPrompt: "BASE",
     }
     const t1 = resolveRolePromptForTurn(args, cache, readRole)
@@ -3977,11 +4046,31 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
     assert.equal(t2, t3)
   })
 
+  it("recomposes against a fresh baseSystemPrompt each turn (no accumulation across turns)", () => {
+    // before_agent_start fires once per turn (pi 0.77). The handler must NOT
+    // accumulate the role across turns — each call re-composes role onto the
+    // base provided by that turn's event.systemPrompt.
+    const cache = newCache()
+    const readRole = (): string => "ROLE"
+    const t1 = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE-TURN-1" },
+      cache,
+      readRole,
+    )
+    const t2 = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE-TURN-2" },
+      cache,
+      readRole,
+    )
+    assert.equal(t1, "BASE-TURN-1\n\nROLE")
+    assert.equal(t2, "BASE-TURN-2\n\nROLE")
+  })
+
   it("missing role file resolves to a no-op (undefined) and stays latched", () => {
     const cache = newCache()
     let reads = 0
     const out = resolveRolePromptForTurn(
-      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => {
         reads++
@@ -3989,10 +4078,10 @@ describe("resolveRolePromptForTurn — gating, handshake latch, idempotency", ()
       },
     )
     assert.equal(out, undefined)
-    assert.equal(cache.resolved, true) // latched after handshake even for no-op
+    assert.equal(cache.resolved, true) // latched after a valid-role read attempt
     // A second turn does not re-read — the no-op is memoised.
     resolveRolePromptForTurn(
-      { handshakeComplete: true, sessionRole: "worker", baseSystemPrompt: "BASE" },
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
       cache,
       () => {
         reads++

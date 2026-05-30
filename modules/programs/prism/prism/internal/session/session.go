@@ -202,6 +202,19 @@ type Opts struct {
 	// Other launch shapes derive the worktree from the DB or from the
 	// container-mode plumbing and do not consult this field.
 	Worktree string
+	// PIExtensionDir is the host-side absolute path to the directory that
+	// contains the prism PI extension file (cfg.PIExtensionDir, populated by
+	// Nix via piExtensionDir in config.json). When non-empty AND the harness
+	// is pi, buildDirectAgentCmd appends --extension <dir>/prism.ts to the
+	// host-mode launch command so the extension loads and the prism↔pi
+	// integration surface (role prompt, sidecar bridge, status bar) works
+	// the same as it does under bwrap / sandbox-exec. Closes #2065.
+	//
+	// Empty value falls back to omitting the flag, which preserves the
+	// pre-#2065 host-mode shape — useful for environments without a Nix-set
+	// piExtensionDir (e.g. a developer running `go run ./...` outside the
+	// configured prism install).
+	PIExtensionDir string
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -346,6 +359,22 @@ func buildDirectAgentCmd(opts Opts) string {
 		cmd = binary + " --agent " + agent
 	} else {
 		cmd = binary
+	}
+	// --extension <dir>/prism.ts for pi harnesses (#2065). Container modes
+	// (bwrap / sandbox-exec) route through container.PIInvocation, which
+	// emits --extension unconditionally. Host mode previously launched pi
+	// with no --extension flag at all, so the prism PI extension never
+	// loaded and role-prompt injection (plus the sidecar bridge, status
+	// bar, doom-loop guard, and review-cycle tracking) silently no-op'd.
+	//
+	// Scoped to pi (or empty harness, which defaults to pi). Non-pi
+	// harnesses do not have a prism extension and must not receive this
+	// flag — it would either be unknown or claim an unrelated meaning.
+	if (opts.HarnessName == "pi" || opts.HarnessName == "") && opts.PIExtensionDir != "" {
+		extPath := container.PIExtensionHostPath(opts.PIExtensionDir)
+		if extPath != "" {
+			cmd += " --extension " + shellQuote(extPath)
+		}
 	}
 	// Append --session <id> for host-mode pi-resume (issue #1838).
 	//

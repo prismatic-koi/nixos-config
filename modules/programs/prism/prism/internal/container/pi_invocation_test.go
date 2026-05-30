@@ -116,6 +116,75 @@ func TestPIInvocation_NoInitialPrompt(t *testing.T) {
 	}
 }
 
+// TestPIInvocation_AgentFlag verifies that --agent <role> is emitted when
+// cfg.AgentRole is non-empty. This is the load-bearing flag for the
+// #2064 fix: the prism PI extension reads it via pi.getFlag("agent") in
+// its before_agent_start handler to select the role system-prompt file.
+// Without this flag, the extension cannot identify the role synchronously
+// and the first-turn role prompt is lost (the regression #2064 captured).
+func TestPIInvocation_AgentFlag(t *testing.T) {
+	cases := []struct {
+		name string
+		role string
+	}{
+		{"worker", "worker"},
+		{"coordinator", "coordinator"},
+		{"review-goal", "review-goal"},
+		{"review-code", "review-code"},
+		{"review-security", "review-security"},
+		{"review-qa", "review-qa"},
+		{"review-context", "review-context"},
+		{"investigate", "investigate"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{AgentRole: tc.role}
+			args := PIInvocation(cfg)
+			if !hasPair(args, "--agent", tc.role) {
+				t.Errorf("expected --agent %q in PIInvocation args; got %v", tc.role, args)
+			}
+		})
+	}
+}
+
+// TestPIInvocation_NoAgentFlagWhenEmpty verifies that --agent is omitted
+// when AgentRole is empty. The extension handles a missing flag as a
+// graceful no-op (issue #2064 edge-case AC: "empty / unknown role starts
+// without error and pi receives only its default system prompt").
+func TestPIInvocation_NoAgentFlagWhenEmpty(t *testing.T) {
+	cfg := Config{}
+	args := PIInvocation(cfg)
+	if hasArg(args, "--agent") {
+		t.Errorf("--agent must not appear when AgentRole is empty; got %v", args)
+	}
+}
+
+// TestPIInvocation_AgentFlagOrder verifies that --agent <role> appears AFTER
+// --extension <path> in the argv. This matters because the extension must
+// be loaded before pi can resolve --agent against the registered flag set
+// (applyExtensionFlagValues runs after resourceLoader.reload). pi's CLI
+// parser is position-agnostic so this is a safety check rather than a
+// load-bearing assertion, but the order helps when reading argv in logs.
+func TestPIInvocation_AgentFlagOrder(t *testing.T) {
+	cfg := Config{AgentRole: "worker"}
+	args := PIInvocation(cfg)
+	var extIdx, agentIdx int = -1, -1
+	for i, a := range args {
+		if a == "--extension" {
+			extIdx = i
+		}
+		if a == "--agent" {
+			agentIdx = i
+		}
+	}
+	if extIdx == -1 || agentIdx == -1 {
+		t.Fatalf("expected both --extension and --agent in args; got %v", args)
+	}
+	if agentIdx < extIdx {
+		t.Errorf("expected --agent to appear after --extension; got --extension at %d, --agent at %d in %v", extIdx, agentIdx, args)
+	}
+}
+
 // hasPair returns true when flag and val appear consecutively in args.
 func hasPair(args []string, flag, val string) bool {
 	for i := 0; i+1 < len(args); i++ {
