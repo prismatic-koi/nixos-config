@@ -781,6 +781,64 @@ The extension calls PI's abort path. The state transition that follows
 ordinary `state_change` frames; `abort` itself produces no acknowledgement
 on this protocol.
 
+### 6.7 `reviewing_state`
+
+Authoritative push of the sidecar's `reviewingInFlight` flag to the
+extension. The extension uses this as the canonical source of truth for
+its `pendingReviewCall` guard, which suppresses `state_change:finished` on
+turn boundaries while a `prism review` is in flight.
+
+```json
+{"type":"reviewing_state","in_flight":true}
+```
+
+- `in_flight` (bool, required) — `true` while the sidecar is awaiting a
+  review-complete prompt for an in-flight review group; `false` once the
+  review has been delivered (or never started).
+
+**Emission sites (sidecar side).**
+
+- Immediately after handshake completion, so a freshly-connected (or
+  reconnecting) extension initialises with the sidecar's current value
+  rather than relying on a per-session-restart guess.
+- Whenever the in-memory `reviewingInFlight` flag transitions to a new
+  value:
+  - The `/review` HTTP handler setting it to `true` after a successful
+    pre-emptive DB write.
+  - The `/prompt` handler clearing it to `false` after a successful
+    synchronous `source: "review-complete"` delivery.
+  - `flushPendingReplay` clearing it to `false` after a buffered
+    review-complete delivery has been re-enqueued post-reconnect.
+
+**Extension side.** On receipt the extension sets
+`pendingReviewCall = (in_flight === true)`. The strict triple-equals
+defaults any malformed / unexpected payload to `false` (release, not
+latch), which is the secure-by-default direction — a missed `in_flight:
+true` produces an extra notification at worst, while a missed `in_flight:
+false` would strand the session as `active` (the #2050 failure shape).
+
+**Why this frame exists (#2050).** Before this frame, the extension set
+`pendingReviewCall` itself by substring-matching `\bprism\s+review\b`
+against every bash `tool_call`. That false-matched on any bash command
+that incidentally contained the literal string (a `gh pr comment` body,
+a `grep` over docs, an `echo` of a commit message), re-latching the
+guard after the genuine review-complete prompt had cleared it. The next
+`turn_end` then suppressed `state_change:finished` forever and the
+worker was stuck `active`. Moving the source of truth to the sidecar
+(which tracks `reviewingInFlight` against its session ledger) eliminates
+the substring class at the root.
+
+**Belt-and-braces.** The `prompt` frame's `source: "review-complete"`
+release path (§6.2) is retained in the extension as defence in depth:
+either clearing path is sufficient on its own.
+
+**Forward-compat note.** This frame was added without a `protocol_version`
+bump, in line with §8.2's additive-frame contract: older extensions skip
+unknown frame types via the default branch in the dispatcher. Sidecar
+and extension ship together via the same Nix package, so the version-skew
+window exists only on a paused/resumed session that crosses a prism
+upgrade boundary.
+
 ## 7. Failure modes
 
 ### 7.1 Sidecar binds before PI starts; extension's first frame is the readiness signal

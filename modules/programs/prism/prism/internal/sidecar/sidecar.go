@@ -2193,6 +2193,18 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		// goroutine so a slow drain cannot block the reader loop.
 		go s.flushPendingReplay()
 
+		// Push the authoritative reviewingInFlight value to the freshly-
+		// connected extension so its pendingReviewCall guard is initialised
+		// from the sidecar's ledger-backed state rather than relying on the
+		// fragile bash-substring detection that was the root cause of #2050.
+		// On a fresh session this is always false; on resume after PI restart
+		// it may legitimately be true (a review group was started before the
+		// restart and has not yet delivered review-complete).
+		s.mu.Lock()
+		reviewingInFlight := s.reviewingInFlight
+		s.mu.Unlock()
+		s.writeReviewingState(reviewingInFlight)
+
 		// --- Inbound frame loop -------------------------------------------
 		cleanShutdown := false
 		for {
@@ -2698,6 +2710,10 @@ func (s *Sidecar) flushPendingReplay() {
 			s.reviewingInFlight = false
 			s.mu.Unlock()
 			s.logger().Printf("sidecar: flushPendingReplay: cleared reviewingInFlight after replayed review-complete enqueue (delivery_id=%s)", d.DeliveryID)
+			// Mirror the in-memory transition on the wire so the PI extension's
+			// pendingReviewCall guard releases in lock-step with the sidecar.
+			// See writeReviewingState's doc comment for #2050 context.
+			s.writeReviewingState(false)
 		}
 	}
 	if len(requeue) > 0 {
@@ -2854,6 +2870,36 @@ func (s *Sidecar) Abort() bool {
 	frame := struct {
 		Type string `json:"type"`
 	}{Type: "abort"}
+	b, _ := json.Marshal(frame)
+	b = append(b, '\n')
+	return s.enqueueHarnessPipeFrame(b)
+}
+
+// writeReviewingState enqueues a reviewing_state frame to the PI extension,
+// telling it the sidecar's authoritative reviewingInFlight value. The extension
+// uses this as the canonical source of truth for its own pendingReviewCall
+// guard, replacing the fragile bash-substring detection that previously set
+// the guard on any tool call containing "prism review" (issue #2050).
+//
+// Emission sites:
+//   - Immediately after handshake completion (so a freshly-connected
+//     extension starts with the correct state, including post-resume).
+//   - Whenever s.reviewingInFlight is mutated to a new value (the /review
+//     handler sets true; the /prompt review-complete handler clears false;
+//     flushPendingReplay clears false after a replayed review-complete frame).
+//
+// MUST be called with s.mu NOT held — enqueueHarnessPipeFrame acquires it
+// internally. A false return is logged-and-dropped; the next transition or
+// handshake will re-assert the correct state, so an isolated drop does not
+// wedge the guard.
+func (s *Sidecar) writeReviewingState(inFlight bool) bool {
+	frame := struct {
+		Type     string `json:"type"`
+		InFlight bool   `json:"in_flight"`
+	}{
+		Type:     "reviewing_state",
+		InFlight: inFlight,
+	}
 	b, _ := json.Marshal(frame)
 	b = append(b, '\n')
 	return s.enqueueHarnessPipeFrame(b)

@@ -253,22 +253,30 @@ func TestMonitorAndRecovery_ExactlyOneDelivery(t *testing.T) {
 	// Give the goroutines a brief settling window.
 	time.Sleep(50 * time.Millisecond)
 
-	// Count frames forwarded to PI.
-	var frames [][]byte
+	// Count frames forwarded to PI. We only care about the prompt-frame
+	// delivery here; the sidecar may legitimately emit other control frames
+	// (e.g. reviewing_state on the in-memory flag flip after delivery, #2050)
+	// alongside the prompt, which are unrelated to the dedup behaviour under
+	// test. Filter to prompt frames only so the assertion remains stable.
+	var promptFrames [][]byte
+	var allFrames [][]byte
 	drainLoop:
 	for {
 		select {
 		case f := <-pipeCh:
-			frames = append(frames, f)
+			allFrames = append(allFrames, f)
+			if strings.Contains(string(f), "\"type\":\"prompt\"") {
+				promptFrames = append(promptFrames, f)
+			}
 		default:
 			break drainLoop
 		}
 	}
 
-	if len(frames) != 1 {
-		t.Errorf("monitor + recovery race: got %d frame(s) forwarded to PI, want exactly 1\n"+
+	if len(promptFrames) != 1 {
+		t.Errorf("monitor + recovery race: got %d prompt frame(s) forwarded to PI, want exactly 1 (all frames: %d)\n"+
 			"Before the F2 fix this would be 2 (different delivery_ids).\n"+
 			"After the F2 fix both paths use RecoveryDeliveryID(%s) and the sidecar dedup drops the second.",
-			len(frames), groupID)
+			len(promptFrames), len(allFrames), groupID)
 	}
 }

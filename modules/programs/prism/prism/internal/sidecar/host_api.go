@@ -896,6 +896,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					s.mu.Lock()
 					s.reviewingInFlight = false
 					s.mu.Unlock()
+					// Push the reviewing-cleared signal to the PI extension so
+					// its pendingReviewCall guard is released even if the
+					// inbound prompt frame is missed by the extension's own
+					// clearing path (issue #2050). Belt-and-braces: the
+					// prompt-frame clear at extensions/prism.ts still applies.
+					s.writeReviewingState(false)
 				}
 				writeJSON(w, http.StatusOK, map[string]string{})
 				return
@@ -1360,6 +1366,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			s.mu.Lock()
 			s.reviewingInFlight = true
 			s.mu.Unlock()
+			// Push the authoritative reviewing-state transition to the PI
+			// extension so its pendingReviewCall guard is set in lock-step with
+			// the sidecar's ledger-backed flag (issue #2050). A dropped frame
+			// here is non-fatal: the handshake-time emission and any subsequent
+			// transition will re-assert the correct state.
+			s.writeReviewingState(true)
 		}
 
 		var req struct {

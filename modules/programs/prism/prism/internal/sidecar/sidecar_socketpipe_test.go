@@ -108,10 +108,49 @@ func dialAndHandshake(t *testing.T, sockPath string) (net.Conn, map[string]any) 
 	}
 	sendJSON(t, conn, hello)
 
-	// Read hello_ack.
-	ack := readJSON(t, conn)
+	// Read hello_ack and post-handshake reviewing_state through a single
+	// shared buffered reader to avoid the multi-bufio data-loss footgun
+	// (if both frames arrive in one syscall, a fresh bufio per readJSON call
+	// would discard the second frame). The post-handshake reviewing_state
+	// frame initialises the extension's pendingReviewCall guard from the
+	// authoritative sidecar-side flag (issue #2050).
+	rd := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	defer conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+
+	ackLine, ackErr := rd.ReadBytes('\n')
+	if ackErr != nil {
+		t.Fatalf("hello_ack read: %v", ackErr)
+	}
+	var ack map[string]any
+	if err := json.Unmarshal(ackLine, &ack); err != nil {
+		t.Fatalf("hello_ack unmarshal: %v", err)
+	}
 	if ack["type"] != "hello_ack" {
 		t.Fatalf("expected hello_ack, got %q", ack["type"])
+	}
+
+	rsLine, rsErr := rd.ReadBytes('\n')
+	if rsErr != nil {
+		t.Fatalf("reviewing_state read: %v", rsErr)
+	}
+	var rs map[string]any
+	if err := json.Unmarshal(rsLine, &rs); err != nil {
+		t.Fatalf("reviewing_state unmarshal: %v", err)
+	}
+	if rs["type"] != "reviewing_state" {
+		t.Fatalf("expected reviewing_state after hello_ack, got %q", rs["type"])
+	}
+
+	// Push any extra buffered bytes back onto the connection so the caller's
+	// own reader sees the next frame intact. bufio.Reader.Buffered() returns
+	// data we read into the bufio buffer but did not consume; if non-zero we
+	// must surface it to the caller. The simplest correct path is to refuse
+	// to leak buffered bytes: assert they are zero. Test-side writers feed
+	// frames synchronously after the handshake, so in practice there is
+	// nothing left in the bufio buffer beyond the two frames we read.
+	if rd.Buffered() != 0 {
+		t.Fatalf("dialAndHandshake: %d unconsumed bytes in bufio buffer after handshake — caller would lose data", rd.Buffered())
 	}
 	return conn, ack
 }

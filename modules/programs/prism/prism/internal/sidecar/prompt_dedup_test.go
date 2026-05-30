@@ -450,10 +450,20 @@ func TestFlushPendingReplay_DuplicateDeliveryIDDropsSecond(t *testing.T) {
 	sc.flushPendingReplay()
 	time.Sleep(10 * time.Millisecond)
 
-	frames := drainFrames(pipeCh)
+	allFrames := drainFrames(pipeCh)
+	// Filter to prompt frames only. The post-#2050 sidecar may also emit a
+	// reviewing_state frame on the reviewingInFlight flip after the
+	// review-complete entry is enqueued; that is orthogonal to the dedup
+	// behaviour under test.
+	var frames [][]byte
+	for _, f := range allFrames {
+		if strings.Contains(string(f), "\"type\":\"prompt\"") {
+			frames = append(frames, f)
+		}
+	}
 	if len(frames) != 1 {
-		t.Fatalf("flushPendingReplay with duplicate delivery_id: want 1 frame (first forwarded, second dropped), got %d: %v",
-			len(frames), framesForLog(frames))
+		t.Fatalf("flushPendingReplay with duplicate delivery_id: want 1 prompt frame (first forwarded, second dropped), got %d (all frames: %v)",
+			len(frames), framesForLog(allFrames))
 	}
 	if !strings.Contains(string(frames[0]), "monitor delivery") {
 		t.Errorf("first frame = %q, want it to contain first entry's text", frames[0])
