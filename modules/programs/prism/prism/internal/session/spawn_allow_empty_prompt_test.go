@@ -45,6 +45,7 @@ func TestSpawnSession_AllowEmptyPrompt_LayoutFull_Accepted(t *testing.T) {
 		IsolationMode:    "host",
 		HarnessName:      "pi",
 		AllowEmptyPrompt: true,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)
@@ -74,7 +75,8 @@ func TestSpawnSession_AllowEmptyPrompt_LayoutFull_OptInRequired(t *testing.T) {
 		Layout:        LayoutFull,
 		IsolationMode: "host",
 		HarnessName:   "pi",
-		// AllowEmptyPrompt deliberately omitted (defaults to false).
+		// AllowEmptyPrompt deliberately omitted (defaults to false).,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)

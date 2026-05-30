@@ -288,6 +288,32 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		return fmt.Errorf("spawn session: Prompt is required for layout %d (LayoutFull or LayoutAgentOnly) — an agent pane cannot start without a prompt", opts.Layout)
 	}
 
+	// Fail-fast guard for the host-mode pi launch (#2065 edge-case AC).
+	// Mirrors the container-path guard at cmd/agent_run.go:730: refuse to
+	// spawn rather than silently launch pi without --extension. Container
+	// modes (bwrap / sandbox-exec) route through PIInvocation which has its
+	// own equivalent check; this guard is host-mode only and is suppressed
+	// for non-pi harnesses (the prism extension is pi-specific).
+	//
+	// LayoutBare and LayoutScratchpad never reach here — SpawnSession is
+	// only called for LayoutFull and LayoutAgentOnly. Both of those layouts
+	// launch an agent pane and therefore require the extension to be wired.
+	//
+	// The validator reads IsolationMode via effectiveIsolationMode, which
+	// defaults empty to "host". Use resolveLayoutIsolationMode here so
+	// LayoutAgentOnly callers that leave IsolationMode empty (the review
+	// fan-out shape on machines whose default is bwrap) are correctly
+	// resolved to the machine default before the host check fires — same
+	// resolution path the actual launch uses below at spawnAgentOnlyLayout.
+	validationOpts := Opts{
+		IsolationMode:  resolveLayoutIsolationMode(opts),
+		HarnessName:    opts.HarnessName,
+		PIExtensionDir: opts.PIExtensionDir,
+	}
+	if err := ValidatePILaunchOpts(validationOpts); err != nil {
+		return fmt.Errorf("spawn session %q: %w", opts.SessionName, err)
+	}
+
 	// Open the per-session startup log as the very first step (#1051 Piece B).
 	// Doing this before any other work means the per-session run directory
 	// exists from the moment the spawn begins, so any later failure has a

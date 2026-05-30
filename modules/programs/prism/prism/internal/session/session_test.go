@@ -271,7 +271,12 @@ func TestBuildDirectAgentCmd_PIExtensionFlag(t *testing.T) {
 		}
 	})
 
-	t.Run("pi harness with empty PIExtensionDir omits --extension (no stray flag with no value)", func(t *testing.T) {
+	t.Run("pi harness with empty PIExtensionDir: low-level emitter omits the flag (production paths are guarded by ValidatePILaunchOpts — see TestValidatePILaunchOpts)", func(t *testing.T) {
+		// buildDirectAgentCmd is a pure string emitter; the fail-fast policy
+		// for the empty-PIExtensionDir case lives one level up in
+		// ValidatePILaunchOpts (called from SpawnSession and Create at
+		// LayoutFull). Keeping the emitter pure simplifies test fixtures and
+		// matches the host-mode pi-resume helper's shape (also pure).
 		opts := Opts{
 			HarnessName:    "pi",
 			Agent:          "worker",
@@ -279,7 +284,7 @@ func TestBuildDirectAgentCmd_PIExtensionFlag(t *testing.T) {
 		}
 		cmd := buildDirectAgentCmd(opts)
 		if strings.Contains(cmd, "--extension") {
-			t.Errorf("empty PIExtensionDir must not emit --extension; got: %q", cmd)
+			t.Errorf("empty PIExtensionDir must not emit a stray --extension at the builder level; got: %q", cmd)
 		}
 	})
 
@@ -330,6 +335,135 @@ func TestPIExtensionHostPath(t *testing.T) {
 	t.Run("empty dir returns empty", func(t *testing.T) {
 		if got := container.PIExtensionHostPath(""); got != "" {
 			t.Errorf("expected empty for empty dir; got %q", got)
+		}
+	})
+}
+
+// TestValidatePILaunchOpts covers the #2065 fail-fast edge-case AC: host-mode
+// pi launches must refuse to spawn when cfg.PIExtensionDir is empty, with
+// a clear error message mirroring the container-path guard at
+// cmd/agent_run.go:730. The check is the policy chokepoint for the
+// extension-must-be-loaded invariant on host mode; ValidatePILaunchOpts is
+// called from SpawnSession (all spawn-side entry points) and from Create
+// when Layout == LayoutFull (switch / restore entry points).
+func TestValidatePILaunchOpts(t *testing.T) {
+	t.Run("host mode + pi harness + empty PIExtensionDir: rejects with clear error", func(t *testing.T) {
+		err := ValidatePILaunchOpts(Opts{
+			IsolationMode:  "host",
+			HarnessName:    "pi",
+			PIExtensionDir: "",
+		})
+		if err == nil {
+			t.Fatalf("expected error for host-mode pi with empty PIExtensionDir; got nil")
+		}
+		// Must mention piExtensionDir so an operator can grep for the
+		// recommendation. Mirrors cmd/agent_run.go:730.
+		if !strings.Contains(err.Error(), "piExtensionDir") {
+			t.Errorf("expected error to reference 'piExtensionDir'; got: %v", err)
+		}
+	})
+
+	t.Run("host mode + empty harness (defaults to pi) + empty PIExtensionDir: also rejects", func(t *testing.T) {
+		err := ValidatePILaunchOpts(Opts{
+			IsolationMode:  "host",
+			HarnessName:    "",
+			PIExtensionDir: "",
+		})
+		if err == nil {
+			t.Errorf("expected error for empty harness (defaults to pi); got nil")
+		}
+	})
+
+	t.Run("host mode + pi harness + non-empty PIExtensionDir: accepts", func(t *testing.T) {
+		err := ValidatePILaunchOpts(Opts{
+			IsolationMode:  "host",
+			HarnessName:    "pi",
+			PIExtensionDir: "/nix/store/abc-prism-extension",
+		})
+		if err != nil {
+			t.Errorf("expected nil for properly-configured host-mode pi; got: %v", err)
+		}
+	})
+
+	t.Run("empty isolation (defaults to host) + pi + empty PIExtensionDir: rejects", func(t *testing.T) {
+		// effectiveIsolationMode defaults empty IsolationMode to "host",
+		// so the guard MUST fire even when the caller leaves the mode unset.
+		err := ValidatePILaunchOpts(Opts{
+			IsolationMode:  "",
+			HarnessName:    "pi",
+			PIExtensionDir: "",
+		})
+		if err == nil {
+			t.Errorf("expected error when IsolationMode is empty (defaults to host); got nil")
+		}
+	})
+
+	t.Run("container modes pass the check (container paths have their own guard at agent_run.go:730)", func(t *testing.T) {
+		for _, mode := range []string{"bwrap", "sandbox-exec", "podman"} {
+			err := ValidatePILaunchOpts(Opts{
+				IsolationMode:  mode,
+				HarnessName:    "pi",
+				PIExtensionDir: "",
+			})
+			if err != nil {
+				t.Errorf("mode=%q: expected nil (container paths route through PIInvocation which has its own guard); got: %v", mode, err)
+			}
+		}
+	})
+
+	t.Run("non-pi harness in host mode passes the check (extension is pi-specific)", func(t *testing.T) {
+		// The prism PI extension is a pi-only artefact; a non-pi harness
+		// (e.g. a hypothetical opencode-in-host-mode) must not be blocked
+		// for missing PIExtensionDir — it does not load the extension at all.
+		err := ValidatePILaunchOpts(Opts{
+			IsolationMode:  "host",
+			HarnessName:    "opencode",
+			PIExtensionDir: "",
+		})
+		if err != nil {
+			t.Errorf("expected nil for non-pi harness; got: %v", err)
+		}
+	})
+}
+
+// TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir confirms that the
+// SpawnSession-parallel switch/restore path (which goes through Create with
+// LayoutFull) also fails fast on the empty-PIExtensionDir / host-mode-pi
+// combination, not just SpawnSession. The non-LayoutFull layouts must NOT
+// be blocked because they don't launch an agent pane.
+func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("LayoutFull + host + pi + empty PIExtensionDir: rejects", func(t *testing.T) {
+		err := Create("unit-test-2065-full", dir, Opts{
+			Layout:         LayoutFull,
+			IsolationMode:  "host",
+			HarnessName:    "pi",
+			PIExtensionDir: "",
+		})
+		if err == nil {
+			t.Fatalf("expected error from Create for empty PIExtensionDir on LayoutFull; got nil")
+		}
+		if !strings.Contains(err.Error(), "piExtensionDir") {
+			t.Errorf("expected error to reference 'piExtensionDir'; got: %v", err)
+		}
+	})
+
+	t.Run("LayoutBare + empty PIExtensionDir: accepted (no agent pane to misconfigure)", func(t *testing.T) {
+		// LayoutBare is the dashboard's dead-session recovery path and
+		// the scratchpad fallback in restore. Both run with no agent.
+		// They legitimately leave PIExtensionDir empty and must NOT be
+		// blocked by the guard.
+		name := "unit-test-2065-bare"
+		defer tmux.KillSession(name)
+		err := Create(name, dir, Opts{
+			Layout:         LayoutBare,
+			IsolationMode:  "host",
+			HarnessName:    "pi",
+			PIExtensionDir: "",
+		})
+		if err != nil {
+			t.Errorf("LayoutBare must not be blocked by the PIExtensionDir guard; got: %v", err)
 		}
 	})
 }

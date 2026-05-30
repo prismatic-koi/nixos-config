@@ -286,6 +286,7 @@ func TestSpawnSession_LostPromptRace_StrictGateFiresAndCleansUp(t *testing.T) {
 		// Short timeout so the test runs quickly; the gate trips because
 		// only a bare-active state_change will arrive (no turn_start).
 		ReadinessTimeout: 600 * time.Millisecond,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	// Inject the symptom-2 precondition partway through the wait: the
@@ -345,6 +346,7 @@ func TestSpawnSession_LostPromptRace_TurnStartUnblocksGate(t *testing.T) {
 		// Generous timeout; the goroutine below will write turn_start
 		// well before it expires.
 		ReadinessTimeout: 5 * time.Second,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	go func() {
@@ -389,6 +391,7 @@ func TestSpawnSession_NoPrompt_LayoutAgentOnly_Rejected(t *testing.T) {
 		IsolationMode:    "host",
 		HarnessName:      "pi",
 		ReadinessTimeout: 2 * time.Second,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)

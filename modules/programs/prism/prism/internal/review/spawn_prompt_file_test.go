@@ -279,6 +279,11 @@ func TestSpawnReviewAgent_LargePrompt_HostMode(t *testing.T) {
 		Prompt:        prompt,
 		Layout:        session.LayoutAgentOnly,
 		IsolationMode: "host", // the previously-broken cell
+		// PIExtensionDir is required for host-mode pi launches
+		// (#2065 fail-fast guard — see ValidatePILaunchOpts). The path
+		// itself is never read; it just satisfies the guard so the test
+		// can exercise the #1195 prompt-file regression unchanged.
+		PIExtensionDir: "/test/prism-pi-extension",
 	}
 
 	// (a) Spawn must succeed. Before the #1195 fix, this call would trip
