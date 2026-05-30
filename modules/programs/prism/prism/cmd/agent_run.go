@@ -667,10 +667,14 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 //  1. Loads profiles.json and resolves the active profile.
 //  2. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
-//  3. Calls StagePIAgentConfigDir to create the per-session staging directory.
-//     Records the host/sandbox paths on ctrCfg so bwrap can bind-mount the
-//     directory and set PI_CODING_AGENT_DIR. The role system-prompt is injected
-//     at runtime by the prism PI extension, not staged here (design #2031).
+//  3. Calls EnsurePIAgentConfigDir to resolve the shared host ~/.pi/agent path
+//     (creating it if absent on a fresh install) and records the host/sandbox
+//     paths on ctrCfg so bwrap can bind-mount the directory and set
+//     PI_CODING_AGENT_DIR. The shared mount carries settings.json, themes/,
+//     AGENTS.md, skills/, and auth.json — all identical across sessions —
+//     since design #2031 PR3 (#2034) collapsed the per-session staging dir.
+//     The role system-prompt is injected at runtime by the prism PI extension,
+//     not staged here.
 //  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  5. Copies PIProvider, PIModel, PIThinking from the profile slot.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config) error {
@@ -697,13 +701,26 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	slot, _ := config.SlotForRole(pf, profileName, agentRole)
 
-	// Stage the PI agent config directory before bwrap launches. The role
-	// system-prompt is no longer staged here — it is injected at runtime by the
-	// prism PI extension (before_agent_start) from ~/.config/prism/agents/<role>.md
-	// (design #2031, PR2 #2033).
-	hostDir, sandboxDir, err := container.StagePIAgentConfigDir(sessionName)
+	// Resolve the shared PI agent config directory (~/.pi/agent on the host)
+	// and the canonical in-sandbox path (/run/prism/pi-agent). Bwrap will
+	// bind-mount the host dir READ-WRITE at the sandbox path; writes to
+	// auth.json reach the host file via that same parent bind. RW (not RO)
+	// is load-bearing for OAuth refresh — proper-lockfile mkdir's
+	// auth.json.lock on the parent dir, which would EPERM under an RO mount
+	// (see pi_invocation.go top-of-file for the full rationale). A redundant
+	// host-path RW bind of auth.json is also retained so $HOME-resolving
+	// call paths inside the sandbox keep working. On sandbox-exec, the
+	// in-sandbox path is overridden in the dispatcher to equal the host
+	// path because sandbox-exec shares the host filesystem. Design #2031,
+	// PR3 (#2034).
+	//
+	// EnsurePIAgentConfigDir creates the host dir if absent so a fresh install
+	// does not fail the spawn. sessionName is intentionally unused here — the
+	// shared mount is identical for every session.
+	_ = sessionName
+	hostDir, sandboxDir, err := container.EnsurePIAgentConfigDir()
 	if err != nil {
-		return fmt.Errorf("pi: stage agent config dir: %w", err)
+		return fmt.Errorf("pi: resolve agent config dir: %w", err)
 	}
 	ctrCfg.PIAgentConfigHostDir = hostDir
 	ctrCfg.PIAgentConfigSandboxDir = sandboxDir

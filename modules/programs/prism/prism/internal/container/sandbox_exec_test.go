@@ -1371,8 +1371,11 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_PiAgentDirNotSymlinked verifies that
-// PrepareSandboxExecHome no longer creates a ~/.pi/agent symlink — auth files
-// are now copied into the staging dir by StagePIAgentConfigDir instead.
+// PrepareSandboxExecHome does NOT create a ~/.pi/agent entry under the
+// staging HOME. Since #2034 the in-sandbox PI_CODING_AGENT_DIR resolves
+// directly to the host ~/.pi/agent via the SBPL (subpath ~/.pi/agent) RW
+// allow for pi sessions; no staging-HOME-relative symlink is required or
+// desirable.
 func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1392,11 +1395,11 @@ func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// No symlink must be created at <stagingHome>/.pi/agent — the staging dir
-	// approach copies files via StagePIAgentConfigDir instead.
+	// No symlink must be created at <stagingHome>/.pi/agent — PI reads the
+	// host ~/.pi/agent directly via the SBPL allow (since #2034).
 	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
 	if _, err := os.Lstat(symlinkPath); err == nil {
-		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (files are copied by StagePIAgentConfigDir)")
+		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (PI reads the host dir directly via the SBPL subpath allow)")
 	}
 }
 
