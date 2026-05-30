@@ -128,13 +128,25 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Keybind carve-out (issue #2063 — parity with the host-side carve-out
+	// added for issue #2012). The tmux Prefix+a keybind invokes `prism spawn
+	// --attach` with no --prompt because the operator types the initial
+	// prompt to the live agent after the popup attaches. The keybind sets
+	// PRISM_SPAWN_PATH (the `fromKeybind` discriminator), so an empty prompt
+	// on that path is legitimate and must be allowed through the proxy too.
+	//
+	// Without this, every Prefix+a popup launched from a tmux server whose
+	// environment contains PRISM_HOST_API hits proxySpawn and flash-closes
+	// on the empty-prompt reject below — exactly the symptom #2012 reported
+	// and #2016 fixed only on the host-side runSpawn path.
+	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
 	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
 	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
 	// stdin produces a session that is created successfully on every
 	// observable surface but never receives a prompt and sits idle forever.
 	// The host-API /spawn handler has a defence-in-depth check too (layer 3);
 	// this surfaces the error in the caller's stderr instead of an HTTP 400.
-	if promptFlag == "" {
+	if promptFlag == "" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}
 
@@ -153,6 +165,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			"variant":                variantFlag,
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			"abtest":                 abtestFlag,
+		}
+		// Forward the keybind discriminator so the host-side /spawn handler
+		// permits an empty prompt on this request. The layer-3 handler still
+		// rejects empty prompts from arbitrary HTTP callers that omit this
+		// field — see issue #2063.
+		if fromKeybind {
+			body["from_keybind"] = true
 		}
 		// Only forward "harness" when explicitly set. When absent, the host-side
 		// spawn derives the harness from the profile slot as designed (#1421).
@@ -200,6 +219,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"variant":                variantFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 		"reuse":                  reuseFlag,
+	}
+	// Forward the keybind discriminator so the host-side /spawn handler
+	// permits an empty prompt on this request. The layer-3 handler still
+	// rejects empty prompts from arbitrary HTTP callers that omit this
+	// field — see issue #2063.
+	if fromKeybind {
+		body["from_keybind"] = true
 	}
 	if len(modelOverrideFlag) > 0 {
 		modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
@@ -513,7 +539,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 					if broken {
 						return fmt.Errorf(
 							"prism spawn --reuse: existing session %q is in a broken state (%s)\n"+
-							"run: prism cleanup --yes --session %s",
+								"run: prism cleanup --yes --session %s",
 							existing.SessionName, existing.State, existing.SessionName)
 					}
 					// Healthy session — emit its details and exit 0.
@@ -532,8 +558,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				// No --reuse: refuse with a structured error.
 				return fmt.Errorf(
 					"prism spawn: branch %q already has an active session %q\n"+
-					"to clean it up: prism cleanup --yes --session %s\n"+
-					"to reuse it: prism spawn --branch %s --reuse",
+						"to clean it up: prism cleanup --yes --session %s\n"+
+						"to reuse it: prism spawn --branch %s --reuse",
 					branch, existing.SessionName, existing.SessionName, branch)
 			}
 		}
@@ -687,8 +713,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
-		ForceFresh:       true,
-		Headless:         headless,
+		ForceFresh: true,
+		Headless:   headless,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions
 		// (defence in depth — denylist prevents writes at the bash level;
 		// read-only mount ensures even a denylist gap cannot modify the repo).
@@ -1344,7 +1370,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
 		WorktreeReadOnly: agentRole == "investigate",
 		// PIExtensionDir for host-mode pi launches (#2065).
-		PIExtensionDir: a.cfg.PIExtensionDir,
+		PIExtensionDir:   a.cfg.PIExtensionDir,
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {

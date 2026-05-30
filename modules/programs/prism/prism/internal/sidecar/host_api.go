@@ -1032,6 +1032,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Reuse                 bool     `json:"reuse"`
 			ModelVariantOverrides string   `json:"model_variant_overrides"` // JSON-encoded map[string]string; see #1263
 			Abtest                []string `json:"abtest"`                  // two-element array of profile names; see #1330
+			// FromKeybind discriminates a tmux Prefix+a (keybind) spawn from
+			// an arbitrary HTTP caller. When true, an empty prompt is
+			// permitted — the operator types the initial prompt to the live
+			// agent after the popup attaches. The proxySpawn CLI path sets
+			// this when PRISM_SPAWN_PATH is set in its own environment. See
+			// issues #2012 (host-side carve-out) and #2063 (proxy parity).
+			FromKeybind bool `json:"from_keybind"`
 		}
 		// /spawn body cap: default 1 MiB (issue #1848). DisallowUnknownFields
 		// is applied via decodeRequestJSON — already strict on this endpoint.
@@ -1060,7 +1067,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// a malformed or alternate client that POSTs {"prompt":""} would otherwise
 		// produce a session that comes up successfully but sits idle forever
 		// because no --prompt argument is forwarded to the host-side prism spawn.
-		if req.Prompt == "" {
+		//
+		// Keybind carve-out (issue #2063): when the request carries
+		// from_keybind=true the empty prompt is intentional and the spawn
+		// proceeds. The carve-out fires only on this explicit discriminator,
+		// so arbitrary HTTP callers that omit the field still hit this guard.
+		if req.Prompt == "" && !req.FromKeybind {
 			writeError(w, http.StatusBadRequest, "prompt is required — the request body must include a non-empty \"prompt\" field")
 			return
 		}
@@ -1228,6 +1240,30 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+		// Issue #2063: when the request was initiated by the tmux Prefix+a
+		// keybind, propagate the discriminator to the host-side prism spawn
+		// via PRISM_SPAWN_PATH. The host-side runSpawn already reads that
+		// env var to recognise a keybind spawn (`fromKeybind`) and skip the
+		// empty-prompt guard — reusing it here keeps a single discriminator
+		// across both code paths instead of inventing a parallel CLI flag.
+		// The value itself is informational only; runSpawn just checks for
+		// non-empty. We derive it from the sidecar's own worktree so any
+		// downstream code that resolves the path lands on the coordinator's
+		// repo, but the empty-prompt carve-out is the only behaviour it
+		// gates on the host side.
+		if req.FromKeybind {
+			// runSpawn only checks `os.Getenv("PRISM_SPAWN_PATH") != ""`, so
+			// any non-empty value enables the carve-out. Prefer the sidecar's
+			// own worktree path when populated so any downstream consumer that
+			// resolves the path lands on a real directory; fall back to a
+			// sentinel marker if it is unset (defence in depth — production
+			// sidecars always have Worktree populated).
+			spawnPath := s.cfg.Worktree
+			if spawnPath == "" {
+				spawnPath = "keybind"
+			}
+			cmd.Env = append(os.Environ(), "PRISM_SPAWN_PATH="+spawnPath)
+		}
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
@@ -2150,14 +2186,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Prompt      string `json:"prompt"`
-			To          string `json:"to,omitempty"`
-			From        string `json:"from,omitempty"`
+			Prompt string `json:"prompt"`
+			To     string `json:"to,omitempty"`
+			From   string `json:"from,omitempty"`
 			// JSON forwards the --json flag to the host-side `prism escalate`
 			// child so its stdout carries the JSON envelope (and stderr the
 			// human mirror). The proxy on the container side then writes the
 			// captured streams verbatim to its own stdout/stderr. See #2018.
-			JSON        bool   `json:"json,omitempty"`
+			JSON bool `json:"json,omitempty"`
 			// DedupWindow forwards the hidden --dedup-window flag for tests
 			// and operator overrides. Empty string falls back to the default.
 			DedupWindow string `json:"dedup_window,omitempty"`
@@ -2961,8 +2997,6 @@ func isPipeConnected(s *Sidecar) bool {
 	s.mu.Unlock()
 	return ch != nil
 }
-
-
 
 // resolveRoleForSession returns the root_agent_name (role) for targetSess, or
 // a non-empty skipStatus string when the session should be skipped.

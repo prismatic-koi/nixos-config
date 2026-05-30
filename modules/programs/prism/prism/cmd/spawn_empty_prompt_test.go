@@ -13,8 +13,11 @@ package cmd
 // is gated on the discriminator only.
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -105,6 +108,153 @@ func TestRunSpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
 	// (stdin), or --prompt-file <path>".
 	if !strings.Contains(err.Error(), "a prompt is required") {
 		t.Errorf("error %q does not contain 'a prompt is required'", err.Error())
+	}
+}
+
+// TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded verifies the issue
+// #2063 parity gap: when proxySpawn is invoked with PRISM_HOST_API set,
+// PRISM_SPAWN_PATH set (the keybind discriminator), and no prompt, the
+// proxy must NOT return emptyPromptError before the round-trip. Instead
+// it must POST the request to the host API with from_keybind=true so the
+// host-side handler honours the carve-out.
+//
+// Without the fix from #2063, this test fails at the layer-1+2 guard in
+// proxySpawn ("a prompt is required") before the HTTP request is ever made,
+// which is exactly the tmux Prefix+a flash-close symptom.
+func TestProxySpawn_KeybindCarveOut_EmptyPromptForwarded(t *testing.T) {
+	type spawnReq struct {
+		Branch      string `json:"branch"`
+		Prompt      string `json:"prompt"`
+		FromKeybind bool   `json:"from_keybind"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spawn" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		var req spawnReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@20260101T1200"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	// PRISM_SPAWN_PATH is the keybind discriminator. With it set and no
+	// --prompt, the proxy must forward from_keybind=true rather than
+	// rejecting at the layer-1+2 guard.
+	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
+
+	cmd := buildSpawnCmdForEmptyPromptTest(t)
+	// No --prompt set; no --branch set — mirrors the tmux Prefix+a invocation.
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		// The error must NOT be the empty-prompt rejection — anything else
+		// (e.g. an HTTP-level oddity) would be a separate failure, but a
+		// successful HTTP round-trip is what the AC requires.
+		if strings.Contains(err.Error(), "a prompt is required") ||
+			strings.Contains(err.Error(), "empty string — supply a non-empty prompt") {
+			t.Fatalf("proxySpawn returned empty-prompt error despite PRISM_SPAWN_PATH set: %v", err)
+		}
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Prompt != "" {
+			t.Errorf("prompt = %q, want empty (keybind path forwards empty prompt)", req.Prompt)
+		}
+		if !req.FromKeybind {
+			t.Errorf("from_keybind = false, want true (keybind discriminator must be forwarded)")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for /spawn request — proxySpawn likely errored before the round-trip")
+	}
+}
+
+// TestProxySpawn_NoKeybind_EmptyPromptStillRejected verifies the security AC:
+// when PRISM_HOST_API is set but PRISM_SPAWN_PATH is NOT set, an empty prompt
+// must still be rejected at the proxy boundary (layer 1+2) — the carve-out
+// fires only on the keybind discriminator. The host-API request must never
+// be made.
+func TestProxySpawn_NoKeybind_EmptyPromptStillRejected(t *testing.T) {
+	reqCh := make(chan struct{}, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		reqCh <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"should-not-happen"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	// PRISM_SPAWN_PATH explicitly unset — not a keybind invocation.
+	t.Setenv("PRISM_SPAWN_PATH", "")
+
+	cmd := buildSpawnCmdForEmptyPromptTest(t)
+	// No --prompt set.
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("proxySpawn returned nil; expected empty-prompt rejection")
+	}
+	if !strings.Contains(err.Error(), "a prompt is required") {
+		t.Errorf("error %q does not contain 'a prompt is required'", err.Error())
+	}
+
+	select {
+	case <-reqCh:
+		t.Fatal("host-API was contacted; layer-1+2 guard must reject before the round-trip")
+	case <-time.After(100 * time.Millisecond):
+		// expected — no request reached the server
+	}
+}
+
+// TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded verifies the
+// edge-case AC: when BOTH PRISM_SPAWN_PATH and --prompt are set, the
+// supplied prompt is forwarded verbatim (the carve-out does not swallow
+// it). from_keybind is still set true so the host knows the call origin.
+func TestProxySpawn_KeybindCarveOut_SuppliedPromptForwarded(t *testing.T) {
+	type spawnReq struct {
+		Prompt      string `json:"prompt"`
+		FromKeybind bool   `json:"from_keybind"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		var req spawnReq
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@x"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+	t.Setenv("PRISM_SPAWN_PATH", t.TempDir())
+
+	cmd := buildSpawnCmdForEmptyPromptTest(t)
+	_ = cmd.Flags().Set("prompt", "explicit prompt from keybind")
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.Prompt != "explicit prompt from keybind" {
+			t.Errorf("prompt = %q, want %q (carve-out must not swallow a supplied prompt)",
+				req.Prompt, "explicit prompt from keybind")
+		}
+		if !req.FromKeybind {
+			t.Errorf("from_keybind = false, want true (discriminator forwarded whenever PRISM_SPAWN_PATH set)")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for /spawn request")
 	}
 }
 

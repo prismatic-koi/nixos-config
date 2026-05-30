@@ -1433,6 +1433,9 @@ func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Clear PRISM_SPAWN_PATH so the keybind carve-out (#2063) does not fire —
+	// this test exercises the non-keybind empty-prompt rejection.
+	t.Setenv("PRISM_SPAWN_PATH", "")
 
 	// Write an empty prompt file.
 	dir := t.TempDir()
@@ -1479,6 +1482,9 @@ func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Clear PRISM_SPAWN_PATH so the keybind carve-out (#2063) does not fire —
+	// this test exercises the non-keybind empty-prompt rejection.
+	t.Setenv("PRISM_SPAWN_PATH", "")
 
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
@@ -1514,6 +1520,9 @@ func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Clear PRISM_SPAWN_PATH so the keybind carve-out (#2063) does not fire —
+	// this test exercises the non-keybind empty-prompt rejection.
+	t.Setenv("PRISM_SPAWN_PATH", "")
 
 	// Redirect os.Stdin to an empty file for the duration of the test.
 	empty, err := os.CreateTemp(t.TempDir(), "empty-stdin")
