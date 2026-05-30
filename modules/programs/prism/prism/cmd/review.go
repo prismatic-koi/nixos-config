@@ -193,6 +193,20 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
+	// Pre-flight PR-existence/state gate (#2040). Runs FIRST — before the
+	// rebase gate — because it is cheaper (one `gh pr view`, no fetch) and
+	// more fundamental (no point rebasing onto a PR that does not exist).
+	// On any non-OPEN outcome (missing / CLOSED / MERGED / transient gh
+	// error) it returns a *review.PRStateError with a ready-to-display Msg.
+	// Like the rebase gate, this check does NOT spawn any agents and does
+	// NOT touch the prism DB, so a fast-fail here cannot register a review
+	// group or move the review-cycle counter. Transient gh errors are
+	// surfaced distinctly from "PR does not exist" — we never silently
+	// proceed to spawn agents against an unverified target.
+	if prStateErr := review.CheckPRState(prNumber); prStateErr != nil {
+		return prStateErr
+	}
+
 	// Pre-flight rebase gate (#1518). Runs BEFORE any review-agent sessions
 	// are spawned and BEFORE any DB rows are written for this round, so a
 	// gate failure (refusal, fetch failure, conflict abort, missing upstream)
