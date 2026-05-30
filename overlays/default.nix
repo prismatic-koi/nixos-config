@@ -89,17 +89,17 @@ rec {
           newSrc = prev.fetchFromGitHub {
             owner = "earendil-works";
             repo = "pi";
-            tag = "v0.77.0";
-            hash = "sha256-PJyhLWfqoPjHoYl4pKJVD3uMD5YjQB5YIk5mBZvGi8E=";
+            tag = "v0.78.0";
+            hash = "sha256-Cw+W5w6yuL+cH+JfgCbEwiyeXloMb7yFd46TXJPZGTg=";
           };
         in
         prev.pi-coding-agent.overrideAttrs (old: {
-          version = "0.77.0";
+          version = "0.78.0";
           src = newSrc;
           npmDeps = prev.fetchNpmDeps {
             inherit (old) npmWorkspace;
             src = newSrc;
-            hash = "sha256-X0qMLqAi5pgrtTw5+DfSPsgIEngUnHwGxqYE6PL8NJU=";
+            hash = "sha256-TxMiT7nJqLZRXKFoxb4FpsETGe3I99qU7olTgNsoQd4=";
           };
           # Upstream nixpkgs' postInstall hard-codes the old
           # @mariozechner/* workspace names; in v0.75.0 the monorepo
