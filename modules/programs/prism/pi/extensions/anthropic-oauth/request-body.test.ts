@@ -110,7 +110,12 @@ describe("buildRequestBody — adaptive thinking (forceAdaptiveThinking)", () =>
     assert.deepEqual(body.output_config, { effort: "low" })
   })
 
-  it("honours the model's thinkingLevelMap (xhigh → 'xhigh' for opus-4-7/4-8)", () => {
+  it("honours the model's thinkingLevelMap (xhigh → 'xhigh' for opus-4-8)", () => {
+    // Issue #2053: the registry ships opus-4-8 with
+    // thinkingLevelMap: {"xhigh":"xhigh"}. Before the projection in
+    // index.ts::getAnthropicModels propagated thinkingLevelMap, this fell
+    // through to the default mapping ("high"). After the fix the resolved
+    // effort matches the registry.
     const body = buildRequestBody(
       makeAdaptiveModel(), // thinkingLevelMap: { xhigh: "xhigh" }
       makeContext(),
@@ -120,7 +125,27 @@ describe("buildRequestBody — adaptive thinking (forceAdaptiveThinking)", () =>
     assert.deepEqual(body.output_config, { effort: "xhigh" })
   })
 
+  it("honours the model's thinkingLevelMap (xhigh → 'xhigh' for opus-4-7)", () => {
+    // Mirrors the opus-4-8 case — the registry ships opus-4-7 with the
+    // same {"xhigh":"xhigh"} entry. Explicit assertion per AC in #2053.
+    const model = makeAdaptiveModel({
+      id: "claude-opus-4-7",
+      name: "Claude Opus 4.7",
+      thinkingLevelMap: { xhigh: "xhigh" },
+    } as Partial<Model<"anthropic-messages">>)
+    const body = buildRequestBody(
+      model,
+      makeContext(),
+      { reasoning: "xhigh", maxTokens: 1024 },
+      false,
+    )
+    assert.deepEqual(body.output_config, { effort: "xhigh" })
+  })
+
   it("honours the model's thinkingLevelMap (xhigh → 'max' for opus-4-6)", () => {
+    // Registry ships opus-4-6 with thinkingLevelMap: {"xhigh":"max"} —
+    // a distinct value from opus-4-7/4-8, so this assertion also proves the
+    // map is being read per-model and not coincidentally matching a default.
     const model = makeAdaptiveModel({
       id: "claude-opus-4-6",
       thinkingLevelMap: { xhigh: "max" },
@@ -132,6 +157,25 @@ describe("buildRequestBody — adaptive thinking (forceAdaptiveThinking)", () =>
       false,
     )
     assert.deepEqual(body.output_config, { effort: "max" })
+  })
+
+  it("falls through to default mapping when thinkingLevelMap is absent (no regression)", () => {
+    // Adaptive model with no thinkingLevelMap (hypothetical / legacy /
+    // corporate-proxy registry entry that opts into adaptive thinking but
+    // omits the map). Without thinkingLevelMap, mapThinkingLevelToEffort
+    // falls back to its default switch — xhigh hits the `default` arm and
+    // resolves to "high". This is the pre-fix behaviour for opus-4-6/4-7/4-8
+    // (#2053) and the contract we preserve for models that never had a map.
+    const model = makeAdaptiveModel({
+      thinkingLevelMap: undefined,
+    } as Partial<Model<"anthropic-messages">>)
+    const body = buildRequestBody(
+      model,
+      makeContext(),
+      { reasoning: "xhigh", maxTokens: 1024 },
+      false,
+    )
+    assert.deepEqual(body.output_config, { effort: "high" })
   })
 
   it("does NOT set body.temperature when thinking is enabled (pi-ai parity)", () => {
