@@ -304,11 +304,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /
-	// themes / AGENTS.md / skills from the per-session staging directory. The
-	// role system-prompt is injected at runtime by the prism PI extension, not
-	// staged here (design #2031). On Darwin (sandbox-exec), the
-	// staging dir is on the host filesystem, so the "sandbox path" override set
-	// in populatePIConfig points at the host path directly.
+	// themes / AGENTS.md / skills from the shared host ~/.pi/agent directory.
+	// The role system-prompt is injected at runtime by the prism PI extension,
+	// not via this directory (design #2031). On Darwin (sandbox-exec) the
+	// in-sandbox path is collapsed to the host path above (sandbox-exec shares
+	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
+	// ~/.pi/agent directly. The SBPL profile grants (subpath ~/.pi/agent) RW
+	// for pi sessions which covers auth.json writes (OAuth token refresh) and
+	// the proper-lockfile auth.json.lock mkdir.
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}

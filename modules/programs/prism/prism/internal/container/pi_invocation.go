@@ -3,28 +3,41 @@ package container
 // pi_invocation.go — helpers for launching PI on the PTY inside bwrap.
 //
 // When a bwrap session has harness=pi, agent-run must:
-//  1. Stage a per-session PI agent config directory on the host before bwrap
-//     launches. This directory carries the auth.json symlink, settings.json,
-//     themes/, AGENTS.md, and skills/ — it no longer carries any role prompt.
-//     The role system-prompt is injected at runtime by the prism PI extension
+//  1. Bind-mount the user's host ~/.pi/agent directory read-WRITE into the
+//     sandbox at the canonical in-sandbox path /run/prism/pi-agent and set
+//     PI_CODING_AGENT_DIR to that path. The single shared mount carries
+//     settings.json, themes/, AGENTS.md, skills/, auth.json, and
+//     atlassian-mcp-oauth.json — all identical across sessions.
+//     Per-session staging dirs were eliminated in design #2031 PR3 (#2034)
+//     once APPEND_SYSTEM.md was no longer needed (PR2 #2038). The role
+//     system-prompt is injected at runtime by the prism PI extension
 //     (pi/extensions/prism.ts, before_agent_start), which reads
-//     ~/.config/prism/agents/<role>.md; the former APPEND_SYSTEM.md file is no
-//     longer written (design #2031, PR2 #2033).
-//  2. Bind-mount the staging directory read-only into the bwrap sandbox at a
-//     fixed in-sandbox path and set PI_CODING_AGENT_DIR to that path.
-//  3. Bind-mount the prism PI extension directory read-only into the bwrap
+//     ~/.config/prism/agents/<role>.md.
+//
+//     RW (not RO) is required for OAuth token refresh: pi-coding-agent uses
+//     proper-lockfile with realpath:true, which mkdir's <auth.json>.lock
+//     in the PARENT directory to acquire the lock. With an RO parent the
+//     lock mkdir EPERMs and refresh silently fails after ~30s of retries.
+//     The sandbox-exec SBPL profile has the same RW grant on (subpath
+//     ~/.pi/agent), gated on Harness == "pi" (sandbox_exec.go section 6a).
+//  2. Bind-mount the prism PI extension directory read-only into the bwrap
 //     sandbox.
-//  4. Invoke PI with the appropriate flags as the sandbox
-//     terminator.
+//  3. Invoke PI with the appropriate flags as the sandbox terminator.
+//
+// `nh switch` mid-session behaviour: because ~/.pi/agent is now a live
+// shared mount (rather than a per-session COPY of settings.json/themes/AGENTS.md),
+// changes to those files on the host become visible to a running PI session
+// without requiring a respawn. This is the design call locked in #2034 —
+// the content is the user's own config and changing rarely mid-session, and
+// the simplification payoff is significant.
 //
 // This file provides PIInvocation (analogous to HarnessInvocation) and
-// StagePIAgentConfigDir which prepares the per-session staging directory.
+// EnsurePIAgentConfigDir which prepares the shared host directory.
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,14 +45,11 @@ import (
 
 const (
 	// piAgentConfigSandboxDefault is the in-sandbox directory path at which
-	// the per-session PI agent config directory is bind-mounted when the caller
-	// has not overridden PIAgentConfigSandboxDir. PI_CODING_AGENT_DIR is set to
-	// this path so PI discovers settings.json / themes / AGENTS.md / skills.
+	// the shared PI agent config directory (~/.pi/agent on the host) is
+	// bind-mounted when the caller has not overridden PIAgentConfigSandboxDir.
+	// PI_CODING_AGENT_DIR is set to this path so PI discovers settings.json /
+	// themes / AGENTS.md / skills.
 	piAgentConfigSandboxDefault = "/run/prism/pi-agent"
-
-	// piAgentConfigSubdir is the subdirectory name created under the per-session
-	// run directory to hold the PI agent config staging files.
-	piAgentConfigSubdir = "pi-agent"
 
 	// piExtensionSandboxDefault is the in-sandbox directory path at which
 	// the PI extension directory is bind-mounted when the caller has not
@@ -283,178 +293,36 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 	return filepath.Join(stateHome, "prism", "run", sessionDirName(sessionName), "agent-run.log"), nil
 }
 
-// StagePIAgentConfigDir prepares the per-session PI agent config staging
-// directory. It returns the host path to the staging directory and the
-// canonical in-sandbox path (piAgentConfigSandboxDefault).
+// EnsurePIAgentConfigDir returns the host path to the shared PI agent config
+// directory (~/.pi/agent) and the canonical in-sandbox path
+// (piAgentConfigSandboxDefault). It creates the host directory if it does not
+// yet exist so bwrap has a valid bind source on a fresh install.
 //
-// The staging directory is created at:
+// Design #2031, PR3 (#2034): the per-session staging directory previously
+// built by StagePIAgentConfigDir has been collapsed into a single shared
+// read-only mount of ~/.pi/agent at /run/prism/pi-agent. Every session of
+// every role mounts the same host directory — settings.json, themes/,
+// AGENTS.md, skills/, and auth.json are all shared/identical, so there is
+// nothing per-session left to stage.
 //
-//	~/.local/state/prism/run/<sessionDirHash>/pi-agent/
-//
-// which is a subdirectory of the per-session run directory (co-located with
-// agent-run.log and hostapi.sock). This path falls under the existing SBPL
-// run-dir (subpath ...) rule on Darwin — no additional sandbox-exec profile
-// rule is required (confirmed issue #1285).
-//
-// The directory carries auth.json (symlink), settings.json, themes/, AGENTS.md,
-// and skills/. It no longer carries any role prompt: the role system-prompt is
-// injected at runtime by the prism PI extension (pi/extensions/prism.ts,
-// before_agent_start) from ~/.config/prism/agents/<role>.md (design #2031).
+// The role system-prompt is injected at runtime by the prism PI extension
+// (pi/extensions/prism.ts, before_agent_start) from
+// ~/.config/prism/agents/<role>.md (design #2031, PR1 #2037 + PR2 #2038).
 // A role with no <role>.md file simply starts with PI's default prompt — the
 // extension returns no override, no error (edge-case AC).
-//
-// The staging directory is isolated per session (via the sessionDirHash), so
-// two concurrent spawns for different roles never share a staging dir.
-func StagePIAgentConfigDir(sessionName string) (hostDir, sandboxDir string, err error) {
-	runDir, err := sessionRunDir(sessionName)
-	if err != nil {
-		return "", "", fmt.Errorf("pi: session %q: resolve run dir: %w", sessionName, err)
+func EnsurePIAgentConfigDir() (hostDir, sandboxDir string, err error) {
+	home, hErr := os.UserHomeDir()
+	if hErr != nil || home == "" {
+		return "", "", fmt.Errorf("pi: resolve user home: %w", hErr)
 	}
-
-	stagingDir := filepath.Join(runDir, piAgentConfigSubdir)
-	if mkErr := os.MkdirAll(stagingDir, 0o700); mkErr != nil {
-		return "", "", fmt.Errorf("pi: session %q: create pi-agent staging dir %s: %w", sessionName, stagingDir, mkErr)
+	hostDir = filepath.Join(home, ".pi", "agent")
+	// Create the host dir if absent so bwrap has a valid bind source on a
+	// fresh install. Mode 0o700 mirrors what StagePIAgentConfigDir formerly
+	// did for the per-session staging dir.
+	if mkErr := os.MkdirAll(hostDir, 0o700); mkErr != nil {
+		return "", "", fmt.Errorf("pi: create shared agent dir %s: %w", hostDir, mkErr)
 	}
-
-	// The role system-prompt is no longer staged here. It is injected at runtime
-	// by the prism PI extension (before_agent_start) from
-	// ~/.config/prism/agents/<role>.md — see pi/extensions/prism.ts (design
-	// #2031, PR2 #2033). The former APPEND_SYSTEM.md write has been removed.
-
-	// Symlink auth.json from the staging dir to the real ~/.pi/agent/auth.json.
-	// This allows OAuth token refreshes performed inside the sandbox to be
-	// written back to the host file (a copy would be stale after refresh).
-	// The symlink is created even when the target does not exist yet (a
-	// dangling symlink is fine — PI will prompt for login). Non-fatal if
-	// symlinking fails for any reason.
-	if home, err := os.UserHomeDir(); err == nil {
-		authTarget := filepath.Join(home, ".pi", "agent", "auth.json")
-		authLink := filepath.Join(stagingDir, "auth.json")
-		_ = symlinkIdempotent(authTarget, authLink)
-	}
-
-	// Copy settings.json, themes/, and AGENTS.md from ~/.pi/agent/ into the
-	// staging directory. Each copy is best-effort and silent when the source
-	// does not exist — PI can start without them.
-	//
-	// AGENTS.md is copied (not symlinked) so the staging dir is self-contained:
-	// a `nh switch` mid-session must not change the AGENTS.md content that an
-	// active PI session reads. copyFileIfExists overwrites any existing
-	// destination, so re-running on the same staging dir picks up updated
-	// host content (idempotent for re-spawn).
-	if home, err := os.UserHomeDir(); err == nil {
-		piAgentSrc := filepath.Join(home, ".pi", "agent")
-		src := filepath.Join(piAgentSrc, "settings.json")
-		dst := filepath.Join(stagingDir, "settings.json")
-		_ = copyFileIfExists(src, dst)
-		themeSrc := filepath.Join(piAgentSrc, "themes")
-		themeDst := filepath.Join(stagingDir, "themes")
-		_ = copyDirIfExists(themeSrc, themeDst)
-		agentsSrc := filepath.Join(piAgentSrc, "AGENTS.md")
-		agentsDst := filepath.Join(stagingDir, "AGENTS.md")
-		_ = copyFileIfExists(agentsSrc, agentsDst)
-	}
-
-	// Symlink skills/ from the staging dir to the resolved target of
-	// ~/.pi/agent/skills. This allows PI inside bwrap to discover user skills
-	// via PI_CODING_AGENT_DIR. The source is often a home-manager symlink
-	// pointing at a Nix-store derivation; we resolve it so that the staging-dir
-	// symlink points directly at the store path (which is bind-mounted into
-	// bwrap via /nix). Absent or broken source is non-fatal — PI starts with
-	// no skills rather than crashing.
-	if home, err := os.UserHomeDir(); err == nil {
-		skillsSrc := filepath.Join(home, ".pi", "agent", "skills")
-		skillsLink := filepath.Join(stagingDir, "skills")
-		// Lstat to check existence without following symlinks.
-		if _, lstatErr := os.Lstat(skillsSrc); lstatErr == nil {
-			// Resolve any symlink chain (e.g. home-manager → /nix/store/…).
-			resolvedTarget := skillsSrc
-			if resolved, evalErr := filepath.EvalSymlinks(skillsSrc); evalErr == nil {
-				resolvedTarget = resolved
-			}
-			// Non-fatal: remove any existing entry before creating the new
-			// symlink so that the target is always current (e.g. after a
-			// home-manager switch the resolved Nix-store path changes).
-			_ = symlinkIdempotent(resolvedTarget, skillsLink)
-		}
-		// When skillsSrc is absent (lstat failed), do nothing — no skills entry
-		// is created in the staging dir, and PI starts without skills.
-	}
-
-	return stagingDir, piAgentConfigSandboxDefault, nil
-}
-
-// symlinkIdempotent removes any existing filesystem entry at dst (file,
-// symlink, or empty directory) and then creates a symlink dst → src. Removing
-// before creating ensures the symlink target is always current — without this,
-// a pre-existing symlink at dst would cause os.Symlink to return EEXIST and
-// the target would never be updated (e.g. after a home-manager switch where
-// the resolved Nix-store path changes between calls).
-func symlinkIdempotent(src, dst string) error {
-	_ = os.Remove(dst) // ignore error — dst may not exist
-	return os.Symlink(src, dst)
-}
-
-// copyFileIfExists copies a single regular file from src to dst. It is a
-// no-op (returning nil) when src does not exist. The destination file is
-// created with mode 0o600.
-func copyFileIfExists(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
-}
-
-// copyDirIfExists recursively copies a directory tree from src to dst. It is a
-// no-op (returning nil) when src does not exist. Files are written with
-// mode 0o600; directories are created with mode 0o700.
-func copyDirIfExists(src, dst string) error {
-	info, err := os.Stat(src)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	if !info.IsDir() {
-		return nil
-	}
-
-	if mkErr := os.MkdirAll(dst, 0o700); mkErr != nil {
-		return mkErr
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-		if entry.IsDir() {
-			if err := copyDirIfExists(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			if err := copyFileIfExists(srcPath, dstPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
+	return hostDir, piAgentConfigSandboxDefault, nil
 }
 
 // ValidatePIExtensionDir checks that the PI extension directory exists and
@@ -552,10 +420,28 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 	args = append(args, "--ro-bind", cfg.PIBinaryPath, cfg.PIBinaryPath)
 
 	// ── PI agent config directory ────────────────────────────────────────────
-	// The staging directory is always created by StagePIAgentConfigDir before
-	// bwrap launches. Bind-mount it read-only and set PI_CODING_AGENT_DIR to
-	// the in-sandbox path so PI discovers settings.json / themes / AGENTS.md /
-	// skills.
+	// Bind-mount the shared host ~/.pi/agent directory READ-WRITE at the
+	// canonical in-sandbox path and set PI_CODING_AGENT_DIR to it so PI
+	// discovers settings.json / themes / AGENTS.md / skills / auth.json.
+	//
+	// Why RW (not RO):
+	//
+	//   - OAuth token refresh inside pi-coding-agent uses proper-lockfile
+	//     with realpath:true. After resolving auth.json's realpath, the
+	//     library calls mkdir(<resolved-auth-path>.lock) on the PARENT
+	//     directory to acquire the lock. The parent dir must therefore be
+	//     writable, not just auth.json itself. This is the same constraint
+	//     the sandbox-exec SBPL profile satisfies via
+	//     (allow file-read* file-write* ... (subpath ~/.pi/agent)) gated
+	//     on Harness == "pi" (see sandbox_exec.go section 6a).
+	//
+	//   - The directory is the user's own config dir. There is no isolation
+	//     gain in making it RO from the sandbox; the agent already has full
+	//     RW access to the worktree.
+	//
+	// Design #2031 PR3 (#2034) collapsed the former per-session staging dir
+	// into this single shared mount. See pi_invocation.go top-of-file doc
+	// comment for the `nh switch` mid-session implication.
 	agentConfigHostDir := cfg.PIAgentConfigHostDir
 	agentConfigSandboxDir := cfg.PIAgentConfigSandboxDir
 	if agentConfigSandboxDir == "" {
@@ -571,40 +457,26 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 		args = append(args, "--setenv", "PI_CODING_AGENT_DIR", agentConfigSandboxDir)
 
 		// ── PI sessions overlay (read-write, global, #1985) ─────────────────
-		// Overlay the host's ~/.pi/agent/sessions/ onto
-		// <agentConfigSandboxDir>/sessions/ so pi-written JSONL transcripts
-		// land in the user's global per-cwd history directory rather than the
-		// per-prism-session staging dir (which disappears on `prism cleanup`).
-		//
-		// This bind MUST be emitted after the staging-dir bind above so that
-		// bwrap applies it as an overlay (later --bind entries take effect on
-		// top of earlier ones at the same mount point). The staging dir keeps
-		// providing settings.json / themes / AGENTS.md / skills / auth.json;
-		// only the `sessions/` subdirectory is redirected.
-		//
-		// We create the host directory if it does not exist so a fresh install
-		// (no prior pi history) does not fail the spawn — bwrap requires the
-		// bind source to exist. Best-effort: if MkdirAll fails (e.g. read-only
-		// home), we skip the overlay rather than aborting the launch — pi will
-		// fall back to writing into the staging dir, matching pre-#1985
-		// behaviour for that one session.
+		// Ensure the host's ~/.pi/agent/sessions/ exists so pi can write its
+		// per-cwd JSONL transcripts there. Pre-#2034 this needed a dedicated
+		// --bind overlay because the parent mount was a per-session staging
+		// dir that did not contain a sessions/ subdir. Post-#2034 the parent
+		// mount IS ~/.pi/agent (RW), so writes to $PI_CODING_AGENT_DIR/
+		// sessions/ already land on the host via the same bind — we just need
+		// to make sure the subdirectory exists on the host before pi starts.
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			hostSessionsDir := filepath.Join(home, ".pi", "agent", "sessions")
-			if mkErr := os.MkdirAll(hostSessionsDir, 0o700); mkErr == nil {
-				sandboxSessionsDir := filepath.Join(agentConfigSandboxDir, "sessions")
-				args = append(args, "--bind", hostSessionsDir, sandboxSessionsDir)
-			}
+			_ = os.MkdirAll(hostSessionsDir, 0o700)
 		}
 	}
 
-	// ── PI auth.json bind-mount (read-write) ─────────────────────────────
-	// The staging dir contains a symlink <stagingDir>/auth.json →
-	// ~/.pi/agent/auth.json (created by StagePIAgentConfigDir). For the
-	// symlink to resolve inside the bwrap sandbox, the real file must also
-	// be bind-mounted at its host path. We use --bind (read-write) so that
-	// OAuth token refreshes performed inside the session are written back to
-	// the host file. The bind is only emitted when the file exists on the
-	// host — when it does not, pi prompts for login instead of crashing.
+	// ── PI auth.json bind-mount (read-write, host path) ─────────────────
+	// The parent mount above already exposes auth.json RW at
+	// $PI_CODING_AGENT_DIR/auth.json (which is what PI reads). Retain the
+	// host-path RW bind so any code path that resolves $HOME/.pi/agent/
+	// auth.json directly inside the sandbox (e.g. via os.UserHomeDir()) also
+	// works. The bind is only emitted when the file exists on the host —
+	// when it does not, pi prompts for login instead of crashing.
 	if home, err := os.UserHomeDir(); err == nil {
 		authPath := filepath.Join(home, ".pi", "agent", "auth.json")
 		if _, statErr := os.Stat(authPath); statErr == nil {
@@ -635,6 +507,9 @@ func appendPIBwrapMounts(args []string, cfg Config) ([]string, error) {
 				_ = f.Close()
 			}
 		}
+		// Host-path bind retained for callers that resolve via $HOME directly.
+		// The in-sandbox shared mount above already exposes this file RW at
+		// $PI_CODING_AGENT_DIR/atlassian-mcp-oauth.json.
 		if _, statErr := os.Stat(atlasMCPPath); statErr == nil {
 			args = append(args, "--bind", atlasMCPPath, atlasMCPPath)
 		}
