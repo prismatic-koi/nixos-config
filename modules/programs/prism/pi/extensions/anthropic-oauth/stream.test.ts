@@ -19,7 +19,13 @@
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
 import { PassThrough } from "node:stream"
-import { sanitizeSystemText, buildAnthropicSystemPrompt, parseSSEStream } from "./stream.ts"
+import {
+  sanitizeSystemText,
+  buildAnthropicSystemPrompt,
+  parseSSEStream,
+  convertPiMessagesToAnthropic,
+} from "./stream.ts"
+import type { Message } from "@earendil-works/pi-ai"
 import { initLogger, closeLogger } from "./logger.ts"
 
 // ---------------------------------------------------------------------------
@@ -666,5 +672,230 @@ describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
     } finally {
       closeLogger()
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// convertPiMessagesToAnthropic — thinking-block re-injection (#2049)
+//
+// Verifies that prior assistant turns containing `thinking` content blocks
+// are re-emitted into the Anthropic request body with their signature
+// preserved (and ordered before any text/tool_use), matching pi-ai's
+// built-in handler at anthropic.ts ~1069-1099.
+// ---------------------------------------------------------------------------
+describe("convertPiMessagesToAnthropic \u2014 thinking-block re-injection (#2049)", () => {
+  // Find the assistant message in the converted output.
+  function pickAssistant(
+    out: ReturnType<typeof convertPiMessagesToAnthropic>,
+  ) {
+    const m = out.find((x) => x.role === "assistant")
+    assert.ok(m, "expected an assistant message in output")
+    assert.ok(
+      Array.isArray(m.content),
+      "assistant content should be a block array",
+    )
+    return m.content as Array<{ type: string; [k: string]: unknown }>
+  }
+
+  it("round-trips a thinking block with signature, ordered before text/tool_use", () => {
+    const messages: Message[] = [
+      { role: "user", content: "hi" } as Message,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "step 1: consider options",
+            thinkingSignature: "sig-abc-123",
+          },
+          { type: "text", text: "answer" },
+          {
+            type: "toolCall",
+            id: "call_1",
+            name: "Read",
+            arguments: { path: "/etc/hosts" },
+          },
+        ],
+        // Remaining AssistantMessage fields are not consulted by the converter.
+      } as unknown as Message,
+      { role: "user", content: "continue" } as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    // Thinking block must come first (mirroring pi-ai), then text, then tool_use.
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["thinking", "text", "tool_use"],
+      "thinking precedes text/tool_use in assistant turn",
+    )
+
+    const th = blocks[0]
+    assert.equal(th.type, "thinking")
+    assert.equal(th.thinking, "step 1: consider options")
+    assert.equal(
+      th.signature,
+      "sig-abc-123",
+      "signature must be preserved bit-for-bit",
+    )
+  })
+
+  it("skips a thinking block whose text is empty/whitespace", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "   ",
+            thinkingSignature: "sig-empty-text",
+          },
+          { type: "text", text: "hello" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["text"],
+      "empty-text thinking block must be dropped",
+    )
+  })
+
+  it("degrades a thinking block to text when signature is missing/empty (OAuth-safe default)", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "reasoning without sig",
+            // thinkingSignature omitted entirely
+          },
+          { type: "text", text: "answer" },
+        ],
+      } as unknown as Message,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "reasoning with blank sig",
+            thinkingSignature: "   ",
+          },
+          { type: "text", text: "answer2" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+
+    // Both assistant turns should degrade thinking-with-no-sig to a text block,
+    // ordered before the original text answer.
+    const a1 = (out[0].content as Array<{ type: string; text?: string }>)
+    assert.deepEqual(
+      a1.map((b) => b.type),
+      ["text", "text"],
+      "missing-sig thinking becomes a leading text block",
+    )
+    assert.equal(a1[0].text, "reasoning without sig")
+    assert.equal(a1[1].text, "answer")
+
+    const a2 = (out[1].content as Array<{ type: string; text?: string }>)
+    assert.deepEqual(
+      a2.map((b) => b.type),
+      ["text", "text"],
+      "blank-sig thinking becomes a leading text block",
+    )
+    assert.equal(a2[0].text, "reasoning with blank sig")
+    assert.equal(a2[1].text, "answer2")
+  })
+
+  it("round-trips a redacted_thinking block, carrying the opaque payload", () => {
+    // Per ThinkingContent docs: when `redacted` is true, the opaque encrypted
+    // payload is stored in `thinkingSignature` so it can be passed back.
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "", // redacted blocks carry no plaintext
+            thinkingSignature: "OPAQUE_REDACTED_PAYLOAD_xyz",
+            redacted: true,
+          },
+          { type: "text", text: "answer" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["redacted_thinking", "text"],
+      "redacted_thinking precedes text",
+    )
+    assert.equal(blocks[0].data, "OPAQUE_REDACTED_PAYLOAD_xyz")
+  })
+
+  it("is a no-op pass-through for assistant turns with no thinking blocks (regression guard)", () => {
+    const messages: Message[] = [
+      { role: "user", content: "hi" } as Message,
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "answer" },
+          {
+            type: "toolCall",
+            id: "call_2",
+            name: "Read",
+            arguments: { path: "/tmp/x" },
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    // Exactly the original two blocks, in original order — no spurious
+    // empty thinking block injected.
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["text", "tool_use"],
+      "non-thinking assistant turn is unchanged",
+    )
+    assert.equal(blocks[0].text, "answer")
+    assert.equal(blocks[1].name, "Read")
+  })
+
+  it("applies sanitizeSurrogates to thinking text", () => {
+    // Lone high surrogate must be replaced with U+FFFD, matching the text/
+    // tool-call paths.
+    const lone = "before \uD83D after" // unpaired high surrogate
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: lone,
+            thinkingSignature: "sig-1",
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+    assert.equal(blocks[0].type, "thinking")
+    assert.equal(blocks[0].thinking, "before \uFFFD after")
+    assert.equal(blocks[0].signature, "sig-1", "signature is NOT sanitized")
   })
 })
