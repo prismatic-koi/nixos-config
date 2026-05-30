@@ -48,7 +48,8 @@ func TestSpawnSession_ReadinessTimeout_FiresAndCleansUp(t *testing.T) {
 		AgentRole:        "review-code",
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
-		ReadinessTimeout: 300 * time.Millisecond, // short; no signal will arrive
+		ReadinessTimeout: 300 * time.Millisecond, // short; no signal will arrive,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	start := time.Now()
@@ -94,7 +95,8 @@ func TestSpawnSession_ReadinessTimeoutZero_SkipsGate(t *testing.T) {
 		AgentRole:   "review-code",
 		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
-		// ReadinessTimeout omitted (zero) — gate must be skipped.
+		// ReadinessTimeout omitted (zero) — gate must be skipped.,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	start := time.Now()
@@ -128,6 +130,7 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 		AgentRole:   "review-code",
 		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -184,7 +187,8 @@ func TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded(t *testing.T) {
 		AgentRole:        "review-code",
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
-		ReadinessTimeout: 100 * time.Millisecond, // short; no signal will arrive
+		ReadinessTimeout: 100 * time.Millisecond, // short; no signal will arrive,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); !IsReadinessTimeout(err) {
@@ -249,6 +253,7 @@ func TestSpawnSession_ReadinessTimeoutWritesFailureToStartupLog(t *testing.T) {
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 250 * time.Millisecond,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err == nil {

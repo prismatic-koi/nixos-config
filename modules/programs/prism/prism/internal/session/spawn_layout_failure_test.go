@@ -45,6 +45,7 @@ func TestSpawnSession_LayoutFailure_CleansUpDB(t *testing.T) {
 		Layout:        LayoutAgentOnly,
 		IsolationMode: "host",
 		HarnessName:   "pi",
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)

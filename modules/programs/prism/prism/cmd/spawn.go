@@ -680,6 +680,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
 		AllowEmptyPrompt: allowEmptyPrompt,
+		// PIExtensionDir is the host-side prism PI extension directory
+		// (populated by Nix into config.json). Forwarded so that host-mode
+		// pi launches pass --extension <dir>/prism.ts (#2065).
+		PIExtensionDir: cfg.PIExtensionDir,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
@@ -1339,6 +1343,8 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		Headless:         true,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
 		WorktreeReadOnly: agentRole == "investigate",
+		// PIExtensionDir for host-mode pi launches (#2065).
+		PIExtensionDir: a.cfg.PIExtensionDir,
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {

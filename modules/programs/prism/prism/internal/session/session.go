@@ -202,6 +202,51 @@ type Opts struct {
 	// Other launch shapes derive the worktree from the DB or from the
 	// container-mode plumbing and do not consult this field.
 	Worktree string
+	// PIExtensionDir is the host-side absolute path to the directory that
+	// contains the prism PI extension file (cfg.PIExtensionDir, populated by
+	// Nix via piExtensionDir in config.json). When non-empty AND the harness
+	// is pi, buildDirectAgentCmd appends --extension <dir>/prism.ts to the
+	// host-mode launch command so the extension loads and the prism↔pi
+	// integration surface (role prompt, sidecar bridge, status bar) works
+	// the same as it does under bwrap / sandbox-exec. Closes #2065.
+	//
+	// Production callers MUST set this for host-mode pi launches —
+	// ValidatePILaunchOpts (called from SpawnSession and Create+LayoutFull)
+	// rejects an empty value with a clear error mirroring the container-path
+	// guard at cmd/agent_run.go:730. buildDirectAgentCmd remains a pure
+	// string emitter and omits --extension when this field is empty so test
+	// fixtures and the validator-bypass paths in restore (with the legacy
+	// agent-pane shape) don't need to fake a directory; the fail-fast policy
+	// is centralised in ValidatePILaunchOpts, not the emitter.
+	PIExtensionDir string
+}
+
+// ValidatePILaunchOpts checks Opts against the requirements for a host-mode
+// pi launch. It is the host-mode analogue of the container-path guard at
+// cmd/agent_run.go:730: when the prism PI extension cannot be located the
+// session must fail fast with a clear error rather than launch pi with no
+// extension (and therefore no role-prompt injection, no sidecar bridge, no
+// status bar — the #2065 silent-degradation shape).
+//
+// Returns nil for every non-host isolation mode (container modes route
+// through PIInvocation which has its own guard upstream) and for every
+// non-pi harness (non-pi launches do not load the prism extension).
+//
+// Called from SpawnSession (every spawn-side entry point) and from Create
+// when Layout == LayoutFull (the switch / restore entry points). Bare and
+// Scratchpad layouts skip this check because they do not launch an agent
+// pane and therefore have no pi to misconfigure.
+func ValidatePILaunchOpts(opts Opts) error {
+	if effectiveIsolationMode(opts) != "host" {
+		return nil
+	}
+	if opts.HarnessName != "" && opts.HarnessName != "pi" {
+		return nil
+	}
+	if opts.PIExtensionDir == "" {
+		return fmt.Errorf("pi: PIExtensionDir is not set in prism config — ensure the prism PI extension is configured in Nix (piExtensionDir in config.json)")
+	}
+	return nil
 }
 
 // Layout selects the window layout used when creating a new session.
@@ -346,6 +391,22 @@ func buildDirectAgentCmd(opts Opts) string {
 		cmd = binary + " --agent " + agent
 	} else {
 		cmd = binary
+	}
+	// --extension <dir>/prism.ts for pi harnesses (#2065). Container modes
+	// (bwrap / sandbox-exec) route through container.PIInvocation, which
+	// emits --extension unconditionally. Host mode previously launched pi
+	// with no --extension flag at all, so the prism PI extension never
+	// loaded and role-prompt injection (plus the sidecar bridge, status
+	// bar, doom-loop guard, and review-cycle tracking) silently no-op'd.
+	//
+	// Scoped to pi (or empty harness, which defaults to pi). Non-pi
+	// harnesses do not have a prism extension and must not receive this
+	// flag — it would either be unknown or claim an unrelated meaning.
+	if (opts.HarnessName == "pi" || opts.HarnessName == "") && opts.PIExtensionDir != "" {
+		extPath := container.PIExtensionHostPath(opts.PIExtensionDir)
+		if extPath != "" {
+			cmd += " --extension " + shellQuote(extPath)
+		}
 	}
 	// Append --session <id> for host-mode pi-resume (issue #1838).
 	//
@@ -611,6 +672,19 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 //     and recreated. When opts.DB is nil, any existing session is treated as
 //     live (legacy no-op behaviour).
 func Create(name, directory string, opts Opts) error {
+	// Fail-fast guard for the host-mode pi launch (#2065 edge-case AC).
+	// Only applies to LayoutFull, which is the layout that actually launches
+	// an agent pane. LayoutBare and LayoutScratchpad have no agent and
+	// legitimately leave PIExtensionDir empty (scratchpad sessions are pure
+	// shells; bare sessions are restore-time placeholders for non-LayoutFull
+	// rows). Running the guard for those layouts would block the dashboard's
+	// dead-session recovery path with a misleading error.
+	if opts.Layout == LayoutFull {
+		if err := ValidatePILaunchOpts(opts); err != nil {
+			return fmt.Errorf("session.Create %q: %w", name, err)
+		}
+	}
+
 	if !startupGuardKillOld(name, opts.DB, opts.ForceFresh) {
 		return nil
 	}

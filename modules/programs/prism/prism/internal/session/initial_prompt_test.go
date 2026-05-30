@@ -284,6 +284,7 @@ func TestSpawnSession_HostMode_RejectsOversizedLaunchCmd(t *testing.T) {
 		AgentEnvVars: map[string]string{
 			"OVERSIZE_VAR": bigEnvValue,
 		},
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)

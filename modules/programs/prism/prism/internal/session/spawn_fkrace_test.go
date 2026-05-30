@@ -61,7 +61,8 @@ func TestSpawnSession_FullLayout_PreInsertsSessionsRow(t *testing.T) {
 		IsolationMode: "host",
 		HarnessName:   "pi",
 		// ReadinessTimeout=0: skip the readiness gate. We are testing the
-		// pre-spawn DB-state invariants, not the readiness path.
+		// pre-spawn DB-state invariants, not the readiness path.,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -138,6 +139,7 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 		Layout:        LayoutFull,
 		IsolationMode: "host",
 		HarnessName:   "pi",
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -195,6 +197,7 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 				Layout:        LayoutFull,
 				IsolationMode: "host",
 				HarnessName:   "pi",
+				PIExtensionDir: testPIExtensionDir,
 			}
 			errs[i] = SpawnSession(d, opts)
 		}()
