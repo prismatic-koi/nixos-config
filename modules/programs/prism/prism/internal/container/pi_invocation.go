@@ -300,10 +300,19 @@ func piAgentRunLogPath(sessionName string) (string, error) {
 //
 // Design #2031, PR3 (#2034): the per-session staging directory previously
 // built by StagePIAgentConfigDir has been collapsed into a single shared
-// read-only mount of ~/.pi/agent at /run/prism/pi-agent. Every session of
+// read-WRITE mount of ~/.pi/agent at /run/prism/pi-agent. Every session of
 // every role mounts the same host directory — settings.json, themes/,
 // AGENTS.md, skills/, and auth.json are all shared/identical, so there is
 // nothing per-session left to stage.
+//
+// The parent mount is RW (not RO) because pi-coding-agent's OAuth token
+// refresh uses proper-lockfile with realpath:true, which mkdir's
+// <auth.json>.lock on the PARENT directory to acquire the lock. An RO
+// parent would EPERM the lock mkdir and silently fail refresh after ~30s
+// of retries. See top-of-file doc and appendPIBwrapMounts for the full
+// rationale; the sandbox-exec SBPL profile satisfies the same constraint
+// via (allow file-read* file-write* … (subpath ~/.pi/agent)) gated on
+// Harness == "pi" (sandbox_exec.go section 6a).
 //
 // The role system-prompt is injected at runtime by the prism PI extension
 // (pi/extensions/prism.ts, before_agent_start) from
@@ -398,8 +407,10 @@ func PIExtensionSandboxPath(sandboxDirOverride string) string {
 // session to args and returns the extended slice. Specifically:
 //
 //   - PI agent config directory: cfg.PIAgentConfigHostDir → cfg.PIAgentConfigSandboxDir
-//     (read-only). Sets PI_CODING_AGENT_DIR env var to the sandbox path so PI
-//     discovers settings.json / themes / AGENTS.md / skills.
+//     (read-WRITE — see OAuth proper-lockfile rationale in the in-function
+//     comment block below and at the top of this file). Sets
+//     PI_CODING_AGENT_DIR env var to the sandbox path so PI discovers
+//     settings.json / themes / AGENTS.md / skills / auth.json.
 //   - Extension directory: cfg.PIExtensionHostDir → cfg.PIExtensionSandboxDir
 //     (read-only).
 //

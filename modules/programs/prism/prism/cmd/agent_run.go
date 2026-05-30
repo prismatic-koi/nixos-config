@@ -703,10 +703,16 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 
 	// Resolve the shared PI agent config directory (~/.pi/agent on the host)
 	// and the canonical in-sandbox path (/run/prism/pi-agent). Bwrap will
-	// bind-mount the host dir RO at the sandbox path with auth.json overlaid
-	// RW for OAuth token write-back. On sandbox-exec, the in-sandbox path is
-	// overridden in the dispatcher to equal the host path because sandbox-exec
-	// shares the host filesystem. Design #2031, PR3 (#2034).
+	// bind-mount the host dir READ-WRITE at the sandbox path; writes to
+	// auth.json reach the host file via that same parent bind. RW (not RO)
+	// is load-bearing for OAuth refresh — proper-lockfile mkdir's
+	// auth.json.lock on the parent dir, which would EPERM under an RO mount
+	// (see pi_invocation.go top-of-file for the full rationale). A redundant
+	// host-path RW bind of auth.json is also retained so $HOME-resolving
+	// call paths inside the sandbox keep working. On sandbox-exec, the
+	// in-sandbox path is overridden in the dispatcher to equal the host
+	// path because sandbox-exec shares the host filesystem. Design #2031,
+	// PR3 (#2034).
 	//
 	// EnsurePIAgentConfigDir creates the host dir if absent so a fresh install
 	// does not fail the spawn. sessionName is intentionally unused here — the

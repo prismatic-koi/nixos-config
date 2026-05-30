@@ -290,12 +290,16 @@ type Config struct {
 	// config directory (~/.pi/agent). Since design #2031 PR3 (#2034) the
 	// per-session staging dir has been collapsed into a single shared mount of
 	// the user's ~/.pi/agent. When non-empty and Harness == "pi", BuildArgs
-	// (bwrap) bind-mounts this directory read-only into the sandbox at
-	// PIAgentConfigSandboxDir (with auth.json / atlassian-mcp-oauth.json /
-	// sessions/ layered RW on top) and sets PI_CODING_AGENT_DIR to the
-	// in-sandbox path so PI discovers settings.json / themes / AGENTS.md /
-	// skills / auth.json. The role system-prompt is injected at runtime by
-	// the prism PI extension, not via this directory (design #2031).
+	// (bwrap) bind-mounts this directory read-WRITE into the sandbox at
+	// PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR to the in-sandbox
+	// path so PI discovers settings.json / themes / AGENTS.md / skills /
+	// auth.json. Writes to auth.json, atlassian-mcp-oauth.json, and sessions/
+	// reach the host via the same parent bind — there is no separate overlay
+	// (the pre-#2034 "RO parent + RW file overlays" design was rejected
+	// because proper-lockfile's auth.json.lock mkdir on the parent dir needs
+	// write access; see pi_invocation.go top-of-file for the full rationale).
+	// The role system-prompt is injected at runtime by the prism PI extension,
+	// not via this directory (design #2031).
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
