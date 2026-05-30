@@ -42,11 +42,28 @@ function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
       name: model.name,
       api: model.api ?? "anthropic-messages",
       reasoning: model.reasoning,
+      // thinkingLevelMap drives request-body.ts::mapThinkingLevelToEffort —
+      // without it, opus-4-6/4-7/4-8 silently fall through to the default
+      // mapping (e.g. xhigh → "high" instead of "max"/"xhigh"). Issue #2053;
+      // same bug shape as leohenon/pi-anthropic-oauth#7. Pi's
+      // ProviderModelConfig schema explicitly accepts this field
+      // (`dist/core/model-registry.js` ~line 114 / 505).
+      thinkingLevelMap: model.thinkingLevelMap,
       input: model.input,
       cost: model.cost,
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
       compat: model.compat,
+      // Deliberately NOT propagated:
+      //   - provider: fixed at "anthropic" by registerProvider() below.
+      //   - baseUrl: set at the provider level in registerProvider(); no
+      //     anthropic-provider registry entry overrides it per-model.
+      //   - headers: this extension builds the Anthropic request headers
+      //     itself in streamSimple (Bearer token, anthropic-version,
+      //     anthropic-beta, x-app, user-agent, x-client-request-id) — pi's
+      //     per-model headers would be additive and risk colliding with the
+      //     OAuth-mode auth header. No anthropic registry model currently
+      //     declares per-model headers, so this is also a no-op today.
     }))
 
   return models
