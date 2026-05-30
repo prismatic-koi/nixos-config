@@ -1,12 +1,13 @@
 // Unit tests for the prism PI extension's pure helpers.
-// Run with: node --test --test-force-exit --import tsx prism.test.ts
+// Run with: node --test --import tsx prism.test.ts
+// Or:       tsx --test prism.test.ts
 //
 // We test the helper functions in isolation: truncation, endpoint parsing,
 // the JSONL line reader, and the inbound dispatcher with a mock API. The
 // extension factory itself (with PI hook subscriptions) is end-to-end tested
 // via the P2.SPAWN integration scenario.
 
-import { describe, it } from "node:test"
+import { describe, it, after } from "node:test"
 import assert from "node:assert/strict"
 import { Readable } from "node:stream"
 import * as net from "node:net"
@@ -2023,6 +2024,110 @@ function makeSidecarResponder1554(conn: net.Socket): { frames: string[] } {
 // Fast retry schedule: 1+2+4+8+16 = 31ms total budget.
 const FAST_DELAYS_1554 = "1,2,4,8,16"
 
+// ---------------------------------------------------------------------------
+// Module-level teardown (issue #2060).
+//
+// Runs after the final test in the file completes. Each test that wires the
+// extension to a real net.Server calls `registerExtensionWiring(...)` so we
+// can trigger `session_shutdown` on the extension (releasing the writer's
+// outbound Socket via the production half-close path). After per-wiring
+// teardown, we sweep `_getActiveHandles()` and destroy any leaked Sockets or
+// Servers that survived — in practice this catches sockets from ad-hoc
+// tests that don't yet propagate an AcceptedConnRef into the registry, and
+// any server-accepted Socket whose owning test never tracked it. Without
+// this sweep the Node test runner hangs on a non-draining event loop and
+// only `--test-force-exit` rescues it (#1825 was the symptom that masked
+// these leaks).
+// ---------------------------------------------------------------------------
+after(async () => {
+  // 1. Per-wiring teardown — await each so the extension's writer.close()
+  //    completes before we sweep raw handles.
+  for (const w of extensionWirings.splice(0)) {
+    await teardownExtensionWiring(w)
+  }
+  // 2. Sweep any remaining Sockets / Servers from the active-handles list.
+  //    `_getActiveHandles` is a Node internal but is stable in practice and
+  //    is the recommended diagnostic surface for this exact problem.
+  type ActiveHandle = {
+    constructor?: { name?: string }
+    destroy?: () => void
+    close?: () => void
+    _handle?: { fd?: number }
+  }
+  const handles = (process as unknown as { _getActiveHandles: () => ActiveHandle[] })._getActiveHandles()
+  for (const h of handles) {
+    // Skip stdio (fd 0/1/2) — those are owned by the runner.
+    const fd = h._handle?.fd
+    if (fd === 0 || fd === 1 || fd === 2) continue
+    const name = h.constructor?.name
+    if (name === "Socket") {
+      try { h.destroy?.() } catch {}
+    } else if (name === "Server") {
+      try { h.close?.() } catch {}
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Test-wiring teardown registry (issue #2060)
+//
+// Every test that wires `prismExtension(mockPi)` to a real net.Server leaks
+// the extension's outbound client Socket, the server-accepted Socket, and the
+// listening Server unless the test explicitly tears them down before exit.
+//
+// Production teardown lives in the extension's `session_shutdown` hook, but
+// that hook only does a half-close (writer.close() → socket.end()) because
+// PI is about to exit in real life and the sidecar wants a clean EOF rather
+// than a RST. In tests the process keeps running across many describes, so
+// the half-closed socket lingers as an active handle.
+//
+// Rather than refactor every individual harness, tests call
+// `registerExtensionWiring(...)` immediately after `prismExtension(pi)` and
+// the module-level `after()` hook (defined right after the imports above)
+// walks the registry and tears each entry down:
+//   1. trigger session_shutdown on the mock pi (extension half-closes)
+//   2. destroy any captured server-accepted Socket (RST to extension's client)
+//   3. await server.close() (drains the listener)
+//
+// The `serverConn` ref is filled by `trackConn(ref, inner)`, a thin
+// connection-handler wrapper.
+// ---------------------------------------------------------------------------
+interface AcceptedConnRef { current: net.Socket | null }
+
+interface ExtensionWiring {
+  trigger: (event: string, eventArg?: unknown, ctx?: unknown) => Promise<void>
+  server: net.Server | null
+  acceptedConn: AcceptedConnRef | null
+}
+
+const extensionWirings: ExtensionWiring[] = []
+
+function registerExtensionWiring(w: ExtensionWiring): void {
+  extensionWirings.push(w)
+}
+
+function trackConn(
+  ref: AcceptedConnRef,
+  inner: (conn: net.Socket) => void,
+): (conn: net.Socket) => void {
+  return (conn) => {
+    ref.current = conn
+    inner(conn)
+  }
+}
+
+async function teardownExtensionWiring(w: ExtensionWiring): Promise<void> {
+  try { await w.trigger("session_shutdown", {}, {}) } catch {}
+  if (w.acceptedConn?.current) {
+    try { w.acceptedConn.current.destroy() } catch {}
+  }
+  if (w.server) {
+    await new Promise<void>((res) => {
+      try { w.server!.close(() => res()) } catch { res() }
+    })
+  }
+}
+
 describe("#1554: first-connect retry — TCP ECONNREFUSED then success", () => {
   it("retries on ECONNREFUSED and completes handshake when server binds within budget", () => {
     return new Promise<void>((resolve, reject) => {
@@ -3608,6 +3713,8 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 
       const { pi, trigger } = makeMockPI1554()
       prismExtension(pi as never)
+      // Register for module-level teardown sweep (issue #2060).
+      registerExtensionWiring({ trigger, server: null, acceptedConn: null })
 
       server.listen(sockPath, () => {
         void trigger("session_start", {}, {}).then(async () => {
@@ -3943,8 +4050,12 @@ function setupReviewGuardHarness(): Promise<{
   pushInbound: (frame: Record<string, unknown>) => void
   /** Frames received from the extension on the socket, parsed as objects. */
   received: () => Record<string, unknown>[]
-  /** Tear down server, restore env, remove tempdir. */
-  cleanup: () => void
+  /**
+   * Tear down server, restore env, remove tempdir. The extension's outbound
+   * socket and the server-accepted Socket are torn down by the module-level
+   * `after()` hook via the extension-wiring registry (see issue #2060).
+   */
+  cleanup: () => Promise<void>
 }> {
   return new Promise((resolve, reject) => {
     const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2050-"))
@@ -3956,17 +4067,20 @@ function setupReviewGuardHarness(): Promise<{
     process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
 
     const receivedLines: string[] = []
-    let serverConn: net.Socket | null = null
+    const acceptedConn: AcceptedConnRef = { current: null }
 
-    const cleanup = () => {
+    const { pi, trigger } = makeMockPI1554()
+
+    const cleanup = async () => {
       process.env.PRISM_SESSION_NAME = savedName
       process.env.PRISM_HARNESS_PIPE = savedPipe
-      try { server.close() } catch {}
+      // Delegate extension+socket teardown to the registry helper so behaviour
+      // matches every other extension-wired test in this file.
+      await teardownExtensionWiring({ trigger, server, acceptedConn })
       try { fs.rmSync(sockDir, { recursive: true, force: true }) } catch {}
     }
 
-    const server = net.createServer((conn) => {
-      serverConn = conn
+    const server = net.createServer(trackConn(acceptedConn, (conn) => {
       attachJsonlReader(conn, (line) => {
         if (line.length === 0) return
         receivedLines.push(line)
@@ -3976,13 +4090,13 @@ function setupReviewGuardHarness(): Promise<{
           conn.write(REVIEW_GUARD_HELLO_ACK())
         }
       })
-    })
+    }))
 
-    const { pi, trigger } = makeMockPI1554()
     // The doom-loop snapshot path that tool_execution_start calls into
     // requires an appendEntry no-op.
     ;(pi as unknown as { appendEntry: () => void }).appendEntry = () => {}
     prismExtension(pi as never)
+    registerExtensionWiring({ trigger, server, acceptedConn })
 
     server.listen(sockPath, () => {
       // Fire session_start to dial the socket and complete the handshake.
@@ -3994,8 +4108,8 @@ function setupReviewGuardHarness(): Promise<{
         resolve({
           trigger,
           pushInbound: (frame) => {
-            if (!serverConn) throw new Error("server connection not yet established")
-            serverConn.write(JSON.stringify(frame) + "\n")
+            if (!acceptedConn.current) throw new Error("server connection not yet established")
+            acceptedConn.current.write(JSON.stringify(frame) + "\n")
           },
           received: () => receivedLines.map((l) => {
             try { return JSON.parse(l) as Record<string, unknown> } catch { return {} }
@@ -4003,14 +4117,12 @@ function setupReviewGuardHarness(): Promise<{
           cleanup,
         })
       }).catch((err) => {
-        cleanup()
-        reject(err)
+        void cleanup().then(() => reject(err)).catch(() => reject(err))
       })
     })
 
     server.on("error", (err) => {
-      cleanup()
-      reject(err)
+      void cleanup().then(() => reject(err)).catch(() => reject(err))
     })
   })
 }
@@ -4038,7 +4150,7 @@ describe("#2050: review-guard — sequence A (no review, turn_end → finished)"
       )
       assert.equal(stateChanges[0].state, "finished")
     } finally {
-      h.cleanup()
+      await h.cleanup()
     }
   })
 })
@@ -4068,7 +4180,7 @@ describe("#2050: review-guard — sequence B (mid-review, turn_end suppressed)",
         `sequence B (mid-review): expected 0 state_change frames, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
       )
     } finally {
-      h.cleanup()
+      await h.cleanup()
     }
   })
 })
@@ -4118,7 +4230,7 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
       )
       assert.equal(postClearSC[0].state, "finished")
     } finally {
-      h.cleanup()
+      await h.cleanup()
     }
   })
 
@@ -4146,7 +4258,7 @@ describe("#2050: review-guard — sequence C (completed-review, turn_end → fin
       )
       assert.equal(stateChanges[0].state, "finished")
     } finally {
-      h.cleanup()
+      await h.cleanup()
     }
   })
 })
