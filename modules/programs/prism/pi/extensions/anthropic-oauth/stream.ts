@@ -46,6 +46,15 @@ type ContentBlockParam =
       input: Record<string, unknown>
     }
   | {
+      type: "thinking"
+      thinking: string
+      signature: string
+    }
+  | {
+      type: "redacted_thinking"
+      data: string
+    }
+  | {
       type: "tool_result"
       tool_use_id: string
       content: string | ToolResultContentBlock[]
@@ -302,6 +311,46 @@ export function convertPiMessagesToAnthropic(
           blocks.push({
             type: "text",
             text: sanitizeSurrogates((block as TextContent).text),
+          })
+        } else if (block.type === "thinking") {
+          // Re-inject thinking blocks on multi-turn requests so the model
+          // receives its signed reasoning chain back, matching pi-ai's
+          // built-in handler at anthropic.ts ~1069-1099. Without this the
+          // model loses reasoning continuity across turns (issue #2049).
+          const tb = block as ThinkingContent
+          // Redacted thinking: pass the opaque payload back as redacted_thinking.
+          // Pi stores the encrypted payload in `thinkingSignature` when
+          // `redacted` is true (see ThinkingContent type docs).
+          if (tb.redacted) {
+            blocks.push({
+              type: "redacted_thinking",
+              data: tb.thinkingSignature ?? "",
+            })
+            continue
+          }
+          // Skip empty thinking blocks entirely — no point shipping a
+          // signed block with no content (also matches pi-ai).
+          if (!tb.thinking || tb.thinking.trim().length === 0) continue
+          // Missing/empty signature: degrade to a plain text block carrying
+          // the thinking text. On the OAuth path this is the safe default
+          // (no `allowEmptySignature` opt-in) — shipping an unsigned
+          // thinking block risks API rejection on models that require a
+          // signature. See pi-ai's `allowEmptySignature` branch which we
+          // intentionally do NOT take here.
+          if (
+            !tb.thinkingSignature ||
+            tb.thinkingSignature.trim().length === 0
+          ) {
+            blocks.push({
+              type: "text",
+              text: sanitizeSurrogates(tb.thinking),
+            })
+            continue
+          }
+          blocks.push({
+            type: "thinking",
+            thinking: sanitizeSurrogates(tb.thinking),
+            signature: tb.thinkingSignature,
           })
         } else if (block.type === "toolCall") {
           const tb = block as ToolCall
