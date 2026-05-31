@@ -1433,10 +1433,6 @@ func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
-	// Clear PRISM_SPAWN_PATH so the keybind carve-out (#2063) does not fire —
-	// this test exercises the non-keybind empty-prompt rejection.
-	t.Setenv("PRISM_SPAWN_PATH", "")
-
 	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
 	// dedicated sentinel that no sandbox injects — the defensive
 	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim that pre-#2073 tests carried
