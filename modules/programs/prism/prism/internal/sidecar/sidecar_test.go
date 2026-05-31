@@ -5572,26 +5572,31 @@ func TestHostAPI_Spawn_EmptyPromptReturns400(t *testing.T) {
 	}
 }
 
-// TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted verifies the issue
-// #2063 carve-out: when the request carries {"from_keybind":true}, an
-// empty prompt must NOT be rejected at layer 3 — the proxy has signalled
-// that this is a tmux Prefix+a invocation and the operator will type the
-// initial prompt to the live agent after the popup attaches.
+// TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted verifies the
+// #2063/#2073 carve-out: when the request carries
+// {"from_keybind":true}, an empty prompt must NOT be rejected at layer
+// 3 — the proxy has signalled that this is a tmux Prefix+a invocation
+// and the operator will type the initial prompt to the live agent
+// after the popup attaches.
 //
-// The stub records its env so we can assert that PRISM_SPAWN_PATH is
-// propagated to the host-side prism spawn child. That env var is the
-// discriminator runSpawn uses for its own carve-out — if the sidecar
-// failed to set it, the host-side child would still reject the empty
-// prompt and the popup would flash-close.
+// The stub records its env so we can assert that both PRISM_KEYBIND_SPAWN
+// (the dedicated discriminator post-#2073) AND PRISM_SPAWN_PATH (the
+// cwd hint) are propagated to the host-side prism spawn child. The
+// sentinel is what runSpawn checks for its own carve-out — if the
+// sidecar failed to set it, the host-side child would still reject the
+// empty prompt and the popup would flash-close.
 func TestHostAPI_Spawn_FromKeybind_EmptyPromptAccepted(t *testing.T) {
 	d := openTestDB(t)
 
 	envFile := filepath.Join(t.TempDir(), "captured-env")
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
-	// The stub writes its PRISM_SPAWN_PATH env to a file then prints the
-	// canonical session-created line so the handler's parse succeeds.
+	// The stub writes both env vars to a file then prints the canonical
+	// session-created line so the handler's parse succeeds.
 	stubScript := `#!/bin/sh
-echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}" > ` + envFile + `
+{
+  echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}"
+  echo "PRISM_KEYBIND_SPAWN=${PRISM_KEYBIND_SPAWN}"
+} > ` + envFile + `
 echo "session \"test-repo@keybind-branch\" created"
 `
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
@@ -5619,43 +5624,49 @@ echo "session \"test-repo@keybind-branch\" created"
 			rr.Code, rr.Body.String())
 	}
 
-	// Verify PRISM_SPAWN_PATH was propagated to the host-side child with the
-	// sidecar's own worktree path — not whatever the sidecar process
-	// happened to inherit at launch. The handler explicitly filters and
-	// overwrites PRISM_SPAWN_PATH so the child's view is a pure function of
-	// the request, independent of the sidecar's environment.
+	// Verify both env vars were propagated to the host-side child:
+	//   - PRISM_KEYBIND_SPAWN=1 — the dedicated discriminator runSpawn checks.
+	//   - PRISM_SPAWN_PATH=<sidecar.Worktree> — the cwd hint, set to the
+	//     sidecar's own worktree path so any downstream consumer that
+	//     resolves the path lands on a real directory (not whatever the
+	//     sidecar process happened to inherit at launch).
 	capturedEnv, err := os.ReadFile(envFile)
 	if err != nil {
 		t.Fatalf("read captured env: %v", err)
 	}
-	envLine := strings.TrimSpace(string(capturedEnv))
-	wantLine := "PRISM_SPAWN_PATH=" + cfg.Worktree
-	if envLine != wantLine {
-		t.Errorf("captured env %q, want %q (host-side child must see the sidecar's worktree, not whatever PRISM_SPAWN_PATH this sidecar process inherited)",
-			envLine, wantLine)
+	got := strings.TrimSpace(string(capturedEnv))
+	want := "PRISM_SPAWN_PATH=" + cfg.Worktree + "\nPRISM_KEYBIND_SPAWN=1"
+	if got != want {
+		t.Errorf("captured env %q, want %q (host-side child must see both the keybind sentinel and the sidecar's worktree path, not whatever this sidecar process inherited)",
+			got, want)
 	}
 }
 
 // TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv verifies the
-// narrowing fix surfaced by review-context on the first review round: when
-// from_keybind:true arrives alongside a NON-empty prompt, the sidecar must
-// NOT set PRISM_SPAWN_PATH on the host-side prism spawn child. Doing so
-// would flip the child's `headless := !fromKeybind && !attachFlag` from
-// true to false and cause it to call session.Attach against whatever tmux
-// client the sidecar inherited — a behavioural change for ordinary
-// container worker-spawn flows that the empty-prompt carve-out does not
-// need to enable.
+// narrowing fix surfaced by review-context on the first review round of
+// #2063, preserved post-#2073: when from_keybind:true arrives alongside
+// a NON-empty prompt, the sidecar must NOT set PRISM_KEYBIND_SPAWN (or
+// PRISM_SPAWN_PATH) on the host-side prism spawn child. Setting the
+// keybind sentinel would flip the child's
+// `headless := !fromKeybind && !attachFlag` from true to false and
+// cause it to call session.Attach against whatever tmux client the
+// sidecar inherited — a behavioural change for ordinary worker-spawn
+// flows that the empty-prompt carve-out does not need to enable.
 //
-// In practice the narrowed proxy will not send from_keybind:true alongside
-// a non-empty prompt, but the layer-3 handler's behaviour must be safe
-// even if a malformed client does.
+// In practice the proxy will only ever send from_keybind:true alongside
+// an empty prompt (the keybind path has no --prompt), but the layer-3
+// handler's behaviour must be safe even if a malformed client posts
+// from_keybind:true with a non-empty prompt.
 func TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv(t *testing.T) {
 	d := openTestDB(t)
 
 	envFile := filepath.Join(t.TempDir(), "captured-env")
 	stubPath := filepath.Join(t.TempDir(), "prism-stub")
 	stubScript := `#!/bin/sh
-echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}" > ` + envFile + `
+{
+  echo "PRISM_SPAWN_PATH=${PRISM_SPAWN_PATH}"
+  echo "PRISM_KEYBIND_SPAWN=${PRISM_KEYBIND_SPAWN}"
+} > ` + envFile + `
 echo "session \"test-repo@some-branch\" created"
 `
 	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
@@ -5685,14 +5696,15 @@ echo "session \"test-repo@some-branch\" created"
 	if err != nil {
 		t.Fatalf("read captured env: %v", err)
 	}
-	envLine := strings.TrimSpace(string(capturedEnv))
-	// The harness MUST NOT have inherited PRISM_SPAWN_PATH from this sidecar.
-	// The stub captures `PRISM_SPAWN_PATH=<value>`; for a clean child the
-	// value half is empty. We accept either "PRISM_SPAWN_PATH=" or no line at
-	// all in case the stub never wrote the file for any reason.
-	if envLine != "PRISM_SPAWN_PATH=" && envLine != "" {
-		t.Errorf("captured env %q: PRISM_SPAWN_PATH must NOT be set on the child when from_keybind:true arrives with a non-empty prompt (would flip headless and side-effect session.Attach)",
-			envLine)
+	got := strings.TrimSpace(string(capturedEnv))
+	// Both env vars must be cleared on the child when from_keybind:true
+	// arrives with a non-empty prompt. The stub captures
+	// `<KEY>=<value>`; for a clean child the value half is empty on
+	// both lines.
+	want := "PRISM_SPAWN_PATH=\nPRISM_KEYBIND_SPAWN="
+	if got != want {
+		t.Errorf("captured env %q, want %q: neither PRISM_SPAWN_PATH nor PRISM_KEYBIND_SPAWN may be set on the child when from_keybind:true arrives with a non-empty prompt (setting PRISM_KEYBIND_SPAWN would flip headless and side-effect session.Attach)",
+			got, want)
 	}
 }
 
