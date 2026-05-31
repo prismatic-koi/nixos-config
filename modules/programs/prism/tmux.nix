@@ -264,22 +264,27 @@ in
               #
               # Wrapped in run-shell so we can resolve #{pane_current_path}
               # via `tmux display-message -p` at trigger time and substitute
-              # the resolved string into both `-d` and `-e`. On tmux 3.6a,
+              # the resolved string into `-d`. On tmux 3.6a,
               # `display-popup -e VAR=#{format}` does NOT run the value
-              # through tmux format-expansion — PRISM_SPAWN_PATH arrives
-              # inside the popup as the literal string "#{pane_current_path}",
-              # which causes prism spawn to misroute and flash-close the
-              # popup with an unreadable error (issue #2072). Doing the
-              # substitution in the shell sidesteps the bug entirely.
+              # through tmux format-expansion — a format like
+              # `#{pane_current_path}` arrives inside the popup as the
+              # literal string, not the resolved path (issue #2072). The
+              # run-shell pattern resolves the path in the shell and feeds
+              # it to `-d` directly, sidestepping the bug entirely. The
+              # popup's cwd is enough context for `prism spawn` — its
+              # `resolveBareRoot` falls back to `tmux.CurrentPanePath()`
+              # for the bare-repo lookup, no env transport needed.
               #
-              # PRISM_SPAWN_PATH is set explicitly so the spawn command can
-              # discriminate keybind-initiated spawns from shell/agent
-              # callers. The empty-prompt guard (issue #1891) is relaxed for
-              # the keybind path — the operator types the initial prompt to
-              # the live agent after the popup attaches, so requiring
-              # --prompt at invocation time would flash-close the popup with
-              # an unreadable error (issue #2012).
-              bind a run-shell 'path=$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}"); ${pkgs.tmux}/bin/tmux display-popup -E -d "$path" -w 60% -h 20% -b single -e "PRISM_SPAWN_PATH=$path" "${prism} spawn --attach"'
+              # PRISM_KEYBIND_SPAWN=1 is the dedicated keybind discriminator
+              # (issue #2073). The empty-prompt guard (issue #1891) is
+              # relaxed for the keybind path — the operator types the
+              # initial prompt to the live agent after the popup attaches,
+              # so requiring --prompt at invocation time would flash-close
+              # the popup with an unreadable error (issue #2012). Using a
+              # dedicated sentinel (rather than reusing PRISM_SPAWN_PATH)
+              # ensures sandbox-injected env vars cannot accidentally trip
+              # the carve-out from inside a container.
+              bind a run-shell 'path=$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}"); ${pkgs.tmux}/bin/tmux display-popup -E -d "$path" -w 60% -h 20% -b single -e "PRISM_KEYBIND_SPAWN=1" "${prism} spawn --attach"'
 
               # agent scrolling keybinds — active when the pane is a prism agent
               # running under either supported isolation mode (podman or bwrap),

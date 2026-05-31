@@ -7,7 +7,8 @@ package session
 // initial prompt because the operator types it to the live agent after
 // the popup attaches. The new opts.AllowEmptyPrompt field opts the
 // caller out of the layer-4 guard; cmd/spawn.go sets it when
-// PRISM_SPAWN_PATH is present and no prompt was supplied.
+// PRISM_KEYBIND_SPAWN is present (the dedicated keybind sentinel
+// introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH).
 //
 // These tests are package-internal (`package session`, not session_test)
 // so they can use spyTmuxBin / openSpawnTestDB from spawn_test.go — the

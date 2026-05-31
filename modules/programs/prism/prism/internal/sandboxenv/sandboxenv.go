@@ -11,8 +11,10 @@
 //   - PRISM_HOST_API is set exclusively by the prism sidecar when launching a
 //     sandboxed session (bwrap, sandbox-exec, or podman container).
 //   - PRISM_SPAWN_PATH is also set in sandboxed sessions but serves as a
-//     working-directory hint, not a sandbox sentinel — using it would be a
-//     semantic stretch.
+//     working-directory hint only — it is NOT a sandbox sentinel and NOT a
+//     keybind discriminator. The dedicated tmux-keybind sentinel is
+//     PRISM_KEYBIND_SPAWN (introduced in #2073 to retire the old overload),
+//     which the sidecar never injects into a sandboxed session.
 //
 // Future callers that need to know "am I sandboxed?" should use
 // IsInsideSandbox() rather than repeating the inline os.Getenv check.

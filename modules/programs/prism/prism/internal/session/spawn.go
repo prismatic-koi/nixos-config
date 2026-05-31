@@ -227,12 +227,14 @@ type SpawnOpts struct {
 	ReadinessTimeout time.Duration
 
 	// AllowEmptyPrompt opts the caller out of the layer-4 empty-prompt guard
-	// for LayoutFull / LayoutAgentOnly (issue #2012). The tmux Prefix+a
-	// keybind invokes `prism spawn --attach` with no --prompt so the operator
-	// can type the initial prompt to the live agent after the popup attaches;
-	// `cmd/spawn.go` sets this field when `PRISM_SPAWN_PATH` is present and
-	// no prompt was supplied. All other callers should leave this false so
-	// the original "agent pane needs a prompt" guard (#1891) keeps firing.
+	// for LayoutFull / LayoutAgentOnly (issues #2012, #2073). The tmux
+	// Prefix+a keybind invokes `prism spawn --attach` with no --prompt so
+	// the operator can type the initial prompt to the live agent after the
+	// popup attaches; `cmd/spawn.go` sets this field when
+	// `PRISM_KEYBIND_SPAWN` is present (the dedicated keybind sentinel
+	// introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH). All
+	// other callers should leave this false so the original "agent pane
+	// needs a prompt" guard (#1891) keeps firing.
 	AllowEmptyPrompt bool
 
 	// PIExtensionDir is the host-side absolute path to the directory that

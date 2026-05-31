@@ -128,32 +128,25 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	// Keybind carve-out (issue #2063 — parity with the host-side carve-out
-	// added for issue #2012). The tmux Prefix+a keybind invokes `prism spawn
-	// --attach` with no --prompt because the operator types the initial
-	// prompt to the live agent after the popup attaches.
+	// Keybind carve-out (issues #2063, #2073). The tmux Prefix+a keybind
+	// invokes `prism spawn --attach` with no --prompt because the operator
+	// types the initial prompt to the live agent after the popup attaches.
 	//
-	// The host-side runSpawn uses `PRISM_SPAWN_PATH != ""` as the keybind
-	// discriminator, but inside a container PRISM_SPAWN_PATH is set
-	// UNCONDITIONALLY by every sandbox (bwrap.go:496-503,
-	// agent_run_sandbox_exec_darwin.go:284) — it is documented as a
-	// working-directory hint, not a sandbox sentinel
-	// (internal/sandboxenv/sandboxenv.go). Using it as the sole discriminator
-	// here would fire on every container-originated `prism spawn`, not just
-	// keybind spawns, and the resulting `from_keybind: true` would flip the
-	// host-side child's `headless := !fromKeybind && !attachFlag` from true
-	// to false on every container worker-spawn flow — causing the host child
-	// to call session.Attach against whatever tmux client the sidecar
-	// inherited.
-	//
-	// Narrow the carve-out to the only case where it materially matters: an
-	// EMPTY prompt. That is the exact symptom #2012/#2063 set out to fix
-	// (Prefix+a popup flash-close from an unconditional empty-prompt reject),
-	// and it cannot break a non-empty-prompt invocation because the
-	// non-empty path is byte-identical to today. A coordinator/worker that
-	// passes `--prompt "X"` from inside a container hits the same code path
-	// it did pre-PR.
-	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != "" && promptFlag == ""
+	// History: the original carve-out (#2063) reused PRISM_SPAWN_PATH as the
+	// discriminator, but that env var is set UNCONDITIONALLY by every
+	// sandbox (bwrap.go:~500, cmd/agent_run_sandbox_exec_darwin.go:~284) as
+	// a working-directory hint (see internal/sandboxenv/sandboxenv.go). To
+	// stop ordinary container worker-spawn flows from being misclassified
+	// as keybind spawns, the proxy check had to be narrowed to
+	// `PRISM_SPAWN_PATH != "" && promptFlag == ""`, with an extra layer of
+	// narrowing in the sidecar's /spawn handler. That conflation is finally
+	// retired by #2073: the keybind sets a dedicated sentinel
+	// PRISM_KEYBIND_SPAWN=1 that no sandbox injects, so the discriminator
+	// can be a single env-var check on both the host and proxy paths — no
+	// `promptFlag == ""` narrowing needed, no risk of leakage from sandbox
+	// env-injection. PRISM_SPAWN_PATH keeps its working-directory-hint job
+	// and nothing else.
+	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
 	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
 	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
 	// stdin produces a session that is created successfully on every
@@ -420,19 +413,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	attachFlag, _ := cmd.Flags().GetBool("attach")
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
-	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
-	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
+	// The keybinding sets PRISM_KEYBIND_SPAWN=1; --attach overrides to force a switch.
+	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
 	// Reject an empty prompt at the operator boundary (issue #1891). When the
 	// hidden --prompt-source flag is set we are running as the child of the
 	// host-API /spawn handler, which has already validated that req.Prompt is
 	// non-empty (layer 3); skipping the check there keeps the proxy's own
 	// 400 surface as the source of truth for that path.
 	//
-	// Keybind carve-out (issue #2012): the tmux Prefix+a keybind invokes
-	// `prism spawn --attach` with no --prompt because the operator types the
-	// initial prompt to the live agent after the popup attaches. The keybind
-	// sets PRISM_SPAWN_PATH (the `fromKeybind` discriminator), so an empty
-	// prompt on that path is legitimate and must be allowed through.
+	// Keybind carve-out (issues #2012, #2073): the tmux Prefix+a keybind
+	// invokes `prism spawn --attach` with no --prompt because the operator
+	// types the initial prompt to the live agent after the popup attaches.
+	// The keybind sets PRISM_KEYBIND_SPAWN=1 (the `fromKeybind`
+	// discriminator — a dedicated sentinel that no sandbox injects), so an
+	// empty prompt on that path is legitimate and must be allowed through.
 	if promptText == "" && promptSource != "proxy-spawn" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}

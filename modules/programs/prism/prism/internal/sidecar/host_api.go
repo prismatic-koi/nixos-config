@@ -59,8 +59,9 @@ func contextErrStatus(ctx context.Context) (int, bool) {
 
 // filterEnv returns a copy of env with any entry whose key matches name
 // removed. Used to control specific environment variables passed to a child
-// process (e.g. unsetting PRISM_SPAWN_PATH so the child does not inherit the
-// sidecar process's own value — see the /spawn handler and issue #2063).
+// process (e.g. unsetting PRISM_SPAWN_PATH / PRISM_KEYBIND_SPAWN so the
+// child does not inherit the sidecar process's own value — see the
+// /spawn handler and issues #2063, #2073).
 func filterEnv(env []string, name string) []string {
 	prefix := name + "="
 	out := env[:0:0]
@@ -1052,8 +1053,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// an arbitrary HTTP caller. When true, an empty prompt is
 			// permitted — the operator types the initial prompt to the live
 			// agent after the popup attaches. The proxySpawn CLI path sets
-			// this when PRISM_SPAWN_PATH is set in its own environment. See
-			// issues #2012 (host-side carve-out) and #2063 (proxy parity).
+			// this when PRISM_KEYBIND_SPAWN is set in its own environment
+			// (the dedicated keybind sentinel introduced in #2073 to replace
+			// the overloaded PRISM_SPAWN_PATH). See issues #2012 (host-side
+			// carve-out), #2063 (proxy parity), and #2073 (sentinel decoupling).
 			FromKeybind bool `json:"from_keybind"`
 		}
 		// /spawn body cap: default 1 MiB (issue #1848). DisallowUnknownFields
@@ -1256,47 +1259,59 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
-		// Issue #2063: when the request was initiated by the tmux Prefix+a
-		// keybind AND no prompt was supplied, propagate the discriminator to
-		// the host-side prism spawn via PRISM_SPAWN_PATH. The host-side
-		// runSpawn already reads that env var to recognise a keybind spawn
-		// (`fromKeybind`) and skip the empty-prompt guard — reusing it here
-		// keeps a single discriminator across both code paths instead of
-		// inventing a parallel CLI flag.
+		// Issues #2063, #2073: when the request was initiated by the tmux
+		// Prefix+a keybind, propagate the keybind discriminator to the
+		// host-side `prism spawn` child so runSpawn's own carve-out fires and
+		// the empty-prompt guard is skipped.
 		//
-		// Narrow the propagation to `req.Prompt == ""` to match the proxy
-		// side. fromKeybind on the host also flips runSpawn's
+		// Two env vars are involved, with two separate jobs:
+		//
+		//   - PRISM_KEYBIND_SPAWN=1 — the dedicated keybind sentinel
+		//     introduced in #2073. This is the SOLE discriminator runSpawn
+		//     uses. No sandbox injects this var, so propagating it on
+		//     from_keybind cannot leak into ordinary container worker-spawn
+		//     flows.
+		//   - PRISM_SPAWN_PATH — a working-directory hint (see
+		//     internal/sandboxenv/sandboxenv.go). Propagated here so the
+		//     host-side child has a real path to resolve the bare repo from
+		//     when it falls back through `resolveBareRoot`. NOT a
+		//     discriminator post-#2073.
+		//
+		// IMPORTANT: control both env values explicitly in BOTH branches.
+		// Without an explicit unset, the child inherits the sidecar process's
+		// own values — which can happen if this sidecar itself was launched
+		// from a shell with those vars already set (e.g. a developer running
+		// prism manually for testing). Always overwriting both (either to
+		// the keybind values or to empty) makes the child's view a pure
+		// function of the request, independent of the sidecar's launch
+		// environment.
+		//
+		// Prefer the sidecar's own worktree path when populated so any
+		// downstream consumer that resolves the path lands on a real
+		// directory; fall back to a sentinel marker if it is unset (defence
+		// in depth — production sidecars always have Worktree populated).
+		//
+		// Narrow propagation to `req.Prompt == ""`. fromKeybind on the
+		// host-side child also flips runSpawn's
 		// `headless := !fromKeybind && !attachFlag` from true to false, which
 		// for a NON-empty-prompt invocation would make the child call
-		// session.Attach against whatever tmux client this sidecar inherited
-		// — a behavioural change the empty-prompt carve-out does not need.
-		// Restricting to the empty-prompt case keeps the supplied-prompt path
-		// byte-identical to the pre-PR behaviour.
-		//
-		// IMPORTANT: control the env value explicitly in BOTH branches.
-		// Without an explicit unset, the child inherits the sidecar process's
-		// own PRISM_SPAWN_PATH — which can happen if this sidecar itself was
-		// launched from a shell with PRISM_SPAWN_PATH already set (e.g. a
-		// developer running prism manually for testing). Always overwriting
-		// PRISM_SPAWN_PATH (either to the keybind value or to empty) makes the
-		// child's view of the discriminator a pure function of the request,
-		// independent of the sidecar's launch environment.
-		//
-		// runSpawn only checks `os.Getenv("PRISM_SPAWN_PATH") != ""`, so any
-		// non-empty value enables the carve-out. Prefer the sidecar's own
-		// worktree path when populated so any downstream consumer that
-		// resolves the path lands on a real directory; fall back to a
-		// sentinel marker if it is unset (defence in depth — production
-		// sidecars always have Worktree populated).
+		// session.Attach against whatever tmux client this sidecar inherited.
+		// Restricting propagation to the empty-prompt case keeps the
+		// supplied-prompt path byte-identical to the pre-PR behaviour even
+		// if a malformed client posts from_keybind:true alongside a
+		// non-empty prompt.
 		spawnPathEnv := "PRISM_SPAWN_PATH="
+		keybindEnv := "PRISM_KEYBIND_SPAWN="
 		if req.FromKeybind && req.Prompt == "" {
 			spawnPath := s.cfg.Worktree
 			if spawnPath == "" {
 				spawnPath = "keybind"
 			}
 			spawnPathEnv = "PRISM_SPAWN_PATH=" + spawnPath
+			keybindEnv = "PRISM_KEYBIND_SPAWN=1"
 		}
-		cmd.Env = append(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), spawnPathEnv)
+		cleanedEnv := filterEnv(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), "PRISM_KEYBIND_SPAWN")
+		cmd.Env = append(cleanedEnv, spawnPathEnv, keybindEnv)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
