@@ -261,21 +261,25 @@ in
               # spawn new timestamped worktree from current repo (prefix+a)
               # prism spawn infers the repo from the current pane path, creates
               # a zettelkasten-timestamped branch+worktree, and switches to it.
-              # -d sets the popup's start directory to the caller's pane path
-              # (#{pane_current_path} is expanded by tmux for -d). The popup
-              # pane then reports that same path via pane_current_path, so
-              # prism's CurrentPanePath() fallback works without PRISM_SPAWN_PATH.
               #
-              # PRISM_SPAWN_PATH is also set explicitly so the spawn command
-              # can discriminate keybind-initiated spawns from shell/agent
+              # Wrapped in run-shell so we can resolve #{pane_current_path}
+              # via `tmux display-message -p` at trigger time and substitute
+              # the resolved string into both `-d` and `-e`. On tmux 3.6a,
+              # `display-popup -e VAR=#{format}` does NOT run the value
+              # through tmux format-expansion — PRISM_SPAWN_PATH arrives
+              # inside the popup as the literal string "#{pane_current_path}",
+              # which causes prism spawn to misroute and flash-close the
+              # popup with an unreadable error (issue #2072). Doing the
+              # substitution in the shell sidesteps the bug entirely.
+              #
+              # PRISM_SPAWN_PATH is set explicitly so the spawn command can
+              # discriminate keybind-initiated spawns from shell/agent
               # callers. The empty-prompt guard (issue #1891) is relaxed for
               # the keybind path — the operator types the initial prompt to
               # the live agent after the popup attaches, so requiring
               # --prompt at invocation time would flash-close the popup with
               # an unreadable error (issue #2012).
-              bind a display-popup -E -d "#{pane_current_path}" -w 60% -h 20% -b single \
-                -e "PRISM_SPAWN_PATH=#{pane_current_path}" \
-                "${prism} spawn --attach"
+              bind a run-shell 'path=$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}"); ${pkgs.tmux}/bin/tmux display-popup -E -d "$path" -w 60% -h 20% -b single -e "PRISM_SPAWN_PATH=$path" "${prism} spawn --attach"'
 
               # agent scrolling keybinds — active when the pane is a prism agent
               # running under either supported isolation mode (podman or bwrap),
