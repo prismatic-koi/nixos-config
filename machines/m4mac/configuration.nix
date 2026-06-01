@@ -25,7 +25,7 @@ in
   nx = {
     programs = {
       prism = {
-        profile.default = "anthropic";
+        profile.default = "anthropic-opus-medium";
         agent.isolation.default = "sandbox-exec";
         pi.atlassian = {
           enable = true;
@@ -54,7 +54,7 @@ in
       qutebrowser.enable = false; # broken, due to https://github.com/NixOS/nixpkgs/issues/514179
     };
     desktop = {
-      theme = "onedark";
+      theme = "edge";
       rofi.enable = true; # For shopping list script (uses choose on Darwin)
     };
     services = {
