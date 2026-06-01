@@ -265,6 +265,12 @@ type Opts struct {
 	DBPath string
 	// PluginHostPath is the path to the agent plugin file.
 	PluginHostPath string
+	// PIExtensionDir is the host-side directory containing the prism PI
+	// extension file. Forwarded to session.SpawnOpts.PIExtensionDir for
+	// every spawned review agent so host-mode launches load the extension
+	// (#2065). Empty value falls back to no --extension flag on host mode;
+	// container modes get the flag via container.PIInvocation regardless.
+	PIExtensionDir string
 	// ProfilesFile is the loaded profiles.json, used to resolve per-agent
 	// config content via BuildConfigContent. When nil, no config injection is
 	// performed.

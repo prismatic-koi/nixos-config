@@ -57,12 +57,6 @@
       envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
       clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
 
-      # System prompts sourced directly from the agent files so there
-      # is one authoritative copy — updates to those files flow through here
-      # automatically.
-      workerSystemPrompt = builtins.readFile ./agents/worker.md;
-      coordinatorSystemPrompt = builtins.readFile ./agents/coordinator.md;
-
       # AWS skill with clipboard command substituted at eval time.
       awsSkillFile = pkgs.replaceVars ./skills/aws/SKILL.md {
         inherit clipboardCmd;
@@ -124,9 +118,31 @@
           anthropicExtraUsage = false;
         };
 
-        # Vendored extension: replaces the previous npm:pi-anthropic-oauth@0.1.9
-        # package. The extension is stored in the nix store as plain TypeScript
-        # files and loaded by pi's jiti-based extension loader at runtime.
+        # Vendored extensions registered in settings.json.
+        #
+        # NOTE: the prism PI extension is intentionally NOT listed here.
+        # It is loaded via the `--extension` CLI flag emitted by prism's
+        # Go side at spawn time:
+        #   - internal/container/pi_invocation.go (bwrap / sandbox-exec)
+        #   - internal/session/session.go::buildDirectAgentCmd (host mode, #2065)
+        #
+        # An earlier iteration of #2068 also registered prism.ts here as
+        # defence-in-depth, on the assumption that pi's resource-loader
+        # de-dupes extension paths by canonicalised realpath. That holds
+        # in host mode but FAILS under bwrap: inside the sandbox, the
+        # `--extension` flag uses the bind-mount path
+        # (~/.config/prism/pi-extensions/prism.ts) while settings.json
+        # carries the raw nix-store path, and bwrap bind mounts mask the
+        # underlying realpath so canonicalisation returns two distinct
+        # absolute paths. The extension then loaded twice, pi flagged
+        # "--agent" as a conflicting flag registration, and the entire
+        # prism↔pi integration surface broke on every bwrap session.
+        # See the post-mortem for #2068 for the full diagnosis.
+        #
+        # The anthropic-oauth entry below replaces the previous
+        # npm:pi-anthropic-oauth@0.1.9 package. All extensions are stored
+        # in the nix store as plain TypeScript files and loaded by pi's
+        # jiti-based extension loader at runtime.
         # To port a future upstream fix, see:
         #   modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md
         extensions = [
@@ -243,8 +259,16 @@
         xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
-        home.file.".pi/agent/system-prompt.md".text = workerSystemPrompt;
-        home.file.".pi/agent/coordinator-system-prompt.md".text = coordinatorSystemPrompt;
+        # Note: ~/.pi/agent/system-prompt.md and coordinator-system-prompt.md
+        # were removed in the #2064 cleanup. They were staged by the pre-#2031
+        # mechanism (when prism wrote a per-session APPEND_SYSTEM.md staging
+        # file), but pi 0.78 has no native loader for either filename — it
+        # only auto-discovers SYSTEM.md / APPEND_SYSTEM.md per dist/core/
+        # resource-loader.js. Confirmed inert from #2038 onwards (when the
+        # APPEND_SYSTEM.md staging path was removed); role-prompt injection
+        # now flows through the prism PI extension's pi.registerFlag("agent")
+        # path (extension reads ~/.config/prism/agents/<role>.md at
+        # before_agent_start).
         home.file.".pi/agent/AGENTS.md".text = builtins.readFile ./agents/global-instructions.md;
         # Custom theme derived from config.theme, deployed so pi picks it up
         # from ~/.pi/agent/themes/ at runtime. The theme name matches

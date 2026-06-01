@@ -18,7 +18,15 @@
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
-import { sanitizeSystemText, buildAnthropicSystemPrompt } from "./stream.ts"
+import { PassThrough } from "node:stream"
+import {
+  sanitizeSystemText,
+  buildAnthropicSystemPrompt,
+  parseSSEStream,
+  convertPiMessagesToAnthropic,
+} from "./stream.ts"
+import type { Message } from "@earendil-works/pi-ai"
+import { initLogger, closeLogger } from "./logger.ts"
 
 // ---------------------------------------------------------------------------
 // Helper: reference implementation of the *prior* sanitizeSystemText behaviour
@@ -392,5 +400,502 @@ describe("sanitizeSystemText — real coordinator-shaped system prompt", () => {
       contentBlock.text.includes("Use Claude Code to invoke the agent."),
       "prose pi → Claude Code substitution should still work",
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// [functional] parseSSEStream diagnostic instrumentation (issue #2048)
+//
+// Asserts:
+//   - With PI_ANTHROPIC_OAUTH_DEBUG unset / logger disabled, parseSSEStream
+//     emits no log lines and parses the stream identically.
+//   - With the logger enabled (via initLogger({ stream }), the same mechanism
+//     the runtime uses), per-event logs, the event:error log, and the
+//     terminal summary all appear with the expected compact field shapes.
+//   - No request/response bodies, headers, tokens, or message content appear
+//     in the captured log output — frame metadata only.
+// ---------------------------------------------------------------------------
+
+// Build a Response whose body is a ReadableStream emitting `chunks` as raw
+// SSE bytes. Each chunk is delivered as a separate Uint8Array, which is
+// closer to how the network actually fragments frames.
+function makeSSEResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder()
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(encoder.encode(c))
+      controller.close()
+    },
+  })
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  })
+}
+
+// A no-op AssistantMessageEventStream that just collects pushed events.
+// Typed loosely — we don't assert on stream events, only on log output.
+function makeFakeStream(): { push: (e: unknown) => void; events: unknown[] } {
+  const events: unknown[] = []
+  return { push: (e) => events.push(e), events }
+}
+
+// Minimal Model / Context shaped to satisfy parseSSEStream. We never read
+// network or invoke a tool; these are only assigned onto `output`.
+function makeModelAndContext() {
+  const model = {
+    id: "claude-test",
+    api: "anthropic",
+    provider: "anthropic",
+  } as unknown as Parameters<typeof parseSSEStream>[1]
+  const context = { tools: [] } as unknown as Parameters<typeof parseSSEStream>[2]
+  return { model, context }
+}
+
+// Canonical, well-formed SSE transcript covering each event arm we log.
+const HEALTHY_TRANSCRIPT = [
+  // message_start
+  'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":0}}}\n\n',
+  // content_block_start (text)
+  'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+  // content_block_delta (text)
+  'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
+  // content_block_stop
+  'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+  // content_block_start (tool_use)
+  'event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}\n\n',
+  // content_block_delta (input_json)
+  'event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}\n\n',
+  // content_block_stop
+  'event: content_block_stop\ndata: {"type":"content_block_stop","index":1}\n\n',
+  // message_delta with stop_reason
+  'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":7}}\n\n',
+  // message_stop
+  'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+]
+
+function parseLogLines(buf: string): Array<Record<string, unknown>> {
+  return buf
+    .split("\n")
+    .filter((l) => l.trim().length > 0)
+    .map((l) => JSON.parse(l) as Record<string, unknown>)
+}
+
+describe("parseSSEStream — diagnostic instrumentation (#2048)", () => {
+  it("emits zero log lines when the logger is disabled (env-flag unset default)", async () => {
+    // Ensure no leaked state from a prior test re-enables the logger.
+    closeLogger()
+
+    // Capture writes to the logger's stream sink: install one, then close it
+    // again to flip mode back to "disabled". After this, log() must be a no-op.
+    const sink = new PassThrough()
+    let captured = ""
+    sink.on("data", (chunk) => {
+      captured += chunk.toString()
+    })
+
+    // (Sanity: with no initLogger call, logger is disabled by default.)
+    const { model, context } = makeModelAndContext()
+    const fakeStream = makeFakeStream()
+    const response = makeSSEResponse(HEALTHY_TRANSCRIPT)
+
+    const out = await parseSSEStream(
+      response,
+      model,
+      context,
+      false,
+      fakeStream as unknown as Parameters<typeof parseSSEStream>[4],
+    )
+
+    assert.equal(captured, "", "no log bytes should be written when logger is disabled")
+    // Behavioural sanity: parse still works.
+    assert.equal(out.role, "assistant")
+    assert.equal(out.content.length, 2, "text + toolCall block parsed")
+    assert.equal(out.stopReason, "toolUse")
+  })
+
+  it("emits per-event, error, and terminal-summary log lines with compact field shapes when enabled", async () => {
+    const sink = new PassThrough()
+    let captured = ""
+    sink.on("data", (chunk) => {
+      captured += chunk.toString()
+    })
+    initLogger({ stream: sink })
+
+    try {
+      const { model, context } = makeModelAndContext()
+      const fakeStream = makeFakeStream()
+
+      // Include a mid-stream `event: error` frame to assert the error-arm log.
+      // The parser's silent-fall-through behaviour for errors is preserved
+      // (no error arm in the switch); we only assert that the raw payload was
+      // logged BEFORE that fall-through.
+      const transcriptWithError = [
+        ...HEALTHY_TRANSCRIPT.slice(0, 3),
+        'event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"x"}}\n\n',
+        ...HEALTHY_TRANSCRIPT.slice(3),
+      ]
+      const response = makeSSEResponse(transcriptWithError)
+
+      const out = await parseSSEStream(
+        response,
+        model,
+        context,
+        false,
+        fakeStream as unknown as Parameters<typeof parseSSEStream>[4],
+      )
+
+      const lines = parseLogLines(captured)
+      assert.ok(lines.length > 0, "some log lines should have been emitted")
+
+      // Every log entry has the logger's standard envelope: ts + event + payload.
+      for (const entry of lines) {
+        assert.equal(typeof entry.ts, "string")
+        assert.equal(typeof entry.event, "string")
+      }
+
+      // Per-event logs: one sse_event per parsed SSE frame.
+      const perEvent = lines.filter((l) => l.event === "sse_event")
+      const types = perEvent.map((l) => l.t)
+      assert.deepEqual(
+        types,
+        [
+          "message_start",
+          "content_block_start",
+          "content_block_delta",
+          // NOTE: event:error frame is logged separately as sse_event_error;
+          // it ALSO produces a per-event log because the parser still JSON-
+          // parses the data and routes through the switch with type "error".
+          "error",
+          "content_block_stop",
+          "content_block_start",
+          "content_block_delta",
+          "content_block_stop",
+          "message_delta",
+          "message_stop",
+        ],
+        "per-event log should cover every parsed frame in order",
+      )
+
+      // content_block_start carries the cb (content_block type) field.
+      const blockStarts = perEvent.filter((l) => l.t === "content_block_start")
+      assert.deepEqual(
+        blockStarts.map((l) => l.cb),
+        ["text", "tool_use"],
+        "content_block_start logs include cb field",
+      )
+      // and an index.
+      for (const bs of blockStarts) assert.equal(typeof bs.i, "number")
+
+      // content_block_delta carries the d (delta type) field.
+      const blockDeltas = perEvent.filter((l) => l.t === "content_block_delta")
+      assert.deepEqual(
+        blockDeltas.map((l) => l.d),
+        ["text_delta", "input_json_delta"],
+        "content_block_delta logs include d field",
+      )
+
+      // message_delta carries the sr (stop_reason) field.
+      const msgDeltas = perEvent.filter((l) => l.t === "message_delta")
+      assert.equal(msgDeltas.length, 1)
+      assert.equal(msgDeltas[0].sr, "tool_use", "message_delta log includes sr field")
+
+      // event:error frame produces a dedicated sse_event_error log with raw data.
+      const errLogs = lines.filter((l) => l.event === "sse_event_error")
+      assert.equal(errLogs.length, 1, "exactly one sse_event_error log expected")
+      assert.equal(typeof errLogs[0].data, "string")
+      assert.ok(
+        (errLogs[0].data as string).includes("overloaded_error"),
+        "raw error payload should be captured",
+      )
+
+      // Terminal summary: exactly one, emitted last.
+      const ends = lines.filter((l) => l.event === "sse_stream_end")
+      assert.equal(ends.length, 1, "exactly one sse_stream_end summary expected")
+      assert.equal(lines[lines.length - 1].event, "sse_stream_end", "summary is last")
+      const summary = ends[0]
+      assert.equal(summary.contentLen, 2, "text + toolCall content blocks")
+      assert.equal(summary.toolCalls, 1, "one toolCall block")
+      assert.equal(summary.stopReason, "toolUse")
+      assert.equal(summary.sawMessageStop, true)
+
+      // Security: no message content or token strings leaked into the log.
+      // The transcript contains the text "hi" inside a text_delta. The
+      // per-event logger MUST NOT include it (we only log frame metadata).
+      assert.ok(!captured.includes('"hi"'), "message text must not appear in logs")
+      // No usage tokens fields either.
+      assert.ok(
+        !captured.includes("input_tokens"),
+        "raw usage fields should not appear in per-event logs",
+      )
+
+      // Behavioural sanity: parse still returns the same shape as the
+      // disabled-logger case.
+      assert.equal(out.content.length, 2)
+      assert.equal(out.stopReason, "toolUse")
+    } finally {
+      closeLogger()
+    }
+  })
+
+  it("terminal summary reports sawMessageStop=false when the stream ends without one", async () => {
+    const sink = new PassThrough()
+    let captured = ""
+    sink.on("data", (chunk) => {
+      captured += chunk.toString()
+    })
+    initLogger({ stream: sink })
+
+    try {
+      // Same transcript but drop the trailing message_stop frame.
+      const truncated = HEALTHY_TRANSCRIPT.slice(0, HEALTHY_TRANSCRIPT.length - 1)
+      const { model, context } = makeModelAndContext()
+      const fakeStream = makeFakeStream()
+      const response = makeSSEResponse(truncated)
+
+      await parseSSEStream(
+        response,
+        model,
+        context,
+        false,
+        fakeStream as unknown as Parameters<typeof parseSSEStream>[4],
+      )
+
+      const lines = parseLogLines(captured)
+      const ends = lines.filter((l) => l.event === "sse_stream_end")
+      assert.equal(ends.length, 1)
+      assert.equal(
+        ends[0].sawMessageStop,
+        false,
+        "missing message_stop must be observable in the summary",
+      )
+    } finally {
+      closeLogger()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// convertPiMessagesToAnthropic — thinking-block re-injection (#2049)
+//
+// Verifies that prior assistant turns containing `thinking` content blocks
+// are re-emitted into the Anthropic request body with their signature
+// preserved (and ordered before any text/tool_use), matching pi-ai's
+// built-in handler at anthropic.ts ~1069-1099.
+// ---------------------------------------------------------------------------
+describe("convertPiMessagesToAnthropic \u2014 thinking-block re-injection (#2049)", () => {
+  // Find the assistant message in the converted output.
+  function pickAssistant(
+    out: ReturnType<typeof convertPiMessagesToAnthropic>,
+  ) {
+    const m = out.find((x) => x.role === "assistant")
+    assert.ok(m, "expected an assistant message in output")
+    assert.ok(
+      Array.isArray(m.content),
+      "assistant content should be a block array",
+    )
+    return m.content as Array<{ type: string; [k: string]: unknown }>
+  }
+
+  it("round-trips a thinking block with signature, ordered before text/tool_use", () => {
+    const messages: Message[] = [
+      { role: "user", content: "hi" } as Message,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "step 1: consider options",
+            thinkingSignature: "sig-abc-123",
+          },
+          { type: "text", text: "answer" },
+          {
+            type: "toolCall",
+            id: "call_1",
+            name: "Read",
+            arguments: { path: "/etc/hosts" },
+          },
+        ],
+        // Remaining AssistantMessage fields are not consulted by the converter.
+      } as unknown as Message,
+      { role: "user", content: "continue" } as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    // Thinking block must come first (mirroring pi-ai), then text, then tool_use.
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["thinking", "text", "tool_use"],
+      "thinking precedes text/tool_use in assistant turn",
+    )
+
+    const th = blocks[0]
+    assert.equal(th.type, "thinking")
+    assert.equal(th.thinking, "step 1: consider options")
+    assert.equal(
+      th.signature,
+      "sig-abc-123",
+      "signature must be preserved bit-for-bit",
+    )
+  })
+
+  it("skips a thinking block whose text is empty/whitespace", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "   ",
+            thinkingSignature: "sig-empty-text",
+          },
+          { type: "text", text: "hello" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["text"],
+      "empty-text thinking block must be dropped",
+    )
+  })
+
+  it("degrades a thinking block to text when signature is missing/empty (OAuth-safe default)", () => {
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "reasoning without sig",
+            // thinkingSignature omitted entirely
+          },
+          { type: "text", text: "answer" },
+        ],
+      } as unknown as Message,
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "reasoning with blank sig",
+            thinkingSignature: "   ",
+          },
+          { type: "text", text: "answer2" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+
+    // Both assistant turns should degrade thinking-with-no-sig to a text block,
+    // ordered before the original text answer.
+    const a1 = (out[0].content as Array<{ type: string; text?: string }>)
+    assert.deepEqual(
+      a1.map((b) => b.type),
+      ["text", "text"],
+      "missing-sig thinking becomes a leading text block",
+    )
+    assert.equal(a1[0].text, "reasoning without sig")
+    assert.equal(a1[1].text, "answer")
+
+    const a2 = (out[1].content as Array<{ type: string; text?: string }>)
+    assert.deepEqual(
+      a2.map((b) => b.type),
+      ["text", "text"],
+      "blank-sig thinking becomes a leading text block",
+    )
+    assert.equal(a2[0].text, "reasoning with blank sig")
+    assert.equal(a2[1].text, "answer2")
+  })
+
+  it("round-trips a redacted_thinking block, carrying the opaque payload", () => {
+    // Per ThinkingContent docs: when `redacted` is true, the opaque encrypted
+    // payload is stored in `thinkingSignature` so it can be passed back.
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: "", // redacted blocks carry no plaintext
+            thinkingSignature: "OPAQUE_REDACTED_PAYLOAD_xyz",
+            redacted: true,
+          },
+          { type: "text", text: "answer" },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["redacted_thinking", "text"],
+      "redacted_thinking precedes text",
+    )
+    assert.equal(blocks[0].data, "OPAQUE_REDACTED_PAYLOAD_xyz")
+  })
+
+  it("is a no-op pass-through for assistant turns with no thinking blocks (regression guard)", () => {
+    const messages: Message[] = [
+      { role: "user", content: "hi" } as Message,
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "answer" },
+          {
+            type: "toolCall",
+            id: "call_2",
+            name: "Read",
+            arguments: { path: "/tmp/x" },
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+
+    // Exactly the original two blocks, in original order — no spurious
+    // empty thinking block injected.
+    assert.deepEqual(
+      blocks.map((b) => b.type),
+      ["text", "tool_use"],
+      "non-thinking assistant turn is unchanged",
+    )
+    assert.equal(blocks[0].text, "answer")
+    assert.equal(blocks[1].name, "Read")
+  })
+
+  it("applies sanitizeSurrogates to thinking text", () => {
+    // Lone high surrogate must be replaced with U+FFFD, matching the text/
+    // tool-call paths.
+    const lone = "before \uD83D after" // unpaired high surrogate
+    const messages: Message[] = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "thinking",
+            thinking: lone,
+            thinkingSignature: "sig-1",
+          },
+        ],
+      } as unknown as Message,
+    ]
+
+    const out = convertPiMessagesToAnthropic(messages, true)
+    const blocks = pickAssistant(out)
+    assert.equal(blocks[0].type, "thinking")
+    assert.equal(blocks[0].thinking, "before \uFFFD after")
+    assert.equal(blocks[0].signature, "sig-1", "signature is NOT sanitized")
   })
 })

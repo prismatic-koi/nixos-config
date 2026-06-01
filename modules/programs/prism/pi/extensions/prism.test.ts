@@ -1,12 +1,13 @@
 // Unit tests for the prism PI extension's pure helpers.
-// Run with: node --test --test-force-exit --import tsx prism.test.ts
+// Run with: node --test --import tsx prism.test.ts
+// Or:       tsx --test prism.test.ts
 //
 // We test the helper functions in isolation: truncation, endpoint parsing,
 // the JSONL line reader, and the inbound dispatcher with a mock API. The
 // extension factory itself (with PI hook subscriptions) is end-to-end tested
 // via the P2.SPAWN integration scenario.
 
-import { describe, it } from "node:test"
+import { describe, it, after } from "node:test"
 import assert from "node:assert/strict"
 import { Readable } from "node:stream"
 import * as net from "node:net"
@@ -58,6 +59,13 @@ import {
   // Mid-tool heartbeat (issue #1761)
   startToolHeartbeat,
   TOOL_HEARTBEAT_INTERVAL_MS,
+  // Role system-prompt injection (issue #2032 / #2033 / #2064)
+  isValidRoleName,
+  prismAgentRolePath,
+  readRolePrompt,
+  composeRoleSystemPrompt,
+  resolveRolePromptForTurn,
+  type RolePromptCache,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -1967,8 +1975,18 @@ describe("shouldAttemptConnect", () => {
 // correctly waits for completion.
 
 /** Minimal mock of ExtensionAPI — only `on` is needed for these tests. */
-function makeMockPI1554() {
+function makeMockPI1554(
+  options: { flagValues?: Record<string, string | boolean> } = {},
+) {
   const handlers: Record<string, ((...args: unknown[]) => unknown)[]> = {}
+  // Extension-registered flag values. The prism extension now calls
+  // pi.registerFlag("agent", ...) at factory entry (issue #2064 fix); the
+  // mock pi binds the matching value here so before_agent_start sees the
+  // role synchronously, mirroring pi's applyExtensionFlagValues path in
+  // agent-session-services.js.
+  const flagValues: Map<string, string | boolean> = new Map(
+    Object.entries(options.flagValues ?? {}),
+  )
   const pi = {
     on: (event: string, handler: (...args: unknown[]) => unknown) => {
       if (!handlers[event]) handlers[event] = []
@@ -1979,13 +1997,26 @@ function makeMockPI1554() {
     setThinkingLevel: () => {},
     registerProvider: () => {},
     setActiveTools: () => {},
+    registerFlag: (
+      _name: string,
+      _opts: { description?: string; type: "boolean" | "string"; default?: boolean | string },
+    ) => {
+      // No-op: the mock records the registration only to the extent that
+      // it does not throw. `flagValues` is the test fixture's source of
+      // truth, populated via options.flagValues.
+    },
+    getFlag: (name: string): string | boolean | undefined => {
+      return flagValues.get(name)
+    },
   }
   const trigger = async (event: string, eventArg: unknown = {}, ctx: unknown = {}) => {
     for (const h of handlers[event] ?? []) {
       await h(eventArg, ctx)
     }
   }
-  return { pi, trigger }
+  // Expose the flagValues map so individual tests can mutate it after factory
+  // entry if they need to simulate pi binding flags between sessions.
+  return { pi, trigger, flagValues }
 }
 
 /** Minimal sidecar responder: on `hello`, writes hello_ack. Returns frame list. */
@@ -2016,6 +2047,110 @@ function makeSidecarResponder1554(conn: net.Socket): { frames: string[] } {
 
 // Fast retry schedule: 1+2+4+8+16 = 31ms total budget.
 const FAST_DELAYS_1554 = "1,2,4,8,16"
+
+// ---------------------------------------------------------------------------
+// Module-level teardown (issue #2060).
+//
+// Runs after the final test in the file completes. Each test that wires the
+// extension to a real net.Server calls `registerExtensionWiring(...)` so we
+// can trigger `session_shutdown` on the extension (releasing the writer's
+// outbound Socket via the production half-close path). After per-wiring
+// teardown, we sweep `_getActiveHandles()` and destroy any leaked Sockets or
+// Servers that survived — in practice this catches sockets from ad-hoc
+// tests that don't yet propagate an AcceptedConnRef into the registry, and
+// any server-accepted Socket whose owning test never tracked it. Without
+// this sweep the Node test runner hangs on a non-draining event loop and
+// only `--test-force-exit` rescues it (#1825 was the symptom that masked
+// these leaks).
+// ---------------------------------------------------------------------------
+after(async () => {
+  // 1. Per-wiring teardown — await each so the extension's writer.close()
+  //    completes before we sweep raw handles.
+  for (const w of extensionWirings.splice(0)) {
+    await teardownExtensionWiring(w)
+  }
+  // 2. Sweep any remaining Sockets / Servers from the active-handles list.
+  //    `_getActiveHandles` is a Node internal but is stable in practice and
+  //    is the recommended diagnostic surface for this exact problem.
+  type ActiveHandle = {
+    constructor?: { name?: string }
+    destroy?: () => void
+    close?: () => void
+    _handle?: { fd?: number }
+  }
+  const handles = (process as unknown as { _getActiveHandles: () => ActiveHandle[] })._getActiveHandles()
+  for (const h of handles) {
+    // Skip stdio (fd 0/1/2) — those are owned by the runner.
+    const fd = h._handle?.fd
+    if (fd === 0 || fd === 1 || fd === 2) continue
+    const name = h.constructor?.name
+    if (name === "Socket") {
+      try { h.destroy?.() } catch {}
+    } else if (name === "Server") {
+      try { h.close?.() } catch {}
+    }
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Test-wiring teardown registry (issue #2060)
+//
+// Every test that wires `prismExtension(mockPi)` to a real net.Server leaks
+// the extension's outbound client Socket, the server-accepted Socket, and the
+// listening Server unless the test explicitly tears them down before exit.
+//
+// Production teardown lives in the extension's `session_shutdown` hook, but
+// that hook only does a half-close (writer.close() → socket.end()) because
+// PI is about to exit in real life and the sidecar wants a clean EOF rather
+// than a RST. In tests the process keeps running across many describes, so
+// the half-closed socket lingers as an active handle.
+//
+// Rather than refactor every individual harness, tests call
+// `registerExtensionWiring(...)` immediately after `prismExtension(pi)` and
+// the module-level `after()` hook (defined right after the imports above)
+// walks the registry and tears each entry down:
+//   1. trigger session_shutdown on the mock pi (extension half-closes)
+//   2. destroy any captured server-accepted Socket (RST to extension's client)
+//   3. await server.close() (drains the listener)
+//
+// The `serverConn` ref is filled by `trackConn(ref, inner)`, a thin
+// connection-handler wrapper.
+// ---------------------------------------------------------------------------
+interface AcceptedConnRef { current: net.Socket | null }
+
+interface ExtensionWiring {
+  trigger: (event: string, eventArg?: unknown, ctx?: unknown) => Promise<void>
+  server: net.Server | null
+  acceptedConn: AcceptedConnRef | null
+}
+
+const extensionWirings: ExtensionWiring[] = []
+
+function registerExtensionWiring(w: ExtensionWiring): void {
+  extensionWirings.push(w)
+}
+
+function trackConn(
+  ref: AcceptedConnRef,
+  inner: (conn: net.Socket) => void,
+): (conn: net.Socket) => void {
+  return (conn) => {
+    ref.current = conn
+    inner(conn)
+  }
+}
+
+async function teardownExtensionWiring(w: ExtensionWiring): Promise<void> {
+  try { await w.trigger("session_shutdown", {}, {}) } catch {}
+  if (w.acceptedConn?.current) {
+    try { w.acceptedConn.current.destroy() } catch {}
+  }
+  if (w.server) {
+    await new Promise<void>((res) => {
+      try { w.server!.close(() => res()) } catch { res() }
+    })
+  }
+}
 
 describe("#1554: first-connect retry — TCP ECONNREFUSED then success", () => {
   it("retries on ECONNREFUSED and completes handshake when server binds within budget", () => {
@@ -3602,6 +3737,8 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
 
       const { pi, trigger } = makeMockPI1554()
       prismExtension(pi as never)
+      // Register for module-level teardown sweep (issue #2060).
+      registerExtensionWiring({ trigger, server: null, acceptedConn: null })
 
       server.listen(sockPath, () => {
         void trigger("session_start", {}, {}).then(async () => {
@@ -3649,5 +3786,594 @@ describe("#1787: tool_call/tool_result emit parentMessageId from message_start",
         reject(new Error("timeout"))
       }, 1000).unref()
     })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Role system-prompt injection (issue #2032)
+// ---------------------------------------------------------------------------
+
+describe("isValidRoleName — path-traversal defence (#2064 security AC)", () => {
+  it("accepts canonical prism role names", () => {
+    const roles = [
+      "coordinator",
+      "worker",
+      "review-goal",
+      "review-code",
+      "review-security",
+      "review-qa",
+      "review-context",
+      "a",
+      "a_b",
+      "A-1",
+    ]
+    for (const r of roles) {
+      assert.ok(isValidRoleName(r), `expected ${JSON.stringify(r)} to be a valid role name`)
+    }
+  })
+
+  it("rejects empty / non-string values", () => {
+    assert.equal(isValidRoleName(""), false)
+    assert.equal(isValidRoleName(undefined as unknown as string), false)
+    assert.equal(isValidRoleName(null as unknown as string), false)
+    assert.equal(isValidRoleName(123 as unknown as string), false)
+  })
+
+  it("rejects path-traversal / shell-meta / null-byte attempts", () => {
+    const evil = [
+      "../etc/passwd",
+      "./worker",
+      "/etc/passwd",
+      "worker/../coordinator",
+      "worker\u0000",
+      "worker.md",
+      "worker$",
+      "worker;rm -rf /",
+      "worker space",
+      "·",
+      "é",
+    ]
+    for (const r of evil) {
+      assert.equal(isValidRoleName(r), false, `expected ${JSON.stringify(r)} to be rejected`)
+    }
+  })
+})
+
+describe("prismAgentRolePath — role→file resolution", () => {
+  it("returns '' for an empty role (no-op short-circuit)", () => {
+    assert.equal(prismAgentRolePath("", { HOME: "/home/u" }), "")
+  })
+
+  it("returns '' when role contains path-traversal (defence-in-depth)", () => {
+    assert.equal(
+      prismAgentRolePath("../etc/passwd", { XDG_CONFIG_HOME: "/xdg", HOME: "/home/u" }),
+      "",
+    )
+    assert.equal(
+      prismAgentRolePath("worker/../coordinator", { HOME: "/home/u" }),
+      "",
+    )
+  })
+
+  it("respects XDG_CONFIG_HOME when set", () => {
+    assert.equal(
+      prismAgentRolePath("worker", { XDG_CONFIG_HOME: "/xdg", HOME: "/home/u" }),
+      "/xdg/prism/agents/worker.md",
+    )
+  })
+
+  it("falls back to $HOME/.config when XDG_CONFIG_HOME is unset", () => {
+    assert.equal(
+      prismAgentRolePath("coordinator", { HOME: "/home/u" }),
+      "/home/u/.config/prism/agents/coordinator.md",
+    )
+  })
+
+  it("falls back to $HOME/.config when XDG_CONFIG_HOME is empty", () => {
+    assert.equal(
+      prismAgentRolePath("review-goal", { XDG_CONFIG_HOME: "", HOME: "/home/u" }),
+      "/home/u/.config/prism/agents/review-goal.md",
+    )
+  })
+
+  it("maps each canonical role to its matching <role>.md filename", () => {
+    const roles = [
+      "coordinator",
+      "worker",
+      "review-goal",
+      "review-code",
+      "review-security",
+      "review-qa",
+      "review-context",
+    ]
+    for (const role of roles) {
+      assert.equal(
+        prismAgentRolePath(role, { XDG_CONFIG_HOME: "/c", HOME: "/h" }),
+        `/c/prism/agents/${role}.md`,
+      )
+    }
+  })
+})
+
+describe("readRolePrompt — file read + missing-file no-op", () => {
+  it("reads the role file contents when present", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      const agentsDir = path.join(dir, "prism", "agents")
+      fs.mkdirSync(agentsDir, { recursive: true })
+      fs.writeFileSync(path.join(agentsDir, "worker.md"), "ROLE: worker prompt body")
+      assert.equal(
+        readRolePrompt("worker", { XDG_CONFIG_HOME: dir }),
+        "ROLE: worker prompt body",
+      )
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the role file does not exist (graceful no-op)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      assert.equal(readRolePrompt("worker", { XDG_CONFIG_HOME: dir }), undefined)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns undefined when the role is empty", () => {
+    assert.equal(readRolePrompt("", { XDG_CONFIG_HOME: "/c" }), undefined)
+  })
+
+  it("returns undefined for an empty/whitespace-only role file", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-2032-"))
+    try {
+      const agentsDir = path.join(dir, "prism", "agents")
+      fs.mkdirSync(agentsDir, { recursive: true })
+      fs.writeFileSync(path.join(agentsDir, "worker.md"), "   \n\t\n")
+      assert.equal(readRolePrompt("worker", { XDG_CONFIG_HOME: dir }), undefined)
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("composeRoleSystemPrompt — APPEND semantics preserved", () => {
+  it("appends the role prompt after the base, preserving the default", () => {
+    assert.equal(
+      composeRoleSystemPrompt("BASE PROMPT", "ROLE PROMPT"),
+      "BASE PROMPT\n\nROLE PROMPT",
+    )
+  })
+
+  it("normalises trailing whitespace on the base to exactly one blank line", () => {
+    assert.equal(
+      composeRoleSystemPrompt("BASE PROMPT\n\n  \n", "ROLE PROMPT"),
+      "BASE PROMPT\n\nROLE PROMPT",
+    )
+  })
+
+  it("returns the role prompt alone when the base is empty", () => {
+    assert.equal(composeRoleSystemPrompt("", "ROLE PROMPT"), "ROLE PROMPT")
+  })
+
+  it("returns undefined (no override → keep base) when there is no role prompt", () => {
+    assert.equal(composeRoleSystemPrompt("BASE", undefined), undefined)
+    assert.equal(composeRoleSystemPrompt("BASE", ""), undefined)
+    assert.equal(composeRoleSystemPrompt("BASE", "   \n  "), undefined)
+  })
+
+  it("is idempotent across turns: recomposing from the same base does not accumulate", () => {
+    const base = "BASE PROMPT"
+    const role = "ROLE PROMPT"
+    const turn1 = composeRoleSystemPrompt(base, role)
+    const turn2 = composeRoleSystemPrompt(base, role)
+    assert.equal(turn1, turn2)
+    assert.equal(turn1, "BASE PROMPT\n\nROLE PROMPT")
+  })
+})
+
+describe("resolveRolePromptForTurn — flag-sourced role, idempotency", () => {
+  const newCache = (): RolePromptCache => ({ resolved: false, cached: undefined })
+
+  // The pre-#2064 design accepted a `handshakeComplete` boolean and gated
+  // resolution on it. That gate dropped the first turn's role prompt on every
+  // bwrap session (the hello_ack handshake fires AFTER the agent-start hook).
+  // The new design sources the role from `pi.getFlag("agent")` which pi binds
+  // synchronously before the first hook fires, so there is no handshake gate.
+
+  it("injects the role prompt on the very first call when agentRole is valid", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, "BASE\n\nROLE") // first-turn injection — no handshake required
+    assert.equal(cache.resolved, true)
+  })
+
+  it("returns undefined and does NOT latch when agentRole is empty (host-mode launch without --agent)", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { agentRole: "", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, false) // empty role must NOT poison the cache
+  })
+
+  it("returns undefined and does NOT latch when agentRole fails whitelist (path-traversal defence)", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { agentRole: "../etc/passwd", baseSystemPrompt: "BASE" },
+      cache,
+      () => "ROLE",
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, false)
+  })
+
+  it("resolves the matching role file when agentRole is a known prism role", () => {
+    const cache = newCache()
+    const out = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      (role) => (role === "worker" ? "WORKER ROLE" : undefined),
+    )
+    assert.equal(out, "BASE\n\nWORKER ROLE")
+    assert.equal(cache.resolved, true)
+    assert.equal(cache.cached, "WORKER ROLE")
+  })
+
+  it("memoises the file read across turns (disk touched at most once)", () => {
+    const cache = newCache()
+    let reads = 0
+    const readRole = (): string | undefined => {
+      reads++
+      return "ROLE"
+    }
+    const args = {
+      agentRole: "worker",
+      baseSystemPrompt: "BASE",
+    }
+    const t1 = resolveRolePromptForTurn(args, cache, readRole)
+    const t2 = resolveRolePromptForTurn(args, cache, readRole)
+    const t3 = resolveRolePromptForTurn(args, cache, readRole)
+    assert.equal(reads, 1) // read once, reused thereafter
+    assert.equal(t1, "BASE\n\nROLE")
+    assert.equal(t1, t2) // idempotent across turns
+    assert.equal(t2, t3)
+  })
+
+  it("recomposes against a fresh baseSystemPrompt each turn (no accumulation across turns)", () => {
+    // before_agent_start fires once per turn (pi 0.77). The handler must NOT
+    // accumulate the role across turns — each call re-composes role onto the
+    // base provided by that turn's event.systemPrompt.
+    const cache = newCache()
+    const readRole = (): string => "ROLE"
+    const t1 = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE-TURN-1" },
+      cache,
+      readRole,
+    )
+    const t2 = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE-TURN-2" },
+      cache,
+      readRole,
+    )
+    assert.equal(t1, "BASE-TURN-1\n\nROLE")
+    assert.equal(t2, "BASE-TURN-2\n\nROLE")
+  })
+
+  it("missing role file resolves to a no-op (undefined) and stays latched", () => {
+    const cache = newCache()
+    let reads = 0
+    const out = resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => {
+        reads++
+        return undefined
+      },
+    )
+    assert.equal(out, undefined)
+    assert.equal(cache.resolved, true) // latched after a valid-role read attempt
+    // A second turn does not re-read — the no-op is memoised.
+    resolveRolePromptForTurn(
+      { agentRole: "worker", baseSystemPrompt: "BASE" },
+      cache,
+      () => {
+        reads++
+        return undefined
+      },
+    )
+    assert.equal(reads, 1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #2050: review-guard release fix — sidecar-authoritative reviewing_state
+// ---------------------------------------------------------------------------
+//
+// Background. Before the #2050 fix the extension's pendingReviewCall guard
+// was set whenever a bash tool_call contained the substring "prism review".
+// That false-matched on any bash command that incidentally embedded the
+// literal text (a `gh pr comment` body, a `grep` over docs, an `echo` of a
+// commit message). A false-set after the genuine review-complete prompt had
+// cleared the flag re-latched the guard with no release path, suppressed
+// state_change:finished on the next turn_end, and stranded the worker as
+// `active` indefinitely — the exact incident captured in #2050.
+//
+// The fix drives pendingReviewCall solely from the inbound `reviewing_state`
+// frame the sidecar emits on every transition of its ledger-backed
+// reviewingInFlight flag plus once post-handshake. These tests assert the
+// three sequences called out in the AC:
+//
+//   A. no-review     — turn_end emits state_change:finished as today.
+//   B. mid-review    — turn_end during the reviewing window emits nothing
+//                       (the guard remains armed via reviewing_state{true}).
+//   C. completed-review — after reviewing_state{false} arrives the next
+//                       turn_end emits state_change:finished, even if no
+//                       inbound `prompt` frame followed (the regression
+//                       shape from the incident in #2050).
+
+const REVIEW_GUARD_HELLO_ACK = (sessionRole: string = "worker") =>
+  JSON.stringify({
+    type: "hello_ack",
+    protocol_version: 2,
+    session_name: "test@main",
+    session_role: sessionRole,
+    isolation_mode: "host",
+  }) + "\n"
+
+/**
+ * Spin up a fake sidecar server on a unix socket and the prism extension
+ * factory against a minimal mock pi. Returns the wired-up surface so each
+ * test can drive PI events, push inbound frames, and inspect frames received
+ * from the extension.
+ */
+function setupReviewGuardHarness(): Promise<{
+  trigger: (event: string, eventArg?: unknown, ctx?: unknown) => Promise<void>
+  /** Send an inbound frame from the (fake) sidecar to the extension. */
+  pushInbound: (frame: Record<string, unknown>) => void
+  /** Frames received from the extension on the socket, parsed as objects. */
+  received: () => Record<string, unknown>[]
+  /**
+   * Tear down server, restore env, remove tempdir. The extension's outbound
+   * socket and the server-accepted Socket are torn down by the module-level
+   * `after()` hook via the extension-wiring registry (see issue #2060).
+   */
+  cleanup: () => Promise<void>
+}> {
+  return new Promise((resolve, reject) => {
+    const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2050-"))
+    const sockPath = path.join(sockDir, "pipe.sock")
+
+    const savedName = process.env.PRISM_SESSION_NAME
+    const savedPipe = process.env.PRISM_HARNESS_PIPE
+    process.env.PRISM_SESSION_NAME = "test@main"
+    process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+    const receivedLines: string[] = []
+    const acceptedConn: AcceptedConnRef = { current: null }
+
+    const { pi, trigger } = makeMockPI1554()
+
+    const cleanup = async () => {
+      process.env.PRISM_SESSION_NAME = savedName
+      process.env.PRISM_HARNESS_PIPE = savedPipe
+      // Delegate extension+socket teardown to the registry helper so behaviour
+      // matches every other extension-wired test in this file.
+      await teardownExtensionWiring({ trigger, server, acceptedConn })
+      try { fs.rmSync(sockDir, { recursive: true, force: true }) } catch {}
+    }
+
+    const server = net.createServer(trackConn(acceptedConn, (conn) => {
+      attachJsonlReader(conn, (line) => {
+        if (line.length === 0) return
+        receivedLines.push(line)
+        let f: Record<string, unknown>
+        try { f = JSON.parse(line) as Record<string, unknown> } catch { return }
+        if (f.type === "hello") {
+          conn.write(REVIEW_GUARD_HELLO_ACK())
+        }
+      })
+    }))
+
+    // The doom-loop snapshot path that tool_execution_start calls into
+    // requires an appendEntry no-op.
+    ;(pi as unknown as { appendEntry: () => void }).appendEntry = () => {}
+    prismExtension(pi as never)
+    registerExtensionWiring({ trigger, server, acceptedConn })
+
+    server.listen(sockPath, () => {
+      // Fire session_start to dial the socket and complete the handshake.
+      void trigger("session_start", {}, {}).then(async () => {
+        // Wait for the handshake to round-trip and post-handshake frames
+        // (including the sidecar's reviewing_state{in_flight:false}) to
+        // arrive at the server's read side.
+        await new Promise((r) => setTimeout(r, 50))
+        resolve({
+          trigger,
+          pushInbound: (frame) => {
+            if (!acceptedConn.current) throw new Error("server connection not yet established")
+            acceptedConn.current.write(JSON.stringify(frame) + "\n")
+          },
+          received: () => receivedLines.map((l) => {
+            try { return JSON.parse(l) as Record<string, unknown> } catch { return {} }
+          }),
+          cleanup,
+        })
+      }).catch((err) => {
+        void cleanup().then(() => reject(err)).catch(() => reject(err))
+      })
+    })
+
+    server.on("error", (err) => {
+      void cleanup().then(() => reject(err)).catch(() => reject(err))
+    })
+  })
+}
+
+describe("#2050: review-guard — sequence A (no review, turn_end → finished)", () => {
+  it("emits state_change:finished on turn_end when no review has been signalled", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // No reviewing_state{true} has been pushed: the guard is clear.
+      // A clean turn_end (stopReason=stop) must emit state_change:finished.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      // Allow the writer to flush across the socket.
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      // First frame should be the initial "active" emitted by before_agent_start
+      // — absent here because we did not fire that hook — so we expect exactly
+      // one state_change frame: the finished signal we are testing.
+      assert.equal(
+        stateChanges.length, 1,
+        `sequence A: expected exactly 1 state_change frame, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+      assert.equal(stateChanges[0].state, "finished")
+    } finally {
+      await h.cleanup()
+    }
+  })
+})
+
+describe("#2050: review-guard — sequence B (mid-review, turn_end suppressed)", () => {
+  it("suppresses state_change after the sidecar pushes reviewing_state{in_flight:true}", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // Sidecar signals that a review has started. The extension MUST set
+      // pendingReviewCall from this frame (replacing the bash-substring
+      // detection that #2050 removed).
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      // Let the inbound frame dispatch.
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Now turn_end fires (e.g. the worker took a brief idle turn while
+      // the review monitor pollled). state_change must NOT be emitted.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        stateChanges.length, 0,
+        `sequence B (mid-review): expected 0 state_change frames, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+    } finally {
+      await h.cleanup()
+    }
+  })
+})
+
+describe("#2050: review-guard — sequence C (completed-review, turn_end → finished)", () => {
+  it("releases the guard via reviewing_state{in_flight:false} and emits finished on the next turn_end", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      // Mid-review: guard is armed.
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Confirm a turn_end during this window emits nothing.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+      const midReviewSC = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        midReviewSC.length, 0,
+        `pre-clear turn_end leaked a state_change frame: ${JSON.stringify(midReviewSC)}`,
+      )
+
+      // Review monitor completes the round. The sidecar emits the cleared
+      // signal. Crucially, NO `prompt` inbound frame is pushed in this
+      // test — we want to prove the reviewing_state release path on its
+      // own, since the incident in #2050 showed that the prompt-frame
+      // clear can be lost while the bash-substring set-trigger
+      // (now removed) re-latched the guard.
+      h.pushInbound({ type: "reviewing_state", in_flight: false })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // The worker takes its final handing-off turn. turn_end must emit
+      // state_change:finished so the sidecar starts the finished debounce
+      // and the coordinator is notified.
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const postClearSC = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        postClearSC.length, 1,
+        `sequence C: expected exactly 1 state_change frame after reviewing_state{false}, got ${postClearSC.length}: ${JSON.stringify(postClearSC)}`,
+      )
+      assert.equal(postClearSC[0].state, "finished")
+    } finally {
+      await h.cleanup()
+    }
+  })
+
+  it("also releases the guard via the prompt inbound frame (belt-and-braces clear path)", async () => {
+    const h = await setupReviewGuardHarness()
+    try {
+      h.pushInbound({ type: "reviewing_state", in_flight: true })
+      await new Promise((r) => setTimeout(r, 20))
+
+      // Simulate the review-complete prompt arriving (the other release
+      // path the extension keeps as defence in depth).
+      h.pushInbound({ type: "prompt", text: "review complete!", deliver_as: "nextTurn" })
+      await new Promise((r) => setTimeout(r, 20))
+
+      await h.trigger("turn_end", { message: { stopReason: "stop" } }, {
+        isIdle: () => true,
+        hasPendingMessages: () => false,
+      })
+      await new Promise((r) => setTimeout(r, 30))
+
+      const stateChanges = h.received().filter((f) => f.type === "state_change")
+      assert.equal(
+        stateChanges.length, 1,
+        `prompt-clear path: expected 1 state_change frame, got ${stateChanges.length}: ${JSON.stringify(stateChanges)}`,
+      )
+      assert.equal(stateChanges[0].state, "finished")
+    } finally {
+      await h.cleanup()
+    }
+  })
+})
+
+describe("#2050: bash-substring set-trigger has been removed from prism.ts", () => {
+  it("prism.ts source no longer contains the /\\bprism\\s+review\\b/ set-trigger for pendingReviewCall", () => {
+    // Source-level guard: the bash-substring detection was the root cause
+    // of the #2050 incident. If it is reintroduced anywhere that sets
+    // pendingReviewCall = true, the substring false-match returns and the
+    // stuck-active class is re-enabled.
+    const src = fs.readFileSync(path.join(__dirname, "prism.ts"), "utf8")
+    // Strip line-comments and the // halves of inline comments so that
+    // historical narrative inside comment blocks does not trip the guard.
+    // Block comments (/* ... */) are stripped first via a non-greedy match.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .split("\n")
+      .map((line) => line.replace(/\/\/.*$/, ""))
+    for (let i = 0; i < stripped.length; i++) {
+      const line = stripped[i]
+      if (/pendingReviewCall\s*=\s*true\b/.test(line)) {
+        const ctx = src.split("\n").slice(Math.max(0, i - 3), i + 4).join("\n")
+        assert.fail(
+          `prism.ts line ${i + 1}: pendingReviewCall is assigned true; the #2050 fix removed this set path entirely (sidecar is now authoritative via reviewing_state).\n\nContext:\n${ctx}`,
+        )
+      }
+    }
   })
 })

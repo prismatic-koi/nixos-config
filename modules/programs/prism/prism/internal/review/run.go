@@ -248,6 +248,8 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			RuntimeEnvVars:     agentH.RuntimeEnv(),
 			HarnessName:        agentHarnessName,
 			ModelsByRole:       opts.ModelsByRole,
+			// PIExtensionDir for host-mode pi launches (#2065).
+			PIExtensionDir: opts.PIExtensionDir,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -542,6 +544,8 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			RuntimeEnvVars:     asyncAgentH.RuntimeEnv(),
 			HarnessName:        asyncAgentHarnessName,
 			ModelsByRole:       opts.ModelsByRole,
+			// PIExtensionDir for host-mode pi launches (#2065).
+			PIExtensionDir: opts.PIExtensionDir,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

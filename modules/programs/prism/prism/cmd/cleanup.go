@@ -246,6 +246,11 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			instanceIDForSessions := instanceIDFromStatus(d, m.session)
 			isolationMode := isolationModeFromDB(d, m.session)
+			// Sever the pi resume linkage (issue #2035): remove the on-disk pi
+			// JSONL transcript and null agent_status.harness_session_id so a
+			// re-spawn on the same branch name starts a fresh pi conversation.
+			// Must run before SetEnded so the status read still sees the row.
+			severPiResumeLinkage(d, m.session)
 			_ = d.SetEnded(m.session)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -630,6 +635,11 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		// row's lifecycle fields.
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
+		// Sever the pi resume linkage (issue #2035): remove the on-disk pi
+		// JSONL transcript and null agent_status.harness_session_id so a
+		// re-spawn on the same branch name starts a fresh pi conversation.
+		// Must run before SetEnded so the status read still sees the row.
+		severPiResumeLinkage(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -708,6 +718,8 @@ func closeSession(session string) error {
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
+		// Sever the pi resume linkage (issue #2035) before marking ended.
+		severPiResumeLinkage(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -804,6 +816,8 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
+		// Sever the pi resume linkage (issue #2035) before marking ended.
+		severPiResumeLinkage(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -1114,6 +1128,63 @@ func init() {
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	cleanupCmd.Flags().Bool("json", false, "Emit a single JSON object describing per-resource outcomes (requires --yes)")
 	rootCmd.AddCommand(cleanupCmd)
+}
+
+// severPiResumeLinkage breaks the pi conversation-resume linkage for
+// sessionName so that a future spawn on the same branch name (and therefore
+// the same agent_status row) does NOT silently resume the now-defunct
+// pi conversation (issue #2035).
+//
+// Two surfaces survive a plain `prism cleanup` otherwise:
+//
+//  1. agent_status.harness_session_id — db.SetEnded only stamps ended_at;
+//     the harness_session_id column persists. cmd/agent_run.go reads it back
+//     on the next spawn and threads it into container.Config, where
+//     PIInvocation appends `--session <id>` to pi when a matching JSONL is
+//     found on disk.
+//
+//  2. ~/.pi/agent/sessions/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
+//     — the on-disk JSONL transcript. The encoded-cwd directory is keyed off
+//     cfg.Worktree, which is stable across a reused branch name (the worktree
+//     path is derived deterministically from the branch). For sandbox-exec
+//     the transcript also lives inside the staging HOME that
+//     RemoveSandboxExecStagingHome subsequently wipes, but we delete it
+//     explicitly here for symmetry across modes.
+//
+// Order:
+//
+//   - Capture worktree + harness_session_id from the live agent_status row
+//     BEFORE the DB clear (the clear nulls the latter).
+//   - Remove the on-disk JSONL (FS-side; non-fatal).
+//   - Null the DB column (load-bearing; logged on error but cleanup
+//     continues so the rest of the teardown still runs).
+//
+// Best-effort — no error path aborts cleanup. A failure here is logged and
+// teardown proceeds: the worst case is that the next spawn on this branch
+// name resumes a defunct conversation, which is recoverable by the operator,
+// whereas a half-cleaned worktree/branch is not.
+func severPiResumeLinkage(d *db.DB, sessionName string) {
+	status, err := d.CurrentStatus(sessionName)
+	if err != nil || status == nil {
+		// No row to read — no JSONL to scope to, no DB clear needed.
+		return
+	}
+	if status.HarnessSessionID != nil && *status.HarnessSessionID != "" && status.Worktree != "" {
+		cfg := container.Config{
+			SessionName:      sessionName,
+			Worktree:         status.Worktree,
+			HarnessSessionID: *status.HarnessSessionID,
+		}
+		if status.InstanceID != nil {
+			cfg.InstanceID = *status.InstanceID
+		}
+		if rmErr := container.RemovePiResumeJSONL(cfg); rmErr != nil {
+			proglog.Warnf("[prism] warning: remove pi resume jsonl for %s: %v — continuing cleanup\n", sessionName, rmErr)
+		}
+	}
+	if clearErr := d.ClearHarnessSessionID(sessionName); clearErr != nil {
+		proglog.Errorf("[prism] severPiResumeLinkage: clear harness_session_id for %s: %v\n", sessionName, clearErr)
+	}
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for

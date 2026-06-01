@@ -1433,6 +1433,10 @@ func TestProxySpawn_EmptyPromptFile_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// dedicated sentinel that no sandbox injects — the defensive
+	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim that pre-#2073 tests carried
+	// is no longer required.
 
 	// Write an empty prompt file.
 	dir := t.TempDir()
@@ -1479,6 +1483,9 @@ func TestProxySpawn_EmptyPromptLiteral_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// dedicated sentinel that no sandbox injects — the defensive
+	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim is no longer required.
 
 	cmd := &cobra.Command{Use: "spawn"}
 	cmd.Flags().String("branch", "", "")
@@ -1514,6 +1521,9 @@ func TestProxySpawn_EmptyPromptStdin_Rejected(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 	t.Setenv("PRISM_BARE_ROOT", "/prism-git")
+	// Post-#2073 the keybind carve-out is gated on PRISM_KEYBIND_SPAWN, a
+	// dedicated sentinel that no sandbox injects — the defensive
+	// `t.Setenv("PRISM_SPAWN_PATH", "")` shim is no longer required.
 
 	// Redirect os.Stdin to an empty file for the duration of the test.
 	empty, err := os.CreateTemp(t.TempDir(), "empty-stdin")

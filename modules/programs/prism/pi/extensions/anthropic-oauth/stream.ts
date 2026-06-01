@@ -23,6 +23,8 @@ import type {
   Tool,
 } from "@earendil-works/pi-ai"
 
+import { log } from "./logger.ts"
+
 // ──────────────────────────────────────────────
 // Type helpers
 // ──────────────────────────────────────────────
@@ -42,6 +44,15 @@ type ContentBlockParam =
       id: string
       name: string
       input: Record<string, unknown>
+    }
+  | {
+      type: "thinking"
+      thinking: string
+      signature: string
+    }
+  | {
+      type: "redacted_thinking"
+      data: string
     }
   | {
       type: "tool_result"
@@ -301,6 +312,46 @@ export function convertPiMessagesToAnthropic(
             type: "text",
             text: sanitizeSurrogates((block as TextContent).text),
           })
+        } else if (block.type === "thinking") {
+          // Re-inject thinking blocks on multi-turn requests so the model
+          // receives its signed reasoning chain back, matching pi-ai's
+          // built-in handler at anthropic.ts ~1069-1099. Without this the
+          // model loses reasoning continuity across turns (issue #2049).
+          const tb = block as ThinkingContent
+          // Redacted thinking: pass the opaque payload back as redacted_thinking.
+          // Pi stores the encrypted payload in `thinkingSignature` when
+          // `redacted` is true (see ThinkingContent type docs).
+          if (tb.redacted) {
+            blocks.push({
+              type: "redacted_thinking",
+              data: tb.thinkingSignature ?? "",
+            })
+            continue
+          }
+          // Skip empty thinking blocks entirely — no point shipping a
+          // signed block with no content (also matches pi-ai).
+          if (!tb.thinking || tb.thinking.trim().length === 0) continue
+          // Missing/empty signature: degrade to a plain text block carrying
+          // the thinking text. On the OAuth path this is the safe default
+          // (no `allowEmptySignature` opt-in) — shipping an unsigned
+          // thinking block risks API rejection on models that require a
+          // signature. See pi-ai's `allowEmptySignature` branch which we
+          // intentionally do NOT take here.
+          if (
+            !tb.thinkingSignature ||
+            tb.thinkingSignature.trim().length === 0
+          ) {
+            blocks.push({
+              type: "text",
+              text: sanitizeSurrogates(tb.thinking),
+            })
+            continue
+          }
+          blocks.push({
+            type: "thinking",
+            thinking: sanitizeSurrogates(tb.thinking),
+            signature: tb.thinkingSignature,
+          })
         } else if (block.type === "toolCall") {
           const tb = block as ToolCall
           blocks.push({
@@ -476,6 +527,11 @@ export async function parseSSEStream(
 
   const blocks = output.content as IndexedBlock[]
 
+  // Diagnostic instrumentation (issue #2048): track whether the API ever
+  // emitted a terminal `message_stop` event. Observation only — NOT an
+  // assertion. The parser's behaviour is unchanged.
+  let sawMessageStop = false
+
   const processEvent = (eventText: string) => {
     const lines = eventText.split("\n")
     let eventType = ""
@@ -489,6 +545,16 @@ export async function parseSSEStream(
       }
     }
 
+    // Diagnostic instrumentation (issue #2048): log any `event: error` frame
+    // with its raw payload BEFORE deciding what to do with it. Today these
+    // frames silently fall through (no `error` arm in the switch below);
+    // that behaviour is intentionally preserved here — this is logging only.
+    // This is the single highest-signal line for distinguishing parser-side
+    // silent data loss from genuine model behaviour.
+    if (eventType === "error") {
+      log("sse_event_error", { data: dataStr })
+    }
+
     if (!dataStr || dataStr === "[DONE]") return
 
     let event: Record<string, unknown>
@@ -499,6 +565,26 @@ export async function parseSSEStream(
     }
 
     const type = (event.type as string) ?? eventType
+
+    // Diagnostic instrumentation (issue #2048): per-event log of frame
+    // metadata only. No request/response bodies, no message content — just
+    // event names, content-block type tags, delta type tags, and stop_reason
+    // values. Compact field names keep long sessions from blowing out the log.
+    {
+      const meta: Record<string, unknown> = { t: type }
+      if (typeof event.index === "number") meta.i = event.index
+      if (type === "content_block_start") {
+        const cb = event.content_block as { type?: string } | undefined
+        if (cb?.type) meta.cb = cb.type
+      } else if (type === "content_block_delta") {
+        const d = event.delta as { type?: string } | undefined
+        if (d?.type) meta.d = d.type
+      } else if (type === "message_delta") {
+        const d = event.delta as { stop_reason?: string | null } | undefined
+        if (d && "stop_reason" in d) meta.sr = d.stop_reason ?? null
+      }
+      log("sse_event", meta)
+    }
 
     if (type === "message_start") {
       const msg = event.message as {
@@ -673,6 +759,13 @@ export async function parseSSEStream(
           output.usage.cacheWrite
       }
     }
+
+    if (type === "message_stop") {
+      // Diagnostic instrumentation (issue #2048): observe terminal frame.
+      // No behavioural change — the parser already implicitly tolerated
+      // missing message_stop; this just records that we saw it.
+      sawMessageStop = true
+    }
   }
 
   // Read the SSE stream chunk by chunk
@@ -693,6 +786,22 @@ export async function parseSSEStream(
 
   // Process any remaining buffer
   if (buffer.trim()) processEvent(buffer)
+
+  // Diagnostic instrumentation (issue #2048): terminal summary emitted
+  // exactly once immediately before returning. Frame metadata only — counts,
+  // stop_reason value, and whether message_stop was observed.
+  {
+    let toolCalls = 0
+    for (const b of output.content) {
+      if ((b as { type?: string }).type === "toolCall") toolCalls++
+    }
+    log("sse_stream_end", {
+      contentLen: output.content.length,
+      toolCalls,
+      stopReason: output.stopReason,
+      sawMessageStop,
+    })
+  }
 
   return output
 }

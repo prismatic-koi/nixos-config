@@ -38,7 +38,10 @@
           #   - provider:         the routing provider
           #   - model:            the model identifier
           #   - thinking:         the reasoning level (rendered as pi "variant")
-          #   - systemPromptPath: absolute path to the role's system prompt file
+          #
+          # The role system-prompt is no longer carried in the slot: it is
+          # injected at runtime by the prism PI extension (before_agent_start)
+          # from ~/.config/prism/agents/<role>.md (design #2031).
 
           # The canonical set of pi agent roles (mirrors the files in ./agents/).
           piRoles = [
@@ -54,15 +57,13 @@
             "review-context"
           ];
 
-          # Map a role name to its agent prompt file (sans .md extension).
-          # Since filenames now match role names directly, this is an identity map.
-          roleToAgentFile = lib.genAttrs piRoles (role: role);
-
-          # Convenience: build a slot with a systemPromptPath derived from
-          # the role's agent file. `thinking` defaults to "off" (the PI
-          # harness zero value). `provider` defaults to "".
+          # Convenience: build a slot. `thinking` defaults to "off" (the PI
+          # harness zero value). `provider` defaults to "". The `role` arg is
+          # retained for call-site readability but no longer affects the slot
+          # (the role system-prompt is injected by the PI extension, not staged
+          # via a per-role path — design #2031).
           slot =
-            role:
+            _role:
             {
               provider ? "",
               model,
@@ -70,7 +71,6 @@
             }:
             {
               inherit provider model thinking;
-              systemPromptPath = "$HOME/.config/prism/agents/${roleToAgentFile.${role}}.md";
             };
 
           # Build a profile entry by calling `fn role` for every pi role.
@@ -88,13 +88,7 @@
               let
                 s = slotMap.${role} or slotMap._default or null;
               in
-              if s == null then
-                throw "profiles.nix: no slot defined for role '${role}' and no _default"
-              else
-                s
-                // {
-                  systemPromptPath = "$HOME/.config/prism/agents/${roleToAgentFile.${role}}.md";
-                }
+              if s == null then throw "profiles.nix: no slot defined for role '${role}' and no _default" else s
             );
 
           # ── Profiles ────────────────────────────────────────────────────────────
@@ -212,14 +206,15 @@
               }
               // {
                 # Profiles are role-keyed. Each slot is emitted with its full
-                # record (provider, model, thinking, systemPromptPath).
+                # record (provider, model, thinking). The role system-prompt is
+                # injected at runtime by the prism PI extension, not carried in
+                # the slot (design #2031).
                 profiles = lib.mapAttrs (
                   _name: profileEntry:
                   lib.mapAttrs (_role: roleSlot: {
                     provider = roleSlot.provider or "";
                     model = roleSlot.model;
                     thinking = roleSlot.thinking or "off";
-                    systemPromptPath = expandHome (roleSlot.systemPromptPath or "");
                   }) profileEntry
                 ) config.nx.programs.prism.profiles.data.profiles;
                 # Agent environment variables to inject into host-mode agent processes.

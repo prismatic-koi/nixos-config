@@ -128,13 +128,32 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Keybind carve-out (issues #2063, #2073). The tmux Prefix+a keybind
+	// invokes `prism spawn --attach` with no --prompt because the operator
+	// types the initial prompt to the live agent after the popup attaches.
+	//
+	// History: the original carve-out (#2063) reused PRISM_SPAWN_PATH as the
+	// discriminator, but that env var is set UNCONDITIONALLY by every
+	// sandbox (bwrap.go:~500, cmd/agent_run_sandbox_exec_darwin.go:~284) as
+	// a working-directory hint (see internal/sandboxenv/sandboxenv.go). To
+	// stop ordinary container worker-spawn flows from being misclassified
+	// as keybind spawns, the proxy check had to be narrowed to
+	// `PRISM_SPAWN_PATH != "" && promptFlag == ""`, with an extra layer of
+	// narrowing in the sidecar's /spawn handler. That conflation is finally
+	// retired by #2073: the keybind sets a dedicated sentinel
+	// PRISM_KEYBIND_SPAWN=1 that no sandbox injects, so the discriminator
+	// can be a single env-var check on both the host and proxy paths — no
+	// `promptFlag == ""` narrowing needed, no risk of leakage from sandbox
+	// env-injection. PRISM_SPAWN_PATH keeps its working-directory-hint job
+	// and nothing else.
+	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
 	// Reject an empty prompt at the operator boundary (layers 1+2 of issue
 	// #1891). Without this, an empty --prompt-file, --prompt "", or empty
 	// stdin produces a session that is created successfully on every
 	// observable surface but never receives a prompt and sits idle forever.
 	// The host-API /spawn handler has a defence-in-depth check too (layer 3);
 	// this surfaces the error in the caller's stderr instead of an HTTP 400.
-	if promptFlag == "" {
+	if promptFlag == "" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}
 
@@ -153,6 +172,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			"variant":                variantFlag,
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			"abtest":                 abtestFlag,
+		}
+		// Forward the keybind discriminator so the host-side /spawn handler
+		// permits an empty prompt on this request. The layer-3 handler still
+		// rejects empty prompts from arbitrary HTTP callers that omit this
+		// field — see issue #2063.
+		if fromKeybind {
+			body["from_keybind"] = true
 		}
 		// Only forward "harness" when explicitly set. When absent, the host-side
 		// spawn derives the harness from the profile slot as designed (#1421).
@@ -200,6 +226,13 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"variant":                variantFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 		"reuse":                  reuseFlag,
+	}
+	// Forward the keybind discriminator so the host-side /spawn handler
+	// permits an empty prompt on this request. The layer-3 handler still
+	// rejects empty prompts from arbitrary HTTP callers that omit this
+	// field — see issue #2063.
+	if fromKeybind {
+		body["from_keybind"] = true
 	}
 	if len(modelOverrideFlag) > 0 {
 		modelsByRole, parseErr := parseModelOverrides(modelOverrideFlag)
@@ -380,19 +413,20 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	attachFlag, _ := cmd.Flags().GetBool("attach")
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
-	// The keybinding sets PRISM_SPAWN_PATH; --attach overrides to force a switch.
-	fromKeybind := os.Getenv("PRISM_SPAWN_PATH") != ""
+	// The keybinding sets PRISM_KEYBIND_SPAWN=1; --attach overrides to force a switch.
+	fromKeybind := os.Getenv("PRISM_KEYBIND_SPAWN") != ""
 	// Reject an empty prompt at the operator boundary (issue #1891). When the
 	// hidden --prompt-source flag is set we are running as the child of the
 	// host-API /spawn handler, which has already validated that req.Prompt is
 	// non-empty (layer 3); skipping the check there keeps the proxy's own
 	// 400 surface as the source of truth for that path.
 	//
-	// Keybind carve-out (issue #2012): the tmux Prefix+a keybind invokes
-	// `prism spawn --attach` with no --prompt because the operator types the
-	// initial prompt to the live agent after the popup attaches. The keybind
-	// sets PRISM_SPAWN_PATH (the `fromKeybind` discriminator), so an empty
-	// prompt on that path is legitimate and must be allowed through.
+	// Keybind carve-out (issues #2012, #2073): the tmux Prefix+a keybind
+	// invokes `prism spawn --attach` with no --prompt because the operator
+	// types the initial prompt to the live agent after the popup attaches.
+	// The keybind sets PRISM_KEYBIND_SPAWN=1 (the `fromKeybind`
+	// discriminator — a dedicated sentinel that no sandbox injects), so an
+	// empty prompt on that path is legitimate and must be allowed through.
 	if promptText == "" && promptSource != "proxy-spawn" && !fromKeybind {
 		return emptyPromptError(cmd, "prism spawn")
 	}
@@ -513,7 +547,7 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 					if broken {
 						return fmt.Errorf(
 							"prism spawn --reuse: existing session %q is in a broken state (%s)\n"+
-							"run: prism cleanup --yes --session %s",
+								"run: prism cleanup --yes --session %s",
 							existing.SessionName, existing.State, existing.SessionName)
 					}
 					// Healthy session — emit its details and exit 0.
@@ -532,8 +566,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				// No --reuse: refuse with a structured error.
 				return fmt.Errorf(
 					"prism spawn: branch %q already has an active session %q\n"+
-					"to clean it up: prism cleanup --yes --session %s\n"+
-					"to reuse it: prism spawn --branch %s --reuse",
+						"to clean it up: prism cleanup --yes --session %s\n"+
+						"to reuse it: prism spawn --branch %s --reuse",
 					branch, existing.SessionName, existing.SessionName, branch)
 			}
 		}
@@ -680,11 +714,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
 		AllowEmptyPrompt: allowEmptyPrompt,
+		// PIExtensionDir is the host-side prism PI extension directory
+		// (populated by Nix into config.json). Forwarded so that host-mode
+		// pi launches pass --extension <dir>/prism.ts (#2065).
+		PIExtensionDir: cfg.PIExtensionDir,
 		// ForceFresh=true: spawn always wants a new instance. If a session
 		// with the same name already exists it is a stale zombie and should
 		// be killed.
-		ForceFresh:       true,
-		Headless:         headless,
+		ForceFresh: true,
+		Headless:   headless,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions
 		// (defence in depth — denylist prevents writes at the bash level;
 		// read-only mount ensures even a denylist gap cannot modify the repo).
@@ -1339,6 +1377,8 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		Headless:         true,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
 		WorktreeReadOnly: agentRole == "investigate",
+		// PIExtensionDir for host-mode pi launches (#2065).
+		PIExtensionDir:   a.cfg.PIExtensionDir,
 		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {

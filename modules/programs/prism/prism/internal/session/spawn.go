@@ -227,13 +227,22 @@ type SpawnOpts struct {
 	ReadinessTimeout time.Duration
 
 	// AllowEmptyPrompt opts the caller out of the layer-4 empty-prompt guard
-	// for LayoutFull / LayoutAgentOnly (issue #2012). The tmux Prefix+a
-	// keybind invokes `prism spawn --attach` with no --prompt so the operator
-	// can type the initial prompt to the live agent after the popup attaches;
-	// `cmd/spawn.go` sets this field when `PRISM_SPAWN_PATH` is present and
-	// no prompt was supplied. All other callers should leave this false so
-	// the original "agent pane needs a prompt" guard (#1891) keeps firing.
+	// for LayoutFull / LayoutAgentOnly (issues #2012, #2073). The tmux
+	// Prefix+a keybind invokes `prism spawn --attach` with no --prompt so
+	// the operator can type the initial prompt to the live agent after the
+	// popup attaches; `cmd/spawn.go` sets this field when
+	// `PRISM_KEYBIND_SPAWN` is present (the dedicated keybind sentinel
+	// introduced in #2073 to replace the overloaded PRISM_SPAWN_PATH). All
+	// other callers should leave this false so the original "agent pane
+	// needs a prompt" guard (#1891) keeps firing.
 	AllowEmptyPrompt bool
+
+	// PIExtensionDir is the host-side absolute path to the directory that
+	// contains the prism PI extension file. Forwarded to Opts.PIExtensionDir
+	// so buildDirectAgentCmd can emit --extension <dir>/prism.ts on the
+	// host-mode pi launch (#2065). Empty value falls back to no --extension
+	// flag on host mode.
+	PIExtensionDir string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -279,6 +288,32 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// prompt to the live agent after the popup attaches.
 	if opts.Prompt == "" && !opts.AllowEmptyPrompt && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly) {
 		return fmt.Errorf("spawn session: Prompt is required for layout %d (LayoutFull or LayoutAgentOnly) — an agent pane cannot start without a prompt", opts.Layout)
+	}
+
+	// Fail-fast guard for the host-mode pi launch (#2065 edge-case AC).
+	// Mirrors the container-path guard at cmd/agent_run.go:730: refuse to
+	// spawn rather than silently launch pi without --extension. Container
+	// modes (bwrap / sandbox-exec) route through PIInvocation which has its
+	// own equivalent check; this guard is host-mode only and is suppressed
+	// for non-pi harnesses (the prism extension is pi-specific).
+	//
+	// LayoutBare and LayoutScratchpad never reach here — SpawnSession is
+	// only called for LayoutFull and LayoutAgentOnly. Both of those layouts
+	// launch an agent pane and therefore require the extension to be wired.
+	//
+	// The validator reads IsolationMode via effectiveIsolationMode, which
+	// defaults empty to "host". Use resolveLayoutIsolationMode here so
+	// LayoutAgentOnly callers that leave IsolationMode empty (the review
+	// fan-out shape on machines whose default is bwrap) are correctly
+	// resolved to the machine default before the host check fires — same
+	// resolution path the actual launch uses below at spawnAgentOnlyLayout.
+	validationOpts := Opts{
+		IsolationMode:  resolveLayoutIsolationMode(opts),
+		HarnessName:    opts.HarnessName,
+		PIExtensionDir: opts.PIExtensionDir,
+	}
+	if err := ValidatePILaunchOpts(validationOpts); err != nil {
+		return fmt.Errorf("spawn session %q: %w", opts.SessionName, err)
 	}
 
 	// Open the per-session startup log as the very first step (#1051 Piece B).
@@ -822,6 +857,7 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		HarnessName:         opts.HarnessName,
 		HarnessPipeSockPath: opts.HarnessPipeSockPath,
 		ModelsByRole:        opts.ModelsByRole,
+		PIExtensionDir:      opts.PIExtensionDir,
 	}
 }
 
@@ -977,6 +1013,7 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		PluginHostPath:   opts.PluginHostPath,
 		ConfigEnvVarName: opts.ConfigEnvVarName,
 		RuntimeEnvVars:   opts.RuntimeEnvVars,
+		PIExtensionDir:   opts.PIExtensionDir,
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}

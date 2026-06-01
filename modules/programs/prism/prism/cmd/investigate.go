@@ -165,6 +165,8 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 		HarnessName:      harnessName,
 		ForceFresh:       true,
 		WorktreeReadOnly: true,
+		// PIExtensionDir for host-mode pi launches (#2065).
+		PIExtensionDir: cfg.PIExtensionDir,
 	}
 
 	if err := session.SpawnSession(database, spawnOpts); err != nil {

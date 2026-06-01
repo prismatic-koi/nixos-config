@@ -63,6 +63,7 @@ func TestSpawnSession_AgentOnly_SeedsRootAgentName(t *testing.T) {
 		AgentRole:   "review-code",
 		Prompt:      "review this PR",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -122,6 +123,7 @@ func TestSpawnSession_AgentOnly_WritesGroupID(t *testing.T) {
 		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
 		GroupID:     groupID,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -161,6 +163,7 @@ func TestSpawnSession_AgentOnly_CreatesTmuxSession(t *testing.T) {
 		AgentRole:   "review-qa",
 		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -201,6 +204,7 @@ func TestSpawnSession_NoAgentRole_LeavesRootAgentNameNull(t *testing.T) {
 		// AgentRole intentionally left empty.
 		Prompt: "go",
 		Layout: LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -244,6 +248,7 @@ func TestSpawnSession_AllocatePortFails_ReturnsError(t *testing.T) {
 		AgentRole:   "review-security",
 		Prompt:      "go",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)
@@ -275,6 +280,7 @@ func TestSpawnSession_Validation_RequiresSessionName(t *testing.T) {
 		Worktree:  "/tmp",
 		AgentRole: "worker",
 		Layout:    LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
 		t.Fatal("expected error when SessionName is empty, got nil")
@@ -292,6 +298,7 @@ func TestSpawnSession_Validation_RequiresWorktree(t *testing.T) {
 		SessionName: "myrepo@branch",
 		AgentRole:   "worker",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
 		t.Fatal("expected error when Worktree is empty, got nil")
@@ -308,6 +315,7 @@ func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 		Worktree:    "/tmp",
 		AgentRole:   "worker",
 		Layout:      LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
 		t.Fatal("expected error when db is nil, got nil")
@@ -343,6 +351,7 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 				Prompt:        "go",
 				Layout:        LayoutAgentOnly,
 				IsolationMode: mode,
+				PIExtensionDir: testPIExtensionDir,
 			}
 
 			if err := SpawnSession(d, opts); err != nil {
@@ -392,6 +401,7 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 		Prompt:        prompt,
 		Layout:        LayoutAgentOnly,
 		IsolationMode: "host",
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err != nil {
@@ -576,6 +586,7 @@ func TestSpawnAgentPaneEnvVars(t *testing.T) {
 		got := spawnAgentPaneEnvVars(SpawnOpts{
 			Prompt:         "hello",
 			PromptFilePath: "/var/state/prism/run/abc/initial-prompt.txt",
+			PIExtensionDir: testPIExtensionDir,
 		})
 		if got == nil {
 			t.Fatal("got nil, want non-nil map")
@@ -588,7 +599,9 @@ func TestSpawnAgentPaneEnvVars(t *testing.T) {
 		}
 	})
 	t.Run("with prompt only (legacy)", func(t *testing.T) {
-		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "hello"})
+		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "hello",
+	PIExtensionDir: testPIExtensionDir,
+})
 		if got == nil {
 			t.Fatal("got nil, want non-nil map")
 		}
@@ -597,7 +610,9 @@ func TestSpawnAgentPaneEnvVars(t *testing.T) {
 		}
 	})
 	t.Run("empty prompt", func(t *testing.T) {
-		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: ""})
+		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "",
+	PIExtensionDir: testPIExtensionDir,
+})
 		if got != nil {
 			t.Errorf("got %v, want nil (an empty entry would override an inherited value)", got)
 		}
@@ -617,7 +632,8 @@ func TestSpawnSession_UnsupportedLayout_ReturnsError(t *testing.T) {
 		SessionName: "myrepo@branch-bad-layout",
 		Worktree:    "/tmp",
 		AgentRole:   "worker",
-		Layout:      LayoutScratchpad, // not supported by SpawnSession
+		Layout:      LayoutScratchpad, // not supported by SpawnSession,
+		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
 		t.Fatal("expected error for unsupported layout, got nil")
@@ -676,6 +692,7 @@ func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
 				Prompt:        prompt,
 				Layout:        tc.layout,
 				IsolationMode: tc.isolationMode,
+				PIExtensionDir: testPIExtensionDir,
 			}
 
 			if err := SpawnSession(d, opts); err != nil {
@@ -820,7 +837,8 @@ func TestSpawnSession_EmptyPrompt_LayoutFull_Rejected(t *testing.T) {
 		Layout:        LayoutFull,
 		IsolationMode: "host",
 		HarnessName:   "pi",
-		// Prompt deliberately empty.
+		// Prompt deliberately empty.,
+		PIExtensionDir: testPIExtensionDir,
 	}
 
 	err := SpawnSession(d, opts)
@@ -877,7 +895,8 @@ func TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt(t *t
 				Repo:        "myrepo",
 				Worktree:    "/worktrees/myrepo-" + layout.name,
 				Layout:      layout.v,
-				// Prompt deliberately empty — legitimate for these layouts.
+				// Prompt deliberately empty — legitimate for these layouts.,
+				PIExtensionDir: testPIExtensionDir,
 			}
 
 			err := SpawnSession(d, opts)

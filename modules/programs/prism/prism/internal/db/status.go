@@ -506,6 +506,48 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 	return n, nil
 }
 
+// ClearHarnessSessionID clears agent_status.harness_session_id for sessionName
+// AND for any review-agent child rows whose session_name matches
+// "<sessionName>~review-%" (mirroring SetEnded's LIKE-escape semantics).
+//
+// This is the per-session counterpart to ClearAllResumePointers (issue #1947).
+// It is called from the `prism cleanup` paths so that re-spawning a NEW
+// session on the SAME branch name does not pick up the cleaned session's
+// stale harness_session_id and unconditionally resume the dead pi conversation
+// (issue #2035).
+//
+// Cleanup must sever the resume linkage on two surfaces:
+//
+//  1. The DB: this method nulls agent_status.harness_session_id so
+//     cmd/agent_run.go's spawn-time read (`status.HarnessSessionID`) returns
+//     a nil pointer on the next spawn — and the in-sandbox PIInvocation
+//     therefore omits `--session <id>` and starts a fresh pi conversation.
+//
+//  2. The filesystem: the JSONL transcript under
+//     <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
+//     — handled by container.RemovePiResumeJSONL on the cleanup side.
+//
+// Fix (1) is load-bearing on its own; fix (2) is defence-in-depth. See the
+// issue body for the full forensics.
+//
+// The session name is escaped for SQL LIKE wildcards before being used as a
+// pattern prefix so that names containing `%`, `_`, or `\` are handled
+// correctly.
+//
+// Returns nil even when no rows matched — the call is idempotent and safe
+// to invoke against a session whose harness_session_id was already NULL.
+func (d *DB) ClearHarnessSessionID(sessionName string) error {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
+	const q = `
+UPDATE agent_status
+SET    harness_session_id = NULL
+WHERE  session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\'`
+	if _, err := d.conn.Exec(q, sessionName, escaped); err != nil {
+		return fmt.Errorf("db: clear harness session id: %w", err)
+	}
+	return nil
+}
+
 // SetMuted sets the muted flag for sessionName to muted (true = 1, false = 0).
 //
 // Returns (false, nil) when no agent_status row exists for sessionName so

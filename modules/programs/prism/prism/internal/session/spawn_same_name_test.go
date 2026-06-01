@@ -51,6 +51,7 @@ func TestSpawnSession_Concurrent_SameName(t *testing.T) {
 				Layout:        LayoutAgentOnly,
 				IsolationMode: "host",
 				HarnessName:   "pi",
+				PIExtensionDir: testPIExtensionDir,
 			}
 			errs[i] = SpawnSession(d, opts)
 		}()

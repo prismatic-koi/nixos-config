@@ -172,8 +172,28 @@ in
                   }
                   precmd_functions+=(_prism_launch_precmd)
                 '';
+
+                # Darwin self-heal for the sops GITHUB_TOKEN decrypt race
+                # (#2029). hm-session-vars.sh exports
+                # GITHUB_TOKEN="$(cat <secret>)" once per shell. A
+                # darwin-rebuild switch tears down and re-bootstraps the
+                # sops-nix launchd agent, which re-decrypts asynchronously; a
+                # shell sourcing hm-session-vars.sh during that window freezes
+                # GITHUB_TOKEN="" (empty, not unset). This guard re-reads the
+                # secret file when the var is empty and the file is readable,
+                # bypassing the source-once cache. It uses the SAME sops secret
+                # path as the home.sessionVariables in modules/programs/git.nix
+                # so the two stay in lockstep. Linux is unaffected: there the
+                # var is set via environment.sessionVariables (normally
+                # non-empty), so the guard is a harmless no-op.
+                darwinInit = lib.optionalString isDarwin ''
+                  if [ -z "$GITHUB_TOKEN" ] && [ -r "${hmConfig.sops.secrets.github_token.path}" ]; then
+                    export GITHUB_TOKEN="$(cat ${hmConfig.sops.secrets.github_token.path})"
+                    export GITHUB_PACKAGES_TOKEN="$GITHUB_TOKEN"
+                  fi
+                '';
               in
-              lib.mkOrder 1000 commonInit;
+              lib.mkOrder 1000 (commonInit + darwinInit);
           };
 
           # NixOS-specific: Impermanence support

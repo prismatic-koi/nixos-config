@@ -105,7 +105,23 @@ func agentPaneStartCmd(t *testing.T, s *cmdTestServer, sessionName string) strin
 // callRestoreSession is a test helper that wraps restoreSession with sensible
 // defaults (threshold=0, no stagger) so that existing tests don't need to be
 // updated every time the internal signature changes.
+//
+// Also ensures `loadRestoreConfig` returns a config with a non-empty
+// PIExtensionDir if no test has already overridden it — the host-mode pi
+// launch path enforces the #2065 fail-fast guard
+// (session.ValidatePILaunchOpts) and would otherwise reject every restore
+// test that exercises LayoutFull. Tests that explicitly override
+// `loadRestoreConfig` via `withRestoreConfig` and want the empty-
+// PIExtensionDir failure path must set the field themselves (currently
+// none of them do).
 func callRestoreSession(d *db.DB, s db.Status) error {
+	cfg := loadRestoreConfig()
+	if cfg.PIExtensionDir == "" {
+		cfg.PIExtensionDir = "/test/prism-pi-extension"
+		prev := loadRestoreConfig
+		loadRestoreConfig = func() config.Config { return cfg }
+		defer func() { loadRestoreConfig = prev }()
+	}
 	pending := false
 	_, err := restoreSession(d, s, 0, &pending, 0)
 	return err

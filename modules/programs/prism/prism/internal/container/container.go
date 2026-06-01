@@ -249,6 +249,15 @@ type Config struct {
 	// requires system-network sandbox rules). When empty, falls back to "ssh".
 	SshBin string
 
+	// GitHubTokenPath is the absolute path to the sops-decrypted GitHub token
+	// secret file on the host (e.g. ~/.config/sops-nix/secrets/github_token on
+	// Darwin). Used as a last-resort fallback by credentialEnvVars when neither
+	// the role-specific PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> var nor the inherited
+	// GITHUB_TOKEN yields a non-empty value — this rescues agents from a Darwin
+	// sops launchd decrypt race that freezes an empty GITHUB_TOKEN into the tmux
+	// server env (#2029). When empty, the file fallback is skipped.
+	GitHubTokenPath string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session
@@ -277,12 +286,20 @@ type Config struct {
 	// BuildArgs to select the correct sandbox-terminator invocation.
 	Harness string
 
-	// PIAgentConfigHostDir is the absolute host path to the per-session
-	// PI agent config staging directory (e.g.
-	// ~/.local/state/prism/run/<hash>/pi-agent/). When non-empty and
-	// Harness == "pi", BuildArgs (bwrap) bind-mounts this directory read-only
-	// into the sandbox at PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR
-	// to that in-sandbox path. PI discovers APPEND_SYSTEM.md automatically.
+	// PIAgentConfigHostDir is the absolute host path to the shared PI agent
+	// config directory (~/.pi/agent). Since design #2031 PR3 (#2034) the
+	// per-session staging dir has been collapsed into a single shared mount of
+	// the user's ~/.pi/agent. When non-empty and Harness == "pi", BuildArgs
+	// (bwrap) bind-mounts this directory read-WRITE into the sandbox at
+	// PIAgentConfigSandboxDir and sets PI_CODING_AGENT_DIR to the in-sandbox
+	// path so PI discovers settings.json / themes / AGENTS.md / skills /
+	// auth.json. Writes to auth.json, atlassian-mcp-oauth.json, and sessions/
+	// reach the host via the same parent bind — there is no separate overlay
+	// (the pre-#2034 "RO parent + RW file overlays" design was rejected
+	// because proper-lockfile's auth.json.lock mkdir on the parent dir needs
+	// write access; see pi_invocation.go top-of-file for the full rationale).
+	// The role system-prompt is injected at runtime by the prism PI extension,
+	// not via this directory (design #2031).
 	PIAgentConfigHostDir string
 
 	// PIAgentConfigSandboxDir is the in-sandbox path at which the PI agent
@@ -358,7 +375,7 @@ func containerName(sessionName string) string {
 	return NameForSession(sessionName)
 }
 
-	// Manager manages the lifecycle of a single agent session sandbox.
+// Manager manages the lifecycle of a single agent session sandbox.
 type Manager struct {
 	cfg            Config
 	name           string
@@ -819,4 +836,3 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 
 	return nil
 }
-

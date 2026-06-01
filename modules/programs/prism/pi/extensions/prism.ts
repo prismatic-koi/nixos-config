@@ -59,6 +59,9 @@
 // applied only on the wire copy; PI retains the full data internally.
 
 import * as net from "node:net"
+import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -1414,6 +1417,15 @@ export async function dispatchInboundFrame(
         break
       }
 
+      case "reviewing_state": {
+        // Handled directly in the attachJsonlReader callback above (the
+        // closure that owns pendingReviewCall). The case exists here so
+        // the forward-compat "unknown inbound frame type" warning at the
+        // bottom of the switch does not fire and clutter logs every time
+        // the sidecar pushes a reviewing-state transition (issue #2050).
+        break
+      }
+
       case "error": {
         // Sidecar-side error; log and disconnect is handled by the caller.
         // Per wire spec §7.4 the extension does not retry the handshake.
@@ -1527,6 +1539,181 @@ export function shouldActivate(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Role system-prompt injection (issue #2032 / design #2031).
+// ---------------------------------------------------------------------------
+//
+// The agent role prompt (coordinator / worker / review-*) is read at
+// `before_agent_start` from ~/.config/prism/agents/<role>.md and injected into
+// the system prompt. This is the runtime counterpart to the per-session
+// APPEND_SYSTEM.md staging file (StagePIAgentConfigDir, pi_invocation.go).
+//
+// Replace-vs-append semantics (verified against pi's agent-session.js):
+//   - Returning { systemPrompt } from before_agent_start REPLACES the whole
+//     prompt wholesale (`this.agent.state.systemPrompt = result.systemPrompt`).
+//   - The event carries the fully assembled default in `event.systemPrompt`
+//     (which the runtime passes as `this._baseSystemPrompt`).
+//   - To match today's APPEND semantics we therefore concatenate
+//     `event.systemPrompt + "\n\n" + rolePrompt` so the default prompt is
+//     preserved in addition to the role prompt (not clobbered).
+//
+// Per-turn re-fire:
+//   - before_agent_start fires once PER TURN, not once per session. Because the
+//     handler recomputes from the constant `event.systemPrompt` (always the
+//     base) each turn, returning `base + "\n\n" + rolePrompt` is idempotent —
+//     the role prompt never accumulates across turns. The file read is memoised
+//     so disk is touched at most once per session regardless.
+//
+// Single source of truth (PR2 of #2031):
+//   - The per-session APPEND_SYSTEM.md staging file has been REMOVED
+//     (StagePIAgentConfigDir no longer writes it). The extension is now the
+//     SOLE source of the role prompt, so injection is unconditional — there is
+//     no PRISM_INJECT_ROLE_PROMPT gate any more. With APPEND_SYSTEM.md gone
+//     there is nothing for `event.systemPrompt` to double up against, so the
+//     double-injection risk the PR1 gate guarded against no longer exists.
+
+/**
+ * Whitelist-validates a role name. Roles flow from pi.getFlag("agent") which
+ * is bound from the CLI's --agent flag, ultimately set by prism Go-side at
+ * spawn time. The host side is trusted, but a stray path-traversal or null
+ * byte in cfg.AgentRole would otherwise concatenate into the role file path
+ * and read an attacker-chosen file. The whitelist matches the host-side
+ * validator at cmd/spawn.go (prism agent names: ASCII letters, digits,
+ * hyphens, underscores).
+ *
+ * Exported for unit testing only.
+ */
+export function isValidRoleName(role: string): boolean {
+  return typeof role === "string" && role.length > 0 && /^[A-Za-z0-9_-]+$/.test(role)
+}
+
+/**
+ * Resolves the absolute path to the role prompt markdown file for `role`,
+ * mirroring the host-side prismAgentRolePath (cmd/spawn.go): respect
+ * XDG_CONFIG_HOME, else fall back to $HOME/.config. Returns "" when role is
+ * empty or contains characters outside the role-name whitelist (defence in
+ * depth against path traversal via a malicious flag value).
+ */
+export function prismAgentRolePath(role: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (!isValidRoleName(role)) {
+    return ""
+  }
+  let base = env.XDG_CONFIG_HOME
+  if (typeof base !== "string" || base.length === 0) {
+    const home = env.HOME && env.HOME.length > 0 ? env.HOME : os.homedir()
+    base = path.join(home, ".config")
+  }
+  return path.join(base, "prism", "agents", role + ".md")
+}
+
+/**
+ * Reads the role prompt markdown for `role`, returning its contents or
+ * undefined when the role is empty, the path cannot be resolved, or the file
+ * does not exist / cannot be read. Trailing whitespace-only contents (e.g. an
+ * empty file) yield undefined so an empty file is treated as "no role prompt".
+ *
+ * Mirrors today's edge case where a missing systemPromptPath simply omits
+ * APPEND_SYSTEM.md (graceful no-op, no error).
+ */
+export function readRolePrompt(role: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const p = prismAgentRolePath(role, env)
+  if (p === "") {
+    return undefined
+  }
+  let content: string
+  try {
+    content = fs.readFileSync(p, "utf8")
+  } catch {
+    // Missing file or unreadable → graceful no-op (matches APPEND_SYSTEM.md).
+    return undefined
+  }
+  if (content.trim().length === 0) {
+    return undefined
+  }
+  return content
+}
+
+/**
+ * Composes the system prompt for a turn: preserves pi's default prompt
+ * (`baseSystemPrompt`) and appends the role prompt, matching APPEND_SYSTEM.md
+ * semantics. Returns undefined (caller returns no override, keeping the base)
+ * when there is no role prompt to inject. Trailing newline on the base is
+ * normalised so the separator is exactly one blank line.
+ */
+export function composeRoleSystemPrompt(
+  baseSystemPrompt: string,
+  rolePrompt: string | undefined,
+): string | undefined {
+  if (typeof rolePrompt !== "string" || rolePrompt.trim().length === 0) {
+    return undefined
+  }
+  const base = typeof baseSystemPrompt === "string" ? baseSystemPrompt : ""
+  if (base.length === 0) {
+    return rolePrompt
+  }
+  return base.replace(/\s+$/, "") + "\n\n" + rolePrompt
+}
+
+/** Mutable cache the before_agent_start handler threads through
+ * resolveRolePromptForTurn so the role file is read at most once per session. */
+export interface RolePromptCache {
+  /** true once the role file has been resolved (read or no-op). */
+  resolved: boolean
+  /** the role file contents, or undefined (no file / empty / read error). */
+  cached: string | undefined
+}
+
+/**
+ * Pure decision for one before_agent_start turn. Encapsulates the latch logic
+ * so it is unit-testable independently of the PI runtime:
+ *
+ *   - The role identity is sourced from `agentRole`, which the caller reads
+ *     synchronously from `pi.getFlag("agent")`. pi binds extension flags at
+ *     `applyExtensionFlagValues` time (agent-session-services.js), which runs
+ *     during `resourceLoader.reload()` BEFORE any `before_agent_start` event
+ *     fires. There is therefore no handshake race — the role is available on
+ *     the very first turn.
+ *
+ *     This replaces the pre-#2064 design which sourced the role from the
+ *     async hello_ack handshake. That source was load-bearing on the wrong
+ *     ordering: hello_ack arrived AFTER the first turn's before_agent_start
+ *     fired (the handshake races over the sidecar's Unix socket; the agent
+ *     hook fires inline on the pi side), so on a fresh bwrap session the
+ *     first turn's role prompt was always missed. See PR for the full
+ *     diagnosis chain.
+ *
+ *   - When `agentRole` is empty (host-mode pi launches that did not pass
+ *     --agent, or a session running outside prism), the handler returns
+ *     undefined and pi keeps its base system prompt unchanged.
+ *
+ *   - The file read is memoised (cache.resolved) so disk is touched at most
+ *     once per session.
+ *
+ *   - The result is recomposed from `baseSystemPrompt` every turn, so it is
+ *     idempotent and never accumulates the role prompt across turns even
+ *     though before_agent_start fires per-turn (pi 0.77).
+ *
+ * Mutates `cache` in place (sets resolved/cached on first valid-role call)
+ * and returns the systemPrompt override to send, or undefined to keep the base.
+ */
+export function resolveRolePromptForTurn(
+  opts: {
+    agentRole: string
+    baseSystemPrompt: string
+  },
+  cache: RolePromptCache,
+  readRole: (role: string) => string | undefined = readRolePrompt,
+): string | undefined {
+  if (!isValidRoleName(opts.agentRole)) {
+    return undefined
+  }
+  if (!cache.resolved) {
+    cache.cached = readRole(opts.agentRole)
+    cache.resolved = true
+  }
+  return composeRoleSystemPrompt(opts.baseSystemPrompt, cache.cached)
+}
+
+// ---------------------------------------------------------------------------
 // Connection guard helper (exported for testing).
 // ---------------------------------------------------------------------------
 
@@ -1598,6 +1785,28 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
   // Session identity captured from hello_ack. Used for status bar display.
   let sessionRole = ""
+
+  // Role system-prompt injection cache (issue #2032 / #2064). The role file
+  // is read once per session (load-once), then recomposed against
+  // event.systemPrompt on every before_agent_start. The role identity is
+  // sourced synchronously from pi.getFlag("agent") in the handler, not from
+  // the async hello_ack handshake (which was the #2064 regression source).
+  const roleSystemPromptCache: RolePromptCache = { resolved: false, cached: undefined }
+
+  // Register --agent as an extension-owned CLI flag. pi has no native
+  // concept of agents (prism owns the agent system), so pi parses --agent
+  // into its `unknownFlags` map; pi.registerFlag binds that entry into
+  // `runtime.flagValues` during applyExtensionFlagValues, which runs after
+  // all extensions load and BEFORE any hook fires. pi.getFlag("agent") is
+  // therefore synchronous and available from the first before_agent_start.
+  //
+  // Canonical example: pi 0.77 examples/extensions/plan-mode/index.ts which
+  // registers --plan in the same shape.
+  pi.registerFlag("agent", {
+    description:
+      "Primary agent identity (worker, coordinator, review-*, etc.) — selects the role system prompt appended to pi's base prompt at before_agent_start.",
+    type: "string",
+  })
   let sessionBranch = extractBranch(process.env.PRISM_SESSION_NAME ?? "")
   let sessionIsolationMode = ""
 
@@ -1924,9 +2133,27 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
       // A prompt frame signals that the sidecar is delivering a message
       // (e.g. review-complete). Clear the reviewing-state guard so subsequent
-      // turns can emit state_change:idle normally.
+      // turns can emit state_change:idle normally. Belt-and-braces with the
+      // reviewing_state frame handler below: either clearing path is
+      // sufficient on its own; both are defence in depth.
       if (f.type === "prompt") {
         pendingReviewCall = false
+      }
+
+      // Authoritative reviewing-state signal from the sidecar (issue #2050).
+      // The sidecar tracks reviewingInFlight against its session-ledger and
+      // emits this frame on every transition plus immediately after
+      // handshake. We mirror it directly into pendingReviewCall, which is
+      // now driven solely from this signal — the previous bash-substring
+      // set-trigger ("/\bprism\s+review\b/") was removed because it false-
+      // matched on any bash command that incidentally contained the literal
+      // "prism review" (e.g. a `gh pr comment` body, a grep, an echo of a
+      // commit message). That re-latched the guard after the genuine
+      // review-complete prompt had cleared it, and the worker's next
+      // turn_end then suppressed state_change:finished forever — the exact
+      // shape of the stuck-active incident in #2050.
+      if (f.type === "reviewing_state") {
+        pendingReviewCall = f.in_flight === true
       }
 
       void dispatchInboundFrame(f, apiAdapter, sendError)
@@ -2000,10 +2227,36 @@ export default function prismExtension(pi: ExtensionAPI): void {
     }
   })
 
-  pi.on("before_agent_start", async (_event, ctx) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     lastCtx = ctx
     if (writer && handshakeComplete) {
       writer.write({ type: "state_change", state: "active" })
+    }
+
+    // Role system-prompt injection (issue #2032 / #2033 / #2064 fix).
+    //
+    // Source the role from pi.getFlag("agent") rather than the async
+    // hello_ack-derived sessionRole. The flag is bound by pi BEFORE any
+    // before_agent_start fires (see applyExtensionFlagValues in
+    // pi's agent-session-services.js), so this is race-free — unlike the
+    // pre-#2064 design which lost the first turn's role prompt because the
+    // handshake socket-receive races behind the agent-start hook.
+    //
+    // getFlag returns `string | boolean | undefined`; we registered the flag
+    // as type="string" so the runtime value is always a string when present.
+    // Defensive narrowing keeps the handler safe if a future pi version
+    // changes the contract or a missing-flag returns the registered default.
+    const flagValue = pi.getFlag("agent")
+    const agentRole = typeof flagValue === "string" ? flagValue : ""
+    const composed = resolveRolePromptForTurn(
+      {
+        agentRole,
+        baseSystemPrompt: event.systemPrompt,
+      },
+      roleSystemPromptCache,
+    )
+    if (composed !== undefined) {
+      return { systemPrompt: composed }
     }
     return undefined
   })
@@ -2217,15 +2470,22 @@ export default function prismExtension(pi: ExtensionAPI): void {
           pendingGitPushReminder = true
         }
 
-        // Reviewing-state guard: set flag when `prism review` is called so
-        // that the turn_end idle emission is suppressed until the
-        // review-complete prompt arrives. NOTE: this is intentionally a
-        // separate flag from cycle counting (the latter moved to the Go
-        // monitor in #1512). The reviewing-state flag's substring-detection
-        // class is tracked in #1519 and is out of scope here.
-        if (/\bprism\s+review\b/.test(command)) {
-          pendingReviewCall = true
-        }
+        // Reviewing-state guard set-path REMOVED in #2050. The previous
+        // implementation set pendingReviewCall = true whenever a bash
+        // command matched /\bprism\s+review\b/, which false-positived on
+        // any bash invocation that incidentally contained the literal
+        // "prism review" (gh pr comment bodies, grep over docs, echo of
+        // a commit message, etc.). A false-set after the genuine review-
+        // complete prompt had cleared the flag re-latched the guard with
+        // no release path, suppressing state_change:finished on the next
+        // turn_end and stranding the session as `active` indefinitely.
+        //
+        // The guard is now driven authoritatively by the sidecar via the
+        // `reviewing_state` inbound frame (see the attachJsonlReader
+        // callback above). The sidecar emits one on every transition of
+        // its ledger-backed `reviewingInFlight` flag plus once post-
+        // handshake, so the extension's pendingReviewCall is a faithful
+        // mirror of the sidecar's authoritative state.
       }
 
       // Persist guard state after each tool call so session resume can

@@ -36,6 +36,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `index.ts` | leohenon (pi-specific) | `src/index.ts` (different API, skip when porting) | `src/index.ts` |
 | `auth.ts` | leohenon | `src/credentials.ts` (OAuth helpers only, no callback server) | `src/auth.ts` |
 | `stream.ts` | leohenon | *(no equivalent — opencode uses different streaming)* | `src/stream.ts`, `src/convert.ts`, `src/prompt.ts` |
+| `request-body.ts` | pi-ai built-in | *(no equivalent — see divergence 9)* | *(no equivalent)* |
 | `credentials.ts` | griffinmartin | `src/credentials.ts` | `src/auth.ts` (partial) |
 | `transforms.ts` | griffinmartin PR #193 | `src/transforms.ts` | *(no equivalent)* |
 | `betas.ts` | griffinmartin | `src/betas.ts` | *(no equivalent)* |
@@ -86,6 +87,63 @@ it is more actively maintained and is the source of the PR #193 fix.
 7. **MD5 hash obfuscation vs PascalCase**: Our `transforms.ts` uses PR #193's
    MD5 approach (`t_<8hex>`) instead of griffinmartin main's `mcp_` PascalCase
    approach. This is intentional — see PR #193 for the rationale.
+
+8. **`getAnthropicModels` returns the runtime registry verbatim — no hardcoded
+   fallback**. leohenon's `index.ts` carried a `DEFAULT_OPUS_4_7` literal that
+   was pushed when the registry lacked opus-4-7. Since pi v0.77.0 the
+   `@earendil-works/pi-ai` model catalog ships `claude-opus-4-7`/`-4-8`
+   directly, so the fallback was dead code and was removed. Do **not**
+   re-introduce a hardcoded model object — rely entirely on the registry.
+
+9. **Adaptive thinking handling lives in `request-body.ts` and is ported from
+   pi-ai — NOT from griffinmartin**. Issue #2044 fixed an erratic-behaviour
+   bug on `claude-opus-4-8` (and a silent degradation on `-4-6` / `-4-7`)
+   where our `streamSimple` was sending the legacy budget-based thinking
+   payload (`thinking: {type:"enabled", budget_tokens:N}`) for all anthropic
+   models. Models flagged with `compat.forceAdaptiveThinking === true` in the
+   pi-ai registry (currently `claude-opus-4-6/4-7/4-8`) REQUIRE the adaptive
+   form: `thinking: {type:"adaptive", display:"summarized"}` +
+   `output_config: {effort}`.
+
+   As of griffinmartin SHA `ffefe9d` (release 1.5.4, 2026-04), griffinmartin
+   upstream has not implemented adaptive thinking — their `transforms.ts`
+   still treats effort as a haiku-only strip target. So the port for this
+   change came from pi-ai's built-in handler:
+   `@earendil-works/pi-ai/src/providers/anthropic.ts`. Key references:
+
+   - `mapThinkingLevelToEffort` (~710-731) — pi reasoning level → Anthropic
+     effort, honouring the model's `thinkingLevelMap`.
+   - `streamSimpleAnthropic` dispatch (~748-770) — selects adaptive vs
+     budget-based based on `compat.forceAdaptiveThinking`.
+   - `buildParams` body assembly (~937-981) — the wire-form details:
+     `display: "summarized"` on BOTH branches; `output_config: {effort}` for
+     adaptive; `budget_tokens` for legacy; and the temperature-suppression
+     guard at ~937-940.
+   - `createClient` interleaved-thinking gate (~789) — adaptive models have
+     interleaved thinking built in, so the
+     `interleaved-thinking-2025-05-14` beta header is suppressed. Mirrored in
+     our `betas.ts::getModelBetas` via the new `ctx.forceAdaptiveThinking`
+     argument.
+
+   When griffinmartin eventually ports adaptive thinking, prefer their
+   implementation if it lands in a logical home file (likely a new
+   `request-body.ts` analogue or an addition to `transforms.ts`). If their
+   shape diverges, keep the pi-ai-faithful behaviour and add a note here.
+
+   Smoke-test references in pi-ai:
+   - `test/anthropic-opus-4-8-smoke.test.ts` (live API smoke).
+   - `test/anthropic-force-adaptive-thinking.test.ts` (offline wire-form
+     capture, including the `forceAdaptiveThinking: false` opt-out case).
+   Our offline parity lives in `request-body.test.ts`.
+
+10. **`model-config.ts` `4-8` override and `betas.ts` adaptive
+    suppression**: Both changes from issue #2044. The `4-8` entry mirrors
+    the existing `4-6`/`4-7` pattern (substring match adds the
+    `effort-2025-11-24` beta). The `forceAdaptiveThinking`-driven
+    suppression of `interleaved-thinking-2025-05-14` in `getModelBetas` is
+    keyed off the model's compat flag at call time — it does NOT rely on
+    substring matching, so any future adaptive model from the registry
+    benefits automatically without a `model-config.ts` change.
 
 ## Port procedure for future upstream fixes
 

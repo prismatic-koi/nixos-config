@@ -29,25 +29,8 @@ import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
 import { getModelBetas, getExcludedBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
-import {
-  buildAnthropicSystemPrompt,
-  convertPiMessagesToAnthropic,
-  convertPiToolsToAnthropic,
-  fromClaudeCodeToolName,
-  parseSSEStream,
-} from "./stream.ts"
-
-const DEFAULT_OPUS_4_7: NonNullable<ProviderConfig["models"]>[number] = {
-  id: "claude-opus-4-7",
-  name: "Claude Opus 4.7",
-  api: "anthropic-messages",
-  reasoning: true,
-  input: ["text", "image"],
-  cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
-  contextWindow: 1000000,
-  maxTokens: 128000,
-  compat: undefined,
-}
+import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
+import { buildRequestBody } from "./request-body.ts"
 
 function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
   const modelRegistry = ModelRegistry.create(AuthStorage.inMemory())
@@ -59,16 +42,29 @@ function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
       name: model.name,
       api: model.api ?? "anthropic-messages",
       reasoning: model.reasoning,
+      // thinkingLevelMap drives request-body.ts::mapThinkingLevelToEffort —
+      // without it, opus-4-6/4-7/4-8 silently fall through to the default
+      // mapping (e.g. xhigh → "high" instead of "max"/"xhigh"). Issue #2053;
+      // same bug shape as leohenon/pi-anthropic-oauth#7. Pi's
+      // ProviderModelConfig schema explicitly accepts this field
+      // (`dist/core/model-registry.js` ~line 114 / 505).
+      thinkingLevelMap: model.thinkingLevelMap,
       input: model.input,
       cost: model.cost,
       contextWindow: model.contextWindow,
       maxTokens: model.maxTokens,
       compat: model.compat,
+      // Deliberately NOT propagated:
+      //   - provider: fixed at "anthropic" by registerProvider() below.
+      //   - baseUrl: set at the provider level in registerProvider(); no
+      //     anthropic-provider registry entry overrides it per-model.
+      //   - headers: this extension builds the Anthropic request headers
+      //     itself in streamSimple (Bearer token, anthropic-version,
+      //     anthropic-beta, x-app, user-agent, x-client-request-id) — pi's
+      //     per-model headers would be additive and risk colliding with the
+      //     OAuth-mode auth header. No anthropic registry model currently
+      //     declares per-model headers, so this is also a no-op today.
     }))
-
-  if (!models.some((model) => model.id === DEFAULT_OPUS_4_7.id)) {
-    models.push(DEFAULT_OPUS_4_7)
-  }
 
   return models
 }
@@ -146,7 +142,10 @@ export default function (pi: ExtensionAPI) {
               const creds = getCachedCredentials()
               const token = creds?.accessToken ?? apiKey
               const excluded = getExcludedBetas(model.id)
-              const betas = getModelBetas(model.id, excluded)
+              const betas = getModelBetas(model.id, excluded, {
+                forceAdaptiveThinking:
+                  model.compat?.forceAdaptiveThinking === true,
+              })
               headers.set("authorization", `Bearer ${token}`)
               headers.set("anthropic-version", "2023-06-01")
               headers.set("anthropic-beta", betas.join(","))
@@ -166,50 +165,12 @@ export default function (pi: ExtensionAPI) {
             return headers
           }
 
-          const maxTokens =
-            options?.maxTokens || Math.floor(model.maxTokens / 3)
-
-          const body: Record<string, unknown> = {
-            model: model.id,
-            max_tokens: maxTokens,
-            stream: true,
-          }
-
-          body.messages = convertPiMessagesToAnthropic(
-            context.messages,
-            isOAuth,
-          )
-
-          const system = buildAnthropicSystemPrompt(
-            context.systemPrompt,
-            isOAuth,
-          )
-          if (system) body.system = system
-
-          if (context.tools?.length) {
-            body.tools = convertPiToolsToAnthropic(context.tools, isOAuth)
-          }
-
-          if (options?.reasoning && model.reasoning && maxTokens > 1) {
-            const defaultBudgets: Record<string, number> = {
-              minimal: 1024,
-              low: 4096,
-              medium: 10240,
-              high: 20480,
-              xhigh: 32000,
-            }
-            const customBudget =
-              options.thinkingBudgets?.[
-                options.reasoning as keyof typeof options.thinkingBudgets
-              ]
-            const requestedBudget =
-              customBudget ?? defaultBudgets[options.reasoning] ?? 10240
-            body.thinking = {
-              type: "enabled",
-              budget_tokens: Math.min(requestedBudget, maxTokens - 1),
-            }
-          }
-
+          const body = buildRequestBody(model, context, options, isOAuth)
+          // NOTE: temperature is intentionally not set anywhere in body —
+          // Anthropic rejects extended-thinking requests that also pass
+          // temperature with a 400. Mirrors pi-ai's guard
+          // (`anthropic.ts` ~937-940). If a future change adds a
+          // temperature path, gate it on `!body.thinking`.
           const bodyStr = JSON.stringify(body)
           const transformedBody = isOAuth ? transformBody(bodyStr) : bodyStr
           const headers = buildHeaders()

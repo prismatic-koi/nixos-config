@@ -90,9 +90,23 @@ export function isEnable1mContext(): boolean {
   return false
 }
 
+export interface GetModelBetasContext {
+  /**
+   * Whether the model uses adaptive thinking
+   * (`compat.forceAdaptiveThinking === true`). When true,
+   * `interleaved-thinking-2025-05-14` is suppressed because adaptive thinking
+   * models have interleaved thinking built in — mirrors pi-ai's
+   * `anthropic.ts::createClient` (~line 789):
+   *   "Adaptive thinking models have interleaved thinking built in,
+   *    so skip the beta header."
+   */
+  forceAdaptiveThinking?: boolean
+}
+
 export function getModelBetas(
   modelId: string,
   excluded?: Set<string>,
+  ctx?: GetModelBetasContext,
 ): string[] {
   const betas = [...getRequiredBetas()]
 
@@ -122,6 +136,15 @@ export function getModelBetas(
         if (!betas.includes(add)) betas.push(add)
       }
     }
+  }
+
+  // Adaptive thinking models have interleaved thinking built in — drop the
+  // beta header. Mirrors pi-ai's `anthropic.ts::createClient` ~789. The
+  // legacy beta is harmless for non-adaptive Claude 4.x models and is left in
+  // place there to preserve the existing wire form. Issue #2044.
+  if (ctx?.forceAdaptiveThinking) {
+    const idx = betas.indexOf("interleaved-thinking-2025-05-14")
+    if (idx !== -1) betas.splice(idx, 1)
   }
 
   // Filter out excluded betas (from previous failed requests due to long context errors)

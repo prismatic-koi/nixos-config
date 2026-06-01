@@ -138,6 +138,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshAccessKeyName:  cfg.SshAccessKeyName,
 		SshSigningKeyName: cfg.SshSigningKeyName,
 		SshBin:            cfg.SshBin,
+		GitHubTokenPath:   cfg.GitHubTokenPath,
 		HostAPISockPath:   hostAPISockPath,
 		InstanceID:        instanceID,
 		RuntimeEnv:        sandboxRuntimeEnv,
@@ -210,11 +211,11 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 			// Strip any existing HOME and XDG vars from the filtered env —
 			// we replace them all with staging-HOME-relative paths below.
 			xdgKeys := map[string]bool{
-				"HOME":             true,
-				"XDG_CACHE_HOME":   true,
-				"XDG_DATA_HOME":    true,
-				"XDG_CONFIG_HOME":  true,
-				"XDG_STATE_HOME":   true,
+				"HOME":              true,
+				"XDG_CACHE_HOME":    true,
+				"XDG_DATA_HOME":     true,
+				"XDG_CONFIG_HOME":   true,
+				"XDG_STATE_HOME":    true,
 				"CFFIXED_USER_HOME": true,
 			}
 			filtered := make([]string, 0, len(env))
@@ -302,10 +303,15 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
 	}
 
-	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers APPEND_SYSTEM.md
-	// from the per-session staging directory. On Darwin (sandbox-exec), the
-	// staging dir is on the host filesystem, so the "sandbox path" override set
-	// in populatePIConfig points at the host path directly.
+	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /
+	// themes / AGENTS.md / skills from the shared host ~/.pi/agent directory.
+	// The role system-prompt is injected at runtime by the prism PI extension,
+	// not via this directory (design #2031). On Darwin (sandbox-exec) the
+	// in-sandbox path is collapsed to the host path above (sandbox-exec shares
+	// the host filesystem), so PI_CODING_AGENT_DIR ends up pointing at
+	// ~/.pi/agent directly. The SBPL profile grants (subpath ~/.pi/agent) RW
+	// for pi sessions which covers auth.json writes (OAuth token refresh) and
+	// the proper-lockfile auth.json.lock mkdir.
 	if ctrCfg.Harness == "pi" && ctrCfg.PIAgentConfigSandboxDir != "" {
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}
