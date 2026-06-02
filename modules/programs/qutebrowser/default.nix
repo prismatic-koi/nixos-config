@@ -304,6 +304,9 @@
                 config.set("content.geolocation", True, "https://www.metlink.org.nz")
                 config.set("content.geolocation", True, "https://www.newworld.co.nz")
                 config.set("content.geolocation", True, "https://www.pbtech.co.nz")
+                # farmers.co.nz rejects qutebrowser's default UA and serves a "temporarily down"
+                # error page; spoof a recent Chrome desktop UA on that origin only.
+                config.set("content.headers.user_agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36", "https://www.farmers.co.nz/*")
                 # tab padding
                 c.tabs.padding = {
                     "bottom": 5,
