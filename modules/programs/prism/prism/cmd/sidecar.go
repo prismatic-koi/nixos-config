@@ -45,7 +45,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 
@@ -249,14 +248,20 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// Build the harness pipe socket path for socket-pipe harnesses (P2.SIDECAR).
 	// The socket co-locates with the host-API socket in the same per-session
 	// directory, so the existing bind-mount for that directory covers it too.
-	// On Darwin, sandbox-exec cannot reliably access Unix sockets; allocate a
-	// TCP port instead and expose it via PRISM_HARNESS_PIPE.
+	//
+	// Transport selection is gated on isolation mode, not GOOS (issue #2078):
+	// sandbox-exec cannot reliably reach Unix sockets, so it uses a TCP port on
+	// 127.0.0.1. Every other mode (host on Linux/Darwin, bwrap on Linux) uses a
+	// Unix socket co-located with the host-API socket. Gating on GOOS broke
+	// Darwin host-mode pi sessions, because agentPaneEnvVars always injects a
+	// unix:// URL for host mode while the sidecar was binding TCP.
 	var harnessPipeSockPath string
 	var harnessPipeTCPPort int
-	if harnessShape, shapeOK := harness.ShapeOf(harnessName); shapeOK && harnessShape == harness.TransportSocketPipe {
-		if runtime.GOOS == "darwin" {
-			// Darwin: allocate a TCP port and store it in harness_port so that
-			// agent-run (sandbox-exec) can read it and inject PRISM_HARNESS_PIPE.
+	if isSocketPipe, useTCP := selectHarnessPipeTransport(harnessName, isolationMode); isSocketPipe {
+		if useTCP {
+			// sandbox-exec: allocate a TCP port and store it in harness_port so
+			// that agent-run (sandbox-exec) can read it and inject
+			// PRISM_HARNESS_PIPE.
 			tcpPort, portErr := d.AllocatePort(sessionName)
 			if portErr != nil {
 				return fmt.Errorf("sidecar: allocate harness pipe TCP port: %w", portErr)
@@ -471,3 +476,26 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 }
 
 
+
+// selectHarnessPipeTransport decides whether a named harness needs a harness
+// pipe and, if so, whether the sidecar should bind a TCP port or a Unix
+// socket for it.
+//
+// Returns isSocketPipe=false for harnesses whose shape is not
+// TransportSocketPipe (e.g. SSE-only harnesses) — those need no harness pipe.
+// Returns useTCP=true only under sandbox-exec isolation, where the sandboxed
+// agent-run process cannot reliably reach a Unix socket on the host. All
+// other isolation modes (host on Linux/Darwin, bwrap on Linux) use a Unix
+// socket co-located with the host-API socket.
+//
+// This function is the single source of truth for the transport decision —
+// agentPaneEnvVars (host mode) and agent-run (sandbox-exec, bwrap) must inject
+// PRISM_HARNESS_PIPE values consistent with whatever this function picks. See
+// issue #2078 for the regression that motivated extracting this gate.
+func selectHarnessPipeTransport(harnessName string, isolationMode config.IsolationMode) (isSocketPipe bool, useTCP bool) {
+	shape, ok := harness.ShapeOf(harnessName)
+	if !ok || shape != harness.TransportSocketPipe {
+		return false, false
+	}
+	return true, isolationMode == config.IsolationSandboxExec
+}
