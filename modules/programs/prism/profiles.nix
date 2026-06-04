@@ -120,6 +120,19 @@
               };
             };
 
+            anthropic-opus-max = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-opus-4-7";
+                thinking = "xhigh";
+              };
+              coordinator = slot "coordinator" {
+                provider = "anthropic";
+                model = "anthropic/claude-opus-4-7";
+                thinking = "xhigh";
+              };
+            };
+
             anthropic-opus = profileFromSlots {
               coordinator = slot "coordinator" {
                 provider = "anthropic";
