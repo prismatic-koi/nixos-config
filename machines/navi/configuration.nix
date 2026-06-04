@@ -23,7 +23,7 @@
     };
     programs = {
       prism = {
-        profile.default = "anthropic-opus-medium";
+        profile.default = "anthropic-opus-max";
         agent.isolation.default = "bwrap";
       };
       anki.enable = false; # build broken as of 2025-08-30
