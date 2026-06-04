@@ -26,11 +26,19 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// investigateSpawnSessionFn is the function used to actually spawn the
+// investigator session. It defaults to session.SpawnSession; tests can swap
+// it out to capture the SpawnOpts that would be passed to SpawnSession
+// without performing the (tmux + sidecar) side-effects.
+var investigateSpawnSessionFn = session.SpawnSession
 
 var investigateCmd = &cobra.Command{
 	Use:   "investigate",
@@ -118,7 +126,13 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 		return fmt.Errorf("open db: %w", err)
 	}
 	defer database.Close()
+	return spawnInvestigateSessionWithDB(database, invokerSession, promptText, suppliedName)
+}
 
+// spawnInvestigateSessionWithDB is the DB-injected core of spawnInvestigateSession,
+// extracted so tests can drive the SpawnOpts construction against an isolated DB
+// (sidecartest.NewIsolated) without going through openDB() / a real prism.db.
+func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, suppliedName string) error {
 	status, err := database.CurrentStatus(invokerSession)
 	if err != nil {
 		return fmt.Errorf("prism investigate: read invoker status: %w", err)
@@ -178,7 +192,21 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 		PIExtensionDir: cfg.PIExtensionDir,
 	}
 
-	if err := session.SpawnSession(database, spawnOpts); err != nil {
+	// For socket-pipe harnesses (e.g. "pi") in host isolation mode, pre-compute
+	// the Unix socket path so agentPaneEnvVars can inject PRISM_HARNESS_PIPE
+	// into the tmux pane. bwrap and sandbox-exec set PRISM_HARNESS_PIPE via
+	// their own paths (bwrap.go --setenv, sandbox-exec profile, podman --env);
+	// only inject here for host mode. Mirrors the same block in spawn.go,
+	// switch.go, and restore.go (issue #2111).
+	if hShape, hShapeOK := harness.ShapeOf(harnessName); hShapeOK && hShape == harness.TransportSocketPipe && string(isoMode) == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
+			spawnOpts.HarnessPipeSockPath = pipePath
+		} else {
+			proglog.Warnf("[prism investigate] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
+		}
+	}
+
+	if err := investigateSpawnSessionFn(database, spawnOpts); err != nil {
 		return fmt.Errorf("prism investigate: spawn session: %w", err)
 	}
 
