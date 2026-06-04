@@ -1166,8 +1166,17 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 		s := opts.HarnessFlag
 		si.HarnessFlag = &s
 	}
+	// Capture the isolation mode for the audit row. Prefer the raw --isolation
+	// flag as the user passed it; when no flag was passed (the common case) fall
+	// back to the resolved effective mode (opts.IsolationMode) so the column is
+	// always populated for the `prism stats compare` Spawn Inputs block rather
+	// than NULL-by-default (issue #2102). IsolationMode is the mode the session
+	// actually ran under, which is exactly what an A/B comparison wants to show.
 	if opts.IsolationFlag != "" {
 		s := opts.IsolationFlag
+		si.IsolationFlag = &s
+	} else if opts.IsolationMode != "" {
+		s := opts.IsolationMode
 		si.IsolationFlag = &s
 	}
 	si.HostModeFlag = opts.HostModeFlag

@@ -527,6 +527,48 @@ prism spawn \
   --prompt "Please take a look at PROJ-123, cover off the work required, and open a pull request."
 ```
 
+## A/B-testing two profiles on the same task (`--abtest`)
+
+`prism spawn --abtest <profileA> --abtest <profileB>` spawns **two** sibling
+worker sessions on the same task, each running a different model profile, in
+separate worktrees. Use it when you want head-to-head evidence — cost, token
+usage, speed, tool-call volume — to inform which profile's result to merge.
+
+The merge-decision flow is:
+
+1. **Spawn the pair.** Both legs share an `abtest_pair_id` and get their own
+   branch / worktree.
+   ```bash
+   prism spawn --abtest anthropic --abtest gemini \
+     --branch try-new-parser \
+     --prompt 'implement the new parser per issue #123 and open a PR'
+   ```
+2. **Let both workers finish** and open their PRs. Each leg runs its own
+   `prism review` cycle independently — do not coordinate them.
+3. **Compare the legs for the merge-decision data.** Run `prism stats compare`
+   on the two instances (or `prism stats abtest <group_id>`) to get the
+   side-by-side cost / token / duration / `msg_assistant` / `tool_call`
+   numbers **and** the captured Spawn Inputs (profile, isolation mode, branch,
+   harness):
+   ```bash
+   prism stats compare <instance-A> <instance-B>
+   # or, by group:
+   prism stats abtest <group_id>
+   ```
+   This works **as soon as both legs reach a terminal state** (`finished` /
+   `error` / `interrupted`) — you do **not** need to clean up first. The
+   aggregate axes are computed on the fly from the event stream between the
+   terminal transition and cleanup, so the comparison is available exactly when
+   you need it to make the call (issue #2102).
+4. **Pick the winner** on quality **plus** the cost/speed evidence. Merge the
+   winner's PR, close the loser's PR.
+5. **Cleanup both** legs (see the next section) once the decision is made.
+
+> Run the comparison **before** you merge/cleanup — that is the whole point of
+> the A/B test. Cleaning up first is fine too (the persisted `spawn_outcome`
+> row carries the identical numbers), but it is no longer required for the
+> data to be available.
+
 ## Lifecycle: cleaning up after a merge
 
 When you spawn a session and later merge its PR yourself, you are responsible for cleaning up the worktree and session. The spawned agent cannot do this — it would be tearing down its own environment.

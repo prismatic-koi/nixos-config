@@ -263,6 +263,7 @@ var prCmd = &cobra.Command{
 			agentFlag:            agentFlag,
 			harnessFlag:          effectiveHarness,
 			isolationFlag:        isolationFlag,
+			isolationMode:        string(isoMode),
 			prNumber:             prNumber,
 			ignoreConcurrencyCap: ignoreConcurrencyCapFlag,
 			modelsByRole:         modelsByRole,
@@ -288,6 +289,7 @@ type prSpawnInputsArgs struct {
 	agentFlag            string
 	harnessFlag          string
 	isolationFlag        string
+	isolationMode        string
 	prNumber             string
 	ignoreConcurrencyCap bool
 	modelsByRole         map[string]string
@@ -346,8 +348,13 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 	if a.harnessFlag != "" {
 		si.HarnessFlag = &a.harnessFlag
 	}
+	// Mirror spawnInputsFromOpts (#2102): record the raw --isolation flag when
+	// passed, else fall back to the resolved effective mode so the column is
+	// always populated for the compare Spawn Inputs block.
 	if a.isolationFlag != "" {
 		si.IsolationFlag = &a.isolationFlag
+	} else if a.isolationMode != "" {
+		si.IsolationFlag = &a.isolationMode
 	}
 	if a.prNumber != "" {
 		if n, convErr := strconv.Atoi(a.prNumber); convErr == nil {

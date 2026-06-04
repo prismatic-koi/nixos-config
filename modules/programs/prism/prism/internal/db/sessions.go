@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/agent"
 )
 
 // scanSession scans a sessions row from the given scanner into a Session value.
@@ -269,24 +271,36 @@ SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
 	return turns, nil
 }
 
-// WriteSpawnOutcome computes all aggregated columns for the given instanceID
-// from agent_events and sessions, then upserts a spawn_outcome row. The write
-// is idempotent (INSERT OR REPLACE). Calling it twice produces the same result.
+// computeSpawnOutcome aggregates every spawn_outcome column for instanceID from
+// agent_events and the sessions / agent_status rows, returning the computed
+// *SpawnOutcome WITHOUT persisting it. It returns (nil, nil) when no sessions
+// row exists (pre-migration or unknown instance).
 //
-// The function does not return an error when the sessions row does not exist
-// (e.g. for pre-migration instances). In that case it is a silent no-op.
+// This is the single canonical aggregation, shared by two callers so their
+// values can never drift:
+//
+//   - WriteSpawnOutcome persists the result (INSERT OR REPLACE) — the
+//     cleanup-path writer (cmd/cleanup.go).
+//   - SpawnOutcomeForCompare returns it directly at read time for a terminal
+//     session that has not been cleaned up yet, so `prism stats compare` shows
+//     full data between the terminal transition and cleanup (issue #2102).
+//
+// Because both paths run the identical agent_events aggregation query, the
+// event-derived axes (token / cost / tool / msg counts) agree byte-for-byte:
+// there is no double-counting and no missed delta when cleanup later overwrites
+// the row with the same numbers.
 //
 // Review-group verdict is rolled up from GroupResults when a review group
 // exists for the session. PR number and merge timestamp come from
 // pending_merges (merge-queue path only).
-func (d *DB) WriteSpawnOutcome(instanceID string) error {
+func (d *DB) computeSpawnOutcome(instanceID string) (*SpawnOutcome, error) {
 	// Fetch the sessions row; skip if not found.
 	sess, err := d.SessionByInstanceID(instanceID)
 	if err != nil {
-		return fmt.Errorf("db: write spawn outcome: fetch session: %w", err)
+		return nil, fmt.Errorf("db: compute spawn outcome: fetch session: %w", err)
 	}
 	if sess == nil {
-		return nil // pre-migration or unknown instance — silent no-op
+		return nil, nil // pre-migration or unknown instance — silent no-op
 	}
 
 	now := time.Now().UnixMilli()
@@ -296,14 +310,18 @@ func (d *DB) WriteSpawnOutcome(instanceID string) error {
 		SchemaVersion: 1,
 	}
 
-	// --- Process-level ---
-
+	// --- Process-level: end_state ---
+	//
+	// sessions.end_state is only stamped at cleanup (UpdateSessionEnded). Between
+	// the agent reaching a terminal state and cleanup running it is NULL, so fall
+	// back to the live agent_status.state when that is terminal. The cleanup path
+	// is unchanged (sess.EndState is already set there); only the read-time compute
+	// uses the fallback to surface the real terminal state pre-cleanup.
 	out.EndState = sess.EndState
-	if sess.EndedAt != nil && sess.StartedAt.UnixMilli() > 0 {
-		dur := sess.EndedAt.Sub(sess.StartedAt).Milliseconds()
-		out.DurationMs = &dur
-		if sess.EndState != nil && *sess.EndState == "finished" {
-			out.TimeToFinishedMs = &dur
+	if out.EndState == nil {
+		if st, terminal, stErr := d.agentTerminalState(instanceID); stErr == nil && terminal {
+			s := string(st)
+			out.EndState = &s
 		}
 	}
 
@@ -324,12 +342,13 @@ SELECT
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheReadTokens'), 0) ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cacheWriteTokens'),0) ELSE 0 END), 0),
     COALESCE(SUM(CASE WHEN type = 'msg_assistant' THEN COALESCE(JSON_EXTRACT(payload,'$.cost'),          0) ELSE 0.0 END), 0.0),
-    MIN(created_at)
+    MIN(created_at),
+    MAX(created_at)
 FROM agent_events
 WHERE instance_id = ?`
 
 	row := d.conn.QueryRow(aggQ, instanceID)
-	var minCreatedAt *int64
+	var minCreatedAt, maxCreatedAt *int64
 	if scanErr := row.Scan(
 		&out.InterruptedCount, &out.CompactionCount, &out.ErrorEventCount,
 		&out.PermissionAskCount, &out.PermissionDeniedCount, &out.DoomLoopCount,
@@ -337,9 +356,9 @@ WHERE instance_id = ?`
 		&out.TokensInputTotal, &out.TokensOutputTotal,
 		&out.TokensCacheReadTotal, &out.TokensCacheWriteTotal,
 		&out.CostUSDTotal,
-		&minCreatedAt,
+		&minCreatedAt, &maxCreatedAt,
 	); scanErr != nil {
-		return fmt.Errorf("db: write spawn outcome: aggregate events: %w", scanErr)
+		return nil, fmt.Errorf("db: compute spawn outcome: aggregate events: %w", scanErr)
 	}
 
 	// time_to_first_event_ms: min(event.created_at) − session.started_at
@@ -347,6 +366,32 @@ WHERE instance_id = ?`
 		ttfe := *minCreatedAt - sess.StartedAt.UnixMilli()
 		if ttfe >= 0 {
 			out.TimeToFirstEventMs = &ttfe
+		}
+	}
+
+	// --- Process-level: duration_ms / time_to_finished_ms ---
+	//
+	// Prefer the cleanup-stamped sessions.ended_at (the post-cleanup value). Before
+	// cleanup runs that column is NULL, so fall back to the last agent_event
+	// timestamp — a point that does not move once the agent stops emitting events —
+	// so duration is populated on the pre-cleanup compare surface too.
+	var endedAtMs int64
+	hasEnded := false
+	switch {
+	case sess.EndedAt != nil:
+		endedAtMs = sess.EndedAt.UnixMilli()
+		hasEnded = true
+	case maxCreatedAt != nil:
+		endedAtMs = *maxCreatedAt
+		hasEnded = true
+	}
+	if hasEnded && sess.StartedAt.UnixMilli() > 0 {
+		dur := endedAtMs - sess.StartedAt.UnixMilli()
+		if dur >= 0 {
+			out.DurationMs = &dur
+			if out.EndState != nil && *out.EndState == "finished" {
+				out.TimeToFinishedMs = &dur
+			}
 		}
 	}
 
@@ -407,6 +452,27 @@ SELECT group_id FROM session_groups
 		}
 	}
 
+	return &out, nil
+}
+
+// WriteSpawnOutcome computes the aggregated spawn_outcome columns for
+// instanceID (via computeSpawnOutcome) and upserts the row. The write is
+// idempotent (INSERT OR REPLACE): calling it twice — or after the read-time
+// compute (SpawnOutcomeForCompare) has already surfaced the same numbers —
+// produces the identical row.
+//
+// It is a silent no-op when no sessions row exists (pre-migration / unknown
+// instance). Called from cmd/cleanup.go after UpdateSessionEnded stamps the
+// terminal end_state.
+func (d *DB) WriteSpawnOutcome(instanceID string) error {
+	out, err := d.computeSpawnOutcome(instanceID)
+	if err != nil {
+		return err
+	}
+	if out == nil {
+		return nil // pre-migration or unknown instance — silent no-op
+	}
+
 	// --- INSERT OR REPLACE ---
 	const insertQ = `
 INSERT OR REPLACE INTO spawn_outcome (
@@ -438,7 +504,7 @@ INSERT OR REPLACE INTO spawn_outcome (
     ?, ?, ?,
     ?, ?
 )`
-	_, err = d.conn.Exec(insertQ,
+	if _, execErr := d.conn.Exec(insertQ,
 		out.InstanceID,
 		out.EndState, out.ExitCode, out.DurationMs,
 		out.InterruptedCount, out.CompactionCount, out.ErrorEventCount,
@@ -452,11 +518,65 @@ INSERT OR REPLACE INTO spawn_outcome (
 		out.CostUSDTotal, out.ToolCallCount, out.ToolErrorCount,
 		out.MsgAssistantCount, out.TimeToFirstEventMs, out.TimeToFinishedMs,
 		out.ComputedAt, out.SchemaVersion,
-	)
-	if err != nil {
-		return fmt.Errorf("db: write spawn outcome: insert: %w", err)
+	); execErr != nil {
+		return fmt.Errorf("db: write spawn outcome: insert: %w", execErr)
 	}
 	return nil
+}
+
+// agentTerminalState returns the current agent_status.state for instanceID and
+// whether it is one of the terminal agent states (finished / error /
+// interrupted). It returns ("", false, nil) when no agent_status row exists.
+//
+// deleted is intentionally excluded: a deleted session has been cleaned up, so
+// its spawn_outcome row already exists (or its events were purged) and the
+// on-the-fly compute path does not apply.
+func (d *DB) agentTerminalState(instanceID string) (agent.AgentState, bool, error) {
+	var state string
+	err := d.conn.QueryRow(
+		`SELECT state FROM agent_status WHERE instance_id = ? ORDER BY last_seen DESC LIMIT 1`,
+		instanceID,
+	).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("db: agent terminal state for %q: %w", instanceID, err)
+	}
+	st := agent.AgentState(state)
+	switch st {
+	case agent.StateFinished, agent.StateError, agent.StateInterrupted:
+		return st, true, nil
+	}
+	return st, false, nil
+}
+
+// SpawnOutcomeForCompare returns the spawn_outcome data for instanceID for the
+// `prism stats compare` read path (issue #2102). It prefers the persisted
+// spawn_outcome row (present post-cleanup). When that row is absent it computes
+// the aggregates on the fly from agent_events — but only when the session has
+// reached a terminal agent state, so an in-progress (active / idle / ...)
+// session still reports "—" for its aggregate axes rather than partial
+// mid-flight data.
+//
+// Returns (nil, nil) when there is no persisted row and the session is not
+// terminal.
+func (d *DB) SpawnOutcomeForCompare(instanceID string) (*SpawnOutcome, error) {
+	out, err := d.SpawnOutcomeByInstanceID(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if out != nil {
+		return out, nil
+	}
+	_, terminal, err := d.agentTerminalState(instanceID)
+	if err != nil {
+		return nil, err
+	}
+	if !terminal {
+		return nil, nil
+	}
+	return d.computeSpawnOutcome(instanceID)
 }
 
 // SpawnOutcomeByInstanceID returns the spawn_outcome row for instanceID, or nil

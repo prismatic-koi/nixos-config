@@ -260,6 +260,52 @@ func TestSpawnInputsFromOpts_AbtestPair(t *testing.T) {
 	}
 }
 
+// TestSpawnInputsFromOpts_AbtestLegCapturesEffectiveIsolation verifies the
+// Layer-2 AC for issue #2102: every --abtest leg's spawn_inputs row carries
+// profile_name AND isolation_mode with non-empty values, even when no explicit
+// --isolation flag was passed. The abtest path leaves IsolationFlag empty but
+// always sets the resolved IsolationMode; spawnInputsFromOpts must fall back to
+// the effective mode so the compare "Spawn Inputs" block is populated.
+func TestSpawnInputsFromOpts_AbtestLegCapturesEffectiveIsolation(t *testing.T) {
+	bus := sidecartest.NewIsolated(t, "")
+	d := bus.DB
+
+	pairID := uuid.New().String()
+	for _, leg := range []struct{ name, profile string }{
+		{"prism-test@worker-iso-a", "anthropic"},
+		{"prism-test@worker-iso-b", "gemini"},
+	} {
+		instanceID := uuid.New().String()
+		seedSessionForSpawnInputs(t, d, instanceID, leg.name)
+		// Mirror an --abtest leg: ProfileName + the resolved IsolationMode are
+		// set; the raw IsolationFlag is left empty (no --isolation passed).
+		si := session.SpawnInputsFromOpts(session.SpawnOpts{
+			InstanceID:    instanceID,
+			Prompt:        "abtest leg prompt",
+			PromptSource:  "cli-positional",
+			ProfileName:   leg.profile,
+			IsolationMode: "bwrap", // effective resolved mode
+			AbtestPairID:  pairID,
+		})
+		if err := d.InsertSpawnInputs(si); err != nil {
+			t.Fatalf("InsertSpawnInputs leg %q: %v", leg.name, err)
+		}
+		got, err := d.SpawnInputsByInstanceID(instanceID)
+		if err != nil {
+			t.Fatalf("SpawnInputsByInstanceID leg %q: %v", leg.name, err)
+		}
+		if got == nil {
+			t.Fatalf("leg %q: got nil row", leg.name)
+		}
+		// profile_name non-empty.
+		if got.ProfileName == nil || *got.ProfileName == "" {
+			t.Errorf("leg %q: ProfileName empty, want %q", leg.name, leg.profile)
+		}
+		// isolation_mode captured from the effective mode (non-empty).
+		assertStringPtr(t, "IsolationFlag/"+leg.name, got.IsolationFlag, "bwrap")
+	}
+}
+
 // TestSpawnInputsFromOpts_ModelOverrideJSON verifies the JSON shape written
 // to model_variant_overrides for --model-override flag repeats. Downstream
 // readers parse this back into a map, so the round trip must be lossless.

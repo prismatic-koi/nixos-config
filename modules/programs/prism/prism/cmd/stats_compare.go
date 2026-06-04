@@ -142,9 +142,10 @@ func runStatsAbtest(cmd *cobra.Command, args []string) error {
 
 // compareRun holds per-run data for the comparison.
 type compareRun struct {
-	Label       string
-	Session     *db.Session
-	Outcome     *db.SpawnOutcome // may be nil if not yet computed
+	Label   string
+	Session *db.Session
+	Outcome *db.SpawnOutcome // may be nil if not yet computed
+	Inputs  *db.SpawnInputs  // may be nil if no spawn_inputs row was written
 }
 
 // axisRow is a single row in the comparison table: a label and one value per run.
@@ -172,8 +173,13 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 	runs := make([]compareRun, len(sessions))
 	for i, sess := range sessions {
 		label := "run-" + string(rune('A'+i))
-		out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID) // nil is ok
-		runs[i] = compareRun{Label: label, Session: sess, Outcome: out}
+		// SpawnOutcomeForCompare returns the persisted spawn_outcome row when
+		// present (post-cleanup) and otherwise computes the aggregates on the fly
+		// for a terminal-state session that has not been cleaned up yet (issue
+		// #2102). An in-progress session yields nil → every aggregate axis "—".
+		out, _ := d.SpawnOutcomeForCompare(sess.InstanceID)     // nil is ok
+		inputs, _ := d.SpawnInputsByInstanceID(sess.InstanceID) // nil is ok
+		runs[i] = compareRun{Label: label, Session: sess, Outcome: out, Inputs: inputs}
 	}
 
 	// Collect desired axes.
@@ -561,11 +567,13 @@ func renderCompareTable(runs []compareRun, axes []string, includeInputs, include
 		fmt.Println(line)
 	}
 
-	// Spawn inputs block (show session name differences).
+	// Spawn inputs block — surface the captured spawn_inputs columns
+	// (profile, isolation, harness, agent role, branch, …). Written on every
+	// spawn path via the centralised SpawnSession writer (#2087); partial rows
+	// (some columns NULL) are surfaced as what's there rather than treated as
+	// absent (issue #2102).
 	if includeInputs {
-		fmt.Println()
-		fmt.Println(styleHeader.Render("Spawn Inputs"))
-		fmt.Println(styleDim.Render("  (spawn_inputs table not yet populated — run `prism spawn` with C.1 to capture inputs)"))
+		renderSpawnInputs(styleHeader, styleLabel, styleDim, runs, wLabel, wVal)
 	}
 
 	// Section: process-level.
@@ -598,6 +606,147 @@ func renderCompareTable(runs []compareRun, axes []string, includeInputs, include
 	}
 
 	return nil
+}
+
+// spawnInputFields is the ordered list of spawn_inputs rows shown in the
+// "Spawn Inputs" block of the table renderer. Each derives its display value
+// from the run's spawn_inputs row, falling back to the sessions row (for the
+// effective harness / agent role / branch) so the block is meaningful even
+// when a flag was left at its default (NULL in spawn_inputs).
+var spawnInputFields = []struct {
+	label string
+	fn    func(compareRun) string
+}{
+	{"profile_name", func(r compareRun) string { return spawnInputProfile(r) }},
+	{"isolation_mode", func(r compareRun) string { return spawnInputIsolation(r) }},
+	{"harness", func(r compareRun) string { return spawnInputHarness(r) }},
+	{"agent_role", func(r compareRun) string { return spawnInputAgentRole(r) }},
+	{"branch", func(r compareRun) string { return spawnInputBranch(r) }},
+	{"model", func(r compareRun) string { return strPtrOr(inputsModel(r), "(profile default)") }},
+	{"variant", func(r compareRun) string { return strPtrOr(inputsVariant(r), "(profile default)") }},
+	{"host_mode", func(r compareRun) string { return spawnInputHostMode(r) }},
+	{"abtest_pair_id", func(r compareRun) string { return strPtrOr(inputsAbtest(r), "—") }},
+}
+
+func inputsModel(r compareRun) *string {
+	if r.Inputs != nil {
+		return r.Inputs.ModelFlag
+	}
+	return nil
+}
+func inputsVariant(r compareRun) *string {
+	if r.Inputs != nil {
+		return r.Inputs.VariantFlag
+	}
+	return nil
+}
+func inputsAbtest(r compareRun) *string {
+	if r.Inputs != nil {
+		return r.Inputs.AbtestPairID
+	}
+	return nil
+}
+
+// strPtrOr returns *p when non-nil/non-empty, otherwise the fallback.
+func strPtrOr(p *string, fallback string) string {
+	if p != nil && *p != "" {
+		return *p
+	}
+	return fallback
+}
+
+func spawnInputProfile(r compareRun) string {
+	if r.Inputs != nil {
+		return strPtrOr(r.Inputs.ProfileName, "(default)")
+	}
+	return "(default)"
+}
+
+// spawnInputIsolation reads the captured isolation mode. spawnInputsFromOpts
+// records the effective resolved mode when no explicit --isolation flag was
+// passed (issue #2102), so this is populated for every spawn path.
+func spawnInputIsolation(r compareRun) string {
+	if r.Inputs != nil {
+		return strPtrOr(r.Inputs.IsolationFlag, "(default)")
+	}
+	return "(default)"
+}
+
+// spawnInputHarness prefers the captured flag, falling back to the effective
+// harness recorded on the sessions row (always set).
+func spawnInputHarness(r compareRun) string {
+	if r.Inputs != nil && r.Inputs.HarnessFlag != nil && *r.Inputs.HarnessFlag != "" {
+		return *r.Inputs.HarnessFlag
+	}
+	if r.Session != nil && r.Session.Harness != "" {
+		return r.Session.Harness
+	}
+	return "(default)"
+}
+
+// spawnInputAgentRole prefers the captured flag, falling back to the effective
+// agent role recorded on the sessions row.
+func spawnInputAgentRole(r compareRun) string {
+	if r.Inputs != nil && r.Inputs.AgentFlag != nil && *r.Inputs.AgentFlag != "" {
+		return *r.Inputs.AgentFlag
+	}
+	if r.Session != nil && r.Session.AgentRole != nil && *r.Session.AgentRole != "" {
+		return *r.Session.AgentRole
+	}
+	return "(default)"
+}
+
+// spawnInputBranch prefers the captured --branch flag, otherwise derives the
+// branch from the session name (the `repo@branch` slug).
+func spawnInputBranch(r compareRun) string {
+	if r.Inputs != nil && r.Inputs.BranchFlag != nil && *r.Inputs.BranchFlag != "" {
+		return *r.Inputs.BranchFlag
+	}
+	if r.Session != nil {
+		if at := strings.Index(r.Session.SessionName, "@"); at >= 0 && at+1 < len(r.Session.SessionName) {
+			return r.Session.SessionName[at+1:]
+		}
+	}
+	return "(derived)"
+}
+
+func spawnInputHostMode(r compareRun) string {
+	if r.Inputs == nil {
+		return "—"
+	}
+	if r.Inputs.HostModeFlag {
+		return "yes"
+	}
+	return "no"
+}
+
+// renderSpawnInputs prints the "Spawn Inputs" block. Rows whose value is the
+// same across all runs are still shown (spawn inputs are sparse and the few
+// rows that differ between A/B legs — typically profile — are the point).
+func renderSpawnInputs(
+	styleHeader, styleLabel, styleDim lipgloss.Style,
+	runs []compareRun,
+	wLabel, wVal int,
+) {
+	fmt.Println()
+	fmt.Println(styleHeader.Render("Spawn Inputs"))
+	anyRow := false
+	for _, r := range runs {
+		if r.Inputs != nil {
+			anyRow = true
+			break
+		}
+	}
+	if !anyRow {
+		fmt.Println(styleDim.Render("  (no spawn_inputs row recorded for these sessions; showing session-derived values)"))
+	}
+	for _, field := range spawnInputFields {
+		line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(field.label+":"))
+		for _, r := range runs {
+			line += fmt.Sprintf("  %-*s", wVal, truncateStr(field.fn(r), wVal))
+		}
+		fmt.Println(line)
+	}
 }
 
 // renderSection prints a named section of the comparison table.
@@ -667,21 +816,54 @@ func renderSection(
 
 // compareJSONOutput is the top-level JSON shape (C3 §6.3).
 type compareJSONOutput struct {
-	Runs  []compareJSONRun      `json:"runs"`
-	Diffs compareJSONDiffs      `json:"diffs"`
+	Runs  []compareJSONRun `json:"runs"`
+	Diffs compareJSONDiffs `json:"diffs"`
 }
 
 type compareJSONRun struct {
 	Label        string                 `json:"label"`
 	SessionName  string                 `json:"session_name"`
 	InstanceID   string                 `json:"instance_id"`
-	SpawnInputs  map[string]interface{} `json:"spawn_inputs"` // always {} until C.1 writes rows
+	SpawnInputs  map[string]interface{} `json:"spawn_inputs"`
 	SpawnOutcome map[string]interface{} `json:"spawn_outcome"`
 }
 
 type compareJSONDiffs struct {
-	SpawnInputs  []string `json:"spawn_inputs"`  // always [] until C.1
+	SpawnInputs  []string `json:"spawn_inputs"`
 	SpawnOutcome []string `json:"spawn_outcome"`
+}
+
+// spawnInputsJSON renders the spawn_inputs row for a run into the JSON contract
+// shape. Placeholder display sentinels ("(default)", "(derived)", …) map to a
+// JSON null so machine consumers see absence explicitly rather than the
+// human-facing fallback string.
+func spawnInputsJSON(r compareRun) map[string]interface{} {
+	m := make(map[string]interface{}, len(spawnInputFields))
+	for _, f := range spawnInputFields {
+		v := f.fn(r)
+		switch v {
+		case "(default)", "(derived)", "(profile default)", "—":
+			m[f.label] = nil
+		default:
+			m[f.label] = v
+		}
+	}
+	return m
+}
+
+// spawnInputsAllSame reports whether every run renders the same value for the
+// given spawn-input field.
+func spawnInputsAllSame(fn func(compareRun) string, runs []compareRun) bool {
+	if len(runs) == 0 {
+		return true
+	}
+	first := fn(runs[0])
+	for _, r := range runs[1:] {
+		if fn(r) != first {
+			return false
+		}
+	}
+	return true
 }
 
 func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeRubric bool) error {
@@ -702,7 +884,7 @@ func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeR
 			Label:       r.Label,
 			SessionName: r.Session.SessionName,
 			InstanceID:  r.Session.InstanceID,
-			SpawnInputs: map[string]interface{}{},
+			SpawnInputs: spawnInputsJSON(r),
 		}
 		outcomeMap := make(map[string]interface{})
 		for _, axis := range effectiveAxes {
@@ -721,6 +903,15 @@ func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeR
 	for _, axis := range effectiveAxes {
 		if !allSame(axis, runs) {
 			out.Diffs.SpawnOutcome = append(out.Diffs.SpawnOutcome, axis)
+		}
+	}
+
+	// Compute spawn_inputs diffs: fields where runs differ.
+	if includeInputs {
+		for _, f := range spawnInputFields {
+			if !spawnInputsAllSame(f.fn, runs) {
+				out.Diffs.SpawnInputs = append(out.Diffs.SpawnInputs, f.label)
+			}
 		}
 	}
 
