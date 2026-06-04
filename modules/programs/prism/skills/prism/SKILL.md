@@ -547,6 +547,9 @@ prism cleanup --yes --session "nixos-config@update-plex"
 - Remove the git worktree
 - Force-delete the local branch (relies on the orchestrator-trust contract: call this only after confirming the PR is merged)
 - Kill the tmux session, redirecting any attached client to `scratchpad`
+- Mark the `agent_status` row as ended (stamps `ended_at`, releases the harness port, and clears the pi `harness_session_id` so the next spawn starts a fresh conversation)
+
+The `agent_status` row itself is preserved — it is not deleted. Re-spawning on the same branch name reuses the row: `tmux-session-start` re-seeds it to `idle`, which the state machine accepts from any non-`deleted` terminal state (`error`, `finished`, `interrupted`). Long-term retention is handled by the 90-day `Prune` job.
 
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
@@ -904,7 +907,7 @@ A lookup table of log patterns, their causes, and remediation hints:
 
 - **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the container's `harness-config.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
 
-- **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to remove the stale row and any dangling port allocation.
+- **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to end the row (stamps `ended_at`, releases any dangling port, clears the pi resume linkage) so it drops out of the active-session view. The row itself is preserved; re-spawning on the same branch name reuses it by re-seeding `state` back to `idle`.
 
 ### Escalation
 

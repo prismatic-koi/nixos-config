@@ -40,6 +40,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateFinished, StateIdle, "tmux-session-start resets finished session on recreate"},
 		{StateInterrupted, StateActive, "session resumed after interruption"},
 		{StateInterrupted, StateIdle, "tmux-session-start resets interrupted session on recreate"},
+		{StateError, StateIdle, "tmux-session-start resets errored session on recreate (issue #2094)"},
 
 		// Reviewing state (issue #1033)
 		{StateActive, StateReviewing, "prism review called — entering reviewing state"},

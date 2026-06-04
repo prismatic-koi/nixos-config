@@ -42,6 +42,15 @@ import "fmt"
 //     manual kill+recreate).
 //   - interrupted → active: session resumed after an interruption.
 //   - interrupted → idle: same as finished → idle but starting from interrupted.
+//   - error → idle: same as finished → idle but starting from error. After
+//     `prism cleanup --yes --session <name>` ends a session whose last state
+//     was error, re-spawning on the same branch name reuses the existing
+//     agent_status row — tmux-session-start writes idle to seed the new
+//     incarnation. Without this entry, every re-spawn-after-cleanup on a
+//     session that ended in error logs an advisory transition warning, and
+//     would become a hard failure if checkTransition is ever tightened to
+//     return errors (issue #2094, prerequisite for any future tightening of
+//     checkTransition raised by #2081).
 //   - * → deleted: any state can transition to deleted when session.deleted fires.
 //
 // The TypeScript plugin writes state directly to SQLite and is not constrained
@@ -75,10 +84,18 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateInterrupted: true,
 		StateDeleted:     true,
 	},
+	// error→active: retry / next turn after a transient error.
+	// error→finished: idle debounce fires after error is resolved.
+	// error→interrupted: pane-died after error.
+	// error→idle: tmux-session-start resets a previously-errored session on
+	// recreate. Mirrors finished→idle and interrupted→idle so that
+	// re-spawning on the same branch name after `prism cleanup` succeeds
+	// without an advisory transition warning (issue #2094).
 	StateError: {
 		StateActive:      true,
 		StateInterrupted: true,
 		StateFinished:    true,
+		StateIdle:        true,
 		StateDeleted:     true,
 	},
 	// reviewing→finished: PASS verdict received; coordinator notified now.
