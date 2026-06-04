@@ -66,7 +66,12 @@
           pkgs = import nixpkgs {
             inherit system;
             config = lib.mkMerge [
-              { allowUnfree = true; }
+              {
+                allowUnfree = true;
+                # See overlays/default.nix (bitwarden-desktop block) for
+                # context + removal condition.
+                permittedInsecurePackages = [ "electron-39.8.10" ];
+              }
               extraConfig
             ];
             overlays = [ self.overlays.modifications ];

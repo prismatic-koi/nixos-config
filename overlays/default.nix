@@ -84,6 +84,29 @@ rec {
       # remains our most-vetted package source.
       # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
+
+      # bitwarden-desktop: swap the source-built `electron_39` for the
+      # prebuilt `electron_39-bin` so we don't compile EOL electron from
+      # source. Electron 39 is past end-of-life and has been marked
+      # insecure in nixpkgs; the matching `permittedInsecurePackages =
+      # [ "electron-39.8.10" ];` entry lives in `flake.nix`'s base
+      # config block (module-level `nixpkgs.config` is bypassed because
+      # we pass a pre-built `pkgs` into `nixosSystem`).
+      #
+      # nixpkgs tracking issue (Electron 39 EOL, most dependents bumped):
+      #   https://github.com/NixOS/nixpkgs/issues/521305
+      # nixpkgs issue for bitwarden-desktop specifically:
+      #   https://github.com/NixOS/nixpkgs/issues/526914
+      # Upstream electron bump PR (open, not yet merged):
+      #   https://github.com/bitwarden/clients/pull/20448
+      #
+      # REMOVAL CONDITION: delete this block (and the matching
+      # `permittedInsecurePackages` entry in `flake.nix`) once
+      # bitwarden/clients#20448 lands and nixpkgs bumps
+      # `bitwarden-desktop` to a build on electron >= 40.
+      bitwarden-desktop = prev.bitwarden-desktop.override {
+        electron_39 = final.electron_39-bin;
+      };
       pi-coding-agent =
         let
           newSrc = prev.fetchFromGitHub {
