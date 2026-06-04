@@ -19,8 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,7 +28,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
-	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -82,6 +81,19 @@ func init() {
 // ---------- runner functions ----------
 
 func runStatsCompare(cmd *cobra.Command, args []string) error {
+	// PRISM_HOST_API proxy dispatch: inside a sandbox the local shadow DB does
+	// not carry the host's data, so the resolution + aggregation must run on the
+	// host. The sidecar returns the assembled per-run data and the rendering
+	// (Δ column, table/json/csv, all flags) stays on the CLI side — byte for
+	// byte identical to the host-direct path (issue #2098).
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		runs, err := proxyStatsCompare(apiURL, args)
+		if err != nil {
+			return fmt.Errorf("stats compare: %w", err)
+		}
+		return renderComparison(cmd, runs)
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats compare: %w", err)
@@ -104,39 +116,86 @@ func runStatsCompare(cmd *cobra.Command, args []string) error {
 func runStatsAbtest(cmd *cobra.Command, args []string) error {
 	groupID := args[0]
 
+	// PRISM_HOST_API proxy dispatch (issue #2098): same contract as compare —
+	// the host resolves the group members and assembles per-run data; the CLI
+	// renders.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		runs, err := proxyStatsAbtest(apiURL, groupID)
+		if err != nil {
+			return fmt.Errorf("stats abtest: %w", err)
+		}
+		return renderComparison(cmd, runs)
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats abtest: %w", err)
 	}
 	defer d.Close()
 
-	// Resolve group members.
-	members, err := d.GroupResults(groupID)
+	// Resolve group members to their most recent sessions rows (sorted by
+	// session_name) — shared with the proxy path via db.AbtestGroupSessions.
+	sessions, err := d.AbtestGroupSessions(groupID)
 	if err != nil {
-		return fmt.Errorf("stats abtest: resolve group members: %w", err)
+		return fmt.Errorf("stats abtest: %w", err)
 	}
-	if len(members) == 0 {
-		return fmt.Errorf("stats abtest: no members found for group %q", groupID)
-	}
-
-	// Get the sessions rows for each member by session name (most recent).
-	var sessions []*db.Session
-	for _, m := range members {
-		sess, err := d.MostRecentSessionForName(m.SessionName)
-		if err != nil {
-			return fmt.Errorf("stats abtest: resolve member %q: %w", m.SessionName, err)
-		}
-		if sess == nil {
-			return fmt.Errorf("stats abtest: member session %q not found in sessions table", m.SessionName)
-		}
-		sessions = append(sessions, sess)
-	}
-	// Sort by session_name for deterministic output.
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].SessionName < sessions[j].SessionName
-	})
 
 	return runComparison(cmd, d, sessions)
+}
+
+// proxyStatsCompare proxies `prism stats compare <ids…>` to the host sidecar's
+// GET /stats?view=compare endpoint. The instance IDs / session names are sent
+// as repeated id= query params (preserving order, which drives run-A/run-B…
+// labelling). The host resolves each arg and returns the assembled per-run
+// data; resolution is atomic — if any arg fails to resolve the host returns a
+// 404 and no runs, matching the host-direct path which aborts on the first
+// unresolvable arg.
+func proxyStatsCompare(apiURL string, args []string) ([]compareRun, error) {
+	q := url.Values{}
+	q.Set("view", "compare")
+	for _, a := range args {
+		q.Add("id", a)
+	}
+	var resp struct {
+		Runs []db.CompareRunData `json:"runs"`
+	}
+	if err := proxyGetValuesFromHostAPI(apiURL, "/stats", q, &resp); err != nil {
+		return nil, err
+	}
+	return compareRunsFromData(resp.Runs), nil
+}
+
+// proxyStatsAbtest proxies `prism stats abtest <group_id>` to the host
+// sidecar's GET /stats?view=abtest endpoint. The host resolves the group
+// members, sorts them, and returns the assembled per-run data.
+func proxyStatsAbtest(apiURL, groupID string) ([]compareRun, error) {
+	q := url.Values{}
+	q.Set("view", "abtest")
+	q.Set("group", groupID)
+	var resp struct {
+		Runs []db.CompareRunData `json:"runs"`
+	}
+	if err := proxyGetValuesFromHostAPI(apiURL, "/stats", q, &resp); err != nil {
+		return nil, err
+	}
+	return compareRunsFromData(resp.Runs), nil
+}
+
+// compareRunsFromData converts the host-API per-run DTOs into the renderer's
+// compareRun values, assigning run-A / run-B / … labels in order. This is the
+// proxy-path analogue of loadCompareRuns: identical label assignment, fed the
+// data the host already assembled via db.AssembleCompareRun.
+func compareRunsFromData(data []db.CompareRunData) []compareRun {
+	runs := make([]compareRun, len(data))
+	for i, cr := range data {
+		runs[i] = compareRun{
+			Label:   "run-" + string(rune('A'+i)),
+			Session: cr.Session,
+			Outcome: cr.Outcome,
+			Inputs:  cr.Inputs,
+		}
+	}
+	return runs
 }
 
 // ---------- comparison engine ----------
@@ -152,10 +211,13 @@ type compareRun struct {
 	// populated by an on-the-fly call to db.ComputeSpawnOutcome — see
 	// loadCompareRuns and issue #2102.
 	Outcome *db.SpawnOutcome
-	// Inputs is the spawn_inputs row for this session, or nil when no row
-	// exists (pre-#2087 spawns, or a session created outside of the
-	// SpawnSession chokepoint).
-	Inputs *db.SpawnInputs
+	// Inputs is the slim, non-sensitive spawn_inputs projection for this
+	// session, or nil when no row exists (pre-#2087 spawns, or a session
+	// created outside of the SpawnSession chokepoint). It is db.CompareInputs
+	// rather than the full db.SpawnInputs so the conversation-bearing columns
+	// (prompt_text, …) never cross the all-roles host-API /stats boundary on
+	// the proxy path (issue #2098 security review).
+	Inputs *db.CompareInputs
 }
 
 // axisRow is a single row in the comparison table: a label and one value per run.
@@ -164,8 +226,21 @@ type axisRow struct {
 	Values []string // one per run
 }
 
-// runComparison is the shared engine for compare and abtest.
+// runComparison is the shared engine for the direct-DB compare and abtest
+// paths. It assembles the per-run data from the local DB and hands off to
+// renderComparison, which is also used directly by the proxy path once the
+// host has assembled the runs.
 func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
+	return renderComparison(cmd, loadCompareRuns(d, sessions))
+}
+
+// renderComparison reads the rendering flags and dispatches to the table,
+// JSON, or CSV renderer. It takes fully-assembled runs so the direct-DB and
+// host-API proxy paths render byte-identically from the same code (issue
+// #2098): every rendering flag (--format, --diff-only, --axes,
+// --include-inputs, --include-rubric) is applied here, on the CLI side, so
+// none of them can silently degrade on the proxy path.
+func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 	format, _ := cmd.Flags().GetString("format")
 	diffOnly, _ := cmd.Flags().GetBool("diff-only")
 	includeRubric, _ := cmd.Flags().GetBool("include-rubric")
@@ -176,11 +251,8 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 	includeInputsVal, _ := cmd.Flags().GetBool("include-inputs")
 	includeInputs := includeInputsVal
 	if !includeInputsFlagSet {
-		includeInputs = len(sessions) == 2
+		includeInputs = len(runs) == 2
 	}
-
-	// Build run labels as run-A, run-B, run-C...
-	runs := loadCompareRuns(d, sessions)
 
 	// Collect desired axes.
 	wantAxes := defaultAxes()
@@ -222,66 +294,16 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 // Live sessions (active / idle / reviewing / escalated) keep Outcome == nil
 // so the renderer shows “—” — the aggregates are not yet meaningful.
 func loadCompareRuns(d *db.DB, sessions []*db.Session) []compareRun {
-	runs := make([]compareRun, len(sessions))
+	data := make([]db.CompareRunData, len(sessions))
 	for i, sess := range sessions {
-		label := "run-" + string(rune('A'+i))
-		run := compareRun{Label: label, Session: sess}
-
-		// Read the persisted spawn_outcome row first. nil is ok — the
-		// session may be in the gap between terminal-state transition and
-		// cleanup, or still in-progress.
-		if out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID); out != nil {
-			run.Outcome = out
-		} else if sessionIsTerminal(d, sess) {
-			// Terminal state but no persisted row — compute on the fly
-			// using the canonical aggregation. The row will later be
-			// persisted by `prism cleanup`; the two paths must agree.
-			if computed, err := d.ComputeSpawnOutcome(sess.InstanceID); err == nil && computed != nil {
-				run.Outcome = computed
-			}
-		}
-
-		// Load the spawn_inputs row. Best-effort: pre-#2087 sessions may
-		// have no row, in which case Inputs stays nil and the renderer
-		// surfaces what it can from the sessions row instead.
-		if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil {
-			run.Inputs = inputs
-		}
-
-		runs[i] = run
+		// db.AssembleCompareRun is the canonical assembly shared with the
+		// host-API proxy path (db.AssembleCompareRun → CompareRunOutcome →
+		// SessionIsTerminal): persisted spawn_outcome, or an on-the-fly
+		// ComputeSpawnOutcome when the session is terminal but not yet
+		// cleaned up, plus the best-effort spawn_inputs row.
+		data[i] = d.AssembleCompareRun(sess)
 	}
-	return runs
-}
-
-// sessionIsTerminal reports whether the agent_status row for sess shows a
-// terminal state (finished / error / interrupted / deleted) — the gate for
-// computing spawn_outcome on the fly when no persisted row exists yet.
-//
-// Falls back to sess.EndState (sessions.end_state) for sessions whose
-// agent_status row has already been cleaned away but whose sessions row
-// still records a terminal end_state. Live sessions keep Outcome nil so the
-// renderer shows “—” for aggregate axes (the over-broad-fix negative-test
-// AC in #2102).
-func sessionIsTerminal(d *db.DB, sess *db.Session) bool {
-	if sess == nil {
-		return false
-	}
-	// agent_status is the live source of truth while the row still exists.
-	if st, err := d.CurrentStatus(sess.SessionName); err == nil && st != nil {
-		return agent.IsTerminal(agent.AgentState(st.State))
-	}
-	// Fall back to sessions.end_state, written by the sidecar shutdown / by
-	// `prism cleanup`. Any non-empty terminal-shaped value here counts as
-	// terminal — "reset" (the SetEnded marker) is excluded because it can
-	// be set before the more-specific UpdateSessionEnded call, and the
-	// aggregates may not yet be stable at that point.
-	if sess.EndState != nil {
-		switch *sess.EndState {
-		case "finished", "error", "interrupted", "deleted":
-			return true
-		}
-	}
-	return false
+	return compareRunsFromData(data)
 }
 
 // defaultAxes returns the default axis set (all non-rubric axes).

@@ -10,7 +10,9 @@ package cmd
 //   - Outcome (both finished, one errored, one still running, etc.)
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -22,6 +24,19 @@ import (
 // runStatsAbtestFlag implements prism stats --abtest (the --abtest top-level flag,
 // distinct from `prism stats abtest <group_id>` which is runStatsAbtest in stats_compare.go).
 func runStatsAbtestFlag() error {
+	// PRISM_HOST_API proxy dispatch (issue #2098): inside a sandbox the local
+	// shadow DB carries no abtest pairs, so list them from the host DB via the
+	// sidecar /stats?view=abtest_list endpoint. Rendering stays on the CLI side
+	// for byte-identical output with the host-direct path.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		pairs, err := proxyStatsAbtestList(apiURL)
+		if err != nil {
+			return fmt.Errorf("stats --abtest: %w", err)
+		}
+		renderAbtestPairs(pairs)
+		return nil
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats --abtest: %w", err)
@@ -33,14 +48,36 @@ func runStatsAbtestFlag() error {
 		return fmt.Errorf("stats --abtest: %w", err)
 	}
 
+	renderAbtestPairs(pairs)
+	return nil
+}
+
+// proxyStatsAbtestList proxies `prism stats --abtest` to the host sidecar's
+// GET /stats?view=abtest_list endpoint and returns the pair rows for the CLI
+// to render.
+func proxyStatsAbtestList(apiURL string) ([]db.AbtestPairRow, error) {
+	raw, err := proxyStats(apiURL, "abtest_list", "", 0, "", 0)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Pairs []db.AbtestPairRow `json:"pairs"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal abtest_list response: %w", err)
+	}
+	return resp.Pairs, nil
+}
+
+// renderAbtestPairs renders the abtest pairs listing, handling the empty case
+// identically on the direct-DB and proxy paths (issue #2098).
+func renderAbtestPairs(pairs []db.AbtestPairRow) {
 	if len(pairs) == 0 {
 		fmt.Println("no abtest pairs recorded")
 		fmt.Println("  Use 'prism spawn --abtest <profileA> <profileB> --prompt \"...\"' to create a pair.")
-		return nil
+		return
 	}
-
 	renderAbtestPairsTable(pairs)
-	return nil
 }
 
 // renderAbtestPairsTable renders the abtest pairs table to stdout.
@@ -53,14 +90,14 @@ func renderAbtestPairsTable(pairs []db.AbtestPairRow) {
 	fmt.Println()
 
 	const (
-		wPairID   = 12
-		wSession  = 36
-		wProfile  = 16
-		wTurns    = 6
-		wTokIn    = 9
-		wTokOut   = 9
-		wDur      = 9
-		wState    = 12
+		wPairID  = 12
+		wSession = 36
+		wProfile = 16
+		wTurns   = 6
+		wTokIn   = 9
+		wTokOut  = 9
+		wDur     = 9
+		wState   = 12
 	)
 
 	header := fmt.Sprintf("%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s  %-*s",

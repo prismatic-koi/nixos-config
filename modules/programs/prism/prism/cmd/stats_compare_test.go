@@ -27,7 +27,7 @@ import (
 )
 
 // seedCompareSession inserts the minimum rows the compare engine reads:
-// agent_status (driver of sessionIsTerminal), sessions (driver of Outcome
+// agent_status (driver of db.SessionIsTerminal), sessions (driver of Outcome
 // fallback aggregation), and optionally spawn_inputs.
 //
 // finalState is the agent_status.state value the test wants the row to
@@ -35,7 +35,7 @@ import (
 // "deleted" depending on the case under test. The sessions row's
 // end_state mirrors the sidecar-shutdown / cleanup contract:
 //   - terminal final states populate sessions.end_state with the same value
-//     so the sessions-row fallback in sessionIsTerminal also returns true,
+//     so the sessions-row fallback in db.SessionIsTerminal also returns true,
 //   - non-terminal final states leave sessions.end_state NULL.
 func seedCompareSession(t *testing.T, d *db.DB, sessionName string, startedAt time.Time, finalState agent.AgentState, inputs *db.SpawnInputs) (instanceID string) {
 	t.Helper()

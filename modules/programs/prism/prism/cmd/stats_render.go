@@ -101,45 +101,9 @@ func renderIncarnationDetailFromSession(sess *db.Session) {
 //  3. UUID prefix → SessionsByInstanceIDPrefix (must be unambiguous)
 //  4. Not found → error
 func resolveSessionArg(d *db.DB, arg string, forceInstance bool) (*db.Session, error) {
-	// Step 1: full UUID (36 chars) or --instance flag.
-	if forceInstance || len(arg) == 36 {
-		sess, err := d.SessionByInstanceID(arg)
-		if err != nil {
-			return nil, fmt.Errorf("stats: lookup instance %q: %w", arg, err)
-		}
-		if sess != nil {
-			return sess, nil
-		}
-		return nil, fmt.Errorf("stats: instance %q not found", arg)
-	}
-
-	// Step 2: try exact session_name match first.
-	sess, err := d.MostRecentSessionForName(arg)
-	if err != nil {
-		return nil, fmt.Errorf("stats: lookup session name %q: %w", arg, err)
-	}
-	if sess != nil {
-		return sess, nil
-	}
-
-	// Step 3: try UUID prefix match.
-	matches, err := d.SessionsByInstanceIDPrefix(arg)
-	if err != nil {
-		return nil, fmt.Errorf("stats: lookup instance prefix %q: %w", arg, err)
-	}
-	if len(matches) == 1 {
-		return &matches[0], nil
-	}
-	if len(matches) > 1 {
-		var candidates []string
-		for _, m := range matches {
-			candidates = append(candidates, m.InstanceID)
-		}
-		return nil, fmt.Errorf("stats: %q is ambiguous — multiple incarnations match:\n  %s\nuse the full instance_id to disambiguate",
-			arg, strings.Join(candidates, "\n  "))
-	}
-
-	return nil, fmt.Errorf("stats: %q is not a known instance_id or session_name", arg)
+	// Delegates to db.ResolveSessionArg so the host-API proxy path resolves
+	// session names / instance-id prefixes byte-for-byte identically (#2098).
+	return d.ResolveSessionArg(arg, forceInstance)
 }
 
 // renderIncarnationDetail renders the full detail block for a single sessions row.
