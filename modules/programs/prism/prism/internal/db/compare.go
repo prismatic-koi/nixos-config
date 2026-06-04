@@ -21,15 +21,43 @@ import (
 )
 
 // CompareRunData is the wire/render shape for one run in `prism stats compare`:
-// a resolved sessions row plus its assembled spawn_outcome and spawn_inputs.
-// It is the element type of the host-API /stats?view=compare and
-// view=abtest responses; the CLI renderer consumes the same struct on both
-// the direct and proxy paths. JSON tags are explicit so the proxy envelope is
-// stable across refactors of the underlying struct field names.
+// a resolved sessions row plus its assembled spawn_outcome and the slim,
+// non-sensitive spawn_inputs projection. It is the element type of the
+// host-API /stats?view=compare and view=abtest responses; the CLI renderer
+// consumes the same struct on both the direct and proxy paths. JSON tags are
+// explicit so the proxy envelope is stable across refactors of the underlying
+// struct field names.
+//
+// Inputs is CompareInputs, not the full *SpawnInputs, by design: /stats is the
+// all-roles "aggregate counts" surface, and the full spawn_inputs row carries
+// row-level conversation content (prompt_text, prompt_source, …) that must not
+// cross that boundary. See CompareInputs.
 type CompareRunData struct {
-	Session *Session      `json:"session"`
-	Outcome *SpawnOutcome `json:"outcome"`
-	Inputs  *SpawnInputs  `json:"inputs"`
+	Session *Session       `json:"session"`
+	Outcome *SpawnOutcome  `json:"outcome"`
+	Inputs  *CompareInputs `json:"inputs"`
+}
+
+// CompareInputs is the deliberately-slim projection of spawn_inputs that the
+// comparison renderer consumes. It contains only the six non-sensitive
+// provenance fields surfaced by `prism stats compare` (cmd/stats_compare.go
+// inputsValue). The conversation-bearing columns of SpawnInputs —
+// prompt_text, prompt_source, model_variant_overrides, extras — are
+// intentionally excluded so they never cross the all-roles host-API /stats
+// boundary.
+//
+// /stats is the "aggregate counts" surface; row-level conversation content
+// stays behind the coordinator-only /db/query and /checkin endpoints (see the
+// privilege boundary documented in internal/sidecar/host_api.go). This mirrors
+// the view=detail precedent, which returns only *Session and never the spawn
+// prompt (issue #2098, round-1 security review).
+type CompareInputs struct {
+	ProfileName   *string `json:"profile_name"`
+	HarnessFlag   *string `json:"harness_flag"`
+	IsolationFlag *string `json:"isolation_flag"`
+	AgentFlag     *string `json:"agent_flag"`
+	BranchFlag    *string `json:"branch_flag"`
+	AbtestPairID  *string `json:"abtest_pair_id"`
 }
 
 // ResolveSessionArg resolves a user-supplied argument to a sessions row.
@@ -134,14 +162,23 @@ func (d *DB) CompareRunOutcome(sess *Session) *SpawnOutcome {
 
 // AssembleCompareRun gathers the per-run data the comparison renderer needs
 // for a single resolved session: the persisted-or-computed spawn_outcome and
-// the spawn_inputs row. spawn_inputs is best-effort — pre-#2087 sessions may
-// have no row, in which case Inputs stays nil and the renderer surfaces what
-// it can from the sessions row instead.
+// the slim spawn_inputs projection. spawn_inputs is best-effort — pre-#2087
+// sessions may have no row, in which case Inputs stays nil and the renderer
+// surfaces what it can from the sessions row instead. The full row is
+// projected down to CompareInputs here so the sensitive conversation columns
+// never leave the DB layer (see CompareInputs).
 func (d *DB) AssembleCompareRun(sess *Session) CompareRunData {
 	cr := CompareRunData{Session: sess}
 	cr.Outcome = d.CompareRunOutcome(sess)
-	if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil {
-		cr.Inputs = inputs
+	if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil && inputs != nil {
+		cr.Inputs = &CompareInputs{
+			ProfileName:   inputs.ProfileName,
+			HarnessFlag:   inputs.HarnessFlag,
+			IsolationFlag: inputs.IsolationFlag,
+			AgentFlag:     inputs.AgentFlag,
+			BranchFlag:    inputs.BranchFlag,
+			AbtestPairID:  inputs.AbtestPairID,
+		}
 	}
 	return cr
 }

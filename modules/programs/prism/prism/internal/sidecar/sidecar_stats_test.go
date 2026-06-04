@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -603,4 +604,112 @@ func TestHostAPI_Stats_AbtestList_Empty(t *testing.T) {
 	if resp.Pairs == nil {
 		t.Error("pairs field should be an empty array, not null")
 	}
+}
+
+// seedCompareSessionWithPrompt seeds a session whose spawn_inputs row carries
+// sensitive conversation content (prompt_text, prompt_source, extras,
+// model_variant_overrides) plus the non-sensitive provenance fields. Used by
+// the privilege-boundary regression tests below.
+func seedCompareSessionWithPrompt(t *testing.T, d *db.DB, sessionName, instanceID, secret string) {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, "test-repo", "/tmp/w", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %q: %v", sessionName, err)
+	}
+	if err := d.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID %q: %v", sessionName, err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        "test-repo",
+		Worktree:    "/tmp/w",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertSession %q: %v", sessionName, err)
+	}
+	if err := d.UpdateSessionEnded(instanceID, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded %q: %v", sessionName, err)
+	}
+	profile := "opus-4-7"
+	if err := d.InsertSpawnInputs(db.SpawnInputs{
+		InstanceID:            instanceID,
+		ProfileName:           &profile,
+		PromptText:            &secret,
+		PromptSource:          &secret,
+		ModelVariantOverrides: &secret,
+		Extras:                &secret,
+		CreatedAt:             time.Now().UnixMilli(),
+	}); err != nil {
+		t.Fatalf("InsertSpawnInputs %q: %v", sessionName, err)
+	}
+}
+
+// assertNoPromptLeak fails if the response body carries the secret prompt
+// content or any of the sensitive spawn_inputs column names — the
+// privilege-boundary guard for issue #2098: /stats is the all-roles
+// "aggregate counts" surface and must never ship row-level conversation
+// content (prompt_text et al).
+func assertNoPromptLeak(t *testing.T, body, secret string) {
+	t.Helper()
+	if strings.Contains(body, secret) {
+		t.Errorf("response leaked sensitive spawn_inputs content %q:\n%s", secret, body)
+	}
+	for _, field := range []string{"prompt_text", "PromptText", "prompt_source", "model_variant_overrides", "extras"} {
+		if strings.Contains(body, field) {
+			t.Errorf("response leaked sensitive field name %q:\n%s", field, body)
+		}
+	}
+	// The slim projection's non-sensitive provenance field must still be present.
+	if !strings.Contains(body, "profile_name") {
+		t.Errorf("expected slim inputs projection to include profile_name; got:\n%s", body)
+	}
+}
+
+// TestHostAPI_Stats_Compare_NoPromptLeak verifies that view=compare ships only
+// the slim, non-sensitive spawn_inputs projection — never prompt_text or the
+// other conversation-bearing columns — over the all-roles /stats policy.
+func TestHostAPI_Stats_Compare_NoPromptLeak(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	const secret = "SECRET-SPAWN-PROMPT-DO-NOT-LEAK"
+	seedCompareSessionWithPrompt(t, d, "test-repo@run-a", idA, secret)
+	seedCompareSessionWithPrompt(t, d, "test-repo@run-b", idB, secret)
+
+	// Worker role: the most privilege-sensitive caller under the all-roles policy.
+	sc := newSidecarWithRole(t, "test-repo@feature", "test-repo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=compare&id="+idA+"&id="+idB, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	assertNoPromptLeak(t, rr.Body.String(), secret)
+}
+
+// TestHostAPI_Stats_Abtest_NoPromptLeak verifies the same boundary for view=abtest.
+func TestHostAPI_Stats_Abtest_NoPromptLeak(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	const secret = "SECRET-SPAWN-PROMPT-DO-NOT-LEAK"
+	seedCompareSessionWithPrompt(t, d, "test-repo@run-a", idA, secret)
+	seedCompareSessionWithPrompt(t, d, "test-repo@run-b", idB, secret)
+
+	groupID, err := d.RegisterGroup("test-repo@main")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.SetGroupID("test-repo@run-a", groupID); err != nil {
+		t.Fatalf("SetGroupID run-a: %v", err)
+	}
+	if err := d.SetGroupID("test-repo@run-b", groupID); err != nil {
+		t.Fatalf("SetGroupID run-b: %v", err)
+	}
+
+	sc := newSidecarWithRole(t, "test-repo@feature", "test-repo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest&group="+groupID, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	assertNoPromptLeak(t, rr.Body.String(), secret)
 }

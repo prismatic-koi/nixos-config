@@ -211,10 +211,13 @@ type compareRun struct {
 	// populated by an on-the-fly call to db.ComputeSpawnOutcome — see
 	// loadCompareRuns and issue #2102.
 	Outcome *db.SpawnOutcome
-	// Inputs is the spawn_inputs row for this session, or nil when no row
-	// exists (pre-#2087 spawns, or a session created outside of the
-	// SpawnSession chokepoint).
-	Inputs *db.SpawnInputs
+	// Inputs is the slim, non-sensitive spawn_inputs projection for this
+	// session, or nil when no row exists (pre-#2087 spawns, or a session
+	// created outside of the SpawnSession chokepoint). It is db.CompareInputs
+	// rather than the full db.SpawnInputs so the conversation-bearing columns
+	// (prompt_text, …) never cross the all-roles host-API /stats boundary on
+	// the proxy path (issue #2098 security review).
+	Inputs *db.CompareInputs
 }
 
 // axisRow is a single row in the comparison table: a label and one value per run.
