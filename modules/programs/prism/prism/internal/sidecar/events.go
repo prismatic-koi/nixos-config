@@ -309,6 +309,36 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 
+		// Zero-output exit detection (issue #2081): when the persisted state
+		// is still "idle" at debounce-fire time, no turn_start was ever
+		// processed for this session — meaning the worker connected, emitted
+		// state_change{finished}, and disconnected without producing any
+		// assistant output. The persisted-state agent state machine rejects
+		// the idle → finished transition (see agent.ValidTransitions);
+		// previously the in-memory sidecar forced the write through anyway
+		// and the coordinator received a misleading "has finished"
+		// notification, then chased a PR that did not exist.
+		//
+		// Honour the state machine's rejection here: write StateError with a
+		// diagnostic note and route the coordinator notification through
+		// notifyCoordinatorError so the body uses the documented "has
+		// errored its current task" wording (skill: Worker terminal-state
+		// notifications).
+		if currentState == agent.StateIdle {
+			s.logger().Printf("sidecar: transition -> error (cause=zero_output_exit, from_state=%q) — state machine rejects idle→finished", currentState)
+			s.upsertState(agent.StateError, nil, nil)
+			s.writeStateChange(agent.StateError)
+			s.writeEvent("state_change", map[string]string{
+				"state": string(agent.StateError),
+				"note":  "zero-output exit: state_change{finished} received without a prior turn_start",
+			}, nil)
+			s.lastErrorAt = s.cfg.Clock.Now()
+			finalText := s.lastInvestigatorText
+			s.goNotify(s.notifyCoordinatorError)
+			s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
+			return
+		}
+
 		s.logger().Printf("sidecar: transition -> finished (cause=finished_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
