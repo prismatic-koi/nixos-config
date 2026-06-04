@@ -228,6 +228,14 @@ var prCmd = &cobra.Command{
 			ModelsByRole:     modelsByRole,
 			// PIExtensionDir for host-mode pi launches (#2065).
 			PIExtensionDir: cfg.PIExtensionDir,
+			// CLI overrides (issue #2086) flow through to the tmux pane
+			// command so `prism agent-run` (bwrap / sandbox-exec) and direct
+			// pi (host) receive --model / --variant on the final argv.
+			// `prism pr` is a sibling front door to `prism spawn` and
+			// already accepts these flags (see the flag registration below),
+			// so the same wire-through is required here.
+			Model:   modelFlag,
+			Variant: variantFlag,
 			// ForceFresh=true: prism pr creates a new worktree; if a session
 			// with the same name exists it is a stale zombie and should be
 			// killed, matching the same semantics as prism spawn.

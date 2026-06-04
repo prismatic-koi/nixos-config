@@ -26,6 +26,12 @@ var (
 	// process); the map shape lets us key cleanly without a global pointer
 	// race.
 	agentRunStatusCache = map[string]*db.Status{}
+
+	// agentRunOverridesCache caches the CLI override flag values
+	// (--model / --variant) for the session being dispatched, so the
+	// sandbox-exec handler can read them without re-parsing argv. Same
+	// single-entry contract as agentRunStatusCache (issue #2086).
+	agentRunOverridesCache = map[string]piOverrides{}
 )
 
 // storeAgentRunStatus stashes the looked-up DB status for sessionName so the
@@ -53,6 +59,26 @@ func clearAgentRunStatus(sessionName string) {
 	agentRunStatusMu.Lock()
 	defer agentRunStatusMu.Unlock()
 	delete(agentRunStatusCache, sessionName)
+	delete(agentRunOverridesCache, sessionName)
+}
+
+// storeAgentRunOverrides stashes the CLI overrides parsed by runAgentRun so
+// the registered per-mode handler can read them via loadAgentRunOverrides.
+// Empty fields mean "no override" and the active profile slot's value is
+// used unchanged (issue #2086).
+func storeAgentRunOverrides(sessionName string, overrides piOverrides) {
+	agentRunStatusMu.Lock()
+	defer agentRunStatusMu.Unlock()
+	agentRunOverridesCache[sessionName] = overrides
+}
+
+// loadAgentRunOverrides returns the cached CLI overrides for sessionName, or
+// a zero piOverrides when no entry has been stored. Zero value means
+// "no overrides" — the slot value is used unchanged.
+func loadAgentRunOverrides(sessionName string) piOverrides {
+	agentRunStatusMu.Lock()
+	defer agentRunStatusMu.Unlock()
+	return agentRunOverridesCache[sessionName]
 }
 
 // runAgentRunSandboxExecHandler is the registered AgentRun handler for the

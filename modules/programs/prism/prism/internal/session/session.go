@@ -219,6 +219,23 @@ type Opts struct {
 	// agent-pane shape) don't need to fake a directory; the fail-fast policy
 	// is centralised in ValidatePILaunchOpts, not the emitter.
 	PIExtensionDir string
+
+	// Model, when non-empty, is the CLI-supplied model override (`prism spawn
+	// --model <X>`). In host mode, buildDirectAgentCmd appends `--model <X>`
+	// to the pi argv so it wins over the profile slot's model. In bwrap and
+	// sandbox-exec modes the value is threaded into AgentPaneOpts so the
+	// `prism agent-run` tmux pane command carries it forward to the
+	// populatePIConfig override path. Empty value omits the flag and the
+	// profile slot's model is used unchanged. Issue #2086.
+	Model string
+
+	// Variant, when non-empty, is the CLI-supplied variant override (`prism
+	// spawn --variant <Y>`). Semantics mirror Model: in host mode the value
+	// is appended as `--variant <Y>` (pi consumes it as a thinking/reasoning
+	// level via the harness's --thinking mapping at the populatePIConfig
+	// override path); in bwrap and sandbox-exec modes it flows through
+	// AgentPaneOpts. Issue #2086.
+	Variant string
 }
 
 // ValidatePILaunchOpts checks Opts against the requirements for a host-mode
@@ -357,6 +374,14 @@ func BuildAgentCmd(opts Opts) string {
 	return iso.AgentPaneCmd(container.AgentPaneOpts{
 		SessionName: opts.SessionName,
 		DirectCmd:   direct,
+		// Model / Variant overrides (issue #2086) are forwarded into the
+		// tmux pane command for bwrap and sandbox-exec so that `prism
+		// agent-run` receives them as explicit flags and can override the
+		// active profile slot's model/variant on the final pi argv. The
+		// host isolator's AgentPaneCmd returns DirectCmd unchanged, which
+		// already carries the flags via buildDirectAgentCmd above.
+		Model:   opts.Model,
+		Variant: opts.Variant,
 	})
 }
 
@@ -406,6 +431,20 @@ func buildDirectAgentCmd(opts Opts) string {
 		extPath := container.PIExtensionHostPath(opts.PIExtensionDir)
 		if extPath != "" {
 			cmd += " --extension " + shellQuote(extPath)
+		}
+	}
+	// CLI overrides for model and variant (issue #2086). Scoped to the pi
+	// harness (or empty, which defaults to pi). The flag pair must appear
+	// before the positional prompt so pi parses them as named flags rather
+	// than as positional message bytes. Empty values omit the flag and the
+	// profile slot's model/variant is used unchanged (no-regression default
+	// path).
+	if opts.HarnessName == "pi" || opts.HarnessName == "" {
+		if opts.Model != "" {
+			cmd += " --model " + shellQuote(opts.Model)
+		}
+		if opts.Variant != "" {
+			cmd += " --thinking " + shellQuote(opts.Variant)
 		}
 	}
 	// Append --session <id> for host-mode pi-resume (issue #1838).
