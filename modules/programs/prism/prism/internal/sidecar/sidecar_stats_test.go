@@ -379,3 +379,228 @@ func TestHostAPI_Stats_Doomloops_JSONSchema(t *testing.T) {
 		}
 	}
 }
+
+// ── GET /stats?view=compare / abtest / abtest_list (#2098) ────────────────────
+//
+// These exercise the host-API views that back `prism stats compare`,
+// `prism stats abtest <group>`, and `prism stats --abtest` from sandboxed
+// sessions. The handler reuses the same db helpers as the CLI direct path
+// (db.ResolveSessionArg, db.AssembleCompareRun, db.AbtestGroupSessions,
+// db.AbtestPairsAll) so the CLI renders byte-identical output on both paths.
+
+// seedCompareSessionForSidecar seeds the rows the compare/abtest views read:
+// agent_status (finished), sessions (terminal end_state), and a spawn_inputs
+// row optionally carrying an abtest_pair_id.
+func seedCompareSessionForSidecar(t *testing.T, d *db.DB, sessionName, instanceID, pairID string) {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, "test-repo", "/tmp/w", "finished", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %q: %v", sessionName, err)
+	}
+	if err := d.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID %q: %v", sessionName, err)
+	}
+	sess := db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        "test-repo",
+		Worktree:    "/tmp/w",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-2 * time.Minute),
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession %q: %v", sessionName, err)
+	}
+	if err := d.UpdateSessionEnded(instanceID, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded %q: %v", sessionName, err)
+	}
+	si := db.SpawnInputs{InstanceID: instanceID, CreatedAt: time.Now().UnixMilli()}
+	if pairID != "" {
+		si.AbtestPairID = &pairID
+	}
+	if err := d.InsertSpawnInputs(si); err != nil {
+		t.Fatalf("InsertSpawnInputs %q: %v", sessionName, err)
+	}
+}
+
+// TestHostAPI_Stats_Compare_HappyPath verifies that GET
+// /stats?view=compare&id=A&id=B returns one run per id, in request order.
+func TestHostAPI_Stats_Compare_HappyPath(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, "")
+	seedCompareSessionForSidecar(t, d, "test-repo@run-b", idB, "")
+
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=compare&id="+idA+"&id="+idB, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Runs []db.CompareRunData `json:"runs"`
+	}
+	decodeJSONBody(t, rr, &resp)
+	if len(resp.Runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(resp.Runs))
+	}
+	if resp.Runs[0].Session == nil || resp.Runs[0].Session.InstanceID != idA {
+		t.Errorf("run[0] instance = %v, want %s", resp.Runs[0].Session, idA)
+	}
+	if resp.Runs[1].Session == nil || resp.Runs[1].Session.InstanceID != idB {
+		t.Errorf("run[1] instance = %v, want %s", resp.Runs[1].Session, idB)
+	}
+}
+
+// TestHostAPI_Stats_Compare_UnknownID returns 404 when any id fails to resolve
+// (atomic — no partial runs are returned).
+func TestHostAPI_Stats_Compare_UnknownID(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, "")
+
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=compare&id="+idA+"&id=cccc1111-2222-3333-4444-555555555555", "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %q, want 404", rr.Code, rr.Body.String())
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	decodeJSONBody(t, rr, &errResp)
+	if errResp.Error == "" {
+		t.Error("expected non-empty error field for unknown id")
+	}
+}
+
+// TestHostAPI_Stats_Compare_TooFewIDs returns 400 when fewer than 2 ids are
+// supplied (compare requires at least two runs).
+func TestHostAPI_Stats_Compare_TooFewIDs(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, "")
+
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=compare&id="+idA, "")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %q, want 400", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHostAPI_Stats_Compare_WorkerAllowed verifies the compare view honours
+// the /stats all-roles policy (workers may read it).
+func TestHostAPI_Stats_Compare_WorkerAllowed(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, "")
+	seedCompareSessionForSidecar(t, d, "test-repo@run-b", idB, "")
+
+	sc := newSidecarWithRole(t, "test-repo@feature", "test-repo", "worker", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=compare&id="+idA+"&id="+idB, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("worker should access view=compare: status = %d, body = %q", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHostAPI_Stats_Abtest_HappyPath verifies that GET /stats?view=abtest&group=<id>
+// resolves group members and returns one run per member.
+func TestHostAPI_Stats_Abtest_HappyPath(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, "")
+	seedCompareSessionForSidecar(t, d, "test-repo@run-b", idB, "")
+
+	groupID, err := d.RegisterGroup("test-repo@main")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+	if err := d.SetGroupID("test-repo@run-a", groupID); err != nil {
+		t.Fatalf("SetGroupID run-a: %v", err)
+	}
+	if err := d.SetGroupID("test-repo@run-b", groupID); err != nil {
+		t.Fatalf("SetGroupID run-b: %v", err)
+	}
+
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest&group="+groupID, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Runs []db.CompareRunData `json:"runs"`
+	}
+	decodeJSONBody(t, rr, &resp)
+	if len(resp.Runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(resp.Runs))
+	}
+	// Sorted by session_name: run-a before run-b.
+	if resp.Runs[0].Session.SessionName != "test-repo@run-a" {
+		t.Errorf("run[0] = %q, want test-repo@run-a (sorted)", resp.Runs[0].Session.SessionName)
+	}
+}
+
+// TestHostAPI_Stats_Abtest_MissingGroup returns 400 when no group param is given.
+func TestHostAPI_Stats_Abtest_MissingGroup(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest", "")
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %q, want 400", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHostAPI_Stats_Abtest_UnknownGroup returns 404 when the group has no members.
+func TestHostAPI_Stats_Abtest_UnknownGroup(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest&group=no-such-group", "")
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, body = %q, want 404", rr.Code, rr.Body.String())
+	}
+}
+
+// TestHostAPI_Stats_AbtestList_HappyPath verifies that GET /stats?view=abtest_list
+// returns the recorded A/B pairs.
+func TestHostAPI_Stats_AbtestList_HappyPath(t *testing.T) {
+	d := openTestDB(t)
+	idA := "aaaa1111-2222-3333-4444-555555555555"
+	idB := "bbbb1111-2222-3333-4444-555555555555"
+	pairID := "pair-1111-2222-3333-4444-555555555555"
+	seedCompareSessionForSidecar(t, d, "test-repo@run-a", idA, pairID)
+	seedCompareSessionForSidecar(t, d, "test-repo@run-b", idB, pairID)
+
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest_list", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Pairs []db.AbtestPairRow `json:"pairs"`
+	}
+	decodeJSONBody(t, rr, &resp)
+	if len(resp.Pairs) != 1 {
+		t.Fatalf("got %d pairs, want 1", len(resp.Pairs))
+	}
+	if resp.Pairs[0].PairID != pairID {
+		t.Errorf("pair id = %q, want %q", resp.Pairs[0].PairID, pairID)
+	}
+}
+
+// TestHostAPI_Stats_AbtestList_Empty verifies an empty result returns
+// {"pairs":[]} (not null).
+func TestHostAPI_Stats_AbtestList_Empty(t *testing.T) {
+	d := openTestDB(t)
+	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=abtest_list", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Pairs []db.AbtestPairRow `json:"pairs"`
+	}
+	decodeJSONBody(t, rr, &resp)
+	if resp.Pairs == nil {
+		t.Error("pairs field should be an empty array, not null")
+	}
+}

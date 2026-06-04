@@ -162,6 +162,24 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 // "/list-sessions"). params are appended as properly-encoded URL query
 // parameters. On success, response JSON is unmarshalled into respDst (may be nil).
 func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, respDst any) error {
+	// Build url.Values from the single-valued map and delegate to the
+	// repeated-key form. q.Encode() sorts keys, so the encoded query is
+	// deterministic regardless of Go's map iteration order.
+	q := url.Values{}
+	for k, v := range params {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	return proxyGetValuesFromHostAPI(apiURL, endpoint, q, respDst)
+}
+
+// proxyGetValuesFromHostAPI is the url.Values form of proxyGetFromHostAPI. It
+// supports repeated query keys (e.g. id=A&id=B for /stats?view=compare), which
+// the map-based form cannot express. apiURL is either a unix:// or http:// URL;
+// endpoint is the path; query carries the (possibly repeated) parameters. On
+// success the response JSON is unmarshalled into respDst (may be nil).
+func proxyGetValuesFromHostAPI(apiURL, endpoint string, query url.Values, respDst any) error {
 	var client *http.Client
 	var rawURL string
 
@@ -177,17 +195,8 @@ func proxyGetFromHostAPI(apiURL, endpoint string, params map[string]string, resp
 		rawURL = "http://prism-hostapi" + endpoint
 	}
 
-	// Append properly percent-encoded query parameters.
-	if len(params) > 0 {
-		q := url.Values{}
-		for k, v := range params {
-			if v != "" {
-				q.Set(k, v)
-			}
-		}
-		if len(q) > 0 {
-			rawURL += "?" + q.Encode()
-		}
+	if enc := query.Encode(); enc != "" {
+		rawURL += "?" + enc
 	}
 
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)

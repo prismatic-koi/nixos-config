@@ -295,11 +295,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// GET /stats
 	// Query params:
-	//   view     — one of: summary, doomloops, denials, asks, detail (required)
+	//   view     — one of: summary, doomloops, denials, asks, detail, compare,
+	//              abtest, abtest_list (required)
 	//   session  — session name filter (optional for doomloops/denials/asks; required for detail)
 	//   days     — look-back window in days (default 7 for event views; unused for summary/detail)
 	//   repo     — repo filter (summary only, optional)
 	//   since    — sinceMs timestamp as string (summary only, optional)
+	//   id       — instance-id / session-name / prefix (compare only, repeated, ≥2)
+	//   group    — session_groups.group_id (abtest only)
 	//
 	// Response shapes (all roles permitted — read-only):
 	//   view=summary → {"sessions":[...db.Session...]} with token/cost totals per-session
@@ -308,6 +311,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   view=denials   → {"events":[...db.Event...]}
 	//   view=asks      → {"events":[...db.Event...]}
 	//   view=detail    → {"session":{...db.Session...}} (single-session incarnation detail)
+	//   view=compare   → {"runs":[...db.CompareRunData...]} one per id, in request order;
+	//                    404 if any id fails to resolve (atomic, mirrors the host CLI path)
+	//   view=abtest    → {"runs":[...db.CompareRunData...]} group members sorted by session_name
+	//   view=abtest_list → {"pairs":[...db.AbtestPairRow...]} all A/B pairs (prism stats --abtest)
+	//
+	// compare/abtest/abtest_list back `prism stats compare`, `prism stats abtest
+	// <group>`, and `prism stats --abtest` from sandboxed sessions (issue #2098).
+	// The data assembly (resolution + spawn_outcome aggregation) reuses the same
+	// db helpers as the CLI direct path, so the CLI renders byte-identical output
+	// on both paths.
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -438,8 +451,59 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"session": sess})
 
+		case "compare":
+			// Repeated id= params, one per run arg, order-preserving. The host
+			// resolves each and assembles its per-run data; resolution is
+			// atomic — a single unresolvable id fails the whole request with a
+			// 404, exactly as the host-direct CLI path aborts on the first bad
+			// arg (issue #2098).
+			ids := q["id"]
+			if len(ids) < 2 {
+				writeError(w, http.StatusBadRequest, "view=compare requires at least 2 id params")
+				return
+			}
+			runs := make([]db.CompareRunData, 0, len(ids))
+			for _, id := range ids {
+				sess, rErr := s.cfg.DB.ResolveSessionArg(id, false)
+				if rErr != nil {
+					writeError(w, http.StatusNotFound, rErr.Error())
+					return
+				}
+				runs = append(runs, s.cfg.DB.AssembleCompareRun(sess))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+
+		case "abtest":
+			groupID := q.Get("group")
+			if groupID == "" {
+				writeError(w, http.StatusBadRequest, "view=abtest requires a group param")
+				return
+			}
+			sessions, gErr := s.cfg.DB.AbtestGroupSessions(groupID)
+			if gErr != nil {
+				// No members / unresolved member → 404, mirroring the host path.
+				writeError(w, http.StatusNotFound, gErr.Error())
+				return
+			}
+			runs := make([]db.CompareRunData, 0, len(sessions))
+			for _, sess := range sessions {
+				runs = append(runs, s.cfg.DB.AssembleCompareRun(sess))
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+
+		case "abtest_list":
+			pairs, err := s.cfg.DB.AbtestPairsAll()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if pairs == nil {
+				pairs = []db.AbtestPairRow{}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"pairs": pairs})
+
 		default:
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown view %q — must be one of: summary, doomloops, denials, asks, detail", view))
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown view %q — must be one of: summary, doomloops, denials, asks, detail, compare, abtest, abtest_list", view))
 		}
 	})
 

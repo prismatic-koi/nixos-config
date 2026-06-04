@@ -150,8 +150,10 @@ func runStats(cmd *cobra.Command, args []string) error {
 	groupBy, _ := cmd.Flags().GetString("group-by")
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
-	// --abtest: list all A/B test pairs with summary metrics.
-	// Not proxied (coordinator-only, no sandbox concern).
+	// --abtest: list all A/B test pairs with summary metrics. runStatsAbtestFlag
+	// performs its own PRISM_HOST_API proxy dispatch (issue #2098) so a
+	// sandboxed session lists pairs from the host DB rather than the empty
+	// shadow DB.
 	if abtest {
 		return runStatsAbtestFlag()
 	}
