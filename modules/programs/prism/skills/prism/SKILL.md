@@ -555,6 +555,32 @@ Only call this after you have confirmed the PR is merged. The `--yes` path alway
 
 Pi sessions block `git worktree prune` and `git worktree remove` at the extension layer. When recovering from a failed spawn, use `prism cleanup` — do not reach for git plumbing.
 
+## A/B-test workflow: `prism spawn --abtest`, `prism stats compare`, merge decision, cleanup
+
+An A/B test spawns two sibling sessions on the same prompt with different model profiles (or other configuration), lets both run to completion, then compares the two outcomes to decide which one to merge.
+
+The workflow is:
+
+1. **Spawn the pair.** `prism spawn --abtest <profile-a>,<profile-b> --prompt '<the prompt>'` creates two sessions that share a single `abtest_pair_id` in `spawn_inputs`. Each leg runs in its own worktree on its own branch and opens its own PR when it finishes.
+2. **Wait for both workers to finish.** Each session lands in a terminal state (`finished`, `error`, or `interrupted`). You can watch them in `prism sessions list`; both legs will surface terminal-state notifications via the usual coordinator-notification surface (see *Worker terminal-state notifications* below).
+3. **Run `prism stats compare` for the merge-decision data.** Once both legs have transitioned to terminal state — *before* you merge either PR — compare them:
+
+   ```bash
+   prism stats compare <instance-id-A> <instance-id-B>
+   # or, if you minted the pair via --abtest, by the shared pair id:
+   prism stats abtest <pair-id>
+   ```
+
+   The output carries the `Spawn Inputs` block (profile, harness, isolation, agent role, branch, abtest_pair_id) plus per-axis aggregates (tokens, cost, tool calls, durations, end_state). The aggregates are available *between* terminal-state transition and `prism cleanup` — they no longer require cleanup to materialise (issue #2102). Use the cost / duration / msg_assistant axes alongside the quality of the produced PRs to pick a winner.
+4. **Merge the winner, close the loser.** Standard merge / close flow on the two PRs.
+5. **Cleanup both sessions.** `prism cleanup --yes --session <winner>` and `prism cleanup --yes --session <loser>`. Cleanup persists the `spawn_outcome` row for long-term querying via `prism stats --group-by profile|model|...`; until then the row is computed on the fly from `agent_events` whenever `prism stats compare` is run.
+
+Notes:
+
+- `prism stats compare` shows `—` for aggregate axes while a session is still in progress (state `active`, `idle`, or `reviewing`). The aggregates only stabilise at terminal transition.
+- The `Spawn Inputs` block surfaces whatever the writer captured at spawn time. Pre-#2087 sessions may have a partial row — missing columns render as `—` rather than collapsing the whole block.
+- Use `--format json` for machine-readable output (e.g. when scripting the winner decision); the `spawn_inputs` object carries the same fields shown in the table.
+
 ## Querying prism state — prefer `--json` for scripting
 
 Every list-style and lookup-style prism subcommand supports a `--json` flag that emits a single JSON document to stdout — keys are snake_case, timestamps are RFC 3339, empty lists are `[]` (never null, never absent), and any informational/progress text routes to stderr. **When you need to parse prism output programmatically, always pass `--json`.** Screen-scraping tabular human-readable output is fragile and burns tokens.

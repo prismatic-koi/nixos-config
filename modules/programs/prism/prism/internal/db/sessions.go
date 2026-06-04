@@ -269,24 +269,31 @@ SELECT COALESCE(JSON_EXTRACT(payload, '$.model'), ''),
 	return turns, nil
 }
 
-// WriteSpawnOutcome computes all aggregated columns for the given instanceID
-// from agent_events and sessions, then upserts a spawn_outcome row. The write
-// is idempotent (INSERT OR REPLACE). Calling it twice produces the same result.
+// ComputeSpawnOutcome computes all aggregated columns for the given
+// instanceID from agent_events, sessions, pending_merges, and any
+// review-group rollup, and returns a fully-populated *SpawnOutcome
+// without persisting it.
 //
-// The function does not return an error when the sessions row does not exist
-// (e.g. for pre-migration instances). In that case it is a silent no-op.
+// It is the canonical aggregation pass shared by:
 //
-// Review-group verdict is rolled up from GroupResults when a review group
-// exists for the session. PR number and merge timestamp come from
-// pending_merges (merge-queue path only).
-func (d *DB) WriteSpawnOutcome(instanceID string) error {
+//   - WriteSpawnOutcome (the persist path called from `prism cleanup`)
+//   - prism stats compare (the read path that needs the same data shape
+//     between terminal-state transition and cleanup, issue #2102)
+//
+// Returns (nil, nil) when the sessions row does not exist (pre-migration
+// or unknown instance) so callers can treat the result as a silent no-op.
+//
+// Both call sites must use this helper to guarantee byte-for-byte
+// identical aggregates — the AC for issue #2102 requires that the
+// on-the-fly compute path and the cleanup write path agree.
+func (d *DB) ComputeSpawnOutcome(instanceID string) (*SpawnOutcome, error) {
 	// Fetch the sessions row; skip if not found.
 	sess, err := d.SessionByInstanceID(instanceID)
 	if err != nil {
-		return fmt.Errorf("db: write spawn outcome: fetch session: %w", err)
+		return nil, fmt.Errorf("db: compute spawn outcome: fetch session: %w", err)
 	}
 	if sess == nil {
-		return nil // pre-migration or unknown instance — silent no-op
+		return nil, nil // pre-migration or unknown instance — silent no-op
 	}
 
 	now := time.Now().UnixMilli()
@@ -339,7 +346,7 @@ WHERE instance_id = ?`
 		&out.CostUSDTotal,
 		&minCreatedAt,
 	); scanErr != nil {
-		return fmt.Errorf("db: write spawn outcome: aggregate events: %w", scanErr)
+		return nil, fmt.Errorf("db: compute spawn outcome: aggregate events: %w", scanErr)
 	}
 
 	// time_to_first_event_ms: min(event.created_at) − session.started_at
@@ -405,6 +412,34 @@ SELECT group_id FROM session_groups
 			}
 			out.ReviewVerdict = &verdict
 		}
+	}
+
+	return &out, nil
+}
+
+// WriteSpawnOutcome computes all aggregated columns for the given instanceID
+// from agent_events and sessions, then upserts a spawn_outcome row. The write
+// is idempotent (INSERT OR REPLACE). Calling it twice produces the same result.
+//
+// The function does not return an error when the sessions row does not exist
+// (e.g. for pre-migration instances). In that case it is a silent no-op.
+//
+// Review-group verdict is rolled up from GroupResults when a review group
+// exists for the session. PR number and merge timestamp come from
+// pending_merges (merge-queue path only).
+//
+// Implementation note: this function delegates to ComputeSpawnOutcome to
+// produce the in-memory aggregate, then performs the INSERT OR REPLACE.
+// The two call sites (write-time via cleanup, read-time via
+// `prism stats compare` for terminal-but-not-cleaned-up sessions) share the
+// aggregation pass so the produced rows agree byte-for-byte (issue #2102).
+func (d *DB) WriteSpawnOutcome(instanceID string) error {
+	out, err := d.ComputeSpawnOutcome(instanceID)
+	if err != nil {
+		return fmt.Errorf("db: write spawn outcome: %w", err)
+	}
+	if out == nil {
+		return nil // sessions row missing — silent no-op
 	}
 
 	// --- INSERT OR REPLACE ---

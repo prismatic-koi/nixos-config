@@ -28,6 +28,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -142,9 +143,19 @@ func runStatsAbtest(cmd *cobra.Command, args []string) error {
 
 // compareRun holds per-run data for the comparison.
 type compareRun struct {
-	Label       string
-	Session     *db.Session
-	Outcome     *db.SpawnOutcome // may be nil if not yet computed
+	Label   string
+	Session *db.Session
+	// Outcome may be nil when the session is still in-progress (live state
+	// such as active/idle/reviewing). When a session has reached a terminal
+	// state (finished/error/interrupted) but no spawn_outcome row exists yet
+	// (the window between terminal transition and prism cleanup), Outcome is
+	// populated by an on-the-fly call to db.ComputeSpawnOutcome — see
+	// loadCompareRuns and issue #2102.
+	Outcome *db.SpawnOutcome
+	// Inputs is the spawn_inputs row for this session, or nil when no row
+	// exists (pre-#2087 spawns, or a session created outside of the
+	// SpawnSession chokepoint).
+	Inputs *db.SpawnInputs
 }
 
 // axisRow is a single row in the comparison table: a label and one value per run.
@@ -169,12 +180,7 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 	}
 
 	// Build run labels as run-A, run-B, run-C...
-	runs := make([]compareRun, len(sessions))
-	for i, sess := range sessions {
-		label := "run-" + string(rune('A'+i))
-		out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID) // nil is ok
-		runs[i] = compareRun{Label: label, Session: sess, Outcome: out}
-	}
+	runs := loadCompareRuns(d, sessions)
 
 	// Collect desired axes.
 	wantAxes := defaultAxes()
@@ -200,6 +206,82 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 	default:
 		return renderCompareTable(runs, wantAxes, includeInputs, includeRubric, diffOnly)
 	}
+}
+
+// loadCompareRuns assembles the per-run data shown by `prism stats compare`.
+//
+// For each session it reads the spawn_outcome and spawn_inputs rows. When a
+// session has reached a terminal state (finished / error / interrupted)
+// but no spawn_outcome row exists yet — the window between the sidecar's
+// terminal-state transition and `prism cleanup` — the outcome is computed
+// on the fly from agent_events via db.ComputeSpawnOutcome. ComputeSpawnOutcome
+// is the same code path WriteSpawnOutcome uses internally, so the values
+// surfaced here agree byte-for-byte with the row the cleanup pass will
+// later write (issue #2102).
+//
+// Live sessions (active / idle / reviewing / escalated) keep Outcome == nil
+// so the renderer shows “—” — the aggregates are not yet meaningful.
+func loadCompareRuns(d *db.DB, sessions []*db.Session) []compareRun {
+	runs := make([]compareRun, len(sessions))
+	for i, sess := range sessions {
+		label := "run-" + string(rune('A'+i))
+		run := compareRun{Label: label, Session: sess}
+
+		// Read the persisted spawn_outcome row first. nil is ok — the
+		// session may be in the gap between terminal-state transition and
+		// cleanup, or still in-progress.
+		if out, _ := d.SpawnOutcomeByInstanceID(sess.InstanceID); out != nil {
+			run.Outcome = out
+		} else if sessionIsTerminal(d, sess) {
+			// Terminal state but no persisted row — compute on the fly
+			// using the canonical aggregation. The row will later be
+			// persisted by `prism cleanup`; the two paths must agree.
+			if computed, err := d.ComputeSpawnOutcome(sess.InstanceID); err == nil && computed != nil {
+				run.Outcome = computed
+			}
+		}
+
+		// Load the spawn_inputs row. Best-effort: pre-#2087 sessions may
+		// have no row, in which case Inputs stays nil and the renderer
+		// surfaces what it can from the sessions row instead.
+		if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil {
+			run.Inputs = inputs
+		}
+
+		runs[i] = run
+	}
+	return runs
+}
+
+// sessionIsTerminal reports whether the agent_status row for sess shows a
+// terminal state (finished / error / interrupted / deleted) — the gate for
+// computing spawn_outcome on the fly when no persisted row exists yet.
+//
+// Falls back to sess.EndState (sessions.end_state) for sessions whose
+// agent_status row has already been cleaned away but whose sessions row
+// still records a terminal end_state. Live sessions keep Outcome nil so the
+// renderer shows “—” for aggregate axes (the over-broad-fix negative-test
+// AC in #2102).
+func sessionIsTerminal(d *db.DB, sess *db.Session) bool {
+	if sess == nil {
+		return false
+	}
+	// agent_status is the live source of truth while the row still exists.
+	if st, err := d.CurrentStatus(sess.SessionName); err == nil && st != nil {
+		return agent.IsTerminal(agent.AgentState(st.State))
+	}
+	// Fall back to sessions.end_state, written by the sidecar shutdown / by
+	// `prism cleanup`. Any non-empty terminal-shaped value here counts as
+	// terminal — "reset" (the SetEnded marker) is excluded because it can
+	// be set before the more-specific UpdateSessionEnded call, and the
+	// aggregates may not yet be stable at that point.
+	if sess.EndState != nil {
+		switch *sess.EndState {
+		case "finished", "error", "interrupted", "deleted":
+			return true
+		}
+	}
+	return false
 }
 
 // defaultAxes returns the default axis set (all non-rubric axes).
@@ -561,11 +643,30 @@ func renderCompareTable(runs []compareRun, axes []string, includeInputs, include
 		fmt.Println(line)
 	}
 
-	// Spawn inputs block (show session name differences).
+	// Spawn inputs block: render the actual values written at spawn time by
+	// SpawnSession (#2087) and the `prism pr` writer. The renderer reads
+	// profile_name, isolation, harness, branch, agent_role, and the abtest
+	// pair id. Partial data is rendered as-is — missing fields collapse to
+	// “—” rather than treating the row as absent (issue #2102, Layer 2).
 	if includeInputs {
 		fmt.Println()
 		fmt.Println(styleHeader.Render("Spawn Inputs"))
-		fmt.Println(styleDim.Render("  (spawn_inputs table not yet populated — run `prism spawn` with C.1 to capture inputs)"))
+		if !anyInputsPresent(runs) {
+			// Best-effort placeholder for sessions that pre-date the
+			// spawn_inputs writer (#2087). The old “C.1” placeholder is
+			// gone — the writer is live for every front door, so the only
+			// reason a row is missing today is that the session is from
+			// before #2087 merged.
+			fmt.Println(styleDim.Render("  (no spawn_inputs rows for the runs being compared)"))
+		} else {
+			for _, row := range inputsAxisRows(runs, diffOnly) {
+				line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
+				for _, v := range row.Values {
+					line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
+				}
+				fmt.Println(line)
+			}
+		}
 	}
 
 	// Section: process-level.
@@ -663,24 +764,143 @@ func renderSection(
 	}
 }
 
+// ---------- spawn_inputs renderer helpers ----------
+
+// inputsAxes is the canonical ordered list of spawn_inputs columns surfaced
+// by `prism stats compare`. The set must match the AC for issue #2102 Layer 2:
+// profile_name, isolation_mode, branch, agent_role, harness, plus the
+// abtest pair id (the data point that ties two sibling sessions together).
+var inputsAxes = []string{
+	"profile_name",
+	"harness",
+	"isolation_mode",
+	"agent_role",
+	"branch",
+	"abtest_pair_id",
+}
+
+// inputsValue returns the display string for a single spawn_inputs axis on
+// one run. Falls back from spawn_inputs columns to the sessions row for
+// harness and agent_role so that runs with a partial spawn_inputs row (or
+// no row at all) still surface what we know. Returns "—" for missing data.
+func inputsValue(axis string, run compareRun) string {
+	in := run.Inputs
+	switch axis {
+	case "profile_name":
+		if in != nil && in.ProfileName != nil && *in.ProfileName != "" {
+			return *in.ProfileName
+		}
+	case "harness":
+		if in != nil && in.HarnessFlag != nil && *in.HarnessFlag != "" {
+			return *in.HarnessFlag
+		}
+		if run.Session != nil && run.Session.Harness != "" {
+			return run.Session.Harness
+		}
+	case "isolation_mode":
+		if in != nil && in.IsolationFlag != nil && *in.IsolationFlag != "" {
+			return *in.IsolationFlag
+		}
+	case "agent_role":
+		if in != nil && in.AgentFlag != nil && *in.AgentFlag != "" {
+			return *in.AgentFlag
+		}
+		if run.Session != nil && run.Session.AgentRole != nil && *run.Session.AgentRole != "" {
+			return *run.Session.AgentRole
+		}
+	case "branch":
+		if in != nil && in.BranchFlag != nil && *in.BranchFlag != "" {
+			return *in.BranchFlag
+		}
+	case "abtest_pair_id":
+		if in != nil && in.AbtestPairID != nil && *in.AbtestPairID != "" {
+			return *in.AbtestPairID
+		}
+	}
+	return "—"
+}
+
+// anyInputsPresent reports whether any inputs axis has a non-“—” value on
+// at least one run — used to decide whether to render the Spawn Inputs
+// block at all, or fall back to the “no spawn_inputs rows” note.
+func anyInputsPresent(runs []compareRun) bool {
+	for _, axis := range inputsAxes {
+		for _, r := range runs {
+			if inputsValue(axis, r) != "—" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// inputsAxisRows builds the per-axis rows for the spawn_inputs block,
+// applying --diff-only consistently with the outcome sections.
+func inputsAxisRows(runs []compareRun, diffOnly bool) []axisRow {
+	var rows []axisRow
+	for _, axis := range inputsAxes {
+		vals := make([]string, len(runs))
+		allSame := true
+		for i, r := range runs {
+			vals[i] = inputsValue(axis, r)
+			if i > 0 && vals[i] != vals[0] {
+				allSame = false
+			}
+		}
+		if diffOnly && allSame {
+			continue
+		}
+		// Skip rows that are entirely missing across all runs — keeps the
+		// rendering compact when (e.g.) no leg in the pair set --branch.
+		nonEmpty := false
+		for _, v := range vals {
+			if v != "—" {
+				nonEmpty = true
+				break
+			}
+		}
+		if !nonEmpty {
+			continue
+		}
+		rows = append(rows, axisRow{Name: axis, Values: vals})
+	}
+	return rows
+}
+
+// inputsMapForRun returns the per-run spawn_inputs map used by the JSON
+// renderer. Missing fields are emitted as JSON null rather than the “—”
+// glyph used by the table renderer.
+func inputsMapForRun(run compareRun) map[string]interface{} {
+	m := make(map[string]interface{}, len(inputsAxes))
+	for _, axis := range inputsAxes {
+		v := inputsValue(axis, run)
+		if v == "—" {
+			m[axis] = nil
+		} else {
+			m[axis] = v
+		}
+	}
+	return m
+}
+
 // ---------- JSON renderer ----------
 
 // compareJSONOutput is the top-level JSON shape (C3 §6.3).
 type compareJSONOutput struct {
-	Runs  []compareJSONRun      `json:"runs"`
-	Diffs compareJSONDiffs      `json:"diffs"`
+	Runs  []compareJSONRun `json:"runs"`
+	Diffs compareJSONDiffs `json:"diffs"`
 }
 
 type compareJSONRun struct {
 	Label        string                 `json:"label"`
 	SessionName  string                 `json:"session_name"`
 	InstanceID   string                 `json:"instance_id"`
-	SpawnInputs  map[string]interface{} `json:"spawn_inputs"` // always {} until C.1 writes rows
+	SpawnInputs  map[string]interface{} `json:"spawn_inputs"`
 	SpawnOutcome map[string]interface{} `json:"spawn_outcome"`
 }
 
 type compareJSONDiffs struct {
-	SpawnInputs  []string `json:"spawn_inputs"`  // always [] until C.1
+	SpawnInputs  []string `json:"spawn_inputs"`
 	SpawnOutcome []string `json:"spawn_outcome"`
 }
 
@@ -702,7 +922,7 @@ func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeR
 			Label:       r.Label,
 			SessionName: r.Session.SessionName,
 			InstanceID:  r.Session.InstanceID,
-			SpawnInputs: map[string]interface{}{},
+			SpawnInputs: inputsMapForRun(r),
 		}
 		outcomeMap := make(map[string]interface{})
 		for _, axis := range effectiveAxes {
@@ -718,6 +938,11 @@ func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeR
 	}
 
 	// Compute diffs: axes where runs differ.
+	for _, axis := range inputsAxes {
+		if !inputsAxisAllSame(axis, runs) {
+			out.Diffs.SpawnInputs = append(out.Diffs.SpawnInputs, axis)
+		}
+	}
 	for _, axis := range effectiveAxes {
 		if !allSame(axis, runs) {
 			out.Diffs.SpawnOutcome = append(out.Diffs.SpawnOutcome, axis)
@@ -727,6 +952,20 @@ func renderCompareJSON(runs []compareRun, axes []string, includeInputs, includeR
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// inputsAxisAllSame mirrors allSame() but for a single spawn_inputs axis.
+func inputsAxisAllSame(axis string, runs []compareRun) bool {
+	if len(runs) == 0 {
+		return true
+	}
+	first := inputsValue(axis, runs[0])
+	for _, r := range runs[1:] {
+		if inputsValue(axis, r) != first {
+			return false
+		}
+	}
+	return true
 }
 
 // ---------- CSV renderer ----------
@@ -751,6 +990,24 @@ func renderCompareCSV(runs []compareRun, axes []string, includeInputs, includeRu
 	}
 	if err := w.Write(header); err != nil {
 		return fmt.Errorf("csv: write header: %w", err)
+	}
+
+	// Inputs rows (CSV equivalent of the table renderer’s Spawn Inputs
+	// block). Emitted before outcome axes when --include-inputs is on so
+	// downstream consumers see the per-axis ordering: inputs, then outcome.
+	if includeInputs {
+		for _, row := range inputsAxisRows(runs, diffOnly) {
+			record := []string{row.Name}
+			record = append(record, row.Values...)
+			if len(runs) == 2 {
+				// Delta is meaningful only for numeric axes; spawn_inputs
+				// columns are all strings (profile_name, isolation, etc).
+				record = append(record, "")
+			}
+			if err := w.Write(record); err != nil {
+				return fmt.Errorf("csv: write inputs row: %w", err)
+			}
+		}
 	}
 
 	// Data rows.

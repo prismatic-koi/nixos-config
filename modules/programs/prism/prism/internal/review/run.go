@@ -254,8 +254,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			// harness so review fan-out rows are queryable alongside other
 			// spawn front doors. PromptSource / PromptTemplateHash above
 			// already feed the centralised SpawnSession writer.
-			AgentFlag:   ag.Name,
-			HarnessFlag: agentHarnessName,
+			// IsolationFlag mirrors the resolved isolation mode so the
+			// `prism stats compare` Spawn Inputs block surfaces it for
+			// review-fan-out rows too (issue #2102 Layer 2).
+			AgentFlag:     ag.Name,
+			HarnessFlag:   agentHarnessName,
+			IsolationFlag: opts.IsolationMode,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -553,8 +557,10 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			// PIExtensionDir for host-mode pi launches (#2065).
 			PIExtensionDir: opts.PIExtensionDir,
 			// spawn_inputs audit (#2087): mirror the sync fan-out block.
-			AgentFlag:   ag.Name,
-			HarnessFlag: asyncAgentHarnessName,
+			// IsolationFlag mirrors the resolved isolation mode (#2102 Layer 2).
+			AgentFlag:     ag.Name,
+			HarnessFlag:   asyncAgentHarnessName,
+			IsolationFlag: opts.IsolationMode,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

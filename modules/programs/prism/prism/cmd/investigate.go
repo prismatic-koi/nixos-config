@@ -160,8 +160,12 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 		// spawn_inputs audit (#2087): record the agent role on the audit row
 		// so investigate spawns show up in `prism stats` group-by queries
 		// alongside `prism spawn` / `prism pr` rows.
-		AgentFlag:        "investigate",
-		HarnessFlag:      harnessName,
+		AgentFlag:   "investigate",
+		HarnessFlag: harnessName,
+		// spawn_inputs.isolation_flag: record the resolved isolation mode
+		// so investigate spawns surface alongside `prism spawn` rows in the
+		// stats compare "Spawn Inputs" block (issue #2102 Layer 2).
+		IsolationFlag:    string(isoMode),
 		Layout:           session.LayoutAgentOnly,
 		IsolationMode:    string(isoMode),
 		PluginHostPath:   cfg.SidecarPluginPath,
