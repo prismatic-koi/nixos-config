@@ -250,6 +250,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			ModelsByRole:       opts.ModelsByRole,
 			// PIExtensionDir for host-mode pi launches (#2065).
 			PIExtensionDir: opts.PIExtensionDir,
+			// spawn_inputs audit (#2087): record the per-agent role and the
+			// harness so review fan-out rows are queryable alongside other
+			// spawn front doors. PromptSource / PromptTemplateHash above
+			// already feed the centralised SpawnSession writer.
+			AgentFlag:   ag.Name,
+			HarnessFlag: agentHarnessName,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -546,6 +552,9 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			ModelsByRole:       opts.ModelsByRole,
 			// PIExtensionDir for host-mode pi launches (#2065).
 			PIExtensionDir: opts.PIExtensionDir,
+			// spawn_inputs audit (#2087): mirror the sync fan-out block.
+			AgentFlag:   ag.Name,
+			HarnessFlag: asyncAgentHarnessName,
 		}
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -616,7 +625,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		Agents:        liveAgents,
 		AgentSessions: liveSessions,
 		DBPath:        dbPath,
-		Timeout: opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
+		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.

@@ -698,6 +698,36 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// (non-keybind, or keybind with an explicit --prompt) keeps the original
 	// #1891 guard active.
 	allowEmptyPrompt := fromKeybind && promptText == ""
+
+	// C4.SK / C4.AP: compute the skills manifest hash and the agent role file
+	// hash before building SpawnOpts so they land on the spawn_inputs row
+	// written by SpawnSession (issue #2087 centralisation). Errors are
+	// non-fatal: a missing or unreadable input produces an empty hash (which
+	// SpawnSession then writes as NULL).
+	skillsDir := prismSkillsDir()
+	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
+	if skillsHashErr != nil {
+		proglog.Warnf("[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
+		skillsManifestHash = ""
+	}
+	agentRoleFilePath := prismAgentRolePath(agentRole)
+	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
+	if agentHashErr != nil {
+		proglog.Warnf("[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
+		agentPromptHash = ""
+	}
+
+	// spawn_inputs audit fields (issue #2087): collected here, written by
+	// SpawnSession via SpawnOpts. Raw user-passed flag values — isolationMode
+	// above is the *resolved* value; this is the raw --isolation flag.
+	isolationFlagRaw, _ := cmd.Flags().GetString("isolation")
+	prNumber := 0
+	if prFlag != "" {
+		if n, convErr := strconv.Atoi(prFlag); convErr == nil {
+			prNumber = n
+		}
+	}
+
 	spawnOpts := session.SpawnOpts{
 		SessionName:      sessionName,
 		Repo:             deriveRepo(worktreePath),
@@ -719,6 +749,19 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		// receive --model / --variant on the final argv.
 		Model:   modelFlag,
 		Variant: variantFlag,
+		// ── spawn_inputs audit fields (#2087) ─────────────────────────
+		ProfileName:          resolvedProfile,
+		ModelFlag:            modelFlag,
+		VariantFlag:          variantFlag,
+		AgentFlag:            agentFlag,
+		HarnessFlag:          harnessFlag,
+		IsolationFlag:        isolationFlagRaw,
+		PRNumber:             prNumber,
+		BranchFlag:           branchFlag,
+		IgnoreConcurrencyCap: ignoreConcurrencyCapFlagFromCmd(cmd),
+		SkillsManifestHash:   skillsManifestHash,
+		AgentPromptHash:      agentPromptHash,
+		// ────────────────────────────────────────────────────────
 		// PIExtensionDir is the host-side prism PI extension directory
 		// (populated by Nix into config.json). Forwarded so that host-mode
 		// pi launches pass --extension <dir>/prism.ts (#2065).
@@ -764,51 +807,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
-	// C4.SK: compute skills manifest hash before spawn so it is available for
-	// spawn_inputs. Read skills from XDG_CONFIG_HOME/prism/skills/ (with the
-	// standard ~/.config fallback). Errors are non-fatal: a missing or
-	// unreadable skills directory produces an empty hash (caller writes NULL).
-	skillsDir := prismSkillsDir()
-	skillsManifestHash, skillsHashErr := skills.ComputeManifest(skillsDir)
-	if skillsHashErr != nil {
-		proglog.Warnf("[prism spawn] warning: could not compute skills manifest hash: %v\n", skillsHashErr)
-		skillsManifestHash = ""
-	}
-
-	// C4.AP: compute agent role file hash. The role file is resolved from
-	// XDG_CONFIG_HOME/prism/agents/<role>.md. Errors are non-fatal.
-	agentRoleFilePath := prismAgentRolePath(agentRole)
-	agentPromptHash, agentHashErr := skills.ComputeAgentPromptHash(agentRoleFilePath)
-	if agentHashErr != nil {
-		proglog.Warnf("[prism spawn] warning: could not compute agent prompt hash: %v\n", agentHashErr)
-		agentPromptHash = ""
-	}
-
+	// SpawnSession is the canonical spawn_inputs writer (#2087): it builds
+	// the row from SpawnOpts fields populated above and inserts it after the
+	// sessions row exists. No post-spawn writer is needed here.
 	if err := session.SpawnSession(d, spawnOpts); err != nil {
 		return err
 	}
-
-	// Write spawn_inputs row. This is best-effort: a failure is logged but
-	// does not roll back the session (the session is already live).
-	// We read instance_id back from the DB because the sidecar mints it
-	// at startup and we do not want to thread it back through SpawnOpts just
-	// for this write path.
-	writeSpawnInputs(d, spawnInputsArgs{
-		sessionName:        sessionName,
-		profileName:        resolvedProfile,
-		modelFlag:          modelFlag,
-		variantFlag:        variantFlag,
-		agentFlag:          agentFlag,
-		harnessFlag:        harnessFlag,
-		cmd:                cmd,
-		prFlag:             prFlag,
-		branchFlag:         branchFlag,
-		skillsManifestHash: skillsManifestHash,
-		agentPromptHash:    agentPromptHash,
-		promptText:         promptText,
-		promptSource:       promptSource,
-		modelsByRole:       modelsByRole,
-	})
 
 	waitFlag, _ := cmd.Flags().GetBool("wait")
 	jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -854,101 +858,17 @@ func prismAgentRolePath(role string) string {
 	return filepath.Join(base, "prism", "agents", role+".md")
 }
 
-// spawnInputsArgs bundles the flag values needed to build a db.SpawnInputs row.
-type spawnInputsArgs struct {
-	sessionName        string
-	profileName        string
-	modelFlag          string
-	variantFlag        string
-	agentFlag          string
-	harnessFlag        string
-	cmd                *cobra.Command
-	prFlag             string
-	branchFlag         string
-	skillsManifestHash string
-	agentPromptHash    string
-	promptText         string
-	promptSource       string
-	modelsByRole       map[string]string
-	// abtestPairID is non-empty for sessions spawned via --abtest.
-	abtestPairID string
+// ignoreConcurrencyCapFlagFromCmd reads --ignore-concurrency-cap if present.
+// Safe to call on commands that do not register the flag (returns false).
+// Used to populate SpawnOpts.IgnoreConcurrencyCap for the spawn_inputs audit
+// row written by SpawnSession (issue #2087).
+func ignoreConcurrencyCapFlagFromCmd(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	v, _ := cmd.Flags().GetBool("ignore-concurrency-cap")
+	return v
 }
-
-// writeSpawnInputs looks up the instance_id for sessionName and inserts a row
-// into spawn_inputs. All errors are non-fatal and logged to stderr.
-func writeSpawnInputs(d *db.DB, args spawnInputsArgs) {
-	st, err := d.CurrentStatus(args.sessionName)
-	if err != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
-		proglog.Warnf("[prism spawn] warning: could not read instance_id for spawn_inputs: %v\n", err)
-		return
-	}
-
-	si := db.SpawnInputs{
-		InstanceID: *st.InstanceID,
-		CreatedAt:  time.Now().UnixMilli(),
-	}
-	if args.promptSource != "" {
-		si.PromptSource = spawnStrPtr(args.promptSource)
-	}
-
-	if args.profileName != "" {
-		si.ProfileName = &args.profileName
-	}
-	if args.modelFlag != "" {
-		si.ModelFlag = &args.modelFlag
-	}
-	if args.variantFlag != "" {
-		si.VariantFlag = &args.variantFlag
-	}
-	if args.agentFlag != "" {
-		si.AgentFlag = &args.agentFlag
-	}
-	if args.harnessFlag != "" {
-		si.HarnessFlag = &args.harnessFlag
-	}
-	if isolationFlag, _ := args.cmd.Flags().GetString("isolation"); isolationFlag != "" {
-		si.IsolationFlag = &isolationFlag
-	}
-	if hostModeFlag, _ := args.cmd.Flags().GetBool("host-mode"); hostModeFlag {
-		si.HostModeFlag = true
-	}
-	if args.prFlag != "" {
-		if n, err := strconv.Atoi(args.prFlag); err == nil {
-			si.PRNumber = &n
-		}
-	}
-	if args.branchFlag != "" {
-		si.BranchFlag = &args.branchFlag
-	}
-	if ignoreCap, _ := args.cmd.Flags().GetBool("ignore-concurrency-cap"); ignoreCap {
-		si.IgnoreConcurrencyCap = true
-	}
-	if args.skillsManifestHash != "" {
-		si.SkillsManifestHash = &args.skillsManifestHash
-	}
-	if args.agentPromptHash != "" {
-		si.AgentPromptHash = &args.agentPromptHash
-	}
-	if args.promptText != "" {
-		si.PromptText = &args.promptText
-	}
-	if len(args.modelsByRole) > 0 {
-		if encoded, encErr := json.Marshal(args.modelsByRole); encErr == nil {
-			s := string(encoded)
-			si.ModelVariantOverrides = &s
-		}
-	}
-	if args.abtestPairID != "" {
-		si.AbtestPairID = &args.abtestPairID
-	}
-
-	if err := d.InsertSpawnInputs(si); err != nil {
-		proglog.Warnf("[prism spawn] warning: could not write spawn_inputs: %v\n", err)
-	}
-}
-
-// spawnStrPtr returns a pointer to s, for optional string fields in SpawnInputs.
-func spawnStrPtr(s string) *string { return &s }
 
 // resolveBareRoot returns the bare repo root to operate on.
 // If repoFlag is set, it is resolved as a shorthand name under ~/code or as a
@@ -1363,6 +1283,13 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	}
 
 	h, _ := harness.New(a.harnessFlag, "", nil, "", "")
+	isolationFlagRaw, _ := cmd.Flags().GetString("isolation")
+	prNumber := 0
+	if a.prFlag != "" {
+		if n, convErr := strconv.Atoi(a.prFlag); convErr == nil {
+			prNumber = n
+		}
+	}
 	spawnOpts := session.SpawnOpts{
 		SessionName:      sessionName,
 		Repo:             deriveRepo(worktreePath),
@@ -1388,6 +1315,20 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		// PIExtensionDir for host-mode pi launches (#2065).
 		PIExtensionDir:   a.cfg.PIExtensionDir,
 		ReadinessTimeout: session.DefaultReadinessTimeout,
+		// ── spawn_inputs audit fields (#2087) ─────────────────────────
+		ProfileName:          a.profileName,
+		ModelFlag:            a.modelFlag,
+		VariantFlag:          a.variantFlag,
+		AgentFlag:            a.agentFlag,
+		HarnessFlag:          a.harnessFlag,
+		IsolationFlag:        isolationFlagRaw,
+		PRNumber:             prNumber,
+		BranchFlag:           a.branchFlag,
+		IgnoreConcurrencyCap: ignoreConcurrencyCapFlagFromCmd(cmd),
+		SkillsManifestHash:   a.skillsManifestHash,
+		AgentPromptHash:      a.agentPromptHash,
+		AbtestPairID:         a.pairID,
+		// ────────────────────────────────────────────────────────
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = a.pf.AgentEnvVars
@@ -1400,28 +1341,12 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		}
 	}
 
+	// SpawnSession is the canonical spawn_inputs writer (#2087) and includes
+	// the abtest_pair_id from SpawnOpts.AbtestPairID. Both legs of the abtest
+	// pair share the same a.pairID minted by the caller.
 	if err := session.SpawnSession(a.d, spawnOpts); err != nil {
 		return "", worktreePath, err
 	}
-
-	// Write spawn_inputs including abtest_pair_id.
-	writeSpawnInputs(a.d, spawnInputsArgs{
-		sessionName:        sessionName,
-		profileName:        a.profileName,
-		modelFlag:          a.modelFlag,
-		variantFlag:        a.variantFlag,
-		agentFlag:          a.agentFlag,
-		harnessFlag:        a.harnessFlag,
-		cmd:                cmd,
-		prFlag:             a.prFlag,
-		branchFlag:         a.branchFlag,
-		skillsManifestHash: a.skillsManifestHash,
-		agentPromptHash:    a.agentPromptHash,
-		promptText:         a.promptText,
-		promptSource:       a.promptSource,
-		modelsByRole:       a.modelsByRole,
-		abtestPairID:       a.pairID,
-	})
 
 	return sessionName, worktreePath, nil
 }

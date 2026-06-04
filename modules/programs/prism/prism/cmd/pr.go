@@ -24,16 +24,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/skills"
 )
 
 var prCmd = &cobra.Command{
@@ -241,8 +245,138 @@ var prCmd = &cobra.Command{
 			// killed, matching the same semantics as prism spawn.
 			ForceFresh: true,
 		}
-		return ensureAndSwitch(worktreePath, bareRoot, opts)
+		if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
+			return err
+		}
+
+		// Write spawn_inputs (#2087). prism pr does not go through
+		// SpawnSession — it uses ensureAndSwitch → session.Create — so the
+		// audit-row writer fires here, mirroring the centralised writer in
+		// SpawnSession with the same column mapping.
+		writeSpawnInputsForPR(cmd, prSpawnInputsArgs{
+			worktreePath:         worktreePath,
+			bareRoot:             bareRoot,
+			agentRole:            session.DefaultAgent(worktreePath, agentFlag),
+			profileName:          resolvedProfile,
+			modelFlag:            modelFlag,
+			variantFlag:          variantFlag,
+			agentFlag:            agentFlag,
+			harnessFlag:          effectiveHarness,
+			isolationFlag:        isolationFlag,
+			prNumber:             prNumber,
+			ignoreConcurrencyCap: ignoreConcurrencyCapFlag,
+			modelsByRole:         modelsByRole,
+			promptText:           promptFlag,
+			promptSource:         "cli-positional",
+		})
+		return nil
 	},
+}
+
+// prSpawnInputsArgs bundles the fields needed to write spawn_inputs from the
+// `prism pr` path. Kept separate from the centralised SpawnSession write
+// because prism pr does not flow through SpawnSession (it uses
+// ensureAndSwitch → session.Create), and we need to mirror SpawnSession's
+// column mapping without duplicating the SpawnOpts struct.
+type prSpawnInputsArgs struct {
+	worktreePath         string
+	bareRoot             string
+	agentRole            string
+	profileName          string
+	modelFlag            string
+	variantFlag          string
+	agentFlag            string
+	harnessFlag          string
+	isolationFlag        string
+	prNumber             string
+	ignoreConcurrencyCap bool
+	modelsByRole         map[string]string
+	promptText           string
+	promptSource         string
+}
+
+// writeSpawnInputsForPR writes the spawn_inputs row for a `prism pr` spawn.
+// All errors are non-fatal and logged — the session is already live and the
+// row is best-effort telemetry.
+func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
+	d, dbErr := openDB()
+	if dbErr != nil {
+		proglog.Warnf("[prism pr] warning: could not open DB for spawn_inputs: %v\n", dbErr)
+		return
+	}
+	defer d.Close()
+
+	sessionName := session.NameFor(a.worktreePath, a.bareRoot)
+	st, lookupErr := d.CurrentStatus(sessionName)
+	if lookupErr != nil || st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+		proglog.Warnf("[prism pr] warning: could not resolve instance_id for spawn_inputs (%v)\n", lookupErr)
+		return
+	}
+
+	// Compute skills and agent-role hashes the same way cmd/spawn.go does so
+	// the audit columns line up across the two CLI front doors.
+	skillsDir := prismSkillsDir()
+	skillsManifestHash, hashErr := skills.ComputeManifest(skillsDir)
+	if hashErr != nil {
+		proglog.Warnf("[prism pr] warning: could not compute skills manifest hash: %v\n", hashErr)
+		skillsManifestHash = ""
+	}
+	agentPromptHash, hashErr := skills.ComputeAgentPromptHash(prismAgentRolePath(a.agentRole))
+	if hashErr != nil {
+		proglog.Warnf("[prism pr] warning: could not compute agent prompt hash: %v\n", hashErr)
+		agentPromptHash = ""
+	}
+
+	si := db.SpawnInputs{
+		InstanceID: *st.InstanceID,
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	if a.profileName != "" {
+		si.ProfileName = &a.profileName
+	}
+	if a.modelFlag != "" {
+		si.ModelFlag = &a.modelFlag
+	}
+	if a.variantFlag != "" {
+		si.VariantFlag = &a.variantFlag
+	}
+	if a.agentFlag != "" {
+		si.AgentFlag = &a.agentFlag
+	}
+	if a.harnessFlag != "" {
+		si.HarnessFlag = &a.harnessFlag
+	}
+	if a.isolationFlag != "" {
+		si.IsolationFlag = &a.isolationFlag
+	}
+	if a.prNumber != "" {
+		if n, convErr := strconv.Atoi(a.prNumber); convErr == nil {
+			si.PRNumber = &n
+		}
+	}
+	si.IgnoreConcurrencyCap = a.ignoreConcurrencyCap
+	if len(a.modelsByRole) > 0 {
+		if encoded, encErr := json.Marshal(a.modelsByRole); encErr == nil {
+			s := string(encoded)
+			si.ModelVariantOverrides = &s
+		}
+	}
+	if skillsManifestHash != "" {
+		si.SkillsManifestHash = &skillsManifestHash
+	}
+	if agentPromptHash != "" {
+		si.AgentPromptHash = &agentPromptHash
+	}
+	if a.promptText != "" {
+		si.PromptText = &a.promptText
+	}
+	if a.promptSource != "" {
+		si.PromptSource = &a.promptSource
+	}
+
+	if err := d.InsertSpawnInputs(si); err != nil {
+		proglog.Warnf("[prism pr] warning: could not write spawn_inputs: %v\n", err)
+	}
 }
 
 func init() {
