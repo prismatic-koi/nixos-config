@@ -10,18 +10,31 @@ package cmd
 //   - Outcome (both finished, one errored, one still running, etc.)
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 // runStatsAbtestFlag implements prism stats --abtest (the --abtest top-level flag,
 // distinct from `prism stats abtest <group_id>` which is runStatsAbtest in stats_compare.go).
+//
+// When PRISM_HOST_API is set the request is forwarded to the host sidecar's
+// GET /stats?view=abtest_list endpoint so an in-sandbox coordinator listing
+// pairs sees the host DB rather than the (empty / partial) shadow DB inside
+// the container (issue #2098). The empty-set helper line is rendered on the
+// CLI side on both paths so the user-facing output is byte-identical.
 func runStatsAbtestFlag() error {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return runStatsAbtestFlagProxy(apiURL)
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats --abtest: %w", err)
@@ -34,13 +47,39 @@ func runStatsAbtestFlag() error {
 	}
 
 	if len(pairs) == 0 {
-		fmt.Println("no abtest pairs recorded")
-		fmt.Println("  Use 'prism spawn --abtest <profileA> <profileB> --prompt \"...\"' to create a pair.")
+		printAbtestPairsEmpty()
 		return nil
 	}
 
 	renderAbtestPairsTable(pairs)
 	return nil
+}
+
+// runStatsAbtestFlagProxy handles the PRISM_HOST_API path for
+// `prism stats --abtest`. The host sidecar returns the raw
+// {"pairs":[...db.AbtestPairRow...]} envelope and the CLI renders.
+func runStatsAbtestFlagProxy(apiURL string) error {
+	raw, err := proxyStatsAbtestList(apiURL)
+	if err != nil {
+		return fmt.Errorf("stats --abtest: %w", err)
+	}
+	var resp sidecar.StatsAbtestListResponseWire
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("stats --abtest: unmarshal response: %w", err)
+	}
+	if len(resp.Pairs) == 0 {
+		printAbtestPairsEmpty()
+		return nil
+	}
+	renderAbtestPairsTable(resp.Pairs)
+	return nil
+}
+
+// printAbtestPairsEmpty prints the two-line "no pairs recorded" hint shared
+// between the direct-DB and proxy paths.
+func printAbtestPairsEmpty() {
+	fmt.Println("no abtest pairs recorded")
+	fmt.Println("  Use 'prism spawn --abtest <profileA> <profileB> --prompt \"...\"' to create a pair.")
 }
 
 // renderAbtestPairsTable renders the abtest pairs table to stdout.
@@ -53,14 +92,14 @@ func renderAbtestPairsTable(pairs []db.AbtestPairRow) {
 	fmt.Println()
 
 	const (
-		wPairID   = 12
-		wSession  = 36
-		wProfile  = 16
-		wTurns    = 6
-		wTokIn    = 9
-		wTokOut   = 9
-		wDur      = 9
-		wState    = 12
+		wPairID  = 12
+		wSession = 36
+		wProfile = 16
+		wTurns   = 6
+		wTokIn   = 9
+		wTokOut  = 9
+		wDur     = 9
+		wState   = 12
 	)
 
 	header := fmt.Sprintf("%-*s  %-*s  %-*s  %*s  %*s  %*s  %*s  %-*s",

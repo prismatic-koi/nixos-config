@@ -30,6 +30,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 // ---------- cobra command wiring ----------
@@ -82,6 +83,17 @@ func init() {
 // ---------- runner functions ----------
 
 func runStatsCompare(cmd *cobra.Command, args []string) error {
+	// PRISM_HOST_API proxy dispatch: in-sandbox sessions cannot reach the
+	// host DB directly, so forward the raw args verbatim to the host
+	// sidecar's GET /stats?view=compare endpoint. The server resolves each
+	// arg the same way `resolveSessionArg` does locally and returns the
+	// per-run (session, outcome, inputs) triples; the renderer below is
+	// unchanged so output is byte-identical to a host-direct invocation.
+	// Issue #2098.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return runStatsCompareProxy(cmd, args, apiURL)
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("stats compare: %w", err)
@@ -103,6 +115,14 @@ func runStatsCompare(cmd *cobra.Command, args []string) error {
 
 func runStatsAbtest(cmd *cobra.Command, args []string) error {
 	groupID := args[0]
+
+	// PRISM_HOST_API proxy dispatch (issue #2098). The server resolves the
+	// group members and returns the same {"runs":[...]} envelope as
+	// view=compare, sorted by session_name to match the direct-DB path's
+	// deterministic ordering.
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return runStatsAbtestProxy(cmd, groupID, apiURL)
+	}
 
 	d, err := openDB()
 	if err != nil {
@@ -139,6 +159,71 @@ func runStatsAbtest(cmd *cobra.Command, args []string) error {
 	return runComparison(cmd, d, sessions)
 }
 
+// runStatsCompareProxy handles the PRISM_HOST_API path for `prism stats
+// compare`. It forwards the raw args to the sidecar, unmarshals the per-run
+// payloads, and hands them to the same renderer the direct-DB path uses.
+func runStatsCompareProxy(cmd *cobra.Command, args []string, apiURL string) error {
+	raw, err := proxyStatsCompare(apiURL, args)
+	if err != nil {
+		return fmt.Errorf("stats compare: %w", err)
+	}
+	var resp sidecar.StatsCompareResponseWire
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("stats compare: unmarshal response: %w", err)
+	}
+	runs, err := wireRunsToCompareRuns(resp.Runs)
+	if err != nil {
+		return fmt.Errorf("stats compare: %w", err)
+	}
+	return renderComparison(cmd, runs)
+}
+
+// runStatsAbtestProxy handles the PRISM_HOST_API path for `prism stats abtest
+// <group_id>`.
+func runStatsAbtestProxy(cmd *cobra.Command, groupID, apiURL string) error {
+	raw, err := proxyStatsAbtest(apiURL, groupID)
+	if err != nil {
+		return fmt.Errorf("stats abtest: %w", err)
+	}
+	var resp sidecar.StatsCompareResponseWire
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return fmt.Errorf("stats abtest: unmarshal response: %w", err)
+	}
+	runs, err := wireRunsToCompareRuns(resp.Runs)
+	if err != nil {
+		return fmt.Errorf("stats abtest: %w", err)
+	}
+	return renderComparison(cmd, runs)
+}
+
+// wireRunsToCompareRuns converts the server-side per-run payloads into the
+// cmd-local compareRun shape consumed by the renderer. Returns an error if
+// any payload is missing the required sessions row (defence-in-depth: the
+// sidecar always populates this field, but a malformed response would
+// otherwise NPE deep in axisValue).
+func wireRunsToCompareRuns(wireRuns []sidecar.StatsCompareRunWire) ([]compareRun, error) {
+	runs := make([]compareRun, 0, len(wireRuns))
+	for i, w := range wireRuns {
+		if w.Session == nil {
+			return nil, fmt.Errorf("proxy response: run %d missing session", i)
+		}
+		label := w.Label
+		if label == "" {
+			// Defensive fallback so an empty server-side label does not
+			// produce "run-" rendered cells. Matches the cmd-side
+			// loadCompareRuns labelling.
+			label = "run-" + string(rune('A'+i))
+		}
+		runs = append(runs, compareRun{
+			Label:   label,
+			Session: w.Session,
+			Outcome: w.Outcome,
+			Inputs:  w.Inputs,
+		})
+	}
+	return runs, nil
+}
+
 // ---------- comparison engine ----------
 
 // compareRun holds per-run data for the comparison.
@@ -164,8 +249,21 @@ type axisRow struct {
 	Values []string // one per run
 }
 
-// runComparison is the shared engine for compare and abtest.
+// runComparison is the shared engine for compare and abtest on the
+// direct-DB path. It loads the per-run data via loadCompareRuns and hands
+// off to renderComparison — the same renderer the proxy path uses, which
+// is how byte-identity between the two paths is guaranteed (issue #2098).
 func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
+	runs := loadCompareRuns(d, sessions)
+	return renderComparison(cmd, runs)
+}
+
+// renderComparison reads the comparison-engine flags (--format, --axes,
+// --diff-only, --include-inputs, --include-rubric) and renders the
+// provided runs in the chosen format. Shared between the direct-DB and
+// proxy paths so that --format json / --format csv / table output is
+// byte-identical between them.
+func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 	format, _ := cmd.Flags().GetString("format")
 	diffOnly, _ := cmd.Flags().GetBool("diff-only")
 	includeRubric, _ := cmd.Flags().GetBool("include-rubric")
@@ -176,11 +274,8 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 	includeInputsVal, _ := cmd.Flags().GetBool("include-inputs")
 	includeInputs := includeInputsVal
 	if !includeInputsFlagSet {
-		includeInputs = len(sessions) == 2
+		includeInputs = len(runs) == 2
 	}
-
-	// Build run labels as run-A, run-B, run-C...
-	runs := loadCompareRuns(d, sessions)
 
 	// Collect desired axes.
 	wantAxes := defaultAxes()

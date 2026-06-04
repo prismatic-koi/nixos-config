@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -295,19 +296,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 	// GET /stats
 	// Query params:
-	//   view     — one of: summary, doomloops, denials, asks, detail (required)
+	//   view     — one of: summary, doomloops, denials, asks, detail,
+	//              compare, abtest, abtest_list (required)
 	//   session  — session name filter (optional for doomloops/denials/asks; required for detail)
 	//   days     — look-back window in days (default 7 for event views; unused for summary/detail)
 	//   repo     — repo filter (summary only, optional)
 	//   since    — sinceMs timestamp as string (summary only, optional)
+	//   ids      — comma-separated list of session names / instance IDs / UUID prefixes
+	//              (compare only, required) — each id is resolved server-side the
+	//              same way `cmd.resolveSessionArg` resolves it locally
+	//   group_id — session_groups.group_id (abtest only, required)
 	//
 	// Response shapes (all roles permitted — read-only):
-	//   view=summary → {"sessions":[...db.Session...]} with token/cost totals per-session
+	//   view=summary    → {"sessions":[...db.Session...]} with token/cost totals per-session
 	//     when session is set: {"type":"detail","session":{...db.Session...}} (same as view=detail)
-	//   view=doomloops → {"events":[...db.Event...]}
-	//   view=denials   → {"events":[...db.Event...]}
-	//   view=asks      → {"events":[...db.Event...]}
-	//   view=detail    → {"session":{...db.Session...}} (single-session incarnation detail)
+	//   view=doomloops  → {"events":[...db.Event...]}
+	//   view=denials    → {"events":[...db.Event...]}
+	//   view=asks       → {"events":[...db.Event...]}
+	//   view=detail     → {"session":{...db.Session...}} (single-session incarnation detail)
+	//   view=compare    → {"runs":[StatsCompareRunWire,...]} for `prism stats compare`
+	//   view=abtest     → {"runs":[StatsCompareRunWire,...]} for `prism stats abtest <group>`
+	//                     (members are resolved and sorted by session_name, matching
+	//                     the direct-DB path in `cmd.runStatsAbtest`)
+	//   view=abtest_list → {"pairs":[...db.AbtestPairRow...]} for `prism stats --abtest`
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -438,8 +449,104 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 			writeJSON(w, http.StatusOK, map[string]any{"session": sess})
 
+		case "compare":
+			// Multi-instance comparison view. `ids` is a comma-separated
+			// list of session names / instance IDs / UUID prefixes — the
+			// same kinds of argument `prism stats compare` accepts on the
+			// host. We resolve each id and return the per-run
+			// (session, outcome, inputs) triples; the CLI computes the Δ /
+			// MIN / MAX columns and emits the table / JSON / CSV. Order is
+			// preserved so the rendered "run-A / run-B / ..." labels
+			// match the input order on both paths.
+			idsStr := q.Get("ids")
+			if idsStr == "" {
+				writeError(w, http.StatusBadRequest, "ids is required for view=compare (comma-separated list)")
+				return
+			}
+			var ids []string
+			for _, raw := range strings.Split(idsStr, ",") {
+				trimmed := strings.TrimSpace(raw)
+				if trimmed != "" {
+					ids = append(ids, trimmed)
+				}
+			}
+			if len(ids) < 2 {
+				writeError(w, http.StatusBadRequest, "view=compare requires at least 2 ids")
+				return
+			}
+			var sessions []*db.Session
+			for _, id := range ids {
+				sess, resolveErr := resolveStatsSessionArg(s.cfg.DB, id)
+				if resolveErr != nil {
+					if lookupErr, ok := asStatsLookupError(resolveErr); ok {
+						writeError(w, lookupErr.status, lookupErr.msg)
+					} else {
+						writeError(w, http.StatusInternalServerError, "db error: "+resolveErr.Error())
+					}
+					return
+				}
+				sessions = append(sessions, sess)
+			}
+			runs := buildStatsCompareRuns(s.cfg.DB, sessions)
+			writeJSON(w, http.StatusOK, StatsCompareResponseWire{Runs: runs})
+
+		case "abtest":
+			// Group-driven comparison: resolve every member of the
+			// session_groups.group_id and return the same {"runs":[...]}
+			// shape as view=compare. Members are sorted by session_name
+			// to match the direct-DB path's deterministic ordering.
+			groupID := q.Get("group_id")
+			if groupID == "" {
+				writeError(w, http.StatusBadRequest, "group_id is required for view=abtest")
+				return
+			}
+			members, err := s.cfg.DB.GroupResults(groupID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if len(members) == 0 {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("no members found for group %q", groupID))
+				return
+			}
+			var sessions []*db.Session
+			for _, m := range members {
+				sess, err := s.cfg.DB.MostRecentSessionForName(m.SessionName)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+					return
+				}
+				if sess == nil {
+					writeError(w, http.StatusNotFound,
+						fmt.Sprintf("member session %q not found in sessions table", m.SessionName))
+					return
+				}
+				sessions = append(sessions, sess)
+			}
+			sort.Slice(sessions, func(i, j int) bool {
+				return sessions[i].SessionName < sessions[j].SessionName
+			})
+			runs := buildStatsCompareRuns(s.cfg.DB, sessions)
+			writeJSON(w, http.StatusOK, StatsCompareResponseWire{Runs: runs})
+
+		case "abtest_list":
+			// Listing of every recorded A/B test pair, for
+			// `prism stats --abtest`. No filtering — same payload the
+			// host-direct path renders. The CLI handles the empty-set
+			// "no abtest pairs recorded" message so the wire stays a
+			// pure data envelope.
+			pairs, err := s.cfg.DB.AbtestPairsAll()
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+				return
+			}
+			if pairs == nil {
+				pairs = []db.AbtestPairRow{}
+			}
+			writeJSON(w, http.StatusOK, StatsAbtestListResponseWire{Pairs: pairs})
+
 		default:
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown view %q — must be one of: summary, doomloops, denials, asks, detail", view))
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown view %q — must be one of: summary, doomloops, denials, asks, detail, compare, abtest, abtest_list", view))
 		}
 	})
 

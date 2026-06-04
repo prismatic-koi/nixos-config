@@ -242,6 +242,46 @@ func proxyStats(apiURL, view, sessionFilter string, days int, repoFilter string,
 	return proxyReadToHostAPI(apiURL, "/stats", params)
 }
 
+// proxyStatsCompare proxies a `prism stats compare` request to the host-API
+// sidecar. apiURL is the value of PRISM_HOST_API. ids is the list of
+// session-name / instance-id / UUID-prefix arguments passed on the command
+// line; they are joined with commas and forwarded verbatim so the server
+// resolves them with the same disambiguation rules the CLI uses on the
+// direct-DB path. Returns the raw {"runs":[...]} JSON envelope for the
+// caller to unmarshal and render. Added for issue #2098.
+//
+// We deliberately use a single bulk request rather than N per-instance
+// requests so partial-failure semantics are unambiguous: if any id fails
+// to resolve, the server returns a single 404 and the whole comparison
+// fails — matching the direct-DB behaviour where `resolveSessionArg`
+// aborts on the first miss. The single-request shape also keeps the
+// round-trip count at one regardless of how many ids the user passes.
+func proxyStatsCompare(apiURL string, ids []string) ([]byte, error) {
+	return proxyReadToHostAPI(apiURL, "/stats", map[string]string{
+		"view": "compare",
+		"ids":  strings.Join(ids, ","),
+	})
+}
+
+// proxyStatsAbtest proxies a `prism stats abtest <group_id>` request to the
+// host-API sidecar. Returns the same {"runs":[...]} envelope shape as
+// proxyStatsCompare. Added for issue #2098.
+func proxyStatsAbtest(apiURL, groupID string) ([]byte, error) {
+	return proxyReadToHostAPI(apiURL, "/stats", map[string]string{
+		"view":     "abtest",
+		"group_id": groupID,
+	})
+}
+
+// proxyStatsAbtestList proxies a `prism stats --abtest` request to the
+// host-API sidecar. Returns the raw {"pairs":[...db.AbtestPairRow...]}
+// JSON for the caller to unmarshal and render. Added for issue #2098.
+func proxyStatsAbtestList(apiURL string) ([]byte, error) {
+	return proxyReadToHostAPI(apiURL, "/stats", map[string]string{
+		"view": "abtest_list",
+	})
+}
+
 // proxyListSessions proxies a list-sessions request to the host-API sidecar.
 // apiURL is the value of PRISM_HOST_API. showAll controls whether the all=true
 // query parameter is sent. Returns the raw JSON output for the caller to render.
