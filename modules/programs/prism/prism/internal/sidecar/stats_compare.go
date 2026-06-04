@@ -141,6 +141,16 @@ func statsSessionIsTerminal(d *db.DB, sess *db.Session) bool {
 // best-effort — pre-#2087 sessions have no row and the CLI renderer
 // surfaces what it can from sessions instead.
 //
+// spawn_inputs is converted to the restricted StatsCompareInputsWire
+// subset (six fields the CLI renderer actually consumes) before being
+// placed on the wire. The full db.SpawnInputs row carries row-level
+// conversation content (PromptText, PromptSource, ModelVariantOverrides,
+// Extras, manifest hashes) that the all-roles /stats endpoint must not
+// expose — see the architecture note on host_api.go's hostAPIHandler
+// stating "/stats is aggregate counts, /db/query is row-level
+// conversation content". restrictSpawnInputsForWire keeps those fields
+// off the wire entirely (review-security feedback on PR #2107).
+//
 // Labels are assigned in input order so the CLI does not need to
 // re-derive ordering after unmarshaling. The caller is responsible for
 // any ordering policy (input-order for view=compare, session_name-sorted
@@ -160,12 +170,33 @@ func buildStatsCompareRuns(d *db.DB, sessions []*db.Session) []StatsCompareRunWi
 				run.Outcome = computed
 			}
 		}
-		if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil {
-			run.Inputs = inputs
+		if inputs, err := d.SpawnInputsByInstanceID(sess.InstanceID); err == nil && inputs != nil {
+			run.Inputs = restrictSpawnInputsForWire(inputs)
 		}
 		runs = append(runs, run)
 	}
 	return runs
+}
+
+// restrictSpawnInputsForWire copies the six render-relevant fields from a
+// full db.SpawnInputs row into a StatsCompareInputsWire so the prompt body,
+// prompt source, model-variant overrides JSON, extras blob, and manifest
+// hashes never appear on the all-roles /stats wire. The set of fields
+// mirrors cmd/stats_compare.go::inputsAxes exactly — every other field on
+// db.SpawnInputs is unused by the renderer and so has no reason to cross
+// the boundary.
+func restrictSpawnInputsForWire(in *db.SpawnInputs) *StatsCompareInputsWire {
+	if in == nil {
+		return nil
+	}
+	return &StatsCompareInputsWire{
+		ProfileName:   in.ProfileName,
+		HarnessFlag:   in.HarnessFlag,
+		IsolationFlag: in.IsolationFlag,
+		AgentFlag:     in.AgentFlag,
+		BranchFlag:    in.BranchFlag,
+		AbtestPairID:  in.AbtestPairID,
+	}
 }
 
 // asStatsLookupError extracts a *statsLookupError from err, if present.

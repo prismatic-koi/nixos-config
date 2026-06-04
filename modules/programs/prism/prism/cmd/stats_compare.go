@@ -201,6 +201,12 @@ func runStatsAbtestProxy(cmd *cobra.Command, groupID, apiURL string) error {
 // any payload is missing the required sessions row (defence-in-depth: the
 // sidecar always populates this field, but a malformed response would
 // otherwise NPE deep in axisValue).
+//
+// The wire-side spawn_inputs subset (StatsCompareInputsWire) is expanded
+// back into the partial db.SpawnInputs the renderer expects — the cmd-side
+// axisValue / inputsValue paths only read the six restricted fields, so
+// re-using db.SpawnInputs here costs nothing while keeping the renderer
+// type-stable across the direct-DB and proxy paths.
 func wireRunsToCompareRuns(wireRuns []sidecar.StatsCompareRunWire) ([]compareRun, error) {
 	runs := make([]compareRun, 0, len(wireRuns))
 	for i, w := range wireRuns {
@@ -214,11 +220,23 @@ func wireRunsToCompareRuns(wireRuns []sidecar.StatsCompareRunWire) ([]compareRun
 			// loadCompareRuns labelling.
 			label = "run-" + string(rune('A'+i))
 		}
+		var inputs *db.SpawnInputs
+		if w.Inputs != nil {
+			inputs = &db.SpawnInputs{
+				InstanceID:    w.Session.InstanceID,
+				ProfileName:   w.Inputs.ProfileName,
+				HarnessFlag:   w.Inputs.HarnessFlag,
+				IsolationFlag: w.Inputs.IsolationFlag,
+				AgentFlag:     w.Inputs.AgentFlag,
+				BranchFlag:    w.Inputs.BranchFlag,
+				AbtestPairID:  w.Inputs.AbtestPairID,
+			}
+		}
 		runs = append(runs, compareRun{
 			Label:   label,
 			Session: w.Session,
 			Outcome: w.Outcome,
-			Inputs:  w.Inputs,
+			Inputs:  inputs,
 		})
 	}
 	return runs, nil

@@ -397,6 +397,120 @@ func TestHostAPI_Stats_AbtestList_HappyPath(t *testing.T) {
 	}
 }
 
+// ── privilege-boundary regression (PR #2107 review-security) ─────────────────
+
+// TestHostAPI_Stats_Compare_DoesNotLeakPromptText is the regression guard
+// for the review-security finding on PR #2107: the all-roles /stats
+// endpoint must NOT serialise db.SpawnInputs.PromptText (or any of the
+// other row-level conversation-content fields — PromptSource,
+// ModelVariantOverrides, Extras, SkillsManifestHash, AgentPromptHash) to
+// callers. The restricted StatsCompareInputsWire struct holds only the six
+// render-relevant fields; this test asserts that contract by inserting a
+// distinctive prompt body, issuing a worker-role request, and confirming
+// the secret is absent from both the parsed envelope and the raw response
+// bytes.
+//
+// AgentRole = "worker" exercises the path most likely to leak: a
+// container worker session with PRISM_HOST_API set, talking to its own
+// sidecar's /stats handler. The same data shape goes out for coordinator
+// callers as well, but the worker case is the boundary that matters.
+func TestHostAPI_Stats_Compare_DoesNotLeakPromptText(t *testing.T) {
+	d := openTestDB(t)
+	startedAt := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
+
+	iidA := seedSidecarStatsSession(t, d, "repo@secret-a", startedAt, "finished")
+	iidB := seedSidecarStatsSession(t, d, "repo@secret-b", startedAt.Add(time.Second), "finished")
+
+	profile := "anthropic-opus-max-4-7"
+	// Distinctive sentinel strings so a substring match is unambiguous.
+	promptText := "SECRET-PROMPT-do-not-leak-9d8f7a6b"
+	promptSource := "SECRET-SOURCE-also-do-not-leak"
+	modelOverrides := `{"SECRET-OVERRIDES":"do-not-leak"}`
+	extras := `{"SECRET-EXTRAS":"do-not-leak"}`
+	skillsHash := "SECRET-SKILLS-HASH"
+	agentHash := "SECRET-AGENT-PROMPT-HASH"
+	promptTemplateHash := "SECRET-PROMPT-TEMPLATE-HASH"
+	modelFlag := "SECRET-MODEL-FLAG"
+	variantFlag := "SECRET-VARIANT-FLAG"
+
+	for _, iid := range []string{iidA, iidB} {
+		if err := d.InsertSpawnInputs(db.SpawnInputs{
+			InstanceID:            iid,
+			ProfileName:           &profile,
+			PromptText:            &promptText,
+			PromptSource:          &promptSource,
+			ModelVariantOverrides: &modelOverrides,
+			Extras:                &extras,
+			SkillsManifestHash:    &skillsHash,
+			AgentPromptHash:       &agentHash,
+			PromptTemplateHash:    &promptTemplateHash,
+			ModelFlag:             &modelFlag,
+			VariantFlag:           &variantFlag,
+			CreatedAt:             startedAt.UnixMilli(),
+		}); err != nil {
+			t.Fatalf("InsertSpawnInputs %s: %v", iid, err)
+		}
+	}
+
+	sc := newSidecarWithRole(t, "repo@secret-worker", "repo", "worker", d)
+	url := fmt.Sprintf("/stats?view=compare&ids=%s,%s", iidA, iidB)
+	rr := doHostAPI(t, sc, http.MethodGet, url, "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+
+	// Raw-byte check first: this is the strongest assertion because it
+	// catches a serialised field even if the wire struct gains a typo
+	// later (e.g. "prompttext" instead of "prompt_text").
+	body := rr.Body.String()
+	secrets := []string{
+		promptText, promptSource, modelOverrides, extras,
+		skillsHash, agentHash, promptTemplateHash,
+		modelFlag, variantFlag,
+	}
+	for _, secret := range secrets {
+		if strings.Contains(body, secret) {
+			t.Errorf("response body leaks %q to worker caller; full body:\n%s", secret, body)
+		}
+	}
+	// And the JSON field names themselves — belt and braces, so a future
+	// refactor that switches to a different secret value still trips this.
+	forbiddenFields := []string{
+		"prompt_text", "PromptText",
+		"prompt_source", "PromptSource",
+		"model_variant_overrides", "ModelVariantOverrides",
+		"extras", "Extras",
+		"skills_manifest_hash", "SkillsManifestHash",
+		"agent_prompt_hash", "AgentPromptHash",
+		"prompt_template_hash", "PromptTemplateHash",
+		"model_flag", "ModelFlag",
+		"variant_flag", "VariantFlag",
+	}
+	for _, field := range forbiddenFields {
+		if strings.Contains(body, field) {
+			t.Errorf("response body includes forbidden field key %q; full body:\n%s", field, body)
+		}
+	}
+
+	// Parsed-envelope check: the six render-relevant fields must still be
+	// present so the renderer works. ProfileName is the easiest to assert
+	// because the test seeds it on every run.
+	var resp StatsCompareResponseWire
+	decodeJSONBody(t, rr, &resp)
+	if len(resp.Runs) != 2 {
+		t.Fatalf("got %d runs, want 2", len(resp.Runs))
+	}
+	for i, run := range resp.Runs {
+		if run.Inputs == nil {
+			t.Errorf("run %d: Inputs is nil; want populated render-only subset", i)
+			continue
+		}
+		if run.Inputs.ProfileName == nil || *run.Inputs.ProfileName != profile {
+			t.Errorf("run %d: ProfileName = %v, want %q", i, run.Inputs.ProfileName, profile)
+		}
+	}
+}
+
 // ── unknown view ──────────────────────────────────────────────────────────────
 
 // TestHostAPI_Stats_UnknownViewIncludesNewViews verifies the dispatcher's

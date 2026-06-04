@@ -427,12 +427,10 @@ func proxyCompareFixture() sidecar.StatsCompareResponseWire {
 		ToolCallCount:     5,
 		MsgAssistantCount: 4,
 	}
-	inA := &db.SpawnInputs{
-		InstanceID:  sessA.InstanceID,
+	inA := &sidecar.StatsCompareInputsWire{
 		ProfileName: &profA,
 	}
-	inB := &db.SpawnInputs{
-		InstanceID:  sessB.InstanceID,
+	inB := &sidecar.StatsCompareInputsWire{
 		ProfileName: &profB,
 	}
 	return sidecar.StatsCompareResponseWire{
