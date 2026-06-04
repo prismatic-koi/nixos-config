@@ -2643,6 +2643,151 @@ func TestCheckTransition_EmptyStates(t *testing.T) {
 	// If we reach here, no panic occurred.
 }
 
+// TestRespawnAfterCleanup_NoInvalidTransition is the end-to-end regression
+// guard for issue #2094. It reproduces the full post-cleanup → re-spawn cycle
+// at the DB layer:
+//
+//  1. A failed/closed session leaves a row in a terminal state (error,
+//     finished, or interrupted).
+//  2. `prism cleanup` marks that row ended via SetEnded (ended_at set; state
+//     column intentionally untouched — cleanup never writes state).
+//  3. Re-spawning on the SAME branch name re-seeds the row to idle via
+//     UpsertStatusSeedRootAgentName, then ClearEnded restores visibility
+//     (this mirrors the tmux-session-start hook in cmd/event.go).
+//
+// The invariant under test: step 3 must NOT emit an "invalid transition"
+// advisory warning for any prior terminal state, and the row must end up idle
+// with ended_at cleared. Before the fix, error → idle was missing from
+// ValidTransitions, so the error case logged a spurious warning (and would
+// hard-block a re-spawn once checkTransition is tightened to return errors).
+func TestRespawnAfterCleanup_NoInvalidTransition(t *testing.T) {
+	// All terminal states a worktree session can leave behind on the row.
+	// finished and interrupted already permit → idle; error is the case the
+	// fix adds. All three are asserted so the invariant covers AC #1 fully.
+	terminalStates := []string{"error", "finished", "interrupted"}
+	for _, st := range terminalStates {
+		t.Run(st, func(t *testing.T) {
+			d := openTestDB(t)
+			const session = "repo@feature"
+			const worktree = "/code/repo/feature"
+
+			// 1. Seed a row that ended in a terminal state.
+			if err := d.UpsertStatusSeedRootAgentName(session, "repo", worktree, st, nil, nil, "worker", "pi", "podman"); err != nil {
+				t.Fatalf("seed terminal row (%s): %v", st, err)
+			}
+
+			// 2. `prism cleanup` marks the row ended (state column untouched).
+			if err := d.SetEnded(session); err != nil {
+				t.Fatalf("SetEnded (cleanup): %v", err)
+			}
+
+			// 3. Re-spawn on the same branch: capture stderr so we can assert
+			// that no invalid-transition warning is emitted by checkTransition.
+			origStderr := os.Stderr
+			r, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			os.Stderr = w
+
+			seedErr := d.UpsertStatusSeedRootAgentName(session, "repo", worktree, "idle", nil, nil, "worker", "pi", "podman")
+			clearErr := d.ClearEnded(session)
+
+			w.Close()
+			os.Stderr = origStderr
+			var buf bytes.Buffer
+			if _, err := io.Copy(&buf, r); err != nil {
+				t.Fatalf("read captured stderr: %v", err)
+			}
+			r.Close()
+
+			if seedErr != nil {
+				t.Fatalf("re-seed idle: %v", seedErr)
+			}
+			if clearErr != nil {
+				t.Fatalf("ClearEnded: %v", clearErr)
+			}
+			if strings.Contains(buf.String(), "invalid transition") {
+				t.Errorf("re-spawn after cleanup from %q emitted an invalid-transition warning:\n%s", st, buf.String())
+			}
+
+			// Invariant: the row is idle and visible (active) again.
+			s, err := d.CurrentStatus(session)
+			if err != nil {
+				t.Fatalf("CurrentStatus: %v", err)
+			}
+			if s == nil {
+				t.Fatalf("CurrentStatus: row missing after re-spawn")
+			}
+			if s.State != "idle" {
+				t.Errorf("state after re-spawn from %q: got %q, want \"idle\"", st, s.State)
+			}
+			if s.EndedAt != nil {
+				t.Errorf("ended_at after re-spawn from %q: got %v, want nil", st, *s.EndedAt)
+			}
+		})
+	}
+}
+
+// TestRespawnDifferentBranch_AfterCleanup is the over-broad-fix guard
+// (issue #2094, negative test #1). Widening error → idle must not change the
+// behaviour of spawning a DIFFERENT branch after cleaning up a broken one: a
+// new branch name is a fresh INSERT with no prior row, so checkTransition has
+// nothing to validate and no warning is emitted — exactly as before the fix.
+func TestRespawnDifferentBranch_AfterCleanup(t *testing.T) {
+	d := openTestDB(t)
+
+	// Branch A ends in error, then is cleaned up.
+	if err := d.UpsertStatusSeedRootAgentName("repo@branch-a", "repo", "/code/repo/a", "error", nil, nil, "worker", "pi", "podman"); err != nil {
+		t.Fatalf("seed branch-a error: %v", err)
+	}
+	if err := d.SetEnded("repo@branch-a"); err != nil {
+		t.Fatalf("SetEnded branch-a: %v", err)
+	}
+
+	// Spawn a DIFFERENT branch B — capture stderr to assert no warning.
+	origStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stderr = w
+
+	seedErr := d.UpsertStatusSeedRootAgentName("repo@branch-b", "repo", "/code/repo/b", "idle", nil, nil, "worker", "pi", "podman")
+
+	w.Close()
+	os.Stderr = origStderr
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatalf("read captured stderr: %v", err)
+	}
+	r.Close()
+
+	if seedErr != nil {
+		t.Fatalf("seed branch-b: %v", seedErr)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("spawning a different branch produced unexpected log output:\n%s", buf.String())
+	}
+
+	// Branch B is a fresh idle row.
+	sb, err := d.CurrentStatus("repo@branch-b")
+	if err != nil {
+		t.Fatalf("CurrentStatus branch-b: %v", err)
+	}
+	if sb == nil || sb.State != "idle" {
+		t.Errorf("branch-b state: got %+v, want idle row", sb)
+	}
+	// Branch A's row is untouched by the branch-B spawn and still ended.
+	sa, err := d.CurrentStatus("repo@branch-a")
+	if err != nil {
+		t.Fatalf("CurrentStatus branch-a: %v", err)
+	}
+	if sa == nil || sa.EndedAt == nil {
+		t.Errorf("branch-a should remain ended after a different-branch spawn: got %+v", sa)
+	}
+}
+
 // ── TestOpen_CreatesSchema addendum: session_groups and group_id column ────────
 
 // TestOpen_CreatesSessionGroupsTable verifies that the session_groups table and

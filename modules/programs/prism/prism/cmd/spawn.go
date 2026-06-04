@@ -545,10 +545,17 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				broken := existing.State == "error" || existing.State == "deleted"
 				if reuseFlag {
 					if broken {
+						// Cleaning up a broken session then re-spawning on the
+						// same branch is a clean recovery: cleanup marks the row
+						// ended and the next spawn re-seeds it to idle, which the
+						// state machine now permits for any terminal state
+						// including error (issue #2094). Point the operator at the
+						// full path so the hint is not a dead end.
 						return fmt.Errorf(
 							"prism spawn --reuse: existing session %q is in a broken state (%s)\n"+
-								"run: prism cleanup --yes --session %s",
-							existing.SessionName, existing.State, existing.SessionName)
+								"clean it up, then re-spawn on the same branch:\n"+
+								"  prism cleanup --yes --session %s && prism spawn --branch %s",
+							existing.SessionName, existing.State, existing.SessionName, branch)
 					}
 					// Healthy session — emit its details and exit 0.
 					agentName := ""

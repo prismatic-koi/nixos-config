@@ -23,6 +23,7 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateError, StateActive, "retry / next turn after error"},
 		{StateWaiting, StateError, "session.error while waiting"},
 		{StateError, StateFinished, "idle debounce after error"},
+		{StateError, StateIdle, "tmux-session-start resets errored session on recreate after cleanup (#2094)"},
 
 		// Interruption paths
 		{StateActive, StateInterrupted, "pane-died / SIGINT / MessageAbortedError"},
