@@ -172,9 +172,32 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 	}
 }
 
+// coordinatorNotifyText returns the verbatim coordinator notification body for
+// a worker terminal state. The strings are fixed so coordinators can
+// pattern-match on them — see the "Worker terminal-state notifications" table
+// in the prism skill (SKILL.md). StateError uses the "has errored" wording;
+// every other terminal state uses the "has finished" wording.
+func coordinatorNotifyText(sessionName string, state agent.AgentState) string {
+	if state == agent.StateError {
+		return fmt.Sprintf("Agent %s has errored its current task", sessionName)
+	}
+	return fmt.Sprintf("Agent %s has finished its current task", sessionName)
+}
+
 // notifyCoordinator sends a "finished" notification to the coordinator session
-// for this repo. It is called asynchronously (via go) after writing
-// StateFinished, so s.mu must NOT be held when this method runs.
+// for this repo. It is a thin wrapper over notifyCoordinatorWithState that
+// preserves the historical StateFinished ("has finished") behaviour for the
+// clean-exit call sites.
+func (s *Sidecar) notifyCoordinator() {
+	s.notifyCoordinatorWithState(agent.StateFinished)
+}
+
+// notifyCoordinatorWithState sends a terminal-state notification to the
+// coordinator session for this repo. It is called asynchronously (via go)
+// after writing the terminal state, so s.mu must NOT be held when this method
+// runs. The notification body is selected from the terminal state via
+// coordinatorNotifyText: StateError yields "has errored", StateFinished (and
+// any other state) yields "has finished".
 //
 // The coordinator is discovered by looking up "<repo>@main" in the DB.
 // Notification is delivered via the coordinator's host-API Unix socket
@@ -193,7 +216,7 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 //
 // Delivery is a single attempt via promptdelivery.DeliverToSession; there is
 // no retry loop or backoff in this function.
-func (s *Sidecar) notifyCoordinator() {
+func (s *Sidecar) notifyCoordinatorWithState(state agent.AgentState) {
 	// Self-notification guard: if this session IS the coordinator, skip.
 	// DB-backed: check root_agent_name == "coordinator" for self.
 	// Fallback to name heuristic for pre-migration rows.
@@ -276,7 +299,7 @@ func (s *Sidecar) notifyCoordinator() {
 
 	coordinatorName := coordStatus.SessionName
 
-	notifyText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
+	notifyText := coordinatorNotifyText(s.cfg.SessionName, state)
 
 	// Capture the coordinator's current instance_id so the message is scoped
 	// to the correct incarnation of the coordinator. If the coordinator has no

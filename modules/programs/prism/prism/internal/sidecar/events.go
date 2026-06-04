@@ -309,6 +309,36 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 
+		// Zero-output guard (#2081): a worker that connects, produces no
+		// assistant output, and disconnects within seconds of the handshake
+		// must not be reported as a clean finish — the coordinator would chase a
+		// PR that never existed. Two corroborating signals from the issue are
+		// combined here:
+		//
+		//   (3) the persisted-state machine rejects the transition to finished —
+		//       the session never reached `active` (no turn_start upserted the
+		//       row out of `idle`), so finishing from here is illegal; and
+		//   (1) the session produced no assistant output this lifetime
+		//       (sawAssistantOutput is still false).
+		//
+		// When BOTH hold this is a zero-output startup exit: route to StateError
+		// (a valid idle → error transition) and deliver the "has errored"
+		// notification instead of "has finished". Requiring both signals keeps
+		// the fix narrow — a session that did real work (sawAssistantOutput) or
+		// that reached a state from which finishing is legal (active/waiting) is
+		// untouched.
+		if !s.sawAssistantOutput && agent.Transition(currentState, agent.StateFinished) != nil {
+			s.logger().Printf("sidecar: transition -> error (cause=zero_output_exit, state=%q, no assistant output)", currentState)
+			s.upsertState(agent.StateError, nil, nil)
+			s.writeStateChange(agent.StateError)
+			s.lastState = agent.StateError
+			s.lastErrorAt = s.cfg.Clock.Now()
+			finalText := s.lastInvestigatorText
+			s.goNotify(func() { s.notifyCoordinatorWithState(agent.StateError) })
+			s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
+			return
+		}
+
 		s.logger().Printf("sidecar: transition -> finished (cause=finished_debounce)")
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)

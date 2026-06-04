@@ -482,6 +482,18 @@ type Sidecar struct {
 	// Protected by s.mu.
 	lastInvestigatorText string
 
+	// sawAssistantOutput records whether this session has produced any
+	// non-empty assistant turn since the sidecar started. It is set once (to
+	// true) on the first turn_end carrying assistant text and is never reset.
+	//
+	// handleSessionFinished reads it to distinguish a genuine clean finish
+	// from a zero-output startup crash (#2081): a worker that connects,
+	// produces no assistant output, and disconnects within seconds of the
+	// handshake must be classified as StateError ("has errored"), not
+	// StateFinished ("has finished") — otherwise the coordinator chases a PR
+	// that does not exist. Protected by s.mu.
+	sawAssistantOutput bool
+
 	// promptDedup is the bounded in-memory dedup set for /prompt deliveries.
 	// Each /prompt request carries a delivery_id (UUID minted by the sender);
 	// repeats whose ID has been seen recently are dropped before they reach
@@ -2455,9 +2467,12 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.writeEvent("msg_assistant", p, nil)
 		}
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
-		// Track the most recent turn text for the final completion notification.
+		// Track the most recent turn text for the final completion notification,
+		// and record that this session has produced assistant output at least
+		// once (#2081 zero-output detection in handleSessionFinished).
 		if text != "" {
 			s.lastInvestigatorText = text
+			s.sawAssistantOutput = true
 		}
 
 	case "auto_retry_start":

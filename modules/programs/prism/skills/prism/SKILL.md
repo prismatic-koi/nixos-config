@@ -805,9 +805,11 @@ When a worker session reaches a terminal state, the coordinator that spawned it 
 | Terminal state | Notification body |
 |---|---|
 | `finished` (clean exit) | `Agent <name> has finished its current task` |
-| `error` (crash / restart-exhausted) | `Agent <name> has errored its current task` |
+| `error` (crash / restart-exhausted / zero-output exit) | `Agent <name> has errored its current task` |
 
 The wording is fixed so coordinators can pattern-match on either string.
+
+- **Zero-output exits classify as `error` (issue #2081).** A worker that connects, produces no assistant output, and disconnects within seconds of the handshake never reached `active` — the persisted-state machine rejects the `idle → finished` transition. The sidecar honours that rejection: such an exit is routed to `error` (the "has errored" wording) rather than firing a false "has finished" signal that would send the coordinator chasing a PR that does not exist.
 
 ### Delivery contract
 
