@@ -539,6 +539,15 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			defer d.Close()
 			repoName := strings.TrimSuffix(filepath.Base(bareRoot), ".git")
 			existing, lookupErr := d.ActiveStatusForRepoBranch(repoName, branch)
+			// ActiveStatusForRepoBranch filters by ended_at IS NULL, so a
+			// session whose row was just `prism cleanup`’d (ended_at
+			// stamped) is invisible here — a re-spawn on the same branch
+			// proceeds and the state-machine table allows the row to be
+			// re-seeded from any non-deleted terminal state (error /
+			// finished / interrupted) back to idle. That is why both
+			// recovery messages below truthfully point at `prism cleanup`
+			// (issue #2094 — prerequisite for any future tightening of
+			// checkTransition raised by #2081).
 			if lookupErr == nil && existing != nil {
 				// There is an active session for this branch.
 				// Healthy = state not "error" and not "deleted".
