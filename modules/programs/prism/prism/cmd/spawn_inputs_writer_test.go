@@ -344,6 +344,59 @@ func TestSpawnInputsFromOpts_InvestigateMinimalRow(t *testing.T) {
 	assertStringPtr(t, "HarnessFlag", got.HarnessFlag, "pi")
 }
 
+// TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields is the issue #2102
+// Layer 2 AC at the writer level: every --abtest leg must persist the columns
+// that `prism stats compare`'s Spawn Inputs block actually reads —
+// profile_name, harness_flag, isolation_flag, agent_flag — with non-empty
+// values. Without these, the renderer collapses each leg to "—" and the
+// A/B-test merge-decision workflow loses its leg-discriminating data.
+func TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields(t *testing.T) {
+	bus := sidecartest.NewIsolated(t, "")
+	d := bus.DB
+
+	pairID := uuid.New().String()
+	legs := []struct {
+		name      string
+		profile   string
+		isolation string
+		agent     string
+	}{
+		{"prism-test@worker-abtest-renderer-a", "anthropic", "bwrap", "worker"},
+		{"prism-test@worker-abtest-renderer-b", "google-gemini", "bwrap", "worker"},
+	}
+	for _, leg := range legs {
+		iid := uuid.New().String()
+		seedSessionForSpawnInputs(t, d, iid, leg.name)
+		si := session.SpawnInputsFromOpts(session.SpawnOpts{
+			InstanceID:    iid,
+			Prompt:        "abtest leg prompt",
+			PromptSource:  "cli-positional",
+			ProfileName:   leg.profile,
+			HarnessFlag:   "pi",
+			IsolationFlag: leg.isolation,
+			AgentFlag:     leg.agent,
+			AbtestPairID:  pairID,
+		})
+		if err := d.InsertSpawnInputs(si); err != nil {
+			t.Fatalf("InsertSpawnInputs leg %q: %v", leg.name, err)
+		}
+		got, err := d.SpawnInputsByInstanceID(iid)
+		if err != nil {
+			t.Fatalf("SpawnInputsByInstanceID leg %q: %v", leg.name, err)
+		}
+		if got == nil {
+			t.Fatalf("leg %q: got nil row", leg.name)
+		}
+		// Every column the `prism stats compare` Spawn Inputs renderer reads
+		// must be populated. Missing fields would collapse the leg to "—".
+		assertStringPtr(t, "ProfileName/"+leg.name, got.ProfileName, leg.profile)
+		assertStringPtr(t, "HarnessFlag/"+leg.name, got.HarnessFlag, "pi")
+		assertStringPtr(t, "IsolationFlag/"+leg.name, got.IsolationFlag, leg.isolation)
+		assertStringPtr(t, "AgentFlag/"+leg.name, got.AgentFlag, leg.agent)
+		assertStringPtr(t, "AbtestPairID/"+leg.name, got.AbtestPairID, pairID)
+	}
+}
+
 // assertStringPtr fails the test if got is nil or *got != want. Used to keep
 // the per-field assertions in the tests above concise.
 func assertStringPtr(t *testing.T, name string, got *string, want string) {

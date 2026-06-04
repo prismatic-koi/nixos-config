@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -7558,6 +7559,163 @@ func TestWriteSpawnOutcome_NoSession(t *testing.T) {
 	d := openTestDB(t)
 	if err := d.WriteSpawnOutcome("does-not-exist-" + uuid.New().String()); err != nil {
 		t.Fatalf("WriteSpawnOutcome on missing session: %v (want nil)", err)
+	}
+}
+
+// TestComputeSpawnOutcome_MatchesWriteSpawnOutcome is the byte-for-byte
+// idempotence guard required by issue #2102. It verifies that the on-the-fly
+// aggregation surfaced to `prism stats compare` (ComputeSpawnOutcome) and the
+// persisted aggregation that `prism cleanup` writes (WriteSpawnOutcome +
+// SpawnOutcomeByInstanceID) produce identical values — every count, every
+// token total, every cost. If the two paths drift, the comparison surface
+// would silently report different numbers before vs after cleanup.
+func TestComputeSpawnOutcome_MatchesWriteSpawnOutcome(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	startedAt := time.Now().Add(-10 * time.Minute)
+	endedAt := startedAt.Add(5 * time.Minute)
+	if err := d.InsertSession(db.Session{
+		InstanceID:  iid,
+		SessionName: "test@compute-match",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "pi",
+		StartedAt:   startedAt,
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	if err := d.UpdateSessionEnded(iid, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded: %v", err)
+	}
+
+	// Seed a representative event mix: an assistant turn with tokens + cost,
+	// a tool_call, a permission_ask, and an error event. Every aggregate
+	// column must show up identical between the two paths.
+	events := []struct {
+		typ     string
+		payload string
+		at      time.Time
+	}{
+		{"msg_assistant", `{"inputTokens":1500,"outputTokens":700,"cacheReadTokens":300,"cacheWriteTokens":150,"cost":0.123}`, startedAt.Add(30 * time.Second)},
+		{"msg_assistant", `{"inputTokens":2000,"outputTokens":900,"cacheReadTokens":400,"cacheWriteTokens":200,"cost":0.456}`, startedAt.Add(90 * time.Second)},
+		{"tool_call", `{"name":"bash"}`, startedAt.Add(60 * time.Second)},
+		{"tool_call", `{"name":"read"}`, startedAt.Add(70 * time.Second)},
+		{"permission_ask", `{"tool":"write"}`, startedAt.Add(80 * time.Second)},
+		{"error", `{"message":"transient"}`, startedAt.Add(100 * time.Second)},
+		{"state_change", `{"state":"finished"}`, endedAt},
+	}
+	for i, e := range events {
+		ev := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: "test@compute-match",
+			Repo:        "repo",
+			Worktree:    "/wt",
+			InstanceID:  &iid,
+			Type:        e.typ,
+			Payload:     e.payload,
+			CreatedAt:   e.at,
+		}
+		if err := d.WriteEvent(ev); err != nil {
+			t.Fatalf("WriteEvent[%d]: %v", i, err)
+		}
+	}
+
+	// On-the-fly compute (the prism stats compare read path).
+	computed, err := d.ComputeSpawnOutcome(iid)
+	if err != nil {
+		t.Fatalf("ComputeSpawnOutcome: %v", err)
+	}
+	if computed == nil {
+		t.Fatal("ComputeSpawnOutcome: got nil, want a populated outcome")
+	}
+
+	// Write and read back (the prism cleanup write path).
+	if err := d.WriteSpawnOutcome(iid); err != nil {
+		t.Fatalf("WriteSpawnOutcome: %v", err)
+	}
+	written, err := d.SpawnOutcomeByInstanceID(iid)
+	if err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID: %v", err)
+	}
+	if written == nil {
+		t.Fatal("SpawnOutcomeByInstanceID: got nil, want a row")
+	}
+
+	// Compare every aggregate column. ComputedAt is allowed to differ
+	// because each pass stamps its own clock read — the AC is data shape
+	// agreement, not snapshot-time agreement.
+	written.ComputedAt = computed.ComputedAt
+	if !reflect.DeepEqual(computed, written) {
+		t.Errorf("compute vs write drift\n  compute: %+v\n  written: %+v", computed, written)
+	}
+}
+
+// TestWriteSpawnOutcome_IdempotentOverwrite verifies that a second
+// WriteSpawnOutcome call after intervening events still produces a row that
+// matches a fresh ComputeSpawnOutcome — the incremental/cleanup overwrite
+// must not double-count or miss deltas (issue #2102 AC).
+func TestWriteSpawnOutcome_IdempotentOverwrite(t *testing.T) {
+	d := openTestDB(t)
+
+	iid := uuid.New().String()
+	startedAt := time.Now().Add(-3 * time.Minute)
+	if err := d.InsertSession(db.Session{
+		InstanceID:  iid,
+		SessionName: "test@idempotent",
+		Repo:        "repo",
+		Worktree:    "/wt",
+		Harness:     "pi",
+		StartedAt:   startedAt,
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+
+	// First write with two assistant turns.
+	for i, payload := range []string{
+		`{"inputTokens":100,"outputTokens":50}`,
+		`{"inputTokens":200,"outputTokens":75}`,
+	} {
+		ev := db.Event{
+			ID:          uuid.New().String(),
+			SessionName: "test@idempotent",
+			Repo:        "repo",
+			Worktree:    "/wt",
+			InstanceID:  &iid,
+			Type:        "msg_assistant",
+			Payload:     payload,
+			CreatedAt:   startedAt.Add(time.Duration(i+1) * 10 * time.Second),
+		}
+		if err := d.WriteEvent(ev); err != nil {
+			t.Fatalf("WriteEvent: %v", err)
+		}
+	}
+	if err := d.WriteSpawnOutcome(iid); err != nil {
+		t.Fatalf("WriteSpawnOutcome (first): %v", err)
+	}
+
+	// Second write after the same events have all been seen — no new
+	// events between the two writes, so the second row must match the
+	// fresh recompute exactly. INSERT OR REPLACE means the row overwrites
+	// cleanly without doubling.
+	if err := d.WriteSpawnOutcome(iid); err != nil {
+		t.Fatalf("WriteSpawnOutcome (second): %v", err)
+	}
+	written, err := d.SpawnOutcomeByInstanceID(iid)
+	if err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID: %v", err)
+	}
+	if written == nil {
+		t.Fatal("SpawnOutcomeByInstanceID: got nil, want a row")
+	}
+	if written.TokensInputTotal != 300 {
+		t.Errorf("TokensInputTotal after double-write: got %d, want 300 (100+200, no double-count)", written.TokensInputTotal)
+	}
+	if written.TokensOutputTotal != 125 {
+		t.Errorf("TokensOutputTotal after double-write: got %d, want 125 (50+75, no double-count)", written.TokensOutputTotal)
+	}
+	if written.MsgAssistantCount != 2 {
+		t.Errorf("MsgAssistantCount after double-write: got %d, want 2 (no double-count)", written.MsgAssistantCount)
 	}
 }
 

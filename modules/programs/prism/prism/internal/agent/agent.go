@@ -36,3 +36,24 @@ const (
 	// `session.escalated` bus event already informed the coordinator.
 	StateEscalated AgentState = "escalated"
 )
+
+// IsTerminal reports whether s is a terminal agent state. Terminal states
+// are the lifecycle endpoints for which post-hoc aggregates (token totals,
+// cost, durations) are meaningful: the agent has stopped producing new
+// events, so a snapshot taken at this point will not be invalidated by
+// later activity.
+//
+// The set is the same one the cleanup pipeline and `prism stats compare`
+// treat as "data is final": finished, error, interrupted, and deleted. It
+// excludes the in-progress states (active, idle, waiting, compacting,
+// reviewing, escalated) — those sessions may still emit events.
+//
+// Called by `prism stats compare` to decide whether to compute an outcome
+// on the fly when no `spawn_outcome` row exists yet (issue #2102).
+func IsTerminal(s AgentState) bool {
+	switch s {
+	case StateFinished, StateError, StateInterrupted, StateDeleted:
+		return true
+	}
+	return false
+}
