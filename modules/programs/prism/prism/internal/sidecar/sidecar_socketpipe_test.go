@@ -3432,3 +3432,239 @@ func TestSocketPipe_LineCap_HelloOversizedClosesConnection(t *testing.T) {
 		t.Errorf("expected 'closing connection' in logs, got: %s", logs)
 	}
 }
+
+// ── zero-output exit classification (issue #2081) ───────────────────────────
+
+// newZeroOutputWorkerSidecar wires a worker-named ("testrepo@feature")
+// socket-pipe sidecar against a freshly-seeded coordinator row at
+// "testrepo@main" so that notifyCoordinator / notifyCoordinatorError can
+// progress past the self / discovery / suppression guards. It returns the
+// sidecar plus its testClock; the caller is responsible for installing the
+// notifyCoordinatorDeliverFn test seam and for running runStartupSocketPipe.
+//
+// Mirrors newSocketPipeSidecarWithClock's isolation contract (XDG_STATE_HOME
+// redirected, PRISM_TEST_MODE_RESTRICT_HOSTAPI set) and uses session names
+// that cannot collide with a live host coordinator.
+func newZeroOutputWorkerSidecar(t *testing.T, sockPath string) (*Sidecar, *testClock) {
+	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")
+	d := openTestDB(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           "testrepo@feature",
+		Repo:                  "testrepo",
+		Worktree:              t.TempDir(),
+		DB:                    d,
+		Clock:                 clk,
+		AgentRole:             "worker",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		Harness:               pih.New("", "", ""),
+	}
+	sc := New(cfg)
+
+	// Seed an active coordinator row at testrepo@main so CoordinatorForRepo
+	// discovers it via the DB-backed path. root_agent_name='coordinator' is
+	// required for isCoordinatorSession's DB lookup; harness='' forces the
+	// HTTP fallback in promptdelivery (we shortcut that anyway via the
+	// notifyCoordinatorDeliverFn seam).
+	coordName := "testrepo@main"
+	coordAgent := "coordinator"
+	coordModel := "anthropic/claude-sonnet-4-5"
+	coordSID := "coord-sid-zero-output"
+	if err := d.UpsertStatusWithAgent(coordName, "testrepo", "/tmp/test-coord", "active", nil, &coordSID, &coordAgent, &coordModel); err != nil {
+		t.Fatalf("seed coordinator: UpsertStatusWithAgent: %v", err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET root_agent_name = 'coordinator', harness = '' WHERE session_name = ? RETURNING session_name",
+		coordName,
+	).Scan(new(string)); err != nil {
+		t.Fatalf("seed coordinator: set root_agent_name: %v", err)
+	}
+
+	return sc, clk
+}
+
+// seedWorkerIdle writes an idle agent_status row for the worker before the
+// sidecar runs, reproducing the production sequence where tmux-session-start
+// has set state=idle prior to the PI socket-pipe handshake. The persisted
+// agent_status.state stays "idle" through handshake (which only writes a
+// state_change *event*, not an upsert) until a turn_start frame arrives. The
+// zero-output bug is reproduced when no turn_start ever arrives.
+func seedWorkerIdle(t *testing.T, sc *Sidecar) {
+	t.Helper()
+	if err := sc.cfg.DB.UpsertStatus(sc.cfg.SessionName, sc.cfg.Repo, sc.cfg.Worktree, string(agent.StateIdle), nil, nil); err != nil {
+		t.Fatalf("seed worker idle row: %v", err)
+	}
+}
+
+// TestSocketPipe_ZeroOutputExit_ClassifiesAsError reproduces issue #2081: a
+// worker connects, performs the handshake, receives a turn_end + state_change
+// {finished} pair without ever emitting a turn_start (and therefore without
+// producing any assistant output), and disconnects. The historical
+// behaviour wrote StateFinished and notified the coordinator with the
+// "has finished" wording — leading the coordinator to chase a PR that
+// did not exist.
+//
+// After the fix, the finished-debounce callback consults the persisted state:
+// when it is still StateIdle (no turn_start ever fired), the sidecar honours
+// the state machine's idle→finished rejection and routes to StateError with
+// the "has errored" wording instead.
+func TestSocketPipe_ZeroOutputExit_ClassifiesAsError(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newZeroOutputWorkerSidecar(t, sockPath)
+
+	// Reproduce the production pre-handshake state: tmux-session-start has
+	// written state=idle to agent_status. The handshake's writeStateChange
+	// writes an event but does NOT upsert agent_status, so this row remains
+	// the authoritative state when the finished debounce fires.
+	seedWorkerIdle(t, sc)
+
+	// Capture the notification text via the deliverFn seam so we can assert
+	// on the exact wording without performing real network delivery.
+	var (
+		deliverMu     sync.Mutex
+		capturedText  string
+		capturedToCnt int
+	)
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		capturedToCnt++
+		capturedText = text
+		return nil
+	}
+
+	wait := runSocketPipeSidecar(sc)
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Reproduce the issue's frame sequence verbatim: turn_end with the root
+	// agent name, immediately followed by state_change{finished}. Crucially
+	// there is NO turn_start — the worker exits without producing output.
+	sendJSON(t, conn, map[string]any{"type": "turn_end", "agent": "worker"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	// Wait deterministically for the finished debounce timer to be registered.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer was created after state_change{finished}")
+	}
+
+	// Pre-fire state must still be idle (handshake does not upsert).
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateIdle) {
+		t.Fatalf("pre-fire state = %q, want %q (handshake must not upsert agent_status)", s, agent.StateIdle)
+	}
+
+	timer.Fire()
+
+	// State must land in error (NOT finished). Poll because the debounce
+	// goroutine commits asynchronously.
+	got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second)
+	if got != string(agent.StateError) {
+		t.Errorf("state after zero-output debounce = %q, want %q", got, agent.StateError)
+	}
+	if got == string(agent.StateFinished) {
+		t.Error("zero-output exit was misclassified as finished — issue #2081 regression")
+	}
+
+	// Drain notify goroutines so the deliverFn seam captures have committed.
+	sc.WaitNotifies()
+
+	deliverMu.Lock()
+	defer deliverMu.Unlock()
+	if capturedToCnt != 1 {
+		t.Fatalf("deliverFn invocations = %d, want 1", capturedToCnt)
+	}
+	wantText := "Agent testrepo@feature has errored its current task"
+	if capturedText != wantText {
+		t.Errorf("coordinator notification text = %q, want %q", capturedText, wantText)
+	}
+	if strings.Contains(capturedText, "has finished") {
+		t.Errorf("coordinator notification still uses 'has finished' wording: %q", capturedText)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_NormalExitWithContent_StillClassifiesFinished is the
+// negative counterpart to TestSocketPipe_ZeroOutputExit_ClassifiesAsError
+// (issue #2081 AC #4). A worker that emits a normal turn_start → msg_assistant
+// → turn_end → state_change{finished} sequence must still land in StateFinished
+// with the "has finished" coordinator notification. The fix must not be
+// over-broad and silently relabel normal exits as errors.
+func TestSocketPipe_NormalExitWithContent_StillClassifiesFinished(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newZeroOutputWorkerSidecar(t, sockPath)
+
+	// Same pre-handshake state seeding as the zero-output test: tmux has
+	// written state=idle. The turn_start frame should transition the
+	// persisted state to active, so the finished debounce sees a valid
+	// active→finished transition.
+	seedWorkerIdle(t, sc)
+
+	var (
+		deliverMu    sync.Mutex
+		capturedText string
+		capturedCnt  int
+	)
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		capturedCnt++
+		capturedText = text
+		return nil
+	}
+
+	wait := runSocketPipeSidecar(sc)
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Normal frame sequence: turn_start moves agent_status to active, a
+	// msg_assistant carries actual text content, turn_end closes the turn,
+	// state_change{finished} starts the debounce.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "hello from the worker"})
+	sendJSON(t, conn, map[string]any{"type": "turn_end", "agent": "worker"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer was created after state_change{finished}")
+	}
+
+	// Pre-fire state must be active (turn_start transitioned idle→active).
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateActive) {
+		t.Fatalf("pre-fire state = %q, want %q (turn_start must upsert to active)", s, agent.StateActive)
+	}
+
+	timer.Fire()
+
+	got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateFinished), 2*time.Second)
+	if got != string(agent.StateFinished) {
+		t.Errorf("state after normal-exit debounce = %q, want %q", got, agent.StateFinished)
+	}
+	if got == string(agent.StateError) {
+		t.Error("normal-exit worker was misclassified as error — zero-output fix is over-broad")
+	}
+
+	sc.WaitNotifies()
+
+	deliverMu.Lock()
+	defer deliverMu.Unlock()
+	if capturedCnt != 1 {
+		t.Fatalf("deliverFn invocations = %d, want 1", capturedCnt)
+	}
+	wantText := "Agent testrepo@feature has finished its current task"
+	if capturedText != wantText {
+		t.Errorf("coordinator notification text = %q, want %q", capturedText, wantText)
+	}
+	if strings.Contains(capturedText, "has errored") {
+		t.Errorf("coordinator notification incorrectly uses 'has errored' wording for a normal exit: %q", capturedText)
+	}
+
+	conn.Close()
+	_ = wait()
+}

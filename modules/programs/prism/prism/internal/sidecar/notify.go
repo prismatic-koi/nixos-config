@@ -194,6 +194,29 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 // Delivery is a single attempt via promptdelivery.DeliverToSession; there is
 // no retry loop or backoff in this function.
 func (s *Sidecar) notifyCoordinator() {
+	s.notifyCoordinatorWithText(fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName))
+}
+
+// notifyCoordinatorError sends an "errored" notification to the coordinator
+// session for this repo. The wording is the verbatim error-terminal-state
+// counterpart of notifyCoordinator's "has finished" wording (skill table:
+// Worker terminal-state notifications).
+//
+// Called asynchronously (via goNotify) after writing StateError on the
+// zero-output-exit path (issue #2081). All suppression guards (self,
+// review-agent, investigate-agent, escalated, muted) and the audit-row
+// behaviour are shared with notifyCoordinator via notifyCoordinatorWithText.
+func (s *Sidecar) notifyCoordinatorError() {
+	s.notifyCoordinatorWithText(fmt.Sprintf("Agent %s has errored its current task", s.cfg.SessionName))
+}
+
+// notifyCoordinatorWithText is the shared implementation used by
+// notifyCoordinator ("has finished" wording) and notifyCoordinatorError
+// ("has errored" wording). The two terminal-state variants differ only in
+// the notifyText they pass in; everything else — recipient discovery,
+// suppression guards, audit-row writes, and the notifyCoordinatorDeliverFn
+// test seam — is identical and lives here so the two paths cannot drift.
+func (s *Sidecar) notifyCoordinatorWithText(notifyText string) {
 	// Self-notification guard: if this session IS the coordinator, skip.
 	// DB-backed: check root_agent_name == "coordinator" for self.
 	// Fallback to name heuristic for pre-migration rows.
@@ -275,8 +298,6 @@ func (s *Sidecar) notifyCoordinator() {
 	}
 
 	coordinatorName := coordStatus.SessionName
-
-	notifyText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
 
 	// Capture the coordinator's current instance_id so the message is scoped
 	// to the correct incarnation of the coordinator. If the coordinator has no
