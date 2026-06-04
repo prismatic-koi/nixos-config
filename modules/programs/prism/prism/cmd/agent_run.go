@@ -692,10 +692,20 @@ type piOverrides struct {
 // populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
 //
 // It:
-//  1. Loads profiles.json and resolves the active profile.
-//  2. Looks up the slot for the session's agent role — returns a clear error if
+//  1. Loads profiles.json.
+//  2. Resolves the profile for this session using the precedence
+//     spawn_inputs.profile_name (#2090) > runtime state file > nix-default.
+//     The DB lookup is the post-#2092 fix for the silent-drop of
+//     `prism spawn --profile <X>` / `--abtest <A> <B>`: spawn-time profile
+//     choice is now read back from the audit row that #2090 writes for every
+//     session, so `--abtest` legs run on their own profile slot instead of
+//     the active profile's slot. When the DB has no row (legacy sessions,
+//     paths that legitimately don't write spawn_inputs, or transient lookup
+//     errors), the function falls through to the existing
+//     state-file / nix-default resolution unchanged.
+//  3. Looks up the slot for the session's agent role — returns a clear error if
 //     the profile does not define a slot for this role.
-//  3. Calls EnsurePIAgentConfigDir to resolve the shared host ~/.pi/agent path
+//  4. Calls EnsurePIAgentConfigDir to resolve the shared host ~/.pi/agent path
 //     (creating it if absent on a fresh install) and records the host/sandbox
 //     paths on ctrCfg so bwrap can bind-mount the directory and set
 //     PI_CODING_AGENT_DIR. The shared mount carries settings.json, themes/,
@@ -703,8 +713,8 @@ type piOverrides struct {
 //     since design #2031 PR3 (#2034) collapsed the per-session staging dir.
 //     The role system-prompt is injected at runtime by the prism PI extension,
 //     not staged here.
-//  4. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
-//  5. Copies PIProvider, PIModel, PIThinking from the profile slot, then
+//  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
+//  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
 //     applies any CLI overrides from `prism agent-run --model` /
 //     `--variant` (issue #2086). A non-empty Model override wins over
 //     slot.Model; a non-empty Variant override wins over slot.Thinking.
@@ -717,10 +727,23 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 		return fmt.Errorf("pi: load profiles: %w", pfErr)
 	}
 
-	// Resolve the active profile (flag > state-file > nix-default).
-	// We have no per-command flag here, so pass "" and let the state-file /
-	// nix-default path take over.
-	profileName, _, err := config.ResolveActiveProfile(pf, "")
+	// Resolve the profile for this session.
+	//
+	// Precedence (post-#2092): spawn_inputs.profile_name > state file > nix-default.
+	//
+	// Before #2092 we passed "" as the flag value, so `prism spawn --profile <X>`
+	// and both legs of `prism spawn --abtest <A> <B>` were silently substituted
+	// for the active profile. The #2090 audit row now carries the spawn-time
+	// profile per instance_id, so reading it back here makes the spawn-time
+	// choice authoritative without re-plumbing a CLI flag on `agent-run`.
+	//
+	// When the lookup returns "" (no spawn_inputs row, NULL profile_name, or a
+	// transient DB error) we fall through to the existing state-file /
+	// nix-default path. This preserves restart / restore semantics for legacy
+	// sessions that pre-date #2090 and the host-mode path that does not call
+	// this function at all.
+	spawnProfile := spawnTimeProfileForSession(sessionName)
+	profileName, _, err := config.ResolveActiveProfile(pf, spawnProfile)
 	if err != nil {
 		return fmt.Errorf("pi: resolve active profile: %w", err)
 	}
