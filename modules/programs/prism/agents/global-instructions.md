@@ -1,5 +1,13 @@
 # Global Agent Instructions
 
+## Identity
+
+Ben Sherman is the user. When an agent is operating in his environment:
+
+- His GitHub handle is **prismatic-koi** — that is the account agents commit and push as, and the only Ben in any of his orgs that should be tagged, requested as a reviewer, or otherwise referenced.
+- Do NOT pick a "Ben" by name-matching against org membership — handles like `b-h-mck`, `ben-*`, etc. are other people and must not be substituted in.
+- Whenever an instruction or notification says "request review from Ben", "tag Ben", or similar, that always means **prismatic-koi**.
+
 ## Skills
 
 When working in environments with domain-specific skills available (via the `skill` tool), err on the side of loading them. If a conversation touches a domain that has a skill, load it – even if you think you know the conventions from other context sources.
