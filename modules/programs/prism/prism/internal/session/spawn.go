@@ -243,6 +243,16 @@ type SpawnOpts struct {
 	// host-mode pi launch (#2065). Empty value falls back to no --extension
 	// flag on host mode.
 	PIExtensionDir string
+
+	// Model, when non-empty, is the CLI-supplied model override from
+	// `prism spawn --model <X>`. Forwarded to Opts.Model and (for bwrap /
+	// sandbox-exec) into the AgentPaneOpts that builds the `prism
+	// agent-run` tmux pane command. Issue #2086.
+	Model string
+
+	// Variant, when non-empty, is the CLI-supplied variant override from
+	// `prism spawn --variant <Y>`. Semantics mirror Model. Issue #2086.
+	Variant string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -458,6 +468,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			Port:             0,
 			IsolationMode:    mode,
 			ConfigEnvVarName: opts.ConfigEnvVarName,
+			Model:            opts.Model,
+			Variant:          opts.Variant,
 		}
 		size += len(BuildAgentCmd(previewOpts))
 		hostLaunchCmdSize = size
@@ -486,6 +498,8 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			Port:             0,
 			IsolationMode:    mode,
 			ConfigEnvVarName: opts.ConfigEnvVarName,
+			Model:            opts.Model,
+			Variant:          opts.Variant,
 		}
 		previewCmd := BuildAgentCmd(previewOpts)
 		// For the env-var preview, route through the same helper used at
@@ -858,6 +872,10 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		HarnessPipeSockPath: opts.HarnessPipeSockPath,
 		ModelsByRole:        opts.ModelsByRole,
 		PIExtensionDir:      opts.PIExtensionDir,
+		// CLI overrides (issue #2086) flow into buildDirectAgentCmd (host)
+		// and AgentPaneOpts (bwrap / sandbox-exec) via BuildAgentCmd.
+		Model:   opts.Model,
+		Variant: opts.Variant,
 	}
 }
 
@@ -1014,6 +1032,9 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		ConfigEnvVarName: opts.ConfigEnvVarName,
 		RuntimeEnvVars:   opts.RuntimeEnvVars,
 		PIExtensionDir:   opts.PIExtensionDir,
+		// CLI overrides (issue #2086) for review-style agent-only layouts.
+		Model:   opts.Model,
+		Variant: opts.Variant,
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}

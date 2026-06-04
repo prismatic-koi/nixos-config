@@ -209,6 +209,20 @@ type AgentPaneOpts struct {
 	// (defensive fallback) or for the host isolator. Callers construct it
 	// before calling AgentPaneCmd.
 	DirectCmd string
+
+	// Model, when non-empty, is appended to the bwrap/sandbox-exec tmux
+	// pane command as `--model <X>` so that `prism agent-run` overrides the
+	// active profile slot's model on the final pi argv. Sourced from
+	// `prism spawn --model` (issue #2086). Empty value omits the flag and
+	// the slot's model is used unchanged.
+	Model string
+
+	// Variant, when non-empty, is appended to the bwrap/sandbox-exec tmux
+	// pane command as `--variant <Y>` so that `prism agent-run` overrides
+	// the active profile slot's thinking/variant on the final pi argv.
+	// Sourced from `prism spawn --variant` (issue #2086). Empty value omits
+	// the flag and the slot's thinking is used unchanged.
+	Variant string
 }
 
 // ArchivePaths describes the per-mode paths that the archive copy step
@@ -307,7 +321,7 @@ func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
 	if opts.SessionName == "" {
 		return opts.DirectCmd
 	}
-	return "prism agent-run --session " + shellQuotePodman(opts.SessionName)
+	return appendAgentRunOverrides("prism agent-run --session "+shellQuotePodman(opts.SessionName), opts)
 }
 
 // SidecarFlags returns the sidecar argv extensions for bwrap: --port and the
@@ -390,7 +404,7 @@ func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
 	if opts.SessionName == "" {
 		return opts.DirectCmd
 	}
-	return "prism agent-run --session " + shellQuotePodman(opts.SessionName)
+	return appendAgentRunOverrides("prism agent-run --session "+shellQuotePodman(opts.SessionName), opts)
 }
 
 // SidecarFlags returns the sidecar argv extensions for sandbox-exec — same
@@ -476,6 +490,25 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // ----------------------------------------------------------------------------
 // shared helpers
 // ----------------------------------------------------------------------------
+
+// appendAgentRunOverrides appends `--model <X>` and/or `--variant <Y>` to the
+// `prism agent-run` tmux pane command when those overrides are set on opts.
+// Shared between the bwrap and sandbox-exec isolators because both modes
+// dispatch the agent via `prism agent-run` (which then re-reads the session
+// row, populates a container.Config, and launches pi via PIInvocation).
+//
+// Issue #2086: without these flags the `--model` / `--variant` values passed
+// to `prism spawn` are silently dropped — `populatePIConfig` only consults
+// the active profile slot, so the CLI override never reaches pi's argv.
+func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
+	if opts.Model != "" {
+		cmd += " --model " + shellQuotePodman(opts.Model)
+	}
+	if opts.Variant != "" {
+		cmd += " --variant " + shellQuotePodman(opts.Variant)
+	}
+	return cmd
+}
 
 // shellQuotePodman wraps s in single quotes for shell-safe embedding. It is a
 // local copy of internal/session.shellQuote — duplicated here to avoid a

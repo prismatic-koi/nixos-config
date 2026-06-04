@@ -160,7 +160,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// On Darwin sandbox-exec there are no bind-mounts, so the "sandbox paths"
 	// are the same as the host paths — sandbox-exec shares the host filesystem.
 	if sandboxHarnessName == "pi" {
-		if piErr := populatePIConfig(&ctrCfg, sessionName, agentRole, cfg); piErr != nil {
+		if piErr := populatePIConfig(&ctrCfg, sessionName, agentRole, cfg, loadAgentRunOverrides(sessionName)); piErr != nil {
 			return fmt.Errorf("agent-run: %w", piErr)
 		}
 		// sandbox-exec shares the host filesystem, so the in-sandbox paths for

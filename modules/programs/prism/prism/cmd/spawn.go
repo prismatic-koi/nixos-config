@@ -714,6 +714,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
 		AllowEmptyPrompt: allowEmptyPrompt,
+		// CLI overrides (issue #2086) flow through to the tmux pane command
+		// so `prism agent-run` (bwrap / sandbox-exec) and direct pi (host)
+		// receive --model / --variant on the final argv.
+		Model:   modelFlag,
+		Variant: variantFlag,
 		// PIExtensionDir is the host-side prism PI extension directory
 		// (populated by Nix into config.json). Forwarded so that host-mode
 		// pi launches pass --extension <dir>/prism.ts (#2065).
@@ -1373,8 +1378,11 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		RuntimeEnvVars:   h.RuntimeEnv(),
 		HarnessName:      a.harnessFlag,
 		ModelsByRole:     a.modelsByRole,
-		ForceFresh:       true,
-		Headless:         true,
+		// CLI overrides flow through to the tmux pane command (issue #2086).
+		Model:      a.modelFlag,
+		Variant:    a.variantFlag,
+		ForceFresh: true,
+		Headless:   true,
 		// WorktreeReadOnly: mount the worktree read-only for investigate sessions.
 		WorktreeReadOnly: agentRole == "investigate",
 		// PIExtensionDir for host-mode pi launches (#2065).

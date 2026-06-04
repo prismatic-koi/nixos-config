@@ -185,6 +185,69 @@ func TestPIInvocation_AgentFlagOrder(t *testing.T) {
 	}
 }
 
+// TestPIInvocation_CLIOverrideWinsOverSlot is the issue #2086 regression
+// guard. The end-to-end picture: `prism spawn --model X` is translated by
+// `populatePIConfig` into a PIModel/PIThinking override that wins over the
+// active profile slot's Model/Thinking before `PIInvocation` reads the
+// fields. This test pins the contract at the PIInvocation layer: whatever
+// value ends up in cfg.PIModel / cfg.PIThinking is what appears on the
+// final pi argv.
+//
+// The test is written as a pair: the "slot only" case stands in for the
+// pre-#2086 baseline (slot.Model goes straight onto argv); the "override
+// wins" case stands in for the post-#2086 fix (populatePIConfig replaced
+// the slot value with the CLI override before constructing this Config).
+// Both cases assert against the same argv positions so a future regression
+// that re-introduces the slot value (e.g. by reading the profile inside
+// PIInvocation itself) trips this guard.
+func TestPIInvocation_CLIOverrideWinsOverSlot(t *testing.T) {
+	t.Run("slot only (no override) - baseline", func(t *testing.T) {
+		cfg := Config{
+			PIBinaryPath:          "/nix/store/abc-pi/bin/pi",
+			PIProvider:            "anthropic",
+			PIModel:               "anthropic/claude-opus-4-7",
+			PIThinking:            "medium",
+			PIExtensionSandboxDir: "/etc/prism/pi-extensions",
+		}
+		args := PIInvocation(cfg)
+		if !hasPair(args, "--model", "anthropic/claude-opus-4-7") {
+			t.Errorf("expected --model anthropic/claude-opus-4-7 (slot value); got %v", args)
+		}
+		if !hasPair(args, "--thinking", "medium") {
+			t.Errorf("expected --thinking medium (slot value); got %v", args)
+		}
+	})
+
+	t.Run("CLI override wins on final argv", func(t *testing.T) {
+		// Same shape as above except PIModel/PIThinking carry the post-
+		// override values (claude-opus-4-8 / high) that `populatePIConfig`
+		// produced. The slot's claude-opus-4-7 / medium values are
+		// intentionally absent from the argv — if they appear here the
+		// override path has regressed.
+		cfg := Config{
+			PIBinaryPath:          "/nix/store/abc-pi/bin/pi",
+			PIProvider:            "anthropic",
+			PIModel:               "anthropic/claude-opus-4-8",
+			PIThinking:            "high",
+			PIExtensionSandboxDir: "/etc/prism/pi-extensions",
+		}
+		args := PIInvocation(cfg)
+		if !hasPair(args, "--model", "anthropic/claude-opus-4-8") {
+			t.Errorf("expected --model anthropic/claude-opus-4-8 (override); got %v", args)
+		}
+		if !hasPair(args, "--thinking", "high") {
+			t.Errorf("expected --thinking high (override); got %v", args)
+		}
+		// Negative checks: the pre-override slot values must not appear.
+		if hasPair(args, "--model", "anthropic/claude-opus-4-7") {
+			t.Errorf("slot model leaked into argv after override; got %v", args)
+		}
+		if hasPair(args, "--thinking", "medium") {
+			t.Errorf("slot thinking leaked into argv after override; got %v", args)
+		}
+	})
+}
+
 // hasPair returns true when flag and val appear consecutively in args.
 func hasPair(args []string, flag, val string) bool {
 	for i := 0; i+1 < len(args); i++ {
