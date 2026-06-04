@@ -23,6 +23,7 @@ package session
 //     review.go once this primitive lands.
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -253,6 +254,75 @@ type SpawnOpts struct {
 	// Variant, when non-empty, is the CLI-supplied variant override from
 	// `prism spawn --variant <Y>`. Semantics mirror Model. Issue #2086.
 	Variant string
+
+	// Note: ModelFlag / VariantFlag below are distinct from Model / Variant
+	// above. Model / Variant feed harness-routing (the agent-run launch argv);
+	// ModelFlag / VariantFlag feed the audit row written to spawn_inputs.
+	// In `prism spawn` they carry the same string — keeping them as separate
+	// fields lets the audit shape evolve independently of launch-time semantics.
+
+	// ── spawn_inputs audit fields (issue #2087) ──────────────────────────
+	//
+	// These mirror the CLI flag values passed at spawn time and are written
+	// to the spawn_inputs table by SpawnSession. Each front door
+	// (`prism spawn`, `prism pr`, `prism investigate`, `prism review`) populates
+	// the fields it knows about; SpawnSession is the single chokepoint that
+	// inserts the row. Pointer fields are nullable in the DB — leave the
+	// matching SpawnOpts field as its zero value when the flag was not passed.
+
+	// ProfileName is the resolved active profile name (e.g. "anthropic").
+	// Mirrors spawn_inputs.profile_name. Empty when no profile is active.
+	ProfileName string
+
+	// ModelFlag is the raw --model flag value (e.g. "anthropic/claude-sonnet-4-7").
+	// Mirrors spawn_inputs.model_flag.
+	ModelFlag string
+
+	// VariantFlag is the raw --variant flag value (e.g. "high").
+	// Mirrors spawn_inputs.variant_flag.
+	VariantFlag string
+
+	// AgentFlag is the raw --agent flag value as the user passed it
+	// (distinct from AgentRole, which is the resolved role written to
+	// agent_status.root_agent_name). Mirrors spawn_inputs.agent_flag.
+	AgentFlag string
+
+	// HarnessFlag is the raw --harness flag value (e.g. "pi").
+	// Mirrors spawn_inputs.harness_flag.
+	HarnessFlag string
+
+	// IsolationFlag is the raw --isolation flag value as the user passed
+	// it (distinct from IsolationMode, which is the resolved mode used at
+	// launch). Mirrors spawn_inputs.isolation_flag.
+	IsolationFlag string
+
+	// HostModeFlag mirrors --host-mode. Mirrors spawn_inputs.host_mode_flag.
+	HostModeFlag bool
+
+	// PRNumber is the parsed --pr flag value. Zero means no --pr was passed.
+	// Mirrors spawn_inputs.pr_number.
+	PRNumber int
+
+	// BranchFlag is the raw --branch flag value.
+	// Mirrors spawn_inputs.branch_flag.
+	BranchFlag string
+
+	// IgnoreConcurrencyCap mirrors --ignore-concurrency-cap.
+	// Mirrors spawn_inputs.ignore_concurrency_cap.
+	IgnoreConcurrencyCap bool
+
+	// SkillsManifestHash is the C4.SK skills directory hash computed at spawn
+	// time. Mirrors spawn_inputs.skills_manifest_hash.
+	SkillsManifestHash string
+
+	// AgentPromptHash is the C4.AP agent role file hash computed at spawn
+	// time. Mirrors spawn_inputs.agent_prompt_hash.
+	AgentPromptHash string
+
+	// AbtestPairID is the shared UUID minted at the spawn-call site when
+	// --abtest is used. Both sibling sessions receive the same value so the
+	// rows pair via spawn_inputs.abtest_pair_id (P4.ABTEST, #1216).
+	AbtestPairID string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -663,37 +733,23 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: sessions row pre-inserted (instance_id=%s)", opts.InstanceID)
 	}
 
-	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148). Non-fatal:
-	// spawn_inputs is best-effort telemetry; a failure here must never block
-	// session creation.
+	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148; centralised in
+	// SpawnSession per issue #2087). SpawnSession is the single chokepoint:
+	// every front door (`prism spawn`, `prism pr`, `prism investigate`,
+	// `prism review`) populates the audit fields on SpawnOpts and the row is
+	// written here, after the sessions row has been pre-inserted (FK target)
+	// and before any layout/sidecar side-effects. Non-fatal: spawn_inputs is
+	// best-effort telemetry; a failure here must never block session creation.
 	//
-	// LayoutFull (CLI) spawns: the richer writeSpawnInputs call in cmd/spawn.go
-	// carries all flag-value columns (profile, model, variant, agent, harness,
-	// branch, skills hash, etc.) and will write the row after SpawnSession
-	// returns. Avoid writing here so INSERT OR IGNORE does not silently drop
-	// that richer payload.
-	//
-	// LayoutAgentOnly (review fan-out) spawns: the caller does not run
-	// writeSpawnInputs afterwards, so SpawnSession owns the only write.
-	if opts.Layout != LayoutFull {
-		si := db.SpawnInputs{
-			InstanceID: opts.InstanceID,
-			CreatedAt:  time.Now().UnixMilli(),
-		}
-		if opts.Prompt != "" {
-			si.PromptText = &opts.Prompt
-		}
-		if opts.PromptSource != "" {
-			si.PromptSource = &opts.PromptSource
-		}
-		if opts.PromptTemplateHash != "" {
-			si.PromptTemplateHash = &opts.PromptTemplateHash
-		}
-		if insertErr := d.InsertSpawnInputs(si); insertErr != nil {
-			fmt.Fprintf(os.Stderr,
-				"warning: could not write spawn_inputs for %q: %v\n",
-				opts.SessionName, insertErr)
-		}
+	// The write happens for every Layout. INSERT OR IGNORE means a duplicate
+	// call (e.g. from a caller that has not yet migrated) is silently dropped
+	// rather than overwriting the row — the first writer wins, and since this
+	// is the canonical writer it always wins.
+	si := spawnInputsFromOpts(opts)
+	if insertErr := d.InsertSpawnInputs(si); insertErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: could not write spawn_inputs for %q: %v\n",
+			opts.SessionName, insertErr)
 	}
 
 	// Step 3: Allocate a port from the configured range. Fails fast if the
@@ -853,21 +909,21 @@ func resolveLayoutIsolationMode(opts SpawnOpts) string {
 // preview and launch in practice.
 func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 	return Opts{
-		Prompt:           opts.Prompt,
-		PromptFilePath:   promptFilePath,
-		Agent:            opts.AgentRole,
-		ConfigContent:    opts.ConfigContent,
-		SessionName:      opts.SessionName,
-		Port:             port,
-		IsolationMode:    opts.IsolationMode,
-		PluginHostPath:   opts.PluginHostPath,
-		InstanceID:       opts.InstanceID,
-		AgentEnvVars:     opts.AgentEnvVars,
-		ConfigEnvVarName: opts.ConfigEnvVarName,
-		RuntimeEnvVars:   opts.RuntimeEnvVars,
-		Layout:           LayoutFull,
-		ForceFresh:       opts.ForceFresh,
-		Headless:         opts.Headless,
+		Prompt:              opts.Prompt,
+		PromptFilePath:      promptFilePath,
+		Agent:               opts.AgentRole,
+		ConfigContent:       opts.ConfigContent,
+		SessionName:         opts.SessionName,
+		Port:                port,
+		IsolationMode:       opts.IsolationMode,
+		PluginHostPath:      opts.PluginHostPath,
+		InstanceID:          opts.InstanceID,
+		AgentEnvVars:        opts.AgentEnvVars,
+		ConfigEnvVarName:    opts.ConfigEnvVarName,
+		RuntimeEnvVars:      opts.RuntimeEnvVars,
+		Layout:              LayoutFull,
+		ForceFresh:          opts.ForceFresh,
+		Headless:            opts.Headless,
 		HarnessName:         opts.HarnessName,
 		HarnessPipeSockPath: opts.HarnessPipeSockPath,
 		ModelsByRole:        opts.ModelsByRole,
@@ -1073,4 +1129,97 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	}
 	_ = tmux.SelectWindow(opts.SessionName, 1)
 	return nil
+}
+
+// spawnInputsFromOpts builds the db.SpawnInputs row written by SpawnSession
+// from the audit-field subset of SpawnOpts. Each pointer field is set only
+// when the corresponding flag was passed (non-empty / non-zero) so that
+// genuinely-unset flags remain NULL in the DB — matching the schema's
+// nullability and downstream `prism stats` / abtest queries which test for
+// IS NULL / IS NOT NULL explicitly.
+//
+// Exported test-side via the spawnInputsFromOptsForTest shim in
+// spawn_test.go so cmd/-level tests can assert the flag→column mapping
+// without spinning up a real tmux/sidecar.
+func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
+	si := db.SpawnInputs{
+		InstanceID: opts.InstanceID,
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	if opts.ProfileName != "" {
+		s := opts.ProfileName
+		si.ProfileName = &s
+	}
+	if opts.ModelFlag != "" {
+		s := opts.ModelFlag
+		si.ModelFlag = &s
+	}
+	if opts.VariantFlag != "" {
+		s := opts.VariantFlag
+		si.VariantFlag = &s
+	}
+	if opts.AgentFlag != "" {
+		s := opts.AgentFlag
+		si.AgentFlag = &s
+	}
+	if opts.HarnessFlag != "" {
+		s := opts.HarnessFlag
+		si.HarnessFlag = &s
+	}
+	if opts.IsolationFlag != "" {
+		s := opts.IsolationFlag
+		si.IsolationFlag = &s
+	}
+	si.HostModeFlag = opts.HostModeFlag
+	if opts.PRNumber != 0 {
+		n := opts.PRNumber
+		si.PRNumber = &n
+	}
+	if opts.BranchFlag != "" {
+		s := opts.BranchFlag
+		si.BranchFlag = &s
+	}
+	si.IgnoreConcurrencyCap = opts.IgnoreConcurrencyCap
+	if len(opts.ModelsByRole) > 0 {
+		if encoded, err := json.Marshal(opts.ModelsByRole); err == nil {
+			s := string(encoded)
+			si.ModelVariantOverrides = &s
+		}
+	}
+	if opts.SkillsManifestHash != "" {
+		s := opts.SkillsManifestHash
+		si.SkillsManifestHash = &s
+	}
+	if opts.PromptTemplateHash != "" {
+		s := opts.PromptTemplateHash
+		si.PromptTemplateHash = &s
+	}
+	if opts.AgentPromptHash != "" {
+		s := opts.AgentPromptHash
+		si.AgentPromptHash = &s
+	}
+	if opts.Prompt != "" {
+		s := opts.Prompt
+		si.PromptText = &s
+	}
+	if opts.PromptSource != "" {
+		s := opts.PromptSource
+		si.PromptSource = &s
+	}
+	if opts.AbtestPairID != "" {
+		s := opts.AbtestPairID
+		si.AbtestPairID = &s
+	}
+	return si
+}
+
+// SpawnInputsFromOpts is the test-only export of spawnInputsFromOpts. It lets
+// cmd/-level unit tests assert the flag-to-column mapping without spinning up
+// a real tmux/sidecar/DB stack — they build a SpawnOpts, call this, and
+// assert on the returned db.SpawnInputs.
+//
+// Not for production use: production code should go through SpawnSession,
+// which is the single chokepoint that writes the row.
+func SpawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
+	return spawnInputsFromOpts(opts)
 }

@@ -151,12 +151,17 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 	h, _ := harness.New(harnessName, "", nil, "", "")
 
 	spawnOpts := session.SpawnOpts{
-		SessionName:      sessionName,
-		Repo:             repo,
-		Worktree:         worktree,
-		AgentRole:        "investigate",
-		Prompt:           promptText,
-		PromptSource:     "cli-positional",
+		SessionName:  sessionName,
+		Repo:         repo,
+		Worktree:     worktree,
+		AgentRole:    "investigate",
+		Prompt:       promptText,
+		PromptSource: "cli-positional",
+		// spawn_inputs audit (#2087): record the agent role on the audit row
+		// so investigate spawns show up in `prism stats` group-by queries
+		// alongside `prism spawn` / `prism pr` rows.
+		AgentFlag:        "investigate",
+		HarnessFlag:      harnessName,
 		Layout:           session.LayoutAgentOnly,
 		IsolationMode:    string(isoMode),
 		PluginHostPath:   cfg.SidecarPluginPath,

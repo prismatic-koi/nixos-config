@@ -57,12 +57,12 @@ func TestSpawnSession_AgentOnly_SeedsRootAgentName(t *testing.T) {
 
 	const sessionName = "myrepo@branch~review-1-review-code"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-code",
-		Prompt:      "review this PR",
-		Layout:      LayoutAgentOnly,
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         "review this PR",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -116,13 +116,13 @@ func TestSpawnSession_AgentOnly_WritesGroupID(t *testing.T) {
 
 	const sessionName = "myrepo@branch~review-1-review-goal"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-goal",
-		Prompt:      "go",
-		Layout:      LayoutAgentOnly,
-		GroupID:     groupID,
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-goal",
+		Prompt:         "go",
+		Layout:         LayoutAgentOnly,
+		GroupID:        groupID,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -157,12 +157,12 @@ func TestSpawnSession_AgentOnly_CreatesTmuxSession(t *testing.T) {
 
 	const sessionName = "myrepo@branch~review-1-review-qa"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-qa",
-		Prompt:      "go",
-		Layout:      LayoutAgentOnly,
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-qa",
+		Prompt:         "go",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -202,8 +202,8 @@ func TestSpawnSession_NoAgentRole_LeavesRootAgentNameNull(t *testing.T) {
 		Repo:        "myrepo",
 		Worktree:    "/worktrees/myrepo-branch",
 		// AgentRole intentionally left empty.
-		Prompt: "go",
-		Layout: LayoutAgentOnly,
+		Prompt:         "go",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -242,12 +242,12 @@ func TestSpawnSession_AllocatePortFails_ReturnsError(t *testing.T) {
 
 	const sessionName = "myrepo@branch-alloc-fail"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-security",
-		Prompt:      "go",
-		Layout:      LayoutAgentOnly,
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-security",
+		Prompt:         "go",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -277,9 +277,9 @@ func TestSpawnSession_Validation_RequiresSessionName(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 
 	err := SpawnSession(d, SpawnOpts{
-		Worktree:  "/tmp",
-		AgentRole: "worker",
-		Layout:    LayoutAgentOnly,
+		Worktree:       "/tmp",
+		AgentRole:      "worker",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
@@ -295,9 +295,9 @@ func TestSpawnSession_Validation_RequiresWorktree(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 
 	err := SpawnSession(d, SpawnOpts{
-		SessionName: "myrepo@branch",
-		AgentRole:   "worker",
-		Layout:      LayoutAgentOnly,
+		SessionName:    "myrepo@branch",
+		AgentRole:      "worker",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
@@ -311,10 +311,10 @@ func TestSpawnSession_Validation_RequiresWorktree(t *testing.T) {
 // TestSpawnSession_Validation_RequiresDB verifies the argument guard.
 func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 	err := SpawnSession(nil, SpawnOpts{
-		SessionName: "myrepo@branch",
-		Worktree:    "/tmp",
-		AgentRole:   "worker",
-		Layout:      LayoutAgentOnly,
+		SessionName:    "myrepo@branch",
+		Worktree:       "/tmp",
+		AgentRole:      "worker",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
@@ -344,13 +344,13 @@ func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
 
 			sessionName := "myrepo@branch~review-1-review-code-" + mode
 			opts := SpawnOpts{
-				SessionName:   sessionName,
-				Repo:          "myrepo",
-				Worktree:      "/worktrees/myrepo-branch",
-				AgentRole:     "review-code",
-				Prompt:        "go",
-				Layout:        LayoutAgentOnly,
-				IsolationMode: mode,
+				SessionName:    sessionName,
+				Repo:           "myrepo",
+				Worktree:       "/worktrees/myrepo-branch",
+				AgentRole:      "review-code",
+				Prompt:         "go",
+				Layout:         LayoutAgentOnly,
+				IsolationMode:  mode,
 				PIExtensionDir: testPIExtensionDir,
 			}
 
@@ -394,13 +394,13 @@ func TestSpawnSession_AgentOnly_PromptFile_WithPrompt_Host(t *testing.T) {
 	const sessionName = "myrepo@branch~review-1-review-code"
 	const prompt = "review this PR"
 	opts := SpawnOpts{
-		SessionName:   sessionName,
-		Repo:          "myrepo",
-		Worktree:      "/worktrees/myrepo-branch",
-		AgentRole:     "review-code",
-		Prompt:        prompt,
-		Layout:        LayoutAgentOnly,
-		IsolationMode: "host",
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         prompt,
+		Layout:         LayoutAgentOnly,
+		IsolationMode:  "host",
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -600,8 +600,8 @@ func TestSpawnAgentPaneEnvVars(t *testing.T) {
 	})
 	t.Run("with prompt only (legacy)", func(t *testing.T) {
 		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "hello",
-	PIExtensionDir: testPIExtensionDir,
-})
+			PIExtensionDir: testPIExtensionDir,
+		})
 		if got == nil {
 			t.Fatal("got nil, want non-nil map")
 		}
@@ -611,8 +611,8 @@ func TestSpawnAgentPaneEnvVars(t *testing.T) {
 	})
 	t.Run("empty prompt", func(t *testing.T) {
 		got := spawnAgentPaneEnvVars(SpawnOpts{Prompt: "",
-	PIExtensionDir: testPIExtensionDir,
-})
+			PIExtensionDir: testPIExtensionDir,
+		})
 		if got != nil {
 			t.Errorf("got %v, want nil (an empty entry would override an inherited value)", got)
 		}
@@ -629,10 +629,10 @@ func TestSpawnSession_UnsupportedLayout_ReturnsError(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	err := SpawnSession(d, SpawnOpts{
-		SessionName: "myrepo@branch-bad-layout",
-		Worktree:    "/tmp",
-		AgentRole:   "worker",
-		Layout:      LayoutScratchpad, // not supported by SpawnSession,
+		SessionName:    "myrepo@branch-bad-layout",
+		Worktree:       "/tmp",
+		AgentRole:      "worker",
+		Layout:         LayoutScratchpad, // not supported by SpawnSession,
 		PIExtensionDir: testPIExtensionDir,
 	})
 	if err == nil {
@@ -685,13 +685,13 @@ func TestSpawnSession_NeedsPromptFile_AllModesAndLayouts(t *testing.T) {
 			sessionName := "myrepo@branch~review-1-review-code-" + strings.ReplaceAll(tc.name, "+", "-")
 
 			opts := SpawnOpts{
-				SessionName:   sessionName,
-				Repo:          "myrepo",
-				Worktree:      "/worktrees/myrepo",
-				AgentRole:     "review-code",
-				Prompt:        prompt,
-				Layout:        tc.layout,
-				IsolationMode: tc.isolationMode,
+				SessionName:    sessionName,
+				Repo:           "myrepo",
+				Worktree:       "/worktrees/myrepo",
+				AgentRole:      "review-code",
+				Prompt:         prompt,
+				Layout:         tc.layout,
+				IsolationMode:  tc.isolationMode,
 				PIExtensionDir: testPIExtensionDir,
 			}
 
@@ -904,5 +904,223 @@ func TestSpawnSession_EmptyPrompt_NonAgentLayouts_NotRejectedForEmptyPrompt(t *t
 				t.Errorf("SpawnSession with empty Prompt + %s returned a 'Prompt is required' error: %v — the layer-4 guard must fire only for LayoutFull/LayoutAgentOnly (issue #1891 AC5)", layout.name, err)
 			}
 		})
+	}
+}
+
+// TestSpawnSession_WritesSpawnInputs_AllFields is the end-to-end integration
+// test for the centralised spawn_inputs writer (issue #2087). It verifies
+// that SpawnSession, given a SpawnOpts populated with every audit-mirror
+// field, inserts a single spawn_inputs row keyed by the host-minted
+// instance_id and that every column lands with the expected value.
+//
+// This test exercises the writer path inside SpawnSession itself (rather than
+// the helper SpawnInputsFromOpts in isolation), so a regression that
+// silently drops the InsertSpawnInputs call — the failure mode that
+// motivated #2087 — would be caught here.
+func TestSpawnSession_WritesSpawnInputs_AllFields(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "prism-test@worker-spawn-inputs-end-to-end"
+	overrides := map[string]string{
+		"review-context": "google/gemini-2.5-pro",
+	}
+	opts := SpawnOpts{
+		SessionName:          sessionName,
+		Repo:                 "myrepo",
+		Worktree:             "/worktrees/myrepo-spawn-inputs",
+		AgentRole:            "worker",
+		Prompt:               "ship the audit row",
+		PromptSource:         "cli-positional",
+		PromptTemplateHash:   "tmpl-sha-e2e",
+		Layout:               LayoutAgentOnly,
+		IsolationMode:        "host",
+		HarnessName:          "pi",
+		PIExtensionDir:       testPIExtensionDir,
+		ProfileName:          "anthropic",
+		ModelFlag:            "anthropic/claude-opus-4-7",
+		VariantFlag:          "high",
+		AgentFlag:            "worker",
+		HarnessFlag:          "pi",
+		IsolationFlag:        "host",
+		HostModeFlag:         false,
+		PRNumber:             2087,
+		BranchFlag:           "prism-spawn-inputs-writer",
+		IgnoreConcurrencyCap: true,
+		ModelsByRole:         overrides,
+		SkillsManifestHash:   "skills-e2e",
+		AgentPromptHash:      "agent-e2e",
+		AbtestPairID:         "abtest-e2e",
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil || st.InstanceID == nil || *st.InstanceID == "" {
+		t.Fatal("CurrentStatus: missing instance_id after SpawnSession")
+	}
+
+	si, err := d.SpawnInputsByInstanceID(*st.InstanceID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if si == nil {
+		t.Fatal("spawn_inputs row missing — SpawnSession must write a row for every spawn (#2087)")
+	}
+
+	checkPtr := func(name string, got *string, want string) {
+		t.Helper()
+		if got == nil {
+			t.Errorf("spawn_inputs.%s: got nil, want %q", name, want)
+			return
+		}
+		if *got != want {
+			t.Errorf("spawn_inputs.%s: got %q, want %q", name, *got, want)
+		}
+	}
+	checkPtr("profile_name", si.ProfileName, "anthropic")
+	checkPtr("model_flag", si.ModelFlag, "anthropic/claude-opus-4-7")
+	checkPtr("variant_flag", si.VariantFlag, "high")
+	checkPtr("agent_flag", si.AgentFlag, "worker")
+	checkPtr("harness_flag", si.HarnessFlag, "pi")
+	checkPtr("isolation_flag", si.IsolationFlag, "host")
+	checkPtr("branch_flag", si.BranchFlag, "prism-spawn-inputs-writer")
+	checkPtr("skills_manifest_hash", si.SkillsManifestHash, "skills-e2e")
+	checkPtr("prompt_template_hash", si.PromptTemplateHash, "tmpl-sha-e2e")
+	checkPtr("agent_prompt_hash", si.AgentPromptHash, "agent-e2e")
+	checkPtr("prompt_text", si.PromptText, "ship the audit row")
+	checkPtr("prompt_source", si.PromptSource, "cli-positional")
+	checkPtr("abtest_pair_id", si.AbtestPairID, "abtest-e2e")
+
+	if si.PRNumber == nil || *si.PRNumber != 2087 {
+		t.Errorf("spawn_inputs.pr_number: got %v, want 2087", si.PRNumber)
+	}
+	if !si.IgnoreConcurrencyCap {
+		t.Error("spawn_inputs.ignore_concurrency_cap: got false, want true")
+	}
+	if si.HostModeFlag {
+		t.Error("spawn_inputs.host_mode_flag: got true, want false")
+	}
+	if si.CreatedAt == 0 {
+		t.Error("spawn_inputs.created_at: got 0, want non-zero")
+	}
+	if si.ModelVariantOverrides == nil || *si.ModelVariantOverrides == "" {
+		t.Error("spawn_inputs.model_variant_overrides: got empty, want JSON of ModelsByRole")
+	} else if !strings.Contains(*si.ModelVariantOverrides, "review-context") {
+		t.Errorf("spawn_inputs.model_variant_overrides: got %q, expected to contain %q",
+			*si.ModelVariantOverrides, "review-context")
+	}
+}
+
+// TestSpawnSession_WritesSpawnInputs_MinimalRow verifies the floor of the
+// AC contract for #2087: a SpawnSession invocation with only the required
+// inputs (no audit flags) still produces a spawn_inputs row keyed by
+// instance_id with created_at populated, so downstream JOINs see the row
+// instead of the pre-fix empty-table state.
+func TestSpawnSession_WritesSpawnInputs_MinimalRow(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "prism-test@worker-spawn-inputs-minimal"
+	opts := SpawnOpts{
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-minimal",
+		AgentRole:      "worker",
+		Prompt:         "minimal",
+		Layout:         LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil || st == nil || st.InstanceID == nil {
+		t.Fatalf("CurrentStatus: %v / %v", err, st)
+	}
+
+	si, err := d.SpawnInputsByInstanceID(*st.InstanceID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if si == nil {
+		t.Fatal("spawn_inputs row missing — minimal spawn must still produce an audit row (#2087)")
+	}
+	if si.InstanceID != *st.InstanceID {
+		t.Errorf("spawn_inputs.instance_id = %q, want %q", si.InstanceID, *st.InstanceID)
+	}
+	if si.CreatedAt == 0 {
+		t.Error("spawn_inputs.created_at: got 0, want non-zero")
+	}
+	if si.PromptText == nil || *si.PromptText != "minimal" {
+		t.Errorf("spawn_inputs.prompt_text: got %v, want %q", si.PromptText, "minimal")
+	}
+}
+
+// TestSpawnSession_WritesSpawnInputs_AbtestPairIDShared verifies that two
+// SpawnSession calls carrying the same AbtestPairID land two rows that
+// share the abtest_pair_id column, matching the contract of `prism spawn
+// --abtest` (cmd/spawn.go's runAbtestSpawn mints one pairID and passes it
+// to both legs).
+func TestSpawnSession_WritesSpawnInputs_AbtestPairIDShared(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	pairID := "abtest-pair-shared-uuid"
+
+	legs := []struct{ name, profile string }{
+		{"prism-test@worker-abtest-leg-a", "profileA"},
+		{"prism-test@worker-abtest-leg-b", "profileB"},
+	}
+	instanceIDs := make([]string, len(legs))
+
+	for i, leg := range legs {
+		opts := SpawnOpts{
+			SessionName:    leg.name,
+			Repo:           "myrepo",
+			Worktree:       "/worktrees/myrepo-" + leg.profile,
+			AgentRole:      "worker",
+			Prompt:         "abtest leg",
+			Layout:         LayoutAgentOnly,
+			PIExtensionDir: testPIExtensionDir,
+			ProfileName:    leg.profile,
+			AbtestPairID:   pairID,
+		}
+		if err := SpawnSession(d, opts); err != nil {
+			t.Fatalf("SpawnSession leg %d (%q): %v", i, leg.name, err)
+		}
+		st, _ := d.CurrentStatus(leg.name)
+		if st == nil || st.InstanceID == nil {
+			t.Fatalf("leg %d: missing instance_id after SpawnSession", i)
+		}
+		instanceIDs[i] = *st.InstanceID
+	}
+
+	for i, iid := range instanceIDs {
+		si, err := d.SpawnInputsByInstanceID(iid)
+		if err != nil {
+			t.Fatalf("SpawnInputsByInstanceID leg %d: %v", i, err)
+		}
+		if si == nil {
+			t.Fatalf("leg %d: missing spawn_inputs row", i)
+		}
+		if si.AbtestPairID == nil || *si.AbtestPairID != pairID {
+			t.Errorf("leg %d: abtest_pair_id = %v, want %q", i, si.AbtestPairID, pairID)
+		}
+		if si.ProfileName == nil || *si.ProfileName != legs[i].profile {
+			t.Errorf("leg %d: profile_name = %v, want %q", i, si.ProfileName, legs[i].profile)
+		}
 	}
 }
