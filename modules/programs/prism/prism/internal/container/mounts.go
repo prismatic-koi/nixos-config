@@ -186,7 +186,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// inside the sandbox matches the host path.
 		//
 		// Parity with sandbox-exec's staging-HOME entry at
-		// sandbox_exec_home.go:334-340. See issue #2127.
+		// sandbox_exec_home.go:309-316. See issue #2127.
 		{
 			HostPath:          filepath.Join(hostHome, ".npm"),
 			SandboxPath:       filepath.Join(sandboxHomeDir, ".npm"),
