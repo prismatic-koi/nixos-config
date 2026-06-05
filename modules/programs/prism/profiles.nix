@@ -191,11 +191,9 @@
 
           quickProfiles = {
             pr = {
-              model = "google/gemini-3.1-flash-lite";
-              providerOrder = [
-                "google"
-                "google-vertex"
-              ];
+              # prism quick pr invokes `pi --print` (anthropic-oauth route).
+              # See modules/programs/prism/prism/internal/quick/pr.go (#2118).
+              model = "anthropic/claude-sonnet-4-6";
             };
           };
 

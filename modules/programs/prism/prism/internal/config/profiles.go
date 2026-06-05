@@ -90,13 +90,17 @@ type ContainerResources struct {
 	PidsLimit int `json:"pidsLimit,omitempty"`
 }
 
-// QuickProfile holds the model and provider routing config for a prism quick
-// subcommand (e.g. "pr").
+// QuickProfile holds the model config for a prism quick subcommand (e.g. "pr").
+//
+// As of #2118, prism quick pr invokes `pi --print` instead of OpenRouter
+// over HTTP; Model is now a pi model specifier (e.g.
+// "anthropic/claude-sonnet-4-6") and the legacy ProviderOrder field is
+// dropped. Unknown fields in profiles.json are ignored by Go's JSON
+// decoder, so loading a profiles.json that still carries a `providerOrder`
+// key (e.g. an older system rebuild) is silently tolerated.
 type QuickProfile struct {
-	// Model is the OpenRouter model slug (e.g. "google/gemini-3.1-flash-lite-preview").
+	// Model is the pi model specifier passed to `pi --model`.
 	Model string `json:"model"`
-	// ProviderOrder is the ordered list of OpenRouter provider slugs to try.
-	ProviderOrder []string `json:"providerOrder,omitempty"`
 }
 
 // profilesFilePath returns the path to profiles.json.
