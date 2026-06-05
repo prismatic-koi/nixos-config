@@ -389,12 +389,6 @@ type Manager struct {
 	// allowed_signers temp file. buildRunArgs uses this to gate the bind-mount
 	// so that bwrap is never given a source path that doesn't exist on disk.
 	allowedSignersReady bool
-	// claudeCredentialsReady is true when writeClaudeCredentials successfully
-	// extracted Claude credentials from the macOS Keychain and wrote them to
-	// a temp file. buildRunArgs uses this to gate the bind-mount so that
-	// bwrap is never given a source path that doesn't exist on disk.
-	// This field is only ever true on Darwin.
-	claudeCredentialsReady bool
 
 	// piBwrapErr holds any error produced by appendPIBwrapMounts during
 	// BuildArgs. BuildArgs cannot return an error, so the error is stored
@@ -513,16 +507,6 @@ func WriteHarnessConfig(sessionName, content string) error {
 		return fmt.Errorf("container: write harness config for session %q: %w", sessionName, err)
 	}
 	return nil
-}
-
-// claudeCredentialsFilePath returns the host path for the temporary Claude
-// credentials file written before container start (Darwin only). On Darwin,
-// Claude Code stores OAuth credentials in the macOS Keychain rather than
-// ~/.claude/.credentials.json. We extract the token and write it to a temp
-// file so it can be bind-mounted at /root/.claude/.credentials.json inside
-// the container where opencode-claude-auth can read it.
-func (m *Manager) claudeCredentialsFilePath() string {
-	return m.tempPath("claude-creds", "")
 }
 
 // writeSshConfig generates a minimal ~/.ssh/config for the sandbox and writes
