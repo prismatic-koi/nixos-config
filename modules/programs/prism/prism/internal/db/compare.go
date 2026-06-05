@@ -52,9 +52,18 @@ type CompareRunData struct {
 // the view=detail precedent, which returns only *Session and never the spawn
 // prompt (issue #2098, round-1 security review).
 type CompareInputs struct {
-	ProfileName   *string `json:"profile_name"`
-	HarnessFlag   *string `json:"harness_flag"`
+	ProfileName *string `json:"profile_name"`
+	HarnessFlag *string `json:"harness_flag"`
+	// IsolationFlag is the raw --isolation CLI value (nil = flag omitted).
+	// Preserved as the audit trail; consumers that want the actual mode the
+	// session ran under should read IsolationMode instead. Issue #2105.
 	IsolationFlag *string `json:"isolation_flag"`
+	// IsolationMode is the resolved effective isolation mode the session
+	// actually ran under (podman/bwrap/sandbox-exec/host), captured at
+	// spawn time post profile/config/Nix-default resolution. Always
+	// populated for sessions spawned post-#2105; nil only on pre-#2105 rows
+	// (the renderer falls back to IsolationFlag for those).
+	IsolationMode *string `json:"isolation_mode"`
 	AgentFlag     *string `json:"agent_flag"`
 	BranchFlag    *string `json:"branch_flag"`
 	AbtestPairID  *string `json:"abtest_pair_id"`
@@ -175,6 +184,7 @@ func (d *DB) AssembleCompareRun(sess *Session) CompareRunData {
 			ProfileName:   inputs.ProfileName,
 			HarnessFlag:   inputs.HarnessFlag,
 			IsolationFlag: inputs.IsolationFlag,
+			IsolationMode: inputs.IsolationMode,
 			AgentFlag:     inputs.AgentFlag,
 			BranchFlag:    inputs.BranchFlag,
 			AbtestPairID:  inputs.AbtestPairID,

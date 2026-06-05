@@ -263,6 +263,7 @@ var prCmd = &cobra.Command{
 			agentFlag:            agentFlag,
 			harnessFlag:          effectiveHarness,
 			isolationFlag:        isolationFlag,
+			isolationMode:        string(isoMode),
 			prNumber:             prNumber,
 			ignoreConcurrencyCap: ignoreConcurrencyCapFlag,
 			modelsByRole:         modelsByRole,
@@ -279,15 +280,20 @@ var prCmd = &cobra.Command{
 // ensureAndSwitch → session.Create), and we need to mirror SpawnSession's
 // column mapping without duplicating the SpawnOpts struct.
 type prSpawnInputsArgs struct {
-	worktreePath         string
-	bareRoot             string
-	agentRole            string
-	profileName          string
-	modelFlag            string
-	variantFlag          string
-	agentFlag            string
-	harnessFlag          string
-	isolationFlag        string
+	worktreePath  string
+	bareRoot      string
+	agentRole     string
+	profileName   string
+	modelFlag     string
+	variantFlag   string
+	agentFlag     string
+	harnessFlag   string
+	isolationFlag string
+	// isolationMode is the resolved effective isolation mode for the
+	// session — always populated (#2105) so spawn_inputs.isolation_mode
+	// reflects what the session actually ran under, even when --isolation
+	// was omitted and isolationFlag is therefore "".
+	isolationMode        string
 	prNumber             string
 	ignoreConcurrencyCap bool
 	modelsByRole         map[string]string
@@ -327,9 +333,22 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 		agentPromptHash = ""
 	}
 
+	si := buildPRSpawnInputs(a, *st.InstanceID, skillsManifestHash, agentPromptHash, time.Now().UnixMilli())
+	if err := d.InsertSpawnInputs(si); err != nil {
+		proglog.Warnf("[prism pr] warning: could not write spawn_inputs: %v\n", err)
+	}
+}
+
+// buildPRSpawnInputs builds the db.SpawnInputs row written by the `prism pr`
+// path from its audit-field args. Factored out of writeSpawnInputsForPR so
+// the flag-to-column mapping is testable without spinning up tmux / git /
+// the cobra command. Mirrors spawnInputsFromOpts in internal/session/spawn.go
+// — the two writers must stay in sync because both front doors share the
+// same spawn_inputs schema. Issue #2105.
+func buildPRSpawnInputs(a prSpawnInputsArgs, instanceID, skillsManifestHash, agentPromptHash string, createdAt int64) db.SpawnInputs {
 	si := db.SpawnInputs{
-		InstanceID: *st.InstanceID,
-		CreatedAt:  time.Now().UnixMilli(),
+		InstanceID: instanceID,
+		CreatedAt:  createdAt,
 	}
 	if a.profileName != "" {
 		si.ProfileName = &a.profileName
@@ -348,6 +367,14 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 	}
 	if a.isolationFlag != "" {
 		si.IsolationFlag = &a.isolationFlag
+	}
+	// isolationMode mirrors spawn_inputs.isolation_mode — the resolved
+	// effective mode the session ran under, distinct from the raw
+	// --isolation flag value. Always populated post-#2105 so the
+	// `prism stats compare` Spawn Inputs block surfaces a meaningful value
+	// even when --isolation was omitted (the common case).
+	if a.isolationMode != "" {
+		si.IsolationMode = &a.isolationMode
 	}
 	if a.prNumber != "" {
 		if n, convErr := strconv.Atoi(a.prNumber); convErr == nil {
@@ -373,10 +400,7 @@ func writeSpawnInputsForPR(cmd *cobra.Command, a prSpawnInputsArgs) {
 	if a.promptSource != "" {
 		si.PromptSource = &a.promptSource
 	}
-
-	if err := d.InsertSpawnInputs(si); err != nil {
-		proglog.Warnf("[prism pr] warning: could not write spawn_inputs: %v\n", err)
-	}
+	return si
 }
 
 func init() {

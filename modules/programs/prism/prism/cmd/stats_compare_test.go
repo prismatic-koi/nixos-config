@@ -390,6 +390,87 @@ func TestInputsValue_PullsFromSpawnInputs(t *testing.T) {
 	}
 }
 
+// TestInputsValue_IsolationModePreferredOverFlag is the issue #2105
+// renderer AC. When a row has BOTH isolation_mode and isolation_flag set
+// (the new post-fix shape), the renderer must surface isolation_mode —
+// the resolved effective mode is what the operator wants to see for
+// A/B leg comparisons. isolation_flag is the raw audit trail.
+func TestInputsValue_IsolationModePreferredOverFlag(t *testing.T) {
+	d := openStatsTestDB(t)
+	startedAt := time.Now().Add(-time.Minute)
+
+	const sessionName = "repo@inputs-iso-mode-preferred"
+	inputs := &db.SpawnInputs{
+		ProfileName:   strPtr("anthropic"),
+		HarnessFlag:   strPtr("pi"),
+		IsolationFlag: strPtr("bwrap"),
+		IsolationMode: strPtr("sandbox-exec"),
+		AgentFlag:     strPtr("worker"),
+	}
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
+
+	sess, _ := d.SessionByInstanceID(iid)
+	runs := loadCompareRuns(d, []*db.Session{sess})
+
+	if got := inputsValue("isolation_mode", runs[0]); got != "sandbox-exec" {
+		t.Errorf("inputsValue(isolation_mode) = %q, want %q (resolved mode wins over raw flag)",
+			got, "sandbox-exec")
+	}
+}
+
+// TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow is the
+// issue #2105 over-broad-fix guard. Pre-#2105 rows have isolation_mode
+// NULL (the column did not yet exist or the writer did not yet populate
+// it) but isolation_flag set to the resolved mode (the old shim). The
+// renderer must surface the legacy isolation_flag value gracefully
+// rather than "—" — historical sessions should still display sensibly
+// in stats compare output.
+func TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow(t *testing.T) {
+	d := openStatsTestDB(t)
+	startedAt := time.Now().Add(-time.Minute)
+
+	const sessionName = "repo@inputs-iso-mode-legacy"
+	inputs := &db.SpawnInputs{
+		ProfileName:   strPtr("anthropic"),
+		HarnessFlag:   strPtr("pi"),
+		IsolationFlag: strPtr("bwrap"),
+		// IsolationMode deliberately nil — simulating a pre-#2105 row.
+		AgentFlag: strPtr("worker"),
+	}
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
+
+	sess, _ := d.SessionByInstanceID(iid)
+	runs := loadCompareRuns(d, []*db.Session{sess})
+
+	if got := inputsValue("isolation_mode", runs[0]); got != "bwrap" {
+		t.Errorf("inputsValue(isolation_mode) on legacy row = %q, want %q (fallback to isolation_flag)",
+			got, "bwrap")
+	}
+}
+
+// TestInputsValue_IsolationModeAbsentRendersDash guards the empty-row
+// branch: when neither isolation_mode nor isolation_flag is set (e.g. a
+// pre-spawn_inputs row from a test fixture), the renderer must return
+// "—" rather than crash on a nil pointer dereference.
+func TestInputsValue_IsolationModeAbsentRendersDash(t *testing.T) {
+	d := openStatsTestDB(t)
+	startedAt := time.Now().Add(-time.Minute)
+
+	const sessionName = "repo@inputs-iso-mode-absent"
+	inputs := &db.SpawnInputs{
+		ProfileName: strPtr("anthropic"),
+		// Both IsolationFlag and IsolationMode deliberately nil.
+	}
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
+
+	sess, _ := d.SessionByInstanceID(iid)
+	runs := loadCompareRuns(d, []*db.Session{sess})
+
+	if got := inputsValue("isolation_mode", runs[0]); got != "—" {
+		t.Errorf("inputsValue(isolation_mode) on empty row = %q, want %q", got, "—")
+	}
+}
+
 // TestInputsValue_PartialRowSurfacesWhatExists guards the Layer 2 AC: a row
 // with only profile_name set (the #2092/#2093 case) must surface that field
 // rather than treating the whole row as absent.
