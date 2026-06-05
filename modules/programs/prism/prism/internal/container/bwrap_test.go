@@ -100,6 +100,7 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	dirs := []string{
 		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
+		filepath.Join(fakeHome, ".npm"),
 		filepath.Join(fakeHome, ".cache", "nix"),
 	}
 	for _, d := range dirs {
@@ -1398,6 +1399,61 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 
 	if hasBind(args, mcpAuthDir) {
 		t.Errorf("missing ~/.mcp-auth should be omitted but found as --bind in args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_NpmCacheBound pins the ~/.npm RW bind-mount when the
+// host directory exists. npx (used by mcp-remote and similar npx-fetched
+// tools) caches downloaded packages under ~/.npm/_npx/; without this mount
+// the sandbox cache-misses and re-downloads, which then fails under the
+// sandbox's network policy. Parity with sandbox-exec's staging-HOME entry at
+// sandbox_exec_home.go:334-340. See issue #2127.
+func TestBwrapBuildArgs_NpmCacheBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	npmDir := filepath.Join(fakeHome, ".npm")
+	if !hasBind(args, npmDir) {
+		t.Errorf("~/.npm %q not found as --bind SRC SRC in args: %v", npmDir, args)
+	}
+	// And it must NOT be read-only — npx writes to its cache on first use.
+	if hasROBind(args, npmDir) {
+		t.Errorf("~/.npm %q must be RW (--bind), not RO (--ro-bind): %v", npmDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_MissingNpmCacheOmitted pins the conditional-on-existence
+// semantics: when ~/.npm does not exist on the host, the mount is omitted
+// silently and the sandbox starts cleanly. Mirrors
+// TestBwrapBuildArgs_MissingMcpAuthOmitted. See issue #2127.
+func TestBwrapBuildArgs_MissingNpmCacheOmitted(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	npmDir := filepath.Join(fakeHome, ".npm")
+	if err := os.RemoveAll(npmDir); err != nil {
+		t.Fatalf("RemoveAll npm: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, npmDir) {
+		t.Errorf("missing ~/.npm should be omitted but found as --bind in args: %v", args)
+	}
+	if hasROBind(args, npmDir) {
+		t.Errorf("missing ~/.npm should be omitted but found as --ro-bind in args: %v", args)
 	}
 }
 

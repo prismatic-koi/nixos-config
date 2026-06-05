@@ -173,6 +173,26 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			OptionalIfMissing: true,
 		},
 
+		// ── ~/.npm (RW, conditional) ─────────────────────────────────────
+		// npx caches downloaded packages (e.g. mcp-remote) under
+		// ~/.npm/_npx/. Without this mount, an npx-fetched tool inside
+		// the sandbox cannot find its cache and attempts to re-download —
+		// which then fails under the sandbox's network restrictions.
+		//
+		// Read-write so npx can populate the cache on first use. Mounted
+		// only when the directory exists on the host — hosts that have
+		// never run npm/npx are unaffected. Dst==Src under bwrap (where
+		// sandboxHomeDir == hostHome) so the canonical $HOME/.npm path
+		// inside the sandbox matches the host path.
+		//
+		// Parity with sandbox-exec's staging-HOME entry at
+		// sandbox_exec_home.go:334-340. See issue #2127.
+		{
+			HostPath:          filepath.Join(hostHome, ".npm"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".npm"),
+			OptionalIfMissing: true,
+		},
+
 		// ── ~/.cache/nix (RW) ────────────────────────────────────────────
 		// Pre-populated nix flake input cache. Read-write because nix
 		// writes to its SQLite databases during evaluation.
