@@ -42,15 +42,27 @@ agent-level, and per-axis aggregation metrics.
 Each argument is a session name, a full 36-character instance_id, or an
 unambiguous instance_id prefix. You may mix session names and instance IDs.
 
-Output is a formatted table by default. Use --format json to emit the
-machine-readable contract format or --format csv for spreadsheet import.
+Output is a formatted table by default. Use --json (preferred) or the
+equivalent --format json to emit the machine-readable contract format, or
+--format csv for spreadsheet import. --json and --format json are
+byte-identical aliases on the success path; on the error path both emit a
+single-line JSON object {"error":"<message>"} to stderr and exit non-zero.
 
 Examples:
   prism stats compare run-A run-B
   prism stats compare --diff-only run-A run-B run-C
-  prism stats compare --format json run-A run-B | jq .`,
+  prism stats compare --json run-A run-B | jq .`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: runStatsCompare,
+	// SilenceUsage / SilenceErrors keep the JSON error contract clean:
+	// on a bad ID we emit a single-line `{"error":"..."}` envelope to
+	// stderr (see runStatsCompare) and let main.go drive the non-zero
+	// exit code. Cobra's default behaviour would dump the usage block
+	// and a duplicate "Error: ..." line, both of which violate the
+	// documented `--json` output contract for `prism stats compare`
+	// (issue #2099 Bug 3).
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 var abtestCmd = &cobra.Command{
@@ -61,26 +73,68 @@ resolves all group members automatically.
 
 Example:
   prism stats abtest <group_id>`,
-	Args: cobra.ExactArgs(1),
-	RunE: runStatsAbtest,
+	Args:          cobra.ExactArgs(1),
+	RunE:          runStatsAbtest,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 func init() {
 	for _, cmd := range []*cobra.Command{compareCmd, abtestCmd} {
 		cmd.Flags().StringSlice("axes", nil, "Comma-separated axes to display (default: all). Names: end_state, duration_ms, interrupted_count, compaction_count, error_event_count, permission_ask_count, permission_denied_count, doom_loop_count, pr_number, pr_merged_at, review_verdict, review_pass_count, review_fail_count, tokens_input, tokens_output, tokens_cache_read, tokens_cache_write, cost_usd, tool_call, tool_error, msg_assistant, time_to_first_event, time_to_finished")
-		cmd.Flags().String("format", "table", "Output format: table, json, csv")
+		cmd.Flags().String("format", "table", "Output format: table, json, csv. --format json is equivalent to the top-level --json flag.")
 		cmd.Flags().Bool("diff-only", false, "Hide rows where every run has the same value")
 		cmd.Flags().String("sort", "", "Sort columns by this axis value descending (reserved; renderer details deferred per C3 §6.5)")
 		cmd.Flags().Bool("include-inputs", false, "Prepend spawn_inputs block (default: on for 2-run, off for 3+)")
 		cmd.Flags().Bool("include-rubric", false, "Include rubric_* columns (hidden by default)")
+		// Top-level `--json` flag honours the prism-wide convention that
+		// every list/lookup subcommand accepts `--json` (issue #2099 Bug 2).
+		// It is byte-equivalent to `--format json` on stdout for the success
+		// path; on the error path both surfaces emit `{"error":"..."}` on
+		// stderr per the prism `--json` contract (issue #2099 Bug 3).
+		cmd.Flags().Bool("json", false, "Emit a single JSON document to stdout (alias for --format json). On error, emits {\"error\":\"...\"} to stderr.")
 	}
 	statsCmd.AddCommand(compareCmd)
 	statsCmd.AddCommand(abtestCmd)
 }
 
+// jsonOutputRequested reports whether the caller asked for the JSON
+// output contract via either the top-level `--json` flag (issue #2099
+// Bug 2) or the legacy `--format json`. The two surfaces are equivalent
+// — see compareCmd.Long for the documented contract.
+func jsonOutputRequested(cmd *cobra.Command) bool {
+	if j, _ := cmd.Flags().GetBool("json"); j {
+		return true
+	}
+	if f, _ := cmd.Flags().GetString("format"); f == "json" {
+		return true
+	}
+	return false
+}
+
+// reportCompareError implements the JSON-or-passthrough error contract
+// shared by runStatsCompare and runStatsAbtest. When the caller asked for
+// JSON output (via --json or --format json), the error is rendered as a
+// single-line JSON envelope on stderr and a quietExitErr is returned so
+// main does not double-print. Otherwise the original error is returned
+// unchanged.
+func reportCompareError(cmd *cobra.Command, err error) error {
+	if err == nil {
+		return nil
+	}
+	if jsonOutputRequested(cmd) {
+		return emitJSONErrorEnvelope(err)
+	}
+	return err
+}
+
 // ---------- runner functions ----------
 
 func runStatsCompare(cmd *cobra.Command, args []string) error {
+	return reportCompareError(cmd, runStatsCompareInner(cmd, args))
+}
+
+func runStatsCompareInner(cmd *cobra.Command, args []string) error {
 	// PRISM_HOST_API proxy dispatch: inside a sandbox the local shadow DB does
 	// not carry the host's data, so the resolution + aggregation must run on the
 	// host. The sidecar returns the assembled per-run data and the rendering
@@ -114,6 +168,10 @@ func runStatsCompare(cmd *cobra.Command, args []string) error {
 }
 
 func runStatsAbtest(cmd *cobra.Command, args []string) error {
+	return reportCompareError(cmd, runStatsAbtestInner(cmd, args))
+}
+
+func runStatsAbtestInner(cmd *cobra.Command, args []string) error {
 	groupID := args[0]
 
 	// PRISM_HOST_API proxy dispatch (issue #2098): same contract as compare —
@@ -242,6 +300,15 @@ func runComparison(cmd *cobra.Command, d *db.DB, sessions []*db.Session) error {
 // none of them can silently degrade on the proxy path.
 func renderComparison(cmd *cobra.Command, runs []compareRun) error {
 	format, _ := cmd.Flags().GetString("format")
+	// The top-level `--json` flag (issue #2099 Bug 2) is an alias for
+	// `--format json`. Both surfaces must produce byte-identical stdout,
+	// so collapse them to the same renderer dispatch here. If both are
+	// set with conflicting values (e.g. `--json --format csv`), --json
+	// wins — it is the documented prism-wide convention and the more
+	// explicit signal.
+	if j, _ := cmd.Flags().GetBool("json"); j {
+		format = "json"
+	}
 	diffOnly, _ := cmd.Flags().GetBool("diff-only")
 	includeRubric, _ := cmd.Flags().GetBool("include-rubric")
 	axesFlag, _ := cmd.Flags().GetStringSlice("axes")
@@ -616,13 +683,45 @@ func buildAxisRows(axes []string, runs []compareRun, diffOnly bool) []axisRow {
 }
 
 // ---------- table renderer ----------
+//
+// Issue #2099 Bug 1 — the previous renderer used `fmt.Sprintf("%-*s", wLabel,
+// styleLabel.Render(row.Name+":"))` which mixes byte-count padding with ANSI
+// escape sequences from lipgloss. Escape codes contribute bytes but zero
+// visible width, so the visible column anchor drifted by (raw_bytes - visible)
+// on every row, breaking vertical alignment between value cells and the
+// header row's run-A / run-B / Δ positions.
+//
+// The new renderer:
+//   - assembles every section (Session, Spawn Inputs, Process-level, ...)
+//     into a flat list of (section-title, rows[]) entries up front,
+//   - performs a single pass over the full dataset to compute the label
+//     column width and per-run value column widths from the actual data
+//     (rather than guessing fixed constants),
+//   - pads with `padRightVisible`, which measures visible width via
+//     `lipgloss.Width` so styled labels and unstyled values share the
+//     same column anchors,
+//   - applies `truncateStr` per column using the column's measured width,
+//     so a long value (e.g. a multi-line PR title or a full instance_id)
+//     stays inside its own column instead of pushing later columns right.
+
+// compareTableSection groups one rendered block of the compare table. The
+// header is fully-rendered text ("Session", "Process-level outcomes:", "").
+// emptyMsg, when non-empty, is printed in place of rows for the Spawn Inputs
+// no-data fallback. showDelta is true only for the outcome / aggregation
+// sections in a 2-run comparison.
+type compareTableSection struct {
+	title    string
+	suffix   string // ":" for outcome sections, empty for the Session block
+	rows     []axisRow
+	emptyMsg string
+	showDelta bool
+}
 
 func renderCompareTable(runs []compareRun, axes []string, includeInputs, includeRubric, diffOnly bool) error {
 	styleHeader := lipgloss.NewStyle().Bold(true)
 	styleLabel := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
 
-	// Effective axes.
 	effectiveAxes := axes
 	if includeRubric {
 		effectiveAxes = append(effectiveAxes, rubricAxes...)
@@ -630,92 +729,213 @@ func renderCompareTable(runs []compareRun, axes []string, includeInputs, include
 
 	isPairwise := len(runs) == 2
 
-	// Column widths.
-	const wLabel = 28
-	wVal := 26
+	// --- Build sections ------------------------------------------------------
+	var sections []compareTableSection
 
-	// Header row: axis label + run labels.
-	headerCols := fmt.Sprintf("%-*s", wLabel, "")
-	for _, r := range runs {
-		headerCols += fmt.Sprintf("  %-*s", wVal, r.Label)
-	}
-	if isPairwise {
-		headerCols += fmt.Sprintf("  %s", "Δ")
-	}
-	fmt.Println(styleHeader.Render(headerCols))
-	fmt.Println(styleDim.Render(fmt.Sprintf("%-*s", wLabel, "") +
-		strings.Repeat("  "+strings.Repeat("─", wVal), len(runs))))
+	// Session block — always shown, no Δ column.
+	sections = append(sections, compareTableSection{
+		title: "Session",
+		rows: []axisRow{
+			{Name: "instance_id", Values: valsFromRuns(runs, func(r compareRun) string { return r.Session.InstanceID })},
+			{Name: "session_name", Values: valsFromRuns(runs, func(r compareRun) string { return r.Session.SessionName })},
+			{Name: "started_at", Values: valsFromRuns(runs, func(r compareRun) string { return r.Session.StartedAt.Format("2006-01-02 15:04:05") })},
+		},
+	})
 
-	// Session metadata block.
-	fmt.Println()
-	fmt.Println(styleHeader.Render("Session"))
-	for _, row := range []struct {
-		label string
-		fn    func(compareRun) string
-	}{
-		{"instance_id", func(r compareRun) string { return r.Session.InstanceID }},
-		{"session_name", func(r compareRun) string { return r.Session.SessionName }},
-		{"started_at", func(r compareRun) string { return r.Session.StartedAt.Format("2006-01-02 15:04:05") }},
-	} {
-		line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.label+":"))
-		for _, r := range runs {
-			v := truncateStr(row.fn(r), wVal)
-			line += fmt.Sprintf("  %-*s", wVal, v)
-		}
-		fmt.Println(line)
-	}
-
-	// Spawn inputs block: render the actual values written at spawn time by
-	// SpawnSession (#2087) and the `prism pr` writer. The renderer reads
-	// profile_name, isolation, harness, branch, agent_role, and the abtest
-	// pair id. Partial data is rendered as-is — missing fields collapse to
-	// “—” rather than treating the row as absent (issue #2102, Layer 2).
+	// Spawn Inputs block — optional, no Δ column.
 	if includeInputs {
-		fmt.Println()
-		fmt.Println(styleHeader.Render("Spawn Inputs"))
+		inputsSection := compareTableSection{title: "Spawn Inputs"}
 		if !anyInputsPresent(runs) {
-			// Best-effort placeholder for sessions that pre-date the
-			// spawn_inputs writer (#2087). The old “C.1” placeholder is
-			// gone — the writer is live for every front door, so the only
-			// reason a row is missing today is that the session is from
-			// before #2087 merged.
-			fmt.Println(styleDim.Render("  (no spawn_inputs rows for the runs being compared)"))
+			inputsSection.emptyMsg = "  (no spawn_inputs rows for the runs being compared)"
 		} else {
-			for _, row := range inputsAxisRows(runs, diffOnly) {
-				line := fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
-				for _, v := range row.Values {
-					line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
-				}
-				fmt.Println(line)
-			}
+			inputsSection.rows = inputsAxisRows(runs, diffOnly)
 		}
+		sections = append(sections, inputsSection)
 	}
 
-	// Section: process-level.
+	// Outcome sections — deltas only meaningful for pairwise.
 	processAxes := []string{
 		"end_state", "duration_ms", "interrupted_count", "compaction_count",
 		"error_event_count", "permission_ask_count", "permission_denied_count", "doom_loop_count",
 	}
-	renderSection(styleHeader, styleLabel, styleDim, "Process-level outcomes", processAxes, effectiveAxes, runs, wLabel, wVal, isPairwise, diffOnly)
-
-	// Section: agent-level.
 	agentAxes := []string{
 		"pr_number", "pr_merged_at", "review_verdict", "review_pass_count", "review_fail_count",
 	}
-	renderSection(styleHeader, styleLabel, styleDim, "Agent-level outcomes", agentAxes, effectiveAxes, runs, wLabel, wVal, isPairwise, diffOnly)
-
-	// Section: per-axis aggregations.
 	aggregateAxes := []string{
 		"tokens_input", "tokens_output", "tokens_cache_read", "tokens_cache_write",
 		"cost_usd", "tool_call", "tool_error", "msg_assistant",
 		"time_to_first_event", "time_to_finished",
 	}
-	renderSection(styleHeader, styleLabel, styleDim, "Per-axis aggregations", aggregateAxes, effectiveAxes, runs, wLabel, wVal, isPairwise, diffOnly)
+	wantSet := make(map[string]bool, len(effectiveAxes))
+	for _, a := range effectiveAxes {
+		wantSet[a] = true
+	}
+	filterRequested := func(axes []string) []string {
+		var out []string
+		for _, a := range axes {
+			if wantSet[a] {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
 
-	// Section: rubric.
+	appendOutcomeSection := func(title string, axes []string) {
+		filtered := filterRequested(axes)
+		if len(filtered) == 0 {
+			return
+		}
+		rows := buildAxisRows(filtered, runs, diffOnly)
+		if len(rows) == 0 {
+			return
+		}
+		sections = append(sections, compareTableSection{
+			title:     title,
+			suffix:    ":",
+			rows:      rows,
+			showDelta: isPairwise,
+		})
+	}
+	appendOutcomeSection("Process-level outcomes", processAxes)
+	appendOutcomeSection("Agent-level outcomes", agentAxes)
+	appendOutcomeSection("Per-axis aggregations", aggregateAxes)
 	if includeRubric {
-		renderSection(styleHeader, styleLabel, styleDim, "Rubric-level outcomes", rubricAxes, effectiveAxes, runs, wLabel, wVal, isPairwise, diffOnly)
-	} else {
+		appendOutcomeSection("Rubric-level outcomes", rubricAxes)
+	}
+
+	// --- Single-pass width calculation across ALL rows ----------------------
+	//
+	// labelW is the max axis-name length plus the trailing ":".
+	// valW[i] is the max visible width of any value in column i, including
+	// run header labels and any "[MIN]" / "[MAX]" annotation that will be
+	// appended in the 3+ run case. We use lipgloss.Width so that styled
+	// strings contribute their *visible* width, not their raw byte length.
+	labelW := 0
+	for _, s := range sections {
+		for _, r := range s.rows {
+			if w := lipgloss.Width(r.Name) + 1; w > labelW { // +1 for ":"
+				labelW = w
+			}
+		}
+	}
+	if labelW < 12 {
+		labelW = 12
+	}
+
+	valW := make([]int, len(runs))
+	for i, r := range runs {
+		if w := lipgloss.Width(r.Label); w > valW[i] {
+			valW[i] = w
+		}
+	}
+	for _, s := range sections {
+		for _, row := range s.rows {
+			for i, v := range row.Values {
+				if i >= len(valW) {
+					break
+				}
+				candidate := v
+				if !isPairwise {
+					if ann := minMaxAnnotation(row.Name, i, runs); ann != "" {
+						candidate = candidate + " [" + ann + "]"
+					}
+				}
+				if w := lipgloss.Width(candidate); w > valW[i] {
+					valW[i] = w
+				}
+			}
+		}
+	}
+	const maxValW = 40
+	for i := range valW {
+		if valW[i] > maxValW {
+			valW[i] = maxValW
+		}
+		if valW[i] < len("run-A") {
+			valW[i] = len("run-A")
+		}
+	}
+
+	const colGap = "  "
+
+	// --- Render: header + separator ----------------------------------------
+	var sb strings.Builder
+	sb.WriteString(strings.Repeat(" ", labelW))
+	for i, r := range runs {
+		sb.WriteString(colGap)
+		sb.WriteString(padRightVisible(r.Label, valW[i]))
+	}
+	if isPairwise {
+		sb.WriteString(colGap)
+		sb.WriteString("Δ")
+	}
+	fmt.Println(styleHeader.Render(sb.String()))
+
+	sb.Reset()
+	sb.WriteString(strings.Repeat(" ", labelW))
+	for i := range runs {
+		sb.WriteString(colGap)
+		sb.WriteString(strings.Repeat("─", valW[i]))
+	}
+	fmt.Println(styleDim.Render(sb.String()))
+
+	// --- Render: per-section bodies ----------------------------------------
+	renderRow := func(name string, values []string, showDelta bool, deltaVal string) {
+		var sb strings.Builder
+		labelStr := name + ":"
+		sb.WriteString(styleLabel.Render(labelStr))
+		// Pad the label column to labelW using *visible* width — escape
+		// codes from styleLabel.Render must not push the value column right.
+		if pad := labelW - lipgloss.Width(labelStr); pad > 0 {
+			sb.WriteString(strings.Repeat(" ", pad))
+		}
+		for i, v := range values {
+			sb.WriteString(colGap)
+			cell := truncateStr(v, valW[i])
+			sb.WriteString(padRightVisible(cell, valW[i]))
+		}
+		if showDelta {
+			sb.WriteString(colGap)
+			sb.WriteString(deltaVal)
+		}
+		fmt.Println(sb.String())
+	}
+
+	for _, sec := range sections {
+		fmt.Println()
+		fmt.Println(styleHeader.Render(sec.title + sec.suffix))
+		if sec.emptyMsg != "" {
+			fmt.Println(styleDim.Render(sec.emptyMsg))
+			continue
+		}
+		for _, row := range sec.rows {
+			// Build the per-cell display values — for 3+ runs, append
+			// the MIN/MAX annotation BEFORE truncation/padding so the
+			// width pass above already accounted for it.
+			vals := make([]string, len(row.Values))
+			for i, v := range row.Values {
+				if !sec.showDelta && !isPairwise {
+					if ann := minMaxAnnotation(row.Name, i, runs); ann != "" {
+						vals[i] = v + " [" + ann + "]"
+						continue
+					}
+				}
+				vals[i] = v
+			}
+
+			deltaVal := ""
+			if sec.showDelta {
+				d := deltaStr(row.Name, runs[0], runs[1])
+				if d == "" {
+					d = "—"
+				}
+				deltaVal = d
+			}
+			renderRow(row.Name, vals, sec.showDelta, deltaVal)
+		}
+	}
+
+	if !includeRubric {
 		fmt.Println()
 		fmt.Println(styleDim.Render("Rubric-level outcomes: (none recorded; pass --include-rubric to show NULLs)"))
 	}
@@ -723,67 +943,27 @@ func renderCompareTable(runs []compareRun, axes []string, includeInputs, include
 	return nil
 }
 
-// renderSection prints a named section of the comparison table.
-// Only axes that are in both sectionAxes and wantAxes are shown.
-func renderSection(
-	styleHeader, styleLabel, styleDim lipgloss.Style,
-	title string,
-	sectionAxes, wantAxes []string,
-	runs []compareRun,
-	wLabel, wVal int,
-	isPairwise, diffOnly bool,
-) {
-	// Intersect: only axes requested by the user.
-	wantSet := make(map[string]bool, len(wantAxes))
-	for _, a := range wantAxes {
-		wantSet[a] = true
+// valsFromRuns is a small helper that materialises a per-run value slice
+// from a projection function. Used to build the Session block rows without
+// repeating the boilerplate `make + for` loop at each call site.
+func valsFromRuns(runs []compareRun, fn func(compareRun) string) []string {
+	out := make([]string, len(runs))
+	for i, r := range runs {
+		out[i] = fn(r)
 	}
+	return out
+}
 
-	var filtered []string
-	for _, a := range sectionAxes {
-		if wantSet[a] {
-			filtered = append(filtered, a)
-		}
+// padRightVisible right-pads s with spaces so its visible width is at
+// least width. Visible width is measured by lipgloss.Width so ANSI escape
+// sequences (from lipgloss.Style.Render) contribute zero to the width
+// budget. If s is already >= width visibly, it is returned unchanged.
+func padRightVisible(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
 	}
-	if len(filtered) == 0 {
-		return
-	}
-
-	rows := buildAxisRows(filtered, runs, diffOnly)
-	if len(rows) == 0 {
-		return
-	}
-
-	fmt.Println()
-	fmt.Println(styleHeader.Render(title + ":"))
-	for _, row := range rows {
-		var line string
-		if isPairwise {
-			// 2 runs: plain values + Δ column.
-			line = fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
-			for _, v := range row.Values {
-				line += fmt.Sprintf("  %-*s", wVal, truncateStr(v, wVal))
-			}
-			delta := deltaStr(row.Name, runs[0], runs[1])
-			if delta != "" {
-				line += fmt.Sprintf("  %s", delta)
-			} else {
-				line += "  —"
-			}
-		} else {
-			// 3+ runs: MIN/MAX annotation per cell; no Δ column.
-			line = fmt.Sprintf("%-*s", wLabel, styleLabel.Render(row.Name+":"))
-			for i, v := range row.Values {
-				ann := minMaxAnnotation(row.Name, i, runs)
-				cellStr := truncateStr(v, wVal)
-				if ann != "" {
-					cellStr = fmt.Sprintf("%s [%s]", truncateStr(v, wVal-len(ann)-3), ann)
-				}
-				line += fmt.Sprintf("  %-*s", wVal, cellStr)
-			}
-		}
-		fmt.Println(line)
-	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 // ---------- spawn_inputs renderer helpers ----------

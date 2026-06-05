@@ -153,9 +153,11 @@ func runStats(cmd *cobra.Command, args []string) error {
 	// --abtest: list all A/B test pairs with summary metrics. runStatsAbtestFlag
 	// performs its own PRISM_HOST_API proxy dispatch (issue #2098) so a
 	// sandboxed session lists pairs from the host DB rather than the empty
-	// shadow DB.
+	// shadow DB. The jsonMode arg honours the prism-wide --json convention
+	// (issue #2099 Bug 2): on success the function emits a single JSON
+	// document mirroring the /stats?view=abtest_list shape.
 	if abtest {
-		return runStatsAbtestFlag()
+		return runStatsAbtestFlag(jsonMode)
 	}
 
 	// Validate --group-by early so we fail fast on bad input.

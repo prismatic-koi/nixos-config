@@ -23,7 +23,13 @@ import (
 
 // runStatsAbtestFlag implements prism stats --abtest (the --abtest top-level flag,
 // distinct from `prism stats abtest <group_id>` which is runStatsAbtest in stats_compare.go).
-func runStatsAbtestFlag() error {
+//
+// When jsonMode is true, emits the abtest_list payload to stdout as a single
+// JSON document on the success path (issue #2099 Bug 2 — sibling surface
+// of `prism stats compare --json`). The shape mirrors the host-API
+// /stats?view=abtest_list response so the direct-DB and proxy paths are
+// byte-identical.
+func runStatsAbtestFlag(jsonMode bool) error {
 	// PRISM_HOST_API proxy dispatch (issue #2098): inside a sandbox the local
 	// shadow DB carries no abtest pairs, so list them from the host DB via the
 	// sidecar /stats?view=abtest_list endpoint. Rendering stays on the CLI side
@@ -32,6 +38,9 @@ func runStatsAbtestFlag() error {
 		pairs, err := proxyStatsAbtestList(apiURL)
 		if err != nil {
 			return fmt.Errorf("stats --abtest: %w", err)
+		}
+		if jsonMode {
+			return emitAbtestPairsJSON(pairs)
 		}
 		renderAbtestPairs(pairs)
 		return nil
@@ -48,8 +57,30 @@ func runStatsAbtestFlag() error {
 		return fmt.Errorf("stats --abtest: %w", err)
 	}
 
+	if jsonMode {
+		return emitAbtestPairsJSON(pairs)
+	}
 	renderAbtestPairs(pairs)
 	return nil
+}
+
+// emitAbtestPairsJSON writes the abtest pairs list as a single JSON
+// document on stdout. Shape: {"pairs":[...]} — a top-level object with one
+// `pairs` array of db.AbtestPairRow entries, matching the host-API
+// /stats?view=abtest_list response so consumers see the same shape on the
+// direct-DB and proxy paths.
+func emitAbtestPairsJSON(pairs []db.AbtestPairRow) error {
+	// Nil-safe: an empty list emits {"pairs":[]} rather than {"pairs":null},
+	// so consumers can `.pairs | length` without a null-check.
+	if pairs == nil {
+		pairs = []db.AbtestPairRow{}
+	}
+	payload := struct {
+		Pairs []db.AbtestPairRow `json:"pairs"`
+	}{Pairs: pairs}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(payload)
 }
 
 // proxyStatsAbtestList proxies `prism stats --abtest` to the host sidecar's

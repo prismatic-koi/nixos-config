@@ -646,13 +646,13 @@ func TestStatsAbtestFlagProxy_ByteIdentical(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", "")
 	direct := captureStdout(t, func() {
-		if err := runStatsAbtestFlag(); err != nil {
+		if err := runStatsAbtestFlag(false); err != nil {
 			t.Fatalf("runStatsAbtestFlag (direct): %v", err)
 		}
 	})
 	t.Setenv("PRISM_HOST_API", apiURL)
 	proxy := captureStdout(t, func() {
-		if err := runStatsAbtestFlag(); err != nil {
+		if err := runStatsAbtestFlag(false); err != nil {
 			t.Fatalf("runStatsAbtestFlag (proxy): %v", err)
 		}
 	})
@@ -672,7 +672,7 @@ func TestStatsAbtestFlagProxy_Empty(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", apiURL)
 	out := captureStdout(t, func() {
-		if err := runStatsAbtestFlag(); err != nil {
+		if err := runStatsAbtestFlag(false); err != nil {
 			t.Fatalf("runStatsAbtestFlag (proxy, empty): %v", err)
 		}
 	})
@@ -762,7 +762,7 @@ func TestStatsAbtestFlagProxy_UnsetUsesDirectDB(t *testing.T) {
 	_ = srv
 
 	out := captureStdout(t, func() {
-		if err := runStatsAbtestFlag(); err != nil {
+		if err := runStatsAbtestFlag(false); err != nil {
 			t.Fatalf("runStatsAbtestFlag (direct): %v", err)
 		}
 	})
