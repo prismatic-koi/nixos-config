@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
@@ -25,6 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/profile"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -77,7 +77,16 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	// agent in this fan-out spawns with the same models (#1207). Errors are
 	// surfaced — a corrupt state file would otherwise silently leak the
 	// pf.Default profile into review agents.
-	activeProfile, _, profErr := config.ResolveActiveProfile(opts.ProfilesFile, "")
+	//
+	// Issue #2097: the parent worker's spawn-time profile (recorded on
+	// `spawn_inputs.profile_name` by #2090) is fed as the highest-precedence
+	// input via profile.InheritFromParent. Before #2097 we passed "" here,
+	// so the resolution silently fell through to state-file > nix-default —
+	// every review fan-out since `--abtest` (#1216) shipped ran on the host
+	// default regardless of the parent's `--profile` choice. The #1207
+	// single-resolve-per-round invariant is preserved: this call happens
+	// once, outside the agent loop, so all 5 reviewers share one profile.
+	activeProfile, profErr := profile.InheritFromParent(d, opts.ParentSession, opts.ProfilesFile)
 	if profErr != nil {
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
 	}
@@ -229,38 +238,28 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			}
 			continue
 		}
-		spawnOpts := session.SpawnOpts{
-			InstanceID:         uuid.New().String(),
-			SessionName:        agentSession,
+		// Build the per-reviewer SpawnOpts via the shared builder so the
+		// audit-row shape, isolation-mode propagation, and #2097
+		// ProfileName inheritance are guaranteed identical between Run
+		// (sync) and RunAsync (async monitor). See spawn_opts.go for the
+		// field-level rationale.
+		spawnOpts := newReviewerSpawnOpts(reviewerSpawnInput{
+			AgentName:          ag.Name,
+			AgentSession:       agentSession,
+			Prompt:             prompt,
+			AgentConfigContent: agentConfigContent,
 			Repo:               repo,
 			Worktree:           worktree,
-			AgentRole:          ag.Name,
-			Prompt:             prompt,
-			PromptSource:       "review-fanout",
 			PromptTemplateHash: ReviewPromptTemplateHash(),
-			ConfigContent:      agentConfigContent,
-			Layout:             session.LayoutAgentOnly,
 			IsolationMode:      opts.IsolationMode,
 			PluginHostPath:     opts.PluginHostPath,
-			WorktreeReadOnly:   true,
 			GroupID:            groupID,
-			ConfigEnvVarName:   agentH.ConfigEnvVar(),
-			RuntimeEnvVars:     agentH.RuntimeEnv(),
 			HarnessName:        agentHarnessName,
+			HarnessHandle:      agentH,
 			ModelsByRole:       opts.ModelsByRole,
-			// PIExtensionDir for host-mode pi launches (#2065).
-			PIExtensionDir: opts.PIExtensionDir,
-			// spawn_inputs audit (#2087): record the per-agent role and the
-			// harness so review fan-out rows are queryable alongside other
-			// spawn front doors. PromptSource / PromptTemplateHash above
-			// already feed the centralised SpawnSession writer.
-			// IsolationFlag mirrors the resolved isolation mode so the
-			// `prism stats compare` Spawn Inputs block surfaces it for
-			// review-fan-out rows too (issue #2102 Layer 2).
-			AgentFlag:     ag.Name,
-			HarnessFlag:   agentHarnessName,
-			IsolationFlag: opts.IsolationMode,
-		}
+			PIExtensionDir:     opts.PIExtensionDir,
+			ProfileName:        activeProfile,
+		})
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))
@@ -429,8 +428,9 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	repo := deriveRepo(opts.ParentSession)
 
 	// Resolve the runtime active profile once for the round (#1207). See
-	// the matching block in Run() above for rationale.
-	activeProfile, _, profErr := config.ResolveActiveProfile(opts.ProfilesFile, "")
+	// the matching block in Run() above for rationale, including the
+	// #2097 inheritance of the parent worker's spawn-time profile.
+	activeProfile, profErr := profile.InheritFromParent(d, opts.ParentSession, opts.ProfilesFile)
 	if profErr != nil {
 		return nil, fmt.Errorf("resolve active profile: %w", profErr)
 	}
@@ -535,33 +535,26 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			}
 			continue
 		}
-		spawnOpts := session.SpawnOpts{
-			InstanceID:         uuid.New().String(),
-			SessionName:        agentSession,
+		// Build the per-reviewer SpawnOpts via the shared builder so
+		// RunAsync and Run produce structurally identical SpawnOpts.
+		// See spawn_opts.go for the field-level rationale.
+		spawnOpts := newReviewerSpawnOpts(reviewerSpawnInput{
+			AgentName:          ag.Name,
+			AgentSession:       agentSession,
+			Prompt:             prompt,
+			AgentConfigContent: agentConfigContent,
 			Repo:               repo,
 			Worktree:           worktree,
-			AgentRole:          ag.Name,
-			Prompt:             prompt,
-			PromptSource:       "review-fanout",
 			PromptTemplateHash: ReviewPromptTemplateHash(),
-			ConfigContent:      agentConfigContent,
-			Layout:             session.LayoutAgentOnly,
 			IsolationMode:      opts.IsolationMode,
 			PluginHostPath:     opts.PluginHostPath,
-			WorktreeReadOnly:   true,
 			GroupID:            groupID,
-			ConfigEnvVarName:   asyncAgentH.ConfigEnvVar(),
-			RuntimeEnvVars:     asyncAgentH.RuntimeEnv(),
 			HarnessName:        asyncAgentHarnessName,
+			HarnessHandle:      asyncAgentH,
 			ModelsByRole:       opts.ModelsByRole,
-			// PIExtensionDir for host-mode pi launches (#2065).
-			PIExtensionDir: opts.PIExtensionDir,
-			// spawn_inputs audit (#2087): mirror the sync fan-out block.
-			// IsolationFlag mirrors the resolved isolation mode (#2102 Layer 2).
-			AgentFlag:     ag.Name,
-			HarnessFlag:   asyncAgentHarnessName,
-			IsolationFlag: opts.IsolationMode,
-		}
+			PIExtensionDir:     opts.PIExtensionDir,
+			ProfileName:        activeProfile,
+		})
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))

@@ -31,6 +31,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/profile"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -129,16 +130,60 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 	return spawnInvestigateSessionWithDB(database, invokerSession, promptText, suppliedName)
 }
 
-// spawnInvestigateSessionWithDB is the DB-injected core of spawnInvestigateSession,
-// extracted so tests can drive the SpawnOpts construction against an isolated DB
-// (sidecartest.NewIsolated) without going through openDB() / a real prism.db.
+// spawnInvestigateSessionWithDB is the DB-injected core of
+// spawnInvestigateSession, extracted in #2113 so tests can drive the
+// SpawnOpts construction against an isolated DB (sidecartest.NewIsolated)
+// without going through openDB() / a real prism.db.
 func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, suppliedName string) error {
+	spawnOpts, isoMode, harnessName, err := buildInvestigateSpawnOpts(database, invokerSession, promptText, suppliedName)
+	if err != nil {
+		return err
+	}
+
+	// For socket-pipe harnesses (e.g. "pi") in host isolation mode, pre-compute
+	// the Unix socket path so agentPaneEnvVars can inject PRISM_HARNESS_PIPE
+	// into the tmux pane. bwrap and sandbox-exec set PRISM_HARNESS_PIPE via
+	// their own paths (bwrap.go --setenv, sandbox-exec profile, podman --env);
+	// only inject here for host mode. Mirrors the same block in spawn.go,
+	// switch.go, and restore.go (issue #2111).
+	if hShape, hShapeOK := harness.ShapeOf(harnessName); hShapeOK && hShape == harness.TransportSocketPipe && string(isoMode) == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(spawnOpts.SessionName); pipeErr == nil {
+			spawnOpts.HarnessPipeSockPath = pipePath
+		} else {
+			proglog.Warnf("[prism investigate] warning: could not resolve harness pipe path for %q: %v\n", spawnOpts.SessionName, pipeErr)
+		}
+	}
+
+	if err := investigateSpawnSessionFn(database, spawnOpts); err != nil {
+		return fmt.Errorf("prism investigate: spawn session: %w", err)
+	}
+
+	fmt.Println(spawnOpts.SessionName)
+	return nil
+}
+
+// buildInvestigateSpawnOpts resolves everything spawnInvestigateSessionWithDB
+// needs to know about the child session BEFORE the heavyweight
+// session.SpawnSession call (which touches tmux, sidecar, and port
+// allocation). Extracted from spawnInvestigateSessionWithDB in #2097 so the
+// profile-inheritance path can be unit-tested without spinning up the real
+// spawn machinery — the test calls this helper with a seeded DB and asserts
+// on the returned SpawnOpts.ProfileName.
+//
+// The returned SpawnOpts.ProfileName carries the resolved profile from the
+// invoker session via profile.InheritFromParent — see the inline comment
+// block below for the precedence rationale.
+//
+// isolation mode and harness name are returned alongside the SpawnOpts so
+// the #2111 HarnessPipeSockPath pre-computation step (which keys off both)
+// stays in spawnInvestigateSessionWithDB without re-resolving them.
+func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, suppliedName string) (session.SpawnOpts, config.IsolationMode, string, error) {
 	status, err := database.CurrentStatus(invokerSession)
 	if err != nil {
-		return fmt.Errorf("prism investigate: read invoker status: %w", err)
+		return session.SpawnOpts{}, "", "", fmt.Errorf("prism investigate: read invoker status: %w", err)
 	}
 	if status == nil {
-		return fmt.Errorf("prism investigate: invoker session %q has no agent_status row", invokerSession)
+		return session.SpawnOpts{}, "", "", fmt.Errorf("prism investigate: invoker session %q has no agent_status row", invokerSession)
 	}
 
 	repo := status.Repo
@@ -160,6 +205,28 @@ func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, 
 		isoMode = config.IsolationMode(cfg.DefaultIsolationMode)
 	}
 
+	// Resolve the profile the child investigate session should inherit
+	// from its invoker (issue #2097). The precedence is identical to the
+	// worker layer's #2092 chain:
+	//
+	//   1. Invoker's `spawn_inputs.profile_name` (highest, e.g. an
+	//      `--abtest` leg's per-leg profile).
+	//   2. Runtime state file `$XDG_STATE_HOME/prism/active-profile`.
+	//   3. `pf.Default` — the nix-configured default, lowest.
+	//
+	// profiles.json is loaded best-effort: a missing file is non-fatal on
+	// host-mode setups (mirrors the cmd/spawn.go pattern), and
+	// ResolveActiveProfile (called inside InheritFromParent) tolerates a
+	// nil ProfilesFile by falling through to the spawn-time or state-file
+	// value. Errors from the state-file read path are surfaced so a
+	// corrupt active-profile file does not silently pin every investigate
+	// to nix-default.
+	pf, _ := config.LoadProfiles()
+	resolvedProfile, profErr := profile.InheritFromParent(database, invokerSession, pf)
+	if profErr != nil {
+		return session.SpawnOpts{}, "", "", fmt.Errorf("prism investigate: resolve active profile: %w", profErr)
+	}
+
 	// Pi is the sole harness. Use harness.Lookup("pi") as the single source of truth.
 	harnessName := "pi"
 	h, _ := harness.New(harnessName, "", nil, "", "")
@@ -176,6 +243,12 @@ func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, 
 		// alongside `prism spawn` / `prism pr` rows.
 		AgentFlag:   "investigate",
 		HarnessFlag: harnessName,
+		// ProfileName carries the inherited profile through to the child's
+		// `spawn_inputs.profile_name` row (issue #2097). The child's
+		// runtime populatePIConfig reads that column via the #2092 chain
+		// and resolves to the same models the invoker was spawned with,
+		// instead of the host default.
+		ProfileName: resolvedProfile,
 		// spawn_inputs.isolation_flag: record the resolved isolation mode
 		// so investigate spawns surface alongside `prism spawn` rows in the
 		// stats compare "Spawn Inputs" block (issue #2102 Layer 2).
@@ -192,26 +265,7 @@ func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, 
 		PIExtensionDir: cfg.PIExtensionDir,
 	}
 
-	// For socket-pipe harnesses (e.g. "pi") in host isolation mode, pre-compute
-	// the Unix socket path so agentPaneEnvVars can inject PRISM_HARNESS_PIPE
-	// into the tmux pane. bwrap and sandbox-exec set PRISM_HARNESS_PIPE via
-	// their own paths (bwrap.go --setenv, sandbox-exec profile, podman --env);
-	// only inject here for host mode. Mirrors the same block in spawn.go,
-	// switch.go, and restore.go (issue #2111).
-	if hShape, hShapeOK := harness.ShapeOf(harnessName); hShapeOK && hShape == harness.TransportSocketPipe && string(isoMode) == "host" {
-		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {
-			spawnOpts.HarnessPipeSockPath = pipePath
-		} else {
-			proglog.Warnf("[prism investigate] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
-		}
-	}
-
-	if err := investigateSpawnSessionFn(database, spawnOpts); err != nil {
-		return fmt.Errorf("prism investigate: spawn session: %w", err)
-	}
-
-	fmt.Println(sessionName)
-	return nil
+	return spawnOpts, isoMode, harnessName, nil
 }
 
 // investigateSlug derives a short kebab-case slug from the prompt text.
