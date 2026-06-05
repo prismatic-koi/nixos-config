@@ -1,17 +1,21 @@
-// Package quickpr implements the "prism quick pr" command.
+// Package quick implements the "prism quick pr" command.
 //
-// It generates a PR description from staged git changes using the OpenRouter
-// API, then creates a branch, commits, pushes, and opens a GitHub PR —
-// all from main. On success it switches back to main and opens the PR in
-// the system browser.
+// It generates a PR description from staged git changes by invoking the
+// `pi` binary (with the anthropic-oauth extension for auth), then creates
+// a branch, commits, pushes, and opens a GitHub PR — all from main.
+// On success it switches back to main and opens the PR in the system browser.
+//
+// History (#2118): this used to call a third-party HTTP API directly with
+// google/gemini-3.1-flash-lite and an API-key env var. The HTTP path
+// produced inconsistent output and bypassed pi's prompt scaffolding. It
+// now shells out to `pi --print --mode json` with claude-sonnet-4-6 via
+// pi's anthropic-oauth extension. No API key plumbing remains.
 package quick
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -21,21 +25,193 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 )
 
-const (
-	openrouterURL = "https://openrouter.ai/api/v1/chat/completions"
+// titleMaxLen is the maximum PR title length enforced by the existing
+// convention. Pi is instructed to respect this in the system prompt; we
+// truncate (and warn) as a defensive fallback if the model overruns.
+const titleMaxLen = 72
 
-	// Token thresholds for max_tokens selection.
-	smallLines  = 50
-	mediumLines = 200
+// ── Test seams ─────────────────────────────────────────────────────────────
+//
+// The package-level function vars below mirror the pattern from PR #2113's
+// investigateSpawnSessionFn seam (cmd/investigate.go). Tests override these
+// to drive Run() without actually exec'ing pi / git / gh / a browser.
+//
+// piLookPathFn   — pre-flight check that `pi` is on PATH.
+// piExecFn       — runs `pi <args>` with the given stdin and returns the
+//                  captured stdout/stderr plus run error.
+// gitRunFn       — runs `git <args>` streaming to the user's stdout/stderr.
+// gitOutputFn    — runs `git <args>` capturing stdout.
+// ghRunFn        — runs `gh <args>` streaming to the user's stdout/stderr.
+// ghOutputFn     — runs `gh <args>` capturing stdout.
+// openBrowserFn  — opens a URL in the system browser.
 
-	smallTokens  = 128
-	mediumTokens = 256
-	largeTokens  = 512
+type piResult struct {
+	stdout string
+	stderr string
+	err    error
+}
+
+var (
+	piLookPathFn  = realPiLookPath
+	piExecFn      = realPiExec
+	gitRunFn      = realGitRun
+	gitOutputFn   = realGitOutput
+	ghRunFn       = realGhRun
+	ghOutputFn    = realGhOutput
+	openBrowserFn = realOpenBrowser
 )
+
+func realPiLookPath() error {
+	if _, err := exec.LookPath("pi"); err != nil {
+		return fmt.Errorf("pi binary not found on PATH (install the pi CLI or add it to PATH): %w", err)
+	}
+	return nil
+}
+
+func realPiExec(args []string, stdin string) piResult {
+	cmd := exec.Command("pi", args...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return piResult{
+		stdout: stdout.String(),
+		stderr: stderr.String(),
+		err:    err,
+	}
+}
+
+func realGitRun(args ...string) error {
+	cmd := exec.Command("git", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func realGitOutput(args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func realGhRun(args ...string) error {
+	cmd := exec.Command("gh", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func realGhOutput(args ...string) (string, error) {
+	cmd := exec.Command("gh", args...)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func realOpenBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default: // linux and others
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
+}
+
+// ── System prompt ──────────────────────────────────────────────────────────
+//
+// Materially expanded vs the previous 5-line template (issue #2118). Defines
+// the role, codifies the output structure, includes worked examples for the
+// "quick pr" tactical use case (NOT long-form worker-agent PRs), and
+// emphasises "why" over diff-recital.
+
+const quickPRSystemPrompt = `You are writing a tactical pull request title and body for a single-commit change.
+
+ROLE & SCOPE
+
+The user is invoking ` + "`prism quick pr`" + ` — a fast path for small, focused changes:
+dotfile tweaks, README edits, version bumps, small refactors, config tweaks,
+comment fixes, lint-rule adjustments. This is NOT the long-form worker-agent PR
+style; do NOT produce sections like "## Summary", "## Failure chain", or
+"## Acceptance Criteria". Plain, tight, conversational prose only.
+
+OUTPUT FORMAT (STRICT)
+
+Respond with exactly ONE JSON object and nothing else — no prose preamble, no
+markdown code fences, no trailing commentary. The shape is:
+
+{"title": "<title>", "body": "<body>"}
+
+If you wrap the JSON in markdown fences or add explanatory text, the caller's
+parser will fail. JSON only.
+
+TITLE RULES
+
+- Imperative mood: "Fix...", "Add...", "Drop...", "Bump...", "Switch...".
+- ≤ 72 characters. Hard limit.
+- No trailing period.
+- No conventional-commit prefix (no "feat:", "fix:", "chore:").
+- Lead with the action and the affected component or behaviour.
+
+BODY RULES
+
+- Plain text. No markdown headers. Backticks for code identifiers are fine.
+- Focus on WHY the change is needed: what problem does it solve, what was the
+  motivating observation. Do NOT recite the diff file-by-file — the reviewer
+  can read the diff themselves.
+- 1–4 sentences for normal changes. May be empty ("") for trivial changes
+  (typo fixes, single-character corrections) where the title is fully
+  self-explanatory.
+- For purely mechanical changes (version bumps, dependency updates), keep
+  it brief — one sentence naming the upstream change is plenty.
+
+REPO AWARENESS
+
+You have access to the project's AGENTS.md / CLAUDE.md / CONTRIBUTING.md if
+they exist in the working directory. Use them to match the project's
+conventions (commit style, terminology, focus areas) — but only where it
+adds value. Do not parrot the AGENTS.md verbatim.
+
+WORKED EXAMPLES
+
+Example 1 — small dotfile tweak:
+Diff context: a one-line change in a neovim config replacing
+` + "`set number relativenumber`" + ` with ` + "`set number nornu`" + `.
+Output:
+{"title":"Disable relative line numbers in neovim","body":"Relative numbers were adding visual noise during long reading sessions and the jump-by-count workflow is now handled by leap.nvim, so rnu is redundant."}
+
+Example 2 — version bump:
+Diff context: package.json updates ` + "`\"react\": \"^18.2.0\"`" + ` to ` + "`\"react\": \"^18.3.1\"`" + `.
+Output:
+{"title":"Bump react to 18.3.1","body":"Picks up the upstream useId fix and the deprecation-warning suppression on Suspense boundaries. No app-side changes needed."}
+
+Example 3 — typo fix:
+Diff context: a README sentence changes "recieve" to "receive".
+Output:
+{"title":"Fix \"recieve\" typo in README","body":""}
+
+Now produce the JSON response for the diff the user is about to send.`
+
+// ── Run ────────────────────────────────────────────────────────────────────
 
 // Run executes the quick pr workflow.
 func Run() error {
 	// ── Pre-flight checks ──────────────────────────────────────────────────
+
+	// Pi-on-PATH check is FIRST so that a missing pi binary fails cleanly
+	// before any git/gh side effects.
+	if err := piLookPathFn(); err != nil {
+		return fmt.Errorf("quick pr: %w", err)
+	}
 
 	branch, err := currentBranch()
 	if err != nil {
@@ -59,11 +235,6 @@ func Run() error {
 		)
 	}
 
-	apiKey := os.Getenv("OPENROUTER_API_KEY")
-	if apiKey == "" {
-		return fmt.Errorf("OPENROUTER_API_KEY is not set")
-	}
-
 	// ── Load configuration ─────────────────────────────────────────────────
 
 	pf, err := config.LoadProfiles()
@@ -75,6 +246,9 @@ func Run() error {
 	if !ok {
 		return fmt.Errorf("quick pr: no 'pr' entry in quick_profiles — rebuild system config")
 	}
+	if qp.Model == "" {
+		return fmt.Errorf("quick pr: quick_profiles.pr.model is empty — rebuild system config")
+	}
 
 	// ── Git diff analysis ──────────────────────────────────────────────────
 
@@ -83,31 +257,38 @@ func Run() error {
 		return err
 	}
 
-	lineCount := countDiffLines(diff)
-	maxTokens := tokenBudget(lineCount)
+	// ── Generate PR description via pi ─────────────────────────────────────
 
-	// ── Generate PR description via OpenRouter ─────────────────────────────
-
-	description, err := generateDescription(apiKey, qp, diff, maxTokens)
+	title, body, err := generateDescription(qp, diff)
 	if err != nil {
 		return err
 	}
 
-	// Extract title (first line) and body (rest).
-	title, body := splitDescription(description)
+	// Defensive title truncation: pi is instructed to respect the 72-char
+	// limit, but warn-and-trim if it overruns.
+	if len(title) > titleMaxLen {
+		fmt.Fprintf(os.Stderr,
+			"warning: pi returned a %d-char title (max %d) — truncating\n",
+			len(title), titleMaxLen)
+		title = title[:titleMaxLen]
+	}
+
+	if title == "" {
+		return fmt.Errorf("quick pr: pi returned an empty title")
+	}
 
 	// ── Git operations ─────────────────────────────────────────────────────
 
 	newBranch := fmt.Sprintf("quick/pr-%d", time.Now().Unix())
 	fmt.Printf("Creating branch %s...\n", newBranch)
 
-	if err := gitRun("switch", "-c", newBranch); err != nil {
+	if err := gitRunFn("switch", "-c", newBranch); err != nil {
 		return fmt.Errorf("git switch -c: %w", err)
 	}
 
 	// Ensure we switch back to main even if something fails after this point.
 	defer func() {
-		_ = gitRun("switch", "main")
+		_ = gitRunFn("switch", "main")
 	}()
 
 	// Build commit args: always include title; include body as a separate -m
@@ -118,12 +299,12 @@ func Run() error {
 	if body != "" {
 		commitArgs = append(commitArgs, "-m", body)
 	}
-	if err := gitRun(commitArgs...); err != nil {
+	if err := gitRunFn(commitArgs...); err != nil {
 		return fmt.Errorf("git commit: %w", err)
 	}
 
 	fmt.Println("Pushing branch...")
-	if err := gitRun("push", "-u", "origin", newBranch); err != nil {
+	if err := gitRunFn("push", "-u", "origin", newBranch); err != nil {
 		return fmt.Errorf("git push: %w", err)
 	}
 
@@ -136,13 +317,13 @@ func Run() error {
 	} else {
 		prArgs = append(prArgs, "--body", "")
 	}
-	if err := ghRun(prArgs...); err != nil {
+	if err := ghRunFn(prArgs...); err != nil {
 		return fmt.Errorf("gh pr create: %w", err)
 	}
 
 	// ── Fetch PR URL ───────────────────────────────────────────────────────
 
-	prURL, err := ghOutput("pr", "view", "--json", "url", "-q", ".url")
+	prURL, err := ghOutputFn("pr", "view", "--json", "url", "-q", ".url")
 	if err != nil {
 		return fmt.Errorf("gh pr view: %w", err)
 	}
@@ -153,14 +334,14 @@ func Run() error {
 	// ── Switch back to main ────────────────────────────────────────────────
 	// The deferred switch handles the actual switch; we cancel it here so we
 	// can print a clean message, then let the defer run anyway (no-op on main).
-	if err := gitRun("switch", "main"); err != nil {
+	if err := gitRunFn("switch", "main"); err != nil {
 		return fmt.Errorf("git switch main: %w", err)
 	}
 
 	// ── Open browser ───────────────────────────────────────────────────────
 
 	if prURL != "" {
-		if err := openBrowser(prURL); err != nil {
+		if err := openBrowserFn(prURL); err != nil {
 			// Non-fatal: just print the URL so the user can open it manually.
 			fmt.Fprintf(os.Stderr, "warning: could not open browser: %v\n", err)
 		}
@@ -172,7 +353,7 @@ func Run() error {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 func currentBranch() (string, error) {
-	out, err := gitOutput("rev-parse", "--abbrev-ref", "HEAD")
+	out, err := gitOutputFn("rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("git rev-parse: %w", err)
 	}
@@ -180,7 +361,7 @@ func currentBranch() (string, error) {
 }
 
 func stagedFiles() ([]string, error) {
-	out, err := gitOutput("diff", "--cached", "--name-only")
+	out, err := gitOutputFn("diff", "--cached", "--name-only")
 	if err != nil {
 		return nil, fmt.Errorf("git diff --cached: %w", err)
 	}
@@ -192,196 +373,222 @@ func stagedFiles() ([]string, error) {
 }
 
 func stagedDiff() (string, error) {
-	out, err := gitOutput("diff", "--cached")
+	out, err := gitOutputFn("diff", "--cached")
 	if err != nil {
 		return "", fmt.Errorf("git diff --cached: %w", err)
 	}
 	return out, nil
 }
 
-// countDiffLines counts the number of added + removed lines in a unified diff.
-func countDiffLines(diff string) int {
-	count := 0
-	for _, line := range strings.Split(diff, "\n") {
-		if len(line) == 0 {
+// generateDescription invokes pi to produce a PR title and body for the
+// given staged diff. It uses pi's `--print --mode json` non-interactive
+// path with `--no-tools --no-skills`, leaving AGENTS.md auto-discovery
+// enabled (no `--no-context-files`) for repo-style awareness.
+//
+// Output extraction strategy (chosen for issue #2118): JSON-in-JSON.
+//
+//  1. Pi emits NDJSON (one JSON object per line) when --mode json is set.
+//  2. We scan for the final `agent_end` event; its `messages` array contains
+//     the assistant's full reply.
+//  3. The assistant text is itself a JSON object {"title":"...","body":"..."}
+//     per the system prompt, which we parse to extract the two fields.
+//
+// Rejected alternative: fenced sentinels like <title>...</title>. JSON is
+// chosen because Sonnet 4.6 is highly reliable with structured JSON output
+// and the parse path is unambiguous (no regex on free-form text).
+func generateDescription(qp config.QuickProfile, diff string) (title, body string, err error) {
+	// Pi's `--print --mode json` non-interactive path. Flags chosen per
+	// the issue ACs:
+	//   --print           one-shot completion
+	//   --mode json       NDJSON output for structured parse
+	//   --no-tools        no tool calls
+	//   --no-skills       no skill loading
+	//   --system-prompt   our role/format/example prompt
+	//   --model/--provider — drives the anthropic-oauth route via pi
+	//
+	// AGENTS.md auto-discovery is intentionally left enabled (we do NOT
+	// pass --no-context-files), so pi picks up the repo's conventions.
+	provider := "anthropic" // single-source-of-truth for the anthropic-oauth route
+	args := []string{
+		"--print",
+		"--mode", "json",
+		"--no-tools",
+		"--no-skills",
+		"--system-prompt", quickPRSystemPrompt,
+		"--model", qp.Model,
+		"--provider", provider,
+	}
+
+	// User message: a short framing line plus the diff. Passed as the
+	// final positional arg so it becomes the initial user message body.
+	userMsg := "Generate a PR title and body in the required JSON shape for the following staged git diff:\n\n" + diff
+	args = append(args, userMsg)
+
+	res := piExecFn(args, "")
+	if res.err != nil {
+		// Surface pi's stderr verbatim so OAuth errors, model errors, etc.
+		// reach the user; wrap with a `quick pr:` prefix for clarity.
+		stderr := strings.TrimSpace(res.stderr)
+		if stderr == "" {
+			return "", "", fmt.Errorf("quick pr: pi exec failed: %w", res.err)
+		}
+		return "", "", fmt.Errorf("quick pr: pi exec failed: %w\npi stderr:\n%s", res.err, stderr)
+	}
+
+	return extractTitleBody(res.stdout)
+}
+
+// extractTitleBody parses pi's NDJSON --mode json stdout and pulls the
+// title/body from the assistant's reply (which is itself a JSON object
+// per the system prompt).
+//
+// Returns a clear error including a snippet of the raw stdout if any
+// stage of the parse fails.
+func extractTitleBody(piStdout string) (title, body string, err error) {
+	if strings.TrimSpace(piStdout) == "" {
+		return "", "", fmt.Errorf("quick pr: pi returned empty stdout")
+	}
+
+	assistantText, err := assistantTextFromNDJSON(piStdout)
+	if err != nil {
+		return "", "", fmt.Errorf("quick pr: %w\npi stdout (truncated):\n%s", err, truncate(piStdout, 2000))
+	}
+
+	// The assistant text is supposed to be JSON; strip any surrounding
+	// markdown fences (defensive — the system prompt forbids them, but
+	// models occasionally add them anyway).
+	jsonText := stripCodeFences(strings.TrimSpace(assistantText))
+
+	var parsed struct {
+		Title string `json:"title"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(jsonText), &parsed); err != nil {
+		return "", "", fmt.Errorf(
+			"quick pr: could not parse pi assistant text as JSON {title,body}: %w\nassistant text:\n%s\npi stdout (truncated):\n%s",
+			err, truncate(assistantText, 2000), truncate(piStdout, 2000),
+		)
+	}
+
+	title = strings.TrimSpace(parsed.Title)
+	body = strings.TrimSpace(parsed.Body)
+	return title, body, nil
+}
+
+// piContentBlock is one block of an assistant message's content array.
+type piContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type piMessage struct {
+	Role    string           `json:"role"`
+	Content []piContentBlock `json:"content"`
+}
+
+type piEnvelope struct {
+	Type     string      `json:"type"`
+	Messages []piMessage `json:"messages,omitempty"`
+	Message  *piMessage  `json:"message,omitempty"`
+}
+
+// assistantTextFromNDJSON walks pi's NDJSON --mode json stream and returns
+// the assistant's final reply text. It prefers the `agent_end` event (which
+// carries the full message history) and falls back to the final `turn_end`
+// or assistant `message_end` event if `agent_end` is absent.
+func assistantTextFromNDJSON(stream string) (string, error) {
+	// Event shapes (minimal — we ignore everything else pi emits):
+	//   {"type":"agent_end","messages":[ {role,content:[{type:"text",text}] }, ... ]}
+	//   {"type":"turn_end","message":{role:"assistant",content:[{type:"text",text}]}}
+	//   {"type":"message_end","message":{role:"assistant",content:[{type:"text",text}]}}
+	var (
+		fromAgentEnd     string
+		fromTurnEnd      string
+		fromMessageEnd   string
+		anyEventObserved bool
+	)
+
+	for _, line := range strings.Split(stream, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
-		if line[0] == '+' || line[0] == '-' {
-			// Skip the +++ / --- header lines.
-			if strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---") {
-				continue
+		var env piEnvelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			// Non-JSON lines are tolerated — pi may emit ordinary log lines
+			// in some modes. Skip them.
+			continue
+		}
+		anyEventObserved = true
+		switch env.Type {
+		case "agent_end":
+			// Walk messages in reverse for the last assistant message.
+			for i := len(env.Messages) - 1; i >= 0; i-- {
+				if env.Messages[i].Role == "assistant" {
+					fromAgentEnd = concatText(env.Messages[i].Content)
+					break
+				}
 			}
-			count++
+		case "turn_end":
+			if env.Message != nil && env.Message.Role == "assistant" {
+				fromTurnEnd = concatText(env.Message.Content)
+			}
+		case "message_end":
+			if env.Message != nil && env.Message.Role == "assistant" {
+				fromMessageEnd = concatText(env.Message.Content)
+			}
 		}
 	}
-	return count
-}
 
-// tokenBudget returns the max_tokens value based on the number of diff lines.
-func tokenBudget(lines int) int {
+	if !anyEventObserved {
+		return "", fmt.Errorf("pi stdout contained no JSON events")
+	}
+
 	switch {
-	case lines <= smallLines:
-		return smallTokens
-	case lines <= mediumLines:
-		return mediumTokens
+	case fromAgentEnd != "":
+		return fromAgentEnd, nil
+	case fromTurnEnd != "":
+		return fromTurnEnd, nil
+	case fromMessageEnd != "":
+		return fromMessageEnd, nil
 	default:
-		return largeTokens
+		return "", fmt.Errorf("pi stdout contained no assistant message text")
 	}
 }
 
-// splitDescription splits the generated text into a title (first line) and
-// body (remaining lines). The title is truncated to 72 characters.
-func splitDescription(desc string) (title, body string) {
-	desc = strings.TrimSpace(desc)
-	idx := strings.Index(desc, "\n")
-	if idx == -1 {
-		title = desc
-		body = ""
-	} else {
-		title = strings.TrimSpace(desc[:idx])
-		body = strings.TrimSpace(desc[idx+1:])
-	}
-	if len(title) > 72 {
-		title = title[:72]
-	}
-	return title, body
-}
-
-// openRouterRequest is the JSON body sent to OpenRouter.
-type openRouterRequest struct {
-	Model     string              `json:"model"`
-	MaxTokens int                 `json:"max_tokens"`
-	Messages  []map[string]string `json:"messages"`
-	Provider  *providerConfig     `json:"provider,omitempty"`
-}
-
-type providerConfig struct {
-	Order          []string `json:"order,omitempty"`
-	AllowFallbacks bool     `json:"allow_fallbacks"`
-}
-
-type openRouterResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-	Error *struct {
-		Message string `json:"message"`
-		Code    int    `json:"code"`
-	} `json:"error,omitempty"`
-}
-
-var prPromptTemplate = `You are a concise technical writer. Given the following git diff of staged changes, write a pull request title and description.
-
-Format your response as:
-<title> (one line, imperative mood, max 72 chars, no period)
-
-<body> (2-4 sentences describing what changed and why, plain text, no markdown headers)
-
-Git diff:
-%s`
-
-func generateDescription(apiKey string, qp config.QuickProfile, diff string, maxTokens int) (string, error) {
-	prompt := fmt.Sprintf(prPromptTemplate, diff)
-
-	reqBody := openRouterRequest{
-		Model:     qp.Model,
-		MaxTokens: maxTokens,
-		Messages: []map[string]string{
-			{"role": "user", "content": prompt},
-		},
-	}
-
-	if len(qp.ProviderOrder) > 0 {
-		reqBody.Provider = &providerConfig{
-			Order:          qp.ProviderOrder,
-			AllowFallbacks: true,
+func concatText(blocks []piContentBlock) string {
+	var sb strings.Builder
+	for _, b := range blocks {
+		if b.Type == "text" {
+			sb.WriteString(b.Text)
 		}
 	}
-
-	bodyBytes, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", fmt.Errorf("quick pr: marshal request: %w", err)
-	}
-
-	req, err := http.NewRequest(http.MethodPost, openrouterURL, bytes.NewReader(bodyBytes))
-	if err != nil {
-		return "", fmt.Errorf("quick pr: build request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("quick pr: OpenRouter request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("quick pr: read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("quick pr: OpenRouter API error (HTTP %d): %s", resp.StatusCode, string(respBytes))
-	}
-
-	var orResp openRouterResponse
-	if err := json.Unmarshal(respBytes, &orResp); err != nil {
-		return "", fmt.Errorf("quick pr: parse response: %w", err)
-	}
-
-	if orResp.Error != nil {
-		return "", fmt.Errorf("quick pr: OpenRouter API error (code %d): %s", orResp.Error.Code, orResp.Error.Message)
-	}
-
-	if len(orResp.Choices) == 0 || orResp.Choices[0].Message.Content == "" {
-		return "", fmt.Errorf("quick pr: empty response from OpenRouter")
-	}
-
-	return orResp.Choices[0].Message.Content, nil
+	return sb.String()
 }
 
-func gitRun(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func gitOutput(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+// stripCodeFences removes a single surrounding ```json ... ``` or ``` ... ```
+// fence if present. Pi's system prompt forbids fences, but some model
+// completions still emit them — be defensive.
+func stripCodeFences(s string) string {
+	if !strings.HasPrefix(s, "```") {
+		return s
 	}
-	return string(out), nil
-}
-
-func ghRun(args ...string) error {
-	cmd := exec.Command("gh", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func ghOutput(args ...string) (string, error) {
-	cmd := exec.Command("gh", args...)
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
+	// Drop the leading fence (and optional language tag).
+	first := strings.IndexByte(s, '\n')
+	if first == -1 {
+		return s
 	}
-	return string(out), nil
+	s = s[first+1:]
+	// Drop the trailing fence.
+	if i := strings.LastIndex(s, "```"); i != -1 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
-func openBrowser(url string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	default: // linux and others
-		cmd = exec.Command("xdg-open", url)
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
 	}
-	return cmd.Start()
+	return s[:n] + "…(truncated)"
 }
