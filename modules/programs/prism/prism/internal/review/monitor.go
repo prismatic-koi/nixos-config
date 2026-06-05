@@ -162,6 +162,25 @@ func MonitorFunc(opts MonitorOpts) error {
 	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, 0)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
 
+	// Issue #2110: persist the latest-round review verdict and counts on the
+	// worker's spawn_outcome row. This is the single write site that the AC
+	// requires — it lives at the same point that constructs the delivery
+	// prompt, so the persisted values match exactly what the worker sees.
+	//
+	// Latest-round-wins semantics: each MonitorFunc call represents one
+	// review round. The UPSERT in UpdateSpawnOutcomeReviewResult overwrites
+	// the previous round's values rather than summing across rounds, so a
+	// worker that runs round 1 (FAIL) then round 2 (PASS) ends with the
+	// round-2 values — its actual ship state. The verb is a single
+	// transaction so verdict/passCount/failCount never drift relative to
+	// each other under a partial-failure scenario.
+	//
+	// Failure is non-fatal: a write error logs and continues. The prompt
+	// delivery is the user-facing path; the column persistence is purely
+	// for `prism stats compare` reporting, and a missing column renders as
+	// the existing — placeholder.
+	persistReviewOutcome(d, opts.WorkerSession, results, allPassed)
+
 	// LOOP-LIMIT footer (#1512). Append the footer to the prompt body when
 	//   (a) the cycle has not converged (¬allPassed),
 	//   (b) THIS cycle is itself a verdict-producing cycle — i.e. every
@@ -241,6 +260,53 @@ func MonitorFunc(opts MonitorOpts) error {
 
 	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
 	return nil
+}
+
+// persistReviewOutcome records the latest-round verdict and pass/fail counts
+// on the worker's spawn_outcome row (issue #2110). It is intentionally a thin
+// glue function so that the write-site for the three columns surfaces as a
+// single point in MonitorFunc — callers can grep for the issue number and
+// see the entire write path. The instance_id is resolved via the most-recent
+// sessions row for the worker session name; a missing row makes the call a
+// silent no-op.
+//
+// Counts: passCount = number of agents whose AgentResult.Passed is true (i.e.
+// LastMessage carried a parseable `<verdict>PASS</verdict>` marker);
+// failCount = number of agents that did not pass (FAIL verdicts, error states,
+// no-start failures, finished-without-verdict). Verdict: "pass" when every
+// agent passed; "fail" when at least one did not. The lowercase casing
+// matches the existing ComputeSpawnOutcome convention so the renderer's
+// existing pass-through display does not need a casing-aware code path.
+func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult, allPassed bool) {
+	if d == nil || workerSession == "" {
+		return
+	}
+	sess, err := d.MostRecentSessionForName(workerSession)
+	if err != nil {
+		proglog.Warnf("[prism monitor-review] warning: persist review outcome: lookup session %q: %v\n", workerSession, err)
+		return
+	}
+	if sess == nil || sess.InstanceID == "" {
+		proglog.Infof("[prism monitor-review] persist review outcome: no sessions row for %q — skipping\n", workerSession)
+		return
+	}
+	var passCount, failCount int
+	for _, r := range results {
+		if r.Passed {
+			passCount++
+		} else {
+			failCount++
+		}
+	}
+	verdict := "fail"
+	if allPassed {
+		verdict = "pass"
+	}
+	if err := d.UpdateSpawnOutcomeReviewResult(sess.InstanceID, verdict, passCount, failCount); err != nil {
+		proglog.Warnf("[prism monitor-review] warning: UpdateSpawnOutcomeReviewResult(iid=%s, verdict=%s): %v\n", sess.InstanceID, verdict, err)
+		return
+	}
+	proglog.Infof("[prism monitor-review] persisted review verdict=%s pass=%d fail=%d on worker spawn_outcome (iid=%s)\n", verdict, passCount, failCount, sess.InstanceID)
 }
 
 // forceTerminateStuckMembers walks the given session names and transitions any

@@ -1024,7 +1024,8 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 
 			// Promote high-impact bash commands to the persistent audit log.
 			if part.Tool == "bash" {
-				if cmd := extractBashCommand(part.State.Input); isHighImpactCommand(cmd) {
+				cmd := extractBashCommand(part.State.Input)
+				if isHighImpactCommand(cmd) {
 					s.writeEvent("audit", map[string]any{
 						"tool":             "bash",
 						"command":          cmd,
@@ -1033,6 +1034,29 @@ func (s *Sidecar) handleMessagePartUpdated(evt harness.HarnessEvent) {
 						"messageId":        part.MessageID,
 					}, nil)
 					s.logger().Printf("sidecar: audit: high-impact command recorded: %s", truncate(cmd, 120))
+				}
+				// Issue #2110: capture the PR number when the worker opens its
+				// PR via `gh pr create`. This is the worker-side capture path
+				// (option (a) from the AC), chosen because it writes at the
+				// natural event boundary — the moment the PR comes into
+				// existence — from the session whose spawn_outcome row holds
+				// the column the renderer reads. Other options (backfill at
+				// merge-enqueue time / cleanup time / read-time) push the
+				// write further from the source-of-truth and require either
+				// a session-suffix heuristic to find the worker or a live
+				// GitHub round-trip on every render.
+				//
+				// We only act on completed bash invocations (the surrounding
+				// `status == "completed"` guard rules out errored runs whose
+				// output would contain the gh error text rather than a URL).
+				if isGhPRCreateCommand(cmd) && s.cfg.DB != nil && s.cfg.InstanceID != "" {
+					if prNum, ok := extractPRNumberFromGhOutput(fmt.Sprintf("%v", part.State.Output)); ok {
+						if err := s.cfg.DB.UpdateSpawnOutcomePR(s.cfg.InstanceID, prNum); err != nil {
+							s.logger().Printf("sidecar: UpdateSpawnOutcomePR(pr=%d): %v", prNum, err)
+						} else {
+							s.logger().Printf("sidecar: captured pr_number=%d from gh pr create output", prNum)
+						}
+					}
 				}
 			}
 		} else if part.State != nil && part.State.Status == "error" {
