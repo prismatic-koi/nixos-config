@@ -65,9 +65,11 @@ func newPISidecar(t *testing.T, sockPath, sessionName, agentRole string, d *db.D
 }
 
 // repoOf extracts the repo from a session name (e.g. "myrepo" from "myrepo@main").
+// Passes a nil *db.DB so the helper falls back to pure name parsing — these
+// test fixtures use the `<repo>@<branch>` shape exclusively.
 func repoOf(t *testing.T, sessionName string) string {
 	t.Helper()
-	repo, err := repoFromSession(sessionName)
+	repo, err := repoFromSession(sessionName, nil)
 	if err != nil {
 		t.Fatalf("repoOf: %v", err)
 	}
