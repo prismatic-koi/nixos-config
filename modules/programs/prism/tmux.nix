@@ -226,7 +226,7 @@ in
               # not correspond to a prism session) so a stray Prefix+m there
               # does not crash tmux or surface a stack trace.
               bind-key m if-shell '[ -n "#{session_name}" ]' \
-                'run-shell -b "${prism} mute #{session_name} || ${pkgs.tmux}/bin/tmux display-message \"prism mute: not a prism session\""' \
+                'run-shell -b "${prism} mute #{session_name} >/dev/null || ${pkgs.tmux}/bin/tmux display-message \"prism mute: not a prism session\""' \
                 'display-message "prism mute: no current session"'
               # easy config reload
               bind-key r source-file ~/.config/tmux/tmux.conf \; display-message "tmux.conf reloaded"
