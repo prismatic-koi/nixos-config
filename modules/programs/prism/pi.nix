@@ -67,7 +67,7 @@
       # the persisted ~/.pi/agent/skills/ directory that would dangle after
       # nix-collect-garbage removes the store paths they pointed to.
       skillsDir = pkgs.runCommand "pi-skills" { } ''
-        mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian $out/grill-me
+        mkdir -p $out/prism $out/aws $out/acceptance-criteria $out/retro $out/atlassian $out/grill-me $out/wip-branch
         cp -r ${./skills/prism}/* $out/prism/
         cp -r ${./skills/playwright-cli} $out/playwright-cli
         cp ${awsSkillFile} $out/aws/SKILL.md
@@ -75,6 +75,7 @@
         cp -r ${./skills/retro}/* $out/retro/
         cp -r ${./skills/atlassian}/* $out/atlassian/
         cp -r ${./skills/grill-me}/* $out/grill-me/
+        cp -r ${./skills/wip-branch}/* $out/wip-branch/
       '';
 
       # Vendored pi extensions directory — built as a single derivation so it
