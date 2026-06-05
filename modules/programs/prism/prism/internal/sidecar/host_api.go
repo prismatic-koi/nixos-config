@@ -583,7 +583,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Both DB lookup and name-parse fallback failed — the target
 			// session is unknown. Return 404 so the CLI can surface a clear
 			// "session not found" rather than a parse error (issue #2112).
-			writeError(w, http.StatusNotFound, "invalid target session name: "+targetRepoErr.Error())
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		crossRepo := targetRepo != ownRepo
@@ -752,7 +752,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		targetRepo, targetRepoErr := repoFromSession(targetSession, s.cfg.DB)
 		if targetRepoErr != nil {
 			// Both DB lookup and name-parse fallback failed — unknown target.
-			writeError(w, http.StatusNotFound, "invalid target session name: "+targetRepoErr.Error())
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		if targetRepo != ownRepo && !isCoordinatorSession(targetSession, s.cfg.DB, s.logger()) {
@@ -1002,7 +1002,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		targetRepo, targetRepoErr := repoFromSession(req.Session, s.cfg.DB)
 		if targetRepoErr != nil {
 			// Both DB lookup and name-parse fallback failed — unknown target.
-			writeError(w, http.StatusNotFound, "invalid target session name: "+targetRepoErr.Error())
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		crossRepo := targetRepo != ownRepo
@@ -1744,7 +1744,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		targetRepo, targetRepoErr := repoFromSession(req.Session, s.cfg.DB)
 		if targetRepoErr != nil {
 			// Both DB lookup and name-parse fallback failed — unknown target.
-			writeError(w, http.StatusNotFound, "invalid target session name: "+targetRepoErr.Error())
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		if targetRepo != ownRepo {
