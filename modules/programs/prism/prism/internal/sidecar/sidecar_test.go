@@ -5279,36 +5279,50 @@ func TestHostAPI_Cleanup_WorkerForbidden(t *testing.T) {
 
 func TestHostAPI_SessionNameNoAt_NoCheckinPanic(t *testing.T) {
 	d := openTestDB(t)
-	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
+	// Seed the DB with an empty repo column so isCoordinatorSession recognises
+	// this session as coordinator but repoFromSession's DB lookup falls through
+	// (empty status.Repo is treated as "no resolution" — see helpers.go). The
+	// name-parse fallback then also fails because the session has no '@', so
+	// the handler returns 500 with a "cannot derive repo" error rather than
+	// panicking. This is the panic-safety guarantee — the @-less-with-row
+	// happy path is exercised by TestHostAPI_AtlessSession_Checkin_Resolves
+	// in host_api_atless_session_test.go (issue #2112).
 	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed DB: %v", err)
 	}
-	// Session name without "@" — edge case for repoFromSession.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
-	// The sidecar's own session has no "@", which will fail repoFromSession.
-	// The handler should return 500 (internal error deriving repo), not panic.
 	rr := doHostAPI(t, sc, http.MethodGet, "/checkin?session=myrepo@main", "")
 	if rr.Code == 0 {
 		t.Fatal("got zero status — possible panic")
 	}
-	// Should be 500 (cannot derive repo from sidecar's own session name).
 	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 for no-@ session name", rr.Code)
+		t.Fatalf("status = %d, want 500 for no-@ session name with empty DB repo", rr.Code)
 	}
 }
 
 func TestHostAPI_Prompt_InvalidTargetNoAt(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@main", "myrepo", "coordinator", d)
-	// Target session has no "@" — should return 400.
+	// Target session has no "@" AND no DB row — the handler should now return
+	// 404 ("session not found") instead of the old 400 ("contains no '@'")
+	// because the canonical not-found shape is the new error surface introduced
+	// in issue #2112. The CLI surfaces this verbatim to the operator.
 	rr := doHostAPI(t, sc, http.MethodPost, "/prompt",
 		`{"session":"nosession","prompt":"hello"}`)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 for no-@ target session", rr.Code)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 for unknown @-less target session", rr.Code)
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "not found") {
+		t.Errorf("error %q should mention 'not found'", errResp["error"])
 	}
 }
 
 func TestHostAPI_RepoFromSession(t *testing.T) {
+	// Pure name-parse fallback (nil DB) — preserves the historical behaviour
+	// of the helper for the @-bearing dominant case. The @-less DB-fallback
+	// path is covered by TestHostAPI_RepoFromSession_DBFallback below.
 	tests := []struct {
 		session string
 		want    string
@@ -5320,17 +5334,17 @@ func TestHostAPI_RepoFromSession(t *testing.T) {
 		{"", "", true},
 	}
 	for _, tc := range tests {
-		got, err := repoFromSession(tc.session)
+		got, err := repoFromSession(tc.session, nil)
 		if tc.wantErr {
 			if err == nil {
-				t.Errorf("repoFromSession(%q): expected error, got nil", tc.session)
+				t.Errorf("repoFromSession(%q, nil): expected error, got nil", tc.session)
 			}
 		} else {
 			if err != nil {
-				t.Errorf("repoFromSession(%q): unexpected error: %v", tc.session, err)
+				t.Errorf("repoFromSession(%q, nil): unexpected error: %v", tc.session, err)
 			}
 			if got != tc.want {
-				t.Errorf("repoFromSession(%q) = %q, want %q", tc.session, got, tc.want)
+				t.Errorf("repoFromSession(%q, nil) = %q, want %q", tc.session, got, tc.want)
 			}
 		}
 	}
@@ -5737,19 +5751,21 @@ func TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected(t *testing.T) {
 }
 
 // TestHostAPI_Spawn_SidecarNoAtSign_Returns500 verifies AC edge case: if the
-// sidecar's own session name contains no "@", /spawn returns 500 with a
-// message indicating the repo cannot be derived, and no spawn is attempted.
+// sidecar's own session name contains no "@" AND the DB row has an empty
+// repo column (so the DB-fallback path of repoFromSession also misses),
+// /spawn returns 500 with a message indicating the repo cannot be derived
+// and no spawn is attempted. The @-less-with-valid-repo happy path is
+// covered by TestHostAPI_AtlessSession_Spawn_Resolves in
+// host_api_atless_session_test.go (issue #2112).
 func TestHostAPI_Spawn_SidecarNoAtSign_Returns500(t *testing.T) {
 	d := openTestDB(t)
-	// Seed the DB so isCoordinatorSession recognises this session as coordinator.
 	if err := d.UpsertStatusSeedRootAgentName("no-at-sign", "", "/tmp/no-at-sign", "active", nil, nil, "coordinator", "", ""); err != nil {
 		t.Fatalf("seed DB: %v", err)
 	}
-	// Session name without "@" — repoFromSession will fail.
 	sc := newSidecarWithRole(t, "no-at-sign", "", "coordinator", d)
 	rr := doHostAPI(t, sc, http.MethodPost, "/spawn", `{"branch":"some-branch","prompt":"hi"}`)
 	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500 when sidecar session has no '@'", rr.Code)
+		t.Fatalf("status = %d, want 500 when sidecar session has no '@' and empty DB repo", rr.Code)
 	}
 	var errResp map[string]string
 	decodeJSONBody(t, rr, &errResp)

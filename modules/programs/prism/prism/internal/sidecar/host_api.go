@@ -533,7 +533,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Same-repo: everything. Other repos: only coordinators
 			// (root_agent_name = 'coordinator', with @main name-heuristic
 			// fallback for pre-migration rows where root_agent_name IS NULL).
-			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 			if repoErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 				return
@@ -573,14 +573,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		// Permission check: coordinator can access own-repo sessions and
 		// any cross-repo coordinator (@main) session.
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 			return
 		}
-		targetRepo, targetRepoErr := repoFromSession(targetSession)
+		targetRepo, targetRepoErr := repoFromSession(targetSession, s.cfg.DB)
 		if targetRepoErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			// Both DB lookup and name-parse fallback failed — the target
+			// session is unknown. Return 404 so the CLI can surface a clear
+			// "session not found" rather than a parse error (issue #2112).
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		crossRepo := targetRepo != ownRepo
@@ -741,14 +744,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Permission check: own-repo sessions or cross-repo @main sessions.
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 			return
 		}
-		targetRepo, targetRepoErr := repoFromSession(targetSession)
+		targetRepo, targetRepoErr := repoFromSession(targetSession, s.cfg.DB)
 		if targetRepoErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			// Both DB lookup and name-parse fallback failed — unknown target.
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		if targetRepo != ownRepo && !isCoordinatorSession(targetSession, s.cfg.DB, s.logger()) {
@@ -989,15 +993,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 			return
 		}
 
-		targetRepo, targetRepoErr := repoFromSession(req.Session)
+		targetRepo, targetRepoErr := repoFromSession(req.Session, s.cfg.DB)
 		if targetRepoErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			// Both DB lookup and name-parse fallback failed — unknown target.
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		crossRepo := targetRepo != ownRepo
@@ -1229,7 +1234,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// mount-path name instead of the actual repo name) is silently
 		// corrected. The own-repo restriction is enforced implicitly: the
 		// sidecar can only spawn into its own repo.
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 			return
@@ -1731,14 +1736,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 
 		// Own-repo restriction: coordinators may only clean up sessions in their own repo.
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 		if repoErr != nil {
 			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 			return
 		}
-		targetRepo, targetRepoErr := repoFromSession(req.Session)
+		targetRepo, targetRepoErr := repoFromSession(req.Session, s.cfg.DB)
 		if targetRepoErr != nil {
-			writeError(w, http.StatusBadRequest, "invalid target session name: "+targetRepoErr.Error())
+			// Both DB lookup and name-parse fallback failed — unknown target.
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
 			return
 		}
 		if targetRepo != ownRepo {
@@ -2598,7 +2604,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		case "session":
 			targets = []string{req.Session}
 		case "coordinator":
-			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 			if repoErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot derive repo: "+repoErr.Error())
 				return
@@ -2722,7 +2728,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		case "session":
 			targets = []string{req.Session}
 		case "coordinator":
-			ownRepo, repoErr := repoFromSession(s.cfg.SessionName)
+			ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 			if repoErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot derive repo: "+repoErr.Error())
 				return
