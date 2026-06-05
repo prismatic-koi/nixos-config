@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -62,7 +63,7 @@ type reviewerSpawnInput struct {
 // the #2097 ProfileName inheritance are guaranteed identical between
 // the two fan-out paths.
 func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
-	return session.SpawnOpts{
+	opts := session.SpawnOpts{
 		InstanceID:         uuid.New().String(),
 		SessionName:        in.AgentSession,
 		Repo:               in.Repo,
@@ -101,4 +102,24 @@ func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
 		// instead of the host default.
 		ProfileName: in.ProfileName,
 	}
+	// For socket-pipe harnesses (e.g. "pi") in host isolation mode,
+	// pre-compute the Unix socket path so agentPaneEnvVars can inject
+	// PRISM_HARNESS_PIPE into the tmux pane (session/session.go:778-786).
+	// Without this gate the PI extension early-returns as a no-op,
+	// `--agent` is never registered as a CLI flag, and pi rejects
+	// `--agent review-<role> --prompt "..."` with `Unknown options`,
+	// leaving the review agent idle forever.
+	//
+	// bwrap / sandbox-exec / podman set PRISM_HARNESS_PIPE via their own
+	// paths (bwrap.go --setenv, sandbox-exec profile, podman --env); only
+	// inject here for host mode. Mirrors the same block in cmd/spawn.go,
+	// cmd/switch.go, cmd/restore.go, and cmd/investigate.go (issue #2114).
+	if hShape, hShapeOK := harness.ShapeOf(in.HarnessName); hShapeOK && hShape == harness.TransportSocketPipe && in.IsolationMode == "host" {
+		if pipePath, pipeErr := session.SidecarHarnessPipePath(in.AgentSession); pipeErr == nil {
+			opts.HarnessPipeSockPath = pipePath
+		} else {
+			proglog.Warnf("[prism review] warning: could not resolve harness pipe path for %q: %v\n", in.AgentSession, pipeErr)
+		}
+	}
+	return opts
 }
