@@ -88,6 +88,44 @@ After each meaningful code change, run the quality gates described in the repo's
 AGENTS.md (tests, linters, builds). Do not batch these up — run them as you go
 so problems are caught early.
 
+### Match CI's test invocation locally
+
+Before declaring finished, run the **same** test invocation CI uses — not a
+simpler local-shorthand variant. The repo's `AGENTS.md` should point at the
+canonical command; if it doesn't, read the CI workflow files directly
+(`.github/workflows/`, `.gitlab-ci.yml`, etc.) and mirror the exact command
+and flags. Common failure modes this catches:
+
+- **Concurrency analysers** — race detectors, model checkers, or loom-style
+  scheduling explorers change which interleavings get explored. A test that
+  passes without them may fail with them.
+- **Sandbox / isolation flags** — your local environment usually has fewer
+  restrictions than CI. Tests that touch the user's home directory, network,
+  or filesystem may pass locally and fail in CI's sandbox.
+- **Coverage / lint / strictness flags** — `--strict`, `-Werror`,
+  `clippy::all`, deny-warnings configurations, etc. — change which checks
+  fire.
+- **Integration vs unit suites** — CI may run both; your habit may be to run
+  only one.
+
+This complements the AGENTS.md delegation above rather than replacing it —
+AGENTS.md names the canonical command for the repo; the workflow files are
+the source of truth when AGENTS.md is silent or stale.
+
+### Verify your tests aren't no-ops
+
+When you write a new test for a fix, briefly verify the test actually catches
+the bug it's meant to catch. The minimal discipline:
+
+1. Revert your fix locally (e.g. `git stash`, or comment out the change).
+2. Re-run only the new test. Confirm it **FAILS**.
+3. Re-apply your fix. Confirm the new test **PASSES**.
+
+This is a one-minute check that catches "vacuous pass" tests — tests that
+pass equally before and after the fix and therefore provide no actual signal.
+It's especially important for regression tests on subtle bugs, where the test
+scaffolding may not reproduce the failure path correctly.
+
 ## Opening your PR
 
 When your work is complete and quality gates pass:
