@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/session"
 )
 
 // RunGHForTest is an exported wrapper around runGH for use in timeout tests.
@@ -113,6 +115,58 @@ const MaxProgressMsgBytesForTest = maxProgressMsgBytes
 // for use in external test packages (#1512).
 func BuildLoopLimitFooterForTest(cycles int, prNumber string) string {
 	return buildLoopLimitFooter(cycles, prNumber)
+}
+
+// ReviewerSpawnInputForTest mirrors the unexported reviewerSpawnInput
+// struct (spawn_opts.go) so external tests in package review_test can
+// drive newReviewerSpawnOpts via NewReviewerSpawnOptsForTest. Fields
+// match 1:1 with the production struct; see spawn_opts.go for the
+// field-level rationale.
+type ReviewerSpawnInputForTest struct {
+	AgentName          string
+	AgentSession       string
+	Prompt             string
+	AgentConfigContent string
+	Repo               string
+	Worktree           string
+	PromptTemplateHash string
+	IsolationMode      string
+	PluginHostPath     string
+	GroupID            string
+	HarnessName        string
+	HarnessHandle      harness.Harness
+	ModelsByRole       map[string]string
+	PIExtensionDir     string
+	ProfileName        string
+}
+
+// NewReviewerSpawnOptsForTest is an exported wrapper around
+// newReviewerSpawnOpts (spawn_opts.go) for use in external test
+// packages verifying the #2097 ProfileName-inheritance wiring.
+//
+// Tests construct a ReviewerSpawnInputForTest, pass it through this
+// shim, and assert on the returned session.SpawnOpts.ProfileName.
+// The shim mirrors the production call signature so a regression in
+// the field mapping (e.g. accidentally dropping ProfileName from the
+// returned literal) is caught immediately.
+func NewReviewerSpawnOptsForTest(in ReviewerSpawnInputForTest) session.SpawnOpts {
+	return newReviewerSpawnOpts(reviewerSpawnInput{
+		AgentName:          in.AgentName,
+		AgentSession:       in.AgentSession,
+		Prompt:             in.Prompt,
+		AgentConfigContent: in.AgentConfigContent,
+		Repo:               in.Repo,
+		Worktree:           in.Worktree,
+		PromptTemplateHash: in.PromptTemplateHash,
+		IsolationMode:      in.IsolationMode,
+		PluginHostPath:     in.PluginHostPath,
+		GroupID:            in.GroupID,
+		HarnessName:        in.HarnessName,
+		HarnessHandle:      in.HarnessHandle,
+		ModelsByRole:       in.ModelsByRole,
+		PIExtensionDir:     in.PIExtensionDir,
+		ProfileName:        in.ProfileName,
+	})
 }
 
 // CurrentCycleProducedVerdictsForTest is an exported wrapper around
