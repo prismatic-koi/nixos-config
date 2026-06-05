@@ -250,7 +250,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			// JSONL transcript and null agent_status.harness_session_id so a
 			// re-spawn on the same branch name starts a fresh pi conversation.
 			// Must run before SetEnded so the status read still sees the row.
-			severPiResumeLinkage(d, m.session)
+			// The TUI path does not surface the per-update outcome — failure
+			// is already logged via proglog inside severPiResumeLinkage.
+			_ = severPiResumeLinkage(d, m.session)
 			_ = d.SetEnded(m.session)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -500,11 +502,85 @@ var cleanupCmd = &cobra.Command{
 // and the structured --json object. Empty/false fields mean the corresponding
 // resource was not touched (e.g. worktree path unknown — see
 // worktreeRemoved=nil for the JSON encoding).
+//
+// The three lifecycle-bookkeeping fields (EndedAtStamped, HarnessPortReleased,
+// HarnessSessionIDCleared) carry a heterogeneous value per the issue #2134
+// contract: `true` on success (or idempotent no-op — the row is in the
+// cleaned-up state), a string describing the failure on error, or null when
+// the DB block was never reached (e.g. the function returned early via the
+// PRISM_HOST_API proxy short-circuit at the top of the function). The `any`
+// type marshals as `true | "err msg" | null` directly through encoding/json.
 type cleanupResult struct {
-	Session         string  `json:"session"`
-	WorktreeRemoved *string `json:"worktree_removed"` // nil when no worktree was touched
-	BranchDeleted   *string `json:"branch_deleted"`   // nil when no branch was deleted
-	SessionKilled   bool    `json:"session_killed"`
+	Session                 string  `json:"session"`
+	WorktreeRemoved         *string `json:"worktree_removed"` // nil when no worktree was touched
+	BranchDeleted           *string `json:"branch_deleted"`   // nil when no branch was deleted
+	SessionKilled           bool    `json:"session_killed"`
+	EndedAtStamped          any     `json:"ended_at_stamped"`
+	HarnessPortReleased     any     `json:"harness_port_released"`
+	HarnessSessionIDCleared any     `json:"harness_session_id_cleared"`
+}
+
+// applyDBLifecycleClears performs the three agent_status lifecycle updates
+// for sessionName — release harness_port, clear harness_session_id, stamp
+// ended_at — and records per-update outcomes into result. Each outcome is
+// `true` on success (including idempotent no-ops where the column is already
+// in the cleaned-up state) or a string describing the failure.
+//
+// Issue #2134: prior to this helper, errors from these calls were either
+// silently discarded (`_ = d.SetEnded(...)`) or only logged via proglog. The
+// JSON envelope had no fields for them, so operators had no way to verify
+// whether the bookkeeping actually ran.
+//
+// Call order is preserved from the prior inline form: ReleasePort first,
+// then severPiResumeLinkage (which clears harness_session_id and removes the
+// pi JSONL transcript per #2035), then SetEnded last. SetEnded stamps
+// ended_at on both the agent_status row and any review-child rows via the
+// existing LIKE cascade.
+func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
+	// 1. Release the harness port. ReleasePort is idempotent on existing
+	//    rows (UPDATE on an already-NULL port is a no-op success); the
+	//    "session not found" error only fires when the agent_status row
+	//    does not exist at all, which the cleanupCmd.RunE validation
+	//    rejects up-front for direct cleanup invocations.
+	if err := d.ReleasePort(sessionName); err != nil {
+		result.HarnessPortReleased = err.Error()
+		proglog.Errorf("[prism] cleanup: release port for %s: %v\n", sessionName, err)
+	} else {
+		result.HarnessPortReleased = true
+	}
+
+	// 2. Sever the pi resume linkage (issue #2035): clears
+	//    agent_status.harness_session_id (cascading to ~review-% children
+	//    via SQL LIKE) and removes the on-disk pi JSONL transcript so a
+	//    re-spawn on the same branch name starts a fresh conversation.
+	if err := severPiResumeLinkage(d, sessionName); err != nil {
+		result.HarnessSessionIDCleared = err.Error()
+	} else {
+		result.HarnessSessionIDCleared = true
+	}
+
+	// 3. Stamp ended_at. SetEnded internally guards with `AND ended_at IS
+	//    NULL` so re-invocations on an already-ended row succeed as a
+	//    no-op (idempotent). The LIKE cascade also stamps ended_at on any
+	//    review-child rows whose parent is sessionName.
+	if err := d.SetEnded(sessionName); err != nil {
+		result.EndedAtStamped = err.Error()
+		proglog.Errorf("[prism] cleanup: set ended for %s: %v\n", sessionName, err)
+	} else {
+		result.EndedAtStamped = true
+	}
+}
+
+// markDBLifecycleSkipped populates the three lifecycle fields with the same
+// error description so the JSON envelope clearly tells the operator that the
+// bookkeeping was NOT attempted (DB couldn't be opened). Without this, those
+// fields would marshal as `null` and the operator could not distinguish
+// "not attempted" from "silently skipped without explanation" — exactly the
+// silent-failure mode issue #2134 calls out.
+func markDBLifecycleSkipped(result *cleanupResult, reason string) {
+	result.HarnessPortReleased = reason
+	result.HarnessSessionIDCleared = reason
+	result.EndedAtStamped = reason
 }
 
 // emitCleanupJSON writes the cleanup result as a single JSON object on a line
@@ -628,19 +704,16 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
-		if releaseErr := d.ReleasePort(session); releaseErr != nil {
-			proglog.Errorf("[prism] headlessCleanup: release port: %v\n", releaseErr)
-		}
 		// Capture instance_id and isolation_mode before SetEnded clears the
-		// row's lifecycle fields.
+		// row's lifecycle fields. Done before applyDBLifecycleClears so the
+		// CurrentStatus reads inside instanceIDFromStatus still observe the
+		// pre-cleanup row.
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		// Sever the pi resume linkage (issue #2035): remove the on-disk pi
-		// JSONL transcript and null agent_status.harness_session_id so a
-		// re-spawn on the same branch name starts a fresh pi conversation.
-		// Must run before SetEnded so the status read still sees the row.
-		severPiResumeLinkage(d, session)
-		_ = d.SetEnded(session)
+		// Apply the three lifecycle clears — release harness_port, clear
+		// harness_session_id, stamp ended_at — and capture per-update
+		// outcomes for the JSON envelope (issue #2134).
+		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
@@ -671,6 +744,11 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
 		// Also try to kill review sessions via tmux even without DB cleanup.
+		// Issue #2134: report the skip in the JSON envelope so operators can
+		// distinguish "DB bookkeeping ran successfully" from "DB was
+		// unavailable and the bookkeeping never ran".
+		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
+		proglog.Errorf("[prism] headlessCleanup: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
@@ -719,7 +797,10 @@ func closeSession(session string) error {
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		// Sever the pi resume linkage (issue #2035) before marking ended.
-		severPiResumeLinkage(d, session)
+		// closeSession is the interactive @main path and does not surface a
+		// JSON envelope — the per-update outcome is captured by the proglog
+		// warning in severPiResumeLinkage itself.
+		_ = severPiResumeLinkage(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -811,14 +892,12 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
-		if releaseErr := d.ReleasePort(session); releaseErr != nil {
-			proglog.Errorf("[prism] headlessCloseSession: release port: %v\n", releaseErr)
-		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		// Sever the pi resume linkage (issue #2035) before marking ended.
-		severPiResumeLinkage(d, session)
-		_ = d.SetEnded(session)
+		// Apply the three lifecycle clears — release harness_port, clear
+		// harness_session_id, stamp ended_at — and capture per-update
+		// outcomes for the JSON envelope (issue #2134).
+		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
@@ -842,6 +921,9 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 	} else {
 		// DB unavailable — still attempt container removal conservatively.
 		// Also try to kill review sessions via tmux even without DB cleanup.
+		// Issue #2134: report the skip in the JSON envelope.
+		markDBLifecycleSkipped(&result, fmt.Sprintf("db open failed: %v", err))
+		proglog.Errorf("[prism] headlessCloseSession: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
 	}
@@ -1163,11 +1245,20 @@ func init() {
 // teardown proceeds: the worst case is that the next spawn on this branch
 // name resumes a defunct conversation, which is recoverable by the operator,
 // whereas a half-cleaned worktree/branch is not.
-func severPiResumeLinkage(d *db.DB, sessionName string) {
+//
+// Return value (issue #2134): the error from d.ClearHarnessSessionID (the
+// load-bearing DB clear), or nil on success / when the row is absent. The
+// on-disk JSONL removal is defence-in-depth and its failure is logged but
+// not propagated. Callers that surface the clear outcome in a JSON envelope
+// (headlessCleanupWithJSON / headlessCloseSessionWithJSON via
+// applyDBLifecycleClears) consume this return value; callers that don't
+// (doCleanup, closeSession) ignore it and rely on the proglog warning to
+// surface failures.
+func severPiResumeLinkage(d *db.DB, sessionName string) error {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
 		// No row to read — no JSONL to scope to, no DB clear needed.
-		return
+		return nil
 	}
 	if status.HarnessSessionID != nil && *status.HarnessSessionID != "" && status.Worktree != "" {
 		cfg := container.Config{
@@ -1184,7 +1275,9 @@ func severPiResumeLinkage(d *db.DB, sessionName string) {
 	}
 	if clearErr := d.ClearHarnessSessionID(sessionName); clearErr != nil {
 		proglog.Errorf("[prism] severPiResumeLinkage: clear harness_session_id for %s: %v\n", sessionName, clearErr)
+		return clearErr
 	}
+	return nil
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for
