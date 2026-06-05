@@ -569,6 +569,8 @@ The workflow is:
    prism stats compare <instance-id-A> <instance-id-B>
    # or, if you minted the pair via --abtest, by the shared pair id:
    prism stats abtest <pair-id>
+   # machine-readable when scripting the winner decision:
+   prism stats compare <instance-id-A> <instance-id-B> --json | jq .
    ```
 
    The output carries the `Spawn Inputs` block (profile, harness, isolation, agent role, branch, abtest_pair_id) plus per-axis aggregates (tokens, cost, tool calls, durations, end_state). The aggregates are available *between* terminal-state transition and `prism cleanup` — they no longer require cleanup to materialise (issue #2102). Use the cost / duration / msg_assistant axes alongside the quality of the produced PRs to pick a winner.
@@ -579,7 +581,7 @@ Notes:
 
 - `prism stats compare` shows `—` for aggregate axes while a session is still in progress (state `active`, `idle`, or `reviewing`). The aggregates only stabilise at terminal transition.
 - The `Spawn Inputs` block surfaces whatever the writer captured at spawn time. Pre-#2087 sessions may have a partial row — missing columns render as `—` rather than collapsing the whole block.
-- Use `--format json` for machine-readable output (e.g. when scripting the winner decision); the `spawn_inputs` object carries the same fields shown in the table.
+- Use `--json` (preferred) or the equivalent `--format json` for machine-readable output (e.g. when scripting the winner decision); the `spawn_inputs` object carries the same fields shown in the table. On error, both surfaces emit a single-line `{"error":"..."}` JSON envelope to stderr (no cobra usage dump) — script the failure path against the JSON contract too, not by parsing human-readable text (issue #2099).
 
 ## Querying prism state — prefer `--json` for scripting
 
@@ -591,6 +593,9 @@ Every list-style and lookup-style prism subcommand supports a `--json` flag that
 | `prism sessions list --all --json` | array of session-status objects across all repos |
 | `prism checkin <session> --json` | session + events object |
 | `prism stats --json` (and `prism stats <id> --json`) | rows mirroring the host-API |
+| `prism stats compare --json <runs...>` (alias for `--format json`) | `{runs:[...], diffs:{spawn_inputs:[...], spawn_outcome:[...]}}` |
+| `prism stats abtest <group_id> --json` | same shape as `stats compare --json` |
+| `prism stats --abtest --json` | `{pairs:[...]}` — abtest pair listing |
 | `prism merges --json` (and `prism merges list --json`, `--failed --json`, `--abandoned --json`, `--all --json`) | array of merge-queue entries |
 | `prism audit --json` | object with `events` array, `truncated` bool, optional `hint` |
 | `prism sessions status --json` | object keyed by state (`active`, `waiting`, `idle`, `finished`, `error`) with integer counts (mutually exclusive with `--tmux-format`) |
