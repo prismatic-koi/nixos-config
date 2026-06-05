@@ -551,6 +551,22 @@ prism cleanup --yes --session "nixos-config@update-plex"
 
 The `agent_status` row itself is preserved — it is not deleted. Re-spawning on the same branch name reuses the row: `tmux-session-start` re-seeds it to `idle`, which the state machine accepts from any non-`deleted` terminal state (`error`, `finished`, `interrupted`). Long-term retention is handled by the 90-day `Prune` job.
 
+The `--json` envelope reports per-resource outcomes so you can verify the bookkeeping ran:
+
+```json
+{
+  "session": "nixos-config@update-plex",
+  "worktree_removed": "/code/nixos-config/update-plex",
+  "branch_deleted": "update-plex",
+  "session_killed": true,
+  "ended_at_stamped": true,
+  "harness_port_released": true,
+  "harness_session_id_cleared": true
+}
+```
+
+Each of `ended_at_stamped`, `harness_port_released`, `harness_session_id_cleared` is `true` on success (or idempotent no-op — the row is in the cleaned-up state), or a string describing the failure on error. If the DB cannot be opened, all three carry the same failure description so the operator can tell the bookkeeping was NOT attempted. Re-running cleanup on an already-ended session is idempotent: each field still reports `true`, the row stays ended, and the command exits 0.
+
 Only call this after you have confirmed the PR is merged. The `--yes` path always force-deletes the branch — it does not check whether the branch is reachable from main, because squash-merges produce a different SHA on main than the branch tip.
 
 Pi sessions block `git worktree prune` and `git worktree remove` at the extension layer. When recovering from a failed spawn, use `prism cleanup` — do not reach for git plumbing.
