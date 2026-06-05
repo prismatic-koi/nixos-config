@@ -37,7 +37,6 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.harnessConfigFilePath())
-	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
 		_ = os.RemoveAll(stagingHome)
@@ -149,7 +148,6 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.gitconfigFilePath())
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.harnessConfigFilePath())
-	_ = os.Remove(m.claudeCredentialsFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
 	// Remove the per-session sandbox-exec staging HOME directory tree.
 	if stagingHome, err := m.sandboxExecHomePath(); err == nil {

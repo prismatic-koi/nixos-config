@@ -214,15 +214,38 @@ func extractMessageIDFromPayload(raw string) string {
 	return p.MessageID
 }
 
-// repoFromSession extracts the repo prefix from a session name (e.g.
-// "nixos-config" from "nixos-config@main"). Returns an error when the session
-// name contains no "@" — this indicates a misconfigured or non-worktree session.
-func repoFromSession(sessionName string) (string, error) {
-	idx := strings.Index(sessionName, "@")
-	if idx < 0 {
-		return "", fmt.Errorf("session name %q contains no '@' — cannot derive repo", sessionName)
+// repoFromSession returns the repo prefix for a session.
+//
+// When d is non-nil and an agent_status row exists for sessionName with a
+// non-empty repo column, that value is returned. This is the authoritative
+// path and resolves both `<repo>@<branch>` sessions and @-less host-mode
+// sessions (e.g. "obsidian" against ~/Documents/obsidian via
+// ProjectIsolationOverrides — issue #2112). Without the DB lookup, host-mode
+// non-git sessions whose names lack an `@<branch>` suffix could not be
+// resolved and every host-API permission check that called this helper
+// rejected them with a "contains no '@' — cannot derive repo" parse error.
+//
+// When the DB lookup misses (no row, empty repo, DB error, or d == nil), the
+// helper falls back to parsing the session name as `<repo>@<branch>`. The
+// fallback keeps repoFromSession usable in unit tests that do not seed a row
+// and preserves the original behaviour for the dominant @-bearing case when
+// the DB has not yet recorded a row for a freshly-minted session.
+//
+// Returns an error only when both paths fail: no DB row (or no DB) AND the
+// name contains no "@". The error message names the unknown session so the
+// caller can surface a clear "session not found" error rather than a parse-
+// failure description (AC: prism checkin <unknown-name> should not say
+// "cannot derive repo").
+func repoFromSession(sessionName string, d *db.DB) (string, error) {
+	if d != nil {
+		if status, err := d.CurrentStatus(sessionName); err == nil && status != nil && status.Repo != "" {
+			return status.Repo, nil
+		}
 	}
-	return sessionName[:idx], nil
+	if idx := strings.Index(sessionName, "@"); idx >= 0 {
+		return sessionName[:idx], nil
+	}
+	return "", fmt.Errorf("session %q not found", sessionName)
 }
 
 // isCoordinator returns true when the session name ends with "@main", which is

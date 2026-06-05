@@ -6,48 +6,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
-
-// writeClaudeCredentials extracts Claude Code credentials from the macOS
-// Keychain and writes them to a temp file. On Linux, Claude Code stores
-// credentials in ~/.claude/.credentials.json which is already inside the
-// claudeMount bind-mounted directory and requires no special handling. On
-// Darwin, credentials are stored in the Keychain under the service name
-// "Claude Code-credentials" and never reach disk, so the container never
-// sees them via the directory mount alone.
-//
-// Sets m.claudeCredentialsReady to true on success so that buildRunArgs can
-// add the bind-mount. Logs and returns without error on failure — a missing
-// Keychain entry (e.g. not logged in) should surface as an auth error from
-// the agent harness rather than a hard container launch failure.
-func (m *Manager) writeClaudeCredentials() {
-	m.claudeCredentialsReady = false
-	if runtime.GOOS != "darwin" {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "security", "find-generic-password",
-		"-l", "Claude Code-credentials", "-w").Output()
-	if err != nil {
-		log.Printf("container: could not extract Claude credentials from macOS Keychain: %v — pi-anthropic-oauth may fail to authenticate", err)
-		return
-	}
-	creds := strings.TrimSpace(string(out))
-	if creds == "" {
-		log.Printf("container: macOS Keychain returned empty Claude credentials — run `claude login` to authenticate")
-		return
-	}
-	if err := os.WriteFile(m.claudeCredentialsFilePath(), []byte(creds), 0o600); err != nil {
-		log.Printf("container: failed to write Claude credentials temp file: %v", err)
-		return
-	}
-	m.claudeCredentialsReady = true
-}
 
 // gitBareRootTimeout is the per-call timeout for git subprocess invocations
 // inside githubAccountFromBareRoot. Matches the convention introduced for
