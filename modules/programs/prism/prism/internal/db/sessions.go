@@ -414,6 +414,33 @@ SELECT group_id FROM session_groups
 		}
 	}
 
+	// --- Agent-level: prefer persisted spawn_outcome values when present ---
+	//
+	// Issue #2110 added dedicated write paths for the agent-level columns
+	// (pr_number from the worker's `gh pr create`, pr_merged_at from the
+	// merge-queue watcher, review_verdict/review_pass_count/review_fail_count
+	// from the review-complete handler). When a write path has already fired,
+	// the persisted value is the authoritative one for the latest-round-wins
+	// semantics required by the AC. The pending_merges and GroupResults
+	// fallbacks above remain in place for sessions whose write paths never
+	// fired (historical sessions completed before #2110 landed).
+	if existing, exErr := d.SpawnOutcomeByInstanceID(instanceID); exErr == nil && existing != nil {
+		if existing.PRNumber != nil {
+			out.PRNumber = existing.PRNumber
+		}
+		if existing.PRMergedAt != nil {
+			out.PRMergedAt = existing.PRMergedAt
+		}
+		if existing.ReviewVerdict != nil {
+			out.ReviewVerdict = existing.ReviewVerdict
+			out.ReviewPassCount = existing.ReviewPassCount
+			out.ReviewFailCount = existing.ReviewFailCount
+			// ReviewNoneCount is computed-only; leave whatever ComputeSpawnOutcome
+			// derived above. The write path only persists the three AC-named
+			// columns; the none-count remains a derived signal.
+		}
+	}
+
 	return &out, nil
 }
 
@@ -492,6 +519,156 @@ INSERT OR REPLACE INTO spawn_outcome (
 		return fmt.Errorf("db: write spawn outcome: insert: %w", err)
 	}
 	return nil
+}
+
+// UpdateSpawnOutcomePR records the PR number opened by the worker session
+// identified by instanceID. Issue #2110: pr_number was previously read by the
+// `prism stats compare` renderer but never written by any code path. This is
+// the worker-side capture write trigger: the sidecar calls it the moment it
+// observes a successful `gh pr create` invocation in its event stream.
+//
+// The write is a partial UPSERT — it inserts a minimal row with pr_number set
+// when no spawn_outcome row yet exists for instanceID, and updates only
+// pr_number and computed_at when one does. Other columns are preserved. This
+// allows the write to fire at the natural event boundary (PR creation) without
+// racing the cleanup-time WriteSpawnOutcome overwrite.
+//
+// Returns a silent no-op when no sessions row exists for instanceID. The FK
+// constraint on spawn_outcome.instance_id would otherwise reject the insert;
+// catching it as a no-op matches WriteSpawnOutcome's pre-migration tolerance.
+func (d *DB) UpdateSpawnOutcomePR(instanceID string, prNumber int) error {
+	if instanceID == "" {
+		return nil
+	}
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		return fmt.Errorf("db: update spawn outcome pr: lookup session: %w", err)
+	}
+	if sess == nil {
+		return nil // pre-migration or unknown instance — silent no-op
+	}
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT INTO spawn_outcome (instance_id, pr_number, computed_at, schema_version)
+VALUES (?, ?, ?, 1)
+ON CONFLICT(instance_id) DO UPDATE SET
+    pr_number   = excluded.pr_number,
+    computed_at = excluded.computed_at`
+	if _, err := d.conn.Exec(q, instanceID, prNumber, now); err != nil {
+		return fmt.Errorf("db: update spawn outcome pr: %w", err)
+	}
+	return nil
+}
+
+// UpdateSpawnOutcomePRMergedAt records the wall-clock time the worker
+// session's PR was merged. Issue #2110: this is the merge-queue watcher's
+// write trigger — the watcher calls it from succeedAndNotify, persisting the
+// same timestamp it already passes to TerminateMerge on the pending_merges
+// row. The persistence happens BEFORE the merge notification fires so a write
+// error cannot delay or skip the notification.
+//
+// mergedAtMs is the Unix-milliseconds timestamp. Like UpdateSpawnOutcomePR
+// this is a partial UPSERT — other columns are preserved.
+//
+// Returns a silent no-op when no sessions row exists for instanceID.
+func (d *DB) UpdateSpawnOutcomePRMergedAt(instanceID string, mergedAtMs int64) error {
+	if instanceID == "" {
+		return nil
+	}
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		return fmt.Errorf("db: update spawn outcome pr_merged_at: lookup session: %w", err)
+	}
+	if sess == nil {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT INTO spawn_outcome (instance_id, pr_merged_at, computed_at, schema_version)
+VALUES (?, ?, ?, 1)
+ON CONFLICT(instance_id) DO UPDATE SET
+    pr_merged_at = excluded.pr_merged_at,
+    computed_at  = excluded.computed_at`
+	if _, err := d.conn.Exec(q, instanceID, mergedAtMs, now); err != nil {
+		return fmt.Errorf("db: update spawn outcome pr_merged_at: %w", err)
+	}
+	return nil
+}
+
+// UpdateSpawnOutcomeReviewResult records the latest-round verdict and per-
+// agent counts for the worker session's review. Issue #2110: this is the
+// review-complete handler's write trigger — the monitor calls it the moment
+// it has the aggregated verdicts in hand (same site that builds the prompt
+// body), persisting all three columns in a single transaction.
+//
+// Latest-round-wins semantics. Each MonitorFunc invocation represents a
+// single review round; this UPSERT overwrites the previous round's values
+// rather than accumulating. A worker that runs round 1 (3 PASS, 2 FAIL) then
+// round 2 (5 PASS, 0 FAIL) ends with review_pass_count=5, review_fail_count=0,
+// review_verdict="pass" — its actual ship state, not a historical sum.
+//
+// verdict is "pass" when all reviewers passed, "fail" when any reviewer failed.
+// passCount/failCount reflect the agents whose LastMessage carried a
+// parseable `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` marker for
+// this round; agents without a parseable verdict (infrastructure failures,
+// truncated output) count toward failCount when verdict=="fail" and toward
+// neither when verdict=="pass" (which is unreachable in that case).
+//
+// Like the other partial writers this UPSERT is a no-op when no sessions row
+// exists for instanceID.
+func (d *DB) UpdateSpawnOutcomeReviewResult(instanceID, verdict string, passCount, failCount int) error {
+	if instanceID == "" {
+		return nil
+	}
+	sess, err := d.SessionByInstanceID(instanceID)
+	if err != nil {
+		return fmt.Errorf("db: update spawn outcome review result: lookup session: %w", err)
+	}
+	if sess == nil {
+		return nil
+	}
+	now := time.Now().UnixMilli()
+	const q = `
+INSERT INTO spawn_outcome (instance_id, review_verdict, review_pass_count, review_fail_count, computed_at, schema_version)
+VALUES (?, ?, ?, ?, ?, 1)
+ON CONFLICT(instance_id) DO UPDATE SET
+    review_verdict    = excluded.review_verdict,
+    review_pass_count = excluded.review_pass_count,
+    review_fail_count = excluded.review_fail_count,
+    computed_at       = excluded.computed_at`
+	if _, err := d.conn.Exec(q, instanceID, verdict, passCount, failCount, now); err != nil {
+		return fmt.Errorf("db: update spawn outcome review result: %w", err)
+	}
+	return nil
+}
+
+// InstanceIDForPRNumber returns the instance_id of the worker session whose
+// spawn_outcome row carries the given pr_number, or ("", nil) when none is
+// found. Used by the merge-queue watcher (issue #2110) to locate the worker
+// session that opened the PR, so it can persist pr_merged_at on the same row
+// whose pr_number it sees.
+//
+// When multiple rows match (shouldn't happen in practice — PR numbers are
+// globally unique within a repo and the worker-side capture only writes once),
+// the most recently-computed row wins. The query is scoped to spawn_outcome
+// only; cross-repo PR collisions are impossible because PR numbers are
+// assigned per-repo and the merge-queue watcher's repo binding already
+// narrows the scope at the call site.
+func (d *DB) InstanceIDForPRNumber(prNumber int) (string, error) {
+	const q = `
+SELECT instance_id FROM spawn_outcome
+ WHERE pr_number = ?
+ ORDER BY computed_at DESC
+ LIMIT 1`
+	var iid string
+	err := d.conn.QueryRow(q, prNumber).Scan(&iid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("db: instance for pr_number %d: %w", prNumber, err)
+	}
+	return iid, nil
 }
 
 // SpawnOutcomeByInstanceID returns the spawn_outcome row for instanceID, or nil

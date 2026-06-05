@@ -347,9 +347,39 @@ func (w *Watcher) checkPRMergedState(ctx context.Context, pr int) string {
 
 // succeedAndNotify transitions head to merged and notifies the coordinator.
 func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge) {
+	// Capture mergedAt at the same instant TerminateMerge persists it, so the
+	// spawn_outcome.pr_merged_at write reflects the canonical wall-clock the
+	// merge-queue row carries. Using time.Now() here (and inside TerminateMerge)
+	// rather than gh's mergedAt field is a deliberate trade-off: gh-supplied
+	// timestamps drift in the BLOCKED → CLEAN race window, and the operator
+	// view of "when did we merge it" is the moment the watcher transitioned
+	// the row, not the moment GitHub recorded the squash commit.
+	mergedAt := time.Now().UnixMilli()
 	if err := w.db.TerminateMerge(head.PR, "merged", ""); err != nil {
 		log.Printf("[mergequeue] TerminateMerge(merged) PR #%d: %v", head.PR, err)
 	}
+	// Issue #2110: persist pr_merged_at on the worker's spawn_outcome row
+	// alongside the notification. The write happens BEFORE w.notify is called
+	// below so the notification firing path is unchanged — a write error logs
+	// and continues, never blocking or delaying the notification.
+	//
+	// The worker is located by joining via spawn_outcome.pr_number, which the
+	// worker-side capture path (events.go on `gh pr create` completion) wrote
+	// at PR open. When the worker died before that capture fired, the lookup
+	// returns "" and the update is a no-op — we lose pr_merged_at for that
+	// session, but the merge still notifies.
+	if iid, err := w.db.InstanceIDForPRNumber(head.PR); err != nil {
+		log.Printf("[mergequeue] InstanceIDForPRNumber(PR #%d): %v", head.PR, err)
+	} else if iid != "" {
+		if err := w.db.UpdateSpawnOutcomePRMergedAt(iid, mergedAt); err != nil {
+			log.Printf("[mergequeue] UpdateSpawnOutcomePRMergedAt(iid=%s, pr=%d): %v", iid, head.PR, err)
+		} else {
+			log.Printf("[mergequeue] persisted pr_merged_at on worker spawn_outcome (iid=%s, pr=%d)", iid, head.PR)
+		}
+	} else {
+		log.Printf("[mergequeue] PR #%d: no worker spawn_outcome row carries pr_number=%d — skipping pr_merged_at persistence", head.PR, head.PR)
+	}
+
 	// Look up the worker session's archive_path from the sessions table.
 	archivePath := w.lookupWorkerArchivePath(head)
 	var notifyText string

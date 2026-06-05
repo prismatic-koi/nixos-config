@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/prismatic-koi/prism/internal/agent"
@@ -140,6 +142,63 @@ func extractBashCommand(input any) string {
 		return ""
 	}
 	return cmd
+}
+
+// isGhPRCreateCommand reports whether cmd is a `gh pr create` invocation
+// (case-insensitive, leading-whitespace tolerant). The check is intentionally
+// strict — `gh pr create-merge-commit` or any future subcommand whose first
+// token is "create-XXX" must not match. Matching is performed on the trimmed,
+// lowercased command, treating a tab or space after "create" as the only
+// valid termination of the prefix.
+//
+// Used by the bash tool-completion handler to decide whether to scan the
+// command's output for a PR URL and persist the captured pr_number
+// (issue #2110).
+func isGhPRCreateCommand(cmd string) bool {
+	lower := strings.ToLower(strings.TrimSpace(cmd))
+	const prefix = "gh pr create"
+	if lower == prefix {
+		return true
+	}
+	return strings.HasPrefix(lower, prefix+" ") || strings.HasPrefix(lower, prefix+"\t")
+}
+
+// prURLRegex matches the PR-URL fragment in `gh pr create` output. The CLI
+// prints a single line like `https://github.com/owner/repo/pull/123` on
+// success, sometimes followed by additional output (e.g. `--web` prints a
+// confirmation line). The capture group is the PR number.
+//
+// The pattern is anchored to /pull/ rather than the full host so that
+// enterprise GitHub deployments (github.example.com) and gh-emit changes that
+// re-route through a proxy still match. The trailing boundary `(?:[^0-9]|$)`
+// prevents a partial match into a longer numeric suffix (e.g. /pull/1234
+// would otherwise match as 123 with the `4` dangling).
+var prURLRegex = regexp.MustCompile(`/pull/(\d+)(?:[^0-9]|$)`)
+
+// extractPRNumberFromGhOutput scans the raw stdout/stderr of a successful
+// `gh pr create` invocation for the PR URL and returns the parsed PR number.
+// Returns (0, false) when no URL is found.
+//
+// The matcher trusts the FIRST URL it sees in output. `gh pr create` prints
+// the URL on its own line at the top of its success output; later lines
+// (the `--web` confirmation, browser-open warnings) do not include another
+// /pull/ URL. If a future gh release changes the output shape the worker
+// will silently skip the capture; the sister-write-paths (option (b)
+// backfill via spawn_outcome.pr_number from merge-queue ledger) remain as
+// fallbacks.
+func extractPRNumberFromGhOutput(output string) (int, bool) {
+	if output == "" {
+		return 0, false
+	}
+	m := prURLRegex.FindStringSubmatch(output)
+	if len(m) < 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // extractMessageIDFromPayload returns the "messageId" field from a raw event

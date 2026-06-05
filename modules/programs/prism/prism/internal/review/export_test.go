@@ -180,3 +180,12 @@ func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResu
 func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, perAgentTimeout time.Duration) {
 	forceTerminateStuckMembers(d, agentSessions, perAgentTimeout)
 }
+
+// PersistReviewOutcomeForTest is an exported wrapper around persistReviewOutcome
+// for use in external test packages (#2110). It allows tests to verify the
+// review-complete write trigger — verdict + pass/fail counts persisted on the
+// worker's spawn_outcome row — without standing up an entire MonitorFunc poll
+// loop.
+func PersistReviewOutcomeForTest(d *db.DB, workerSession string, results []AgentResult, allPassed bool) {
+	persistReviewOutcome(d, workerSession, results, allPassed)
+}
