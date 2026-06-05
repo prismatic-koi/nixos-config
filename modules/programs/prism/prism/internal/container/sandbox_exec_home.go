@@ -14,10 +14,6 @@ package container
 //  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment at
 //     bwrap.go:306-308). Writes to .credentials.json (e.g. token refreshes)
 //     flow through the symlink to the host's ~/.claude/.credentials.json.
-//  2. Library/Keychains/login.keychain-db is symlinked so that opencode-claude-auth
-//     (which uses `security dump-keychain` with $HOME to find the keychain search
-//     list) can locate the user's login keychain. The SBPL profile grants
-//     file-read* on the resolved path via (literal login.keychain-db) (#1487).
 //
 //  2. .config/prism/agents/ is symlinked into the staging HOME for ALL roles
 //     (including review-*) so the prism PI extension can read <role>.md at
@@ -289,27 +285,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		for _, d := range []string{chromeAppSupport, chromeCaches} {
 			if err := os.MkdirAll(d, 0o700); err != nil {
 				log.Printf("container: sandbox-exec: create chromium staging dir %s: %v", d, err)
-			}
-		}
-	}
-
-	// ── Library/Keychains/login.keychain-db — symlink for Keychain API ──────
-	// On Darwin, opencode-claude-auth uses `security dump-keychain` and
-	// `security find-generic-password` to retrieve Claude credentials from the
-	// macOS Keychain. Both commands use $HOME to locate the keychain search
-	// list, and inside the sandbox $HOME points at the staging directory. By
-	// symlinking $stagingHome/Library/Keychains/login.keychain-db → the real
-	// login.keychain-db, `security` finds the correct search list and can
-	// retrieve credentials. The SBPL profile grants file-read* on the resolved
-	// (real) path via the (literal login.keychain-db) rule (issue #1487).
-	// Token refresh writes go through the `security add-generic-password`
-	// Mach IPC path which is not affected by this symlink.
-	if runtime.GOOS == "darwin" {
-		realKeychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
-		if _, err := os.Stat(realKeychain); err == nil {
-			keychainLink := filepath.Join(stagingHome, "Library", "Keychains", "login.keychain-db")
-			if mkErr := os.MkdirAll(filepath.Dir(keychainLink), 0o755); mkErr == nil {
-				_ = os.Symlink(realKeychain, keychainLink)
 			}
 		}
 	}
