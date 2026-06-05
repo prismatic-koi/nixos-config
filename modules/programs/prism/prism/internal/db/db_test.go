@@ -51,8 +51,8 @@ func TestOpen_CreatesSchema(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version: got %d, want 35", version)
 	}
 
 	// Verify the partial unique index for coordinator-per-repo was created (v12).
@@ -1233,8 +1233,8 @@ func TestMigration_V1ToV2(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// Verify the new columns exist and the existing row is preserved.
@@ -1308,8 +1308,8 @@ func TestMigration_V2ToV3(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1860,8 +1860,8 @@ func TestMigration_V3ToV4(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1926,8 +1926,8 @@ func TestMigration_V4ToV5(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -1996,8 +1996,8 @@ func TestMigration_V5ToV6(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	s, err := d.CurrentStatus("repo@main")
@@ -2091,8 +2091,8 @@ func TestMigration_V6ToV7(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// Existing row must be preserved with failed_at = NULL.
@@ -2184,8 +2184,8 @@ func TestMigration_V7ToV11(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// All existing rows must be preserved unmodified (additive migration guarantee).
@@ -2728,8 +2728,8 @@ func TestMigration_V8ToV9(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// session_groups table must exist after migration.
@@ -2817,8 +2817,8 @@ func TestMigration_V9ToV10(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// isolation_mode column must exist and be backfilled by v22→v23.
@@ -4667,8 +4667,8 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// Check each row.
@@ -5095,8 +5095,8 @@ func TestMigration_V13ToV14_BackfillsLastSeen(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// repo@stale: last_seen must be MAX(created_at) = 5000.
@@ -5370,8 +5370,8 @@ func TestMigration_V14ToV15_RenamesColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// harness_session_id column must now exist in agent_events.
@@ -5591,8 +5591,8 @@ func TestMigration_V15ToV16_CreatesSessionsTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// sessions table must exist.
@@ -5745,8 +5745,8 @@ func TestMigration_V15ToV16_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 }
 
@@ -6299,8 +6299,8 @@ func TestMigration_V17ToV18_BackfillsStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// iid-has-events: started_at must be updated to 1600000000000 (min event ts).
@@ -6357,8 +6357,8 @@ func TestMigration_V17ToV18_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	// iid-has-events should still have the corrected timestamp.
@@ -6659,8 +6659,8 @@ func TestMigration_V20ToV21_BackfillsHarnessSessionID(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// iid-with-sid: harness_session_id must have been backfilled.
@@ -6721,8 +6721,8 @@ func TestMigration_V20ToV21_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	// iid-with-sid must still have the backfilled value.
@@ -6880,8 +6880,8 @@ func TestMigration_V21ToV22_BackfillsZeroStartedAt(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// iid-zero-has-events: started_at must be updated to the minimum event ts.
@@ -6934,8 +6934,8 @@ func TestMigration_V21ToV22_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	var startedAt int64
@@ -7088,8 +7088,8 @@ func TestMigration_V22ToV23_BackfillsIsolationMode(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// host-null: host_mode=1, was NULL → must now be 'host'.
@@ -7161,8 +7161,8 @@ func TestMigration_V22ToV23_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	// Values must be stable after a second open.
@@ -7297,8 +7297,8 @@ func TestMigration_V23ToV24_DropsOutcomeSummaryAndCreatesSpawnOutcome(t *testing
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// outcome_summary column must no longer exist on sessions.
@@ -7351,8 +7351,8 @@ func TestMigration_V23ToV24_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	// spawn_outcome must still exist.
@@ -7466,8 +7466,8 @@ func TestMigration_V23ToV24_CrashRecovery(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&finalVer); err != nil {
 		t.Fatalf("read schema_version after recovery: %v", err)
 	}
-	if finalVer != 34 {
-		t.Errorf("schema_version after recovery: got %d, want 34", finalVer)
+	if finalVer != 35 {
+		t.Errorf("schema_version after recovery: got %d, want 35", finalVer)
 	}
 
 	// Sessions data must be preserved (the two rows seeded by seedV23DB).
@@ -8352,8 +8352,8 @@ func TestMigration_V10ToV11_DropsLegacyOpencodeColumns(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// opencode_sid and opencode_port must be gone from agent_status.
@@ -8436,8 +8436,8 @@ func TestMigration_V10ToV11_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	// Columns must remain dropped.
@@ -8606,8 +8606,8 @@ func TestMigration_V11ToV12_CreatesIndex(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// Index must exist after migration.
@@ -8679,8 +8679,8 @@ func TestMigration_V11ToV12_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	var idxName string
@@ -8780,8 +8780,8 @@ func TestMigration_V16ToV17_BumpsVersion(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// The pre-existing sessions row must be unchanged.
@@ -8816,8 +8816,8 @@ func TestMigration_V16ToV17_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 }
 
@@ -8908,8 +8908,8 @@ func TestMigration_V18ToV19_CreatesPendingMerges(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var tname string
@@ -9055,8 +9055,8 @@ func TestMigration_V19ToV20_AddsStatusSessionIndex(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var iname string
@@ -9224,8 +9224,8 @@ func TestMigration_V24ToV25_CreatesSpawnInputs(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var tname string
@@ -9426,8 +9426,8 @@ func TestMigration_V25ToV26_DropsHostModeAndBackfillsPodman(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// host_mode column must be gone.
@@ -9525,8 +9525,8 @@ func TestMigration_V25ToV26_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 
 	var hmCount int
@@ -9646,8 +9646,8 @@ func TestMigration_V26ToV27_CreatesHarnessFrames(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var tname string
@@ -9816,8 +9816,8 @@ func TestMigration_V27ToV28_BodyRuns_AddsAbtestPairID(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// abtest_pair_id must exist on spawn_inputs.
@@ -9860,8 +9860,8 @@ func TestMigration_V27ToV28_BodySkips_PreExistingColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// The column must still be present — exactly one (not duplicated by a
@@ -9989,8 +9989,8 @@ func TestMigration_V28ToV29_BumpsVersion(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var startedAt int64
@@ -10023,8 +10023,8 @@ func TestMigration_V28ToV29_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version on second open: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after second open: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after second open: got %d, want 35", version)
 	}
 }
 
@@ -10121,8 +10121,8 @@ func TestMigration_V29ToV30_BodyRuns_AddsParentSession(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	var n int
@@ -10161,8 +10161,8 @@ func TestMigration_V29ToV30_BodySkips_PreExistingColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	// Exactly one parent_session column — not duplicated by re-ADD.
@@ -10292,8 +10292,8 @@ func TestMigration_V30ToV31_AddsPRNumberAndRound(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 34 {
-		t.Errorf("schema_version after migration: got %d, want 34", version)
+	if version != 35 {
+		t.Errorf("schema_version after migration: got %d, want 35", version)
 	}
 
 	for _, col := range []string{"pr_number", "round"} {

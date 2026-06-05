@@ -1170,6 +1170,16 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 		s := opts.IsolationFlag
 		si.IsolationFlag = &s
 	}
+	// IsolationMode is the resolved effective mode the session actually ran
+	// under — always populated when known so that `prism stats compare`'s
+	// Spawn Inputs block surfaces a meaningful value even when the user
+	// relied on the default and omitted --isolation (the common case).
+	// Distinct from IsolationFlag above, which preserves the raw CLI value
+	// (nil when omitted) as a separate audit trail. Issue #2105.
+	if opts.IsolationMode != "" {
+		s := opts.IsolationMode
+		si.IsolationMode = &s
+	}
 	si.HostModeFlag = opts.HostModeFlag
 	if opts.PRNumber != 0 {
 		n := opts.PRNumber

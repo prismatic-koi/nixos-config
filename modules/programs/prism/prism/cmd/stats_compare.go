@@ -1000,6 +1000,15 @@ func inputsValue(axis string, run compareRun) string {
 			return run.Session.Harness
 		}
 	case "isolation_mode":
+		// Prefer the resolved effective mode (#2105 — always populated for
+		// new rows post-fix) so the renderer surfaces a meaningful value
+		// even when --isolation was omitted at spawn time. Fall back to the
+		// raw --isolation flag value for back-compat with pre-#2105 rows
+		// (where isolation_mode is NULL) so we never crash or misreport on
+		// historical data.
+		if in != nil && in.IsolationMode != nil && *in.IsolationMode != "" {
+			return *in.IsolationMode
+		}
 		if in != nil && in.IsolationFlag != nil && *in.IsolationFlag != "" {
 			return *in.IsolationFlag
 		}

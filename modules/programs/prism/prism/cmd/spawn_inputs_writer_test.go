@@ -397,6 +397,106 @@ func TestSpawnInputsFromOpts_AbtestPairCarriesRendererFields(t *testing.T) {
 	}
 }
 
+// TestSpawnInputsFromOpts_IsolationModeDefaultsWhenFlagOmitted is the
+// issue #2105 writer-level AC. When --isolation is omitted (the common
+// case where the user relies on the resolved default), the writer must
+// still populate spawn_inputs.isolation_mode with the resolved effective
+// mode the session is about to run under. isolation_flag stays NULL
+// because the raw flag was not passed — that is the audit trail.
+//
+// Without this, `prism stats compare`'s Spawn Inputs block shows "—"
+// for the isolation_mode axis on nearly every session (every session
+// where the user did not pass --isolation), defeating the
+// A/B-comparison workflow's ability to confirm both legs ran under the
+// same sandbox shape.
+func TestSpawnInputsFromOpts_IsolationModeDefaultsWhenFlagOmitted(t *testing.T) {
+	bus := sidecartest.NewIsolated(t, "")
+	d := bus.DB
+
+	const sessionName = "prism-test@worker-iso-mode-default"
+	instanceID := uuid.New().String()
+	seedSessionForSpawnInputs(t, d, instanceID, sessionName)
+
+	// SpawnOpts mimics the shape `prism spawn` builds when the user runs
+	// `prism spawn "do the mahi"` without --isolation: IsolationFlag is
+	// empty (no raw flag), IsolationMode holds the resolved effective
+	// mode the resolver picked (here "sandbox-exec" for the test host).
+	const resolvedMode = "sandbox-exec"
+	opts := session.SpawnOpts{
+		InstanceID:    instanceID,
+		Prompt:        "do the mahi",
+		PromptSource:  "cli-positional",
+		IsolationMode: resolvedMode,
+		// IsolationFlag deliberately empty — the user did not pass --isolation.
+	}
+
+	si := session.SpawnInputsFromOpts(opts)
+	if err := d.InsertSpawnInputs(si); err != nil {
+		t.Fatalf("InsertSpawnInputs: %v", err)
+	}
+
+	got, err := d.SpawnInputsByInstanceID(instanceID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("SpawnInputsByInstanceID: got nil row, want non-nil")
+	}
+
+	// isolation_mode must carry the resolved effective mode — the bug
+	// fix in #2105 hinges on this not being NULL.
+	assertStringPtr(t, "IsolationMode", got.IsolationMode, resolvedMode)
+
+	// isolation_flag must stay NULL because no raw --isolation flag was
+	// passed. This is the audit trail: it records that the user relied
+	// on the default rather than naming a specific mode.
+	if got.IsolationFlag != nil {
+		t.Errorf("IsolationFlag: got %q, want nil (raw flag was not passed)",
+			*got.IsolationFlag)
+	}
+}
+
+// TestSpawnInputsFromOpts_IsolationModeMatchesFlagWhenPassed verifies that
+// when --isolation is explicitly passed, BOTH spawn_inputs.isolation_mode
+// (the resolved effective mode) and spawn_inputs.isolation_flag (the raw
+// flag value as audit trail) are populated with that value. The two
+// columns serve different roles — mode is what the renderer reads, flag
+// is what the audit trail preserves — but in this case they agree because
+// the explicit flag IS the resolved mode.
+func TestSpawnInputsFromOpts_IsolationModeMatchesFlagWhenPassed(t *testing.T) {
+	bus := sidecartest.NewIsolated(t, "")
+	d := bus.DB
+
+	const sessionName = "prism-test@worker-iso-mode-explicit"
+	instanceID := uuid.New().String()
+	seedSessionForSpawnInputs(t, d, instanceID, sessionName)
+
+	const mode = "bwrap"
+	opts := session.SpawnOpts{
+		InstanceID:    instanceID,
+		Prompt:        "do the mahi",
+		PromptSource:  "cli-positional",
+		IsolationFlag: mode, // user passed --isolation bwrap
+		IsolationMode: mode, // resolver agrees with the flag
+	}
+
+	si := session.SpawnInputsFromOpts(opts)
+	if err := d.InsertSpawnInputs(si); err != nil {
+		t.Fatalf("InsertSpawnInputs: %v", err)
+	}
+
+	got, err := d.SpawnInputsByInstanceID(instanceID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("SpawnInputsByInstanceID: got nil row, want non-nil")
+	}
+
+	assertStringPtr(t, "IsolationMode", got.IsolationMode, mode)
+	assertStringPtr(t, "IsolationFlag", got.IsolationFlag, mode)
+}
+
 // assertStringPtr fails the test if got is nil or *got != want. Used to keep
 // the per-field assertions in the tests above concise.
 func assertStringPtr(t *testing.T, name string, got *string, want string) {

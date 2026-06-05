@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 34
+	currentSchemaVersion = 35
 )
 
 // DB wraps a SQLite connection.
@@ -203,11 +203,22 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     variant_flag           TEXT,
     agent_flag             TEXT,
     harness_flag           TEXT,
+    -- Raw --isolation flag value as the user passed it (NULL = flag omitted,
+    -- default in effect). Preserved as audit trail; the actual mode the
+    -- session ran under lives in isolation_mode (below). Added pre-#2105.
     isolation_flag         TEXT,
     host_mode_flag         INTEGER NOT NULL DEFAULT 0,
     pr_number              INTEGER,
     branch_flag            TEXT,
     ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+
+    -- Resolved effective isolation mode the session actually ran under
+    -- (podman/bwrap/sandbox-exec/host), captured at spawn time post profile/
+    -- config/Nix-default resolution. Added in #2105 so stats compare surfaces
+    -- a meaningful value even when --isolation was omitted. NULLABLE for
+    -- back-compat with pre-#2105 rows; new rows are always populated by the
+    -- centralised writer in internal/session/spawn.go.
+    isolation_mode         TEXT,
 
     -- C.2: per-role model-variant overrides (JSON; NULL if no overrides).
     model_variant_overrides TEXT,
@@ -350,8 +361,9 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // 'podman'. The WHERE clause makes the migration idempotent: rows already set
 // are skipped on any subsequent open. This is the Phase A prerequisite for the
 // A4 deprecation-removal sequence (#1129).
-// v23→v24 drops sessions.outcome_summary (reserved by C.1 as a JSON
-// placeholder with zero writers) and adds the spawn_outcome table (C.3 §4).
+// v23→v24 drops sessions.outcome_summary (a JSON placeholder column with
+// zero writers) and adds the spawn_outcome table (#1130 — the discrete-event
+// aggregation row that supersedes outcome_summary).
 // The outcome_summary column is dropped with a rebuild-via-rename strategy
 // because SQLite does not support ALTER TABLE ... DROP COLUMN on columns with
 // foreign-key references (and to maintain compatibility with older SQLite
@@ -360,7 +372,8 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // the migration idempotent. Fresh databases skip the column-drop (the column
 // never existed in the declarative schema) and the table creation is a no-op
 // because the schema block above already created it.
-// v24→v25 adds the spawn_inputs table (C.1/C.4 §4.1) and the agent_prompt_hash
+// v24→v25 adds the spawn_inputs table (#2087 introduced the table; #2092 /
+// #2093 fixed the profile_name write path) and the agent_prompt_hash
 // column within it (C4.AP). The table is created with CREATE TABLE IF NOT
 // EXISTS and its indexes with CREATE INDEX IF NOT EXISTS, making the migration
 // idempotent. Fresh databases already have the table from the declarative
@@ -393,6 +406,14 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 //   - idx_agent_status_{active,group_id,instance_id,repo_active} on agent_status
 // Each CREATE INDEX uses IF NOT EXISTS so the migration is idempotent on a
 // fresh DB (which already has the indexes via the declarative schema block).
+// v34→v35 adds spawn_inputs.isolation_mode (issue #2105). The column carries
+// the resolved effective isolation mode the session ran under — distinct
+// from isolation_flag, which is the raw --isolation CLI value (NULL when the
+// user relied on the resolved default). The ALTER TABLE is guarded by a
+// pragma_table_info check so the migration is idempotent on fresh databases
+// where the declarative schema block above already includes the column. No
+// backfill: pre-#2105 rows keep their NULL isolation_mode and the renderer
+// falls back to isolation_flag for them.
 //
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -633,6 +654,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV33ToV34(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV34ToV35(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -680,6 +704,44 @@ func runMigrations(conn *sql.DB) error {
 // The partial WHERE (harness_port IS NOT NULL AND ended_at IS NULL) excludes
 // both NULL/released ports and ended sessions, so that ended sessions' ports
 // can be reclaimed by new sessions without triggering a constraint error.
+// migrateV34ToV35 adds the `isolation_mode` column to spawn_inputs
+// (issue #2105). The new column carries the resolved effective isolation
+// mode the session ran under, captured at spawn time after profile /
+// config / Nix-default resolution — distinct from `isolation_flag`, which
+// preserves the raw --isolation CLI flag value (NULL when omitted) purely
+// as an audit trail.
+//
+// Pre-#2105 rows keep NULL `isolation_mode`; no backfill is performed.
+// The `prism stats compare` renderer falls back to `isolation_flag` for
+// those rows so they continue to display whatever was originally recorded.
+//
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration
+// is idempotent on fresh databases where the base schema already includes
+// the column.
+func migrateV34ToV35(conn *sql.DB, version *int) error {
+	if *version >= 35 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'isolation_mode'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v34\u2192v35: check isolation_mode column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE spawn_inputs ADD COLUMN isolation_mode TEXT`,
+		); err != nil {
+			return fmt.Errorf("db: migration v34\u2192v35: add isolation_mode: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 35`); err != nil {
+		return fmt.Errorf("db: migration v34\u2192v35: %w", err)
+	}
+	*version = 35
+	return nil
+}
+
 // migrateV33ToV34 adds the `muted` column to agent_status (issue #2013).
 // The column is `INTEGER NOT NULL DEFAULT 0` so existing rows are
 // initialised as unmuted (false). The ALTER TABLE is guarded by a
@@ -1618,9 +1680,10 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 	if *version != 23 {
 		return nil
 	}
-	// Migration v23 → v24: drop sessions.outcome_summary (reserved by C.1
-	// as a JSON placeholder with zero writers) and add the spawn_outcome
-	// table (C.3 §4, issue #1130).
+	// Migration v23 → v24: drop sessions.outcome_summary (a JSON
+	// placeholder column with zero writers) and add the spawn_outcome
+	// table (issue #1130 — the discrete-event aggregation row that
+	// supersedes outcome_summary).
 	//
 	// Dropping a column from sessions requires recreating the table because
 	// SQLite < 3.35 does not support ALTER TABLE ... DROP COLUMN and because
@@ -1753,7 +1816,8 @@ func migrateV24toV25(conn *sql.DB, version *int) error {
 	if *version != 24 {
 		return nil
 	}
-	// Migration v24 → v25: add the spawn_inputs table (C.1/C.4 §4.1).
+	// Migration v24 → v25: add the spawn_inputs table (#2087 introduced
+	// the table; #2092 / #2093 fixed the profile_name write path).
 	// The table holds the intent of a spawn — every flag value the user
 	// passed — keyed on instance_id (FK → sessions). Also includes
 	// agent_prompt_hash (C4.AP) and skills_manifest_hash (C4.SK) columns.
@@ -2048,7 +2112,18 @@ type SpawnInputs struct {
 	VariantFlag   *string
 	AgentFlag     *string
 	HarnessFlag   *string
+	// IsolationFlag is the raw --isolation flag value as the user passed
+	// it. nil when the flag was omitted (the common case). Preserved as an
+	// audit trail; downstream readers that want the actual mode the
+	// session ran under should consult IsolationMode (below) instead.
 	IsolationFlag *string
+	// IsolationMode is the resolved effective isolation mode the session
+	// actually ran under ("podman", "bwrap", "sandbox-exec", "host"),
+	// captured at spawn time after profile / config / Nix-default
+	// resolution. Always populated by the centralised writer post-#2105 so
+	// the `prism stats compare` Spawn Inputs block can surface it. nil only
+	// on pre-#2105 rows or when a writer somehow omits it.
+	IsolationMode *string
 	HostModeFlag  bool
 	PRNumber      *int
 	BranchFlag    *string
@@ -2095,6 +2170,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
     isolation_flag, host_mode_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
+    isolation_mode,
     model_variant_overrides,
     skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
     prompt_text, prompt_source, abtest_pair_id, extras,
@@ -2105,6 +2181,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     ?, ?,
     ?, ?, ?,
     ?,
+    ?,
     ?, ?, ?,
     ?, ?, ?, ?,
     ?
@@ -2113,6 +2190,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 		si.ProfileName, si.ModelFlag, si.VariantFlag, si.AgentFlag, si.HarnessFlag,
 		si.IsolationFlag, boolToInt(si.HostModeFlag),
 		si.PRNumber, si.BranchFlag, boolToInt(si.IgnoreConcurrencyCap),
+		si.IsolationMode,
 		si.ModelVariantOverrides,
 		si.SkillsManifestHash, si.PromptTemplateHash, si.AgentPromptHash,
 		si.PromptText, si.PromptSource, si.AbtestPairID, si.Extras,
@@ -2133,6 +2211,7 @@ SELECT
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
     isolation_flag, host_mode_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
+    isolation_mode,
     model_variant_overrides,
     skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
     prompt_text, prompt_source, abtest_pair_id, extras,
@@ -2142,6 +2221,7 @@ WHERE instance_id = ?`
 	row := d.conn.QueryRow(q, instanceID)
 	var si SpawnInputs
 	var profileName, modelFlag, variantFlag, agentFlag, harnessFlag, isolationFlag sql.NullString
+	var isolationMode sql.NullString
 	var prNumber sql.NullInt64
 	var branchFlag, modelVariantOverrides, skillsManifestHash, promptTemplateHash, agentPromptHash sql.NullString
 	var promptText, promptSource, abtestPairID, extras sql.NullString
@@ -2151,6 +2231,7 @@ WHERE instance_id = ?`
 		&profileName, &modelFlag, &variantFlag, &agentFlag, &harnessFlag,
 		&isolationFlag, &hostModeFlag,
 		&prNumber, &branchFlag, &ignoreConcurrencyCap,
+		&isolationMode,
 		&modelVariantOverrides,
 		&skillsManifestHash, &promptTemplateHash, &agentPromptHash,
 		&promptText, &promptSource, &abtestPairID, &extras,
@@ -2179,6 +2260,9 @@ WHERE instance_id = ?`
 	}
 	if isolationFlag.Valid {
 		si.IsolationFlag = &isolationFlag.String
+	}
+	if isolationMode.Valid {
+		si.IsolationMode = &isolationMode.String
 	}
 	si.HostModeFlag = hostModeFlag != 0
 	if prNumber.Valid {
