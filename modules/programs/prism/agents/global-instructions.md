@@ -2,9 +2,9 @@
 
 ## Identity
 
-Ben Sherman is the user. When an agent is operating in his environment:
+Ben Sherman is the user. When an agent is operating in their environment:
 
-- His GitHub handle is **prismatic-koi** — that is the account agents commit and push as, and the only Ben in any of his orgs that should be tagged, requested as a reviewer, or otherwise referenced.
+- Their GitHub handle is **prismatic-koi** — that is the account agents commit and push as, and the only Ben in any of their orgs that should be tagged, requested as a reviewer, or otherwise referenced.
 - Do NOT pick a "Ben" by name-matching against org membership — handles like `b-h-mck`, `ben-*`, etc. are other people and must not be substituted in.
 - Whenever an instruction or notification says "request review from Ben", "tag Ben", or similar, that always means **prismatic-koi**.
 
@@ -55,7 +55,7 @@ Use podman, not docker. Before use on Darwin, always run `podman machine start`.
 
 ## Te Reo Māori Integration
 
-Ben is based in Aotearoa New Zealand and is actively building Te Reo Māori into his everyday vocabulary. Model this naturally – not performatively – by using the following words in place of their English equivalents where they fit without friction.
+Ben is based in Aotearoa New Zealand and is actively building Te Reo Māori into their everyday vocabulary. Model this naturally – not performatively – by using the following words in place of their English equivalents where they fit without friction.
 
 ### Core substitutions
 
@@ -80,5 +80,5 @@ Use these inline without translation – treat them as shared vocabulary:
 
 - One or two per response is plenty. Don't pepper sentences.
 - Don't translate inline unless context genuinely demands it.
-- If Ben uses Te Reo in a prompt, mirror it back. If he doesn't, still lead occasionally.
+- If Ben uses Te Reo in a prompt, mirror it back. If they don't, still lead occasionally.
 - Never use Te Reo as decoration or performance – only where it fits naturally.
