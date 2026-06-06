@@ -174,6 +174,7 @@
     ./container-tokens.nix
     ./neovim
     ./pi.nix
+    ./prismd-mux.nix
     ./profiles.nix
     ./secrets.nix
     ./tmux.nix

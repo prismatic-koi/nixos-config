@@ -19,11 +19,22 @@ buildGoModule {
 
   src = ../modules/programs/prism/prism;
 
-  # Build only the prism entrypoint from the shared Go module.
+  # Build the two prism entrypoints from the shared Go module.
   # subPackages restricts what buildGoModule compiles into the output,
-  # so the derivation produces only the prism binary (not any other
-  # cmd/ entrypoints).
-  subPackages = [ "." ];
+  # so the derivation produces exactly:
+  #
+  #   - prism  — the user-facing CLI (root main.go).
+  #   - prismd — the daemon binary (cmd/prismd), currently hosting the
+  #              `mux` subcommand surface for the prism-native
+  #              multiplexer (#2147).
+  #
+  # Both share every internal/* package so there is no code duplication;
+  # the split is purely about entry-point shape (synchronous CLI vs
+  # long-lived daemon — see cmd/prismd/main.go).
+  subPackages = [
+    "."
+    "cmd/prismd"
+  ];
 
   doCheck = runChecks;
 
@@ -106,7 +117,7 @@ buildGoModule {
   nativeCheckInputs = [ git ];
 
   meta = {
-    description = "Prism — tmux-based AI development environment TUI";
+    description = "Prism — tmux-based AI development environment TUI and mux daemon";
     mainProgram = "prism";
     license = lib.licenses.mit;
   };
