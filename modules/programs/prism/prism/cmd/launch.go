@@ -52,6 +52,23 @@ func init() {
 }
 
 func runLaunch(_ *cobra.Command, _ []string) error {
+	// PRISM_USE_MUX=1 (#2176): bring up the bubbletea renderer in the
+	// calling terminal instead of standing up the tmux
+	// scratchpad+dashboard pair. The mux path owns its own session
+	// tree (sourced from the local mux daemon) and does not need the
+	// scratchpad to exist; the renderer is the user-facing surface.
+	//
+	// --path is a legacy keybinding fast-path (ALT+o / ALT+n / zsh ^o)
+	// that opens the tmux context switcher pre-seeded with a directory.
+	// It is intentionally NOT routed through the mux path — the mux
+	// renderer does not have an equivalent "open the C-f popup at this
+	// dir" affordance yet, and the soak's launch entry point is the
+	// no-flag form. The --path path stays on the existing tmux
+	// behaviour regardless of PRISM_USE_MUX.
+	if muxCutoverEnabled() && launchPath == "" {
+		return runLaunchMux()
+	}
+
 	// --path: bypass the dashboard and open the context switcher at the given
 	// directory. This preserves the existing UX for project-specific keybindings
 	// (e.g. ALT+o → Obsidian, ALT+n → nixos-config, zsh ^o).

@@ -145,8 +145,18 @@ func SpawnMuxLayout(opts SpawnOpts, port int) error {
 	//    first pane (AddPane sets ActivePane when the session had
 	//    none), so the canonical order matters — the slice order is
 	//    the order we add.
+	//
+	//    The agent pane's argv is branched on isolation mode (#2176):
+	//    sandboxed modes (bwrap / podman / sandbox-exec) exec
+	//    `prism agent-run --session <name>`; host mode execs the
+	//    harness directly via BuildAgentCmd. Both paths wrap the
+	//    command string in `sh -c …` so shell features (env-var
+	//    expansion, `$(cat <prompt-file>)`, the podman readiness
+	//    wait loop) keep working — mirroring tmux's NewWindow,
+	//    which itself runs the agent command via `sh -c`.
+	isolation := resolveLayoutIsolationMode(opts)
 	for _, name := range paneNames {
-		paneOpts := muxPaneOptsFor(opts, port, name)
+		paneOpts := muxPaneOptsFor(opts, port, name, isolation)
 		if err := mc.Panes().Create(ctx, opts.SessionName, name, paneOpts); err != nil {
 			// Roll back: tear down the session so a retry sees a
 			// clean slate in the daemon's session tree.
@@ -244,55 +254,70 @@ func muxPanesForLayout(layout Layout) (panes []string, active string, err error)
 }
 
 // muxPaneOptsFor returns the PaneCreateOptions for the named pane.
-// Each pane gets a tiny argv that runs the same kind of process the
-// tmux path runs in the equivalent window:
+// Each pane's argv mirrors the tmux path's equivalent window:
 //
-//   - edit   → nvim (matches tmux setupFullLayout window 0)
-//   - agent  → /bin/sh under the worktree (the agent harness is
-//              started by the sidecar; the shell holds the PTY so
-//              the renderer has something to render and so initial-
-//              prompt bytes have somewhere to land)
+//   - edit   → /bin/sh under the worktree (matches tmux
+//              setupFullLayout window 0; the renderer will gain a
+//              "switch to edit pane" key that opens nvim on demand —
+//              not strictly needed for the soak)
+//   - agent  → the harness launch command, dispatched by isolation:
+//              · sandboxed (bwrap / podman / sandbox-exec):
+//                `prism agent-run --session <name>` (BuildAgentCmd's
+//                AgentPaneCmd output for those modes; #2176 cutover)
+//              · host: pi (or the configured harness) execs directly
+//                via buildDirectAgentCmd's output (#2176 cutover)
 //   - term   → /bin/sh (matches tmux setupFullLayout window 2)
 //   - shell  → /bin/sh (LayoutAgentOnly window 0)
 //
+// The agent pane is wrapped in `sh -c <cmd>` so shell features the
+// tmux path relies on — host mode's `$(cat <prompt-file>)`,
+// sandboxed modes' env-var expansion, and podman's readiness-wait
+// loop — keep working. This mirrors tmux's NewWindow, which runs the
+// agent command via `sh -c` itself.
+//
 // The Cwd is opts.Worktree for every pane so the shell prompt
 // matches the tmux path's per-window starting directory.
-//
-// Note: this is not yet feature-parity with the tmux path. The tmux
-// path's `agent` window runs the harness directly under sandbox
-// wrappers; the mux path's `agent` pane runs /bin/sh and the sidecar
-// drives the harness over the host-API socket. For phase-2 cutover
-// this is sufficient — the user does not see the panes (no renderer
-// is wired into a user-facing entry point yet) and the agent's
-// observable behaviour is unchanged because the sidecar is the
-// substrate that talks to pi.
-func muxPaneOptsFor(opts SpawnOpts, _ int, name string) client.PaneCreateOptions {
+func muxPaneOptsFor(opts SpawnOpts, port int, name, isolation string) client.PaneCreateOptions {
 	shell := defaultShellPath()
 	cwd := opts.Worktree
-	// Inherit the daemon's env. A future PR can layer per-pane env
-	// (PRISM_SESSION_NAME, TERM, etc.) once the renderer is wired
-	// and starts to care.
-	env := map[string]string(nil)
 
 	switch name {
-	case "edit":
-		// Run a shell rather than nvim directly — nvim is more
-		// expensive and not strictly necessary for the cutover.
-		// The renderer will eventually expose a "switch to edit
-		// pane" key that opens nvim on demand. For the soak the
-		// shell-in-the-worktree shape is enough.
+	case "agent":
+		// Build the agent launch command using the same Opts shape
+		// the tmux path uses (buildOptsForLayout). The isolation
+		// mode is explicit so a SpawnOpts with an empty IsolationMode
+		// (the review-fanout shape on a bwrap-default machine)
+		// resolves the same way it does in the tmux path —
+		// resolveLayoutIsolationMode is called once in SpawnMuxLayout
+		// and threaded through here.
+		launchOpts := buildOptsForLayout(opts, port, opts.PromptFilePath)
+		launchOpts.IsolationMode = isolation
+		launchOpts.Worktree = opts.Worktree
+		agentCmd := BuildAgentCmd(launchOpts)
+
 		return client.PaneCreateOptions{
-			Argv: []string{shell},
+			// `sh -c <cmd>` mirrors what tmux does for NewWindow's
+			// command argument. argv[0] is the shell so the daemon's
+			// PTY-spawn path is unchanged.
+			Argv: []string{shell, "-c", agentCmd},
 			Cwd:  cwd,
-			Env:  env,
+			// Merge the daemon's env (inherited via os.Environ() on
+			// the CLI side — both daemon and CLI run under the same
+			// user session for the soak) with the per-session
+			// overrides agentPaneEnvVars produces. The overrides
+			// carry PRISM_INITIAL_PROMPT_FILE (sandboxed modes) and
+			// PRISM_HARNESS_PIPE (host mode with a socket-pipe
+			// harness) — without these the agent never reads the
+			// prompt and never connects to the sidecar bridge.
+			Env:  muxAgentEnv(launchOpts),
 			Cols: 80,
 			Rows: 24,
 		}
-	case "agent", "term", "shell":
+	case "edit", "term", "shell":
 		return client.PaneCreateOptions{
 			Argv: []string{shell},
 			Cwd:  cwd,
-			Env:  env,
+			Env:  nil, // inherit daemon env
 			Cols: 80,
 			Rows: 24,
 		}
@@ -302,11 +327,45 @@ func muxPaneOptsFor(opts SpawnOpts, _ int, name string) client.PaneCreateOptions
 		return client.PaneCreateOptions{
 			Argv: []string{shell},
 			Cwd:  cwd,
-			Env:  env,
+			Env:  nil,
 			Cols: 80,
 			Rows: 24,
 		}
 	}
+}
+
+// muxAgentEnv builds the env map for the agent pane: the CLI process's
+// own os.Environ() (used as a proxy for the daemon's inherited env,
+// since both run under the same user for the soak) merged with the
+// per-session overrides from agentPaneEnvVars.
+//
+// The mux daemon's pane.create REPLACES the child's env when a non-nil
+// map is supplied — there is no "inherit + override" mode — so we have
+// to assemble the full set here. agentPaneEnvVars overrides win on key
+// collision: a session-specific PRISM_HARNESS_PIPE replaces any stale
+// one in the operator's shell env.
+func muxAgentEnv(opts Opts) map[string]string {
+	env := make(map[string]string, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		if i := indexByte(kv, '='); i > 0 {
+			env[kv[:i]] = kv[i+1:]
+		}
+	}
+	for k, v := range agentPaneEnvVars(opts) {
+		env[k] = v
+	}
+	return env
+}
+
+// indexByte is a tiny inline strings.IndexByte so this file does not
+// need to import strings for a single call site.
+func indexByte(s string, c byte) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 // defaultShellPath returns the absolute path to /bin/sh, the one

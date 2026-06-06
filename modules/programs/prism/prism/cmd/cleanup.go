@@ -207,22 +207,34 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 		}
 
-		// Ensure scratchpad exists.
-		if !tmux.HasSession("scratchpad") {
-			home, _ := os.UserHomeDir()
-			_ = tmux.NewSessionDetached("scratchpad", home)
-			_ = tmux.RenameWindow("scratchpad:0", "term")
-		}
+		// Scratchpad swing + SwitchClient is a tmux-substrate UX
+		// affordance: redirect any attached tmux client off the
+		// session we are about to kill so the client doesn't watch
+		// its own pane die. Under PRISM_USE_MUX (#2176) the session
+		// lives in the mux daemon's tree, not tmux — there is no
+		// tmux client to redirect, the renderer handles its own
+		// session-list focus, and ensuring a tmux "scratchpad"
+		// session at this point would defeat the cutover (it would
+		// silently re-introduce a tmux dependency the renderer was
+		// supposed to replace).
+		if !muxCutoverEnabled() {
+			// Ensure scratchpad exists.
+			if !tmux.HasSession("scratchpad") {
+				home, _ := os.UserHomeDir()
+				_ = tmux.NewSessionDetached("scratchpad", home)
+				_ = tmux.RenameWindow("scratchpad:0", "term")
+			}
 
-		// Switch only this client to scratchpad, then kill the session.
-		client, _ := tmux.CurrentClient()
-		if client == "" {
-			client = tmux.CallerClient()
-		}
-		if client != "" {
-			_ = tmux.SwitchClient(client, "scratchpad")
-		} else {
-			_, _ = tmux.SwitchClientCurrent("scratchpad")
+			// Switch only this client to scratchpad, then kill the session.
+			client, _ := tmux.CurrentClient()
+			if client == "" {
+				client = tmux.CallerClient()
+			}
+			if client != "" {
+				_ = tmux.SwitchClient(client, "scratchpad")
+			} else {
+				_, _ = tmux.SwitchClientCurrent("scratchpad")
+			}
 		}
 		// PRISM_USE_MUX cutover (#2158): under the gate the session is
 		// in the mux daemon's tree, not tmux — destroy it via the
@@ -668,19 +680,29 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		}
 	}
 
-	// Ensure the scratchpad exists so we have somewhere to send the client.
-	if !tmux.HasSession("scratchpad") {
-		home, _ := os.UserHomeDir()
-		_ = tmux.NewSessionDetached("scratchpad", home)
-		_ = tmux.RenameWindow("scratchpad:0", "term")
-	}
+	// Scratchpad swing + per-client SwitchClient is a tmux-substrate
+	// affordance (see the doCleanup gate above). Under PRISM_USE_MUX
+	// (#2176) the session lives in the mux daemon's tree, not tmux —
+	// there is no tmux client attached to the target session, the
+	// renderer handles its own session-list focus, and ensuring a
+	// tmux "scratchpad" session at this point would silently
+	// re-introduce the tmux dependency the cutover was supposed to
+	// replace.
+	if !muxCutoverEnabled() {
+		// Ensure the scratchpad exists so we have somewhere to send the client.
+		if !tmux.HasSession("scratchpad") {
+			home, _ := os.UserHomeDir()
+			_ = tmux.NewSessionDetached("scratchpad", home)
+			_ = tmux.RenameWindow("scratchpad:0", "term")
+		}
 
-	// Redirect only clients that are currently attached to the target session.
-	// We must not touch the orchestrator's own client.
-	if clients, err := tmux.ListClients(); err == nil {
-		for _, c := range clients {
-			if sess, err := tmux.ClientSession(c); err == nil && sess == session {
-				_ = tmux.SwitchClient(c, "scratchpad")
+		// Redirect only clients that are currently attached to the target session.
+		// We must not touch the orchestrator's own client.
+		if clients, err := tmux.ListClients(); err == nil {
+			for _, c := range clients {
+				if sess, err := tmux.ClientSession(c); err == nil && sess == session {
+					_ = tmux.SwitchClient(c, "scratchpad")
+				}
 			}
 		}
 	}
@@ -791,22 +813,29 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 // delete the branch — used for default-branch sessions where the checkout
 // must remain intact.
 func closeSession(session string) error {
-	// Ensure scratchpad exists.
-	if !tmux.HasSession("scratchpad") {
-		home, _ := os.UserHomeDir()
-		_ = tmux.NewSessionDetached("scratchpad", home)
-		_ = tmux.RenameWindow("scratchpad:0", "term")
-	}
+	// Scratchpad swing + SwitchClient is a tmux-substrate UX
+	// affordance — same shape as doCleanup / headlessCleanup. Skip
+	// under PRISM_USE_MUX (#2176): the session is in the mux
+	// daemon's tree, the renderer handles its own focus, and a
+	// scratchpad tmux session here would silently undo the cutover.
+	if !muxCutoverEnabled() {
+		// Ensure scratchpad exists.
+		if !tmux.HasSession("scratchpad") {
+			home, _ := os.UserHomeDir()
+			_ = tmux.NewSessionDetached("scratchpad", home)
+			_ = tmux.RenameWindow("scratchpad:0", "term")
+		}
 
-	// Switch only this client to scratchpad, then kill the session.
-	client, _ := tmux.CurrentClient()
-	if client == "" {
-		client = tmux.CallerClient()
-	}
-	if client != "" {
-		_ = tmux.SwitchClient(client, "scratchpad")
-	} else {
-		_, _ = tmux.SwitchClientCurrent("scratchpad")
+		// Switch only this client to scratchpad, then kill the session.
+		client, _ := tmux.CurrentClient()
+		if client == "" {
+			client = tmux.CallerClient()
+		}
+		if client != "" {
+			_ = tmux.SwitchClient(client, "scratchpad")
+		} else {
+			_, _ = tmux.SwitchClientCurrent("scratchpad")
+		}
 	}
 	// PRISM_USE_MUX cutover (#2158): same gate as doCleanup above
 	// and the headless-soft-close mirror. closeSession is the
@@ -887,18 +916,26 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 
 	printLine("closing session %s...\n", session)
 
-	// Ensure scratchpad exists.
-	if !tmux.HasSession("scratchpad") {
-		home, _ := os.UserHomeDir()
-		_ = tmux.NewSessionDetached("scratchpad", home)
-		_ = tmux.RenameWindow("scratchpad:0", "term")
-	}
+	// Scratchpad swing + per-client SwitchClient is a tmux-substrate
+	// affordance — same shape as the other sibling sites in this
+	// file. Skip under PRISM_USE_MUX (#2176): the session lives in
+	// the mux daemon's tree, the renderer handles its own focus,
+	// and a scratchpad tmux session here would silently undo the
+	// cutover.
+	if !muxCutoverEnabled() {
+		// Ensure scratchpad exists.
+		if !tmux.HasSession("scratchpad") {
+			home, _ := os.UserHomeDir()
+			_ = tmux.NewSessionDetached("scratchpad", home)
+			_ = tmux.RenameWindow("scratchpad:0", "term")
+		}
 
-	// Redirect clients attached to the target session.
-	if clients, err := tmux.ListClients(); err == nil {
-		for _, c := range clients {
-			if sess, err := tmux.ClientSession(c); err == nil && sess == session {
-				_ = tmux.SwitchClient(c, "scratchpad")
+		// Redirect clients attached to the target session.
+		if clients, err := tmux.ListClients(); err == nil {
+			for _, c := range clients {
+				if sess, err := tmux.ClientSession(c); err == nil && sess == session {
+					_ = tmux.SwitchClient(c, "scratchpad")
+				}
 			}
 		}
 	}
