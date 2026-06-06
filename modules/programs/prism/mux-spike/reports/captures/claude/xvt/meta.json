@@ -1,0 +1,13 @@
+{
+  "app": "claude",
+  "cols": 140,
+  "rows": 45,
+  "wall_duration_ms": 5082,
+  "exit_code": -1,
+  "frame_count": 11,
+  "triggers_sent": 1,
+  "bytes_from_pty": 4437,
+  "settle_ms": 2000,
+  "post_trigger_settle_ms": 2500,
+  "notes": "Claude Code TUI under x/vt. Tests: streaming text rendering, soft-wrap at\ncolumn boundary, code-fence highlighting, spinner glyph cycle. Failure\nmodes: lost spinner animation frames, wrong wrap column, code-fence fg/bg\ninversion. The wall-clock here depends on network — manifest is the\nworst-case settle.\n"
+}

@@ -164,6 +164,12 @@
         # The `nix-build-battery-monitor-checked` CI job overrides
         # `runChecks = true` to preserve the homeless-shelter signal.
         battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
+
+        # x/vt fidelity spike (issue #2141). Sibling Go module to prism;
+        # has its own go.mod precisely so adding/removing it never forces
+        # a prism `vendorHash` recompute. Hand-graded characterisation
+        # tool, no test suite — see pkgs/mux-spike.nix.
+        mux-spike = pkgs.callPackage ./pkgs/mux-spike.nix { };
       });
 
       devShells = forEachSystem (pkgs: {

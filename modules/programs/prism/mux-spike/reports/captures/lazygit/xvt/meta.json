@@ -1,0 +1,13 @@
+{
+  "app": "lazygit",
+  "cols": 160,
+  "rows": 50,
+  "wall_duration_ms": 2221,
+  "exit_code": -1,
+  "frame_count": 152,
+  "triggers_sent": 5,
+  "bytes_from_pty": 492402,
+  "settle_ms": 1200,
+  "post_trigger_settle_ms": 600,
+  "notes": "Tiled-pane TUI with frequent partial repaints. Tests: focus-border colour\nchanges, conditional bottom-bar legend, scrollable diff pane, branch list\nwith truncated entries. Failure modes: stale border colour on unfocused\npanes, lost diff colours after scroll, cell-width off-by-one on truncated\nbranch names.\n"
+}

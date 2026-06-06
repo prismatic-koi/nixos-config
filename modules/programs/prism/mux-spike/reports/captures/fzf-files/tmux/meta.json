@@ -1,0 +1,8 @@
+{
+  "app": "fzf-files",
+  "cols": 100,
+  "rows": 30,
+  "backend": "tmux",
+  "settle_ms": 1200,
+  "post_trigger_settle_ms": 800
+}

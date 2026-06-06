@@ -1,0 +1,8 @@
+{
+  "app": "htop",
+  "cols": 180,
+  "rows": 50,
+  "backend": "tmux",
+  "settle_ms": 1500,
+  "post_trigger_settle_ms": 1800
+}

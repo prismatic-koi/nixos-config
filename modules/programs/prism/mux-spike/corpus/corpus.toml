@@ -1,0 +1,107 @@
+# Seed corpus for the x/vt fidelity spike. Six apps spanning the fidelity
+# surface area. Each entry exercises a different VT-engine stressor. Grading
+# on the 1-4 fidelity scale (see reports/report.md) is hand-judged per app
+# against the tmux reference capture.
+#
+# Keystroke shorthand recognised by internal/corpus and capture-via-tmux.sh:
+#   <esc> <cr> <lf> <tab> <bs> <space>
+#   <up> <down> <left> <right>
+#   <f1>..<f12>
+#   <c-X>  where X is a letter (Ctrl-A through Ctrl-Z)
+# Anything outside <...> is forwarded verbatim.
+
+[[apps]]
+name        = "nvim"
+argv        = ["nvim", "+set list", "+startinsert", "corpus/sample.go"]
+cols        = 120
+rows        = 40
+settle_ms   = 800
+triggers    = ["i", "hello", "<esc>", ":sp<cr>", "<c-w>j"]
+post_trigger_settle_ms = 400
+notes       = """
+Full-TUI fidelity baseline. Tests: mode-line repaint, split-window borders,
+'list' invisibles, syntax-highlighted code, cursor positioning in insert
+mode. Failure modes to watch for: garbled box-drawing on splits, wrong
+cursor cell, lost syntax colours after :sp.
+"""
+
+[[apps]]
+name        = "pi-card"
+# pi --mode card-demo does not exist as of writing; fall back to printing
+# a known card frame fixture via cat. The shape under test is identical:
+# a leading U+0020 prefix on every non-empty line plus box-drawing chars.
+argv        = ["sh", "-c", "cat corpus/pi-card-fixture.txt; sleep 30"]
+cols        = 100
+rows        = 30
+settle_ms   = 600
+triggers    = []
+post_trigger_settle_ms = 0
+notes       = """
+pi's card rendering: a single leading U+0020 on every non-empty line, plus
+box-drawing characters for the card border, plus ANSI 256-colour fg/bg for
+the role-coloured status strip. Failure modes: lost leading space (breaks
+yank-strip), mangled box glyphs, wrong 256-colour mapping.
+"""
+
+[[apps]]
+name        = "lazygit"
+argv        = ["lazygit"]
+cols        = 160
+rows        = 50
+settle_ms   = 1200
+triggers    = ["<tab>", "<tab>", "j", "j", "<cr>"]
+post_trigger_settle_ms = 600
+notes       = """
+Tiled-pane TUI with frequent partial repaints. Tests: focus-border colour
+changes, conditional bottom-bar legend, scrollable diff pane, branch list
+with truncated entries. Failure modes: stale border colour on unfocused
+panes, lost diff colours after scroll, cell-width off-by-one on truncated
+branch names.
+"""
+
+[[apps]]
+name        = "claude"
+argv        = ["claude"]
+cols        = 140
+rows        = 45
+settle_ms   = 2000
+triggers    = ["hello there<cr>"]
+post_trigger_settle_ms = 2500
+notes       = """
+Claude Code TUI under x/vt. Tests: streaming text rendering, soft-wrap at
+column boundary, code-fence highlighting, spinner glyph cycle. Failure
+modes: lost spinner animation frames, wrong wrap column, code-fence fg/bg
+inversion. The wall-clock here depends on network — manifest is the
+worst-case settle.
+"""
+
+[[apps]]
+name        = "htop"
+argv        = ["htop"]
+cols        = 180
+rows        = 50
+settle_ms   = 1500
+triggers    = ["<f5>", "<f6>", "P"]
+post_trigger_settle_ms = 1800
+notes       = """
+Live-updating gauges + sortable process list. Tests: per-cell colour
+gauge (the CPU/memory bars), F-key legend at the bottom, sort-column
+indicator change, process row repaint cadence. Failure modes: gauge
+colour banding wrong, F-key legend glyphs garbled, sort-arrow on the
+wrong column.
+"""
+
+[[apps]]
+name        = "fzf-files"
+argv        = ["sh", "-c", "find . -type f | fzf"]
+cols        = 100
+rows        = 30
+settle_ms   = 1200
+triggers    = ["go<bs><bs>nix", "<down>", "<down>"]
+post_trigger_settle_ms = 800
+notes       = """
+fzf overlay popup over a host shell. Tests: alternate-screen entry/exit,
+incremental query rendering, match-highlight inverse-video, popup
+positioning. Failure modes: alt-screen residue after exit, lost match
+highlights, popup off-by-one position.
+"""
