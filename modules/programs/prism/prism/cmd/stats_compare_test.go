@@ -17,6 +17,7 @@ package cmd
 // tmux, sidecar, or a real agent.
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -588,9 +589,15 @@ func TestRenderCompareTable_LiveSessionStillShowsDash(t *testing.T) {
 		t.Errorf("rendered output missing profile_name on live session:\n%s", out)
 	}
 	// But aggregate axes must read "—" — the session is still in progress.
-	if strings.Contains(out, "100") || strings.Contains(out, "150") {
-		// "100" / "150" are the seeded tokens from writeAssistantTurn —
-		// they must not surface for a still-active session.
+	// "100" / "150" are the seeded tokens from writeAssistantTurn — they
+	// must not surface for a still-active session. Use word-boundary regex
+	// rather than substring containment because the instance_id row in the
+	// rendered table is a UUID and ~1/256 UUIDs happen to end in "100" or
+	// "150", triggering a false-positive leak detection (issue #2169 §
+	// Cluster 4). Word boundaries ensure we only match the token values
+	// (which are whitespace-surrounded in the table), not UUID substrings.
+	leakRe := regexp.MustCompile(`\b(100|150)\b`)
+	if leakRe.MatchString(out) {
 		t.Errorf("rendered output leaks aggregate data for an active session:\n%s", out)
 	}
 }

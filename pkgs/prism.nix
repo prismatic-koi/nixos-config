@@ -27,6 +27,36 @@ buildGoModule {
 
   doCheck = runChecks;
 
+  # Override checkPhase so the test suite covers ./..., not just the
+  # subPackages list. buildGoModule's default checkPhase iterates over
+  # `getGoDirs test`, which honours `subPackages` when set — so with
+  # `subPackages = [ "." ]` above (kept for buildPhase, which controls
+  # the binary output), the default check would only test the root
+  # package (`./.`), which has no test files. That silently masked the
+  # homeless-shelter sandbox signal for every subpackage under
+  # internal/... and cmd/... See issue tracking this regression and
+  # AGENTS.md § "the homeless-shelter failure class".
+  #
+  # The `GOFLAGS=${GOFLAGS//-trimpath/}` strip mirrors the default
+  # checkPhase: buildGoModule adds -trimpath to GOFLAGS, which breaks
+  # tests that reference assets via their source paths. Race detection
+  # is intentionally not enabled here — the `go-tests` CI job already
+  # runs `go test ./... -race` on an Ubuntu runner; this job's purpose
+  # is the $HOME=/homeless-shelter signal, not race coverage.
+  #
+  # The `-timeout 30m` flag overrides the default 10m per-package budget:
+  # the bwrap sandbox is slower than the host (the `internal/sidecar` and
+  # `internal/db` packages each push close to the default 10m limit there
+  # even when they finish in tens of seconds on a host). The sandbox
+  # slowdown is tracked in issue #2169 § Cluster 1; this is a sandbox
+  # workaround, not a logic fix.
+  checkPhase = ''
+    runHook preCheck
+    export GOFLAGS=''${GOFLAGS//-trimpath/}
+    go test -timeout 30m ./...
+    runHook postCheck
+  '';
+
   vendorHash = "sha256-QmGhhx3JmxoNj8cgTaOIS4nffHx/vrB/fgXFjmle1gA=";
 
   # reviewGoSHA is the SHA-256 of internal/review/review.go, computed at
