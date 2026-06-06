@@ -28,13 +28,25 @@ const maxRequestBodyBytes = 1 << 20 // 1 MiB
 // have to drain before we close their connections.
 const shutdownGrace = 2 * time.Second
 
-// Server is the prism mux Unix-socket API server. It owns no state of
-// its own beyond a pointer to the underlying SessionTree; all
-// concurrency is serialised through the tree's existing mutex.
+// Server is the prism mux Unix-socket API server. It owns the
+// SessionTree (pane model) and the runtime ptyRegistry that tracks
+// the live *pty.Session + *vt.Host pair for each pane that was
+// created with a non-empty argv. The model is intentionally pure data
+// — the runtime side lives here so the pane package never has to
+// import os/exec or the pty package.
+//
+// Concurrency:
+//
+//   - The SessionTree has its own mutex; we never lock it externally.
+//   - The ptyRegistry has its own mutex.
+//   - The two are sequenced inside each handler: we always touch the
+//     tree first (so a 4xx fails before any side effects on the
+//     runtime) and then the registry.
 //
 // The zero value is NOT ready for use — construct with New.
 type Server struct {
 	tree   *pane.SessionTree
+	ptys   *ptyRegistry
 	logger *log.Logger
 }
 
@@ -60,12 +72,23 @@ func New(tree *pane.SessionTree, opts ...Option) *Server {
 	}
 	s := &Server{
 		tree:   tree,
+		ptys:   newPTYRegistry(),
 		logger: log.Default(),
 	}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+// Close releases every live PTY host. Tests use this to ensure their
+// spawned children are reaped before t.Cleanup runs; production
+// callers do not need it (process exit cleans up).
+func (s *Server) Close() {
+	if s == nil || s.ptys == nil {
+		return
+	}
+	s.ptys.closeAll()
 }
 
 // Tree returns the SessionTree the server is bound to. Provided so
@@ -90,6 +113,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/pane/switch", s.handlePaneSwitch)
 	mux.HandleFunc("/pane/resize", s.handlePaneResize)
 	mux.HandleFunc("/pane/send_input", s.handlePaneSendInput)
+	mux.HandleFunc("/pane/read_output", s.handlePaneReadOutput)
 
 	// Fall-through: anything not matched above is a 404 with a structured
 	// body so the CLI client gets a consistent error shape regardless of
@@ -349,6 +373,15 @@ func (s *Server) handleSessionDestroy(w http.ResponseWriter, r *http.Request) {
 		writePaneErr(w, err, map[string]any{"id": req.ID})
 		return
 	}
+	// Cascade PTY teardown for every pane that belonged to the destroyed
+	// session. Done after the model accepts the remove so a 4xx returns
+	// without killing children.
+	for _, host := range s.ptys.removeSession(req.ID) {
+		if err := host.Close(); err != nil && s.logger != nil {
+			s.logger.Printf("mux/server: session.destroy cascade close (%s): %v",
+				req.ID, err)
+		}
+	}
 	writeJSON(w, struct{}{})
 }
 
@@ -411,9 +444,30 @@ func (s *Server) handleSessionSwitch(w http.ResponseWriter, r *http.Request) {
 // ---------------------------------------------------------------------------
 
 // paneCreateRequest is the wire shape for POST /pane/create.
+//
+// Argv (when non-empty) tells the server to spawn the process under a
+// PTY and host its output in a vt.Host. The pane row in the model is
+// runtime-agnostic; the PTY handle and the VT engine live in the
+// server's internal ptyRegistry, keyed by (SessionID, Name).
+//
+// Cwd is the child's working directory. Env, when non-nil, replaces
+// the daemon's environment. A nil Env means "inherit the daemon's
+// env" — the typical CLI shape.
+//
+// Cols / Rows are the initial PTY geometry. Zero falls back to a
+// conventional 80x24; the renderer resizes on first paint.
+//
+// When Argv is empty the pane is created as a pure data-model entry
+// with no PTY — useful for tests and for the legacy "validate-only"
+// behaviour from before #2158.
 type paneCreateRequest struct {
-	SessionID string `json:"session_id"`
-	Name      string `json:"name"`
+	SessionID string            `json:"session_id"`
+	Name      string            `json:"name"`
+	Argv      []string          `json:"argv,omitempty"`
+	Cwd       string            `json:"cwd,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Cols      uint16            `json:"cols,omitempty"`
+	Rows      uint16            `json:"rows,omitempty"`
 }
 
 func (s *Server) handlePaneCreate(w http.ResponseWriter, r *http.Request) {
@@ -429,12 +483,51 @@ func (s *Server) handlePaneCreate(w http.ResponseWriter, r *http.Request) {
 			"session_id and name are required", nil)
 		return
 	}
+	// Model insertion first so a duplicate / unknown-session error is
+	// reported before we go to the work of spawning a child process.
 	if err := s.tree.AddPane(req.SessionID, pane.Pane{Name: req.Name}); err != nil {
 		writePaneErr(w, err, map[string]any{
 			"session_id": req.SessionID,
 			"name":       req.Name,
 		})
 		return
+	}
+
+	// Runtime side: only spawn a PTY when the caller supplied an argv.
+	// An empty argv is the legacy "validate-only" shape — the pane row
+	// is created in the model and that is all.
+	if len(req.Argv) > 0 {
+		host, err := startPTYHost(req.Argv, req.Cwd, req.Env, req.Cols, req.Rows, s.logger)
+		if err != nil {
+			// Roll the model insertion back so a failed spawn leaves no
+			// trace — callers retrying see a clean slate.
+			if rmErr := s.tree.RemovePane(req.SessionID, req.Name); rmErr != nil && s.logger != nil {
+				s.logger.Printf("mux/server: pane.create rollback (RemovePane): %v", rmErr)
+			}
+			writeError(w, http.StatusInternalServerError, codeInternal,
+				fmt.Sprintf("spawn pty: %v", err),
+				map[string]any{
+					"session_id": req.SessionID,
+					"name":       req.Name,
+				})
+			return
+		}
+		if err := s.ptys.add(req.SessionID, req.Name, host); err != nil {
+			// Programming-error path: the model said the pane was new,
+			// but the registry already had a host. Clean both up so the
+			// next call sees a consistent state, then report 500.
+			_ = host.Close()
+			if rmErr := s.tree.RemovePane(req.SessionID, req.Name); rmErr != nil && s.logger != nil {
+				s.logger.Printf("mux/server: pane.create rollback (RemovePane): %v", rmErr)
+			}
+			writeError(w, http.StatusInternalServerError, codeInternal,
+				fmt.Sprintf("register pty host: %v", err),
+				map[string]any{
+					"session_id": req.SessionID,
+					"name":       req.Name,
+				})
+			return
+		}
 	}
 	writeJSON(w, struct{}{})
 }
@@ -464,6 +557,16 @@ func (s *Server) handlePaneDestroy(w http.ResponseWriter, r *http.Request) {
 			"name":       req.Name,
 		})
 		return
+	}
+	// Runtime teardown after the model side has accepted the destroy.
+	// SIGTERM → (destroyGrace) → SIGKILL, then close the master FD so
+	// the pump goroutines unblock. Best-effort: a destroy can never
+	// fail the API call once the model side has succeeded.
+	if host := s.ptys.remove(req.SessionID, req.Name); host != nil {
+		if err := host.Close(); err != nil && s.logger != nil {
+			s.logger.Printf("mux/server: pane.destroy close pty (%s/%s): %v",
+				req.SessionID, req.Name, err)
+		}
 	}
 	writeJSON(w, struct{}{})
 }
@@ -607,11 +710,23 @@ func (s *Server) handlePaneResize(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// Model is geometry-free; the effective resize is dispatched by
-	// the PTY/render layers in a follow-on PR (see
-	// docs/multiplexer-proposal.md §3). The handler still returns
-	// success so a CLI that drives pane.resize today has a stable
-	// wire contract.
+	// Runtime side: forward to the live PTY when one exists. A pane
+	// created without an argv has no PTY — in that case the model
+	// accepts the call and we return 200 with no effect, matching the
+	// pre-#2158 wire contract.
+	if host, ok := s.ptys.get(req.SessionID, req.Name); ok {
+		if err := host.Resize(uint16(req.Cols), uint16(req.Rows)); err != nil {
+			writeError(w, http.StatusInternalServerError, codeInternal,
+				fmt.Sprintf("resize pty: %v", err),
+				map[string]any{
+					"session_id": req.SessionID,
+					"name":       req.Name,
+					"cols":       req.Cols,
+					"rows":       req.Rows,
+				})
+			return
+		}
+	}
 	writeJSON(w, struct{}{})
 }
 
@@ -647,9 +762,21 @@ func (s *Server) handlePaneSendInput(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	// As with /pane/resize: the model carries no input channel; the
-	// actual delivery lands in the PTY layer. Return success so the
-	// wire contract is stable.
+	// Runtime side: write the bytes to the PTY when a host is
+	// registered. As with resize, a pane without a PTY is the
+	// legacy validate-only shape and the handler returns 200 with
+	// no effect.
+	if host, ok := s.ptys.get(req.SessionID, req.Name); ok {
+		if err := host.SendInput([]byte(req.Data)); err != nil {
+			writeError(w, http.StatusInternalServerError, codeInternal,
+				fmt.Sprintf("send input: %v", err),
+				map[string]any{
+					"session_id": req.SessionID,
+					"name":       req.Name,
+				})
+			return
+		}
+	}
 	writeJSON(w, struct{}{})
 }
 

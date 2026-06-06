@@ -753,6 +753,11 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		HarnessName:      harnessFlag,
 		ModelsByRole:     modelsByRole,
 		AllowEmptyPrompt: allowEmptyPrompt,
+		// PRISM_USE_MUX cutover (#2158): route layout creation through
+		// the prismd-mux daemon instead of tmux when the gate is on.
+		// Errors from the gate (e.g. daemon not running) surface from
+		// SpawnSession as a layoutErr just like a tmux failure would.
+		UseMux: muxCutoverEnabled(),
 		// CLI overrides (issue #2086) flow through to the tmux pane command
 		// so `prism agent-run` (bwrap / sandbox-exec) and direct pi (host)
 		// receive --model / --variant on the final argv.
@@ -1338,6 +1343,11 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		AgentPromptHash:      a.agentPromptHash,
 		AbtestPairID:         a.pairID,
 		// ────────────────────────────────────────────────────────
+		// PRISM_USE_MUX cutover (#2158): route layout creation through
+		// the prismd-mux daemon when the gate is on. Abtest legs honour
+		// the same env var as single spawns so a Ben-side soak that
+		// exports PRISM_USE_MUX=1 in a shell rc gets uniform behaviour.
+		UseMux: muxCutoverEnabled(),
 	}
 	if a.pf != nil && !a.isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = a.pf.AgentEnvVars

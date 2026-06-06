@@ -675,7 +675,19 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 	}
 
 	printLine("killing session %s\n", session)
-	_ = tmux.KillSession(session)
+	if muxCutoverEnabled() {
+		// PRISM_USE_MUX cutover (#2158): destroy the session in the mux
+		// daemon. The daemon cascades to every pane's PTY (SIGTERM →
+		// grace → SIGKILL). A non-running daemon surfaces as a clear
+		// diagnostic via surfaceDaemonError below; an absent session
+		// (already destroyed, never registered) is swallowed by
+		// TeardownMuxSession so cleanup stays idempotent.
+		if muxErr := prismSession.TeardownMuxSession(session); muxErr != nil {
+			return surfaceDaemonError("prism cleanup", muxErr)
+		}
+	} else {
+		_ = tmux.KillSession(session)
+	}
 	prismSession.KillSidecar(session)
 	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
 	// processes still alive for review-group or investigator-group
@@ -874,7 +886,16 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 
 	printLine("killing session %s\n", session)
 	result.SessionKilled = true
-	_ = tmux.KillSession(session)
+	if muxCutoverEnabled() {
+		// PRISM_USE_MUX cutover (#2158): same as the full-cleanup path —
+		// destroy the mux session (cascades PTY teardown). Non-mux
+		// callers continue down the tmux path unchanged.
+		if muxErr := prismSession.TeardownMuxSession(session); muxErr != nil {
+			return surfaceDaemonError("prism cleanup", muxErr)
+		}
+	} else {
+		_ = tmux.KillSession(session)
+	}
 	prismSession.KillSidecar(session)
 	// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
 	// processes still alive for review-group or investigator-group

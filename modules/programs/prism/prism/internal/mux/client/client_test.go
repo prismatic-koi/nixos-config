@@ -266,7 +266,7 @@ func TestPanes_FullLifecycle(t *testing.T) {
 	}
 
 	for _, name := range []string{"agent", "term"} {
-		if err := c.Panes().Create(ctx, "r@b", name); err != nil {
+		if err := c.Panes().Create(ctx, "r@b", name, PaneCreateOptions{}); err != nil {
 			t.Fatalf("Pane.Create %q: %v", name, err)
 		}
 	}
@@ -362,7 +362,7 @@ func TestErrors_SentinelMapping(t *testing.T) {
 	if _, err := c.Sessions().Create(ctx, pane.Session{ID: "r@b", Repo: "r"}); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	if err := c.Panes().Create(ctx, "r@b", "agent"); err != nil {
+	if err := c.Panes().Create(ctx, "r@b", "agent", PaneCreateOptions{}); err != nil {
 		t.Fatalf("seed pane: %v", err)
 	}
 
@@ -419,7 +419,7 @@ func TestErrors_SentinelMapping(t *testing.T) {
 		{
 			name: "pane_exists",
 			do: func() error {
-				return c.Panes().Create(ctx, "r@b", "agent")
+				return c.Panes().Create(ctx, "r@b", "agent", PaneCreateOptions{})
 			},
 			want:     ErrPaneExists,
 			wantCode: CodePaneExists,
