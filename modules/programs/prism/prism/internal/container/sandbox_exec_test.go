@@ -531,6 +531,12 @@ func TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded(t *testing.T) {
 // per-session state dir and returns args of the shape
 // ["sandbox-exec", "-f", <profile_path>, <harness>, ...].
 func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
+	// PrepareSandboxExec derives the staging HOME from os.UserHomeDir(); in
+	// the nix build sandbox $HOME is /homeless-shelter (unwritable), so we
+	// redirect HOME to a tempdir. This is the AGENTS.md § "the
+	// homeless-shelter failure class" pattern — the gate this test exercises
+	// (issue #2168) exists to catch the inverse of this missing guard.
+	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManager(Config{
 		SessionName:   "repo@feat",
 		Worktree:      t.TempDir(),
@@ -613,6 +619,9 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 // The session must NOT launch: no profile file is written and no
 // sandbox-exec subprocess is started (issue #1879).
 func TestSandboxExecPrepare_StagingHomeFailurePropagated(t *testing.T) {
+	// Redirect HOME for the sandbox-exec staging-home path derivation. See
+	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
+	t.Setenv("HOME", t.TempDir())
 	// Build the manager and derive the staging home path before injecting the
 	// failure, so we know which path to block.
 	m := newSandboxExecManagerWithInstance(Config{
@@ -673,6 +682,9 @@ func TestSandboxExecPrepare_StagingHomeFailurePropagated(t *testing.T) {
 // confirming no sandbox-exec argument list was produced for the caller to
 // use (regression guard for issue #1879).
 func TestSandboxExecPrepare_StagingHomeFailurePropagated_NilArgs(t *testing.T) {
+	// Redirect HOME for the sandbox-exec staging-home path derivation. See
+	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
+	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
 		InstanceID:  "staging-home-fail-nil-args-test",

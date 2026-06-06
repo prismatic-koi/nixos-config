@@ -442,6 +442,11 @@ func containsAt(s, substr string) bool {
 // Manager.PrepareSandboxExec pass validation when the on-disk profile is
 // present.
 func TestValidateSandboxExecArgs_OK(t *testing.T) {
+	// PrepareSandboxExec derives the staging HOME from os.UserHomeDir(); in
+	// the nix build sandbox $HOME is /homeless-shelter (unwritable). Redirect
+	// to a tempdir so the staging-home MkdirAll succeeds. AGENTS.md § "the
+	// homeless-shelter failure class" + issue #2168.
+	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",
 		AllocatedPort: 14010,
@@ -471,6 +476,9 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 // when the profile-temp file is missing or unreadable, validation returns a
 // clear error containing the path and the underlying stat error.
 func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
+	// Redirect HOME for the sandbox-exec staging-home path derivation. See
+	// TestValidateSandboxExecArgs_OK for the rationale.
+	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@gone",
 		AllocatedPort: 14011,

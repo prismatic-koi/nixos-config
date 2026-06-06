@@ -3,6 +3,7 @@ package session
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -454,6 +455,16 @@ func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
 		// the scratchpad fallback in restore. Both run with no agent.
 		// They legitimately leave PIExtensionDir empty and must NOT be
 		// blocked by the guard.
+		//
+		// LayoutBare opens a real tmux session, so the subtest requires
+		// tmux on PATH. tmux is intentionally NOT in nativeCheckInputs in
+		// pkgs/prism.nix (see the long comment there), so this subtest is
+		// skipped in the nix build sandbox. The sibling LayoutFull subtest
+		// above still runs because it asserts an error before any tmux
+		// call. Tracked in issue #2169 § Cluster 2.
+		if _, err := exec.LookPath("tmux"); err != nil {
+			t.Skip("tmux not found in PATH — skipping LayoutBare subtest; see issue #2169")
+		}
 		name := "unit-test-2065-bare"
 		defer tmux.KillSession(name)
 		err := Create(name, dir, Opts{
