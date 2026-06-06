@@ -119,7 +119,7 @@ building in the first place — the same data the sidecar writes to
 `prism.db` for `prism checkin` and `prism dashboard` becomes the
 sidebar's data source, with no protocol invention.
 
-**Tmux feature parity is explicitly out of scope** (§9). We build only
+**Tmux feature parity is explicitly out of scope** (§10). We build only
 the multiplexer features prism actually uses, plus the features a
 general-purpose multiplexer must have to host a real TUI workflow.
 Copy-mode with full vi keybinds, named buffers, hooks, the format-string
@@ -148,7 +148,7 @@ herdr's layer on the left, our Go equivalent on the right.
 **Total novel LoC estimate** (Turn 2 §B from the investigator): herdr is
 ~145k LoC total but ~40–55k LoC of novel multiplexer logic on top of the
 VT engine. Our equivalent number, factoring in that we are not
-reimplementing tmux's copy-mode, format strings, or hooks (see §9), is
+reimplementing tmux's copy-mode, format strings, or hooks (see §10), is
 **~25–40k LoC of novel multiplexer logic** on top of the chosen Go
 libraries. The single biggest leverage is reusing `bubbletea` / `lipgloss`
 for the render layer — herdr writes its render layer from scratch in
@@ -351,14 +351,14 @@ distribution before we commit.
 
 **Honesty on the LoC.** "+15–25k novel LoC" is a planning estimate
 based on the herdr readout (Turn 2 §A) minus the features we don't
-build (Turn 2 §B, §9 here). It is not a target. The actual number
+build (Turn 2 §B, §10 here). It is not a target. The actual number
 depends on how much we can lean on `bubbletea` for the render loop
 and how much workspace-model complexity we accept. Both 3mux (~9k LoC
 total) and tuios (~12k LoC total) are existence proofs that a working
 multiplexer can be small.
 
 **What the buckets do not include.** No tmux feature parity beyond what
-prism actually uses (§9). No cross-cutting refactor of prism's
+prism actually uses (§10). No cross-cutting refactor of prism's
 orchestration substrate (escalation, merge queue, abtest — these are
 unrelated and stay as they are). No migration of the dashboard's polling
 loops to subscription unless and until the mux is wired in (the polling
@@ -512,12 +512,108 @@ first-hands-on. The mux-spike's verdict remains valid because
 cell-grid fidelity is the load-bearing question; the live-render bugs
 were spike-level, not engine-level.
 
-## 9. Out of scope
+## 9. Rollout and reversibility
+
+Captures the agreed strategy for how the programme would execute **if**
+the spike at #2141 returns proceed and the subsequent smoke-test of the
+interactive `run` path passes. Descriptive of the chosen approach, not
+a commitment to start.
+
+### 9.1 Train-to-main with feature-flagged late cutover
+
+The programme would land as a train of atomic PRs into `main`, not on
+a long-lived branch. Each PR is independently shippable, and `main`
+stays coherent throughout. The reversibility property comes from two
+structural facts about the architecture and one explicit gate:
+
+1. **The bulk of the work is additive.** New code under
+   `internal/mux/` (the multiplexer package), a new socket-API server,
+   the workspace/tab/pane data model, the SSH transport, the sidebar
+   render — none of these have callers in the existing `cmd/` or
+   `internal/sidecar/` paths until the cutover. Reverting any
+   individual additive PR is a `git revert` of one merge SHA with
+   negligible conflict surface.
+2. **Irrevocability is concentrated in 1–2 PRs.** The actual switch
+   from `tmux.NewSessionDetached`
+   (`internal/session/spawn.go:1124` and the ~33-caller surface in
+   §4) to `muxClient.WorkspaceCreate` lands in a small number of
+   cutover PRs. Until those merge, `main` continues to use tmux for
+   every existing flow.
+3. **The cutover PRs are gated behind `PRISM_USE_MUX=1`.** Both code
+   paths coexist while the env var defaults to off. Reverting the
+   cutover at runtime is `unset PRISM_USE_MUX`; reverting in source is
+   a one-PR revert of the gating commit. The dead `internal/mux/` code
+   remains in `main` as residue but does nothing.
+
+### 9.2 Phased rollout
+
+| Phase | What lands | Reversion cost |
+|---|---|---|
+| **1. Additive build** | `internal/mux/`, socket API, w/t/p model, SSH, sidebar, persistence — all unused | Per-PR `git revert`; no user-visible state |
+| **2. Cutover PR(s)** | Switches `prism spawn`, `cleanup`, `switch`, `nav`, dashboard wiring behind `PRISM_USE_MUX=1` | Unset env var; revert the cutover PR(s) |
+| **3. Soak** | Daily use under `PRISM_USE_MUX=1` for a set duration, exercising real workflows | Trivial: stop setting the env var |
+| **4. "Are we sure" gate** | Explicit go/no-go check before phase 5 | This is the point of no easy return |
+| **5. Tmux deletion** | Delete `internal/tmux/`, remove the `PRISM_USE_MUX` flag, remove the dead tmux code paths from `cmd/cleanup.go` and the rest of the 33-caller surface | Expensive — restoring tmux machinery requires reverting the deletion PR plus catching up to any subsequent changes |
+
+The point of phase 4 is to make the irrevocable transition **a
+deliberate decision**, not a quiet drift. A soak duration is set
+up-front (e.g. "four weeks of `PRISM_USE_MUX=1` daily use before phase
+5"); when the duration elapses, the gate is reviewed and an explicit
+decision is made.
+
+### 9.3 What "abandon" looks like at each phase
+
+- **During phase 1:** the abandon is closing out the programme and
+  either reverting the additive PRs (clean main, costs revert effort)
+  or leaving them as dead code (cheaper, accumulates residue). The
+  dead code is bounded — call it ~15–20 kLoC per §6's MVP estimate.
+- **During phase 2 or 3:** unset `PRISM_USE_MUX`; revert the cutover
+  PR(s) if the gate should also come out of `main`, otherwise it's
+  runtime-free.
+- **During phase 4 review:** decline to proceed. Phase 5 doesn't land.
+  Phase 3's runtime-flag fallback survives indefinitely.
+- **After phase 5:** the long-lived-branch reversion advantage would
+  have helped here; in this strategy, post-phase-5 abandon requires
+  explicit restoration of the tmux machinery. This is the deliberate
+  trade-off — abandon is cheap until the soak gate, then becomes a
+  real undertaking.
+
+### 9.4 Why not a long-lived branch?
+
+The long-lived-branch alternative was considered. It offers a `git
+branch -D mux-main` clean-abandon property throughout. The reasons
+against:
+
+- Prism's `prism merge` / `prism review` / `prism escalate` tooling
+  assumes `main` as the integration target. Merge queue, pre-flight
+  rebase gate, and coordinator auto-discovery would all need
+  base-branch awareness — a meta-project on the order of one week of
+  focused prism work that would have to land before the multiplexer
+  programme could use it.
+- The architecture's additive shape means the train-to-main reversion
+  cost is bounded throughout phases 1–3. The cleanest-abandon property
+  of a long-lived branch is mainly worth its tooling cost when
+  irrevocability is spread across the whole programme; here it's
+  concentrated in phase 5.
+- "Long-lived branch as a first-class prism capability" is a real and
+  interesting question, but it is a separate meta-project that should
+  be scoped on its own merits, not as a prerequisite for the
+  multiplexer.
+
+### 9.5 Tooling implications
+
+No changes to prism's merge queue, review gate, or escalate
+auto-discovery are required under the chosen strategy. The standard
+coordinator workflow on `@main` handles the programme — design doc
+plus atomic PRs that each squash-merge into `main`, with dependency
+ordering captured as the train of PRs is filed.
+
+## 10. Out of scope
 
 The proposal is deliberately narrow. The following are **not** part
 of any bucket in §6 and not part of the MVP definition:
 
-### 9.1 Tmux feature parity
+### 10.1 Tmux feature parity
 
 - **Copy-mode with full vi keybinds.** Tmux's copy-mode is a tiny
   editor; reimplementing it is a multi-week side-quest. The mux ships
@@ -541,7 +637,7 @@ of any bucket in §6 and not part of the MVP definition:
   `modules/programs/prism/tmux.nix`), the equivalent in the mux is a
   direct query against the workspace model. No format-string parsing.
 
-### 9.2 The herdr-on-pi-on-prism hybrid
+### 10.2 The herdr-on-pi-on-prism hybrid
 
 The hybrid path described in §1 is parked, not killed. If the spike
 returns a stop-verdict and the libghostty-vt-via-cgo follow-up is also
@@ -549,7 +645,7 @@ rejected, the hybrid moves from "parked" to "active candidate". Until
 either of those, the hybrid is out of scope for any work in this
 programme.
 
-### 9.3 Cross-cutting orchestration changes
+### 10.3 Cross-cutting orchestration changes
 
 The bus, merge queue, review groups, escalation state machine, abtest,
 stats, sandboxing — all of these stay exactly as they are. The
@@ -558,7 +654,7 @@ its 33-caller boundary in prism. Any change to orchestration belongs
 in a separate issue against the existing subsystems, not in any PR
 under this programme.
 
-### 9.4 Live-handoff (deferred)
+### 10.4 Live-handoff (deferred)
 
 Multi-client live-handoff — a second `prism attach --remote` joining an
 existing remote session without disconnecting the first — is the third
@@ -566,13 +662,13 @@ effort bucket in §6 and is deferred until after MVP + SSH ships.
 "Single-client remote attach" is sufficient for the value the SSH path
 unlocks; live-handoff is a real feature but a real cost.
 
-### 9.5 Windows / non-PTY backends
+### 10.5 Windows / non-PTY backends
 
 The mux assumes a POSIX PTY substrate. WSL2 works via its POSIX layer;
 bare Windows (ConPTY) does not. Out of scope. Darwin and Linux are the
 only supported substrates, matching prism's existing platform support.
 
-## 10. Related
+## 11. Related
 
 - **Spike issue (this proposal's gate):** #2141 — full artefact contract,
   corpus manifest, kill criterion, acceptance criteria.
