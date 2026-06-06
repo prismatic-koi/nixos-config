@@ -1,3 +1,8 @@
 result
 CLAUDE.md
 .prism-review/
+
+# x/vt fidelity spike (#2141) — per-run scratch captures land under
+# reports/. The curated `report.md` plus the per-app captures that back
+# the verdict are committed via `git add -f` against this ignore.
+modules/programs/prism/mux-spike/reports/

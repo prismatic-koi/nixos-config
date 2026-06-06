@@ -1,0 +1,13 @@
+{
+  "app": "fzf-files",
+  "cols": 100,
+  "rows": 30,
+  "wall_duration_ms": 2742,
+  "exit_code": -1,
+  "frame_count": 8,
+  "triggers_sent": 3,
+  "bytes_from_pty": 10311,
+  "settle_ms": 1200,
+  "post_trigger_settle_ms": 800,
+  "notes": "fzf overlay popup over a host shell. Tests: alternate-screen entry/exit,\nincremental query rendering, match-highlight inverse-video, popup\npositioning. Failure modes: alt-screen residue after exit, lost match\nhighlights, popup off-by-one position.\n"
+}

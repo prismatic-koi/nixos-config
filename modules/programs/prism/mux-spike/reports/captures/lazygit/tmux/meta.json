@@ -1,0 +1,8 @@
+{
+  "app": "lazygit",
+  "cols": 160,
+  "rows": 50,
+  "backend": "tmux",
+  "settle_ms": 1200,
+  "post_trigger_settle_ms": 600
+}
