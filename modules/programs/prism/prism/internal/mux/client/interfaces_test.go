@@ -62,19 +62,20 @@ func (f *fakeSessionAPI) Switch(ctx context.Context, id string) (string, error) 
 }
 
 type fakePaneAPI struct {
-	createFn    func(ctx context.Context, sessionID, name string) error
-	destroyFn   func(ctx context.Context, sessionID, name string) error
-	listFn      func(ctx context.Context, sessionID string) (client.PaneList, error)
-	switchFn    func(ctx context.Context, req client.PaneSwitchRequest) (string, error)
-	resizeFn    func(ctx context.Context, sessionID, name string, cols, rows int) error
-	sendInputFn func(ctx context.Context, sessionID, name, data string) error
+	createFn     func(ctx context.Context, sessionID, name string, opts client.PaneCreateOptions) error
+	destroyFn    func(ctx context.Context, sessionID, name string) error
+	listFn       func(ctx context.Context, sessionID string) (client.PaneList, error)
+	switchFn     func(ctx context.Context, req client.PaneSwitchRequest) (string, error)
+	resizeFn     func(ctx context.Context, sessionID, name string, cols, rows int) error
+	sendInputFn  func(ctx context.Context, sessionID, name, data string) error
+	readOutputFn func(ctx context.Context, sessionID, name string) (client.PaneFrame, error)
 }
 
-func (f *fakePaneAPI) Create(ctx context.Context, sessionID, name string) error {
+func (f *fakePaneAPI) Create(ctx context.Context, sessionID, name string, opts client.PaneCreateOptions) error {
 	if f.createFn == nil {
 		return nil
 	}
-	return f.createFn(ctx, sessionID, name)
+	return f.createFn(ctx, sessionID, name, opts)
 }
 func (f *fakePaneAPI) Destroy(ctx context.Context, sessionID, name string) error {
 	if f.destroyFn == nil {
@@ -105,6 +106,12 @@ func (f *fakePaneAPI) SendInput(ctx context.Context, sessionID, name, data strin
 		return nil
 	}
 	return f.sendInputFn(ctx, sessionID, name, data)
+}
+func (f *fakePaneAPI) ReadOutput(ctx context.Context, sessionID, name string) (client.PaneFrame, error) {
+	if f.readOutputFn == nil {
+		return client.PaneFrame{}, nil
+	}
+	return f.readOutputFn(ctx, sessionID, name)
 }
 
 // Compile-time interface-satisfaction checks. These run at build

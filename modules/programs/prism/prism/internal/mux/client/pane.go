@@ -13,9 +13,20 @@ type paneAPI struct {
 }
 
 // paneCreateWire matches server.paneCreateRequest.
+//
+// Argv (when non-empty) instructs the server to spawn the process
+// under a PTY and host its output in a vt.Host. Cwd is the child's
+// working directory; Env (when non-nil) replaces the daemon's
+// environment. Cols / Rows are the initial PTY geometry — zero falls
+// back to a conventional 80x24.
 type paneCreateWire struct {
-	SessionID string `json:"session_id"`
-	Name      string `json:"name"`
+	SessionID string            `json:"session_id"`
+	Name      string            `json:"name"`
+	Argv      []string          `json:"argv,omitempty"`
+	Cwd       string            `json:"cwd,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Cols      uint16            `json:"cols,omitempty"`
+	Rows      uint16            `json:"rows,omitempty"`
 }
 
 // paneDestroyWire matches server.paneDestroyRequest.
@@ -44,11 +55,24 @@ type paneSendInputWire struct {
 	Data      string `json:"data"`
 }
 
-// Create posts /pane/create.
-func (p *paneAPI) Create(ctx context.Context, sessionID, name string) error {
+// Create posts /pane/create. The opts struct carries the runtime-side
+// fields the server needs to spawn a process under a PTY — Argv, Cwd,
+// Env, Cols, Rows. Callers that only want a model-side row (no PTY)
+// pass a zero-value PaneCreateOptions, matching the pre-#2158 shape.
+//
+// Returns *ClientError on a structured server error (model-side
+// failures: ErrSessionNotFound, ErrPaneExists), or ErrServerUnavailable
+// on a connection failure. A PTY-spawn failure surfaces as a 500 with
+// the underlying os/exec error in Message.
+func (p *paneAPI) Create(ctx context.Context, sessionID, name string, opts PaneCreateOptions) error {
 	return p.c.doPost(ctx, "/pane/create", paneCreateWire{
 		SessionID: sessionID,
 		Name:      name,
+		Argv:      opts.Argv,
+		Cwd:       opts.Cwd,
+		Env:       opts.Env,
+		Cols:      opts.Cols,
+		Rows:      opts.Rows,
 	}, nil)
 }
 
@@ -100,13 +124,57 @@ func (p *paneAPI) Resize(ctx context.Context, sessionID, name string, cols, rows
 	}, nil)
 }
 
-// SendInput posts /pane/send_input. data is opaque to the server at
-// this layer (PTY integration lands in a later PR) but is included
-// in the wire shape now so the contract is stable.
+// SendInput posts /pane/send_input. The bytes are written verbatim to
+// the PTY master FD (the kernel presents this to the child as stdin).
+// When the pane has no PTY (created with an empty Argv), the call is a
+// no-op and returns nil so the model side stays consistent.
 func (p *paneAPI) SendInput(ctx context.Context, sessionID, name, data string) error {
 	return p.c.doPost(ctx, "/pane/send_input", paneSendInputWire{
 		SessionID: sessionID,
 		Name:      name,
 		Data:      data,
 	}, nil)
+}
+
+// paneReadOutputResponseWire matches server.paneReadOutputResponse.
+type paneReadOutputResponseWire struct {
+	Cols      int      `json:"cols"`
+	Rows      int      `json:"rows"`
+	CursorX   int      `json:"cursor_x"`
+	CursorY   int      `json:"cursor_y"`
+	AltScreen bool     `json:"alt_screen"`
+	Lines     []string `json:"lines"`
+}
+
+// ReadOutput posts GET /pane/read_output. Returns a snapshot of the
+// pane's rendered cell grid suitable for the renderer's polling tick.
+//
+// The Lines slice is the vt.Host's RenderRows() output — one string
+// per visible row, padded to the row count. Cursor coordinates are
+// in row-major form (CursorY is the row index, CursorX the column).
+// Cols / Rows are the engine's current dimensions.
+//
+// When the pane has no PTY (created with an empty Argv), the returned
+// PaneFrame carries Cols=0 and Rows=0 with an empty Lines slice — the
+// model row exists but there is no rendered content.
+func (p *paneAPI) ReadOutput(ctx context.Context, sessionID, name string) (PaneFrame, error) {
+	q := url.Values{}
+	q.Set("session_id", sessionID)
+	q.Set("name", name)
+
+	var resp paneReadOutputResponseWire
+	if err := p.c.doGet(ctx, "/pane/read_output", q, &resp); err != nil {
+		return PaneFrame{}, err
+	}
+	if resp.Lines == nil {
+		resp.Lines = []string{}
+	}
+	return PaneFrame{
+		Cols:      resp.Cols,
+		Rows:      resp.Rows,
+		CursorX:   resp.CursorX,
+		CursorY:   resp.CursorY,
+		AltScreen: resp.AltScreen,
+		Lines:     resp.Lines,
+	}, nil
 }

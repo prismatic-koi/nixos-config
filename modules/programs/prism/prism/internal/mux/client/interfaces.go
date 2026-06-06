@@ -62,10 +62,20 @@ type SessionAPI interface {
 
 // PaneAPI exposes the pane.* method namespace from the server.
 type PaneAPI interface {
-	// Create posts /pane/create.
-	Create(ctx context.Context, sessionID, name string) error
+	// Create posts /pane/create. opts.Argv (when non-empty) instructs the
+	// server to spawn the process under a PTY and host its output in a
+	// vt.Host. opts.Cwd is the child's working directory; opts.Env (when
+	// non-nil) replaces the daemon's environment; opts.Cols/Rows are the
+	// initial PTY geometry. A zero-value opts creates a model-only row
+	// with no PTY — useful for tests and for the legacy validate-only
+	// shape.
+	Create(ctx context.Context, sessionID, name string, opts PaneCreateOptions) error
 
-	// Destroy posts /pane/destroy.
+	// Destroy posts /pane/destroy. When a PTY is registered for the
+	// pane, the server signals the child (SIGTERM → grace → SIGKILL),
+	// waits for exit, and unregisters the host. Destroy returns once
+	// the model row is removed; PTY teardown is best-effort and never
+	// fails the API call.
 	Destroy(ctx context.Context, sessionID, name string) error
 
 	// List returns the panes for sessionID alongside the
@@ -80,16 +90,63 @@ type PaneAPI interface {
 	Switch(ctx context.Context, req PaneSwitchRequest) (string, error)
 
 	// Resize posts /pane/resize. cols and rows must be non-negative.
-	// The server currently validates the (session, pane) tuple and
-	// returns 200 without effecting the resize — actual geometry
-	// dispatch lands in a later PR — but the wire contract is stable
-	// from this PR onward.
+	// The server forwards the resize to the PTY (kernel will SIGWINCH
+	// the child) and updates the emulator's grid dimensions. Panes
+	// without a PTY accept the call as a no-op for wire-contract
+	// stability.
 	Resize(ctx context.Context, sessionID, name string, cols, rows int) error
 
-	// SendInput posts /pane/send_input. As with Resize, the server
-	// currently validates and returns 200 without effecting input
-	// delivery; the wire contract is the stable part.
+	// SendInput posts /pane/send_input. The bytes are written verbatim
+	// to the PTY master FD (which the kernel presents to the child as
+	// stdin). Panes without a PTY accept the call as a no-op.
 	SendInput(ctx context.Context, sessionID, name, data string) error
+
+	// ReadOutput posts GET /pane/read_output. Returns a snapshot of
+	// the rendered cell grid for the renderer's polling tick. Panes
+	// without a PTY return a zero-dimension PaneFrame with an empty
+	// Lines slice.
+	ReadOutput(ctx context.Context, sessionID, name string) (PaneFrame, error)
+}
+
+// PaneCreateOptions carries the runtime-side fields the server uses
+// to spawn a PTY for the new pane. The zero value is valid: it
+// produces a model-only row with no PTY.
+type PaneCreateOptions struct {
+	// Argv is the executable + arguments to spawn. argv[0] is the
+	// program to exec. An empty Argv creates a model-only row with
+	// no PTY.
+	Argv []string
+
+	// Cwd is the child's working directory. Empty means "inherit the
+	// daemon's cwd" — in practice the user's $HOME, not what the
+	// CLI wants. Pass an explicit absolute path.
+	Cwd string
+
+	// Env is the child's environment. Nil means "inherit the daemon's
+	// env"; a non-nil but empty map means "start with an empty env".
+	Env map[string]string
+
+	// Cols and Rows are the initial PTY geometry. Zero falls back to
+	// a conventional 80x24; the renderer resizes on first paint.
+	Cols uint16
+	Rows uint16
+}
+
+// PaneFrame is the typed response shape for PaneAPI.ReadOutput. It is
+// a polling-shape snapshot of the pane's rendered cell grid — one
+// string per visible row, padded to the row count, with cursor
+// coordinates and the alt-screen flag for renderer chrome.
+//
+// When the pane has no PTY (created with an empty Argv) the returned
+// PaneFrame carries Cols=0 and Rows=0 with an empty Lines slice; the
+// renderer treats this as "no content yet" and shows the placeholder.
+type PaneFrame struct {
+	Cols      int      `json:"cols"`
+	Rows      int      `json:"rows"`
+	CursorX   int      `json:"cursor_x"`
+	CursorY   int      `json:"cursor_y"`
+	AltScreen bool     `json:"alt_screen"`
+	Lines     []string `json:"lines"`
 }
 
 // SessionList is the typed response shape for SessionAPI.List. The

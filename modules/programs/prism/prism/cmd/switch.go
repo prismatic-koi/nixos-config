@@ -6,6 +6,7 @@ package cmd
 // (or $PRISM_CONFIG_FILE) via the internal/config package.
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -109,6 +110,42 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 		return err
 	}
 	opts.ConfigContent = content
+	return nil
+}
+
+// switchMuxOnly is the PRISM_USE_MUX=1 dispatch target for the switch
+// command's create-or-attach path (ensureAndSwitch). It tells the
+// daemon to change its active-session pointer; if the session is not
+// registered in the daemon, surfaces a clear error instead of
+// attempting a tmux-style auto-create. Under the mux model, session
+// lifecycle is owned by `prism spawn` / `restore`, not by switch.
+//
+// sessionName is the canonical prism session name (e.g.
+// "nixos-config@main"). When sessionName is empty, the call is a
+// no-op — the caller has already validated the resolution path.
+//
+// Note: the create-or-attach path prints a "switched to <name>" line
+// because the caller expects the legacy session.Attach success
+// output. The picker-driven entry points (cmd/switch_project.go) use
+// switchClientOrMuxSession directly so they share the same gate
+// shape as nav and stay silent on success, matching the tmux path.
+func switchMuxOnly(sessionName string) error {
+	if sessionName == "" {
+		return nil
+	}
+	mc, err := newMuxClient()
+	if err != nil {
+		return surfaceDaemonError("prism switch", err)
+	}
+	defer mc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), muxClientTimeout)
+	defer cancel()
+
+	if _, err := mc.Sessions().Switch(ctx, sessionName); err != nil {
+		return surfaceDaemonError("prism switch", err)
+	}
+	fmt.Fprintf(stdoutW(), "switched to session %q (mux)\n", sessionName)
 	return nil
 }
 
@@ -243,6 +280,16 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		} else {
 			opts.Port = port
 		}
+	}
+
+	// PRISM_USE_MUX cutover (#2158): under the mux gate, switch only
+	// changes the daemon's active-session pointer. Session lifecycle
+	// is owned by `prism spawn` / `restore`; we do not auto-create
+	// here because the runtime side (PTYs, sidecars, etc.) is owned
+	// by SpawnSession and reaching into it from switch would duplicate
+	// the spawn flow.
+	if muxCutoverEnabled() {
+		return switchMuxOnly(sessionName)
 	}
 
 	if err := session.Create(sessionName, directory, opts); err != nil {

@@ -323,6 +323,19 @@ type SpawnOpts struct {
 	// --abtest is used. Both sibling sessions receive the same value so the
 	// rows pair via spawn_inputs.abtest_pair_id (P4.ABTEST, #1216).
 	AbtestPairID string
+
+	// UseMux opts this spawn into the PRISM_USE_MUX=1 cutover path
+	// (issue #2158). When true, SpawnSession dispatches to
+	// SpawnMuxLayout instead of spawnFullLayout / spawnAgentOnlyLayout
+	// — the four tmux primitives at the bottom of the spawn flow
+	// (NewSessionDetached, NewWindow, SendKeys) are replaced with mux
+	// client calls. Everything above the layout dispatch (DB seeding,
+	// port allocation, sidecar startup) is unchanged.
+	//
+	// The CLI gate (cmd/spawn.go) flips this when os.Getenv("PRISM_USE_MUX")
+	// == "1". Tests can flip it directly to exercise the mux path
+	// without setting an env var.
+	UseMux bool
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -764,11 +777,20 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// Step 4 & 5: Create the tmux session and start the sidecar. Both
 	// layouts share the same responsibilities — only the window shape and
 	// the ownership of the sidecar-start call differ.
+	//
+	// PRISM_USE_MUX cutover (#2158): when opts.UseMux is set, dispatch to
+	// SpawnMuxLayout instead. The mux path uses the same SpawnOpts and
+	// shares the pre-flight (DB seeding, port allocation, spawn_inputs
+	// writes) verbatim; only the four bottom-of-flow tmux primitives are
+	// replaced with mux client calls.
 	var layoutErr error
-	switch opts.Layout {
-	case LayoutFull:
+	switch {
+	case opts.UseMux && (opts.Layout == LayoutFull || opts.Layout == LayoutAgentOnly):
+		startup.log("spawn-session: dispatching to SpawnMuxLayout (PRISM_USE_MUX=1)")
+		layoutErr = SpawnMuxLayout(opts, port)
+	case opts.Layout == LayoutFull:
 		layoutErr = spawnFullLayout(d, opts, port)
-	case LayoutAgentOnly:
+	case opts.Layout == LayoutAgentOnly:
 		layoutErr = spawnAgentOnlyLayout(opts, port)
 	default:
 		startup.log("spawn-session: unsupported layout %d", opts.Layout)
@@ -796,7 +818,15 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		//                               retry with the same name starts fresh.
 		KillSidecar(opts.SessionName)
 		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
-		_ = tmux.KillSession(opts.SessionName)
+		if opts.UseMux {
+			// Tear down the mux session too so a re-spawn does not see a
+			// stale row in the daemon's session tree. Best-effort: a
+			// missing session is fine (TeardownMuxSession swallows
+			// ErrSessionNotFound).
+			_ = TeardownMuxSession(opts.SessionName)
+		} else {
+			_ = tmux.KillSession(opts.SessionName)
+		}
 		removeInitialPrompt(opts.SessionName)
 		return fmt.Errorf("%w — to remove side effects run: prism cleanup --yes --session %s",
 			layoutErr, opts.SessionName)
@@ -863,7 +893,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// releases the pane. All three are best-effort and idempotent.
 			KillSidecar(opts.SessionName)
 			cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
-			_ = tmux.KillSession(opts.SessionName)
+			if opts.UseMux {
+				_ = TeardownMuxSession(opts.SessionName)
+			} else {
+				_ = tmux.KillSession(opts.SessionName)
+			}
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
 			return readyErr

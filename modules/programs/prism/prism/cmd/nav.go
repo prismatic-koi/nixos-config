@@ -24,6 +24,7 @@ package cmd
 //   - Unknown direction arguments return a non-zero exit with a clear error.
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -56,6 +57,13 @@ func runNav(_ *cobra.Command, args []string) error {
 	// Require a tmux client. We treat $TMUX as the marker — `prism nav` is
 	// only ever invoked from a tmux key binding, and outside that context
 	// there is nothing to switch.
+	//
+	// PRISM_USE_MUX cutover (#2158): the $TMUX guard stays because the
+	// nav keybind is still wired to tmux's prefix table during phase 2/3.
+	// We resolve the target the same way; the difference is the
+	// switch-client side. Under PRISM_USE_MUX we tell the daemon to
+	// change its active-session pointer; the daemon's renderer (when
+	// later wired into a user-facing TUI) reacts to that.
 	if os.Getenv("TMUX") == "" {
 		return fmt.Errorf("prism nav: not running inside a tmux client ($TMUX is not set)")
 	}
@@ -77,6 +85,10 @@ func runNav(_ *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if muxCutoverEnabled() {
+		return navMuxSwitch(target)
+	}
+
 	// Use the explicit -c <client> form whenever CurrentClient returns a name.
 	// This matches the pattern used by cmd/switch.go, cmd/switch_project.go,
 	// and cmd/cleanup.go and ensures that `prism nav` switches the client
@@ -95,10 +107,45 @@ func runNav(_ *cobra.Command, args []string) error {
 	return nil
 }
 
+// navMuxSwitch is the PRISM_USE_MUX=1 dispatch target for the nav
+// command. It tells the daemon to change its active-session pointer;
+// the renderer (when later wired to a user-facing TUI) picks up the
+// change on its next paint.
+//
+// On daemon-not-running, surfaces the canonical diagnostic so the
+// operator knows to start prismd-mux. The session-not-found case
+// (target dropped between resolveTarget and the daemon call) is a
+// silent no-op to match the tmux path's behaviour.
+func navMuxSwitch(target string) error {
+	mc, err := newMuxClient()
+	if err != nil {
+		return surfaceDaemonError("prism nav", err)
+	}
+	defer mc.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), muxClientTimeout)
+	defer cancel()
+
+	if _, err := mc.Sessions().Switch(ctx, target); err != nil {
+		return surfaceDaemonError("prism nav", err)
+	}
+	return nil
+}
+
 // resolveTarget computes the target session name for the requested direction,
 // or ("", false) when the navigation is a no-op.
+//
+// PRISM_USE_MUX cutover (#2158): the liveness predicate is sourced
+// from liveSessionPredicate, NOT tmux.HasSession directly. Under the
+// gate, sessions live in the mux daemon's tree, not in tmux — using
+// tmux.HasSession would reduce nav to a silent no-op for every
+// mux-hosted session (the round-1 fix at runNav routes the
+// switch-client call correctly, but if no candidate survives the
+// liveness filter, the routed call is never reached). The predicate
+// is captured once and reused across the per-target lookups so a
+// single CLI invocation pays one round-trip total.
 func resolveTarget(current string, dir nav.Direction, sessions []dashboard.AgentSession) (string, bool) {
-	live := tmux.HasSession
+	live := liveSessionPredicate()
 	switch dir {
 	case nav.DirUp, nav.DirDown:
 		targets := nav.VerticalTargets(sessions, live)

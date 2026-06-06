@@ -124,17 +124,13 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		return handleReviewGroupPick(chosen.reviewGroup)
 	}
 
-	// Review session entry: attach directly to the named tmux session.
+	// Review session entry: attach directly to the named session.
+	// PRISM_USE_MUX cutover (#2158): switchClientOrMuxSession routes
+	// through the mux daemon when the gate is on and falls back to
+	// tmux's switch-client primitive otherwise. Mirrors the gate
+	// pattern used by ensureAndSwitch (cmd/switch.go) and runNav.
 	if chosen.sessionRef != "" {
-		client, _ := tmux.CurrentClient()
-		if client == "" {
-			client = tmux.CallerClient()
-		}
-		if client != "" {
-			return tmux.SwitchClient(client, chosen.sessionRef)
-		}
-		_, err := tmux.SwitchClientCurrent(chosen.sessionRef)
-		return err
+		return switchClientOrMuxSession("prism switch", chosen.sessionRef)
 	}
 
 	if chosen.special == "[+ create new worktree]" {
@@ -214,6 +210,13 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 	groupSessions := map[string][]childInfo{}
 	groupOrder := []string{} // preserve insertion order for sorted output
 
+	// PRISM_USE_MUX cutover (#2158): use liveSessionPredicate so a
+	// mux-hosted session is visible in the picker. tmux.HasSession
+	// returns false for every mux session and would silently empty
+	// the picker, leaving the round-1 routing fix in handleBareRepo
+	// unreachable. Captured once for the whole loop — one round-trip
+	// per CLI invocation.
+	live := liveSessionPredicate()
 	for _, s := range all {
 		// Only per-agent review sessions: name must contain "~review-" and
 		// resolve to a non-empty ReviewRoundKey.
@@ -221,8 +224,9 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 		if rk == "" {
 			continue
 		}
-		// The session must also exist in tmux.
-		if !tmux.HasSession(s.SessionName) {
+		// The session must also be alive in the active substrate (tmux
+		// when the gate is off, the mux daemon's session tree when on).
+		if !live(s.SessionName) {
 			continue
 		}
 		if _, exists := groupSessions[rk]; !exists {
@@ -296,13 +300,17 @@ func handleReviewGroupPick(groupKey string) error {
 		return fmt.Errorf("query sessions: %w", err)
 	}
 
+	// PRISM_USE_MUX cutover (#2158): same liveness predicate as
+	// reviewGroupEntries — see the comment there for why this cannot
+	// stay as tmux.HasSession.
+	live := liveSessionPredicate()
 	var items []entry
 	for _, s := range all {
 		rk := dashboard.ReviewRoundKey(s.SessionName)
 		if rk != groupKey {
 			continue
 		}
-		if !tmux.HasSession(s.SessionName) {
+		if !live(s.SessionName) {
 			continue
 		}
 		// Label: e.g. "~review-1-review-goal"
@@ -341,15 +349,9 @@ func handleReviewGroupPick(groupKey string) error {
 		return nil
 	}
 
-	client, _ := tmux.CurrentClient()
-	if client == "" {
-		client = tmux.CallerClient()
-	}
-	if client != "" {
-		return tmux.SwitchClient(client, chosen.sessionRef)
-	}
-	_, err = tmux.SwitchClientCurrent(chosen.sessionRef)
-	return err
+	// PRISM_USE_MUX cutover (#2158): same gate pattern as the
+	// review-session-entry path above.
+	return switchClientOrMuxSession("prism switch", chosen.sessionRef)
 }
 
 func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
@@ -404,8 +406,16 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 
 		// Conversion succeeded — clean up the pre-conversion session,
 		// mirroring the pattern used by cleanup.go for intentional teardowns.
-		// Kill the tmux session if it exists; ignore "no such session" errors.
-		_ = tmux.KillSession(oldSessionName)
+		// PRISM_USE_MUX cutover (#2158): under the gate the pre-conversion
+		// session is owned by the mux daemon, not tmux — destroy it via
+		// the daemon's API (cascades PTY teardown). Without this gate,
+		// `prism switch` after a bare-repo conversion under PRISM_USE_MUX=1
+		// leaves an orphan row in the daemon's session tree.
+		if muxCutoverEnabled() {
+			_ = session.TeardownMuxSession(oldSessionName)
+		} else {
+			_ = tmux.KillSession(oldSessionName)
+		}
 		// Kill any sidecar process associated with the old session (no-op if
 		// no PID file exists).
 		session.KillSidecar(oldSessionName)
