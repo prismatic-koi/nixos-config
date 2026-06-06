@@ -79,29 +79,56 @@ func repoHeaderStyle(selected bool) lipgloss.Style {
 	return s
 }
 
-// frameStyle wraps the sidebar with a right-edge separator at the
-// fixed Width.
+// frameStyle wraps the sidebar with a right-edge separator. The
+// caller sets Width / Height explicitly so the same style serves
+// both the full sidebar (32 cols) and the narrow-mode popover
+// (configurable width).
 func frameStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Width(Width).
 		BorderStyle(lipgloss.NormalBorder()).
 		BorderRight(true).
 		BorderForeground(lipgloss.Color("#27272a"))
 }
 
-// headerStyle is used for the sticky top row showing the spike's name
-// and the visible-session count.
+// dividerStyle is the colour of the horizontal rule that sits
+// between the header and the scrollable body.
+func dividerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("#27272a"))
+}
+
+// headerStyle is used for the pinned top row showing the spike's
+// name and the non-review session count. v2: the header is composed
+// separately from the body via lipgloss.JoinVertical so it can
+// never be pushed off the top by overflowing content (the bug Ben
+// caught in v1).
 func headerStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#fafafa")).
-		Bold(true).
+		Bold(true)
+}
+
+// footerStyle is used for the pinned keymap hint at the bottom.
+func footerStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#71717a"))
+}
+
+// topbarStyle is used by the narrow-mode top status bar that
+// replaces the sidebar when the terminal is too narrow for a split
+// layout. Mirrors herdr's mobile pattern: a single-row identity strip
+// at the top with a `switch` hint anchored on the right.
+func topbarStyle() lipgloss.Style {
+	return lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#e4e4e7")).
+		Background(lipgloss.Color("#18181b")).
 		Padding(0, 1)
 }
 
-// footerStyle is used for the keymap hint at the bottom of the
-// sidebar.
-func footerStyle() lipgloss.Style {
+// topbarHintStyle is used for the trailing `^B switch` action label
+// on the narrow-mode top bar. Dimmer so the session identity reads
+// first.
+func topbarHintStyle() lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#71717a")).
-		Padding(0, 1)
+		Foreground(lipgloss.Color("#a1a1aa")).
+		Background(lipgloss.Color("#18181b"))
 }

@@ -89,6 +89,13 @@ type Session struct {
 	// never have their own subsessions in the MVP — the hierarchy is
 	// exactly two levels deep.
 	Subsessions []*Session
+
+	// ExpandedReviews controls whether the sidebar shows this
+	// session's review subsessions. Default is false to mirror
+	// prism's existing convention (`prism sessions list` without
+	// `--all` hides review subsessions; the dashboard does the
+	// same). Left / Right on the session row toggles it.
+	ExpandedReviews bool
 }
 
 // Repo is a repo cluster — a group of prism sessions that share a

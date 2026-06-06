@@ -62,6 +62,11 @@ func Default() Fixture {
 						Name:  "@2141-mux-spike",
 						State: model.StateReviewing,
 						Panes: allPanes,
+						// Reviews start collapsed by default, mirroring
+						// `prism sessions list` (no `--all`) and the
+						// dashboard. Right-arrow on this row expands
+						// them.
+						ExpandedReviews: false,
 						Subsessions: []*model.Session{
 							{Name: "~review-1-review-code", State: model.StateActive, Panes: reviewPanes},
 							{Name: "~review-1-review-goal", State: model.StateActive, Panes: reviewPanes},

@@ -28,6 +28,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/prismatic-koi/nixos-config/modules/programs/prism/sidebar-spike/internal/mockdata"
 	"github.com/prismatic-koi/nixos-config/modules/programs/prism/sidebar-spike/internal/model"
@@ -38,6 +39,24 @@ import (
 // at. State transitions are evaluated against the elapsed time on
 // each tick.
 const tickInterval = 200 * time.Millisecond
+
+// narrowWidthThreshold is the terminal-width cutoff below which the
+// UI switches to mobile-style narrow layout: no split-pane sidebar,
+// instead a top status bar and a popover triggered by Ctrl-B.
+//
+// Rationale for 80: at total width 80 a 32-col sidebar leaves 48
+// cols for the right pane, which is too narrow for most code. The
+// crossover where a full-width pane is clearly better than the split
+// sits around this width.
+//
+// Revisable. See design-notes.md.
+const narrowWidthThreshold = 80
+
+// narrowPopoverWidth is the width of the sidebar popover when it is
+// open in narrow mode. Capped at min(sidebar.Width+6, terminalWidth-4)
+// so the popover always has some background of the right pane
+// peeking through the right edge.
+const narrowPopoverWidth = sidebar.Width + 6
 
 // tickMsg is delivered by the animation engine on each tick.
 type tickMsg time.Time
@@ -62,6 +81,12 @@ type rootModel struct {
 
 	width  int
 	height int
+
+	// popoverOpen is true when the user has pressed Ctrl-B in narrow
+	// mode. The sidebar then renders as an overlay on top of the
+	// active pane. Always false in wide mode (the sidebar is always
+	// visible there).
+	popoverOpen bool
 }
 
 func newRootModel(fix mockdata.Fixture) rootModel {
@@ -81,12 +106,33 @@ func (m rootModel) Init() tea.Cmd {
 	return tick()
 }
 
+// isNarrow returns true when the current terminal width should use
+// the mobile layout.
+func (m rootModel) isNarrow() bool {
+	return m.width > 0 && m.width < narrowWidthThreshold
+}
+
 func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "ctrl+b":
+			// In narrow mode, Ctrl-B toggles the sidebar popover.
+			// In wide mode it is a no-op (the sidebar is always
+			// visible). Keystroke mirrors tmux's prefix convention,
+			// revisable in iteration.
+			if m.isNarrow() {
+				m.popoverOpen = !m.popoverOpen
+			}
+			return m, nil
+		case "esc":
+			// Closes the popover without making a selection.
+			if m.popoverOpen {
+				m.popoverOpen = false
+			}
+			return m, nil
 		case "up", "k":
 			m.sidebar.MoveUp()
 		case "down", "j":
@@ -96,9 +142,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "right", "l":
 			m.sidebar.MoveRight()
 		case "enter":
-			// Enter just confirms the current selection — the right
-			// pane already reflects what the cursor is on, so there
-			// is no separate "selected session" to track in v1.
+			// Enter confirms the current selection. In narrow mode
+			// with the popover open it also closes the popover —
+			// matches herdr's mobile pattern where tapping a row
+			// dismisses the switcher.
+			if m.popoverOpen {
+				m.popoverOpen = false
+			}
 		case "tab":
 			m.sidebar.CycleNextPane()
 		case "shift+tab":
@@ -109,6 +159,12 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Close the popover if the terminal grew back into wide
+		// territory — leaving it open would be confusing once the
+		// inline sidebar is visible again.
+		if !m.isNarrow() {
+			m.popoverOpen = false
+		}
 		return m, nil
 
 	case tickMsg:
@@ -128,13 +184,10 @@ func (m *rootModel) applyDueTransitions() {
 		// reseed the transition list from the fixture.
 		m.startedAt = time.Now()
 		m.transitions = append([]model.Transition(nil), m.fixture.Transitions...)
-		// Reset the tree by rebuilding from the fixture. Cheap, and
-		// simpler than tracking per-session original states.
 		fresh := mockdata.ByName(m.fixture.Name)
 		// Preserve the user's expand/collapse choices and pane
 		// cursor across the loop — it's jarring to have the UI
-		// snap back to defaults mid-observation. Walk both trees in
-		// parallel and copy across.
+		// snap back to defaults mid-observation.
 		copyUserChoices(m.sidebar.Tree, fresh.Tree)
 		m.sidebar.Tree = fresh.Tree
 		m.fixture = fresh
@@ -152,9 +205,9 @@ func (m *rootModel) applyDueTransitions() {
 	m.transitions = remaining
 }
 
-// copyUserChoices preserves Repo.Expanded and Session.ActivePane from
-// src into dst on a name-match basis. Anything not present in dst is
-// silently dropped.
+// copyUserChoices preserves Repo.Expanded, Session.ExpandedReviews
+// and Session.ActivePane from src into dst on a name-match basis.
+// Anything not present in dst is silently dropped.
 func copyUserChoices(src, dst *model.Tree) {
 	if src == nil || dst == nil {
 		return
@@ -169,6 +222,7 @@ func copyUserChoices(src, dst *model.Tree) {
 				for _, dSess := range dRepo.Sessions {
 					if dSess.Name == sSess.Name {
 						dSess.ActivePane = sSess.ActivePane
+						dSess.ExpandedReviews = sSess.ExpandedReviews
 					}
 				}
 			}
@@ -214,18 +268,93 @@ func applyTransition(t *model.Tree, tr model.Transition) {
 
 func (m rootModel) View() string {
 	if m.width == 0 || m.height == 0 {
-		// Pre-windowsize message; render nothing rather than a
-		// zero-sized lipgloss box.
 		return "initialising…"
 	}
+	if m.isNarrow() {
+		return m.viewNarrow()
+	}
+	return m.viewWide()
+}
 
-	// Left: sidebar at fixed width.
-	left := m.sidebar.View(m.height)
-
-	// Right: placeholder for the selected session's active pane.
+// viewWide is the v1 split-pane layout: sidebar at fixed width on the
+// left, pane host on the right.
+func (m rootModel) viewWide() string {
+	left := m.sidebar.View(sidebar.Width, m.height)
 	right := renderRightPane(m.sidebar, m.width-sidebar.Width, m.height)
-
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// viewNarrow renders the mobile-shape layout: a thin status bar at
+// the top showing current session identity, the active pane filling
+// the rest of the screen, and an optional popover overlay holding the
+// sidebar tree when the user has hit Ctrl-B.
+//
+// Modelled on herdr's mobile pattern (see herdr.dev/docs mobile
+// screenshots); clean-room replication per the AGPL constraint in
+// proposal §7.4.
+func (m rootModel) viewNarrow() string {
+	topbar := sidebar.Topbar(m.sidebar, m.width, m.popoverOpen)
+	paneHeight := m.height - 1
+	if paneHeight < 1 {
+		paneHeight = 1
+	}
+	pane := renderRightPane(m.sidebar, m.width, paneHeight)
+	base := lipgloss.JoinVertical(lipgloss.Left, topbar, pane)
+
+	if !m.popoverOpen {
+		return base
+	}
+
+	// Popover: composite the sidebar's standard View on top of the
+	// pane background. Width is capped so the right edge of the pane
+	// peeks through, signalling the popover is dismissible.
+	popoverW := narrowPopoverWidth
+	if popoverW > m.width-4 {
+		popoverW = m.width - 4
+	}
+	if popoverW < sidebar.Width {
+		popoverW = sidebar.Width
+	}
+	popoverH := m.height - 2
+	if popoverH < 4 {
+		popoverH = 4
+	}
+	overlay := m.sidebar.View(popoverW, popoverH)
+	// Top-left anchor with one-row top offset so the topbar stays
+	// visible above it. lipgloss doesn't ship a Z-index composer,
+	// so we splice the overlay into the base string ourselves.
+	return overlayAt(base, overlay, 1, 0)
+}
+
+// overlayAt splices an overlay block into base at (row, col), one row
+// per source string-line, padding base lines to col with spaces. Used
+// to render the narrow-mode popover on top of the pane background.
+func overlayAt(base, overlay string, row, col int) string {
+	baseLines := strings.Split(base, "\n")
+	overlayLines := strings.Split(overlay, "\n")
+	for i, oLine := range overlayLines {
+		dst := row + i
+		if dst >= len(baseLines) {
+			break
+		}
+		oWidth := ansi.StringWidth(oLine)
+		// Pad/truncate the base line so we land at the right column.
+		left := ansi.Truncate(baseLines[dst], col, "")
+		leftW := ansi.StringWidth(left)
+		if leftW < col {
+			left += strings.Repeat(" ", col-leftW)
+		}
+		// Trim the tail past the overlay so we don't double up.
+		afterCol := col + oWidth
+		baseLineW := ansi.StringWidth(baseLines[dst])
+		var tail string
+		if baseLineW > afterCol {
+			// Skip past `afterCol` cells of the base line.
+			tail = ansi.Cut(baseLines[dst], afterCol, baseLineW)
+		}
+		baseLines[dst] = left + oLine + tail
+	}
+	return strings.Join(baseLines, "\n")
 }
 
 // renderRightPane renders the [mock pi pane for session X] placeholder
