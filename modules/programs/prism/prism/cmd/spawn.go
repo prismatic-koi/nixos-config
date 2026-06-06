@@ -1211,7 +1211,16 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 		for _, r := range results {
 			if r.err == nil && r.sessionName != "" {
 				// Best-effort teardown of the session that did start.
-				_ = tmux.KillSession(r.sessionName)
+				// PRISM_USE_MUX cutover (#2158): spawnOneAbtest sets
+				// UseMux=muxCutoverEnabled() on its SpawnOpts, so the leg
+				// landed in the mux daemon's session tree, not tmux. Tear
+				// it down via the daemon's API so the surviving leg's mux
+				// session and PTYs do not orphan after a partial failure.
+				if muxCutoverEnabled() {
+					_ = session.TeardownMuxSession(r.sessionName)
+				} else {
+					_ = tmux.KillSession(r.sessionName)
+				}
 				session.KillSidecar(r.sessionName)
 				if killDBErr := d.SetEnded(r.sessionName); killDBErr != nil {
 					proglog.Warnf("[prism spawn] warning: cleanup DB for %q failed: %v\n", r.sessionName, killDBErr)

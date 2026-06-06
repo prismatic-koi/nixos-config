@@ -124,17 +124,13 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		return handleReviewGroupPick(chosen.reviewGroup)
 	}
 
-	// Review session entry: attach directly to the named tmux session.
+	// Review session entry: attach directly to the named session.
+	// PRISM_USE_MUX cutover (#2158): switchClientOrMuxSession routes
+	// through the mux daemon when the gate is on and falls back to
+	// tmux's switch-client primitive otherwise. Mirrors the gate
+	// pattern used by ensureAndSwitch (cmd/switch.go) and runNav.
 	if chosen.sessionRef != "" {
-		client, _ := tmux.CurrentClient()
-		if client == "" {
-			client = tmux.CallerClient()
-		}
-		if client != "" {
-			return tmux.SwitchClient(client, chosen.sessionRef)
-		}
-		_, err := tmux.SwitchClientCurrent(chosen.sessionRef)
-		return err
+		return switchClientOrMuxSession("prism switch", chosen.sessionRef)
 	}
 
 	if chosen.special == "[+ create new worktree]" {
@@ -341,15 +337,9 @@ func handleReviewGroupPick(groupKey string) error {
 		return nil
 	}
 
-	client, _ := tmux.CurrentClient()
-	if client == "" {
-		client = tmux.CallerClient()
-	}
-	if client != "" {
-		return tmux.SwitchClient(client, chosen.sessionRef)
-	}
-	_, err = tmux.SwitchClientCurrent(chosen.sessionRef)
-	return err
+	// PRISM_USE_MUX cutover (#2158): same gate pattern as the
+	// review-session-entry path above.
+	return switchClientOrMuxSession("prism switch", chosen.sessionRef)
 }
 
 func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
@@ -404,8 +394,16 @@ func handleRegularRepo(path string, pf *config.ProfilesFile, opts session.Opts, 
 
 		// Conversion succeeded — clean up the pre-conversion session,
 		// mirroring the pattern used by cleanup.go for intentional teardowns.
-		// Kill the tmux session if it exists; ignore "no such session" errors.
-		_ = tmux.KillSession(oldSessionName)
+		// PRISM_USE_MUX cutover (#2158): under the gate the pre-conversion
+		// session is owned by the mux daemon, not tmux — destroy it via
+		// the daemon's API (cascades PTY teardown). Without this gate,
+		// `prism switch` after a bare-repo conversion under PRISM_USE_MUX=1
+		// leaves an orphan row in the daemon's session tree.
+		if muxCutoverEnabled() {
+			_ = session.TeardownMuxSession(oldSessionName)
+		} else {
+			_ = tmux.KillSession(oldSessionName)
+		}
 		// Kill any sidecar process associated with the old session (no-op if
 		// no PID file exists).
 		session.KillSidecar(oldSessionName)

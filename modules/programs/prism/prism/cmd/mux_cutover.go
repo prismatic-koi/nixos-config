@@ -20,6 +20,7 @@ package cmd
 //     would contaminate Ben's phase-3 soak.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +29,18 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/mux/client"
+	"github.com/prismatic-koi/prism/internal/tmux"
+)
+
+// Indirections used by switchClientOrMuxSession so unit tests can
+// substitute the tmux side without standing up a real tmux server.
+// Production code passes the real internal/tmux functions through;
+// tests override via the package-private vars in mux_cutover_test.go.
+var (
+	tmuxCurrentClient       = tmux.CurrentClient
+	tmuxCallerClient        = tmux.CallerClient
+	tmuxSwitchClient        = tmux.SwitchClient
+	tmuxSwitchClientCurrent = tmux.SwitchClientCurrent
 )
 
 // muxCutoverEnvVar is the sentinel the four CLI gates check. We test
@@ -88,12 +101,28 @@ Or run it directly:
 }
 
 // platformSupervisorHint returns the OS-appropriate command for
-// starting the user's mux supervisor. Linux: systemctl --user.
-// Darwin: launchctl bootstrap. Other platforms: a generic stub that
-// directs the operator to "prismd mux start" only — the four gates
-// already mention that fallback.
+// starting the user's mux supervisor on the current host. It is a
+// thin wrapper over platformSupervisorHintFor(runtime.GOOS) — the
+// split lets tests pin the hint text for both Linux and Darwin
+// without requiring a cross-platform test runner.
 func platformSupervisorHint() string {
-	switch runtime.GOOS {
+	return platformSupervisorHintFor(runtime.GOOS)
+}
+
+// platformSupervisorHintFor returns the supervisor hint for the
+// named GOOS value. Exposed (lower-case, package-private) so the
+// test suite can assert both branches deterministically.
+//
+// Darwin path note: the plist filename must match what home-manager's
+// launchd module actually installs. home-manager hard-codes
+// `labelPrefix = "org.nix-community.home."` and combines it with the
+// service name (`prismd-mux`), so the on-disk file is
+// `~/Library/LaunchAgents/org.nix-community.home.prismd-mux.plist`.
+// A previous version of this string dropped the `home.` segment and
+// pointed Darwin operators at a non-existent file — see PR #2175
+// review-context.
+func platformSupervisorHintFor(goos string) string {
+	switch goos {
 	case "linux":
 		return "systemctl --user start prismd-mux         # Linux"
 	case "darwin":
@@ -104,9 +133,9 @@ func platformSupervisorHint() string {
 		if uid == "" {
 			uid = "<uid>"
 		}
-		return fmt.Sprintf("launchctl bootstrap user/%s ~/Library/LaunchAgents/org.nix-community.prismd-mux.plist   # Darwin", uid)
+		return fmt.Sprintf("launchctl bootstrap user/%s ~/Library/LaunchAgents/org.nix-community.home.prismd-mux.plist   # Darwin", uid)
 	default:
-		return "# (no supervisor hint for runtime.GOOS=" + runtime.GOOS + ")"
+		return "# (no supervisor hint for runtime.GOOS=" + goos + ")"
 	}
 }
 
@@ -129,3 +158,43 @@ func surfaceDaemonError(cmdName string, err error) error {
 // to. Centralised here so a future test fixture can substitute a
 // bytes.Buffer without touching every print call.
 func stdoutW() io.Writer { return os.Stdout }
+
+// switchClientOrMuxSession routes a "switch the active session to
+// target" intent through the right substrate. Under PRISM_USE_MUX=1
+// it tells the mux daemon to change its active-session pointer; in
+// the default path it falls back to tmux's switch-client primitive.
+//
+// Centralised here so every picker-driven entry point (the top-level
+// picker, the review-session attach, the review-group agent pick)
+// branches on the gate uniformly — a single function call instead of
+// a copy-pasted if/else at every site, and one place to audit when
+// the cutover invariant changes.
+//
+// cmdName is forwarded to surfaceDaemonError so the error message
+// names the calling subcommand ("prism switch" / "prism nav").
+func switchClientOrMuxSession(cmdName, target string) error {
+	if muxCutoverEnabled() {
+		mc, err := newMuxClient()
+		if err != nil {
+			return surfaceDaemonError(cmdName, err)
+		}
+		defer mc.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), muxClientTimeout)
+		defer cancel()
+
+		if _, err := mc.Sessions().Switch(ctx, target); err != nil {
+			return surfaceDaemonError(cmdName, err)
+		}
+		return nil
+	}
+	client, _ := tmuxCurrentClient()
+	if client == "" {
+		client = tmuxCallerClient()
+	}
+	if client != "" {
+		return tmuxSwitchClient(client, target)
+	}
+	_, err := tmuxSwitchClientCurrent(target)
+	return err
+}

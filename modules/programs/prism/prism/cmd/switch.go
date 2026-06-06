@@ -114,15 +114,21 @@ func injectContainerConfig(path string, pf *config.ProfilesFile, opts *session.O
 }
 
 // switchMuxOnly is the PRISM_USE_MUX=1 dispatch target for the switch
-// command. It tells the daemon to change its active-session pointer;
-// if the session is not registered in the daemon, surfaces a clear
-// error instead of attempting a tmux-style auto-create. Under the
-// mux model, session lifecycle is owned by `prism spawn` / `restore`,
-// not by switch.
+// command's create-or-attach path (ensureAndSwitch). It tells the
+// daemon to change its active-session pointer; if the session is not
+// registered in the daemon, surfaces a clear error instead of
+// attempting a tmux-style auto-create. Under the mux model, session
+// lifecycle is owned by `prism spawn` / `restore`, not by switch.
 //
 // sessionName is the canonical prism session name (e.g.
 // "nixos-config@main"). When sessionName is empty, the call is a
 // no-op — the caller has already validated the resolution path.
+//
+// Note: the create-or-attach path prints a "switched to <name>" line
+// because the caller expects the legacy session.Attach success
+// output. The picker-driven entry points (cmd/switch_project.go) use
+// switchClientOrMuxSession directly so they share the same gate
+// shape as nav and stay silent on success, matching the tmux path.
 func switchMuxOnly(sessionName string) error {
 	if sessionName == "" {
 		return nil

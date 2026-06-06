@@ -77,6 +77,75 @@ func TestDaemonNotRunningError_MentionsRecoverySteps(t *testing.T) {
 	}
 }
 
+// TestPlatformSupervisorHint_LinuxAndDarwin pins both platform hint
+// strings so a refactor cannot silently regress either. The Darwin
+// path note (see platformSupervisorHintFor docstring) is
+// load-bearing: the plist filename must match the home-manager
+// `labelPrefix = "org.nix-community.home."` + service-name
+// composition, otherwise Darwin operators copy-paste a path that
+// does not exist on disk (PR #2175 review-context blocker).
+func TestPlatformSupervisorHint_LinuxAndDarwin(t *testing.T) {
+	t.Run("linux", func(t *testing.T) {
+		got := platformSupervisorHintFor("linux")
+		for _, want := range []string{
+			"systemctl --user start prismd-mux",
+			"# Linux",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("linux hint missing %q\nfull hint:\n%s", want, got)
+			}
+		}
+	})
+	t.Run("darwin", func(t *testing.T) {
+		// Pin a known UID so the test does not depend on the host's
+		// environment.
+		t.Setenv("UID", "501")
+		got := platformSupervisorHintFor("darwin")
+		for _, want := range []string{
+			"launchctl bootstrap user/501",
+			// The full path must include the `home.` segment that
+			// home-manager's launchd module hard-codes via its
+			// labelPrefix. Pinning the path verbatim catches
+			// regressions like PR #2175's original off-by-one
+			// filename (org.nix-community.prismd-mux.plist).
+			"~/Library/LaunchAgents/org.nix-community.home.prismd-mux.plist",
+			"# Darwin",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("darwin hint missing %q\nfull hint:\n%s", want, got)
+			}
+		}
+		// Defence-in-depth: assert the segment that the regression
+		// dropped is present. A negative assertion on the wrong
+		// filename catches the regression even if the broader
+		// substring assertion is loosened in the future.
+		if !strings.Contains(got, "org.nix-community.home.prismd-mux.plist") {
+			t.Errorf("darwin hint dropped the load-bearing `home.` segment")
+		}
+		if strings.Contains(got, "org.nix-community.prismd-mux.plist") &&
+			!strings.Contains(got, "org.nix-community.home.prismd-mux.plist") {
+			t.Errorf("darwin hint regressed to the pre-#2175 filename")
+		}
+	})
+	t.Run("darwin-uid-fallback", func(t *testing.T) {
+		// When $UID is unset the helper substitutes the literal
+		// "<uid>" placeholder so the operator can see they need to
+		// fill it in. Pin the fallback so the diagnostic stays
+		// informative.
+		t.Setenv("UID", "")
+		got := platformSupervisorHintFor("darwin")
+		if !strings.Contains(got, "user/<uid>") {
+			t.Errorf("darwin hint missing UID fallback placeholder: %s", got)
+		}
+	})
+	t.Run("unknown-goos", func(t *testing.T) {
+		got := platformSupervisorHintFor("plan9")
+		if !strings.Contains(got, "plan9") {
+			t.Errorf("unknown-GOOS hint = %q, want it to name the GOOS", got)
+		}
+	})
+}
+
 // TestSurfaceDaemonError_RewritesUnavailable confirms that the
 // canonical ErrServerUnavailable error is replaced by the structured
 // diagnostic, while other errors pass through unchanged.
@@ -137,4 +206,71 @@ func TestNewMuxClient_Constructs(t *testing.T) {
 	if mc.SocketPath() == "" {
 		t.Errorf("SocketPath is empty after newMuxClient")
 	}
+}
+
+// TestSwitchClientOrMuxSession_RoutesByGate pins the cutover
+// invariant for the picker-driven switch entry points (the
+// review-session attach in handleBareRepo and the agent pick in
+// handleReviewGroupPick — PR #2175 review-context). When the gate is
+// off the call lands on the tmux switch primitives; when the gate is
+// on it lands on the mux client. The test substitutes both halves so
+// it does not require a live tmux server or a live mux daemon.
+func TestSwitchClientOrMuxSession_RoutesByGate(t *testing.T) {
+	// Record which substrate fired so we can assert routing.
+	var tmuxFired bool
+	oldCurClient := tmuxCurrentClient
+	oldCallerClient := tmuxCallerClient
+	oldSwitch := tmuxSwitchClient
+	oldSwitchCurrent := tmuxSwitchClientCurrent
+	t.Cleanup(func() {
+		tmuxCurrentClient = oldCurClient
+		tmuxCallerClient = oldCallerClient
+		tmuxSwitchClient = oldSwitch
+		tmuxSwitchClientCurrent = oldSwitchCurrent
+	})
+	tmuxCurrentClient = func() (string, error) { return "fake-client", nil }
+	tmuxCallerClient = func() string { return "" }
+	tmuxSwitchClient = func(client, target string) error {
+		tmuxFired = true
+		if target != "repo@feat" {
+			t.Errorf("tmux switch target = %q, want %q", target, "repo@feat")
+		}
+		return nil
+	}
+	tmuxSwitchClientCurrent = func(target string) (string, error) {
+		tmuxFired = true
+		return target, nil
+	}
+
+	t.Run("gate-off-uses-tmux", func(t *testing.T) {
+		tmuxFired = false
+		t.Setenv(muxCutoverEnvVar, "")
+		if err := switchClientOrMuxSession("prism switch", "repo@feat"); err != nil {
+			t.Fatalf("switchClientOrMuxSession: %v", err)
+		}
+		if !tmuxFired {
+			t.Errorf("gate off did not route through tmux")
+		}
+	})
+
+	t.Run("gate-on-surfaces-daemon-not-running", func(t *testing.T) {
+		tmuxFired = false
+		// Point at an unbound socket so the call fails cleanly and
+		// the diagnostic surfaces. This proves the gate ROUTED to
+		// the mux client and DID NOT silently fall back to tmux.
+		dir := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", dir)
+		t.Setenv(muxCutoverEnvVar, "1")
+
+		err := switchClientOrMuxSession("prism switch", "repo@feat")
+		if err == nil {
+			t.Fatalf("want error against unbound daemon, got nil")
+		}
+		if !strings.Contains(err.Error(), "prismd mux daemon is not running") {
+			t.Errorf("gate-on error did not surface daemon diagnostic: %v", err)
+		}
+		if tmuxFired {
+			t.Errorf("gate on silently fell back to tmux — this is the load-bearing failure mode the cutover gate exists to prevent")
+		}
+	})
 }
