@@ -55,10 +55,18 @@
 //
 // ## Threading
 //
-// The broker uses a single sync.Mutex to guard its subscriber set. Publish
-// is non-blocking — each subscriber's channel send is in default-drop mode
-// — so the sidecar's HandleEvent path cannot stall on a slow consumer.
-// Subscribe/Unsubscribe are O(N) under the lock.
+// The broker uses a single sync.Mutex to guard its subscriber set AND to
+// serialise every send into a subscriber's channel against the
+// unsubscribe path's close(sub.ch). This is the only safe arrangement
+// for a fan-out broker that closes channels on disconnect: any pattern
+// that releases the lock before the channel send creates a window in
+// which an unsubscribe can close the channel and the subsequent send
+// panics with "send on closed channel". Publish sends are non-blocking
+// (select with default-drop), so holding the lock for the duration of
+// the publish does not stall on a slow consumer — it only serialises
+// publishes against subscribe/unsubscribe, both of which are O(N) and
+// cheap. See PR #2167 round-1 review for the race that motivated this
+// arrangement.
 
 package sidecar
 
@@ -168,17 +176,23 @@ func (b *eventBroker) unsubscribe(sub *eventSubscriber) {
 // env is enqueued in its place. This trades best-effort delivery for the
 // guarantee that the sidecar's HandleEvent loop never stalls on a slow
 // consumer; clients recover by reconnecting and consuming the snapshot.
+//
+// The lock is held for the entire send loop. A previous revision released
+// b.mu before the send to maximise concurrency, but that arrangement
+// raced with unsubscribe — unsubscribe closes sub.ch under the lock, so
+// any send that ran after the unlock could observe a closed channel and
+// panic with "send on closed channel". The select-default fallback does
+// NOT protect against this: sends on closed channels panic outright
+// rather than falling through. Holding the lock for the send is the
+// minimal fix and adds no latency in practice (sends are non-blocking;
+// subscribe/unsubscribe are cheap). See PR #2167 round-1 review.
 func (b *eventBroker) publish(env envelope) {
 	b.mu.Lock()
-	subs := make([]*eventSubscriber, 0, len(b.subscribers))
+	defer b.mu.Unlock()
 	for sub := range b.subscribers {
-		if sub.matches(env.SessionName) {
-			subs = append(subs, sub)
+		if !sub.matches(env.SessionName) {
+			continue
 		}
-	}
-	b.mu.Unlock()
-
-	for _, sub := range subs {
 		select {
 		case sub.ch <- env:
 		default:

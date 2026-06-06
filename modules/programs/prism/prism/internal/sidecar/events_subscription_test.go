@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -378,6 +379,98 @@ func waitForSubscribers(t *testing.T, sc *Sidecar, n int) {
 			t.Fatalf("waitForSubscribers(%d): got %d", n, sc.events.subscriberCount())
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestEventBroker_PublishConcurrentWithUnsubscribe_NoPanic is the
+// regression guard for the PR #2167 round-1 review finding. Before the
+// fix, publish snapshotted the subscriber set under the lock and then
+// sent into sub.ch after releasing the lock; unsubscribe closed sub.ch
+// under the lock. The narrow window between the snapshot and the send
+// allowed unsubscribe to close the channel and the send then panicked
+// with "send on closed channel".
+//
+// The test drives publishes from one goroutine and subscribe/unsubscribe
+// churn from another, both at high frequency, for a fixed duration. Any
+// surviving race manifests as a "send on closed channel" panic on the
+// publish goroutine — which the test thread observes via the
+// publisher's recover, failing the test. Under `-race` the analyser
+// also flags the unsynchronised send-vs-close as a data race.
+func TestEventBroker_PublishConcurrentWithUnsubscribe_NoPanic(t *testing.T) {
+	b := newEventBroker()
+
+	var panicked atomic.Value
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// Publisher loop: publishes a steady stream of envelopes against
+	// the broker until the test deadline fires. Any panic in the send
+	// path is captured and re-checked on the test goroutine after the
+	// loops finish.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				panicked.Store(fmt.Sprintf("%v", r))
+			}
+		}()
+		env := envelope{
+			Type:        "state_change",
+			SessionName: "alpha",
+			Payload:     []byte(`{"state":"active"}`),
+			CreatedAtMs: 1,
+		}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			b.publish(env)
+		}
+	}()
+
+	// Churn loop: subscribes and unsubscribes a fresh subscriber on
+	// every iteration so the publisher races against close(sub.ch).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				panicked.Store(fmt.Sprintf("%v", r))
+			}
+		}()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			sub := b.subscribe([]string{"alpha"})
+			// Drain a few envelopes to ensure the publish loop has
+			// observed this subscriber before we unsubscribe —
+			// otherwise the loop body becomes too short to expose
+			// the race on most schedulers.
+			for i := 0; i < 4; i++ {
+				select {
+				case <-sub.ch:
+				default:
+				}
+			}
+			b.unsubscribe(sub)
+		}
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	if v := panicked.Load(); v != nil {
+		t.Fatalf("publish/unsubscribe race panicked: %v", v)
+	}
+	if got := b.subscriberCount(); got != 0 {
+		t.Errorf("subscriberCount after churn = %d, want 0", got)
 	}
 }
 
