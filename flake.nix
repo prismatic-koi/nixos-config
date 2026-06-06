@@ -165,17 +165,12 @@
         # `runChecks = true` to preserve the homeless-shelter signal.
         battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
 
-        # x/vt fidelity spike (issue #2141). Sibling Go module to prism;
-        # has its own go.mod precisely so adding/removing it never forces
-        # a prism `vendorHash` recompute. Hand-graded characterisation
-        # tool, no test suite — see pkgs/mux-spike.nix.
-        mux-spike = pkgs.callPackage ./pkgs/mux-spike.nix { };
-
         # Non-functional UI mockup of the herdr-shape sidebar for the
         # prism-native multiplexer programme (issue #2148, parent
-        # #2147). Sibling Go module to prism; same vendorHash-isolation
-        # rationale as mux-spike. Interactive visual mockup, no test
-        # suite — see pkgs/sidebar-spike.nix.
+        # #2147). Sibling Go module to prism with its own go.mod so
+        # adding/removing it never forces a prism `vendorHash`
+        # recompute. Interactive visual mockup, no test suite — see
+        # pkgs/sidebar-spike.nix.
         sidebar-spike = pkgs.callPackage ./pkgs/sidebar-spike.nix { };
       });
 

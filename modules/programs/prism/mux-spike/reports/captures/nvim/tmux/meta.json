@@ -1,8 +1,0 @@
-{
-  "app": "nvim",
-  "cols": 120,
-  "rows": 40,
-  "backend": "tmux",
-  "settle_ms": 800,
-  "post_trigger_settle_ms": 400
-}
