@@ -711,7 +711,7 @@ func TestConcurrent_Mutations(t *testing.T) {
 	c, _ := newTestServer(t)
 
 	const (
-		workers  = 16
+		workers   = 16
 		perWorker = 8
 	)
 	var (
@@ -757,11 +757,11 @@ func TestConcurrent_DuplicateIDs(t *testing.T) {
 
 	const workers = 32
 	var (
-		wg          sync.WaitGroup
-		successes   atomic.Int32
-		conflicts   atomic.Int32
-		unexpected  atomic.Int32
-		unexpResp   atomic.Pointer[errorResponse]
+		wg         sync.WaitGroup
+		successes  atomic.Int32
+		conflicts  atomic.Int32
+		unexpected atomic.Int32
+		unexpResp  atomic.Pointer[errorResponse]
 	)
 	for w := 0; w < workers; w++ {
 		wg.Add(1)

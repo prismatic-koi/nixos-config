@@ -251,15 +251,15 @@ func writeJSON(w http.ResponseWriter, v any) {
 // fields mirror pane.Session 1:1; we keep this struct distinct so the
 // model can grow internal fields without forcing a wire change.
 type sessionCreateRequest struct {
-	ID          string       `json:"id"`
-	Repo        string       `json:"repo,omitempty"`
-	Branch      string       `json:"branch,omitempty"`
-	Worktree    string       `json:"worktree,omitempty"`
-	AgentRole   string       `json:"agent_role,omitempty"`
-	SidecarAddr string       `json:"sidecar_addr,omitempty"`
-	ParentID    string       `json:"parent_id,omitempty"`
-	Panes       []paneInput  `json:"panes,omitempty"`
-	ActivePane  string       `json:"active_pane,omitempty"`
+	ID          string      `json:"id"`
+	Repo        string      `json:"repo,omitempty"`
+	Branch      string      `json:"branch,omitempty"`
+	Worktree    string      `json:"worktree,omitempty"`
+	AgentRole   string      `json:"agent_role,omitempty"`
+	SidecarAddr string      `json:"sidecar_addr,omitempty"`
+	ParentID    string      `json:"parent_id,omitempty"`
+	Panes       []paneInput `json:"panes,omitempty"`
+	ActivePane  string      `json:"active_pane,omitempty"`
 }
 
 // paneInput is the JSON shape for pane entries inside a
