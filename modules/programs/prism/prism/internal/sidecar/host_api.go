@@ -2945,6 +2945,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		s.hostAPIDBTables(w, r)
 	})
 
+	// GET /events — long-lived SSE stream of agent_events row writes.
+	// Defined in events_subscription.go (issue #2155). Kept in a separate
+	// file so the parallel multiplexer programme work (#2153) can extend
+	// the host-API surface without conflicting line-by-line with this
+	// handler. See events_subscription.go for the wire protocol and
+	// snapshot-on-subscribe contract.
+	s.registerEventsRoute(mux)
+
 	return mux
 }
 

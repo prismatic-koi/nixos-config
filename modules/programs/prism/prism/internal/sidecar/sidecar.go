@@ -482,6 +482,12 @@ type Sidecar struct {
 	// Protected by s.mu.
 	lastInvestigatorText string
 
+	// events is the in-process broker that fans state_change / agent_event
+	// writes out to GET /events SSE subscribers. Always non-nil after New().
+	// The broker is goroutine-safe; callers may publish without holding s.mu.
+	// See events_subscription.go for the protocol and backpressure contract.
+	events *eventBroker
+
 	// promptDedup is the bounded in-memory dedup set for /prompt deliveries.
 	// Each /prompt request carries a delivery_id (UUID minted by the sender);
 	// repeats whose ID has been seen recently are dropped before they reach
@@ -624,6 +630,7 @@ func New(cfg Config) *Sidecar {
 		ttftByMessage:   newBoundedMap[int64](messageTrackingCap),
 		seenUnknown:     make(map[string]bool),
 		promptDedup:     newDeliveryDedup(deliveryDedupCapacity),
+		events:          newEventBroker(),
 	}
 	// Pre-set rootAgent from the configured agent role so that subagent user
 	// messages (which have a non-empty agent field in SSE events) do not
