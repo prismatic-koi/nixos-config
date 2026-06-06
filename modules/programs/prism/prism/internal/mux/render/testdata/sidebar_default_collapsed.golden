@@ -1,0 +1,20 @@
+ prism · 8 sessions            │
+───────────────────────────────│
+ ▾ nixos-config                │
+ ├─ ○ @main                idle│
+ ├─ ◑ @2141-mux-spike (5 rev)  │
+ ├─ ● @degender-global-instruc…│
+ ├─ ◐ @battery-monitor-refactor│
+ └─ ● @stale-finished-session  │
+ ▾ home-ops                    │
+ ├─ ○ @main                idle│
+ └─ ▲ @plex-image-bump         │
+ ▸ pi-extensions               │
+                               │
+                               │
+                               │
+                               │
+                               │
+                               │
+                               │
+ ↑↓ ←→ ⏎ ⇥ q                   │
