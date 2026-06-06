@@ -164,14 +164,6 @@
         # The `nix-build-battery-monitor-checked` CI job overrides
         # `runChecks = true` to preserve the homeless-shelter signal.
         battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
-
-        # Non-functional UI mockup of the herdr-shape sidebar for the
-        # prism-native multiplexer programme (issue #2148, parent
-        # #2147). Sibling Go module to prism with its own go.mod so
-        # adding/removing it never forces a prism `vendorHash`
-        # recompute. Interactive visual mockup, no test suite — see
-        # pkgs/sidebar-spike.nix.
-        sidebar-spike = pkgs.callPackage ./pkgs/sidebar-spike.nix { };
       });
 
       devShells = forEachSystem (pkgs: {
