@@ -1,6 +1,6 @@
 // Tests for the vt.Host API surface — the public guarantees the
 // production renderer (PR #2152 / internal/mux/render) and any future
-// consumer relies on. These are lifted from the mux-spike's
+// consumer relies on. These are lifted from the spike's
 // cmd/run_test.go (which targeted the spike's buildFrame helper) and
 // refocused on the host's exported methods. The functional behaviour
 // under test is identical; the test scaffolding is just one layer
