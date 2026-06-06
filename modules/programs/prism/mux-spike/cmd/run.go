@@ -64,8 +64,11 @@ func Run(args []string) error {
 	}
 
 	// Switch host terminal into alt-screen so we don't pollute the scrollback
-	// with the hosted TUI's frames. Plain ANSI; no dep needed.
-	os.Stdout.WriteString("\x1b[?1049h\x1b[?25l")
+	// with the hosted TUI's frames, hide the cursor for the duration (paint
+	// re-shows it per-frame at the engine's tracked position), and scrub
+	// once with ED2 so any shell-prompt residue under the alt-screen layer
+	// is gone before the first paint. Plain ANSI; no dep needed.
+	os.Stdout.WriteString("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
 	defer os.Stdout.WriteString("\x1b[?25h\x1b[?1049l")
 
 	sess, err := pty.Start(argv, uint16(*cols), uint16(*rows))
@@ -167,14 +170,61 @@ func Run(args []string) error {
 	}
 }
 
-// paint clears the host terminal and writes the emulator's rendering to
-// stdout. The CSI sequences here are deliberately bare-bones — anything
-// fancier (sync output, double-buffering) would muddy the fidelity signal.
+// paint writes one frame of the hosted TUI to stdout. Factored as
+// build-then-write so the frame-building logic is testable without an
+// attached TTY — see cmd/run_test.go.
 func paint(host *vt.Host) {
-	// Move cursor home, then write the rendered cells. No clear — the
-	// engine's Render() emits a full repaint per row, which is sufficient.
+	_, _ = os.Stdout.WriteString(buildFrame(host))
+}
+
+// buildFrame produces one frame of host-terminal output for the current
+// emulator state.
+//
+// Why per-row absolute positioning rather than `\x1b[H` + host.Render():
+//
+//  1. x/vt's Render() emits rows separated by bare LF (no CR). In raw
+//     mode — which run.go has set on stdin via xterm.MakeRaw — LF is
+//     line-feed only: the cursor moves down one row at the current
+//     column. Every row past the first drifts rightward by the previous
+//     row's width. The first broken-render screenshot shows nvim's
+//     tildes cascading to the right edge for exactly this reason.
+//
+//  2. Render() does NOT pad short rows to the emulator width. Cells
+//     left unfilled by the engine carry over from whatever was last
+//     painted into those cells on the host terminal. The third
+//     screenshot shows two complete nvim status bars at different y
+//     positions — the previous frame's bottom row was still painted
+//     when the new frame's shorter rows landed.
+//
+// Per-row absolute positioning sidesteps both: every row gets
+// `\x1b[<y+1>;1H` so column drift is impossible, and a trailing
+// `\x1b[0m\x1b[K` erases anything left of the previous frame on that
+// row's tail. Cursor is hidden across the frame and reshown at the
+// engine's tracked position (mirroring DECTCEM) at the very end.
+func buildFrame(host *vt.Host) string {
+	snap := host.Snapshot()
+	rows := host.RenderRows()
+
 	var b strings.Builder
-	b.WriteString("\x1b[H")
-	b.WriteString(host.Render())
-	_, _ = os.Stdout.WriteString(b.String())
+	// Hide cursor while we walk it row-to-row so users don't see it dart
+	// around mid-paint at 30 Hz.
+	b.WriteString("\x1b[?25l")
+	for y, row := range rows {
+		// CSI row;col H — absolute position, 1-indexed.
+		fmt.Fprintf(&b, "\x1b[%d;1H", y+1)
+		b.WriteString(row)
+		// Reset SGR before EL so the erase uses the default background,
+		// not whatever colour the last cell in this row left active.
+		b.WriteString("\x1b[0m\x1b[K")
+	}
+	// Position the host cursor where the engine thinks it is. Snapshot's
+	// CursorX/Y are 0-indexed; CSI H wants 1-indexed.
+	fmt.Fprintf(&b, "\x1b[%d;%dH", snap.CursorY+1, snap.CursorX+1)
+	// Mirror the engine's DECTCEM state. If the hosted TUI hid its
+	// cursor (nvim in some modes, htop) we leave it hidden; otherwise we
+	// re-show so users get the standard blinking cursor at the right cell.
+	if host.CursorVisible() {
+		b.WriteString("\x1b[?25h")
+	}
+	return b.String()
 }

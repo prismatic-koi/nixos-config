@@ -493,6 +493,25 @@ between two options, captured in a fresh issue at the time:
 The spike PR does not pre-commit to either follow-up. The follow-up
 is a coordinator decision once the verdict is in hand.
 
+### Spike findings post-merge
+
+After the spike's proceed-verdict landed in #2143, a hands-on smoke
+test of the `run` subcommand surfaced two interactive-paint bugs that
+the corpus grading process did not catch: `host.Render()`'s output
+uses bare LF between rows (right-drift in raw mode) and does not pad
+short rows (previous-frame residue). These were spike-level bugs in
+the live-replay loop, not engine-level bugs in `x/vt` — the corpus
+path drives `host.Snapshot()` rather than `host.Render()`, so the
+fidelity grading was unaffected and the verdict stands. The lesson
+transfers to the multiplexer programme: a corpus snapshot path
+(`host.Snapshot()` + structural cell extraction) is necessary but not
+sufficient for fidelity grading. Any future characterisation spike
+should also drive a live render path (`host.Render()` or equivalent)
+so that interactive-use bugs surface during grading rather than at
+first-hands-on. The mux-spike's verdict remains valid because
+cell-grid fidelity is the load-bearing question; the live-render bugs
+were spike-level, not engine-level.
+
 ## 9. Out of scope
 
 The proposal is deliberately narrow. The following are **not** part

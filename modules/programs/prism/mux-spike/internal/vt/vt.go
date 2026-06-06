@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"io"
 	"sync"
+	"sync/atomic"
 
 	xvt "github.com/charmbracelet/x/vt"
 
@@ -23,15 +24,35 @@ type Host struct {
 	mu   sync.Mutex
 	emul *xvt.Emulator
 	w, h int
+
+	// cursorVisible tracks DECTCEM (the cursor show/hide mode) so the
+	// renderer in cmd/run.go can mirror it to the host terminal each
+	// frame. x/vt does not expose a getter for the visibility flag, but
+	// it fires a Callbacks.CursorVisibility callback whenever the hosted
+	// TUI toggles it. Terminals power on with the cursor visible, so the
+	// zero value (false) is wrong — we seed true in New.
+	cursorVisible atomic.Bool
 }
 
 // New constructs a Host backed by an Emulator of the given dimensions.
 func New(cols, rows int) *Host {
-	return &Host{
+	h := &Host{
 		emul: xvt.NewEmulator(cols, rows),
 		w:    cols,
 		h:    rows,
 	}
+	h.cursorVisible.Store(true)
+	h.emul.SetCallbacks(xvt.Callbacks{
+		CursorVisibility: func(v bool) { h.cursorVisible.Store(v) },
+	})
+	return h
+}
+
+// CursorVisible reports the emulator's current DECTCEM state. Safe to call
+// concurrently with Feed — the value is tracked via an atomic updated from
+// the x/vt callback that fires inside Write.
+func (h *Host) CursorVisible() bool {
+	return h.cursorVisible.Load()
 }
 
 // Feed writes raw PTY bytes into the VT engine. Safe to call concurrently
@@ -158,10 +179,53 @@ func (h *Host) Snapshot() Snapshot {
 // Render returns the emulator's own ANSI rendering of the visible screen.
 // This is the engine's view of what the cells should look like when emitted
 // back out, useful for visual diff against the tmux capture-pane output.
+//
+// Caveat for live replay: x/vt's Render() emits rows separated by bare LF
+// (no CR) and does NOT pad short rows to the emulator width. Driving a host
+// terminal directly with this output in raw mode produces right-drift
+// (cursor walks across the screen at every LF) and previous-frame residue
+// (unfilled cells leave whatever was there before). The corpus path is
+// fine — it captures Render() as a textual artefact — but live-replay
+// callers (see cmd/run.go) should consume the per-row data and emit their
+// own absolute-positioned frame.
 func (h *Host) Render() string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.emul.Render()
+}
+
+// RenderRows splits the emulator's Render() output into one string per
+// visible row, padded out to the configured row count. Rows beyond what
+// Render() emits come back as empty strings. This is the live-replay
+// primitive used by cmd/run.go::paint — the caller wraps each row in an
+// absolute-position sequence and an erase-to-end-of-line, sidestepping the
+// LF-without-CR and no-padding hazards described on Render().
+func (h *Host) RenderRows() []string {
+	rendered := h.Render()
+	h.mu.Lock()
+	rows := h.h
+	h.mu.Unlock()
+
+	out := make([]string, rows)
+	if rendered == "" {
+		return out
+	}
+	// Split on bare LF — that is what x/vt emits between rows. A trailing
+	// LF would produce an extra empty element; clip the result to row
+	// count so callers always see exactly rows entries.
+	line := 0
+	start := 0
+	for i := 0; i < len(rendered) && line < rows; i++ {
+		if rendered[i] == '\n' {
+			out[line] = rendered[start:i]
+			line++
+			start = i + 1
+		}
+	}
+	if line < rows && start < len(rendered) {
+		out[line] = rendered[start:]
+	}
+	return out
 }
 
 func convertCell(c *uv.Cell) Cell {
