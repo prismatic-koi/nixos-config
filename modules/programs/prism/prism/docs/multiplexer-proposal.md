@@ -164,17 +164,33 @@ internal/mux/
 ├── pty/        # creack/pty wiring; signal forwarding; resize handling
 ├── vt/         # x/vt host: cell-grid extraction, alt-screen, scroll-back
 ├── render/     # bubbletea program + lipgloss styles; sidebar widget
-├── workspace/  # workspace/tab/pane model; persistence to prism.db
+├── pane/       # session/repo/pane data model (#2151, landed)
+├── state/      # subscriber for the sidecar /events stream (#2155)
 ├── input/      # host-key dispatch; app-forwarding; OSC52 clipboard
 ├── socket/     # JSONL-framed Unix socket API for the CLI
 ├── ssh/        # wish-based remote-attach server; client-side dialer
 └── testdata/   # corpus from #2141 → corpus.toml lives here post-spike
 ```
 
-`internal/mux/workspace/` persists its model to **`prism.db`**, not a
-flat file. The sidecar already owns the DB connection lifecycle; we
-reuse it. The workspace model — sessions, tabs, panes, focus state —
-is small relative to the existing `agent_events` table.
+**State plumbing — push, not poll.** Per session glyph + colour state is
+driven by a subscription, never by a polling loop. The sidecar exposes
+`GET /events` on its existing host-API Unix socket (issue #2155): a
+long-lived SSE stream that emits one `state_snapshot` envelope per
+matching session on subscribe and then live `state_change` deltas as
+the agent transitions. `internal/mux/state/` opens one such stream per
+sidecar, applies each envelope into a small in-process Store keyed by
+session ID, and fires registered listeners so the renderer
+(§3.1) can repaint within one frame of an event arriving. Reconnection
+is exponential-backoff; on every reconnect the sidecar's snapshot
+resyncs the Store before resuming deltas, so a sidecar restart never
+leaves a stale colour in the sidebar.
+
+`internal/mux/pane/` (formerly sketched as `workspace/` in the original
+proposal) persists its model via the snapshot/restore layer in
+`internal/mux/persist/` (#2156) to **`prism.db`**, not a flat file.
+The sidecar already owns the DB connection lifecycle; we reuse it.
+The pane model — sessions, panes, focus state — is small relative to
+the existing `agent_events` table.
 
 ### 3.1 UI reference: sidebar
 
