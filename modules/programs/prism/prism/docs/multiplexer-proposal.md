@@ -512,6 +512,20 @@ first-hands-on. The mux-spike's verdict remains valid because
 cell-grid fidelity is the load-bearing question; the live-render bugs
 were spike-level, not engine-level.
 
+A follow-up smoke test surfaced a third, related lesson once the
+paint loop itself was correct: the cursor surface needs full
+attribute mirroring across the live-render boundary, not just the
+show/hide bit. nvim sends `\x1b[<n> q` (DECSCUSR) to switch to a beam
+on INSERT-mode entry; x/vt's emulator tracks the shape internally,
+but the spike's paint loop initially only relayed cursor *visibility*
+(PR #2144) and *position* (PR #2144), so the host terminal's cursor
+stayed a block. A follow-up PR adds the shape relay. The same gap likely
+exists for cursor colour (`OSC 12`) and blink state, which a real TUI
+may also drive. The structural lesson for the real `internal/mux/`
+package is that a general "cursor-attribute relay" abstraction — one
+that picks up new x/vt callbacks as they're added — would be cleaner
+than the ad-hoc per-attribute mirroring the spike has accreted.
+
 ## 9. Rollout and reversibility
 
 Captures the agreed strategy for how the programme would execute **if**

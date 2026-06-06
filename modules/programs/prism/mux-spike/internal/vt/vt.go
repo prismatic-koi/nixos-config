@@ -32,6 +32,24 @@ type Host struct {
 	// TUI toggles it. Terminals power on with the cursor visible, so the
 	// zero value (false) is wrong — we seed true in New.
 	cursorVisible atomic.Bool
+
+	// cursorShape tracks the DECSCUSR cursor-shape parameter (1-6 per
+	// the xterm convention: 1=blinking block, 2=steady block,
+	// 3=blinking underline, 4=steady underline, 5=blinking bar,
+	// 6=steady bar) so the renderer in cmd/run.go can mirror it to the
+	// host terminal each frame.
+	//
+	// x/vt fires a Callbacks.CursorStyle callback with (style, steady)
+	// — note the callback's documented second arg is named `blink` but
+	// the value actually passed is `Steady` (= !blink); see
+	// vendor charmbracelet/x/vt/screen.go::setCursorStyle. We convert
+	// back to the DECSCUSR n-value here so the renderer can emit it
+	// verbatim.
+	//
+	// Zero means "engine has not signalled a shape" — in that case the
+	// renderer leaves the host cursor's shape untouched rather than
+	// overriding the terminal's configured default.
+	cursorShape atomic.Uint32
 }
 
 // New constructs a Host backed by an Emulator of the given dimensions.
@@ -44,6 +62,20 @@ func New(cols, rows int) *Host {
 	h.cursorVisible.Store(true)
 	h.emul.SetCallbacks(xvt.Callbacks{
 		CursorVisibility: func(v bool) { h.cursorVisible.Store(v) },
+		// x/vt's Callbacks.CursorStyle documents `blink bool` as the
+		// second arg, but screen.go::setCursorStyle actually passes
+		// `Steady` (= !blink). We name the parameter accordingly so the
+		// n-value reconstruction reads right.
+		CursorStyle: func(style xvt.CursorStyle, steady bool) {
+			// DECSCUSR n encoding: n = 2*style + (steady ? 2 : 1).
+			// Verified against the table in xterm's DECSCUSR spec and
+			// x/vt's handlers.go decoder.
+			n := uint32(2*int(style) + 1)
+			if steady {
+				n = uint32(2*int(style) + 2)
+			}
+			h.cursorShape.Store(n)
+		},
 	})
 	return h
 }
@@ -53,6 +85,15 @@ func New(cols, rows int) *Host {
 // the x/vt callback that fires inside Write.
 func (h *Host) CursorVisible() bool {
 	return h.cursorVisible.Load()
+}
+
+// CursorShape reports the emulator's current DECSCUSR n-parameter (1-6).
+// Returns 0 if no DECSCUSR has been seen yet — callers should treat 0 as
+// "do not override the host terminal's default cursor shape". Safe to call
+// concurrently with Feed — the value is tracked via an atomic updated from
+// the x/vt callback that fires inside Write.
+func (h *Host) CursorShape() uint32 {
+	return h.cursorShape.Load()
 }
 
 // Feed writes raw PTY bytes into the VT engine. Safe to call concurrently
