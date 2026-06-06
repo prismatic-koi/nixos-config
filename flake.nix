@@ -170,6 +170,13 @@
         # a prism `vendorHash` recompute. Hand-graded characterisation
         # tool, no test suite — see pkgs/mux-spike.nix.
         mux-spike = pkgs.callPackage ./pkgs/mux-spike.nix { };
+
+        # Non-functional UI mockup of the herdr-shape sidebar for the
+        # prism-native multiplexer programme (issue #2148, parent
+        # #2147). Sibling Go module to prism; same vendorHash-isolation
+        # rationale as mux-spike. Interactive visual mockup, no test
+        # suite — see pkgs/sidebar-spike.nix.
+        sidebar-spike = pkgs.callPackage ./pkgs/sidebar-spike.nix { };
       });
 
       devShells = forEachSystem (pkgs: {

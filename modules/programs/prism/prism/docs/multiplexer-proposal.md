@@ -176,6 +176,200 @@ flat file. The sidecar already owns the DB connection lifecycle; we
 reuse it. The workspace model — sessions, tabs, panes, focus state —
 is small relative to the existing `agent_events` table.
 
+### 3.1 UI reference: sidebar
+
+**Status:** prescriptive. PR #3 (`internal/mux/render/`) implements
+against this subsection. The design was converged through the
+sidebar-spike (#2148, parent #2147) over an in-session iteration
+loop; the spike directory itself is deleted in a follow-up cleanup PR
+once PR #3 has consumed it, but this subsection is the long-lived
+artefact.
+
+**Visual reference source.** Herdr's sidebar and mobile-popover
+patterns (`herdr.dev/docs/`, plus the GitHub README demo video and
+the mobile screenshots at `/assets/mobile-*-v2.jpeg`). Replicated
+clean-room — layout, glyph choices, hierarchy rendering, state-to-
+colour mapping, narrow-mode pattern are all patterned on herdr; **no
+Rust source was copied**. This is the same line drawn in §7.4.
+
+#### Hierarchy
+
+Two-level nested tree: **repo cluster → session → review subsession**.
+No deeper nesting. Review subsessions are exactly two levels deep;
+they never have children of their own.
+
+Default state with one review group expanded:
+
+```
+ prism · 8 sessions
+ ──────────────────────────────
+ ▾ nixos-config
+ ├─ ○  @main                  idle
+ ├─ ◑  @2141-mux-spike        reviewing
+ │  ├─ ●  ~1-code             active
+ │  ├─ ●  ~1-goal             active
+ │  ├─ ●  ~1-qa               active
+ │  ├─ ▲  ~1-security         escalated
+ │  └─ ●  ~1-context          active
+ ├─ ●  @degender-global-i…    active
+ ├─ ◐  @battery-monitor-ref…  waiting
+ └─ ●  @stale-finished-ses…   finished
+ ▾ home-ops
+ ├─ ○  @main                  idle
+ └─ ▲  @plex-image-bump       escalated
+ ▸ pi-extensions
+ ↑↓ nav  ←→ collapse  ⏎ ⇥ q
+```
+
+Default state with the review group collapsed (the more common case
+because reviews are hidden by default — see below):
+
+```
+ ▾ nixos-config
+ ├─ ○  @main                  idle
+ ├─ ◑  @2141-mux-spike (5 rev) reviewing
+ └─ …
+```
+
+#### State → glyph + colour
+
+The sidebar is the **only** surface in prism where state is conveyed
+visually. The mapping is authoritative; the same vocabulary applies
+in the wide sidebar, the narrow-mode top bar, and the narrow-mode
+popover.
+
+| State | Glyph | Colour (Tailwind) | Hex |
+|---|---|---|---|
+| active | `●` | green-400 | `#4ade80` |
+| idle | `○` | grey-500 | `#71717a` |
+| waiting | `◐` | yellow-400 | `#facc15` |
+| reviewing | `◑` | blue-400 | `#60a5fa` |
+| escalated | `▲` | red-400 | `#f87171` |
+| finished | `●` *strikethrough* | grey-600 | `#52525b` |
+
+`escalated` is the one deliberate break from the circle family: a
+triangle, because escalated is the state that demands user attention
+and needs to read distinct at a glance.
+
+#### Tree characters
+
+Repo headers carry a disclosure glyph: `▾` when expanded, `▸` when
+collapsed. Tree branch lines are `├─` (mid-child), `└─` (last
+child), and `│` (trunk continuation). When a session is the last
+child of its repo, the trunk under it drops to spaces — matches the
+quieter look on trailing clusters.
+
+#### Review subsessions
+
+Review subsessions are **collapsed by default**, mirroring prism's
+existing convention (`prism sessions list` without `--all`, and the
+dashboard). The parent session row carries a trailing dim ` (N rev)`
+badge when reviews are collapsed; the badge disappears when they are
+expanded.
+
+Review subsession names are rewritten at render time: the real name
+`~review-N-<agent>` (as it appears in `agent_status.session_name`)
+renders as `~N-<agent>` inside the parent's tree context. The
+redundant `review-` doubling is stripped; the cycle number stays so
+multiple rounds remain distinguishable. The model holds the
+fully-qualified name; the rewrite happens at the render boundary.
+
+#### Header
+
+`prism · N sessions` at the top of the sidebar, pinned
+non-scrolling. **N counts non-review sessions across all repos** —
+review subsessions are deliberately excluded so the number does not
+shift when the user expands or collapses a review group. The header
+is composed via `lipgloss.JoinVertical` outside the scrollable body
+region, so it cannot be pushed off the top by overflowing content.
+
+#### Footer
+
+Keymap hint `↑↓ nav  ←→ collapse  ⏎ select  ⇥ pane  q quit` pinned
+at the bottom, dimmed. Truncates to glyphs-only (`↑↓ ←→ ⏎ ⇥ q`) when
+the sidebar width forces it.
+
+#### Truncation policy
+
+Every rendered row is hard-truncated to the sidebar's column width
+using an ANSI-aware truncator (`charmbracelet/x/ansi.Truncate(s,
+width, "…")`). No row may wrap or bleed past the sidebar's right
+edge — that is the bug class the spike caught and this rule heads
+off.
+
+Drop order on a session row when space is tight:
+
+1. Drop the right-aligned state label first.
+2. Drop the ` (N rev)` review badge next.
+3. Ellipsis-truncate the session name with `…`.
+
+Applied consistently to repo headers, session names, review labels,
+the header, and the footer.
+
+#### Sidebar width
+
+Fixed **32 columns** in MVP. Resize — either user-driven (drag) or
+responsive-stepped — is deferred to a post-MVP follow-up outside the
+programme's 12 PRs.
+
+#### Selection highlight
+
+Selected row: background `#3f3f46` (zinc-700), foreground `#fafafa`
+(zinc-50), bold. The state glyph keeps its own colour; only the
+session name and the right-aligned state label adopt the selection
+treatment. The repo-header row participates in selection so `←` /
+`→` can collapse / expand the cluster.
+
+#### Responsive narrow mode
+
+Below a terminal width of **80 columns**, the wide split-pane layout
+gives way to a mobile-shape layout patterned on herdr's mobile
+screenshots. Rationale: at total width 80, a 32-col sidebar leaves
+48 cols for the pane — too narrow for most code. The crossover where
+a full-width pane clearly beats the split sits around this width.
+
+Narrow-mode layout:
+
+- **Top status bar** (1 row): `<repo>/<session> · <state>`
+  left-aligned, `^B switch` right-anchored. Dim background.
+- **Pane** fills the rest of the terminal at full width.
+- **No inline sidebar.**
+
+`Ctrl-B` toggles a **sidebar popover** that renders the tree on top
+of the pane background, anchored to the top-left. Popover width is
+`sidebar.Width + 6` columns, capped at `terminal_width - 4` so the
+pane background peeks through on the right edge — a visual cue that
+the popover is dismissable. The popover uses the same
+header/body/footer render path as the wide sidebar; differences are
+background-only.
+
+Popover controls:
+
+- `↑↓` / `←→` navigate exactly as in wide mode.
+- `Enter` selects and dismisses.
+- `Esc` dismisses without selecting.
+- `Ctrl-B` toggles (same key opens and closes).
+
+`Ctrl-B` mirrors tmux's prefix-key convention, kept stable through the
+spike's iteration. Other keystrokes — `Tab`, `?` — are reserved for
+future surfaces.
+
+#### Keyboard surface (canonical)
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` (or `k` / `j`) | Move selection within the visible tree |
+| `←` / `→` (or `h` / `l`) | Collapse / expand repo group, then review group, then walk to parent / first child |
+| `Enter` | Select session; in narrow mode also dismisses the popover |
+| `Tab` / `Shift-Tab` | Cycle the selected session's active pane (the inner ring — `agent` / `term` / `edit`) |
+| `Ctrl-B` | Toggle the sidebar popover (narrow mode only; no-op in wide mode) |
+| `Esc` | Dismiss the popover without selecting (narrow mode only) |
+| `q` / `Ctrl-C` | Quit |
+
+The wide-mode and narrow-mode bindings are identical apart from the
+popover-toggle and `Esc`-dismiss pair, which are inert in wide mode
+because the sidebar is always visible.
+
 ## 4. Prism integration
 
 The structural reason this proposal is feasible: prism's coupling to
