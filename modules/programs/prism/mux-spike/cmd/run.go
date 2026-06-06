@@ -69,7 +69,11 @@ func Run(args []string) error {
 	// once with ED2 so any shell-prompt residue under the alt-screen layer
 	// is gone before the first paint. Plain ANSI; no dep needed.
 	os.Stdout.WriteString("\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")
-	defer os.Stdout.WriteString("\x1b[?25h\x1b[?1049l")
+	// On exit, reshow the cursor, reset the cursor shape to the
+	// terminal-configured default (DECSCUSR 0) so a hosted TUI that left
+	// the cursor as a beam doesn't bleed shape state into the user's
+	// shell, then leave the alt screen.
+	defer os.Stdout.WriteString("\x1b[?25h\x1b[0 q\x1b[?1049l")
 
 	sess, err := pty.Start(argv, uint16(*cols), uint16(*rows))
 	if err != nil {
@@ -225,6 +229,15 @@ func buildFrame(host *vt.Host) string {
 	// re-show so users get the standard blinking cursor at the right cell.
 	if host.CursorVisible() {
 		b.WriteString("\x1b[?25h")
+	}
+	// Mirror the engine's DECSCUSR (cursor-shape) state. nvim sends
+	// \x1b[5 q on INSERT-mode entry (blinking bar); without this relay
+	// the host terminal's cursor stays a block. Skip emission when the
+	// engine has not yet signalled a shape (shape == 0) so we don't
+	// override the user's terminal default before the hosted TUI has an
+	// opinion.
+	if shape := host.CursorShape(); shape != 0 {
+		fmt.Fprintf(&b, "\x1b[%d q", shape)
 	}
 	return b.String()
 }

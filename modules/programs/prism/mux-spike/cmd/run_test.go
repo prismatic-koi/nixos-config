@@ -187,6 +187,85 @@ func TestBuildFrame_CursorVisibilityMirrorsEngine(t *testing.T) {
 	})
 }
 
+// TestBuildFrame_CursorShapeMirrorsEngine pins the DECSCUSR (cursor-shape)
+// relay added on top of PR #2144's visibility + position mirroring. nvim
+// sends "\x1b[5 q" (blinking bar) on INSERT-mode entry; if the paint loop
+// does not forward that sequence to the host terminal, the user's cursor
+// stays a block and INSERT mode is invisible.
+//
+// Anti-regression: this test was verified to FAIL against a stub of
+// buildFrame that omits the `host.CursorShape()` emission — same discipline
+// PR #2144 applied to its five structural tests. The "no shape emitted by
+// default" sub-test also pins that we don't override the host's terminal
+// default before the hosted TUI signals a shape.
+func TestBuildFrame_CursorShapeMirrorsEngine(t *testing.T) {
+	// DECSCUSR sequences look like "\x1b[<n> q" — CSI, decimal digits,
+	// literal space, literal q. Match zero-or-more digits so the regex
+	// also catches "\x1b[ q" (reset to default) variants if we ever emit
+	// them by accident inside a frame.
+	decscusrRe := regexp.MustCompile(`\x1b\[\d* q`)
+
+	t.Run("no shape emitted by default", func(t *testing.T) {
+		// Fresh emulator, no DECSCUSR fed. CursorShape() returns 0; the
+		// frame must NOT contain any DECSCUSR or we'd be stomping on the
+		// host terminal's configured default cursor.
+		h := feed(t, 10, 3, "hi")
+		if got := h.CursorShape(); got != 0 {
+			t.Fatalf("engine cursor shape should be 0 before any DECSCUSR; got %d", got)
+		}
+		frame := buildFrame(h)
+		if loc := decscusrRe.FindStringIndex(frame); loc != nil {
+			t.Errorf("frame should not emit DECSCUSR before engine has seen one; found %q at byte %d.\nframe=%q",
+				frame[loc[0]:loc[1]], loc[0], frame)
+		}
+	})
+
+	t.Run("mirrors blinking bar (DECSCUSR 5)", func(t *testing.T) {
+		// \x1b[5 q is the sequence nvim emits when entering INSERT mode.
+		h := feed(t, 10, 3, "\x1b[5 q")
+		if got := h.CursorShape(); got != 5 {
+			t.Fatalf("engine should track DECSCUSR 5 (blinking bar); got %d", got)
+		}
+
+		frame := buildFrame(h)
+		const want = "\x1b[5 q"
+		idx := strings.Index(frame, want)
+		if idx < 0 {
+			t.Fatalf("frame missing DECSCUSR %q.\nframe=%q", want, frame)
+		}
+
+		// The shape sequence must land AFTER the final cursor-position
+		// sequence — otherwise a row-paint or the end-of-frame position
+		// move could reset the cursor shape on terminals that tie shape
+		// state to the cursor. The spec is explicit: "emit ... at
+		// end-of-frame alongside the cursor-position + visibility-restore".
+		posRe := regexp.MustCompile(`\x1b\[\d+;\d+H`)
+		positions := posRe.FindAllStringIndex(frame, -1)
+		if len(positions) == 0 {
+			t.Fatalf("frame missing any cursor-position sequence.\nframe=%q", frame)
+		}
+		lastPos := positions[len(positions)-1]
+		if idx < lastPos[1] {
+			t.Errorf("DECSCUSR at byte %d appears before the final cursor-position sequence ending at byte %d — the shape relay must come after the position move.\nframe=%q",
+				idx, lastPos[1], frame)
+		}
+	})
+
+	t.Run("mirrors steady block (DECSCUSR 2)", func(t *testing.T) {
+		// Sanity-check the n-value reconstruction across a different
+		// (style, steady) pair so the test doesn't pass by accident on a
+		// hard-coded "5" path.
+		h := feed(t, 10, 3, "\x1b[2 q")
+		if got := h.CursorShape(); got != 2 {
+			t.Fatalf("engine should track DECSCUSR 2 (steady block); got %d", got)
+		}
+		frame := buildFrame(h)
+		if !strings.Contains(frame, "\x1b[2 q") {
+			t.Errorf("frame missing DECSCUSR 2.\nframe=%q", frame)
+		}
+	})
+}
+
 // TestBuildFrame_EmitsOneRowPerEmulatorRow guarantees that even when the
 // engine has rendered fewer rows than the emulator height (e.g. a fresh
 // emulator with a single line of text), we still emit positioning for
