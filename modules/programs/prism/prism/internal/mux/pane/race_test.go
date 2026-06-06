@@ -32,12 +32,10 @@ func TestConcurrentAddSession(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func(i int) {
 			defer wg.Done()
-			id := fmt.Sprintf("repo-%d@main", i%4)
 			_ = tree.AddSession(Session{
 				ID:   fmt.Sprintf("repo-%d@worker-%d", i%4, i),
 				Repo: fmt.Sprintf("repo-%d", i%4),
 			})
-			_ = id // keep the formatter from eliding
 		}(i)
 	}
 	wg.Wait()

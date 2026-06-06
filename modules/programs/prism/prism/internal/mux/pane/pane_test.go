@@ -670,7 +670,7 @@ func TestJSONRoundTrip(t *testing.T) {
 		Branch: "2141-mux-spike", AgentRole: "worker",
 	})
 	mustAddSession(t, tree, Session{
-		ID: "nixos-config@2141-mux-spike~review-1-review-code",
+		ID:       "nixos-config@2141-mux-spike~review-1-review-code",
 		ParentID: "nixos-config@2141-mux-spike", AgentRole: "review-code",
 	})
 	mustAddSession(t, tree, Session{
