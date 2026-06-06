@@ -9,6 +9,7 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -205,6 +206,117 @@ func TestNewMuxClient_Constructs(t *testing.T) {
 	defer mc.Close()
 	if mc.SocketPath() == "" {
 		t.Errorf("SocketPath is empty after newMuxClient")
+	}
+}
+
+// TestLiveSessionPredicate_RoutesByGate pins the cutover invariant
+// for the picker / nav liveness filter (PR #2175 round 2
+// review-context). Under the gate the predicate must consult the
+// mux daemon — NOT tmux — otherwise nav and the switch picker reduce
+// to silent no-ops because tmux.HasSession returns false for every
+// mux-hosted session, leaving the round-1 routing fix unreachable.
+func TestLiveSessionPredicate_RoutesByGate(t *testing.T) {
+	oldHasSession := tmuxHasSession
+	t.Cleanup(func() { tmuxHasSession = oldHasSession })
+
+	// Distinct tmux fake so we can prove the gate-off path goes
+	// through it and the gate-on path does NOT.
+	var tmuxCalls int
+	tmuxHasSession = func(name string) bool {
+		tmuxCalls++
+		return name == "tmux-only-session"
+	}
+
+	t.Run("gate-off-uses-tmux", func(t *testing.T) {
+		tmuxCalls = 0
+		t.Setenv(muxCutoverEnvVar, "")
+		live := liveSessionPredicate()
+		if !live("tmux-only-session") {
+			t.Errorf("gate-off: predicate did not see tmux-hosted session")
+		}
+		if live("mux-only-session") {
+			t.Errorf("gate-off: predicate spuriously matched a non-tmux session")
+		}
+		if tmuxCalls < 1 {
+			t.Errorf("gate-off: tmux.HasSession was not called")
+		}
+	})
+
+	t.Run("gate-on-uses-mux-not-tmux", func(t *testing.T) {
+		tmuxCalls = 0
+		dir := t.TempDir()
+		t.Setenv("XDG_STATE_HOME", dir)
+		t.Setenv(muxCutoverEnvVar, "1")
+
+		live := liveSessionPredicate()
+		// The mux daemon is not running (unbound socket), so the
+		// predicate must return an empty set — a tmux-hosted name
+		// must NOT slip through.
+		if live("tmux-only-session") {
+			t.Errorf("gate-on: predicate fell back to tmux for a tmux-only name — this is the load-bearing failure mode the cutover gate exists to prevent")
+		}
+		if tmuxCalls != 0 {
+			t.Errorf("gate-on: tmux.HasSession was called %d time(s); want 0 (the gate must route to the mux substrate)", tmuxCalls)
+		}
+	})
+}
+
+// TestCleanupSites_AllTeardownsAreGated is a structural assertion
+// over cmd/cleanup.go: every `tmux.KillSession` call must be
+// preceded by the cutover gate so the same call site does the
+// right thing under PRISM_USE_MUX=1. PR #2175 round 1 fixed the
+// headless paths; round 2 fixed the interactive doCleanup +
+// closeSession sites. The test pins the invariant by counting
+// gated vs. ungated KillSession references so a future change
+// that adds an ungated teardown trips the regression at PR-review
+// time, not at soak-time.
+func TestCleanupSites_AllTeardownsAreGated(t *testing.T) {
+	// Read the cleanup.go source. The path is relative to the
+	// test package's working directory; go test puts us in the
+	// package dir.
+	data, err := os.ReadFile("cleanup.go")
+	if err != nil {
+		t.Fatalf("read cleanup.go: %v", err)
+	}
+	src := string(data)
+
+	// Every tmux.KillSession in cleanup.go must be inside the
+	// `else` branch of a `muxCutoverEnabled()` guard. The minimal
+	// pattern this test enforces is that each line containing
+	// `tmux.KillSession(` is the body of an else-branch that
+	// immediately follows a `if muxCutoverEnabled() {` block.
+	//
+	// Implementation: scan lines, count `tmux.KillSession(`
+	// occurrences, and assert the line immediately above contains
+	// `} else {`. This is structural; the exact opcodes of the
+	// gate are not enumerated, but the shape is invariant.
+	lines := strings.Split(src, "\n")
+	killSites := 0
+	gated := 0
+	for i, ln := range lines {
+		if !strings.Contains(ln, "tmux.KillSession(") {
+			continue
+		}
+		killSites++
+		// Look back up to 3 lines for the `} else {` boundary.
+		// Allows for a comment line between the gate and the
+		// teardown call.
+		low := i - 3
+		if low < 0 {
+			low = 0
+		}
+		for j := i - 1; j >= low; j-- {
+			if strings.Contains(lines[j], "} else {") {
+				gated++
+				break
+			}
+		}
+	}
+	if killSites == 0 {
+		t.Fatal("no tmux.KillSession sites found in cleanup.go — test is vacuous")
+	}
+	if gated != killSites {
+		t.Errorf("cleanup.go: %d/%d tmux.KillSession sites are gated by muxCutoverEnabled() — the ungated ones leak the mux session under PRISM_USE_MUX=1 (PR #2175 review-code/review-context)", gated, killSites)
 	}
 }
 

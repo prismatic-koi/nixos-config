@@ -134,8 +134,18 @@ func navMuxSwitch(target string) error {
 
 // resolveTarget computes the target session name for the requested direction,
 // or ("", false) when the navigation is a no-op.
+//
+// PRISM_USE_MUX cutover (#2158): the liveness predicate is sourced
+// from liveSessionPredicate, NOT tmux.HasSession directly. Under the
+// gate, sessions live in the mux daemon's tree, not in tmux — using
+// tmux.HasSession would reduce nav to a silent no-op for every
+// mux-hosted session (the round-1 fix at runNav routes the
+// switch-client call correctly, but if no candidate survives the
+// liveness filter, the routed call is never reached). The predicate
+// is captured once and reused across the per-target lookups so a
+// single CLI invocation pays one round-trip total.
 func resolveTarget(current string, dir nav.Direction, sessions []dashboard.AgentSession) (string, bool) {
-	live := tmux.HasSession
+	live := liveSessionPredicate()
 	switch dir {
 	case nav.DirUp, nav.DirDown:
 		targets := nav.VerticalTargets(sessions, live)

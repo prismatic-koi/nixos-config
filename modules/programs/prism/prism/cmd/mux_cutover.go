@@ -32,15 +32,17 @@ import (
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
-// Indirections used by switchClientOrMuxSession so unit tests can
-// substitute the tmux side without standing up a real tmux server.
-// Production code passes the real internal/tmux functions through;
-// tests override via the package-private vars in mux_cutover_test.go.
+// Indirections used by switchClientOrMuxSession + liveSessionPredicate
+// so unit tests can substitute the tmux side without standing up a
+// real tmux server. Production code passes the real internal/tmux
+// functions through; tests override via the package-private vars in
+// mux_cutover_test.go.
 var (
 	tmuxCurrentClient       = tmux.CurrentClient
 	tmuxCallerClient        = tmux.CallerClient
 	tmuxSwitchClient        = tmux.SwitchClient
 	tmuxSwitchClientCurrent = tmux.SwitchClientCurrent
+	tmuxHasSession          = tmux.HasSession
 )
 
 // muxCutoverEnvVar is the sentinel the four CLI gates check. We test
@@ -158,6 +160,64 @@ func surfaceDaemonError(cmdName string, err error) error {
 // to. Centralised here so a future test fixture can substitute a
 // bytes.Buffer without touching every print call.
 func stdoutW() io.Writer { return os.Stdout }
+
+// muxLiveSessionSet returns the IDs of every session currently in
+// the mux daemon's session tree. Used as the substrate-side input to
+// liveSessionPredicate when PRISM_USE_MUX=1.
+//
+// A single round-trip per call; callers should grab the snapshot
+// once per CLI invocation and reuse the returned closure rather than
+// calling List for every per-row liveness check.
+//
+// Returns an empty (non-nil) set on a daemon error so the caller
+// gets the same "nothing is live" semantics tmux.HasSession would
+// produce against an unreachable tmux server — the picker / nav
+// reduces to a silent no-op rather than crashing.
+func muxLiveSessionSet() map[string]struct{} {
+	out := map[string]struct{}{}
+	mc, err := newMuxClient()
+	if err != nil {
+		return out
+	}
+	defer mc.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), muxClientTimeout)
+	defer cancel()
+	list, err := mc.Sessions().List(ctx)
+	if err != nil {
+		return out
+	}
+	for _, s := range list.Sessions {
+		out[s.ID] = struct{}{}
+	}
+	return out
+}
+
+// liveSessionPredicate returns a "is this session alive in the
+// active substrate?" predicate. Under PRISM_USE_MUX=1 it captures
+// a one-shot snapshot of the daemon's session tree and returns a
+// closure that checks membership; in the default path it returns
+// tmux.HasSession unchanged.
+//
+// Used by nav and the switch picker's review-group filters —
+// without this gate, tmux.HasSession returns false for every
+// mux-hosted session and the picker / nav silently reduce to
+// no-ops, even though the round-1 routing fix is in place. The
+// routing is dead code if the entries it depends on never get
+// generated.
+//
+// Callers MUST invoke this once and reuse the returned closure for
+// the duration of one CLI invocation; calling it inside a per-row
+// loop would issue one round-trip per row.
+func liveSessionPredicate() func(string) bool {
+	if muxCutoverEnabled() {
+		live := muxLiveSessionSet()
+		return func(name string) bool {
+			_, ok := live[name]
+			return ok
+		}
+	}
+	return tmuxHasSession
+}
 
 // switchClientOrMuxSession routes a "switch the active session to
 // target" intent through the right substrate. Under PRISM_USE_MUX=1

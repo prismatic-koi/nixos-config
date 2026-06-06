@@ -224,7 +224,18 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		} else {
 			_, _ = tmux.SwitchClientCurrent("scratchpad")
 		}
-		_ = tmux.KillSession(m.session)
+		// PRISM_USE_MUX cutover (#2158): under the gate the session is
+		// in the mux daemon's tree, not tmux — destroy it via the
+		// daemon's API (cascades PTY teardown). Without this gate, the
+		// interactive TUI path (the most common cleanup invocation
+		// during a soak) silently leaks the mux session. The sibling
+		// headless paths (headlessCleanupWithJSON / headlessCloseSessionWithJSON)
+		// already gate; this is the missing third site.
+		if muxCutoverEnabled() {
+			_ = prismSession.TeardownMuxSession(m.session)
+		} else {
+			_ = tmux.KillSession(m.session)
+		}
 		prismSession.KillSidecar(m.session)
 		// Orphan-sidecar safety net (issue #1751): SIGTERM any sidecar
 		// processes still alive for review-group or investigator-group
@@ -797,7 +808,15 @@ func closeSession(session string) error {
 	} else {
 		_, _ = tmux.SwitchClientCurrent("scratchpad")
 	}
-	_ = tmux.KillSession(session)
+	// PRISM_USE_MUX cutover (#2158): same gate as doCleanup above
+	// and the headless-soft-close mirror. closeSession is the
+	// interactive @main / non-worktree path; without the gate it
+	// leaks the mux session for every interactive soft-close.
+	if muxCutoverEnabled() {
+		_ = prismSession.TeardownMuxSession(session)
+	} else {
+		_ = tmux.KillSession(session)
+	}
 	prismSession.KillSidecar(session)
 	if d, err := openDB(); err == nil {
 		if isolationModeFromDB(d, session) != "host" {

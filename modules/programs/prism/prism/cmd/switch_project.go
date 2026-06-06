@@ -210,6 +210,13 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 	groupSessions := map[string][]childInfo{}
 	groupOrder := []string{} // preserve insertion order for sorted output
 
+	// PRISM_USE_MUX cutover (#2158): use liveSessionPredicate so a
+	// mux-hosted session is visible in the picker. tmux.HasSession
+	// returns false for every mux session and would silently empty
+	// the picker, leaving the round-1 routing fix in handleBareRepo
+	// unreachable. Captured once for the whole loop — one round-trip
+	// per CLI invocation.
+	live := liveSessionPredicate()
 	for _, s := range all {
 		// Only per-agent review sessions: name must contain "~review-" and
 		// resolve to a non-empty ReviewRoundKey.
@@ -217,8 +224,9 @@ func activeReviewSessionEntries(projectPath string, worktrees []string) []entry 
 		if rk == "" {
 			continue
 		}
-		// The session must also exist in tmux.
-		if !tmux.HasSession(s.SessionName) {
+		// The session must also be alive in the active substrate (tmux
+		// when the gate is off, the mux daemon's session tree when on).
+		if !live(s.SessionName) {
 			continue
 		}
 		if _, exists := groupSessions[rk]; !exists {
@@ -292,13 +300,17 @@ func handleReviewGroupPick(groupKey string) error {
 		return fmt.Errorf("query sessions: %w", err)
 	}
 
+	// PRISM_USE_MUX cutover (#2158): same liveness predicate as
+	// reviewGroupEntries — see the comment there for why this cannot
+	// stay as tmux.HasSession.
+	live := liveSessionPredicate()
 	var items []entry
 	for _, s := range all {
 		rk := dashboard.ReviewRoundKey(s.SessionName)
 		if rk != groupKey {
 			continue
 		}
-		if !tmux.HasSession(s.SessionName) {
+		if !live(s.SessionName) {
 			continue
 		}
 		// Label: e.g. "~review-1-review-goal"
