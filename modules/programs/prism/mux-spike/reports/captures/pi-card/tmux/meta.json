@@ -1,8 +1,0 @@
-{
-  "app": "pi-card",
-  "cols": 100,
-  "rows": 30,
-  "backend": "tmux",
-  "settle_ms": 600,
-  "post_trigger_settle_ms": 0
-}

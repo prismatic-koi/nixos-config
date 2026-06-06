@@ -27,7 +27,7 @@ buildGoModule {
 
   doCheck = runChecks;
 
-  vendorHash = "sha256-tU+rnXKz3ALl7pJx7GYTo1hdr3CFMQS4Ih3UYLr4v54=";
+  vendorHash = "sha256-QmGhhx3JmxoNj8cgTaOIS4nffHx/vrB/fgXFjmle1gA=";
 
   # reviewGoSHA is the SHA-256 of internal/review/review.go, computed at
   # build time via builtins.hashFile so it is content-addressed and changes

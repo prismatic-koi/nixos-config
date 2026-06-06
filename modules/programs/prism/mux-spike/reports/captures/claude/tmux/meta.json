@@ -1,8 +1,0 @@
-{
-  "app": "claude",
-  "cols": 140,
-  "rows": 45,
-  "backend": "tmux",
-  "settle_ms": 2000,
-  "post_trigger_settle_ms": 2500
-}
