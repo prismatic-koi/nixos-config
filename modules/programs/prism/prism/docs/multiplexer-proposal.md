@@ -535,7 +535,7 @@ structural facts about the architecture and one explicit gate:
    negligible conflict surface.
 2. **Irrevocability is concentrated in 1–2 PRs.** The actual switch
    from `tmux.NewSessionDetached`
-   (`internal/session/session.go:1124` and the ~33-caller surface in
+   (`internal/session/spawn.go:1124` and the ~33-caller surface in
    §4) to `muxClient.WorkspaceCreate` lands in a small number of
    cutover PRs. Until those merge, `main` continues to use tmux for
    every existing flow.
