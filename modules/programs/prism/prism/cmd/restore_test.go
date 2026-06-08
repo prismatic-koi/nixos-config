@@ -1504,6 +1504,10 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	// Uses withCmdServer — must not run in parallel.
 	// Redirect both XDG_STATE_HOME (prism per-session dirs) and HOME (pi
 	// sessions root in host mode) so the test never touches real state.
+	// Also clear PI_CODING_AGENT_DIR so the resolver exercises the
+	// home-fallback branch deterministically (the developer host sets that
+	// env var system-wide; post-#2185 the resolver honours it).
+	clearPICodingAgentDir(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)

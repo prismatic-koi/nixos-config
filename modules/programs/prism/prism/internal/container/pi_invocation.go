@@ -209,11 +209,17 @@ func piResolveResumeSession(cfg Config) bool {
 // writes session JSONL files under, given the isolation mode implied by cfg.
 // The three branches mirror internal/harness/pi/archive.go::piSessionsRoot:
 //
-//	host         → <home>/.pi/agent/sessions
-//	bwrap        → <home>/.pi/agent/sessions  (overlay-mounted into the sandbox
-//	                                            at $PI_CODING_AGENT_DIR/sessions;
-//	                                            see appendPIBwrapMounts and #1985)
+//	host         → $PI_CODING_AGENT_DIR/sessions (when set) else
+//	               <home>/.pi/agent/sessions
+//	bwrap        → same as host (overlay-mounted into the sandbox at
+//	               $PI_CODING_AGENT_DIR/sessions; see appendPIBwrapMounts
+//	               and #1985)
 //	sandbox-exec → <stagingHome>/.pi/agent/sessions
+//
+// PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.78
+// dist/core/session-manager.js getDefaultAgentDir / getDefaultSessionDirPath
+// — see internal/harness/pi/archive.go for the full citation). The prism
+// developer host sets it system-wide to /run/prism/pi-agent.
 //
 // Mode is inferred from cfg fields rather than carried explicitly:
 //
@@ -222,12 +228,13 @@ func piResolveResumeSession(cfg Config) bool {
 //     host FS, so populatePIConfig deliberately collapses the two paths).
 //   - bwrap is identified by SessionName being set AND
 //     PIAgentConfigSandboxDir != PIAgentConfigHostDir. As of #1985 bwrap
-//     overlays the host's ~/.pi/agent/sessions/ directly under the
-//     in-sandbox $PI_CODING_AGENT_DIR, so the host-side resolution is the
-//     same as host mode — collapsed into the fallback branch below.
+//     overlays the host's PI sessions root directly under the in-sandbox
+//     $PI_CODING_AGENT_DIR, so the host-side resolution is the same as host
+//     mode — collapsed into the fallback branch below.
 //   - host is the fallback when neither condition matches.
 //
-// Returns ok=false only when host-mode resolution fails (no home dir).
+// Returns ok=false only when host-mode resolution fails (no home dir, and
+// PI_CODING_AGENT_DIR is unset).
 func piResumeSessionsRoot(cfg Config) (string, bool) {
 	// sandbox-exec: per-session staging HOME.
 	if cfg.InstanceID != "" && cfg.PIAgentConfigSandboxDir != "" &&
@@ -239,12 +246,28 @@ func piResumeSessionsRoot(cfg Config) (string, bool) {
 		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), true
 	}
 
-	// bwrap and host: both resolve to the real home's ~/.pi/agent/sessions/.
+	// bwrap and host: both resolve to the host PI sessions root —
+	// $PI_CODING_AGENT_DIR/sessions when set, else ~/.pi/agent/sessions.
 	// (Before #1985 bwrap pointed at <XDG_STATE_HOME>/prism/run/<hash>/pi-agent/
 	// sessions/; that directory disappeared on `prism cleanup`, taking the
 	// history with it. The sessions subtree is now overlay-bound from the
-	// host's ~/.pi/agent/sessions/ in appendPIBwrapMounts so writes persist
+	// host's PI sessions root in appendPIBwrapMounts so writes persist
 	// across prism-session lifetimes.)
+	return piResumeHostSessionsRoot()
+}
+
+// piResumeHostSessionsRoot returns the host-side PI sessions directory:
+// $PI_CODING_AGENT_DIR/sessions when the env var is set (non-empty), else
+// <UserHomeDir>/.pi/agent/sessions. Mirrors pi 0.78's data-root resolution
+// (ENV_AGENT_DIR honouring with a ~/.pi/agent/ fallback).
+//
+// Duplicated from internal/harness/pi.hostPISessionsRoot — see the note on
+// hostPISessionsRoot for why we cannot share a single helper. The two
+// implementations MUST stay in sync.
+func piResumeHostSessionsRoot() (string, bool) {
+	if dir := os.Getenv("PI_CODING_AGENT_DIR"); dir != "" {
+		return filepath.Join(dir, "sessions"), true
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", false

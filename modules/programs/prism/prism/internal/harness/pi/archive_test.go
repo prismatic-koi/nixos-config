@@ -19,8 +19,18 @@ func encodePiCWDForTest(cwd string) string {
 	return "--" + r.Replace(stripped) + "--"
 }
 
-// TestEncodePiCWD verifies the encoding formula matches pi 0.75.3
-// dist/core/session-manager.js line 213.
+// clearPICodingAgentDir clears PI_CODING_AGENT_DIR for the test (saved per
+// goroutine via t.Setenv). Tests that exercise the unset/home-fallback branch
+// MUST call this before exercising piSessionsRoot — otherwise the developer
+// host's PI_CODING_AGENT_DIR (set system-wide) bleeds through and the test
+// fails or false-passes for the wrong reason.
+func clearPICodingAgentDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+}
+
+// TestEncodePiCWD verifies the encoding formula matches pi 0.78
+// dist/core/session-manager.js line 221.
 func TestEncodePiCWD(t *testing.T) {
 	cases := []struct {
 		cwd  string
@@ -40,8 +50,12 @@ func TestEncodePiCWD(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_HostMode verifies that SourcePath resolves to
-// the correct file inside the encoded-cwd directory for a host-mode session.
+// the correct file inside the encoded-cwd directory for a host-mode session
+// when PI_CODING_AGENT_DIR is unset (falls back to <home>/.pi/agent/sessions/).
 func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
+	// Unset PI_CODING_AGENT_DIR so the test exercises the home-fallback
+	// branch deterministically.
+	clearPICodingAgentDir(t)
 	// Redirect $HOME to a temp dir so this test does not write to the real
 	// home directory (or /homeless-shelter in the Nix sandbox CI build).
 	fakeHome := t.TempDir()
@@ -78,10 +92,141 @@ func TestArchiveAdapter_SourcePath_HostMode(t *testing.T) {
 	}
 }
 
+// TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir verifies that when
+// PI_CODING_AGENT_DIR is set on the host, SourcePath resolves the sessions
+// root to <dir>/sessions/ (matches pi's own ENV_AGENT_DIR honouring) instead
+// of <home>/.pi/agent/sessions/. This is the issue #2185 fix.
+func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir(t *testing.T) {
+	// Set up a PI data root distinct from HOME.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const worktree = "/tmp/test-my-repo"
+	const sessionID = "d13cc856-f919-4ce9-b733-cf0e25493e62"
+
+	// Plant the session file under <piDataRoot>/sessions/<encoded-cwd>/ —
+	// the place pi 0.78 actually writes when ENV_AGENT_DIR is set.
+	encodedDir := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(piDataRoot, "sessions", encodedDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	fileName := "2026-04-13T09-58-35-623Z_" + sessionID + ".jsonl"
+	filePath := filepath.Join(sessDir, fileName)
+	if err := os.WriteFile(filePath, []byte(`{"type":"session"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		Worktree:         worktree,
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if got != filePath {
+		t.Errorf("SourcePath: got %q, want %q", got, filePath)
+	}
+
+	// The path MUST NOT resolve under $HOME/.pi/agent/sessions/ when
+	// PI_CODING_AGENT_DIR is set — that was the pre-fix bug, where
+	// archives on the developer host were empty because the code looked
+	// in the wrong directory.
+	wrong := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+	if strings.HasPrefix(got, wrong) {
+		t.Errorf("SourcePath resolved under %q when PI_CODING_AGENT_DIR=%q was set; got %q",
+			wrong, piDataRoot, got)
+	}
+}
+
+// TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir_Empty verifies that
+// an explicitly-empty PI_CODING_AGENT_DIR ("" — distinct from unset) is
+// treated the same as unset: the home-fallback branch is taken. This guards
+// against a regression where someone introduces a check that treats "set
+// but empty" as "use empty as a path".
+func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir_Empty(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+
+	const worktree = "/tmp/test-empty-env"
+	const sessionID = "aaaabbbb-cccc-dddd-eeee-ffff00112233"
+
+	encodedDir := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(fakeHome, ".pi", "agent", "sessions", encodedDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	filePath := filepath.Join(sessDir, "2026-04-13T09-58-35-623Z_"+sessionID+".jsonl")
+	if err := os.WriteFile(filePath, []byte(`{"type":"session"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pi.NewArchiveAdapter()
+	got, err := a.SourcePath(harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		Worktree:         worktree,
+	})
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if got != filePath {
+		t.Errorf("SourcePath (empty env): got %q, want %q", got, filePath)
+	}
+}
+
+// TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir_NonExistent verifies
+// the edge case from the AC: when PI_CODING_AGENT_DIR points to a directory
+// that does not exist on disk, SourcePath returns a sentinel (no error) and
+// Archive on that sentinel is a no-op. Cleanup must exit 0.
+func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir_NonExistent(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// A path that definitely does not exist.
+	nonExistent := filepath.Join(t.TempDir(), "does", "not", "exist")
+	t.Setenv("PI_CODING_AGENT_DIR", nonExistent)
+
+	const worktree = "/tmp/test-nonexistent"
+	const sessionID = "00000000-1111-2222-3333-444444444444"
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		Worktree:         worktree,
+	}
+	got, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: unexpected error %v", err)
+	}
+	// The sentinel must be anchored under the configured (non-existent)
+	// PI sessions root, not under $HOME.
+	wantPrefix := filepath.Join(nonExistent, "sessions", encodePiCWDForTest(worktree))
+	if !strings.HasPrefix(got, wantPrefix) {
+		t.Errorf("SourcePath sentinel must be under %q; got %q", wantPrefix, got)
+	}
+
+	// Archive on the sentinel must be a no-op (the os.IsNotExist path),
+	// not an error.
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
+		t.Fatalf("Archive on PI_CODING_AGENT_DIR=nonexistent sentinel: %v", err)
+	}
+	entries, _ := os.ReadDir(archiveDir)
+	if len(entries) != 0 {
+		t.Errorf("archiveDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+	}
+}
+
 // TestArchiveAdapter_SourcePath_EmptyHarnessSessionID verifies that when
 // HarnessSessionID is empty (harness failed to start), SourcePath returns the
 // sessions root, which Archive's os.IsNotExist path treats as a no-op.
 func TestArchiveAdapter_SourcePath_EmptyHarnessSessionID(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
 	// /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -105,6 +250,7 @@ func TestArchiveAdapter_SourcePath_EmptyHarnessSessionID(t *testing.T) {
 // TestArchiveAdapter_SourcePath_EmptyWorktree verifies that when Worktree is
 // empty (non-worktree session), SourcePath returns the sessions root.
 func TestArchiveAdapter_SourcePath_EmptyWorktree(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
 	// /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -130,6 +276,7 @@ func TestArchiveAdapter_SourcePath_EmptyWorktree(t *testing.T) {
 // directory does not exist on disk, SourcePath returns a sentinel path (not an
 // error), and Archive treats it as a no-op via os.IsNotExist.
 func TestArchiveAdapter_SourcePath_NoCWDDir(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
 	// /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -156,36 +303,37 @@ func TestArchiveAdapter_SourcePath_NoCWDDir(t *testing.T) {
 	}
 
 	// Archive should treat the sentinel path as a no-op.
-	rawDir := t.TempDir()
+	archiveDir := t.TempDir()
 	archiveAdapter := pi.NewArchiveAdapter()
-	if err := archiveAdapter.Archive(context.Background(), got, rawDir, p); err != nil {
+	if err := archiveAdapter.Archive(context.Background(), got, archiveDir, p); err != nil {
 		t.Fatalf("Archive with sentinel path: expected nil error, got %v", err)
 	}
-	// rawDir must remain empty.
-	entries, _ := os.ReadDir(rawDir)
+	// archiveDir must remain empty.
+	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
-		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+		t.Errorf("archiveDir must be empty after no-op Archive; got %d entry/entries", len(entries))
 	}
 }
 
 // TestArchiveAdapter_Archive_Directory_NoOp verifies that when srcPath is a
 // directory (the AC4 case: HarnessSessionID empty → SourcePath returns sessionsRoot),
-// Archive returns nil without attempting to copy and leaves rawDir empty.
+// Archive returns nil without attempting to copy and leaves archiveDir empty.
 func TestArchiveAdapter_Archive_Directory_NoOp(t *testing.T) {
 	srcDir := t.TempDir() // a real, existing directory
-	rawDir := t.TempDir()
+	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
-	if err := a.Archive(context.Background(), srcDir, rawDir, harnessarchive.SourceParams{}); err != nil {
+	if err := a.Archive(context.Background(), srcDir, archiveDir, harnessarchive.SourceParams{}); err != nil {
 		t.Fatalf("Archive with directory srcPath: expected nil error, got %v", err)
 	}
-	entries, _ := os.ReadDir(rawDir)
+	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
-		t.Errorf("rawDir must be empty after directory no-op; got %d entry/entries", len(entries))
+		t.Errorf("archiveDir must be empty after directory no-op; got %d entry/entries", len(entries))
 	}
 }
 
 // TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL verifies that Archive
-// copies the single source file into rawDir/session.jsonl.
+// copies the single source file into archiveDir/session.jsonl directly
+// (no `raw/` subdirectory — issue #2185).
 func TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL(t *testing.T) {
 	// Create a fake pi session file (pi layout: <ts>_<uuid>.jsonl).
 	tmpSrc := t.TempDir()
@@ -195,20 +343,26 @@ func TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rawDir := t.TempDir()
+	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
-	if err := a.Archive(context.Background(), sessionFile, rawDir, harnessarchive.SourceParams{}); err != nil {
+	if err := a.Archive(context.Background(), sessionFile, archiveDir, harnessarchive.SourceParams{}); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
-	// Must produce rawDir/session.jsonl with the correct content.
-	dst := filepath.Join(rawDir, "session.jsonl")
+	// Must produce archiveDir/session.jsonl with the correct content.
+	dst := filepath.Join(archiveDir, "session.jsonl")
 	got, err := os.ReadFile(dst)
 	if err != nil {
-		t.Fatalf("read rawDir/session.jsonl: %v", err)
+		t.Fatalf("read archiveDir/session.jsonl: %v", err)
 	}
 	if string(got) != content {
-		t.Errorf("rawDir/session.jsonl content: got %q, want %q", got, content)
+		t.Errorf("archiveDir/session.jsonl content: got %q, want %q", got, content)
+	}
+
+	// Must NOT create a raw/ subdirectory — the pre-fix two-stage layout
+	// is gone.
+	if _, statErr := os.Stat(filepath.Join(archiveDir, "raw")); !os.IsNotExist(statErr) {
+		t.Errorf("archiveDir/raw/ must NOT exist post-fix; stat returned: %v", statErr)
 	}
 }
 
@@ -216,59 +370,12 @@ func TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL(t *testing.T) {
 // non-existent source path is a no-op (preserving existing tolerance for
 // sessions where pi never produced output).
 func TestArchiveAdapter_Archive_MissingSrcPath_NoError(t *testing.T) {
-	rawDir := t.TempDir()
+	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
 
-	err := a.Archive(context.Background(), "/nonexistent/pi/sessions/--tmp-test-foo--/session_xyz.jsonl", rawDir, harnessarchive.SourceParams{})
+	err := a.Archive(context.Background(), "/nonexistent/pi/sessions/--tmp-test-foo--/session_xyz.jsonl", archiveDir, harnessarchive.SourceParams{})
 	if err != nil {
 		t.Fatalf("Archive with missing src: expected nil error, got %v", err)
-	}
-}
-
-// TestArchiveAdapter_Export_CopiesSessionJSONL verifies that Export produces
-// archiveDir/session.jsonl from raw/session.jsonl.
-func TestArchiveAdapter_Export_CopiesSessionJSONL(t *testing.T) {
-	archiveDir := t.TempDir()
-	rawDir := filepath.Join(archiveDir, "raw")
-	if err := os.MkdirAll(rawDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	content := `{"type":"state_change","state":"finished"}` + "\n"
-	if err := os.WriteFile(filepath.Join(rawDir, "session.jsonl"), []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	a := pi.NewArchiveAdapter()
-	if err := a.Export(context.Background(), archiveDir, harnessarchive.SourceParams{}); err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-
-	dst := filepath.Join(archiveDir, "session.jsonl")
-	got, err := os.ReadFile(dst)
-	if err != nil {
-		t.Fatalf("read session.jsonl: %v", err)
-	}
-	if string(got) != content {
-		t.Errorf("session.jsonl content: got %q, want %q", content, got)
-	}
-}
-
-// TestArchiveAdapter_Export_NoRawSessionJSONL_NoError verifies that Export
-// returns nil when raw/session.jsonl is absent, and writes nothing.
-func TestArchiveAdapter_Export_NoRawSessionJSONL_NoError(t *testing.T) {
-	archiveDir := t.TempDir()
-	rawDir := filepath.Join(archiveDir, "raw")
-	if err := os.MkdirAll(rawDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	a := pi.NewArchiveAdapter()
-	if err := a.Export(context.Background(), archiveDir, harnessarchive.SourceParams{}); err != nil {
-		t.Fatalf("Export with missing session.jsonl: expected nil, got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(archiveDir, "session.jsonl")); !os.IsNotExist(err) {
-		t.Error("expected session.jsonl NOT to be created when raw/session.jsonl is absent")
 	}
 }
 
@@ -280,7 +387,14 @@ func TestArchiveAdapter_Export_NoRawSessionJSONL_NoError(t *testing.T) {
 // The encoded-cwd is derived from the host worktree path because sandbox-exec
 // mounts the worktree at its native path (only $HOME is remapped to the staging
 // HOME inside the sandbox).
+//
+// Issue #2185: sandbox-exec resolution is unaffected by PI_CODING_AGENT_DIR
+// on the host — the env var is set for the in-sandbox launcher, and the
+// host-side adapter resolves the staging-home path directly.
 func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
+	// Set a bogus PI_CODING_AGENT_DIR on the host to prove sandbox-exec
+	// ignores it.
+	t.Setenv("PI_CODING_AGENT_DIR", "/totally/bogus/path/that/should/not/be/used")
 	// Redirect $HOME to a temp dir so that SandboxExecStagingHomePath (which
 	// calls os.UserHomeDir internally) writes into a temp dir rather than the
 	// real home directory or /homeless-shelter in the Nix sandbox CI build.
@@ -329,12 +443,17 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 	if strings.HasPrefix(got, filepath.Join(fakeHome, ".pi")) {
 		t.Errorf("SourcePath (sandbox-exec) returned real home path %q; expected staging home", got)
 	}
+	// Must NOT touch the bogus host PI_CODING_AGENT_DIR.
+	if strings.HasPrefix(got, "/totally/bogus") {
+		t.Errorf("SourcePath (sandbox-exec) consulted host PI_CODING_AGENT_DIR; got %q", got)
+	}
 }
 
 // TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID verifies that when
 // IsolationMode is "sandbox-exec" but InstanceID is empty, SourcePath falls
 // back to the real home directory rather than returning an error.
 func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
 	// /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -364,9 +483,11 @@ func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
 
 // TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome verifies that
 // non-sandbox-exec, non-bwrap isolation modes (podman, host, "") use the real
-// home directory for the sessions root. The bwrap branch is covered
-// separately by TestArchiveAdapter_SourcePath_Bwrap* below.
+// home directory for the sessions root WHEN PI_CODING_AGENT_DIR is unset.
+// The bwrap branch is covered separately by TestArchiveAdapter_SourcePath_Bwrap*
+// below.
 func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
 	// /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -398,10 +519,53 @@ func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
 	}
 }
 
+// TestArchiveAdapter_SourcePath_NonSandboxExec_UsesPICodingAgentDir mirrors
+// the above test but with PI_CODING_AGENT_DIR set: every non-sandbox-exec
+// mode must resolve under <dir>/sessions/, not <home>/.pi/agent/sessions/.
+func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesPICodingAgentDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const sessionID = "pi-ses-env-mode"
+	const worktree = "/tmp/test-env-mode"
+
+	for _, mode := range []string{"podman", "host", "bwrap", ""} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			a := pi.NewArchiveAdapter()
+			p := harnessarchive.SourceParams{
+				HarnessSessionID: sessionID,
+				IsolationMode:    mode,
+				InstanceID:       "some-instance-id",
+				Worktree:         worktree,
+			}
+			got, err := a.SourcePath(p)
+			if err != nil {
+				t.Fatalf("SourcePath (mode=%q): %v", mode, err)
+			}
+			// Must be rooted under PI_CODING_AGENT_DIR/sessions/<encoded-cwd>/.
+			encodedDir := encodePiCWDForTest(worktree)
+			expectedPrefix := filepath.Join(piDataRoot, "sessions", encodedDir)
+			if !strings.HasPrefix(got, expectedPrefix) {
+				t.Errorf("SourcePath (mode=%q): got %q, expected prefix %q", mode, got, expectedPrefix)
+			}
+			// Must NOT resolve under the home fallback.
+			wrong := filepath.Join(fakeHome, ".pi", "agent", "sessions")
+			if strings.HasPrefix(got, wrong) {
+				t.Errorf("SourcePath (mode=%q): resolved under home %q with PI_CODING_AGENT_DIR set; got %q",
+					mode, wrong, got)
+			}
+		})
+	}
+}
+
 // TestArchiveAdapter_EndToEnd_HostMode is an integration-style test that
-// exercises the full Archive → Export pipeline with a realistic pi session
-// file (encoded-cwd layout with <ts>_<uuid>.jsonl filename).
+// exercises the full Archive pipeline with a realistic pi session file
+// (encoded-cwd layout with <ts>_<uuid>.jsonl filename). The post-fix layout
+// writes session.jsonl directly into the archive dir — no raw/ subdir.
 func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect $HOME to a temp dir to avoid writing to the real home
 	// directory or /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
@@ -440,38 +604,90 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 	}
 
 	archiveDir := t.TempDir()
-	rawDir := filepath.Join(archiveDir, "raw")
-	if err := os.MkdirAll(rawDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := a.Archive(context.Background(), srcPath, rawDir, p); err != nil {
+	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
 
-	rawJSONL := filepath.Join(rawDir, "session.jsonl")
-	if _, err := os.Stat(rawJSONL); err != nil {
-		t.Fatalf("raw/session.jsonl missing after Archive: %v", err)
-	}
-
-	if err := a.Export(context.Background(), archiveDir, p); err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-
-	exportedJSONL := filepath.Join(archiveDir, "session.jsonl")
-	got, err := os.ReadFile(exportedJSONL)
+	// Post-fix layout: session.jsonl is written directly into archiveDir.
+	finalJSONL := filepath.Join(archiveDir, "session.jsonl")
+	got, err := os.ReadFile(finalJSONL)
 	if err != nil {
-		t.Fatalf("read exported session.jsonl: %v", err)
+		t.Fatalf("read archiveDir/session.jsonl: %v", err)
 	}
 	if string(got) != sessionContent {
-		t.Errorf("exported session.jsonl: got %q, want %q", got, sessionContent)
+		t.Errorf("archiveDir/session.jsonl: got %q, want %q", got, sessionContent)
+	}
+
+	// No raw/ subdirectory exists post-fix.
+	if _, statErr := os.Stat(filepath.Join(archiveDir, "raw")); !os.IsNotExist(statErr) {
+		t.Errorf("archiveDir/raw/ must NOT exist post-fix; stat returned: %v", statErr)
+	}
+}
+
+// TestArchiveAdapter_EndToEnd_HostMode_PICodingAgentDir is the regression
+// fixture for issue #2185 itself: with PI_CODING_AGENT_DIR set, a session
+// that wrote conversation data must produce an archive whose session.jsonl
+// contains that data. Pre-fix this test would produce an empty archive
+// because the adapter looked in <home>/.pi/agent/sessions/ instead of
+// <PI_CODING_AGENT_DIR>/sessions/.
+func TestArchiveAdapter_EndToEnd_HostMode_PICodingAgentDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const worktree = "/tmp/prism-e2e-env-worktree"
+	const sessionID = "11111111-2222-3333-4444-555555555555"
+
+	encodedDir := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(piDataRoot, "sessions", encodedDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	sessionContent := `{"type":"session","version":3,"id":"` + sessionID + `"}` + "\n" +
+		`{"type":"msg_user","content":"hello"}` + "\n" +
+		`{"type":"msg_assistant","content":"hi"}` + "\n"
+	piFile := filepath.Join(sessDir, "2026-06-08T07-12-42-499Z_"+sessionID+".jsonl")
+	if err := os.WriteFile(piFile, []byte(sessionContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		Worktree:         worktree,
+		IsolationMode:    "host",
+	}
+
+	srcPath, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if srcPath != piFile {
+		t.Errorf("SourcePath: got %q, want %q (PI_CODING_AGENT_DIR=%q)", srcPath, piFile, piDataRoot)
+	}
+
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	finalJSONL := filepath.Join(archiveDir, "session.jsonl")
+	got, err := os.ReadFile(finalJSONL)
+	if err != nil {
+		t.Fatalf("read archive session.jsonl: %v", err)
+	}
+	if string(got) != sessionContent {
+		t.Errorf("archive session.jsonl: got %q, want %q", got, sessionContent)
 	}
 }
 
 // stageBwrapSession writes a fake pi JSONL file at the post-#1985 bwrap
-// layout path — the host's global ~/.pi/agent/sessions/ tree, same as host
-// mode — and returns (filePath, content). It assumes $HOME has already been
-// redirected by the caller (t.Setenv("HOME", t.TempDir())).
+// layout path — the host's PI sessions root, same as host mode — and returns
+// (filePath, content). It assumes $HOME has already been redirected by the
+// caller (t.Setenv("HOME", t.TempDir())) AND PI_CODING_AGENT_DIR is unset (or
+// the caller has set it appropriately).
 //
 // Pre-#1985 this helper planted files under
 // <XDG_STATE_HOME>/prism/run/<dirHash>/pi-agent/sessions/. That staging-dir
@@ -503,6 +719,7 @@ func stageBwrapSession(t *testing.T, _ /*stateHome*/, _ /*sessionName*/, worktre
 // path. Post-#1985 the bwrap branch resolves to the same host-global path as
 // host mode (the sandbox overlays it onto $PI_CODING_AGENT_DIR/sessions/).
 func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
+	clearPICodingAgentDir(t)
 	// Redirect both $HOME and $XDG_STATE_HOME so no real-host paths are
 	// touched (works in both dev shell and Nix sandbox).
 	fakeHome := t.TempDir()
@@ -548,9 +765,11 @@ func TestArchiveAdapter_SourcePath_Bwrap_FindsMatchingFile(t *testing.T) {
 }
 
 // TestArchiveAdapter_Archive_Bwrap_EndToEnd verifies that for a staged bwrap
-// session, composing SourcePath then Archive produces rawDir/session.jsonl
-// byte-identical to the source file (AC #8).
+// session, composing SourcePath then Archive produces archiveDir/session.jsonl
+// byte-identical to the source file (AC #8). Post-fix layout writes directly
+// to archiveDir/session.jsonl — no raw/ subdir.
 func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -576,27 +795,28 @@ func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
 		t.Fatalf("SourcePath: got %q, want %q", got, srcPath)
 	}
 
-	rawDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	dst := filepath.Join(rawDir, "session.jsonl")
+	dst := filepath.Join(archiveDir, "session.jsonl")
 	gotContent, err := os.ReadFile(dst)
 	if err != nil {
-		t.Fatalf("read rawDir/session.jsonl: %v", err)
+		t.Fatalf("read archiveDir/session.jsonl: %v", err)
 	}
 	if string(gotContent) != content {
-		t.Errorf("rawDir/session.jsonl content mismatch:\n got: %q\nwant: %q", gotContent, content)
+		t.Errorf("archiveDir/session.jsonl content mismatch:\n got: %q\nwant: %q", gotContent, content)
 	}
 }
 
 // TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName verifies that when
 // IsolationMode is "bwrap" but SessionName is empty, SourcePath still
 // resolves (post-#1985 the bwrap branch no longer needs the SessionName —
-// it resolves to ~/.pi/agent/sessions/ like host mode). Archive on the
+// it resolves to the host PI sessions root like host mode). Archive on the
 // resulting sentinel must still be a no-op when no matching transcript
 // exists, matching the contract for the other modes.
 func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
+	clearPICodingAgentDir(t)
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -614,13 +834,13 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 	}
 
 	// Archive on that sentinel must be a no-op (no matching transcript exists).
-	rawDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
 		t.Fatalf("Archive on bwrap-empty-SessionName sentinel: %v", err)
 	}
-	entries, _ := os.ReadDir(rawDir)
+	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
-		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+		t.Errorf("archiveDir must be empty after no-op Archive; got %d entry/entries", len(entries))
 	}
 }
 
@@ -629,6 +849,7 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 // *_<HarnessSessionID>.jsonl, SourcePath returns a sentinel path inside the
 // encoded-cwd dir and Archive on that sentinel is a no-op.
 func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
+	clearPICodingAgentDir(t)
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -669,25 +890,26 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 		t.Errorf("SourcePath sentinel must be inside %q; got %q", sessDir, got)
 	}
 	// Archive on the sentinel is a no-op (the file does not exist).
-	rawDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, rawDir, p); err != nil {
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
 		t.Fatalf("Archive on bwrap-no-match sentinel: %v", err)
 	}
-	entries, _ := os.ReadDir(rawDir)
+	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
-		t.Errorf("rawDir must be empty after no-op Archive; got %d entry/entries", len(entries))
+		t.Errorf("archiveDir must be empty after no-op Archive; got %d entry/entries", len(entries))
 	}
 }
 
 // TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that
 // SourcePath produces paths anchored in the right per-mode root:
 //
-//   - host and bwrap collapse to the SAME ~/.pi/agent/sessions/ root
+//   - host and bwrap collapse to the SAME host PI sessions root
 //     (post-#1985, bwrap overlays this dir onto the sandbox path so the
 //     host-side resolution is identical).
 //   - sandbox-exec is anchored in the per-instance staging HOME and must
 //     NOT collide with the host/bwrap path.
 func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
+	clearPICodingAgentDir(t)
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	stateHome := t.TempDir()

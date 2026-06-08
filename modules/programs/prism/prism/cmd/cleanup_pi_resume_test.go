@@ -23,6 +23,17 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
+// clearPICodingAgentDir clears PI_CODING_AGENT_DIR for the duration of the
+// test. Required by tests that exercise the host-fallback branch of
+// piResumeSessionsRoot / piSessionsRoot — the developer host sets the env
+// var system-wide (post-#2185 the resolver honours it), and without
+// clearing it tests that set up a temp HOME would silently fall through to
+// /run/prism/pi-agent/sessions/ and fail.
+func clearPICodingAgentDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+}
+
 // piEncodeCWD mirrors internal/container.encodePiCWD / internal/harness/pi.EncodePiCWD.
 // Duplicated here so cmd-package tests do not need to import internal/container.
 func piEncodeCWD(cwd string) string {
@@ -55,6 +66,7 @@ func writeFakePiResumeJSONL(t *testing.T, home, worktree, harnessSessionID strin
 func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -108,6 +120,7 @@ func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 func TestHeadlessCleanup_RemovesPiResumeJSONL(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
+	clearPICodingAgentDir(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -153,6 +166,7 @@ func TestHeadlessCleanup_RemovesPiResumeJSONL(t *testing.T) {
 func TestHeadlessCleanup_ClearsHarnessSessionIDForReviewChildren(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const parent = "myrepo@feature"
@@ -214,6 +228,7 @@ func TestHeadlessCleanup_ClearsHarnessSessionIDForReviewChildren(t *testing.T) {
 func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const session = "myrepo@brand-new"
@@ -261,6 +276,7 @@ func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 func TestHeadlessCleanup_LeavesOtherSessionsResumePointersAlone(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const cleaned = "myrepo@going"

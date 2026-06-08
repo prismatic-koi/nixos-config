@@ -1024,11 +1024,16 @@ into prism's snake_case wire field names — e.g. `toolCallId` → `id`,
 extension's job, not the sidecar's. The sidecar accepts the wire as-is
 and writes it to the DB.
 
-The one exception: **archive normalisation**. The opencode raw-archive
-→ pi-mono-v3 trace translation in `internal/piexport/piexport.go`
-already lives in the archive adapter, not the sidecar. PI archive
-normalisation belongs there too; that work tracks separately under
-issue #1143.
+The one exception: **archive normalisation** — historical. The opencode
+raw-archive → pi-mono-v3 trace translation step that motivated the
+`ArchiveAdapter.Export` interface method has been **removed** along with
+opencode itself (issue #2185). PI is the only remaining harness and its
+on-disk JSONL is already pi-mono-v3 shaped, so the archive pipeline
+writes `session.jsonl` directly into the per-session archive directory
+in a single step — there is no separate Export normalisation pass and
+the pre-fix `raw/session.jsonl` indirection is gone. If a future harness
+needs a normalisation step, `ArchiveAdapter` can re-grow an `Export`
+method then with a real implementation.
 
 ### 8.2 Future protocol versions (additive, not breaking)
 

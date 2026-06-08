@@ -13,6 +13,13 @@ package container
 //
 // All tests use t.TempDir() and t.Setenv("XDG_STATE_HOME", ...) so they never
 // touch the host's real home dir / state dir.
+//
+// Tests that exercise the host-fallback branch of piResumeSessionsRoot MUST
+// also clear PI_CODING_AGENT_DIR — the developer host sets that env var
+// system-wide (post-#2185 the resolver honours it), and without clearing it
+// the helper would point at the host's /run/prism/pi-agent/sessions/ instead
+// of the temp HOME the test set up. Use clearPICodingAgentDir(t) at the top
+// of any such test.
 
 import (
 	"os"
@@ -67,6 +74,7 @@ func bwrapResumeCfg(sessionName, worktree, harnessSessionID string) Config {
 // PIInvocation must append `--session <id>` immediately before any positional
 // InitialPrompt argument.
 func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
@@ -103,6 +111,7 @@ func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
 // positional-prompt-absent path: --session must still appear as the last pair
 // when InitialPrompt is empty.
 func TestPIInvocation_Resume_AppendsSession_NoInitialPrompt(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
@@ -131,6 +140,7 @@ func TestPIInvocation_Resume_AppendsSession_NoInitialPrompt(t *testing.T) {
 // must omit --session AND a clearly-tagged warning line must land in the
 // per-session agent-run log.
 func TestPIInvocation_Resume_OmitsSessionWhenFileMissing(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("HOME", t.TempDir())
@@ -170,6 +180,7 @@ func TestPIInvocation_Resume_OmitsSessionWhenFileMissing(t *testing.T) {
 // AC5: when HarnessSessionID is empty, PIInvocation must behave exactly as
 // pre-#1838 \u2014 no --session, no warning written, no side effects.
 func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("HOME", t.TempDir())
@@ -201,6 +212,7 @@ func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 //   - bwrap:        <home>/.pi/agent/sessions  (same root as host)
 //   - sandbox-exec: <stagingHome>/.pi/agent/sessions
 func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
+	clearPICodingAgentDir(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -287,5 +299,113 @@ func TestEncodePiCWD_MatchesArchiveImpl(t *testing.T) {
 		if got != c.want {
 			t.Errorf("encodePiCWD(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestPIResumeSessionsRoot_PICodingAgentDir verifies the issue #2185 fix at
+// the resume layer: when PI_CODING_AGENT_DIR is set on the host, the
+// resolver returns <dir>/sessions (NOT <home>/.pi/agent/sessions) for host
+// and bwrap modes. Sandbox-exec is unchanged - it always uses the staging
+// HOME formula regardless of host env vars.
+func TestPIResumeSessionsRoot_PICodingAgentDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	wantHostRoot := filepath.Join(piDataRoot, "sessions")
+	homeRoot := filepath.Join(home, ".pi", "agent", "sessions")
+
+	t.Run("host", func(t *testing.T) {
+		got, ok := piResumeSessionsRoot(Config{SessionName: "myrepo@main"})
+		if !ok {
+			t.Fatalf("piResumeSessionsRoot(host): ok=false, want true")
+		}
+		if got != wantHostRoot {
+			t.Errorf("piResumeSessionsRoot(host) = %q, want %q (PI_CODING_AGENT_DIR=%q)",
+				got, wantHostRoot, piDataRoot)
+		}
+		if got == homeRoot {
+			t.Errorf("piResumeSessionsRoot(host) resolved under HOME %q despite PI_CODING_AGENT_DIR being set", homeRoot)
+		}
+	})
+
+	t.Run("bwrap", func(t *testing.T) {
+		cfg := Config{
+			SessionName:             "myrepo@feature",
+			PIAgentConfigHostDir:    "/some/host/stage",
+			PIAgentConfigSandboxDir: "/run/prism/pi-agent",
+		}
+		got, ok := piResumeSessionsRoot(cfg)
+		if !ok {
+			t.Fatalf("piResumeSessionsRoot(bwrap): ok=false, want true")
+		}
+		if got != wantHostRoot {
+			t.Errorf("piResumeSessionsRoot(bwrap) = %q, want %q (PI_CODING_AGENT_DIR=%q)",
+				got, wantHostRoot, piDataRoot)
+		}
+	})
+
+	t.Run("sandbox-exec", func(t *testing.T) {
+		const instanceID = "99999999-2185-2185-2185-218521852185"
+		cfg := Config{
+			InstanceID:              instanceID,
+			PIAgentConfigHostDir:    "/some/host/stage",
+			PIAgentConfigSandboxDir: "/some/host/stage",
+		}
+		got, ok := piResumeSessionsRoot(cfg)
+		if !ok {
+			t.Fatalf("piResumeSessionsRoot(sandbox-exec): ok=false, want true")
+		}
+		// Sandbox-exec must NOT pick up the host's PI_CODING_AGENT_DIR.
+		if got == wantHostRoot {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) returned the host PI_CODING_AGENT_DIR root %q; want a staging-HOME path",
+				got)
+		}
+		stagingHome, err := SandboxExecStagingHomePath(instanceID)
+		if err != nil {
+			t.Fatalf("SandboxExecStagingHomePath: %v", err)
+		}
+		wantSandbox := filepath.Join(stagingHome, ".pi", "agent", "sessions")
+		if got != wantSandbox {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want %q", got, wantSandbox)
+		}
+	})
+}
+
+// TestPIInvocation_Resume_PICodingAgentDir is the end-to-end fixture for the
+// resume probe under issue #2185: when pi wrote its JSONL under
+// $PI_CODING_AGENT_DIR/sessions/ (as it does on hosts where pi's data root
+// is overridden), PIInvocation must find it and append --session.
+func TestPIInvocation_Resume_PICodingAgentDir(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const sessionName = "myrepo@feature"
+	const worktree = "/home/user/code/myrepo/feature"
+	const harnessSessionID = "019e2185-1111-2222-3333-444444444444"
+
+	// Plant the JSONL under PI_CODING_AGENT_DIR/sessions/<encoded-cwd>/
+	// (NOT under <home>/.pi/agent/sessions/).
+	dir := filepath.Join(piDataRoot, "sessions", encodePiCWD(worktree))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir env-mode sessions dir: %v", err)
+	}
+	jsonl := filepath.Join(dir, "2026-06-08T07-12-42-499Z_"+harnessSessionID+".jsonl")
+	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+		t.Fatalf("write env-mode session file: %v", err)
+	}
+
+	cfg := bwrapResumeCfg(sessionName, worktree, harnessSessionID)
+	cfg.InitialPrompt = "do the thing"
+
+	args := PIInvocation(cfg)
+
+	if !hasPair(args, "--session", harnessSessionID) {
+		t.Errorf("expected --session %s in args (resolver did not honour PI_CODING_AGENT_DIR=%q); got %v",
+			harnessSessionID, piDataRoot, args)
 	}
 }

@@ -1168,8 +1168,11 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		HarnessVersion: harnessVersion,
 		// Copier delegates the harness-specific file-copy to the adapter's Archive
 		// method, allowing any registered harness to provide its own copy logic.
-		Copier: func(copyCtx context.Context, rawDir string) error {
-			return archiveAdapter.Archive(copyCtx, srcPath, rawDir, srcParams)
+		// archiveDir is the per-session archive directory itself; the adapter
+		// writes its final-layout artifacts (e.g. session.jsonl for pi) directly
+		// there — there is no longer a `raw/` subdirectory indirection.
+		Copier: func(copyCtx context.Context, archiveDir string) error {
+			return archiveAdapter.Archive(copyCtx, srcPath, archiveDir, srcParams)
 		},
 	}
 	if sess.AgentRole != nil {
@@ -1240,12 +1243,10 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		proglog.Warnf("[prism] archive: update archive_path for %q: %v\n", instanceID, updErr)
 	}
 
-	// Translate the raw archive via the adapter's Export method.
-	// Failure is non-fatal: the raw archive remains intact for re-translation later.
-	if exportErr := archiveAdapter.Export(ctx, archivePath, srcParams); exportErr != nil {
-		proglog.Warnf("[prism] archive: export failed for session %q: %v\n", sessionName, exportErr)
-	}
-
+	// The pre-fix two-stage flow ran a separate adapter.Export here that
+	// byte-copied raw/session.jsonl to session.jsonl. With pi as the only
+	// remaining harness, Archive writes the final layout in one step — no
+	// post-process Export is needed.
 	return nil
 }
 
@@ -1270,8 +1271,11 @@ func init() {
 //     PIInvocation appends `--session <id>` to pi when a matching JSONL is
 //     found on disk.
 //
-//  2. ~/.pi/agent/sessions/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
-//     — the on-disk JSONL transcript. The encoded-cwd directory is keyed off
+//  2. <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
+//     where <piSessionsRoot> is $PI_CODING_AGENT_DIR/sessions when the env
+//     var is set, else ~/.pi/agent/sessions — see
+//     internal/harness/pi/archive.go::piSessionsRoot for the authoritative
+//     resolution. The on-disk JSONL transcript. The encoded-cwd directory is keyed off
 //     cfg.Worktree, which is stable across a reused branch name (the worktree
 //     path is derived deterministically from the branch). For sandbox-exec
 //     the transcript also lives inside the staging HOME that

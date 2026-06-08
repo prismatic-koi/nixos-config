@@ -37,12 +37,19 @@ type SourceParams struct {
 // ArchiveAdapter is the interface each harness implements to plug into the
 // prism archive pipeline.
 //
-// The four methods map directly to the four stages of the cleanup archive flow:
+// The three methods map directly to the three stages of the cleanup archive
+// flow:
 //
 //  1. SourcePath — locate the harness session storage on the host filesystem.
-//  2. Archive    — copy session files from the storage root into the raw archive dir.
-//  3. Export     — translate the raw archive into the downstream export format.
-//  4. Version    — report the harness binary version for the manifest.
+//  2. Archive    — copy session files from the storage root into the archive dir.
+//  3. Version    — report the harness binary version for the manifest.
+//
+// The historical Export step (separate "normalisation" pass that translated
+// the raw archive into a downstream format) was removed when opencode left
+// the codebase — pi is the only remaining harness and its on-disk JSONL is
+// already in the downstream format, so Archive writes the final layout in a
+// single step. If a second harness lands in future, this interface can
+// re-grow an Export method then, with a real implementation.
 type ArchiveAdapter interface {
 	// SourcePath returns the host-side storage root directory for the session
 	// described by p. The returned path is used as the srcPath argument to
@@ -50,16 +57,13 @@ type ArchiveAdapter interface {
 	// derive the path from p.IsolationMode and p.SessionName.
 	SourcePath(p SourceParams) (string, error)
 
-	// Archive copies the harness session files rooted at srcPath into rawDir.
-	// rawDir already exists when Archive is called. On success, rawDir contains
-	// all harness-specific session artifacts (session JSON, messages, parts,
-	// tool output, etc.).
-	Archive(ctx context.Context, srcPath, rawDir string, p SourceParams) error
-
-	// Export translates the raw archive directory at archiveDir into the
-	// downstream export format (e.g. pi-mono JSONL). Failure is non-fatal:
-	// the raw archive remains intact for re-translation later.
-	Export(ctx context.Context, archiveDir string, p SourceParams) error
+	// Archive copies the harness session files rooted at srcPath into
+	// archiveDir. archiveDir is the per-session archive directory itself
+	// (e.g. .../<repo>/<startedAtISO>_<instanceID>/) and already exists
+	// when Archive is called. On success, archiveDir contains the
+	// harness-specific session artifacts in their final on-disk layout —
+	// no further normalisation step is run.
+	Archive(ctx context.Context, srcPath, archiveDir string, p SourceParams) error
 
 	// Version returns the harness binary version string (e.g. "1.1.30"), or
 	// "" when the binary is not on PATH or returns an error. Called once per
