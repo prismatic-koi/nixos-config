@@ -585,6 +585,65 @@ export function splitShellSegments(command: string): string[] {
 }
 
 /**
+ * Strip `$(...)` command-substitution and `` `...` `` backtick regions
+ * from a (quote-stripped) command, replacing each region with a single
+ * space so token boundaries are preserved but the substitution body is
+ * gone. `$(...)` nesting is tracked with a depth counter; backticks do
+ * not nest.
+ *
+ * Unlike `splitShellSegments` — which promotes substitution bodies to
+ * their own segments so e.g. a nested `git push` is still considered a
+ * real invocation — this helper is for patterns that need to match a
+ * shape *spanning* a substitution. Example: `XDG_DATA_HOME=$(mktemp -d)
+ * nix build` would otherwise be split into three disjoint segments
+ * (`XDG_DATA_HOME=`, `mktemp -d`, `nix build .#prism`), none of which
+ * matches the deny-list regex alone. After stripping, the outer command
+ * collapses to a single segment `XDG_DATA_HOME=  nix build .#prism` that
+ * a regex like `VAR=\S*\s+nix build` can detect.
+ *
+ * `checkBlockedBash` runs both the original-stripped and the
+ * substitution-stripped command through `splitShellSegments` and dedupes
+ * the results, so existing patterns that rely on the substitution body
+ * being its own segment continue to fire.
+ *
+ * Exported for unit testing.
+ */
+export function stripCommandSubstitutions(command: string): string {
+  let result = ""
+  let i = 0
+  while (i < command.length) {
+    const c = command[i]
+    const next = command[i + 1]
+    if (c === "$" && next === "(") {
+      // Skip past `$(` and the matching `)`, tracking nesting depth.
+      i += 2
+      let depth = 1
+      while (i < command.length && depth > 0) {
+        if (command[i] === "(") depth++
+        else if (command[i] === ")") depth--
+        if (depth > 0) i++
+      }
+      // Skip the closing `)` itself (if we found one).
+      if (i < command.length) i++
+      result += " "
+      continue
+    }
+    if (c === "`") {
+      // Backticks do not nest; consume to the next backtick.
+      i++
+      while (i < command.length && command[i] !== "`") i++
+      // Skip the closing backtick (if we found one).
+      if (i < command.length) i++
+      result += " "
+      continue
+    }
+    result += c
+    i++
+  }
+  return result
+}
+
+/**
  * Decide whether a single tokenised command segment is a `git push`
  * invocation. Accepts the leading-flag forms the prior regex accepted:
  *   git push ...
@@ -676,6 +735,35 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "(they are not bind-mounted into your view). Use " +
       "`prism cleanup --yes --session <name>` instead.",
   },
+  {
+    // #2180 — `nix build` with an inline override of any of XDG_DATA_HOME,
+    // NIX_STORE_DIR, NIX_DATA_DIR, or HOME repoints nix's local profile /
+    // trust DB / daemon-socket linkage at an empty tempdir, forcing it to
+    // bootstrap a fresh single-user store. Inside sandbox-exec the
+    // parallel evaluation leaks FDs that the next retry inherits; on
+    // Darwin this exhausts `kern.maxfiles` and renders every process on
+    // the host unable to call open() until a reboot. See AGENTS.md
+    // § "When `nix build` fails inside a sandbox".
+    //
+    // The `\S*` (zero-or-more) in the value group is intentional — after
+    // checkBlockedBash's substitution-stripping pass, the command
+    // `XDG_DATA_HOME=$(mktemp -d) nix build` collapses to
+    // `XDG_DATA_HOME=  nix build` (empty value) and must still match.
+    id: "nix-build-with-env-override",
+    match: (segment: string) =>
+      /^\s*(?:env\s+)?(?:(?:XDG_DATA_HOME|NIX_STORE_DIR|NIX_DATA_DIR|HOME)=\S*\s+)+(?:env\s+)?nix\s+build\b/.test(
+        segment,
+      ),
+    reason:
+      "blocked by prism extension: `nix build` with an inline override " +
+      "of XDG_DATA_HOME, NIX_STORE_DIR, NIX_DATA_DIR, or HOME has caused " +
+      "system-wide FD exhaustion on Darwin (kern.maxfiles), requiring a " +
+      "reboot to recover \u2014 see AGENTS.md § 'When `nix build` fails " +
+      "inside a sandbox' for the incident writeup. If `nix build .#prism` " +
+      "fails inside your sandbox, escalate via `prism escalate` rather " +
+      "than attempting environment workarounds; CI runs the authoritative " +
+      "build so a local failure is not a merge blocker.",
+  },
 ]
 
 /**
@@ -693,7 +781,22 @@ export function checkBlockedBash(
   command: string,
 ): { id: string; reason: string } | null {
   const stripped = stripQuotedAndHeredocRegions(command)
-  for (const segment of splitShellSegments(stripped)) {
+  // Two passes:
+  //   1. The plain quote-stripped command — preserves the existing
+  //      behaviour where substitution bodies (e.g. `$(git worktree prune)`)
+  //      become their own segments and can still trigger a block.
+  //   2. The substitution-stripped command — collapses `$(...)` and
+  //      backtick regions to a placeholder space so patterns that need to
+  //      match a shape *spanning* a substitution (e.g. the
+  //      `nix-build-with-env-override` entry on `XDG_DATA_HOME=$(mktemp -d)
+  //      nix build`) fire on the resulting single segment.
+  // The Set dedupes segments that survive unchanged in both passes so the
+  // common case pays no extra cost.
+  const segments = new Set<string>([
+    ...splitShellSegments(stripped),
+    ...splitShellSegments(stripCommandSubstitutions(stripped)),
+  ])
+  for (const segment of segments) {
     for (const pattern of BLOCKED_BASH_PATTERNS) {
       if (pattern.match(segment)) {
         return { id: pattern.id, reason: pattern.reason }
