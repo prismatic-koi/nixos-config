@@ -33,9 +33,10 @@ import {
   processDoomLoop,
   isGitPush,
   EXCLUDED_BASH_BASES,
-  // Pre-tool-call bash deny list (#1528)
+  // Pre-tool-call bash deny list (#1528, #2180)
   BLOCKED_BASH_PATTERNS,
   checkBlockedBash,
+  stripCommandSubstitutions,
   newDoomLoopState,
   snapshotGuardState,
   restoreGuardState,
@@ -1605,8 +1606,8 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly two entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 2)
+  it("contains exactly three entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 3)
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -1619,6 +1620,11 @@ describe("BLOCKED_BASH_PATTERNS", () => {
     assert.ok(ids.includes("git-worktree-remove"))
   })
 
+  it("has the nix-build-with-env-override entry (#2180)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("nix-build-with-env-override"))
+  })
+
   it("every entry has id, match, and reason fields", () => {
     for (const p of BLOCKED_BASH_PATTERNS) {
       assert.equal(typeof p.id, "string")
@@ -1629,8 +1635,9 @@ describe("BLOCKED_BASH_PATTERNS", () => {
     }
   })
 
-  it("every entry's reason names the recommended alternative (prism cleanup --yes --session)", () => {
+  it("git-worktree-* entries' reasons name the recommended alternative (prism cleanup --yes --session)", () => {
     for (const p of BLOCKED_BASH_PATTERNS) {
+      if (!p.id.startsWith("git-worktree-")) continue
       assert.ok(
         p.reason.includes("prism cleanup --yes --session"),
         `pattern ${p.id} reason should mention 'prism cleanup --yes --session'`,
@@ -1766,6 +1773,213 @@ describe("checkBlockedBash — negative cases (quoted / heredoc / grep)", () => 
 
   it("does NOT match when there is no command", () => {
     assert.equal(checkBlockedBash(""), null)
+  })
+})
+
+describe("checkBlockedBash — nix-build-with-env-override (positive cases, #2180)", () => {
+  it("blocks 'XDG_DATA_HOME=$(mktemp -d) nix build .#prism' (the killshot from the incident)", () => {
+    const hit = checkBlockedBash("XDG_DATA_HOME=$(mktemp -d) nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'NIX_STORE_DIR=/tmp/x nix build .#prism'", () => {
+    const hit = checkBlockedBash("NIX_STORE_DIR=/tmp/x nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'env XDG_DATA_HOME=/tmp/x nix build'", () => {
+    const hit = checkBlockedBash("env XDG_DATA_HOME=/tmp/x nix build")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'cd /repo && XDG_DATA_HOME=/tmp/x nix build .#prism' (segment after &&)", () => {
+    const hit = checkBlockedBash(
+      "cd /repo && XDG_DATA_HOME=/tmp/x nix build .#prism",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'HOME=/tmp/h nix build .#prism'", () => {
+    const hit = checkBlockedBash("HOME=/tmp/h nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'NIX_DATA_DIR=/tmp/d nix build .#prism'", () => {
+    const hit = checkBlockedBash("NIX_DATA_DIR=/tmp/d nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks multiple inline assignments 'XDG_DATA_HOME=/tmp/x HOME=/tmp/h nix build .#prism'", () => {
+    const hit = checkBlockedBash(
+      "XDG_DATA_HOME=/tmp/x HOME=/tmp/h nix build .#prism",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks 'XDG_DATA_HOME=/tmp/xdg-data-$$ nix build .#prism' (the second incident retry, with $$)", () => {
+    const hit = checkBlockedBash(
+      "XDG_DATA_HOME=/tmp/xdg-data-$$ nix build .#prism",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+
+  it("blocks backtick command substitution 'XDG_DATA_HOME=`mktemp -d` nix build .#prism'", () => {
+    const hit = checkBlockedBash(
+      "XDG_DATA_HOME=`mktemp -d` nix build .#prism",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "nix-build-with-env-override")
+  })
+})
+
+describe("checkBlockedBash — nix-build-with-env-override (negative cases, #2180)", () => {
+  it("does NOT block plain 'nix build .#prism' (no env override)", () => {
+    assert.equal(checkBlockedBash("nix build .#prism"), null)
+  })
+
+  it("does NOT block 'nix build .#prism --no-link' (still no env override)", () => {
+    assert.equal(checkBlockedBash("nix build .#prism --no-link"), null)
+  })
+
+  it("does NOT block double-quoted 'XDG_DATA_HOME=/tmp/x nix build' inside echo (AC: quoted regions stripped)", () => {
+    assert.equal(
+      checkBlockedBash('echo "XDG_DATA_HOME=/tmp/x nix build"'),
+      null,
+    )
+  })
+
+  it("does NOT block single-quoted 'XDG_DATA_HOME=/tmp/x nix build' inside echo", () => {
+    assert.equal(
+      checkBlockedBash("echo 'XDG_DATA_HOME=/tmp/x nix build'"),
+      null,
+    )
+  })
+
+  it("does NOT block 'XDG_DATA_HOME=/tmp/x go test' (env override without nix build is fine)", () => {
+    assert.equal(checkBlockedBash("XDG_DATA_HOME=/tmp/x go test"), null)
+  })
+
+  it("does NOT block 'HOME=/tmp/h go test ./...' (Go suite under an env override is fine)", () => {
+    assert.equal(checkBlockedBash("HOME=/tmp/h go test ./..."), null)
+  })
+
+  it("does NOT block bare 'XDG_DATA_HOME=/tmp/x' (no command after)", () => {
+    assert.equal(checkBlockedBash("XDG_DATA_HOME=/tmp/x"), null)
+  })
+
+  it("does NOT block unrelated env vars 'FOO=bar nix build .#prism'", () => {
+    assert.equal(checkBlockedBash("FOO=bar nix build .#prism"), null)
+  })
+
+  it("does NOT block 'nix flake check' even with an env override", () => {
+    assert.equal(
+      checkBlockedBash("XDG_DATA_HOME=/tmp/x nix flake check"),
+      null,
+    )
+  })
+})
+
+describe("checkBlockedBash — nix-build-with-env-override reason string (#2180)", () => {
+  it("names the FD-exhaustion failure mode", () => {
+    const hit = checkBlockedBash("XDG_DATA_HOME=/tmp/x nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.toLowerCase().includes("fd") ||
+        hit!.reason.toLowerCase().includes("file descriptor"),
+      `reason should mention FD exhaustion: ${hit!.reason}`,
+    )
+    assert.ok(
+      hit!.reason.includes("kern.maxfiles") ||
+        hit!.reason.toLowerCase().includes("reboot"),
+      `reason should mention kern.maxfiles or reboot: ${hit!.reason}`,
+    )
+  })
+
+  it("points the agent at the AGENTS.md subsection", () => {
+    const hit = checkBlockedBash("XDG_DATA_HOME=/tmp/x nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.includes("AGENTS.md"),
+      `reason should reference AGENTS.md: ${hit!.reason}`,
+    )
+  })
+
+  it("recommends `prism escalate` as the correct path forward", () => {
+    const hit = checkBlockedBash("XDG_DATA_HOME=/tmp/x nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.includes("prism escalate"),
+      `reason should recommend prism escalate: ${hit!.reason}`,
+    )
+  })
+
+  it("is prefixed with 'blocked by prism extension'", () => {
+    const hit = checkBlockedBash("XDG_DATA_HOME=/tmp/x nix build .#prism")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
+  })
+})
+
+describe("stripCommandSubstitutions (#2180)", () => {
+  it("replaces `$(...)` with a single space", () => {
+    assert.equal(
+      stripCommandSubstitutions("XDG_DATA_HOME=$(mktemp -d) nix build"),
+      "XDG_DATA_HOME=  nix build",
+    )
+  })
+
+  it("handles nested `$(...)` via depth tracking", () => {
+    assert.equal(
+      stripCommandSubstitutions("a$(b $(c) d)e"),
+      "a e",
+    )
+  })
+
+  it("replaces backtick regions with a single space", () => {
+    assert.equal(
+      stripCommandSubstitutions("XDG_DATA_HOME=`mktemp -d` nix build"),
+      "XDG_DATA_HOME=  nix build",
+    )
+  })
+
+  it("leaves bare `$` and `$VAR` alone", () => {
+    assert.equal(
+      stripCommandSubstitutions("XDG_DATA_HOME=/tmp/x-$$ nix build"),
+      "XDG_DATA_HOME=/tmp/x-$$ nix build",
+    )
+    assert.equal(
+      stripCommandSubstitutions("echo $HOME"),
+      "echo $HOME",
+    )
+  })
+
+  it("is a no-op when no substitutions are present", () => {
+    assert.equal(
+      stripCommandSubstitutions("nix build .#prism"),
+      "nix build .#prism",
+    )
+  })
+
+  it("handles an unterminated `$(...)` by consuming to end-of-string", () => {
+    assert.equal(
+      stripCommandSubstitutions("nix build $(mktemp -d"),
+      "nix build  ",
+    )
+  })
+
+  it("handles an unterminated backtick by consuming to end-of-string", () => {
+    assert.equal(
+      stripCommandSubstitutions("nix build `mktemp -d"),
+      "nix build  ",
+    )
   })
 })
 
