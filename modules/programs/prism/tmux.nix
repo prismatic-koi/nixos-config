@@ -214,8 +214,12 @@ in
               bind-key X kill-window
               # close pane without confirmation
               bind-key x kill-pane
-              # worktree cleanup: remove worktree + kill session (project@worktree sessions only)
-              bind-key q display-popup -E -w 60% -h 40% -b single "${prism} cleanup"
+              # smart-decide session close (project@worktree sessions only):
+              # - open PR        → soft close (preserve worktree + branch)
+              # - merged/no PR   → hard cleanup (remove worktree + branch)
+              # - probe failure  → fail-safe to soft close
+              # See `prism close --help` for the full decision tree (issue #2179).
+              bind-key q display-popup -E -w 60% -h 40% -b single "${prism} close --yes"
               # restart prism (prefix+R)
               bind-key R run-shell '${prism} restart'
               # toggle session mute (prefix+m). Operator escape hatch (see #2013):

@@ -198,6 +198,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /spawn         — spawn a new worktree session (coordinator only)
 //	POST /review        — run review agents against a PR (workers and coordinators)
 //	POST /cleanup       — clean up an existing session (coordinator only)
+//	POST /close         — smart-decide close (soft if open PR; hard otherwise) (coordinator only)
 //	POST /switch        — switch the tmux client to a session
 //	GET  /list-sessions — list active sessions (role-scoped)
 //	GET  /checkin       — return conversation history for a session (coordinator only)
@@ -1721,9 +1722,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Session string `json:"session"`
-			Yes     bool   `json:"yes"`
-			JSON    bool   `json:"json"`
+			Session      string `json:"session"`
+			Yes          bool   `json:"yes"`
+			JSON         bool   `json:"json"`
+			KeepWorktree bool   `json:"keep_worktree"`
 		}
 		// /cleanup body cap: default 1 MiB (issue #1848).
 		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
@@ -1760,6 +1762,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.JSON {
 			args = append(args, "--json")
 		}
+		if req.KeepWorktree {
+			// issue #2179: forward --keep-worktree so the host-side cleanup
+			// performs a soft close (preserves worktree + branch) even for
+			// a worker session.
+			args = append(args, "--keep-worktree")
+		}
 
 		s.logger().Printf("sidecar: host-API /cleanup: prism %s", strings.Join(args, " "))
 
@@ -1793,6 +1801,109 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// just the outer transport's exit shape.
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"error":  fmt.Sprintf("cleanup failed: %v", err),
+				"stdout": stdoutStr,
+				"stderr": stderrStr,
+			})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"stdout": stdoutStr,
+			"stderr": stderrStr,
+		})
+	})
+
+	// POST /close (issue #2179)
+	// Request:  {"session":"nixos-config@my-feature","yes":true,"json":false,
+	//            "keep_worktree":false,"remove_worktree":false}
+	// Response: {"stdout":"...","stderr":"..."} | {"error":"...","stdout":"...","stderr":"..."}
+	//
+	// Mirrors /cleanup but invokes `prism close`, which auto-decides between
+	// soft close (preserve worktree) and hard cleanup (remove worktree) based
+	// on whether an open PR exists for the branch. The container-side proxy
+	// (proxyCloseToHostAPI) writes stdout/stderr verbatim to its own streams,
+	// matching the /cleanup contract.
+	mux.HandleFunc("/close", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "close") {
+			return
+		}
+		var req struct {
+			Session        string `json:"session"`
+			Yes            bool   `json:"yes"`
+			JSON           bool   `json:"json"`
+			KeepWorktree   bool   `json:"keep_worktree"`
+			RemoveWorktree bool   `json:"remove_worktree"`
+		}
+		// /close body cap: default 1 MiB (matches /cleanup).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.Session == "" {
+			writeError(w, http.StatusBadRequest, "session is required")
+			return
+		}
+
+		// Own-repo restriction: coordinators may only close sessions in their own repo.
+		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
+		if repoErr != nil {
+			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+			return
+		}
+		targetRepo, targetRepoErr := repoFromSession(req.Session, s.cfg.DB)
+		if targetRepoErr != nil {
+			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
+			return
+		}
+		if targetRepo != ownRepo {
+			writeError(w, http.StatusForbidden,
+				fmt.Sprintf("coordinators can only close sessions in their own repo (%s), got %q", ownRepo, req.Session))
+			return
+		}
+
+		args := []string{"close", "--session", req.Session}
+		if req.Yes {
+			args = append(args, "--yes")
+		}
+		if req.JSON {
+			args = append(args, "--json")
+		}
+		if req.KeepWorktree {
+			args = append(args, "--keep-worktree")
+		}
+		if req.RemoveWorktree {
+			args = append(args, "--remove-worktree")
+		}
+
+		s.logger().Printf("sidecar: host-API /close: prism %s", strings.Join(args, " "))
+
+		// 5-min budget matches /cleanup (the soft path is fast; the hard path
+		// can take as long as cleanup).
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, prismBinary(), args...)
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
+		err := cmd.Run()
+		stdoutStr := stdoutBuf.String()
+		stderrStr := stderrBuf.String()
+		if err != nil {
+			if status, ok := contextErrStatus(ctx); ok {
+				s.logger().Printf("sidecar: host-API /close: context fired (%v): killed child after %v", ctx.Err(), 5*time.Minute)
+				writeJSON(w, status, map[string]any{
+					"error":  fmt.Sprintf("close aborted: %v", ctx.Err()),
+					"stdout": stdoutStr,
+					"stderr": stderrStr,
+				})
+				return
+			}
+			s.logger().Printf("sidecar: host-API /close: %v: stdout=%q stderr=%q", err, stdoutStr, stderrStr)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"error":  fmt.Sprintf("close failed: %v", err),
 				"stdout": stdoutStr,
 				"stderr": stderrStr,
 			})

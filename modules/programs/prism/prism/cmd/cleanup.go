@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -344,6 +345,7 @@ var cleanupCmd = &cobra.Command{
 		yesFlag, _ := cmd.Flags().GetBool("yes")
 		sessionFlag, _ := cmd.Flags().GetString("session")
 		jsonFlag, _ := cmd.Flags().GetBool("json")
+		keepWorktreeFlag, _ := cmd.Flags().GetBool("keep-worktree")
 
 		// --json implies --yes: emitting a single structured object is
 		// incompatible with an interactive TUI.
@@ -361,7 +363,7 @@ var cleanupCmd = &cobra.Command{
 			if target == "" {
 				return fmt.Errorf("--session is required when running inside a container")
 			}
-			return proxyCleanupToHostAPI(apiURL, target, yesFlag, jsonFlag)
+			return proxyCleanupToHostAPI(apiURL, target, yesFlag, jsonFlag, keepWorktreeFlag)
 		}
 
 		// Only require tmux when we need to auto-detect the current session.
@@ -401,6 +403,7 @@ var cleanupCmd = &cobra.Command{
 			if yesFlag {
 				return headlessCloseSessionWithJSON(session, jsonFlag)
 			}
+			_ = keepWorktreeFlag // soft close is already implied for non-worktree sessions
 			// Interactive path: simplified confirmation (no worktree/branch prompts).
 			if os.Getenv("TMUX") == "" {
 				return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
@@ -466,6 +469,7 @@ var cleanupCmd = &cobra.Command{
 			if yesFlag {
 				return headlessCloseSessionWithJSON(session, jsonFlag)
 			}
+			_ = keepWorktreeFlag // soft close is already implied for coordinator sessions
 			// Interactive path: simplified confirmation (no worktree/branch prompts).
 			if os.Getenv("TMUX") == "" {
 				return fmt.Errorf("interactive cleanup requires tmux — use --yes for non-interactive use outside tmux")
@@ -482,6 +486,13 @@ var cleanupCmd = &cobra.Command{
 
 		// Non-interactive path: --yes skips all prompts and runs headlessly.
 		if yesFlag {
+			// --keep-worktree forces a soft close on this worker session
+			// (issue #2179): preserve the worktree and branch instead of
+			// removing them. Coordinator and non-worktree sessions already
+			// soft-close above, so this branch only affects worker sessions.
+			if keepWorktreeFlag {
+				return headlessCloseSessionWithJSON(session, jsonFlag)
+			}
 			return headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot, jsonFlag)
 		}
 
@@ -587,6 +598,15 @@ func markDBLifecycleSkipped(result *cleanupResult, reason string) {
 // to os.Stdout. Used by the --json path; mutually exclusive with the textual
 // per-step lines.
 func emitCleanupJSON(r cleanupResult) {
+	emitCleanupJSONTo(os.Stdout, r)
+}
+
+// emitCleanupJSONTo writes the cleanup result as a single JSON object on a
+// line to the supplied writer. Used by callers (e.g. `prism close --yes`)
+// that need to redirect the JSON envelope to io.Discard for popup-safe
+// silent-on-success behaviour while preserving the structured-output
+// contract when --json is also set.
+func emitCleanupJSONTo(w io.Writer, r cleanupResult) {
 	data, err := json.Marshal(r)
 	if err != nil {
 		// Marshal of a small fixed-shape struct should never fail; surface
@@ -595,7 +615,7 @@ func emitCleanupJSON(r cleanupResult) {
 		proglog.Warnf("[prism] warning: cleanup --json: marshal: %v\n", err)
 		return
 	}
-	fmt.Println(string(data))
+	fmt.Fprintln(w, string(data))
 }
 
 // headlessCleanup removes the worktree and session without any TUI interaction.
@@ -618,15 +638,26 @@ func headlessCleanup(session, worktreeName, worktreePath, bareRoot string) error
 // single JSON object is emitted on success. Stderr warnings (e.g. branch
 // delete failure, archive collision) are preserved in both modes per AC.
 func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot string, jsonMode bool) error {
+	return headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot, jsonMode, os.Stdout)
+}
+
+// headlessCleanupWithJSONTo is the writer-aware form of
+// headlessCleanupWithJSON. The `stdout` writer receives the per-step textual
+// progress lines, the "done" line, and the JSON envelope. Callers that want
+// popup-safe silent-on-success behaviour (e.g. `prism close --yes` from a
+// tmux keybind) pass io.Discard; the standard CLI path passes os.Stdout.
+// proglog warnings continue to fire to os.Stderr regardless — they only
+// trigger on partial failures, not on a clean happy-path success.
+func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot string, jsonMode bool, stdout io.Writer) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode)
+		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
 
 	result := cleanupResult{Session: session}
 
 	printLine := func(format string, a ...any) {
 		if !jsonMode {
-			fmt.Printf(format, a...)
+			fmt.Fprintf(stdout, format, a...)
 		}
 	}
 
@@ -756,9 +787,9 @@ func headlessCleanupWithJSON(session, worktreeName, worktreePath, bareRoot strin
 		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
 	}
 	if jsonMode {
-		emitCleanupJSON(result)
+		emitCleanupJSONTo(stdout, result)
 	} else {
-		fmt.Println("done")
+		fmt.Fprintln(stdout, "done")
 	}
 	return nil
 }
@@ -843,14 +874,27 @@ func headlessCloseSession(session string) error {
 // single JSON object is emitted on success (worktree_removed=null,
 // branch_deleted=null since this path never touches them).
 func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
+	return headlessCloseSessionWithJSONTo(session, jsonMode, os.Stdout)
+}
+
+// headlessCloseSessionWithJSONTo is the writer-aware form of
+// headlessCloseSessionWithJSON. See headlessCleanupWithJSONTo for the
+// silent-on-success rationale; identical contract on stdout.
+func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Writer) error {
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode)
+		// The host-side `prism cleanup` already implements the soft-close
+		// path for coordinator and non-@ sessions. We don't need
+		// keep-worktree here because the host's session-routing logic in
+		// cleanupCmd.RunE already chooses the soft path on its own. For
+		// container-mode `prism close --keep-worktree` on a worker session,
+		// see proxyCloseToHostAPI in close.go, which goes through /close.
+		return proxyCleanupToHostAPI(apiURL, session, true, jsonMode, false)
 	}
 
 	result := cleanupResult{Session: session}
 	printLine := func(format string, a ...any) {
 		if !jsonMode {
-			fmt.Printf(format, a...)
+			fmt.Fprintf(stdout, format, a...)
 		}
 	}
 
@@ -931,9 +975,9 @@ func headlessCloseSessionWithJSON(session string, jsonMode bool) error {
 		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
 	}
 	if jsonMode {
-		emitCleanupJSON(result)
+		emitCleanupJSONTo(stdout, result)
 	} else {
-		fmt.Println("done")
+		fmt.Fprintln(stdout, "done")
 	}
 	return nil
 }
@@ -1209,6 +1253,7 @@ func init() {
 	cleanupCmd.Flags().Bool("yes", false, "Non-interactive: skip all prompts and clean up immediately")
 	cleanupCmd.Flags().String("session", "", "Target session name (default: current session)")
 	cleanupCmd.Flags().Bool("json", false, "Emit a single JSON object describing per-resource outcomes (requires --yes)")
+	cleanupCmd.Flags().Bool("keep-worktree", false, "Soft-close: preserve the worktree and branch (matches coordinator / non-@ session behaviour)")
 	rootCmd.AddCommand(cleanupCmd)
 }
 

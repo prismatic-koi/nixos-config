@@ -537,7 +537,39 @@ When you spawn a session and later merge its PR yourself, you are responsible fo
 session "nixos-config@update-plex" created
 ```
 
-Note down the session name from that output. Once you have merged the PR, clean up:
+Note down the session name from that output. Two commands tear down a session, with different defaults:
+
+| Command | Default behaviour | When to use |
+|---|---|---|
+| `prism close --yes --session <name>` | Smart-decide: soft-close if an open PR exists for the branch, otherwise hard-cleanup. | Default. Safe for parked WIP branches and merged work alike. Bound to `prefix+q`. |
+| `prism cleanup --yes --session <name>` | Always destructive (remove worktree + force-delete branch). | Scripted coordinator workflows that know the work is finished and want a guaranteed hard cleanup. |
+
+### `prism close` — smart-decide
+
+```bash
+prism close --yes --session "nixos-config@update-plex"
+```
+
+Decision tree (issue #2179):
+
+1. Coordinator session (`root_agent_name == "coordinator"` or `@main`) → soft close.
+2. Non-worktree session (no `@`) → soft close.
+3. Worker worktree session: probe `gh pr list --head <branch>`:
+   - any PR is OPEN → soft close (preserve worktree + branch)
+   - all PRs MERGED/CLOSED → hard cleanup
+   - no PR found → hard cleanup
+   - probe error / timeout / `gh` missing / unauthenticated → soft close (fail-safe)
+
+The fail-safe is deliberate: a spurious soft close costs one extra `prism close --remove-worktree` later; a spurious hard cleanup destroys uncommitted work. The probe is bounded by a 5-second context timeout so a hung GitHub API cannot wedge the tmux popup.
+
+Force flags override the decision (mutually exclusive):
+
+- `--keep-worktree` — always soft close (paranoid mode for long-lived WIP branches).
+- `--remove-worktree` — always hard cleanup ("I'm done with this branch").
+
+`prism close --yes` writes nothing to stdout/stderr on the happy path, making it safe to bind to a tmux popup. The `--json` envelope is identical to `prism cleanup`'s and is still emitted when `--json` is passed.
+
+### `prism cleanup` — always destructive
 
 ```bash
 prism cleanup --yes --session "nixos-config@update-plex"
@@ -548,6 +580,8 @@ prism cleanup --yes --session "nixos-config@update-plex"
 - Force-delete the local branch (relies on the orchestrator-trust contract: call this only after confirming the PR is merged)
 - Kill the tmux session, redirecting any attached client to `scratchpad`
 - Mark the `agent_status` row as ended (stamps `ended_at`, releases the harness port, and clears the pi `harness_session_id` so the next spawn starts a fresh conversation)
+
+For parity with `prism close`, `prism cleanup` also accepts `--keep-worktree`, which downgrades it to a soft close even on a worker session. Without that flag the command keeps its pre-#2179 always-destructive default, so scripted coordinator workflows that call `prism cleanup --yes --session <X>` after a merge are unaffected.
 
 The `agent_status` row itself is preserved — it is not deleted. Re-spawning on the same branch name reuses the row: `tmux-session-start` re-seeds it to `idle`, which the state machine accepts from any non-`deleted` terminal state (`error`, `finished`, `interrupted`). Long-term retention is handled by the 90-day `Prune` job.
 
