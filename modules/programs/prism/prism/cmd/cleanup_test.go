@@ -24,6 +24,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/prismatic-koi/prism/internal/db"
 )
 
@@ -1343,5 +1345,137 @@ func TestHeadlessCleanup_InvestigatorSessionPreservesMainWorktree(t *testing.T) 
 	}
 	if status.EndedAt == nil {
 		t.Errorf("ended_at is nil — investigator session was not marked as ended")
+	}
+}
+
+// TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker verifies the issue #2179
+// parity AC: `prism cleanup --yes --keep-worktree --session <worker>` runs
+// the soft-close path (preserves worktree + branch, marks DB ended) instead
+// of the default destructive cleanup.
+//
+// Without the flag, the same invocation removes the worktree. The flag is
+// the load-bearing difference — see the AC "`prism cleanup --keep-worktree`
+// exists as a flag on the existing `prism cleanup` command and produces a
+// soft close even for a non-coordinator worker session".
+func TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	withNoopTmux(t)
+
+	bareRoot, worktreePath, branchName := setupMinimalBareRepo(t)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branchName
+	if err := d.UpsertStatus(session, "myrepo", worktreePath, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Drive cleanupCmd.RunE directly with --keep-worktree set.
+	cmd := &cobra.Command{Use: "cleanup", RunE: cleanupCmd.RunE}
+	cmd.Flags().Bool("yes", false, "")
+	cmd.Flags().String("session", "", "")
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Bool("keep-worktree", false, "")
+	_ = cmd.Flags().Set("session", session)
+	_ = cmd.Flags().Set("yes", "true")
+	_ = cmd.Flags().Set("keep-worktree", "true")
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("cleanupCmd.RunE with --keep-worktree: %v", err)
+	}
+
+	// The worktree must still exist on disk (soft close preserves it).
+	if _, statErr := os.Stat(worktreePath); statErr != nil {
+		t.Errorf("worktree %q removed despite --keep-worktree: %v", worktreePath, statErr)
+	}
+
+	// The branch must still exist in the bare repo.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run(); err != nil {
+		t.Errorf("branch %q deleted despite --keep-worktree: %v", branchName, err)
+	}
+
+	// The DB row must be marked ended (soft close still stamps ended_at).
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — soft close did not mark the row as ended")
+	}
+}
+
+// TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker is the negative-control
+// pair to TestCleanupCmd_KeepWorktreeFlag_SoftClosesWorker. Without the flag,
+// the same invocation removes the worktree and force-deletes the branch —
+// the AC "`prism cleanup` (without `--keep-worktree`) continues to behave
+// identically to its current implementation".
+func TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	withNoopTmux(t)
+
+	bareRoot, worktreePath, branchName := setupMinimalBareRepo(t)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branchName
+	if err := d.UpsertStatus(session, "myrepo", worktreePath, "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	cmd := &cobra.Command{Use: "cleanup", RunE: cleanupCmd.RunE}
+	cmd.Flags().Bool("yes", false, "")
+	cmd.Flags().String("session", "", "")
+	cmd.Flags().Bool("json", false, "")
+	cmd.Flags().Bool("keep-worktree", false, "")
+	_ = cmd.Flags().Set("session", session)
+	_ = cmd.Flags().Set("yes", "true")
+	// --keep-worktree NOT set.
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("cleanupCmd.RunE without --keep-worktree: %v", err)
+	}
+
+	// The worktree must be gone.
+	if _, statErr := os.Stat(worktreePath); statErr == nil {
+		t.Errorf("worktree %q still present after default cleanup — expected removal", worktreePath)
+	}
+
+	// The branch must be gone.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run(); err == nil {
+		t.Errorf("branch %q still exists after default cleanup — expected force-delete", branchName)
 	}
 }

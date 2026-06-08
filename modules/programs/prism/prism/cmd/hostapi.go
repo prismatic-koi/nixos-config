@@ -310,18 +310,25 @@ type cleanupResponse struct {
 // the host-path output (modulo trailing whitespace), per issue #1527 AC #1.
 // Without this forwarding, the container path was silent on success because
 // the previous handler discarded the captured CombinedOutput.
-func proxyCleanupToHostAPI(apiURL, session string, yes, jsonMode bool) error {
-	return proxyCleanupToHostAPIWithWriters(apiURL, session, yes, jsonMode, os.Stdout, os.Stderr)
+//
+// `keepWorktree`, when true, forwards `keep_worktree:true` to the host so the
+// host-side `prism cleanup` runs with --keep-worktree (issue #2179). Passing
+// false preserves the pre-#2179 destructive default.
+func proxyCleanupToHostAPI(apiURL, session string, yes, jsonMode, keepWorktree bool) error {
+	return proxyCleanupToHostAPIWithWriters(apiURL, session, yes, jsonMode, keepWorktree, os.Stdout, os.Stderr)
 }
 
 // proxyCleanupToHostAPIWithWriters is the testable form of
 // proxyCleanupToHostAPI: stdout/stderr destinations are injectable so unit
 // tests can capture forwarded output without redirecting os.Stdout.
-func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode bool, stdout, stderr io.Writer) error {
+func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode, keepWorktree bool, stdout, stderr io.Writer) error {
 	body := map[string]any{
 		"session": session,
 		"yes":     yes,
 		"json":    jsonMode,
+	}
+	if keepWorktree {
+		body["keep_worktree"] = true
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -383,6 +390,89 @@ func proxyCleanupToHostAPIWithWriters(apiURL, session string, yes, jsonMode bool
 			return fmt.Errorf("host-API /cleanup: %s", parsed.Error)
 		}
 		return fmt.Errorf("host-API /cleanup: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
+// proxyCloseToHostAPI sends a `prism close` request to the host-API sidecar
+// and forwards the host-side stdout and stderr to the caller's stdout/stderr
+// (issue #2179). Mirrors proxyCleanupToHostAPI but targets the /close endpoint
+// so the host runs `prism close` (with its smart-decide logic) rather than
+// `prism cleanup` (always destructive).
+func proxyCloseToHostAPI(apiURL, session string, yes, jsonMode, keepWorktree, removeWorktree bool) error {
+	return proxyCloseToHostAPIWithWriters(apiURL, session, yes, jsonMode, keepWorktree, removeWorktree, os.Stdout, os.Stderr)
+}
+
+// proxyCloseToHostAPIWithWriters is the testable form of
+// proxyCloseToHostAPI: stdout/stderr destinations are injectable so unit
+// tests can capture forwarded output without redirecting os.Stdout.
+func proxyCloseToHostAPIWithWriters(apiURL, session string, yes, jsonMode, keepWorktree, removeWorktree bool, stdout, stderr io.Writer) error {
+	body := map[string]any{
+		"session": session,
+		"yes":     yes,
+		"json":    jsonMode,
+	}
+	if keepWorktree {
+		body["keep_worktree"] = true
+	}
+	if removeWorktree {
+		body["remove_worktree"] = true
+	}
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("proxyCloseToHostAPI: marshal request body: %w", err)
+	}
+
+	var client *http.Client
+	var reqURL string
+	if strings.HasPrefix(apiURL, "http://") {
+		client = newTCPHostAPIClient()
+		reqURL = apiURL + "/close"
+	} else {
+		sockPath, parseErr := parseUnixSocketURL(apiURL)
+		if parseErr != nil {
+			return fmt.Errorf("PRISM_HOST_API %q: %w", apiURL, parseErr)
+		}
+		client = newHostAPIClient(sockPath)
+		reqURL = "http://prism-hostapi/close"
+	}
+
+	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return fmt.Errorf("proxyCloseToHostAPI: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return fmt.Errorf("host-API /close: read response: %w", readErr)
+	}
+
+	var parsed cleanupResponse
+	if len(respBody) > 0 {
+		if unmarshalErr := json.Unmarshal(respBody, &parsed); unmarshalErr != nil {
+			return fmt.Errorf("host-API /close: unmarshal response: %w (body=%s)", unmarshalErr, strings.TrimSpace(string(respBody)))
+		}
+	}
+
+	// Forward unconditionally on success and error (parity with /cleanup).
+	if parsed.Stdout != "" {
+		_, _ = io.WriteString(stdout, parsed.Stdout)
+	}
+	if parsed.Stderr != "" {
+		_, _ = io.WriteString(stderr, parsed.Stderr)
+	}
+
+	if resp.StatusCode >= 400 {
+		if parsed.Error != "" {
+			return fmt.Errorf("host-API /close: %s", parsed.Error)
+		}
+		return fmt.Errorf("host-API /close: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	return nil
 }

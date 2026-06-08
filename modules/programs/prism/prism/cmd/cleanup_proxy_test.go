@@ -44,7 +44,7 @@ func TestProxyCleanupToHostAPI_ForwardsStdoutAndStderr(t *testing.T) {
 	})
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	if err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@some-branch", true, false, &stdoutBuf, &stderrBuf); err != nil {
+	if err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@some-branch", true, false, false, &stdoutBuf, &stderrBuf); err != nil {
 		t.Fatalf("proxyCleanupToHostAPI: %v", err)
 	}
 	if stdoutBuf.String() != wantStdout {
@@ -90,7 +90,7 @@ func TestProxyCleanupToHostAPI_ForwardsErrorWithStdoutStderr(t *testing.T) {
 	})
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@some-branch", true, false, &stdoutBuf, &stderrBuf)
+	err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@some-branch", true, false, false, &stdoutBuf, &stderrBuf)
 	if err == nil {
 		t.Fatal("expected error from proxyCleanupToHostAPI on 500 response")
 	}
@@ -124,7 +124,7 @@ func TestProxyCleanupToHostAPI_PassesJSONFlag(t *testing.T) {
 	})
 
 	var stdoutBuf, stderrBuf bytes.Buffer
-	if err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@b", true, true, &stdoutBuf, &stderrBuf); err != nil {
+	if err := proxyCleanupToHostAPIWithWriters(srv.apiURL(), "myrepo@b", true, true, false, &stdoutBuf, &stderrBuf); err != nil {
 		t.Fatalf("proxyCleanupToHostAPI: %v", err)
 	}
 	select {
