@@ -244,12 +244,6 @@ func (s *Sidecar) writeEvent(eventType string, payload any, harnessSessionID *st
 	if err := s.cfg.DB.WriteEvent(e); err != nil {
 		s.logger().Printf("sidecar: WriteEvent(%s) failed: %v", eventType, err)
 	}
-
-	// Fan the same write out to any live GET /events subscribers (#2155).
-	// publishEvent is a no-op when s.events is nil (which is impossible
-	// after New() but defensive against tests that construct *Sidecar
-	// without the constructor).
-	s.publishEvent(eventType, s.cfg.SessionName, data, e.CreatedAt)
 }
 
 // writeStartupError writes StateError to the DB and, when this session is a
