@@ -26,11 +26,13 @@ func readFile(t *testing.T, path string) string {
 // noopCopier is a Copier that does nothing — simulates a session with no files.
 func noopCopier(_ context.Context, _ string) error { return nil }
 
-// fileCopier returns a Copier that writes the given filename→content pairs into rawDir.
-func fileCopier(files map[string]string) func(ctx context.Context, rawDir string) error {
-	return func(_ context.Context, rawDir string) error {
+// fileCopier returns a Copier that writes the given filename→content pairs
+// into the archive directory it receives. Post-fix the Copier receives the
+// per-session archive directory itself (no `raw/` subdir).
+func fileCopier(files map[string]string) func(ctx context.Context, archiveDir string) error {
+	return func(_ context.Context, archiveDir string) error {
 		for rel, content := range files {
-			dst := filepath.Join(rawDir, rel)
+			dst := filepath.Join(archiveDir, rel)
 			if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 				return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 			}
@@ -97,17 +99,17 @@ func TestRunHappyPath(t *testing.T) {
 		t.Fatalf("archive dir not found: %v", err)
 	}
 
-	// Verify raw/ directory exists.
-	rawDir := filepath.Join(archivePath, "raw")
-	if _, err := os.Stat(rawDir); err != nil {
-		t.Fatalf("raw/ dir not found: %v", err)
+	// Post-fix layout: no raw/ subdirectory. Verify it does NOT exist.
+	if _, statErr := os.Stat(filepath.Join(archivePath, "raw")); !os.IsNotExist(statErr) {
+		t.Errorf("archive dir must not contain raw/ post-fix; stat returned: %v", statErr)
 	}
 
-	// Verify each file is present and byte-for-byte identical.
+	// Verify each file is present (directly in the archive dir, no raw/ prefix)
+	// and byte-for-byte identical.
 	for rel, want := range wantFiles {
-		got := readFile(t, filepath.Join(rawDir, rel))
+		got := readFile(t, filepath.Join(archivePath, rel))
 		if got != want {
-			t.Errorf("raw/%s content = %q, want %q", rel, got, want)
+			t.Errorf("%s content = %q, want %q", rel, got, want)
 		}
 	}
 
@@ -177,19 +179,27 @@ func TestRunNoHarnessSessionID(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	// raw/ must exist.
-	rawDir := filepath.Join(archivePath, "raw")
-	if _, err := os.Stat(rawDir); err != nil {
-		t.Fatalf("raw/ dir not found: %v", err)
+	// Post-fix layout: no raw/ subdirectory must exist. The archive dir
+	// itself contains only manifest.json (and nothing else when the harness
+	// failed to start).
+	if _, statErr := os.Stat(filepath.Join(archivePath, "raw")); !os.IsNotExist(statErr) {
+		t.Errorf("archive dir must not contain raw/ post-fix; stat returned: %v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(archivePath, "session.jsonl")); !os.IsNotExist(statErr) {
+		t.Errorf("archive dir must not contain session.jsonl when Copier was a no-op; stat returned: %v", statErr)
 	}
 
-	// raw/ must be empty.
-	entries, err := os.ReadDir(rawDir)
+	// Sanity: archive dir contains manifest.json (only).
+	entries, err := os.ReadDir(archivePath)
 	if err != nil {
-		t.Fatalf("ReadDir raw/: %v", err)
+		t.Fatalf("ReadDir archivePath: %v", err)
 	}
-	if len(entries) != 0 {
-		t.Errorf("raw/ has %d entries, want 0", len(entries))
+	if len(entries) != 1 || entries[0].Name() != "manifest.json" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("archive dir must contain only manifest.json post-fix; got %v", names)
 	}
 
 	// manifest.json must be present with correct endState.
@@ -351,13 +361,17 @@ func TestFilePermissions(t *testing.T) {
 		t.Errorf("manifest.json mode = %04o, want %04o", manifestInfo.Mode().Perm(), 0o600)
 	}
 
-	// Check raw/ directory mode.
-	rawInfo, err := os.Stat(filepath.Join(archivePath, "raw"))
-	if err != nil {
-		t.Fatalf("stat raw/: %v", err)
+	// Post-fix layout: no raw/ subdirectory exists. session.jsonl is
+	// written directly into the archive dir.
+	if _, statErr := os.Stat(filepath.Join(archivePath, "raw")); !os.IsNotExist(statErr) {
+		t.Errorf("archive dir must not contain raw/ post-fix; stat returned: %v", statErr)
 	}
-	if rawInfo.Mode().Perm() != 0o700 {
-		t.Errorf("raw/ dir mode = %04o, want %04o", rawInfo.Mode().Perm(), 0o700)
+	sessionInfo, err := os.Stat(filepath.Join(archivePath, "session.jsonl"))
+	if err != nil {
+		t.Fatalf("stat session.jsonl: %v", err)
+	}
+	if sessionInfo.Mode().Perm() != 0o600 {
+		t.Errorf("session.jsonl mode = %04o, want %04o", sessionInfo.Mode().Perm(), 0o600)
 	}
 }
 

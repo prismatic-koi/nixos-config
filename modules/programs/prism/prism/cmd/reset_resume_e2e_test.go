@@ -40,6 +40,7 @@ import (
 // TestReset_E2E_NoSessionFlagAfterReset is the AC8 end-to-end invariant:
 // reset \u2192 (DB cleared + FS cleared) \u2192 PIInvocation does NOT emit --session.
 func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	// Some downstream helpers (piResumeSessionsRoot host fallback,
@@ -202,6 +203,7 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 // In other words: the reset fix changes bwrap / sandbox-exec behaviour; it
 // does NOT regress host mode, which was already correct.
 func TestReset_E2E_HostModeUnchanged(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("HOME", t.TempDir())

@@ -456,9 +456,11 @@ func buildDirectAgentCmd(opts Opts) string {
 	//     sandbox-exec by their AgentPaneCmd, which substitutes
 	//     `prism agent-run --session <name>`). Without this gate, the
 	//     resolver would run on every restore and — because the bwrap/
-	//     sandbox-exec pi sessions live under prism's per-session run dir,
-	//     not under ~/.pi/agent/sessions — the host-fallback lookup would
-	//     miss and piLogResumeWarning would spuriously write a misleading
+	//     sandbox-exec pi sessions live under prism's per-session run dir
+	//     (or staging HOME), not under the host PI sessions root
+	//     ($PI_CODING_AGENT_DIR/sessions or ~/.pi/agent/sessions) — the
+	//     host-fallback lookup would miss and piLogResumeWarning would
+	//     spuriously write a misleading
 	//     "resume failed" line to the agent-run.log even though the actual
 	//     resume succeeds via prism agent-run's DB-read + PIInvocation
 	//     path. (Review round 2 / review-context.)

@@ -292,12 +292,16 @@ func resetKillSidecars() error {
 //     $XDG_STATE_HOME/prism/sessions/<instanceID>/home/.pi/agent/sessions/
 //
 //   host:
-//     ~/.pi/agent/sessions/  — NOT touched here. Host mode is already safe
-//     because `prism switch` leaves opts.HarnessSessionID empty (see
+//     $PI_CODING_AGENT_DIR/sessions/ (when set) or ~/.pi/agent/sessions/
+//     — NOT touched here. Host mode is already safe because
+//     `prism switch` leaves opts.HarnessSessionID empty (see
 //     internal/session/session.go ~line 181-182), so the host-mode
 //     buildDirectAgentCmd never appends --session even if a transcript
-//     remains on disk. Wiping ~/.pi/agent/sessions/ would also touch state
-//     belonging to non-prism pi invocations — strictly out of scope.
+//     remains on disk. Wiping the host PI sessions root would also touch
+//     state belonging to non-prism pi invocations — strictly out of scope.
+//     The host-mode resolution path now honours PI_CODING_AGENT_DIR (see
+//     internal/harness/pi/archive.go::piSessionsRoot) but is unchanged here:
+//     reset still skips host mode entirely.
 //
 // In every layout only the inner `.../sessions/` subtree is removed; the
 // enclosing per-session directory (`<sessionDirHash>` or `<instanceID>/home`)

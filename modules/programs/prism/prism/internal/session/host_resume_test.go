@@ -13,6 +13,17 @@ import (
 	"testing"
 )
 
+// clearPICodingAgentDir clears PI_CODING_AGENT_DIR for the duration of the
+// test. Required by tests that exercise the host-fallback branch of the
+// pi-resume resolver — the developer host sets that env var system-wide
+// (post-#2185 the resolver honours it), and without clearing it tests that
+// set up a temp HOME would silently fall through to the host's PI data root
+// and fail.
+func clearPICodingAgentDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+}
+
 // writeHostModeResumeSession writes a synthetic pi session JSONL under the
 // host-mode sessions root (<HOME>/.pi/agent/sessions/<encoded-cwd>/) that
 // container.ResolvePIResumeSession will find. Returns the on-disk path.
@@ -41,6 +52,7 @@ func piEncodeCWDForTest(cwd string) string {
 // buildDirectAgentCmd appends `--session '<id>'` when the on-disk pi session
 // JSONL is found under the host-mode sessions root.
 func TestBuildDirectAgentCmd_HostMode_AppendsSessionWhenFileExists(t *testing.T) {
+	clearPICodingAgentDir(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
@@ -77,6 +89,7 @@ func TestBuildDirectAgentCmd_HostMode_AppendsSessionWhenFileExists(t *testing.T)
 // negative case: HarnessSessionID set, but no file on disk → no --session
 // emitted. Proves the positive test isn't a no-op.
 func TestBuildDirectAgentCmd_HostMode_OmitsSessionWhenFileMissing(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
@@ -131,6 +144,7 @@ func TestBuildDirectAgentCmd_HostMode_EmptyHarnessSessionIDIsSilent(t *testing.T
 // any agent-run.log file (the dir wouldn't even be created by the resolver
 // when the gate is correctly in place).
 func TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("HOME", t.TempDir())
@@ -163,6 +177,7 @@ func TestBuildDirectAgentCmd_BwrapMode_DoesNotInvokeResolver(t *testing.T) {
 // dispatch.go AgentPaneCmd for both isolators), so buildDirectAgentCmd's
 // resolver-invocation must be gated for both.
 func TestBuildDirectAgentCmd_SandboxExecMode_DoesNotInvokeResolver(t *testing.T) {
+	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("HOME", t.TempDir())
@@ -190,6 +205,7 @@ func TestBuildDirectAgentCmd_SandboxExecMode_DoesNotInvokeResolver(t *testing.T)
 // from a pi-emitted DB column, but the harness check is the load-bearing
 // guard here).
 func TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume(t *testing.T) {
+	clearPICodingAgentDir(t)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -209,5 +225,87 @@ func TestBuildDirectAgentCmd_HostMode_NonPiHarnessSkipsResume(t *testing.T) {
 	cmd := buildDirectAgentCmd(opts)
 	if strings.Contains(cmd, "--session") {
 		t.Errorf("buildDirectAgentCmd must skip --session for non-pi harness; got: %s", cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir is the
+// issue #2185 regression fixture for the resume probe: when
+// PI_CODING_AGENT_DIR is set on the host, the resolver MUST look up the
+// JSONL under <dir>/sessions/ rather than <HOME>/.pi/agent/sessions/. Pre-fix
+// this test would fail because the resolver hardcoded the HOME-based root and
+// missed the transcript that pi actually wrote.
+func TestBuildDirectAgentCmd_HostMode_AppendsSessionUnderPICodingAgentDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const harnessSessionID = "019e00ed-2185-2185-2185-218521852185"
+	worktree := filepath.Join(fakeHome, "code", "myrepo", "feature")
+
+	// Plant the session JSONL under the PI_CODING_AGENT_DIR path — NOT
+	// under <HOME>/.pi/agent/sessions/. Pre-fix this is the location the
+	// resolver missed.
+	dir := filepath.Join(piDataRoot, "sessions", piEncodeCWDForTest(worktree))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir env-mode sessions dir: %v", err)
+	}
+	jsonl := filepath.Join(dir, "2026-06-08T07-12-42-499Z_"+harnessSessionID+".jsonl")
+	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+		t.Fatalf("write env-mode session file: %v", err)
+	}
+
+	opts := Opts{
+		IsolationMode:    "host",
+		HarnessName:      "pi",
+		Agent:            "worker",
+		SessionName:      "myrepo@feature",
+		Worktree:         worktree,
+		HarnessSessionID: harnessSessionID,
+		Prompt:           "hello",
+	}
+	cmd := buildDirectAgentCmd(opts)
+
+	want := "--session '" + harnessSessionID + "'"
+	if !strings.Contains(cmd, want) {
+		t.Errorf("buildDirectAgentCmd missing %q (resolver did not honour PI_CODING_AGENT_DIR=%q)\ngot: %s",
+			want, piDataRoot, cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_HostMode_PICodingAgentDir_OverridesHomeFallback is
+// the negative companion to the above: with PI_CODING_AGENT_DIR set, a JSONL
+// that lives ONLY under <HOME>/.pi/agent/sessions/ (and not under the
+// configured PI data root) must NOT cause --session to be emitted. This
+// proves the resolver consults the env-var-aware root and isn't double-checking
+// the home fallback.
+func TestBuildDirectAgentCmd_HostMode_PICodingAgentDir_OverridesHomeFallback(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const harnessSessionID = "019e00ed-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	worktree := filepath.Join(home, "code", "myrepo", "feature")
+
+	// Plant the JSONL ONLY in the home location — the resolver must not
+	// see it because PI_CODING_AGENT_DIR overrides.
+	writeHostModeResumeSession(t, home, worktree, harnessSessionID)
+
+	opts := Opts{
+		IsolationMode:    "host",
+		HarnessName:      "pi",
+		Agent:            "worker",
+		SessionName:      "myrepo@feature",
+		Worktree:         worktree,
+		HarnessSessionID: harnessSessionID,
+		Prompt:           "hello",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if strings.Contains(cmd, "--session") {
+		t.Errorf("buildDirectAgentCmd unexpectedly emitted --session: the resolver consulted the home fallback even though PI_CODING_AGENT_DIR=%q was set; got: %s",
+			piDataRoot, cmd)
 	}
 }

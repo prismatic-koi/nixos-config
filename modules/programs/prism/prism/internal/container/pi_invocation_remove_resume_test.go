@@ -9,6 +9,10 @@ package container
 //
 // All tests use t.TempDir() + t.Setenv("HOME", ...) so they never touch the
 // host's real ~/.pi/agent/sessions/.
+//
+// Post-#2185 piResumeSessionsRoot honours PI_CODING_AGENT_DIR; these tests
+// clear that env var so they exercise the home-fallback branch
+// deterministically (the developer host sets it system-wide).
 
 import (
 	"os"
@@ -20,6 +24,7 @@ import (
 // a JSONL file matching `*_<HarnessSessionID>.jsonl` under the worktree's
 // encoded-cwd directory is removed.
 func TestRemovePiResumeJSONL_RemovesMatchingFile(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
@@ -51,6 +56,7 @@ func TestRemovePiResumeJSONL_RemovesMatchingFile(t *testing.T) {
 // session that happens to share a worktree path: cleanup must only delete
 // the specific transcript bound to the cleaned session's harness_session_id.
 func TestRemovePiResumeJSONL_LeavesSiblingTranscriptsAlone(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
@@ -78,6 +84,7 @@ func TestRemovePiResumeJSONL_LeavesSiblingTranscriptsAlone(t *testing.T) {
 // worktree whose encoded-cwd directory does not exist (fresh-session-then-cleanup
 // scenario) returns nil — cleanup must remain best-effort.
 func TestRemovePiResumeJSONL_MissingDirIsNoOp(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	cfg := bwrapResumeCfg(
@@ -94,6 +101,7 @@ func TestRemovePiResumeJSONL_MissingDirIsNoOp(t *testing.T) {
 // contract guard: when HarnessSessionID is empty there is nothing to scope
 // to, and the function returns nil without scanning the filesystem.
 func TestRemovePiResumeJSONL_EmptyHarnessSessionIDIsNoOp(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const sessionName = "myrepo@feature"
@@ -115,6 +123,7 @@ func TestRemovePiResumeJSONL_EmptyHarnessSessionIDIsNoOp(t *testing.T) {
 // is also a silent no-op — the function cannot resolve an encoded-cwd dir
 // without a worktree path.
 func TestRemovePiResumeJSONL_EmptyWorktreeIsNoOp(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	cfg := Config{
@@ -133,6 +142,7 @@ func TestRemovePiResumeJSONL_EmptyWorktreeIsNoOp(t *testing.T) {
 // whose name happens to end in `_<HarnessSessionID>.jsonl` is not removed
 // (the suffix match must be restricted to regular files).
 func TestRemovePiResumeJSONL_DoesNotDescendIntoSubdirs(t *testing.T) {
+	clearPICodingAgentDir(t)
 	t.Setenv("HOME", t.TempDir())
 
 	const worktree = "/home/user/code/myrepo/feature"

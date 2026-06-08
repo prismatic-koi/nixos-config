@@ -6,10 +6,17 @@
 //	~/.local/share/prism/archive/
 //	  <repo>/
 //	    <startedAtISO>_<instanceID>/
-//	      raw/
-//	        session.jsonl
+//	      session.jsonl  (when the harness wrote conversation data)
 //	      manifest.json
 //	      agent-run.log  (when present)
+//
+// The pre-fix layout placed `session.jsonl` under a `raw/` subdirectory and
+// ran a separate Export step that byte-copied it next to `manifest.json`.
+// That two-stage flow was an artefact of multi-harness opencode support;
+// with pi as the sole remaining harness, Archive writes `session.jsonl`
+// directly into the per-session archive directory in one step. Pre-fix
+// archives on disk are left as-is — `prism archive` only prints the recorded
+// path.
 //
 // # Atomicity
 //
@@ -97,19 +104,22 @@ type Params struct {
 	// ArchiveRoot overrides the archive root (~/.local/share/prism/archive).
 	// When empty the XDG-derived default is used. Tests inject this.
 	ArchiveRoot string
-	// Copier is called to populate rawDir with harness session files.
+	// Copier is called to populate the archive directory with harness
+	// session files. It receives the per-session archive directory itself
+	// (e.g. .../<repo>/<startedAtISO>_<instanceID>/), NOT a subdirectory.
 	// It is required: Run returns an error if Copier is nil.
 	// Sessions with no HarnessSessionID (harness failed to start) should
-	// provide a no-op Copier that leaves rawDir empty.
-	Copier func(ctx context.Context, rawDir string) error
+	// provide a no-op Copier that leaves the directory empty.
+	Copier func(ctx context.Context, archiveDir string) error
 }
 
 // Run exports the session state for p into the archive directory and returns
 // the absolute path of the archive directory on success.
 //
 // Copier (p.Copier) is required and must not be nil. It is responsible for
-// populating the raw/ subdirectory with harness session files. Run returns an
-// error immediately if Copier is nil.
+// populating the per-session archive directory with harness session files
+// (e.g. session.jsonl for pi). Run returns an error immediately if Copier is
+// nil.
 //
 // Atomicity: the export is written to a temp directory under <archiveRoot>/<repo>/
 // and renamed to the final name only when the entire export succeeds. On any
@@ -120,7 +130,7 @@ type Params struct {
 // directory intact.
 //
 // Sessions with no HarnessSessionID (harness failed to start) still produce
-// an archive directory containing manifest.json and an empty raw/ directory,
+// an archive directory containing manifest.json (and no session.jsonl),
 // as long as Copier is a no-op for that case.
 func Run(p Params) (archivePath string, err error) {
 	if p.Copier == nil {
@@ -182,14 +192,12 @@ func Run(p Params) (archivePath string, err error) {
 		}
 	}()
 
-	// Create raw/ subdirectory.
-	rawDir := filepath.Join(tmpDir, "raw")
-	if mkErr := os.Mkdir(rawDir, archiveDirMode); mkErr != nil {
-		return "", fmt.Errorf("archive: create raw dir: %w", mkErr)
-	}
-
-	// Delegate session file population to the caller-provided Copier.
-	if copyErr := p.Copier(context.Background(), rawDir); copyErr != nil {
+	// Delegate session file population to the caller-provided Copier. It
+	// writes directly into the per-session archive directory — the pre-fix
+	// `raw/` subdirectory has been removed (the opencode-era normalisation
+	// flow no longer applies; pi's on-disk JSONL is already the final
+	// format).
+	if copyErr := p.Copier(context.Background(), tmpDir); copyErr != nil {
 		return "", copyErr
 	}
 
