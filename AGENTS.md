@@ -97,6 +97,33 @@ This is not a hypothetical: PR #1455 (`TestDeliverToSession_PiPath_DeliverAsForw
 
 **Scope — this gate applies only to prism-touching PRs.** PRs that touch only non-prism files (other modules, dotfiles, docs) do **not** trigger the `go-tests` or `nix-build-prism-checked` jobs. The relaxation introduced in #1441 stands for those paths.
 
+### When `nix build` fails inside a sandbox
+
+The local `nix build .#prism` is a *pre-PR* check, not the authoritative
+gate — CI runs the homeless-shelter build (`nix-build-prism-checked`) on
+every prism-touching PR and that is the build that must be green for merge.
+A worker MAY push without a green local build provided the PR description
+says so.
+
+**If `nix build .#prism` fails inside a worker sandbox, escalate via
+`prism escalate`. Do not attempt environment workarounds.**
+
+Specifically, do NOT override any of `XDG_DATA_HOME`, `NIX_STORE_DIR`,
+`NIX_DATA_DIR`, or `HOME` to try to "isolate" or "reset" nix between
+retries. Pointing nix's local profile / trust DB / daemon-socket linkage at
+an empty tempdir forces nix to bootstrap a fresh single-user store, and
+inside sandbox-exec (no host nix-daemon access) the parallel evaluation
+leaks file descriptors that the next retry inherits. On Darwin this
+exhausts the system-wide `kern.maxfiles` cap; once hit, *every* process on
+the host that calls `open()` fails (Karabiner, Chrome, Finder, the agent's
+own harness), and recovery requires a reboot. This actually happened — see
+issue #2180 for the post-incident writeup.
+
+The pi extension's pre-tool-call deny list (`BLOCKED_BASH_PATTERNS` in
+`modules/programs/prism/pi/extensions/prism.ts`) also blocks this command
+shape as defence in depth; if you see that block fire, the correct response
+is still `prism escalate`, not a different workaround.
+
 ### sandbox-exec testing convention
 
 Any change to `internal/container/sandbox_exec.go::generateProfile`,
