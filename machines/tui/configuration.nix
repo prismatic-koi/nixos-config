@@ -133,7 +133,7 @@
     inkscape
     lm_sensors
     ntfs3g
-    openscad
+    openscad-unstable
     parted
     protontricks
     protonup-ng
