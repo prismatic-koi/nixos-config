@@ -150,7 +150,7 @@
     gphoto2
     inkscape
     ntfs3g
-    openscad
+    openscad-unstable
     parted
     protontricks
     protonup-ng
