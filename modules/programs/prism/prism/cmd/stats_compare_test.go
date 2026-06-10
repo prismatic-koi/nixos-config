@@ -370,7 +370,7 @@ func TestInputsValue_PullsFromSpawnInputs(t *testing.T) {
 		BranchFlag:    strPtr("feature/x"),
 		AbtestPairID:  strPtr("pair-uuid-0001"),
 	}
-	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateActive, inputs)
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
 
 	sess, _ := d.SessionByInstanceID(iid)
 	runs := loadCompareRuns(d, []*db.Session{sess})
@@ -407,7 +407,7 @@ func TestInputsValue_IsolationModePreferredOverFlag(t *testing.T) {
 		IsolationMode: strPtr("sandbox-exec"),
 		AgentFlag:     strPtr("worker"),
 	}
-	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateActive, inputs)
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
 
 	sess, _ := d.SessionByInstanceID(iid)
 	runs := loadCompareRuns(d, []*db.Session{sess})
@@ -437,7 +437,7 @@ func TestInputsValue_IsolationModeFallsBackToFlagForLegacyRow(t *testing.T) {
 		// IsolationMode deliberately nil — simulating a pre-#2105 row.
 		AgentFlag: strPtr("worker"),
 	}
-	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateActive, inputs)
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
 
 	sess, _ := d.SessionByInstanceID(iid)
 	runs := loadCompareRuns(d, []*db.Session{sess})
@@ -461,7 +461,7 @@ func TestInputsValue_IsolationModeAbsentRendersDash(t *testing.T) {
 		ProfileName: strPtr("anthropic"),
 		// Both IsolationFlag and IsolationMode deliberately nil.
 	}
-	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateActive, inputs)
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
 
 	sess, _ := d.SessionByInstanceID(iid)
 	runs := loadCompareRuns(d, []*db.Session{sess})
@@ -483,7 +483,7 @@ func TestInputsValue_PartialRowSurfacesWhatExists(t *testing.T) {
 		ProfileName: strPtr("anthropic-opus-max"),
 		// All other flags intentionally nil — partial row case.
 	}
-	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateActive, inputs)
+	iid := seedCompareSession(t, d, sessionName, startedAt, agent.StateFinished, inputs)
 
 	sess, _ := d.SessionByInstanceID(iid)
 	runs := loadCompareRuns(d, []*db.Session{sess})
