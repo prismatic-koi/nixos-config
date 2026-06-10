@@ -190,6 +190,75 @@ func TestSshBinAbsentKeepsEmpty(t *testing.T) {
 	}
 }
 
+// TestAgentMaxOpenFilesDefaults verifies that the compiled-in defaults for
+// the #2190 Layer-1 FD caps apply when no config file is present, and that
+// they equal the named constants.
+func TestAgentMaxOpenFilesDefaults(t *testing.T) {
+	t.Setenv("PRISM_CONFIG_FILE", "/nonexistent/path/config.json")
+
+	cfg := config.LoadFresh()
+
+	if cfg.AgentMaxOpenFilesSoft != config.DefaultAgentMaxOpenFilesSoft {
+		t.Errorf("AgentMaxOpenFilesSoft: got %d, want default %d", cfg.AgentMaxOpenFilesSoft, config.DefaultAgentMaxOpenFilesSoft)
+	}
+	if cfg.AgentMaxOpenFilesHard != config.DefaultAgentMaxOpenFilesHard {
+		t.Errorf("AgentMaxOpenFilesHard: got %d, want default %d", cfg.AgentMaxOpenFilesHard, config.DefaultAgentMaxOpenFilesHard)
+	}
+	// The #2190 AC pins the default values themselves: at least
+	// (soft 8192, hard 16384) when nothing overrides them.
+	if config.DefaultAgentMaxOpenFilesSoft != 8192 {
+		t.Errorf("DefaultAgentMaxOpenFilesSoft: got %d, want 8192", config.DefaultAgentMaxOpenFilesSoft)
+	}
+	if config.DefaultAgentMaxOpenFilesHard != 16384 {
+		t.Errorf("DefaultAgentMaxOpenFilesHard: got %d, want 16384", config.DefaultAgentMaxOpenFilesHard)
+	}
+}
+
+// TestAgentMaxOpenFilesFromFile verifies that explicit values in config.json
+// override the compiled-in defaults.
+func TestAgentMaxOpenFilesFromFile(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"agent_max_open_files_soft": 4096, "agent_max_open_files_hard": 65536}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.AgentMaxOpenFilesSoft != 4096 {
+		t.Errorf("AgentMaxOpenFilesSoft: got %d, want 4096", cfg.AgentMaxOpenFilesSoft)
+	}
+	if cfg.AgentMaxOpenFilesHard != 65536 {
+		t.Errorf("AgentMaxOpenFilesHard: got %d, want 65536", cfg.AgentMaxOpenFilesHard)
+	}
+}
+
+// TestAgentMaxOpenFilesAbsentKeepsDefaults verifies that a config file
+// without the agent_max_open_files_* keys keeps the compiled-in defaults
+// (the parsedConfig pointers distinguish absent from explicit zero).
+func TestAgentMaxOpenFilesAbsentKeepsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	raw := `{"color_primary": "#ff0000"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+
+	cfg := config.LoadFresh()
+
+	if cfg.AgentMaxOpenFilesSoft != config.DefaultAgentMaxOpenFilesSoft {
+		t.Errorf("AgentMaxOpenFilesSoft: got %d, want default %d when absent", cfg.AgentMaxOpenFilesSoft, config.DefaultAgentMaxOpenFilesSoft)
+	}
+	if cfg.AgentMaxOpenFilesHard != config.DefaultAgentMaxOpenFilesHard {
+		t.Errorf("AgentMaxOpenFilesHard: got %d, want default %d when absent", cfg.AgentMaxOpenFilesHard, config.DefaultAgentMaxOpenFilesHard)
+	}
+}
+
 func TestIsolationModeFromNewField(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

@@ -423,9 +423,22 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	// stitch them via wall-clock from each log to bound "exec → agent up".
 	logTimingTo(logFile, "bwrap exec", time.Since(agentRunStart))
 
+	// Layer 1 FD isolation (#2190): cap the sandbox child's RLIMIT_NOFILE so
+	// a misbehaving agent cannot exhaust the host-wide FD pool. The caps are
+	// applied to this process immediately before Start() and restored
+	// immediately after — the child inherits them at fork time, while the
+	// parent's own FD bookkeeping (PTY, stderr pipe, log file) is unaffected.
+	// Warnings (host-hard clamping, setrlimit failures) go to the agent-run
+	// log; failures never abort the spawn.
+	restoreRlimit := container.ApplyAgentRlimitNofile(
+		cfg.AgentMaxOpenFilesSoft, cfg.AgentMaxOpenFilesHard,
+		func(format string, args ...any) { logAgentRunWarning(logFile, format, args...) })
+
 	if err := bwrapCmd.Start(); err != nil {
+		restoreRlimit()
 		return fmt.Errorf("agent-run: start bwrap: %w", err)
 	}
+	restoreRlimit()
 
 	// Close the write end of the stderr pipe in the parent now that bwrap has
 	// inherited it. This is required so that reads from the read end return
@@ -673,6 +686,20 @@ func logTimingTo(logFile *os.File, phase string, d time.Duration) {
 	// per-session agent-run.log keeps every [timing] marker for post-mortem
 	// `grep '\[timing\]'` diagnostics (see issue #1818).
 	proglog.Debugf("%s", line)
+	if logFile != nil {
+		_, _ = logFile.WriteString(line)
+	}
+}
+
+// logAgentRunWarning writes a single "[agent-run] warning: ..." line to both
+// stderr (the tmux pane) and the per-session agent-run log file (when
+// non-nil). Mirrors logTimingTo's dual-destination shape so warnings are
+// greppable post-mortem in agent-run.log alongside the [timing] markers.
+// Used by the #2190 RLIMIT_NOFILE clamp/apply path on both the bwrap and
+// sandbox-exec dispatch paths.
+func logAgentRunWarning(logFile *os.File, format string, args ...any) {
+	line := fmt.Sprintf("[agent-run] warning: "+format+"\n", args...)
+	fmt.Fprint(os.Stderr, line)
 	if logFile != nil {
 		_, _ = logFile.WriteString(line)
 	}
