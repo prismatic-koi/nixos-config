@@ -113,18 +113,37 @@ says so.
 Specifically, do NOT override any of `XDG_DATA_HOME`, `NIX_STORE_DIR`,
 `NIX_DATA_DIR`, or `HOME` to try to "isolate" or "reset" nix between
 retries. Pointing nix's local profile / trust DB / daemon-socket linkage at
-an empty tempdir forces nix to bootstrap a fresh single-user store, and
-inside sandbox-exec (no host nix-daemon access) the parallel evaluation
-leaks file descriptors that the next retry inherits. On Darwin this
-exhausts the system-wide `kern.maxfiles` cap; once hit, *every* process on
-the host that calls `open()` fails (Karabiner, Chrome, Finder, the agent's
-own harness), and recovery requires a reboot. This actually happened — see
-issue #2180 for the post-incident writeup.
+an empty tempdir forces nix to bootstrap a fresh single-user store, which
+opens large numbers of file descriptors and adds real pressure to the
+host-wide FD pool. During the #2180 incident the host had no headroom to
+absorb that: the root cause was kitty's kitten config watcher recursively
+kqueue-watching `/nix/store` — one open FD per store entry — which had
+pre-consumed nearly the entire system-wide `kern.maxfiles` pool (see issue
+#2198). The env-override retries were marginal extra pressure on an
+already-exhausted pool, and once `kern.num_files` reaches `kern.maxfiles`,
+*every* process on the host that calls `open()` fails (Karabiner, Chrome,
+Finder, the agent's own harness) and recovery requires a reboot. This
+actually happened — see issue #2180 for the incident retrospective (its
+causal story is superseded by #2198). The guidance stands regardless of
+the root cause: escalate, don't work around.
 
 The pi extension's pre-tool-call deny list (`BLOCKED_BASH_PATTERNS` in
 `modules/programs/prism/pi/extensions/prism.ts`) also blocks this command
 shape as defence in depth; if you see that block fire, the correct response
 is still `prism escalate`, not a different workaround.
+
+### Darwin FD-exhaustion defences (#2180 class)
+
+`modules/darwin/sysctls.nix` is the **Layer 2** (host-wide) defence against
+#2180-class FD exhaustion (parent: #2181). It raises `kern.maxfiles` to
+524288 and `kern.maxfilesperproc` to 262144 via a boot-time launchd daemon
+(`RunAtLoad`, so the values survive reboots — `/etc/sysctl.conf` is not
+read at boot on modern macOS) paired with an activation script (so the
+values apply during `darwin-rebuild switch` without a reboot). Both paths
+are idempotent and never lower a sysctl that is already at or above target.
+This is headroom only — the root-cause leak is the kitten `/nix/store`
+watcher, tracked in #2198. Do not raise these values further to absorb
+that leak.
 
 ### sandbox-exec testing convention
 

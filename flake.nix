@@ -121,7 +121,7 @@
           modules = [
             ./machines/${configFile}/configuration.nix
             home-manager.darwinModules.home-manager
-            ./modules/darwin/impermanence-stub.nix
+            ./modules/darwin
           ]
           ++ extraModules;
         };
