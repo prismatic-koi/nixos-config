@@ -149,6 +149,9 @@ integration test coverage exists for:
 - **Staging-HOME credential reads** — symlink targets resolved at staging
   time (e.g. `~/.config/aws/readonly-config`, the SSH access key) accessed
   via the in-sandbox `$HOME` path.
+- **Nix flake trusted-settings read** — the single-file read-only allow on
+  `~/.local/share/nix/trusted-settings.json` that flake-CLI nix commands
+  need when the target flake declares a `nixConfig` block (issue #2201).
 - **Explicit denies** — `~/.aws`, `/private/etc/wireguard`,
   `/private/etc/wpa_supplicant`, `/private/etc/ssh` are blocked.
 - **Network egress** — `(allow network*)` permits outbound TCP.
