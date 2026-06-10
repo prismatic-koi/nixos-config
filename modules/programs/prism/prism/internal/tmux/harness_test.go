@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/tmux"
+	"github.com/prismatic-koi/prism/internal/tmux/tmuxtest"
 )
 
 // ─── sandbox detection ────────────────────────────────────────────────────────
@@ -111,13 +112,14 @@ type server struct {
 
 // newServer starts a fresh headless tmux server on a unique socket and returns
 // a handle. The server is automatically killed in t.Cleanup.
+//
+// Skips (via tmuxtest.RequireServer) when tmux is absent from PATH or when
+// tmux server creation is blocked by the sandbox (fork EPERM inside prism
+// sandbox-exec worker sessions — issue #2204).
 func newServer(t *testing.T) *server {
 	t.Helper()
 
-	bin, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux not found in PATH — skipping integration test")
-	}
+	bin := tmuxtest.RequireServer(t)
 
 	socket := fmt.Sprintf("prism-test-%d-%s", os.Getpid(), randHex(8))
 	s := &server{socket: socket, bin: bin}
