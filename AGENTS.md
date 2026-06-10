@@ -179,6 +179,19 @@ This is headroom only — the root-cause leak is the kitten `/nix/store`
 watcher, tracked in #2198. Do not raise these values further to absorb
 that leak.
 
+The **Layer 1** (per-process) defence pairs with it: agents spawned via the
+bwrap and sandbox-exec exec paths get a bounded `RLIMIT_NOFILE` — defaults
+soft 8192 / hard 16384, named constants `DefaultAgentMaxOpenFilesSoft` /
+`DefaultAgentMaxOpenFilesHard` in `internal/config` (issue #2190). The hard
+cap is kernel-enforced: an agent cannot raise it with `ulimit -n` from
+inside its sandbox. Tune per-machine via the `agentMaxOpenFilesSoft` /
+`agentMaxOpenFilesHard` options on `modules/programs/prism/prism-tui.nix`
+(rendered into config.json as `agent_max_open_files_soft` /
+`agent_max_open_files_hard`). Host-mode agents are deliberately uncapped and
+inherit the host's limits. Layer 1 makes the "one agent runs away with FDs"
+class structurally impossible; it is defence-in-depth, not the #2180
+root-cause fix.
+
 ### sandbox-exec testing convention
 
 Any change to `internal/container/sandbox_exec.go::generateProfile`,

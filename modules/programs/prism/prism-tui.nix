@@ -74,6 +74,12 @@ let
     sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
     sandbox_exec_concurrency_cap = config.nx.programs.prism.sandboxExecConcurrencyCap;
+    # agent_max_open_files_soft/hard: per-process RLIMIT_NOFILE caps applied
+    # to agent processes spawned via the bwrap and sandbox-exec exec paths
+    # (Layer 1 FD isolation, #2190). Kernel-enforced — the agent cannot raise
+    # the hard cap from inside its sandbox. Host-mode agents are not capped.
+    agent_max_open_files_soft = config.nx.programs.prism.agentMaxOpenFilesSoft;
+    agent_max_open_files_hard = config.nx.programs.prism.agentMaxOpenFilesHard;
     pi_extension_dir = config.nx.programs.prism.piExtensionDir;
     # github_token_path: absolute path to the sops-decrypted GitHub token file.
     # Last-resort fallback read by credentialEnvVars when the inherited
@@ -148,6 +154,34 @@ in
         sandbox-exec spawns are refused. 0 means uncapped. Default of 50
         mirrors bwrapConcurrencyCap. Darwin-only isolation mode; this option
         is rendered into config.json on all machines but only used on Darwin.
+      '';
+    };
+
+    nx.programs.prism.agentMaxOpenFilesSoft = lib.mkOption {
+      type = lib.types.int;
+      default = 8192;
+      description = ''
+        Soft RLIMIT_NOFILE cap applied to agent processes spawned via the
+        bwrap and sandbox-exec exec paths (Layer 1 FD isolation, issue
+        #2190). Written to config.json as agent_max_open_files_soft. Must
+        not exceed agentMaxOpenFilesHard (prism clamps it down at exec time
+        if it does). Zero or negative values fall back to the compiled-in
+        default (8192). Host-mode agents are not capped.
+      '';
+    };
+
+    nx.programs.prism.agentMaxOpenFilesHard = lib.mkOption {
+      type = lib.types.int;
+      default = 16384;
+      description = ''
+        Hard RLIMIT_NOFILE cap applied to agent processes spawned via the
+        bwrap and sandbox-exec exec paths (Layer 1 FD isolation, issue
+        #2190). Kernel-enforced: the agent cannot raise it from inside its
+        sandbox (ulimit -n above this value fails with EPERM). Written to
+        config.json as agent_max_open_files_hard. Values above the host's
+        hard limit are clamped to the host hard limit with a warning in the
+        agent-run log. Zero or negative values fall back to the compiled-in
+        default (16384). Host-mode agents are not capped.
       '';
     };
 

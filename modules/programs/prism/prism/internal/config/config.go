@@ -127,6 +127,19 @@ type Config struct {
 	// sandboxExecConcurrencyCap option (written to config.json). Darwin only.
 	SandboxExecConcurrencyCap int `json:"sandbox_exec_concurrency_cap"`
 
+	// AgentMaxOpenFilesSoft / AgentMaxOpenFilesHard are the RLIMIT_NOFILE
+	// (soft, hard) caps applied to agent processes spawned via the bwrap and
+	// sandbox-exec exec paths (Layer 1 FD isolation, issue #2190). The hard
+	// cap is kernel-enforced: the agent cannot raise it from inside the
+	// sandbox. Zero or negative values fall back to the compiled-in defaults
+	// (DefaultAgentMaxOpenFilesSoft / DefaultAgentMaxOpenFilesHard). Clamping
+	// rules (configured hard > host hard → host hard + warning; soft > hard →
+	// soft clamped to hard) are applied at exec time by
+	// internal/container.ResolveAgentRlimitNofile. The host-mode agent path is
+	// deliberately NOT capped — host-mode agents inherit the host's limits.
+	AgentMaxOpenFilesSoft int `json:"agent_max_open_files_soft"`
+	AgentMaxOpenFilesHard int `json:"agent_max_open_files_hard"`
+
 	// Project layout (JSON arrays).
 	WorktreeExclude  []string `json:"worktree_exclude"`
 	ProjectLocations []string `json:"project_locations"`
@@ -181,6 +194,8 @@ type parsedConfig struct {
 	SidecarCircuitBreakerThreshold *int               `json:"sidecar_circuit_breaker_threshold"`
 	BwrapConcurrencyCap            *int               `json:"bwrap_concurrency_cap"`
 	SandboxExecConcurrencyCap      *int               `json:"sandbox_exec_concurrency_cap"`
+	AgentMaxOpenFilesSoft          *int               `json:"agent_max_open_files_soft"`
+	AgentMaxOpenFilesHard          *int               `json:"agent_max_open_files_hard"`
 	WorktreeExclude                *[]string          `json:"worktree_exclude"`
 	ProjectLocations               *[]string          `json:"project_locations"`
 	ProjectSpecific                *[]string          `json:"project_specific"`
@@ -202,6 +217,21 @@ const DefaultBwrapConcurrencyCap = 50
 // sandboxExecConcurrencyCap option (written to config.json). Zero means uncapped.
 const DefaultSandboxExecConcurrencyCap = 50
 
+// DefaultAgentMaxOpenFilesSoft / DefaultAgentMaxOpenFilesHard are the
+// compiled-in default RLIMIT_NOFILE (soft, hard) caps for agent processes
+// spawned via the bwrap and sandbox-exec exec paths (Layer 1 FD isolation,
+// issue #2190). The values are the #2181 starting estimates: high enough for
+// legitimate agent workloads (agent-initiated nix builds run via the root
+// nix-daemon, so the agent process itself does not hold build FDs), low
+// enough that a runaway agent hits its own cap long before the host-wide
+// pool (kern.maxfiles on Darwin) is at risk. Tunable per-machine via the
+// agentMaxOpenFilesSoft / agentMaxOpenFilesHard Nix options (written to
+// config.json).
+const (
+	DefaultAgentMaxOpenFilesSoft = 8192
+	DefaultAgentMaxOpenFilesHard = 16384
+)
+
 // defaults returns the compiled-in fallback Config (gruvbox-dark palette,
 // standard paths). These values are used whenever no config file is found.
 func defaults() Config {
@@ -221,6 +251,8 @@ func defaults() Config {
 		SshSigningKeyName:         "prismatic-koi-ed25519-signingkey",
 		BwrapConcurrencyCap:       DefaultBwrapConcurrencyCap,
 		SandboxExecConcurrencyCap: DefaultSandboxExecConcurrencyCap,
+		AgentMaxOpenFilesSoft:     DefaultAgentMaxOpenFilesSoft,
+		AgentMaxOpenFilesHard:     DefaultAgentMaxOpenFilesHard,
 		WorktreeExclude:           []string{"obsidian"},
 		ProjectLocations:          []string{"~/code"},
 		ProjectSpecific:           []string{"~/documents/obsidian"},
@@ -351,6 +383,12 @@ func load() Config {
 	}
 	if parsed.SandboxExecConcurrencyCap != nil {
 		cfg.SandboxExecConcurrencyCap = *parsed.SandboxExecConcurrencyCap
+	}
+	if parsed.AgentMaxOpenFilesSoft != nil {
+		cfg.AgentMaxOpenFilesSoft = *parsed.AgentMaxOpenFilesSoft
+	}
+	if parsed.AgentMaxOpenFilesHard != nil {
+		cfg.AgentMaxOpenFilesHard = *parsed.AgentMaxOpenFilesHard
 	}
 
 	// For slice fields: nil pointer means absent (keep default); non-nil

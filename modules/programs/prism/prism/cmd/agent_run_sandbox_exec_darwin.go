@@ -382,9 +382,23 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// the moment of cmd.Start (fork+exec). Mirrors `[timing] bwrap exec`.
 	logTimingTo(logFile, "sandbox-exec exec", time.Since(agentRunStart))
 
+	// Layer 1 FD isolation (#2190): cap the sandbox child's RLIMIT_NOFILE so
+	// a misbehaving agent cannot exhaust the host-wide FD pool (the #2180
+	// failure class). The caps are applied to this process immediately before
+	// Start() and restored immediately after — the child inherits them at
+	// fork time, while the parent's own FD bookkeeping (stderr pipe, log
+	// file, kqueue watcher) is unaffected. Warnings (host-hard clamping,
+	// setrlimit failures) go to the agent-run log; failures never abort the
+	// spawn. Mirrors the bwrap dispatch path in agent_run.go.
+	restoreRlimit := container.ApplyAgentRlimitNofile(
+		cfg.AgentMaxOpenFilesSoft, cfg.AgentMaxOpenFilesHard,
+		func(format string, args ...any) { logAgentRunWarning(logFile, format, args...) })
+
 	if err := sandboxCmd.Start(); err != nil {
+		restoreRlimit()
 		return fmt.Errorf("agent-run: start sandbox-exec: %w", err)
 	}
+	restoreRlimit()
 
 	// Close the write end of the stderr pipe in the parent now that sandbox-exec
 	// has inherited it. Required so reads from the read end return EOF when
