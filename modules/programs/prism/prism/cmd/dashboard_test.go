@@ -23,6 +23,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/dashboard"
 	"github.com/prismatic-koi/prism/internal/tmux"
+	"github.com/prismatic-koi/prism/internal/tmux/tmuxtest"
 )
 
 // ─── package-level test server registry ──────────────────────────────────────
@@ -78,12 +79,13 @@ type cmdTestServer struct {
 	bin    string
 }
 
+// newCmdTestServer starts an isolated tmux server for a cmd test. Skips (via
+// tmuxtest.RequireServer) when tmux is absent from PATH or when tmux server
+// creation is blocked by the sandbox (fork EPERM inside prism sandbox-exec
+// worker sessions — issue #2204).
 func newCmdTestServer(t *testing.T) *cmdTestServer {
 	t.Helper()
-	bin, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux not found in PATH — skipping integration test")
-	}
+	bin := tmuxtest.RequireServer(t)
 	socket := fmt.Sprintf("prism-cmd-test-%d-%s", os.Getpid(), randCmdHex(8))
 	s := &cmdTestServer{socket: socket, bin: bin}
 
@@ -98,8 +100,7 @@ func newCmdTestServer(t *testing.T) *cmdTestServer {
 	// after CombinedOutput is safe and correct.
 	startCmd := exec.Command(bin, "-L", socket, "-f", "/dev/null", "new-session", "-ds", "bootstrap", "-c", "/tmp")
 	startCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	var startOut []byte
-	startOut, err = startCmd.CombinedOutput()
+	startOut, err := startCmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("start test tmux server: %v\n%s", err, startOut)
 	}

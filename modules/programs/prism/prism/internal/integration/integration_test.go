@@ -35,6 +35,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
+	"github.com/prismatic-koi/prism/internal/tmux/tmuxtest"
 )
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -52,14 +53,13 @@ func openTestDB(t *testing.T) *db.DB {
 	return d
 }
 
-// requireTmux skips the test immediately if tmux is not available in PATH.
+// requireTmux skips the test when tmux is not available in PATH, or when
+// tmux server creation is blocked by the sandbox (fork EPERM inside prism
+// sandbox-exec worker sessions — issue #2204). Its only caller is
+// newTmuxServer, so server-start capability is exactly what it must verify.
 func requireTmux(t *testing.T) string {
 	t.Helper()
-	bin, err := exec.LookPath("tmux")
-	if err != nil {
-		t.Skip("tmux not found in PATH — skipping tmux integration test")
-	}
-	return bin
+	return tmuxtest.RequireServer(t)
 }
 
 // tmuxServer holds a headless tmux server running on a unique socket.
