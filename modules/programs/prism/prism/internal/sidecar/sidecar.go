@@ -1195,10 +1195,20 @@ func (s *Sidecar) Shutdown() {
 			// the wait by ShutdownDrainTimeout so an unresponsive writer
 			// (e.g. blocked on a stalled conn) cannot stall Shutdown longer
 			// than the documented budget.
+			//
+			// The drain bound is armed via s.cfg.Clock (not time.After) so
+			// tests can substitute the fake clock and assert the ack path
+			// behaviourally — "Shutdown returns without the drain timer
+			// firing" — instead of measuring wall-clock latency, which is
+			// scheduler- and I/O-noise-dependent. With the real clock the
+			// behaviour is identical to time.After.
+			drainTimedOut := make(chan struct{})
+			drainTimer := s.cfg.Clock.AfterFunc(drainTimeout, func() { close(drainTimedOut) })
 			select {
 			case <-ackCh:
 				// Healthy path — writer acked the flush.
-			case <-time.After(drainTimeout):
+				drainTimer.Stop()
+			case <-drainTimedOut:
 				s.logger().Printf("sidecar: Shutdown: abort-frame flush timed out after %s; tearing down connection anyway", drainTimeout)
 				// Clear the ack channel so a late writer iteration does not
 				// attempt to close a channel we have already abandoned. We

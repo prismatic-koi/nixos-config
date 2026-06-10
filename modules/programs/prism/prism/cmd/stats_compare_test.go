@@ -17,7 +17,6 @@ package cmd
 // tmux, sidecar, or a real agent.
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -589,17 +588,51 @@ func TestRenderCompareTable_LiveSessionStillShowsDash(t *testing.T) {
 		t.Errorf("rendered output missing profile_name on live session:\n%s", out)
 	}
 	// But aggregate axes must read "—" — the session is still in progress.
-	// "100" / "150" are the seeded tokens from writeAssistantTurn — they
-	// must not surface for a still-active session. Use word-boundary regex
-	// rather than substring containment because the instance_id row in the
-	// rendered table is a UUID and ~1/256 UUIDs happen to end in "100" or
-	// "150", triggering a false-positive leak detection (issue #2169 §
-	// Cluster 4). Word boundaries ensure we only match the token values
-	// (which are whitespace-surrounded in the table), not UUID substrings.
-	leakRe := regexp.MustCompile(`\b(100|150)\b`)
-	if leakRe.MatchString(out) {
-		t.Errorf("rendered output leaks aggregate data for an active session:\n%s", out)
+	// Assert against the aggregate-row cells directly rather than scanning
+	// the whole rendered table for the seeded token values ("100" / "150"):
+	// the table also contains the generated instance UUID, and a UUID that
+	// happens to contain those digits made the whole-table scan flake.
+	// Cell-level assertions are independent of whatever characters uuid.New()
+	// produces. Every aggregate row must render the em-dash placeholder in
+	// all three pairwise cells (run-A, run-B, Δ); a numeric cell means
+	// aggregate data leaked for a still-active session.
+	aggregateAxes := []string{
+		"tokens_input", "tokens_output", "tokens_cache_read", "tokens_cache_write",
+		"cost_usd", "tool_call", "tool_error", "msg_assistant",
+		"time_to_first_event", "time_to_finished",
 	}
+	for _, axis := range aggregateAxes {
+		cells, ok := tableRowCells(out, axis)
+		if !ok {
+			t.Errorf("aggregate row %q not found in rendered output:\n%s", axis, out)
+			continue
+		}
+		if len(cells) != 3 {
+			t.Errorf("aggregate row %q: expected 3 cells (run-A, run-B, Δ); got %d: %v", axis, len(cells), cells)
+			continue
+		}
+		for i, cell := range cells {
+			if cell != "—" {
+				t.Errorf("aggregate row %q cell %d = %q; want %q (aggregates must not surface for a still-active session)", axis, i, cell, "—")
+			}
+		}
+	}
+}
+
+// tableRowCells extracts the whitespace-separated value cells of the rendered
+// compare-table row whose label is axis+":". The renderer pads each cell with
+// spaces and none of the placeholder/count values contain embedded spaces, so
+// strings.Fields yields the label followed by one field per cell. ok is false
+// when no row with that label was rendered.
+func tableRowCells(out, axis string) (cells []string, ok bool) {
+	label := axis + ":"
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == label {
+			return fields[1:], true
+		}
+	}
+	return nil, false
 }
 
 // ── Helper ───────────────────────────────────────────────────────────────────
