@@ -449,6 +449,53 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_NixTrustedSettingsReadAllow verifies that the profile
+// contains a read-only, single-file (literal) allow for
+// ~/.local/share/nix/trusted-settings.json (issue #2201). Flake-CLI nix
+// commands consult this file whenever the target flake declares a nixConfig
+// block; without the allow the read fails EPERM under deny-default and nix
+// aborts the entire eval.
+//
+// The rule must be:
+//   - a (literal ...), not a (subpath ...) — single-file scope only;
+//   - read-only — no file-write* anywhere near it (nix only writes the file
+//     from an interactive trust prompt, which should remain blocked).
+//
+// This substring assertion is necessary but not sufficient — the paired
+// Darwin integration tests in
+// internal/integration/sandbox_exec_nix_trusted_settings_darwin_test.go
+// prove the rule is load-bearing against /usr/bin/sandbox-exec per
+// docs/sandbox-exec-testing.md.
+func TestGenerateProfile_NixTrustedSettingsReadAllow(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	trustedSettings := filepath.Join(fakeHome, ".local", "share", "nix", "trusted-settings.json")
+
+	// The exact rule block as emitted by generateProfile: a read-only allow
+	// with file-test-existence (so nix's pathExists probe gets ENOENT, not
+	// EPERM, when the file is missing) on a single literal path.
+	wantBlock := "(allow file-read* file-test-existence\n" +
+		"  (literal \"" + trustedSettings + "\"))\n"
+	if !strings.Contains(profile, wantBlock) {
+		t.Errorf("profile missing the nix trusted-settings read-only allow block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	}
+
+	// The path must appear exactly once — in the read-only block above. A
+	// second occurrence would mean it leaked into another (potentially
+	// writable) clause.
+	if got := strings.Count(profile, trustedSettings); got != 1 {
+		t.Errorf("trusted-settings path must appear exactly once in the profile (read-only literal); found %d occurrences.\nfull profile:\n%s", got, profile)
+	}
+
+	// Single-file scope: the path must never be granted as a subpath.
+	if strings.Contains(profile, "(subpath \""+trustedSettings+"\")") {
+		t.Errorf("trusted-settings path must be a (literal ...), not a (subpath ...); full profile:\n%s", profile)
+	}
+}
+
 // TestCollectStagingHomeSymlinkTargets_AWSSSONotExcluded verifies that when
 // ~/.aws/sso and ~/.aws/cli symlinks exist in the staging HOME, their resolved
 // targets are included in the collected set (not excluded by the deniedPrefixes

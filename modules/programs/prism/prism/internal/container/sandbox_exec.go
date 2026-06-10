@@ -299,6 +299,32 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 5b. Nix flake trusted-settings read (issue #2201) ────────────────
+	// Flake-CLI nix commands consult $XDG_DATA_HOME/nix/trusted-settings.json
+	// whenever the target flake declares a nixConfig block (e.g. this repo's
+	// extra-substituters / extra-trusted-public-keys). XDG_DATA_HOME inside
+	// the sandbox points at the real host ~/.local/share — see the env
+	// assembly in cmd/agent_run_sandbox_exec_darwin.go — so under
+	// deny-default the read fails EPERM and nix aborts the entire eval,
+	// making every flake CLI command unusable on such repos.
+	//
+	// The file holds the user's accept/ignore decisions for flake-provided
+	// config settings; its contents are not secret. The allow is read-only
+	// and single-file (literal, not subpath): nix only ever writes the file
+	// from an interactive "permanently mark this value as trusted" prompt
+	// (readTrustedList/writeTrustedList in nix's src/libflake/config.cc),
+	// and persisting trust decisions from inside a sandbox should remain
+	// blocked. When the file does not exist, nix's pathExists probe returns
+	// false (the literal allow covers the stat, so it yields ENOENT rather
+	// than EPERM) and nix proceeds with an empty trusted list — its normal
+	// missing-file path.
+	if home != "" {
+		nixTrustedSettings := filepath.Join(home, ".local", "share", "nix", "trusted-settings.json")
+		sb.WriteString("(allow file-read* file-test-existence\n")
+		sb.WriteString("  (literal " + quoteSBPL(nixTrustedSettings) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// ── 6. Staging HOME + worktree + bare repo + host-API socket (RW) ────
 	// Session-specific read-write paths. Locked in #1012 and #1017.
 	// file-test-existence and file-read-metadata added alongside file-read*
