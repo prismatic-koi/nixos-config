@@ -17,7 +17,6 @@ package cmd
 // tmux, sidecar, or a real agent.
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -589,16 +588,32 @@ func TestRenderCompareTable_LiveSessionStillShowsDash(t *testing.T) {
 		t.Errorf("rendered output missing profile_name on live session:\n%s", out)
 	}
 	// But aggregate axes must read "—" — the session is still in progress.
-	// "100" / "150" are the seeded tokens from writeAssistantTurn — they
-	// must not surface for a still-active session. Use word-boundary regex
-	// rather than substring containment because the instance_id row in the
-	// rendered table is a UUID and ~1/256 UUIDs happen to end in "100" or
-	// "150", triggering a false-positive leak detection (issue #2169 §
-	// Cluster 4). Word boundaries ensure we only match the token values
-	// (which are whitespace-surrounded in the table), not UUID substrings.
-	leakRe := regexp.MustCompile(`\b(100|150)\b`)
-	if leakRe.MatchString(out) {
-		t.Errorf("rendered output leaks aggregate data for an active session:\n%s", out)
+	// Assert directly against the per-axis cells (via buildAxisRows, the
+	// same code path renderCompareTable uses internally) rather than
+	// substring-scanning the rendered table for the seeded token values
+	// ("100" / "150"). The whole-table substring approach was flaky:
+	// ~1/256 UUIDs happen to end in "100" or "150", so the instance_id
+	// row's UUID could match by coincidence regardless of what the
+	// aggregate cells actually contained. Asserting against the cells
+	// themselves is both flake-free and a stricter check — it fails if
+	// the aggregate cell renders any non-em-dash value, not just the two
+	// magic seeded numbers.
+	aggregateAxes := []string{
+		"tokens_input", "tokens_output", "tokens_cache_read", "tokens_cache_write",
+		"cost_usd", "tool_call", "tool_error", "msg_assistant",
+		"time_to_first_event", "time_to_finished",
+	}
+	rows := buildAxisRows(aggregateAxes, runs, false)
+	if len(rows) != len(aggregateAxes) {
+		t.Fatalf("buildAxisRows returned %d rows, want %d", len(rows), len(aggregateAxes))
+	}
+	const emDash = "—"
+	for _, row := range rows {
+		for i, v := range row.Values {
+			if v != emDash {
+				t.Errorf("aggregate cell %s[run=%d] = %q for an active session; want %q", row.Name, i, v, emDash)
+			}
+		}
 	}
 }
 

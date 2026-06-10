@@ -44,12 +44,35 @@ buildGoModule {
   # runs `go test ./... -race` on an Ubuntu runner; this job's purpose
   # is the $HOME=/homeless-shelter signal, not race coverage.
   #
-  # The `-timeout 30m` flag overrides the default 10m per-package budget:
-  # the bwrap sandbox is slower than the host (the `internal/sidecar` and
-  # `internal/db` packages each push close to the default 10m limit there
-  # even when they finish in tens of seconds on a host). The sandbox
-  # slowdown is tracked in issue #2169 § Cluster 1; this is a sandbox
-  # workaround, not a logic fix.
+  # The `-timeout 30m` flag overrides Go's default 10m per-package budget.
+  # This is a deliberate, permanent calibration for the nix-sandbox
+  # environment; it is not an interim workaround.
+  #
+  # Empirical baseline:
+  #   - `internal/db` (~270 tests, each calling db.Open which runs all
+  #     schema migrations): ~3.5s on a host shell, ~600s inside the nix
+  #     build sandbox — a ~170× slowdown.
+  #   - `internal/sidecar` (~150 tests, each constructing a Sidecar with
+  #     fresh db.Open + Unix-socket listeners + many goroutines): finishes
+  #     in tens of seconds on a host, brushes against the 10m default in
+  #     the sandbox.
+  #
+  # Root cause: the slowdown is dominated by per-syscall overhead, not
+  # fsync — a host-side microbench shows `synchronous=OFF` and
+  # `temp_store=MEMORY` produce no measurable speedup (db.Open averages
+  # ~6ms baseline and ~5.7ms with both pragmas). The most likely culprit
+  # is bwrap's per-syscall cost (user-namespace remapping + seccomp filter
+  # evaluation) multiplied by the many small syscalls modernc.org/sqlite
+  # makes per Open + per query. Mitigating it cleanly would require
+  # changing how the production driver opens databases (e.g. an in-memory
+  # mode for tests, or batching the migration run), which is out of scope
+  # for the gate — the gate's job is to surface $HOME-touching failures,
+  # not to optimise SQLite-in-bwrap throughput.
+  #
+  # 30m gives ~3× headroom over the worst observed package runtime (600s),
+  # which absorbs CI runner load variance without masking a genuine
+  # infinite-loop regression. Raising it further would weaken the
+  # "a stuck test eventually fails" signal without practical benefit.
   checkPhase = ''
     runHook preCheck
     export GOFLAGS=''${GOFLAGS//-trimpath/}

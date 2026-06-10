@@ -37,13 +37,25 @@ import (
 // ShutdownDrainTimeout bound. Issue #1849 AC: "On a healthy connection,
 // Shutdown returns within ~10ms of the abort frame being flushed".
 func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
-	// In the nix build sandbox ($NIX_BUILD_TOP set), bwrap I/O overhead
-	// inflates the measured latency past the 50ms budget without indicating
-	// a real regression (observed: 104ms). The latency assertion's intent is
-	// "well under the old 100ms hard sleep on a host", and the nix sandbox
-	// is not a host. Tracked in issue #2169 § Cluster 3.
+	// This is a wall-clock assertion: the 50ms budget is meant to distinguish
+	// "ack-signal completes in ~1ms" from "old hard-sleep takes ~100ms". It
+	// is sensitive to scheduler latency on the host running the test.
+	//
+	// In the nix build sandbox (which uses bwrap on Linux and sandbox-exec
+	// on Darwin), Unix-socket I/O and goroutine wake-ups are measurably
+	// slower than on the host filesystem — enough that an entirely healthy
+	// abort-flush ack roundtrip routinely exceeds 50ms (observed: 104ms).
+	// That is a property of the sandbox, not a regression in the production
+	// code path under test. Skipping in that environment preserves the
+	// latency signal where it is meaningful (real hosts, CI's host runner)
+	// without producing false-positive failures inside the nix build.
+	//
+	// Coverage is preserved by the sibling tests in this file: AckArrives→
+	// AfterFlush still verifies the abort frame actually reaches the wire
+	// under sandbox conditions, and the unhealthy-path / default-timeout
+	// tests still exercise the bounded-wait branch unaffected.
 	if os.Getenv("NIX_BUILD_TOP") != "" {
-		t.Skip("skipping latency-budget test in nix build sandbox: bwrap I/O overhead inflates measured latency past the 50ms budget; see issue #2169")
+		t.Skip("nix build sandbox: bwrap/sandbox-exec I/O overhead inflates ack-roundtrip wall-clock latency past the 50ms budget without indicating a regression; latency signal is preserved on host runs")
 	}
 	sockPath := shortSockPath(t)
 	sc := newSocketPipeSidecar(t, sockPath)

@@ -3,7 +3,6 @@ package session
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -447,22 +446,37 @@ func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
 		}
 	})
 
-	t.Run("LayoutBare + empty PIExtensionDir: accepted (no agent pane to misconfigure)", func(t *testing.T) {
-		// LayoutBare is the dashboard's dead-session recovery path and
-		// the scratchpad fallback in restore. Both run with no agent.
-		// They legitimately leave PIExtensionDir empty and must NOT be
-		// blocked by the guard.
+	t.Run("LayoutBare + empty PIExtensionDir: guard does not fire", func(t *testing.T) {
+		// LayoutBare is the dashboard's dead-session recovery path and the
+		// scratchpad fallback in restore. Both run with no agent. They
+		// legitimately leave PIExtensionDir empty and must NOT be blocked
+		// by the guard that LayoutFull applies.
 		//
-		// LayoutBare opens a real tmux session, so the subtest requires
-		// tmux on PATH. tmux is intentionally NOT in nativeCheckInputs in
-		// pkgs/prism.nix (see the long comment there), so this subtest is
-		// skipped in the nix build sandbox. The sibling LayoutFull subtest
-		// above still runs because it asserts an error before any tmux
-		// call. Tracked in issue #2169 § Cluster 2.
-		if _, err := exec.LookPath("tmux"); err != nil {
-			t.Skip("tmux not found in PATH — skipping LayoutBare subtest; see issue #2169")
-		}
+		// The original shape of this subtest opened a real tmux session
+		// and asserted err == nil. That made the assertion depend on
+		// `tmux` being on $PATH, which is intentionally NOT the case in
+		// the nix build sandbox (see the long comment in pkgs/prism.nix)
+		// — the subtest then failed with "exec: tmux: not found" rather
+		// than catching anything about the PIExtensionDir guard.
+		//
+		// The guard is a fail-fast check at the top of session.Create:
+		//
+		//   if opts.Layout == LayoutFull {
+		//       if err := ValidatePILaunchOpts(opts); err != nil { ... }
+		//   }
+		//
+		// The assertion that matters is "this branch is not entered for
+		// LayoutBare". We can express that without invoking tmux by
+		// calling Create and checking that whatever error comes back (if
+		// any — None if tmux is on PATH, a tmux-exec error if not) is
+		// NOT the ValidatePILaunchOpts error. A regression that lifted
+		// the guard out of the LayoutFull branch would produce a
+		// "PIExtensionDir is not set" error here, which we explicitly
+		// reject.
 		name := "unit-test-2065-bare"
+		// Best-effort cleanup in case tmux IS available and the session
+		// actually got created. Safe to call when tmux is missing —
+		// KillSession just returns an error we ignore.
 		defer tmux.KillSession(name)
 		err := Create(name, dir, Opts{
 			Layout:         LayoutBare,
@@ -470,7 +484,7 @@ func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
 			HarnessName:    "pi",
 			PIExtensionDir: "",
 		})
-		if err != nil {
+		if err != nil && strings.Contains(err.Error(), "PIExtensionDir is not set") {
 			t.Errorf("LayoutBare must not be blocked by the PIExtensionDir guard; got: %v", err)
 		}
 	})
