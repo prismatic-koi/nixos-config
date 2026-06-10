@@ -216,7 +216,7 @@ func piResolveResumeSession(cfg Config) bool {
 //	               and #1985)
 //	sandbox-exec → <stagingHome>/.pi/agent/sessions
 //
-// PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.78
+// PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.79
 // dist/core/session-manager.js getDefaultAgentDir / getDefaultSessionDirPath
 // — see internal/harness/pi/archive.go for the full citation). The prism
 // developer host sets it system-wide to /run/prism/pi-agent.
@@ -258,7 +258,7 @@ func piResumeSessionsRoot(cfg Config) (string, bool) {
 
 // piResumeHostSessionsRoot returns the host-side PI sessions directory:
 // $PI_CODING_AGENT_DIR/sessions when the env var is set (non-empty), else
-// <UserHomeDir>/.pi/agent/sessions. Mirrors pi 0.78's data-root resolution
+// <UserHomeDir>/.pi/agent/sessions. Mirrors pi 0.79's data-root resolution
 // (ENV_AGENT_DIR honouring with a ~/.pi/agent/ fallback).
 //
 // Duplicated from internal/harness/pi.hostPISessionsRoot — see the note on

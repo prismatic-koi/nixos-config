@@ -5,9 +5,9 @@ package pi
 // PI stores session data as JSONL files on disk.
 // Unlike some harnesses, PI has no SQLite database — it is a pure flat-file store.
 //
-// Source path layout (authoritative reference: pi 0.78.0
-// dist/core/session-manager.js — see getDefaultSessionDirPath at line 217 and
-// SessionManager.newSession at line 562 for the file-naming):
+// Source path layout (authoritative reference: pi 0.79.1
+// dist/core/session-manager.js — see getDefaultSessionDirPath at line 220 and
+// SessionManager.newSession at line 559 for the file-naming):
 //
 //	<piSessionsRoot>/<encoded-cwd>/<timestamp>_<uuid>.jsonl
 //
@@ -20,7 +20,7 @@ package pi
 //
 // The <encoded-cwd> directory name is derived from the session's working
 // directory (p.Worktree) via EncodePiCWD. The formula mirrors pi's own JS
-// (session-manager.js line 221):
+// (session-manager.js line 223):
 //
 //	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--
 //
@@ -30,7 +30,7 @@ package pi
 //	/home/ben/code/nixos-config/main → --home-ben-code-nixos-config-main--
 //
 // The session UUID (HarnessSessionID) is embedded in the filename, NOT used as
-// a directory name. Pi 0.78 may produce multiple JSONLs in the same
+// a directory name. Pi 0.79 may produce multiple JSONLs in the same
 // <encoded-cwd> directory — one per `pi` invocation in that cwd — but each
 // file's filename carries the UUID that pi's SessionManager.newSession used
 // for that invocation, and the same UUID is mirrored into the JSONL's first
@@ -115,8 +115,8 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/ which was
 // torn down with the prism session (see bugs #1538 / #1814 for context).
 //
-// See pi 0.78 dist/core/session-manager.js (getDefaultSessionDirPath line 217,
-// SessionManager.newSession line 562) for the authoritative path formula.
+// See pi 0.79 dist/core/session-manager.js (getDefaultSessionDirPath line 220,
+// SessionManager.newSession line 559) for the authoritative path formula.
 func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, error) {
 	sessionsRoot, err := piSessionsRoot(p)
 	if err != nil {
@@ -165,7 +165,7 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 //	sandbox-exec               → <stagingHome>/.pi/agent/sessions
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi reads it
-// as the agent data root at startup; see pi 0.78 dist/core/session-manager.js
+// as the agent data root at startup; see pi 0.79 dist/core/session-manager.js
 // getDefaultAgentDir and getDefaultSessionDirPath). The prism developer host
 // sets PI_CODING_AGENT_DIR=/run/prism/pi-agent system-wide, so the unset
 // branch is fallback-only — but it still matches pi's behaviour on hosts
@@ -206,7 +206,7 @@ func piSessionsRoot(p harnessarchive.SourceParams) (string, error) {
 
 // hostPISessionsRoot returns the host-side PI sessions directory:
 // $PI_CODING_AGENT_DIR/sessions when the env var is set (non-empty), else
-// <UserHomeDir>/.pi/agent/sessions. Mirrors pi 0.78's own data-root
+// <UserHomeDir>/.pi/agent/sessions. Mirrors pi 0.79's own data-root
 // resolution: pi honours ENV_AGENT_DIR (the same variable) and falls back to
 // ~/.pi/agent/ when it is unset.
 //
@@ -275,8 +275,8 @@ func (a *piArchiveAdapter) Version(_ context.Context) (string, error) {
 }
 
 // EncodePiCWD encodes an absolute directory path to the directory name pi uses
-// for its session storage. The formula mirrors pi 0.78
-// dist/core/session-manager.js line 221:
+// for its session storage. The formula mirrors pi 0.79
+// dist/core/session-manager.js line 223:
 //
 //	--${cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--
 //
