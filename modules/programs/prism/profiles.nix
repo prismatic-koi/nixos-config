@@ -133,6 +133,19 @@
               };
             };
 
+            anthropic-fable = profileFromSlots {
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5";
+                thinking = "xhigh";
+              };
+              coordinator = slot "coordinator" {
+                provider = "anthropic";
+                model = "anthropic/claude-fable-5";
+                thinking = "xhigh";
+              };
+            };
+
             anthropic-opus-max-4-8 = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
