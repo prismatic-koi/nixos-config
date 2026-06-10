@@ -29,8 +29,8 @@ func clearPICodingAgentDir(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 }
 
-// TestEncodePiCWD verifies the encoding formula matches pi 0.78
-// dist/core/session-manager.js line 221.
+// TestEncodePiCWD verifies the encoding formula matches pi 0.79
+// dist/core/session-manager.js line 223.
 func TestEncodePiCWD(t *testing.T) {
 	cases := []struct {
 		cwd  string
@@ -107,7 +107,7 @@ func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir(t *testing.T) {
 	const sessionID = "d13cc856-f919-4ce9-b733-cf0e25493e62"
 
 	// Plant the session file under <piDataRoot>/sessions/<encoded-cwd>/ —
-	// the place pi 0.78 actually writes when ENV_AGENT_DIR is set.
+	// the place pi 0.79 actually writes when ENV_AGENT_DIR is set.
 	encodedDir := encodePiCWDForTest(worktree)
 	sessDir := filepath.Join(piDataRoot, "sessions", encodedDir)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
