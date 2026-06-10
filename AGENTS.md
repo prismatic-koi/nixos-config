@@ -214,6 +214,44 @@ reason this gap surfaced. See
 `modules/programs/prism/prism/docs/stdout-capture-testing.md` for the full
 convention and the canonical `captureStdout` helper (issue #1798).
 
+### Setting WIP aside — do not use git stash
+
+**Worker-class prism sessions must never use `git stash`** (any subcommand
+— `stash -u`, `stash pop`, `stash apply`, `stash list`, …). In the
+bare+worktree layout the stash stack (`refs/stash` + its reflog) lives in
+the shared bare repo, so it is repo-wide, not per-worktree. Two sessions
+that stash concurrently race on a single LIFO stack — `git stash pop` takes
+whatever is at `stash@{0}`, which may belong to another worktree. On
+2026-06-11 two concurrent workers' pops crossed and silently swapped their
+WIP (issue #2202). The pi extension's deny list (`BLOCKED_BASH_PATTERNS` in
+`modules/programs/prism/pi/extensions/prism.ts`) blocks `git stash` for
+worker-class agents as defence in depth; the coordinator — the single
+session on the main worktree — is exempt and is then the only prism writer
+to the shared stack.
+
+Sanctioned WIP-set-aside patterns — both are worktree-local:
+
+- **Temp commit** (preferred — commit history is disposable on squash-merged
+  branches):
+
+  ```bash
+  git add -A && git commit -m wip   # set WIP aside
+  # ... do the other thing (e.g. rerun a test against HEAD~1 via a checkout) ...
+  git reset --soft HEAD~1           # restore: changes return, staged
+  ```
+
+- **Patch file**:
+
+  ```bash
+  git diff > /tmp/wip.patch && git restore .   # set WIP aside
+  # ... do the other thing ...
+  git apply /tmp/wip.patch                     # restore
+  ```
+
+The "verify your tests aren't no-ops" discipline (revert fix → rerun test →
+re-apply) is the common trigger for reaching for a stash — use one of the
+patterns above instead.
+
 ### File naming and organisation
 
 Names of files and directories should be in lowercase, with dashes between words — kebab case, not camel case.
