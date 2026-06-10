@@ -9,6 +9,9 @@ package container
 
 import (
 	"fmt"
+	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 
@@ -147,6 +150,79 @@ func TestApplyAgentRlimitNofile_AppliesAndRestores(t *testing.T) {
 	}
 	if restored.Cur != wantSoft {
 		t.Errorf("restored soft limit: got %d, want %d", restored.Cur, wantSoft)
+	}
+}
+
+// shObservedNofile runs `sh -c 'echo "$(ulimit -Sn) $(ulimit -Hn)"'` as a
+// plain (un-sandboxed) child and returns the RLIMIT_NOFILE pair it observed,
+// or an error when sh is unavailable or its output is unparsable (callers
+// skip in that case — some build sandboxes lack a capable sh).
+func shObservedNofile() (soft, hard uint64, err error) {
+	shBin, err := exec.LookPath("sh")
+	if err != nil {
+		return 0, 0, fmt.Errorf("sh not in PATH: %w", err)
+	}
+	out, err := exec.Command(shBin, "-c", `echo "$(ulimit -Sn) $(ulimit -Hn)"`).CombinedOutput()
+	if err != nil {
+		return 0, 0, fmt.Errorf("sh ulimit probe: %w — %s", err, out)
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("sh ulimit probe: want two fields, got %q", out)
+	}
+	soft, sErr := strconv.ParseUint(fields[0], 10, 64)
+	hard, hErr := strconv.ParseUint(fields[1], 10, 64)
+	if sErr != nil || hErr != nil {
+		return 0, 0, fmt.Errorf("sh ulimit probe: cannot parse %q", out)
+	}
+	return soft, hard, nil
+}
+
+// TestApplyAgentRlimitNofile_ChildInherits verifies the load-bearing
+// property the exec paths rely on: a child spawned between Apply and restore
+// inherits the resolved (soft, hard) pair verbatim.
+//
+// This specifically pins the Go-runtime subtlety documented on
+// ApplyAgentRlimitNofile: Go ≥ 1.19 raises the soft limit to the hard limit
+// at startup and silently restores the *original* soft limit for exec'd
+// children — unless the program calls syscall.Setrlimit, which disables that
+// restore. If a future refactor switched to a raw syscall wrapper that did
+// not disable it, the process-level assertions in
+// TestApplyAgentRlimitNofile_AppliesAndRestores would still pass while every
+// spawned agent silently inherited the wrong soft limit; this test is the
+// one that would catch it. The bwrap/sandbox-exec integration tests under
+// internal/integration/ assert the same property through the real sandbox
+// binaries but cannot run in every environment (they skip without bwrap /
+// nested sandbox-exec); this plain-child variant runs everywhere a capable
+// sh exists.
+func TestApplyAgentRlimitNofile_ChildInherits(t *testing.T) {
+	if _, _, err := shObservedNofile(); err != nil {
+		t.Skipf("environment cannot observe child rlimits: %v", err)
+	}
+
+	var orig syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &orig); err != nil {
+		t.Fatalf("Getrlimit: %v", err)
+	}
+
+	targetHard := uint64(8192)
+	if orig.Max < targetHard {
+		targetHard = orig.Max
+	}
+	targetSoft := targetHard / 2
+
+	restore := ApplyAgentRlimitNofile(int(targetSoft), int(targetHard), func(format string, args ...any) {
+		t.Logf("rlimit warning: "+format, args...)
+	})
+	defer restore()
+
+	gotSoft, gotHard, err := shObservedNofile()
+	if err != nil {
+		t.Fatalf("observe child rlimits after apply: %v", err)
+	}
+	if gotSoft != targetSoft || gotHard != targetHard {
+		t.Errorf("child observed (soft %d, hard %d), want (soft %d, hard %d)",
+			gotSoft, gotHard, targetSoft, targetHard)
 	}
 }
 
