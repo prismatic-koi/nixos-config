@@ -11,6 +11,17 @@ let
   background = if type == "dark" then bg0 else bg_dim;
 
   kittyconf = ''
+    # Disable config auto-reload entirely (issue #2198, #2180-class FD-exhaustion
+    # incidents). kitty >= 0.47.1 spawns a `kitten __watch_conf__` watcher that
+    # resolves the HM config symlink into /nix/store and, on nixpkgs no-cgo
+    # Darwin builds, kqueue-watches the entire store — one FD per store entry,
+    # ~115k FDs per kitty instance — exhausting the host FD pool (the same bug
+    # manifests as inotify-watch exhaustion on Linux, hence no platform gate).
+    # The upstream 0.47.2 fix does NOT help nixpkgs Darwin builds (fswatcher's
+    # kqueue backend ignores the depth option), and auto-reload never worked
+    # with store-immutable configs anyway. Manual reload: ctrl+shift+f5.
+    auto_reload_config -1
+
     symbol_map U+1f636,U+200D,U+1F32B,U+FE0F Noto Color Emoji
     prefer_color_emoji yes
     hide_window_decorations titlebar-only
