@@ -4627,7 +4627,7 @@ func TestMigration_V12ToV13_LegacyRowsEnded(t *testing.T) {
 		{"nixos-config@fix-tmux~review-4~review~review-1~review", 0, noEnded, true},
 		// Bare review suffix with no role (listed first in issue #826 example output):
 		// matched by %~review-%-review
-		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded, true},
+		{"nixos-config@fix-tmux-keybinds~review-1-review", 0, noEnded, true},
 
 		// *** MUST NOT be matched: current valid shape <parent>~review-<N>-review-<role> ***
 		// These end in "-<role>" (non-empty after "-review-"), so the third LIKE
@@ -5456,7 +5456,7 @@ func TestMigration_V12ToV13_PostMigrationQueryReturnsZero(t *testing.T) {
 		{"nixos-config@fix-tmux~review-1~review", 0, noEnded},
 		{"nixos-config@fix-tmux~review-3~review", 0, noEnded},
 		// Bare review suffix (no role) — first example in issue #826.
-		{"nixos-config@fix-tmux-podman-keybinds~review-1-review", 0, noEnded},
+		{"nixos-config@fix-tmux-keybinds~review-1-review", 0, noEnded},
 		// A current valid shape — should NOT be counted by this query.
 		{"nixos-config@fix-tmux~review-2-review-code", 0, noEnded},
 	}
@@ -7757,12 +7757,12 @@ func TestActiveSessionCountForMode_OnlyMatchingMode(t *testing.T) {
 		t.Fatalf("SetIsolationMode bwrap: %v", err)
 	}
 
-	// Insert a podman session (should not be counted for sandbox-exec).
-	if err := d.UpsertStatus("repo@podman1", "repo", "/code/repo/podman1", "active", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus podman: %v", err)
+	// Insert a host session (should not be counted for sandbox-exec).
+	if err := d.UpsertStatus("repo@host1", "repo", "/code/repo/host1", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus host: %v", err)
 	}
-	if err := d.SetIsolationMode("repo@podman1", "podman"); err != nil {
-		t.Fatalf("SetIsolationMode podman: %v", err)
+	if err := d.SetIsolationMode("repo@host1", "host"); err != nil {
+		t.Fatalf("SetIsolationMode host: %v", err)
 	}
 
 	count, err := d.ActiveSessionCountForMode("sandbox-exec")

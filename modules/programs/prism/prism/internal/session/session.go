@@ -86,11 +86,12 @@ type Opts struct {
 	// host port to bind.
 	Port int
 	// IsolationMode is the resolved isolation mode for this session.
-	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
+	// Valid values: "bwrap", "sandbox-exec", "host" (see
+	// config.ValidIsolationModes).
 	IsolationMode string
-	// PluginHostPath is the host-side path to the agent plugin file that
-	// is bind-mounted into the container. Empty string = no plugin. Only used
-	// in podman mode.
+	// PluginHostPath is the host-side path to the agent plugin file.
+	// Empty string = no plugin. Retained for back-compat; no current
+	// isolation mode consumes it.
 	PluginHostPath string
 	// SkipStatusSeed, when true, causes setupFullLayout to skip the
 	// "prism event tmux-session-start" call that seeds agent_status.
@@ -143,15 +144,14 @@ type Opts struct {
 	// needing zsh aliases.
 	//
 	// Loaded from the agent_env_vars key of profiles.json (written by Nix).
-	// Ignored in podman mode — container sessions receive env vars via
-	// podman --env flags in the sidecar.
+	// Ignored in sandboxed modes — bwrap and sandbox-exec deliver env vars
+	// via their own injection paths (bwrap --setenv, sandbox-exec profile).
 	AgentEnvVars map[string]string
 	// ConfigEnvVarName is the environment variable name used to inject
 	// serialised config content into the agent runtime. Populated from
 	// harness.Harness.ConfigEnvVar() by callers that have a harness
 	// instance. When empty, config content injection is skipped in
-	// buildDirectAgentCmd (podman callers inject config via mounted
-	// files, not env vars).
+	// buildDirectAgentCmd.
 	ConfigEnvVarName string
 	// RuntimeEnvVars holds harness-specific environment variables to
 	// prepend to the agent command in host-mode sessions. Populated from
@@ -170,7 +170,7 @@ type Opts struct {
 	// agentPaneEnvVars injects PRISM_HARNESS_PIPE=unix://<path> into the
 	// agent tmux pane so the PI extension can connect to the sidecar socket.
 	// Ignored for bwrap/sandbox-exec (those modes set PRISM_HARNESS_PIPE via
-	// their own paths) and for podman (container mode uses ctrCfg).
+	// their own paths).
 	HarnessPipeSockPath string
 	// ModelsByRole is the per-role model override map (C.2). When non-empty
 	// it is forwarded to the sidecar via repeated --model-override flags.
@@ -355,7 +355,6 @@ func effectiveIsolationMode(opts Opts) string {
 // BuildAgentCmd returns the agent launch command string for the given opts.
 //
 // Isolation mode determines the command:
-//   - "podman":       "podman attach --sig-proxy=false <container-name>"
 //   - "bwrap":        "prism agent-run --session <session-name>"
 //   - "sandbox-exec": "prism agent-run --session <session-name>"
 //   - "host":         direct agent invocation (default)
@@ -528,8 +527,8 @@ func buildDirectAgentCmd(opts Opts) string {
 	// Prepend harness-specific runtime env vars. These are applied outermost
 	// (before AgentEnvVars and PRISM_SESSION_NAME) so they reach the agent
 	// runtime regardless of profile-level env overrides. Scoped to host-mode
-	// only — container-mode sessions receive env vars via podman --env or
-	// bwrap --setenv.
+	// only — sandboxed sessions receive env vars via bwrap --setenv or the
+	// sandbox-exec profile.
 	if len(opts.RuntimeEnvVars) > 0 {
 		keys := make([]string, 0, len(opts.RuntimeEnvVars))
 		for k := range opts.RuntimeEnvVars {
@@ -804,11 +803,7 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 // window 0 "edit" (nvim auto-launched), window 1 "agent" (pi),
 // window 2 "term". Seeds agent_status via prism event tmux-session-start.
 //
-// In podman mode (isolation mode "podman"), the sidecar is started first and
-// the agent window runs a readiness-wait loop before running "podman attach".
-// This ensures the container is healthy before the PTY bridge tries to connect.
-//
-// In bwrap mode (isolation mode "bwrap"), the sidecar is still started (for
+// In bwrap mode (isolation mode "bwrap"), the sidecar is started (for
 // SSE, state machine, and host-API) but the agent window runs
 // "prism agent-run --session <name>" directly — no readiness wait, because
 // bwrap is owned by the tmux pane and doesn't use a sidecar-written ready file.
@@ -821,10 +816,10 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	_ = tmux.SendKeys(name+":0", nvimCmd)
 
 	// Start the sidecar before creating the agent window.
-	// In podman and bwrap mode the sidecar handles SSE, state transitions,
-	// and host-API — we must start it before the pane command so readiness
-	// signalling and prompt delivery are in place.
-	// In host mode the sidecar runs without --container (no container creation).
+	// In bwrap and sandbox-exec mode the sidecar handles SSE, state
+	// transitions, and host-API — we must start it before the pane command so
+	// readiness signalling and prompt delivery are in place.
+	// In host mode the sidecar connects to the directly-launched agent.
 	if opts.Port == 0 {
 		fmt.Fprintf(os.Stderr, "warning: sidecar skipped for %q — no port allocated\n", name)
 	} else {
@@ -847,9 +842,7 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	}
 
 	// Build the agent window command.
-	// In podman mode, prepend a readiness wait so the pane blocks until
-	// the sidecar has health-checked the container (AC-18, AC-19, AC-20).
-	// In bwrap mode, no readiness wait — "prism agent-run" runs immediately
+	// No readiness wait is needed — "prism agent-run" runs immediately
 	// and the sidecar does not write a ready file for bwrap sessions.
 	// opts.SessionName must be set by the caller before setupFullLayout is
 	// invoked — both ensureAndSwitch and restoreProjectSession do this.
@@ -867,9 +860,9 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// critical ordering fix: prism agent-run in window 1 reads isolation_mode
 	// from agent_status immediately on start. If we write isolation_mode only
 	// after the window exists (as the old post-ensureAndSwitch block in
-	// cmd/spawn.go did), prism agent-run races and sees NULL → falls back to
-	// "podman" → dies with a mode mismatch error. Writing here, synchronously
-	// before NewWindow, removes the race entirely. See issue #894.
+	// cmd/spawn.go did), prism agent-run races and sees NULL → dies with a
+	// mode mismatch error. Writing here, synchronously before NewWindow,
+	// removes the race entirely. See issue #894.
 	if mode != "" {
 		// Always write isolation_mode when we have a non-empty mode.
 		if d, dbErr := openDB(); dbErr == nil {

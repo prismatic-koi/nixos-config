@@ -1,4 +1,5 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines sandboxExecIsolator, an Apple sandbox-exec-based
 // implementation of the Isolator interface. It is symmetric to bwrapIsolator
 // in bwrap.go: BuildRunArgs() is a no-op stub, BuildArgs(m *Manager) is the

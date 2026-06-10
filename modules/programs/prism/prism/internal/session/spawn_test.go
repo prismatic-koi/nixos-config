@@ -332,9 +332,10 @@ func TestSpawnSession_Validation_RequiresDB(t *testing.T) {
 // match "bwrap". If we write isolation_mode only after tmux.NewWindow, agent-run
 // races and sees NULL → the agent-run rejects the session.
 //
-// We test "bwrap" and "podman" modes to verify the write happens for both.
+// We test "bwrap" and "sandbox-exec" modes to verify the write happens for
+// both.
 func TestSpawnSession_AgentOnly_WritesIsolationMode(t *testing.T) {
-	for _, mode := range []string{"bwrap", "podman"} {
+	for _, mode := range []string{"bwrap", "sandbox-exec"} {
 		mode := mode
 		t.Run(mode, func(t *testing.T) {
 			d, _ := openSpawnTestDB(t)

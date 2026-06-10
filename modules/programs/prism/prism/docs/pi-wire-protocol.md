@@ -82,16 +82,17 @@ subsystems.
 ### 2.2 Darwin: localhost TCP listener
 
 - TCP listener on `127.0.0.1:0` (OS-allocated port). The listener binds on
-  `127.0.0.1` (loopback only). Unlike the podman/gvproxy path — where the
-  listener binds `0.0.0.0` so gvproxy's bridge interface (`192.168.127.254`)
-  can reach it from the container VM — `sandbox-exec` runs **directly on the
-  host**. Both the sidecar and the sandboxed extension share the host
+  `127.0.0.1` (loopback only). Unlike the legacy container/gvproxy path —
+  where the
+  listener bound `0.0.0.0` so gvproxy's bridge interface (`192.168.127.254`)
+  could reach it from the container VM — `sandbox-exec` runs **directly on
+  the host**. Both the sidecar and the sandboxed extension share the host
   loopback, so binding only `127.0.0.1` is both sufficient and more secure
   (the port is not reachable from external network interfaces).
 - The allocated port is captured at sidecar startup — *before* the
   extension is launched — and exposed as `tcp://127.0.0.1:<port>` via
-  the env var (§2.4). **Note:** `host.containers.internal` is a
-  podman/gvproxy convention (resolved by gvproxy inside the container VM)
+  the env var (§2.4). **Note:** `host.containers.internal` is a gvproxy
+  container-VM convention (resolved by gvproxy inside the container VM)
   and does **not** resolve on bare macOS; using it for sandbox-exec causes
   `ENOTFOUND` on every dial.
 - Rationale: macOS `sandbox-exec` does not support reliable Unix-socket
@@ -136,7 +137,8 @@ or on Darwin (sandbox-exec, where both sidecar and extension run on the host loo
 PRISM_HARNESS_PIPE=tcp://127.0.0.1:54321
 ```
 
-> **Note:** `host.containers.internal` is a podman/gvproxy convention and
+> **Note:** `host.containers.internal` is a gvproxy container-VM convention
+> and
 > resolves only inside a container VM where gvproxy injects the hostname. It
 > does **not** resolve on bare macOS. The sandbox-exec path always uses
 > `127.0.0.1` instead.
@@ -861,8 +863,8 @@ The order is:
 5. The extension's `hello` frame arrives at the sidecar.
 6. The sidecar replies `hello_ack` and **calls `OnReady`** (writes
    `~/.local/state/prism/run/<session>-sidecar.ready`). The agent pane,
-   which is polling for this file, unblocks and runs `podman attach` /
-   the equivalent for non-podman modes.
+   which is polling for this file, unblocks and launches the agent
+   command for the session's isolation mode.
 7. Domain frames flow.
 
 The first frame **is** the readiness signal. There is no separate health

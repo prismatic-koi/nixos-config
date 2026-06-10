@@ -482,7 +482,8 @@ func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome verifies that
-// non-sandbox-exec, non-bwrap isolation modes (podman, host, "") use the real
+// non-sandbox-exec isolation modes (host, "", and an unknown legacy value,
+// which exercises the defensive default branch) use the real
 // home directory for the sessions root WHEN PI_CODING_AGENT_DIR is unset.
 // The bwrap branch is covered separately by TestArchiveAdapter_SourcePath_Bwrap*
 // below.
@@ -496,7 +497,7 @@ func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesRealHome(t *testing.T) {
 	const sessionID = "pi-ses-xyz-nonse"
 	const worktree = "/tmp/test-non-sandbox"
 
-	for _, mode := range []string{"podman", "host", ""} {
+	for _, mode := range []string{"unknown-legacy-mode", "host", ""} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			a := pi.NewArchiveAdapter()
 			p := harnessarchive.SourceParams{
@@ -531,7 +532,7 @@ func TestArchiveAdapter_SourcePath_NonSandboxExec_UsesPICodingAgentDir(t *testin
 	const sessionID = "pi-ses-env-mode"
 	const worktree = "/tmp/test-env-mode"
 
-	for _, mode := range []string{"podman", "host", "bwrap", ""} {
+	for _, mode := range []string{"unknown-legacy-mode", "host", "bwrap", ""} {
 		t.Run("mode="+mode, func(t *testing.T) {
 			a := pi.NewArchiveAdapter()
 			p := harnessarchive.SourceParams{

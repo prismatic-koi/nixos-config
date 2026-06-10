@@ -7,7 +7,7 @@ package cmd
 // exist are skipped silently — safe to call more than once.
 //
 // Stagger: a configurable delay (default 500ms) is inserted between successive
-// session creates to flatten the podman startup burst on machines with many
+// session creates to flatten the sidecar startup burst on machines with many
 // sessions. The delay only applies to sessions that are actually being created;
 // it is skipped for already-running sessions and for sessions being marked
 // ended due to missing worktrees. It is also fully skipped in dry-run mode.
@@ -128,7 +128,7 @@ func Restore(dryRun bool) error {
 	// pendingStagger is set to true after each successful session.Create. It is
 	// consumed (a sleep is applied) immediately before the NEXT actual create,
 	// not before skipped sessions or circuit-breaker-tripped sessions. This
-	// ensures the delay only fires between real podman/sidecar starts.
+	// ensures the delay only fires between real sidecar starts.
 	//
 	// Using a pointer so that restoreProjectSession can consume it without an
 	// extra return value: the function sleeps before session.Create if
@@ -380,8 +380,9 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		}
 	}
 
-	// In sandboxed mode (podman or bwrap), inject the role-specific config
-	// blob as the harness config env var. This mirrors the pattern in spawn.go.
+	// In sandboxed mode (bwrap or sandbox-exec), inject the role-specific
+	// config blob as the harness config env var. This mirrors the pattern in
+	// spawn.go.
 	// Profile load errors are non-fatal for restore: log and skip config
 	// injection so the session is still recreated without it, rather than
 	// aborting the entire restore run.
@@ -419,9 +420,6 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		// file existence (os.Stat) rather than cfg.ConfigContent, so it picks
 		// this up correctly.
 		//
-		// Podman mode does NOT need this write — the sidecar's Create() path
-		// already writes the file before the container starts.
-		//
 		// IMPORTANT: the path key used here must match the one used by Manager
 		// internally. Manager.name = container.NameForSession(s.SessionName),
 		// and Manager.harnessConfigFilePath() calls HarnessConfigFilePath(m.name).
@@ -457,9 +455,9 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// fresh one below.
 	session.KillSidecar(s.SessionName)
 
-	// For container-mode sessions, also remove any stale container left over
-	// from the previous lifecycle. Without this, `podman create` inside the
-	// new sidecar would fail with "container name already in use".
+	// For container-mode sessions (none in current code — isoCaps.IsContainer
+	// is always false), also remove any stale container left over
+	// from the previous lifecycle.
 	// removeContainerIfExists is idempotent and logs non-fatal errors
 	// internally, so it is safe to call even when no container exists.
 	// Host-mode sessions never have a container, so this step is skipped.

@@ -444,7 +444,7 @@ Add `--json` to any `prism merges` / `prism merges list` invocation (including w
 
 **Ctrl-C semantic.** Killing a `--wait` invocation (Ctrl-C, SIGTERM) interrupts the **local** wait only — the underlying merge / review / spawn keeps running. To recover the result later, re-run the same command (or `prism merges list` / `prism reviews list` / `prism checkin <session>`).
 
-**Inside a sandbox.** `--wait` works identically inside and outside a bwrap / podman / sandbox-exec sandbox. The CLI auto-detects `PRISM_HOST_API` and routes its terminal-state probes through the sidecar's read-only wait endpoints, so the host's prism.db is the source of truth in either case.
+**Inside a sandbox.** `--wait` works identically inside and outside a bwrap / sandbox-exec sandbox. The CLI auto-detects `PRISM_HOST_API` and routes its terminal-state probes through the sidecar's read-only wait endpoints, so the host's prism.db is the source of truth in either case.
 
 **Exit codes.** `--wait` paths use exit codes that distinguish failure modes:
 
@@ -835,7 +835,7 @@ The `--json` flag emits a single line to stdout instead:
 
 In `--json` mode the human-readable line is NOT emitted on stdout (mutual exclusion); it may still be mirrored to stderr for log capture. On error, `--json` emits `{"error": "<message>"}` to stderr and exits non-zero.
 
-The success signal reaches the caller identically from a direct-host invocation and from inside a bwrap / sandbox-exec / podman container: the container path's sidecar proxy captures the host-side child's stdout and stderr separately and re-emits them on the matching local streams, so the `OK` line lands on the container's stdout (and the mirror on stderr) byte-for-byte the same as a host invocation. `--json` is forwarded to the host child via the proxy request body, so the JSON envelope is also surfaced end-to-end.
+The success signal reaches the caller identically from a direct-host invocation and from inside a bwrap / sandbox-exec sandbox: the sandbox path's sidecar proxy captures the host-side child's stdout and stderr separately and re-emits them on the matching local streams, so the `OK` line lands on the container's stdout (and the mirror on stderr) byte-for-byte the same as a host invocation. `--json` is forwarded to the host child via the proxy request body, so the JSON envelope is also surfaced end-to-end.
 
 ### Sender-side idempotency — re-runs within 5 minutes are a no-op
 
@@ -926,7 +926,7 @@ Reads the last 10 turns from the prism DB as a rich narrative view. Use `--verbo
 prism logs <session>
 ```
 
-The raw sidecar log is where container startup errors, timing traces, and stderr from failed `podman run` commands land. This is the most informative diagnostic for infrastructure failures. See [`prism logs`](#prism-logs) below for full flag documentation.
+The raw sidecar log is where sandbox startup errors, timing traces, and stderr from failed launch commands land. This is the most informative diagnostic for infrastructure failures. See [`prism logs`](#prism-logs) below for full flag documentation.
 
 **Step 4 — Source cross-reference:**
 
@@ -978,15 +978,13 @@ prism logs <session> --harness-events --deliver=webhook:https://example.com/fram
 
 A lookup table of log patterns, their causes, and remediation hints:
 
-- **`statfs <path>: no such file or directory`** — podman was told to bind-mount a path that does not exist on the host. Common cause: a container-internal path (e.g. `/workspace`) leaked into a host-side `podman run` invocation. Check the preceding log line for the full `podman run` command. See incident #751 for a historical example.
+- **`statfs <path>: no such file or directory`** — the sandbox was told to bind-mount a path that does not exist on the host. Check the preceding log line for the full launch command. See incident #751 for a historical example.
 
-- **`exit status 125`** — the `podman container create` (or `podman run`) command failed at the OS level. The actual cause is on the preceding line(s) in the log — read upward from this line to find it.
+- **`startup-connect timeout fired`** — the session started but the sidecar never received the first SSE event from the agent. Usual causes: a misconfigured `harness-config.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the launch command line and any JSON parse errors.
 
-- **`container did not become ready within 120s`** — the container started but the sidecar never reached the ready state. Usual causes: a misconfigured `harness-config.json` (agent not declared, malformed JSON), a missing bind-mount, or a missing `--agent` flag value. Check the sidecar log for the `podman run` command line and any JSON parse errors.
+- **Session rows present in `prism sessions list` but no events in `prism checkin`** — the agent process either never started or died immediately after creation. Run `prism logs <session>` to see the full launch command line and its stderr output.
 
-- **Session rows present in `prism sessions list` but no events in `prism checkin`** — the container either never started or died immediately after creation. Run `prism logs <session>` to see the full podman command line and its stderr output.
-
-- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the container's `harness-config.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
+- **Session name doesn't match expected shape** (e.g. `~review` where `~review-1-review-code` is expected) — the agent-list construction produced the wrong agent names, or the `--agent` flag value is incorrect. Check the session's `harness-config.json` for the `agent` block contents and the sidecar log for the `--agent` flag value used in the command line.
 
 - **Zombie DB rows (session in `prism sessions list` but no live tmux session)** — a previous session's process died without cleaning up DB state. Use `prism cleanup --yes --session <name>` to end the row (stamps `ended_at`, releases any dangling port, clears the pi resume linkage) so it drops out of the active-session view. The row itself is preserved; re-spawning on the same branch name reuses it by re-seeding `state` back to `idle`.
 

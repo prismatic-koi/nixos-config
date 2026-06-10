@@ -1,4 +1,5 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines hostIsolator, a no-op implementation of the Isolator
 // interface for IsolationHost ("host") mode, where the agent runs directly in
 // the tmux pane with no sandbox layer.

@@ -5,7 +5,7 @@ package cmd
 // Steps (each attempted independently — a failure in one does not abort others):
 //
 //  1. Kill the tmux server (equivalent to `tmux kill-server`).
-//  2. Stop and remove all podman containers whose names match the "prism-" prefix.
+//  2. Run each registered isolator's Reset sweep (all no-op stubs today).
 //  3. Mark all non-ended rows in agent_status as ended (sets ended_at = now;
 //     state is intentionally left at its last known value — ended_at IS NULL
 //     is the canonical "active session" filter throughout the codebase) AND
@@ -49,7 +49,7 @@ var resetCmd = &cobra.Command{
 
 Steps (each attempted independently):
   1. Kill the tmux server (all sessions and panes).
-  2. Stop and remove all podman containers with the "prism-" name prefix.
+  2. Run each registered isolator's Reset sweep.
   3. Mark all non-ended rows in agent_status as ended and clear the pi
      conversation resume pointer (harness_session_id) on every row.
   4. Terminate all sidecar processes (reads PID files from
@@ -100,10 +100,9 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	// ── Step 2: Reset every registered isolator ──────────────────────────────
 	// Post A1.L3 (issue #1140): the per-mode reset logic moved into each
 	// Isolator's Reset method. `prism reset` iterates over the registered
-	// modes and dispatches to each. Today only podman has a non-stub Reset
-	// body (the prism-* container sweep); bwrap, sandbox-exec, and host
-	// return nil — orphan-agent-run reaping is a future implementation.
-	fmt.Println("Removing prism- podman containers...")
+	// modes and dispatches to each. Today every isolator's Reset is a no-op
+	// stub — orphan-agent-run reaping is a future implementation.
+	fmt.Println("Running per-isolator reset sweeps...")
 	if err := resetIsolators(); err != nil {
 		proglog.Warnf("[prism reset] isolator cleanup: %v (continuing)\n", err)
 	}
@@ -151,15 +150,13 @@ func runReset(cmd *cobra.Command, _ []string) error {
 
 // resetIsolators iterates over every registered isolation mode and calls
 // Reset on each one. Returns the first non-nil error encountered (other
-// modes still get a chance to run). Today only podmanIsolator.Reset has a
-// non-stub body — the prism-* container sweep (was: resetRemovePodmanContainers).
+// modes still get a chance to run). Today every Reset body is a no-op stub.
 //
 // Failures are logged at the call site (Step 2 in runReset); this function
 // returns the error verbatim so the caller can decide whether to continue.
 func resetIsolators() error {
-	// Use a generous per-mode timeout so a slow `podman ps` does not starve
-	// the rm step. The podman implementation issues two podman calls
-	// (`ps -a` then `rm -f <ids...>`); 60 s covers both with margin.
+	// Use a generous per-mode timeout so a slow sweep in one isolator does
+	// not starve the others.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 

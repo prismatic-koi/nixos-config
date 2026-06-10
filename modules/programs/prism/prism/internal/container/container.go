@@ -1,23 +1,23 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 //
-// The sidecar (running on the host) creates a podman container running
-// the agent in combined TUI + HTTP mode, health-checks it until the HTTP
-// endpoint responds, and stops/removes the container on shutdown. The tmux
-// agent window attaches to the container's PTY via "podman attach" so the
-// agent TUI is visible to the user.
+// Each isolation mode ("bwrap", "sandbox-exec", "host" — see
+// config.ValidIsolationModes) is implemented as an Isolator (isolator.go).
+// The Manager prepares the shared per-session artefacts (SSH config,
+// gitconfig, bind-mount sources) and dispatches lifecycle operations
+// (create, shutdown, cleanup) to the registered Isolator for the session's
+// mode.
 //
 // Health check: we probe GET /global/health (not GET /) because the root URL
 // may redirect to an external URL on some harnesses, adding network latency
-// on every container startup. /global/health is in ControlPlaneRoutes and
+// on every startup. /global/health is in ControlPlaneRoutes and
 // returns immediately with no external I/O.
 //
 // Design notes:
-//   - All podman operations use exec.Command("podman", ...) — no daemon or
-//     socket is required from Go's perspective, just a podman binary on PATH.
-//   - The container name is derived from the prism session name so it is
+//   - The sandbox name is derived from the prism session name so it is
 //     predictable and idempotent.
 //   - Credentials are injected as environment variables, never as mounted files.
-//   - The agent serve container port (ContainerPort) is bound to 127.0.0.1
+//   - The agent serve port (ContainerPort) is bound to 127.0.0.1
 //     only — not 0.0.0.0. The host-API TCP listener (Darwin only) intentionally
 //     binds 0.0.0.0 so the gvproxy bridge interface can reach it from the VM.
 package container
@@ -41,8 +41,9 @@ const (
 
 	// Image is the container image name used for all agent containers.
 	// The image is published to GHCR as a multi-arch image by CI and pulled
-	// on first use by the systemd/launchd service. podman resolves the correct
-	// arch (amd64/arm64) automatically from the multi-arch manifest.
+	// on first use by the systemd/launchd service. The container runtime
+	// resolves the correct arch (amd64/arm64) automatically from the
+	// multi-arch manifest.
 	Image = "ghcr.io/prismatic-koi/prism-agent:latest"
 
 	// DefaultHealthCheckTimeout is the maximum time to wait for the container
@@ -56,10 +57,8 @@ const (
 // isolationMode identifies which sandbox layer will consume the temp files
 // (gitconfig, ssh config) that writeGitconfig / writeSshConfig generate.
 //
-// The three sandboxes mount the SSH artefacts at different in-sandbox paths:
+// The sandboxes mount the SSH artefacts at different in-sandbox paths:
 //
-//   - podman runs as root, so canonical paths are /root/.ssh/{access-key,
-//     signing-key,signing-key.pub,allowed_signers} — the agent's $HOME is /root.
 //   - bwrap runs as the host user, so canonical paths are
 //     $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
 //     where $HOME is the host user's home directory.
@@ -67,7 +66,7 @@ const (
 //     HOME (e.g. ~/.local/state/prism/sandbox-exec/<instance>) — the agent
 //     sees this as $HOME and the SSH artefacts are referenced under it.
 //
-// Agents inside all three sandboxes see the same generic filenames
+// Agents inside both sandboxes see the same generic filenames
 // (access-key, signing-key, …); only the $HOME prefix differs. The isolation
 // mode lets the generators substitute the correct prefix into the config
 // files they write.
@@ -208,8 +207,8 @@ type Config struct {
 	// listener (Darwin only). When non-zero, PRISM_HARNESS_PIPE is set to
 	// tcp://127.0.0.1:<HarnessPipeTCPPort> for sandbox-exec sessions (both
 	// the sidecar and the sandboxed extension run on the host loopback, so
-	// host.containers.internal — a podman/gvproxy convention — must not be
-	// used here). On Linux this is zero.
+	// host.containers.internal — a gvproxy container-VM convention — must not
+	// be used here). On Linux this is zero.
 	HarnessPipeTCPPort int
 
 	// InstanceID is the UUID instance identifier for the prism session that owns
@@ -267,15 +266,15 @@ type Config struct {
 	InitialPrompt string
 
 	// RuntimeEnv holds harness-specific environment variables to inject
-	// into the container. Each entry is emitted as --env KEY=VALUE (podman)
-	// or --setenv KEY VALUE (bwrap). Populated from
+	// into the sandbox. Each entry is emitted in the isolator's native
+	// syntax (e.g. --setenv KEY VALUE for bwrap). Populated from
 	// harness.Harness.RuntimeEnv() by the sidecar at container creation
 	// time. When nil, no harness-specific env vars are injected.
 	RuntimeEnv map[string]string
 
 	// AgentEnvVars holds the profile-level environment variables to inject
-	// into the agent shell. Each entry is emitted as --env KEY=VALUE (podman)
-	// or --setenv KEY VALUE (bwrap). Sourced from profiles.json agent_env_vars
+	// into the agent shell. Each entry is emitted in the isolator's native
+	// syntax (e.g. --setenv KEY VALUE for bwrap). Sourced from profiles.json agent_env_vars
 	// (written by Nix). These carry entries such as GIT_EDITOR=true,
 	// KUBECONFIG, and AWS_CONFIG_FILE into the sandboxed agent.
 	// When nil or empty, no profile env vars are injected.
@@ -355,13 +354,13 @@ type Config struct {
 	PIBinaryPath string
 }
 
-// NameForSession returns the stable podman container name for a session.
+// NameForSession returns the stable sandbox name for a session.
 // The name is derived from the session name with "@", "/", ".", and "~"
 // replaced by "-" and a "prism-" prefix, e.g. "prism-nixos-config-feature".
 //
 // The "~" replacement is needed for review agent session names which are
-// structured as "<parent>~review-<N>~<agentName>" — without it, podman would
-// reject the container name (allowed charset: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
+// structured as "<parent>~review-<N>~<agentName>" — it keeps the name within
+// the conservative charset [a-zA-Z0-9][a-zA-Z0-9_.-]*.
 func NameForSession(sessionName string) string {
 	safe := strings.ReplaceAll(sessionName, "@", "-")
 	safe = strings.ReplaceAll(safe, "/", "-")
@@ -516,8 +515,8 @@ func WriteHarnessConfig(sessionName, content string) error {
 // The config only needs to handle GitHub; other SSH hosts are not expected
 // inside agent sandboxes. The IdentityFile path is $HOME/.ssh/access-key
 // using the sandbox-specific $HOME prefix, which matches the generic name
-// used by both the podman volume mount (/root/.ssh/access-key) and the bwrap
-// bind-mount (<hostHome>/.ssh/access-key).
+// used by the bwrap bind-mount (<hostHome>/.ssh/access-key) and the
+// sandbox-exec staging HOME.
 func (m *Manager) writeSshConfig(mode isolationMode) error {
 	identityFile := filepath.Join(sandboxHome(m, mode), ".ssh", "access-key")
 	sshConfig := "Host github.com\n" +
@@ -552,9 +551,6 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //
 // The mode argument controls the paths embedded in the generated file:
 //
-//   - isolationPodman: signingKey = /root/.ssh/signing-key.pub,
-//     allowedSignersFile = /root/.ssh/allowed_signers (paths inside the
-//     podman container, where the agent runs as root).
 //   - isolationBwrap: signingKey = <hostHome>/.ssh/signing-key.pub,
 //     allowedSignersFile = <hostHome>/.ssh/allowed_signers (paths inside
 //     the bwrap sandbox, where the agent runs as the host user).
@@ -639,7 +635,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 	if hasSigning {
 		// Read the signing public key content to build the allowed_signers file.
 		// Only write [gpg "ssh"] allowedSignersFile when the file was actually
-		// produced — if it can't be written, podman must not be given a
+		// produced — if it can't be written, the sandbox must not be given a
 		// bind-mount source path that doesn't exist on disk.
 		pubKeyContent, err := os.ReadFile(signingKeyPub)
 		if err != nil {
@@ -692,8 +688,8 @@ func (m *Manager) worktreeGitdirFilePath() string {
 // WorktreeGitdirFilePath is the exported version of worktreeGitdirFilePath for tests.
 func (m *Manager) WorktreeGitdirFilePath() string { return m.worktreeGitdirFilePath() }
 
-// PrepareBwrap writes the same temp files that Create() writes for podman
-// sessions (SSH config, gitconfig, opencode.json config) and returns the
+// PrepareBwrap writes the per-session temp files (SSH config, gitconfig,
+// opencode.json config) and returns the
 // complete bwrap argument list via bwrapIsolator.BuildArgs. It does NOT write
 // the gitdir fixup files (prism-gitdir-*, prism-wt-gitdir-*) because bwrap
 // uses Dst==Src mounts, so the host git paths are visible at their exact
@@ -734,25 +730,27 @@ func (m *Manager) PrepareSandboxExec() ([]string, error) {
 	return iso.Prepare(context.Background(), m)
 }
 
-// prepareVolumeDirs eagerly creates host directories that buildRunArgs() will
-// reference as bind-mount sources. podman exits 125 ("statfs: no such file or
-// directory") if any bind-mount source is absent, so we create them here —
-// before buildRunArgs() is called — so that buildRunArgs() itself remains a
-// pure argument builder with no filesystem side-effects.
+// prepareVolumeDirs eagerly creates host directories that the sandbox
+// argument builders will reference as bind-mount sources. A sandbox launch
+// fails with an unhelpful error if any bind-mount source is absent, so we
+// create them here — before the argument builders run — so that the builders
+// themselves remain pure with no filesystem side-effects.
 //
 // Directories are classified as critical or optional:
-//   - Critical directories are unconditionally bound by the container runtime
-//     (bwrap --bind, podman --volume). A missing critical dir causes the
+//   - Critical directories are unconditionally bound by the sandbox
+//     (bwrap --bind). A missing critical dir causes the
 //     runtime to abort at exec time with an unhelpful error, so we return an
 //     error immediately so the caller sees the real cause.
-//   - Optional directories are guarded by an os.Stat check in buildRunArgs
-//     and are skipped when absent. A failure to create them is logged but does
-//     not fail the call — the container still starts, just without that mount.
+//   - Optional directories are guarded by an os.Stat check in the argument
+//     builders and are skipped when absent. A failure to create them is
+//     logged but does not fail the call — the sandbox still starts, just
+//     without that mount.
 //
 // perSessionState controls whether the per-session pi state directory
-// (~/.local/share/pi/prism-sessions/<name>/) is created. The podman path
-// requires it (Darwin virtiofs WAL-mode locking workaround); the bwrap path
-// shares the host pi data dir directly and does not need a per-session dir.
+// (~/.local/share/pi/prism-sessions/<name>/) is created. The removed legacy
+// container path required it (Darwin virtiofs WAL-mode locking workaround);
+// the bwrap path shares the host pi data dir directly and does not need a
+// per-session dir.
 func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -760,12 +758,11 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	}
 
 	// ── Critical directories ──────────────────────────────────────────────
-	// These are unconditionally bound by the container runtime. A single
+	// These are unconditionally bound by the sandbox. A single
 	// MkdirAll failure here is fatal — return immediately so the caller
 	// sees the real cause rather than a confusing runtime abort.
 
-	// Per-session pi state directory (podman only, critical because podman
-	// always binds it via --volume).
+	// Per-session pi state directory (legacy container path only).
 	if perSessionState {
 		piSessionDir := filepath.Join(home, ".local", "share", "pi", "prism-sessions", m.name)
 		if err := os.MkdirAll(piSessionDir, 0o755); err != nil {
@@ -773,15 +770,13 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		}
 	}
 
-	// Per-session host-API socket directory (both podman and bwrap, security fix #960).
+	// Per-session host-API socket directory (security fix #960).
 	// Each session places its socket in its own subdirectory
 	// (~/.local/state/prism/run/<sessionName>/hostapi.sock) instead of the
 	// shared run/ directory. The directory must be pre-created here so it
-	// exists before the sandboxed process starts:
-	//   - podman: directory must pre-exist before "podman run" evaluates the
-	//     bind-mount source; the sidecar creates the socket inside it later.
-	//   - bwrap: directory must pre-exist before the sidecar calls
-	//     net.Listen("unix", sockPath); bwrap is exec'd after.
+	// exists before the sandboxed process starts: it must pre-exist before
+	// the sidecar calls net.Listen("unix", sockPath); the sandbox is exec'd
+	// after.
 	// Using 0o700 (owner-only) so other users on the host cannot list or
 	// access this session's socket directory.
 	if m.cfg.HostAPISockPath != "" {

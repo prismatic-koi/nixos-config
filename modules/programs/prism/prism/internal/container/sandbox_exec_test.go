@@ -1838,8 +1838,8 @@ func TestSandboxExecCleanup_RemovesStagingHome(t *testing.T) {
 		t.Fatalf("staging HOME not created: %v", statErr)
 	}
 
-	// Call EnsureRemoved (uses a background context; no podman calls needed
-	// because sandboxExecIsolator.Shutdown is a no-op).
+	// Call EnsureRemoved (uses a background context;
+	// sandboxExecIsolator.Shutdown is a no-op).
 	m.EnsureRemoved(context.Background())
 
 	// Staging HOME must be gone.

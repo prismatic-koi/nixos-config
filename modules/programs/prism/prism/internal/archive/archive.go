@@ -93,7 +93,8 @@ type Params struct {
 	GroupID string
 	// PrismVersion is the git SHA or version of the prism binary. May be empty.
 	PrismVersion string
-	// IsolationMode is "podman", "bwrap", "sandbox-exec", or "host".
+	// IsolationMode is "bwrap", "sandbox-exec", or "host" (see
+	// config.ValidIsolationModes).
 	IsolationMode string
 	// AgentRunLogPath is the absolute path to the harness log file
 	// (~/.local/state/prism/run/<session>/agent-run.log). When non-empty and the

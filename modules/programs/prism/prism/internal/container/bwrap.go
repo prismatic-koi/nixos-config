@@ -1,4 +1,5 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines bwrapIsolator, a bubblewrap-based implementation of the
 // Isolator interface. It is a pure addition — nothing constructs bwrapIsolator
 // at runtime yet. The wiring (CLI flag / config field) is intentionally deferred
@@ -152,13 +153,9 @@ func standardSandboxEnvArgs() []string {
 	return args
 }
 
-// BuildArgs constructs the bwrap argument list that is equivalent to the
-// podman run arguments built by Manager.buildRunArgs(), translating podman
-// syntax into bubblewrap equivalents:
-//
-//   - --volume SRC:DST:ro → --ro-bind SRC DST
-//   - --volume SRC:DST[:Z] → --bind SRC DST
-//   - --env K=V → --setenv K V
+// BuildArgs constructs the bwrap argument list for the session sandbox:
+// bind-mounts (--ro-bind / --bind), environment injection (--setenv), and
+// namespace flags.
 //   - --workdir X → --chdir X
 //
 // Key design decision: Dst == Src for all mounts (no /workspace remap).
@@ -191,9 +188,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// standardSandboxEnvArgs and credentialEnvVars). Without --clearenv, bwrap
 	// forwards the full host environment — which on a prism coordinator
 	// includes role-specific GitHub tokens (PRISM_GITHUB_TOKEN_*) and other
-	// credentials that must never reach a sandboxed agent. Podman does not
-	// have this problem because its default is to pass nothing from the host;
-	// --clearenv gives bwrap the same baseline.
+	// credentials that must never reach a sandboxed agent. --clearenv gives
+	// bwrap a pass-nothing-from-the-host baseline.
 	//
 	// --unshare-ipc is intentionally omitted: SQLite WAL mode uses a -shm
 	// shared memory file that relies on mmap() coherency across processes.
@@ -293,8 +289,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// ── Bare repo and worktree private git state (read-write) ──────────────
 	// Dst == Src: both directories mount at their host paths inside the
-	// sandbox, not at the /prism-git canonical container path used by the
-	// podman path. This is correct bwrap behaviour — the git commondir pointer
+	// sandbox (no canonical-path remapping). This is correct bwrap behaviour
+	// — the git commondir pointer
 	// inside WorktreeGitDir/commondir already points at the absolute host path
 	// for the bare dir, so no remapping is needed. PRISM_BARE_ROOT is updated
 	// below to point at the actual host path rather than /prism-git.
@@ -338,8 +334,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// to follow in a PR.
 
 	// ── Nix daemon socket dir (read-write) ──────────────────────────────────
-	// Mount the parent directory, not the socket file directly (same pattern
-	// as the podman path — avoids statfs ENOTSUP on certain filesystems).
+	// Mount the parent directory, not the socket file directly
+	// (avoids statfs ENOTSUP on certain filesystems).
 	// Kept inline because the absolute system path (not HOME-relative) is
 	// outside the StandardSandboxMounts shape.
 	nixDaemonSocketDir := "/nix/var/nix/daemon-socket"
@@ -347,10 +343,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// ── SSH keys (read-only, conditional) ───────────────────────────────────
 	// All SSH artefacts are remapped to canonical generic paths under
-	// $HOME/.ssh/ inside the sandbox. Agents inside both bwrap and podman
-	// sandboxes see the same filenames (access-key, signing-key, signing-key.pub,
-	// allowed_signers, known_hosts) — only the $HOME prefix differs (/root for
-	// podman, <hostHome> for bwrap). The generated ~/.ssh/config and
+	// $HOME/.ssh/ inside the sandbox. Agents inside both bwrap and
+	// sandbox-exec sandboxes see the same filenames (access-key, signing-key,
+	// signing-key.pub, allowed_signers, known_hosts) — only the $HOME prefix
+	// differs. The generated ~/.ssh/config and
 	// ~/.gitconfig (see writeSshConfig and writeGitconfig) reference these
 	// canonical paths using the same prefix via sandboxHome().
 	sshDir := filepath.Join(home, ".ssh")
@@ -445,8 +441,7 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// duplicated those mounts here have been removed.
 
 	// ── Environment variables ────────────────────────────────────────────────
-	// Translate --env K=V (podman) → --setenv K V (bwrap).
-	// Inject the same set of env vars as the podman path.
+	// Inject the per-session env vars as --setenv K V pairs.
 	for _, kv := range m.credentialEnvVars() {
 		k, v, _ := strings.Cut(kv, "=")
 		args = append(args, "--setenv", k, v)
@@ -468,8 +463,6 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// terminal type as the tmux pane (e.g. tmux-256color). In bwrap mode the
 	// host terminfo tree is already bind-mounted (/etc, /nix, /run/current-system),
 	// so any terminfo entry the host has is resolvable inside the sandbox.
-	// This is intentionally different from the podman path, which hardcodes
-	// xterm-256color because the container image may not ship tmux-256color.
 	// Fallback to xterm-256color only if TERM is unset on the host (shouldn't
 	// happen from a tmux pane, but guard anyway).
 	{
@@ -527,8 +520,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		// subdirectory (run/<session>/hostapi.sock), so binding only that
 		// directory means the sandbox cannot see other sessions' sockets.
 		//
-		// A directory bind (not file bind) is required here for the same reason
-		// as the podman path: the sidecar creates the socket file after startup,
+		// A directory bind (not file bind) is required here: the sidecar
+		// creates the socket file after startup,
 		// and a file-level bind would pin the original inode — meaning the sandbox
 		// would not see the new socket after os.Remove + net.Listen replaced it.
 		// Binding the directory makes the socket file appear inside the sandbox

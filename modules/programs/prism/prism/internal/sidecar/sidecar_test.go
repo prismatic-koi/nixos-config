@@ -2771,7 +2771,7 @@ func TestNotifyCoordinator_ParentWorkerStillNotifies(t *testing.T) {
 // (AC-16) prevents OnReady from firing when Shutdown() races a successful
 // health probe.
 //
-// The race: WaitHealthy returns a genuine 200 during podman stop's grace
+// The race: WaitHealthy returns a genuine 200 during the container-stop grace
 // period. Shutdown() has already set shuttingDown=true. The guard in Run()
 // checks the flag before calling OnReady — this test exercises that guard
 // directly by setting shuttingDown before the guard check runs.
@@ -9027,18 +9027,15 @@ func TestStartupConnectTimeout_ConfigurableViaField(t *testing.T) {
 	// field and relies on the default path.
 }
 
-// TestStartupConnectTimeout_PodmanModeSkipped verifies that the startup-connect
-// timeout goroutine is NOT started when Container != nil (podman mode). In
-// podman mode, WaitHealthy/CreateSession already provide startup-failure
-// protection (#1011); the SSE timeout would be redundant and might fire during
-// container startup.
+// TestStartupConnectTimeout_BwrapModeFiresWhenContainerNil verifies that the
+// startup-connect timeout goroutine IS started when Container == nil (bwrap
+// mode). In the legacy container mode (Container != nil),
+// WaitHealthy/CreateSession already provided startup-failure protection
+// (#1011); the SSE timeout would have been redundant and might have fired
+// during container startup.
 //
-// We cannot test the full podman path in a unit test, but we can verify the
-// bwrap-mode gate: by seeding firstEventLogged=false and leaving Container nil
-// vs non-nil, and observing whether the timeout fires.
-//
-// Container is a *container.Config. Setting it non-nil is the podman gate.
-// This test verifies the bwrap path is the one that fires by using the
+// Container is a *container.Config. Setting it non-nil was the container-mode
+// gate. This test verifies the bwrap path is the one that fires by using the
 // blockingHarness + a short timeout without Container set.
 func TestStartupConnectTimeout_BwrapModeFiresWhenContainerNil(t *testing.T) {
 	const timeout = 20 * time.Millisecond
@@ -9858,8 +9855,8 @@ func TestBwrapTimingMarkers_FirstEvent(t *testing.T) {
 // TestBwrapTimingMarkers_PromptDelivered verifies that when InitialPrompt is
 // non-empty (a prism prompt was supplied at agent-run launch via --prompt),
 // the sidecar emits a `[timing] prompt delivered: <d> from start` marker on
-// the first SSE event. AC #4 (#1052): mirrors the existing podman line at
-// sidecar.go:489 so the bwrap and podman timelines have the same shape.
+// the first SSE event. AC #4 (#1052): mirrors the legacy container-path
+// marker so all timelines have the same shape.
 func TestBwrapTimingMarkers_PromptDelivered(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("PRISM_TEST_MODE_RESTRICT_HOSTAPI", "1")

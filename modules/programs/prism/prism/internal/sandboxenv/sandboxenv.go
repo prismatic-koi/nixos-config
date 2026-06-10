@@ -9,7 +9,7 @@
 // already uses to decide "am I inside a sandbox and need to proxy?":
 //
 //   - PRISM_HOST_API is set exclusively by the prism sidecar when launching a
-//     sandboxed session (bwrap, sandbox-exec, or podman container).
+//     sandboxed session (bwrap or sandbox-exec).
 //   - PRISM_SPAWN_PATH is also set in sandboxed sessions but serves as a
 //     working-directory hint only — it is NOT a sandbox sentinel and NOT a
 //     keybind discriminator. The dedicated tmux-keybind sentinel is
@@ -23,7 +23,7 @@ package sandboxenv
 import "os"
 
 // IsInsideSandbox reports whether the current process is running inside a
-// prism sandbox (bwrap, sandbox-exec, or podman container).
+// prism sandbox (bwrap or sandbox-exec).
 //
 // It uses PRISM_HOST_API != "" as the sentinel: the sidecar sets this variable
 // exclusively when launching a sandboxed session, so its presence is a reliable

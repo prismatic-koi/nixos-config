@@ -20,7 +20,7 @@ package cmd
 //   - TestSpawnInvestigateSession_BwrapMode_LeavesHarnessPipeSockPathEmpty
 //     proves the gate does real work — for container-mode invokers
 //     HarnessPipeSockPath stays empty, so the existing container-mode
-//     injection paths (bwrap --setenv, sandbox-exec profile, podman --env)
+//     injection paths (bwrap --setenv, sandbox-exec profile)
 //     remain responsible for PRISM_HARNESS_PIPE.
 //
 // Test-suite isolation contract (AGENTS.md, issue #1608):
@@ -117,7 +117,7 @@ func TestSpawnInvestigateSession_HostMode_PopulatesHarnessPipeSockPath(t *testin
 // verifies the gate does real work: when the invoker's resolved isolation
 // mode is not "host" (here bwrap), SpawnOpts.HarnessPipeSockPath stays empty
 // so the existing container-mode injection paths (bwrap --setenv, sandbox-exec
-// profile, podman --env) remain responsible for PRISM_HARNESS_PIPE.
+// profile) remain responsible for PRISM_HARNESS_PIPE.
 //
 // Without this assertion a buggy fix that unconditionally set
 // HarnessPipeSockPath for all isolation modes would pass the host-mode test
@@ -151,7 +151,7 @@ func TestSpawnInvestigateSession_BwrapMode_LeavesHarnessPipeSockPathEmpty(t *tes
 	}
 
 	if captured.HarnessPipeSockPath != "" {
-		t.Errorf("SpawnOpts.HarnessPipeSockPath = %q, want \"\" for bwrap invokers — container-mode injection paths (bwrap --setenv, sandbox-exec profile, podman --env) own PRISM_HARNESS_PIPE for container sessions; pre-computing the sock path here would double-inject (issue #2111 AC).",
+		t.Errorf("SpawnOpts.HarnessPipeSockPath = %q, want \"\" for bwrap invokers — container-mode injection paths (bwrap --setenv, sandbox-exec profile) own PRISM_HARNESS_PIPE for container sessions; pre-computing the sock path here would double-inject (issue #2111 AC).",
 			captured.HarnessPipeSockPath)
 	}
 }

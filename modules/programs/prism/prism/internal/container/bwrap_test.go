@@ -468,7 +468,7 @@ func TestBwrapBuildArgs_NixCacheDirBound(t *testing.T) {
 func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
 	// worktree private git state are both bound at their host paths (Dst == Src),
-	// not remapped to /prism-git as in the podman path.
+	// with no canonical-path remapping.
 	bareRoot := t.TempDir()
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if err := os.MkdirAll(bareDir, 0o755); err != nil {
@@ -1672,7 +1672,8 @@ func TestPrepareBwrap_WritesSSHConfigAndGitconfig(t *testing.T) {
 		t.Errorf("Gitconfig temp file not written: %v", err)
 	}
 
-	// Gitdir fixup files must NOT exist (they are podman-only).
+	// Gitdir fixup files must NOT exist (they belonged to the removed
+	// legacy container path).
 	if _, err := os.Stat(m.GitdirFilePath()); err == nil {
 		t.Errorf("gitdir fixup file should not be written by PrepareBwrap")
 	}

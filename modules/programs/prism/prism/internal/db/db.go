@@ -213,7 +213,7 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
 
     -- Resolved effective isolation mode the session actually ran under
-    -- (podman/bwrap/sandbox-exec/host), captured at spawn time post profile/
+    -- (bwrap/sandbox-exec/host), captured at spawn time post profile/
     -- config/Nix-default resolution. Added in #2105 so stats compare surfaces
     -- a meaningful value even when --isolation was omitted. NULLABLE for
     -- back-compat with pre-#2105 rows; new rows are always populated by the
@@ -2118,7 +2118,7 @@ type SpawnInputs struct {
 	// session ran under should consult IsolationMode (below) instead.
 	IsolationFlag *string
 	// IsolationMode is the resolved effective isolation mode the session
-	// actually ran under ("podman", "bwrap", "sandbox-exec", "host"),
+	// actually ran under ("bwrap", "sandbox-exec", "host"),
 	// captured at spawn time after profile / config / Nix-default
 	// resolution. Always populated by the centralised writer post-#2105 so
 	// the `prism stats compare` Spawn Inputs block can surface it. nil only

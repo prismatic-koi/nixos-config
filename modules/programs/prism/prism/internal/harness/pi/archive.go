@@ -160,9 +160,9 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // which pi creates one subdirectory per encoded CWD. The two distinct branches
 // are:
 //
-//	host / bwrap / podman / "" → $PI_CODING_AGENT_DIR/sessions when the env var
-//	                              is set; else <home>/.pi/agent/sessions
-//	sandbox-exec               → <stagingHome>/.pi/agent/sessions
+//	host / bwrap / "" → $PI_CODING_AGENT_DIR/sessions when the env var
+//	                     is set; else <home>/.pi/agent/sessions
+//	sandbox-exec      → <stagingHome>/.pi/agent/sessions
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi reads it
 // as the agent data root at startup; see pi 0.79 dist/core/session-manager.js
@@ -197,7 +197,7 @@ func piSessionsRoot(p harnessarchive.SourceParams) (string, error) {
 		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), nil
 
 	default:
-		// host, bwrap, podman, empty IsolationMode — all resolve to the
+		// host, bwrap, empty, or unknown IsolationMode — all resolve to the
 		// host PI data root: $PI_CODING_AGENT_DIR/sessions when set,
 		// else <home>/.pi/agent/sessions.
 		return hostPISessionsRoot()

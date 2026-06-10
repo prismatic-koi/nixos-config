@@ -297,8 +297,8 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// sandbox-exec runs directly on the host — there is no VM, no gvproxy,
 	// and no synthetic hostname resolution. The sidecar listener and the
 	// sandboxed extension are both on the host loopback, so 127.0.0.1 is the
-	// correct address. host.containers.internal is a podman/gvproxy convention
-	// that does NOT resolve on bare macOS.
+	// correct address. host.containers.internal is a gvproxy container-VM
+	// convention that does NOT resolve on bare macOS.
 	if ctrCfg.HarnessPipeTCPPort != 0 {
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
 	}

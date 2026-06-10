@@ -1,4 +1,5 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file extends the Isolator interface with the dispatch methods migrated
 // from the per-mode switch/if blocks scattered across cmd/ and internal/. Each
 // method body produces the same output as the previous per-mode branch — this
@@ -16,7 +17,7 @@
 //   - LogPaths()                  — D7: per-mode log file set; today no caller dispatches per-mode but the shape is in place
 //
 // The methods are declared on the interface in isolator.go and implemented per
-// isolator (podman, bwrap, sandbox-exec, host) below.
+// isolator (bwrap, sandbox-exec, host) below.
 package container
 
 import (
@@ -44,8 +45,8 @@ type CapStatus struct {
 	// RenderError / RenderWarning for the noun in messages.
 	Mode config.IsolationMode
 
-	// Limit is the configured cap. Zero means uncapped. For podman:
-	// DefaultConcurrencyCap. For bwrap: Config.BwrapConcurrencyCap.
+	// Limit is the configured cap. Zero means uncapped.
+	// For bwrap: Config.BwrapConcurrencyCap.
 	// For sandbox-exec: Config.SandboxExecConcurrencyCap. For host: 0.
 	Limit int
 
@@ -228,7 +229,7 @@ type AgentPaneOpts struct {
 // ArchivePaths describes the per-mode paths that the archive copy step
 // consumes. ExtraFiles are absolute paths copied into the archive root in
 // addition to the harness storage subtree (today: agent-run.log for bwrap +
-// sandbox-exec; empty for podman + host).
+// sandbox-exec; empty for host).
 //
 // This is a stopgap pending #1142 (B6.IF — ArchiveAdapter interface): once
 // that lands, archive will consume the ArchiveAdapter interface and the
@@ -248,7 +249,7 @@ type ArchivePaths struct {
 
 // LogPaths describes the per-mode log file set for a session. Today only the
 // SidecarLog and AgentRunLog fields are populated; future modes may add
-// further entries (e.g. bwrap-stderr, podman-events).
+// further entries (e.g. bwrap-stderr).
 //
 // The values are absolute host paths and may not yet exist on disk — callers
 // must os.Stat them before reading.
@@ -258,8 +259,8 @@ type LogPaths struct {
 	SidecarLog string
 
 	// AgentRunLog is the path to the agent-run log file for this session.
-	// Populated for bwrap and sandbox-exec. Empty for podman and host (the
-	// agent-run path is not used by those modes).
+	// Populated for bwrap and sandbox-exec. Empty for host (the
+	// agent-run path is not used by that mode).
 	AgentRunLog string
 }
 
@@ -321,13 +322,12 @@ func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
 	if opts.SessionName == "" {
 		return opts.DirectCmd
 	}
-	return appendAgentRunOverrides("prism agent-run --session "+shellQuotePodman(opts.SessionName), opts)
+	return appendAgentRunOverrides("prism agent-run --session "+shellQuoteContainer(opts.SessionName), opts)
 }
 
 // SidecarFlags returns the sidecar argv extensions for bwrap: --port and the
 // common AgentRole / PluginHostPath / InitialPrompt / ConfigContent flags.
-// --container is intentionally omitted because bwrap does not own a container
-// lifecycle. Mirrors the pre-refactor branch in StartSidecarWithOpts
+// Mirrors the pre-refactor branch in StartSidecarWithOpts
 // (internal/session/sidecar.go:336-352).
 func (b *bwrapIsolator) SidecarFlags(opts SidecarFlagOpts) []string {
 	return commonHostAPISidecarFlags(opts)
@@ -404,7 +404,7 @@ func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
 	if opts.SessionName == "" {
 		return opts.DirectCmd
 	}
-	return appendAgentRunOverrides("prism agent-run --session "+shellQuotePodman(opts.SessionName), opts)
+	return appendAgentRunOverrides("prism agent-run --session "+shellQuoteContainer(opts.SessionName), opts)
 }
 
 // SidecarFlags returns the sidecar argv extensions for sandbox-exec — same
@@ -502,26 +502,25 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // the active profile slot, so the CLI override never reaches pi's argv.
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
-		cmd += " --model " + shellQuotePodman(opts.Model)
+		cmd += " --model " + shellQuoteContainer(opts.Model)
 	}
 	if opts.Variant != "" {
-		cmd += " --variant " + shellQuotePodman(opts.Variant)
+		cmd += " --variant " + shellQuoteContainer(opts.Variant)
 	}
 	return cmd
 }
 
-// shellQuotePodman wraps s in single quotes for shell-safe embedding. It is a
-// local copy of internal/session.shellQuote — duplicated here to avoid a
+// shellQuoteContainer wraps s in single quotes for shell-safe embedding. It is
+// a local copy of internal/session.shellQuote — duplicated here to avoid a
 // circular dependency (internal/session imports internal/container). When the
 // helpers are unified during a future refactor the two should converge.
-func shellQuotePodman(s string) string {
+func shellQuoteContainer(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 // commonHostAPISidecarFlags returns the SidecarFlags shared by bwrap,
-// sandbox-exec, and host. All three modes set up a host-API socket and harness
-// but do not own a container lifecycle, so --container is intentionally
-// omitted. Mirrors the pre-refactor branch in StartSidecarWithOpts
+// sandbox-exec, and host. All three modes set up a host-API socket and
+// harness. Mirrors the pre-refactor branch in StartSidecarWithOpts
 // (internal/session/sidecar.go:336-352).
 func commonHostAPISidecarFlags(opts SidecarFlagOpts) []string {
 	out := []string{"--port", fmt.Sprintf("%d", opts.Port)}

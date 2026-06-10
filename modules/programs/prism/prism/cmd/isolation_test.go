@@ -193,9 +193,9 @@ func TestSidecarCmd_IsolationModeFlag(t *testing.T) {
 	if flag == nil {
 		t.Fatal("--isolation-mode flag not found on sidecarCmd")
 	}
-	// Default should be empty (sidecar falls back to --container for back-compat).
+	// Default should be empty (sidecar falls back to host mode).
 	if flag.DefValue != "" {
-		t.Errorf("--isolation-mode default = %q, want %q (empty, falls back to --container flag)", flag.DefValue, "")
+		t.Errorf("--isolation-mode default = %q, want %q (empty, falls back to host mode)", flag.DefValue, "")
 	}
 }
 

@@ -147,7 +147,7 @@ func TestHotPathIndexes_QueryPlanUsesIndex(t *testing.T) {
 			}
 		}
 		// Set isolation_mode round-robin across 5 modes.
-		modes := []string{"podman", "bwrap", "host", "sandbox-exec", "none"}
+		modes := []string{"legacy-mode", "bwrap", "host", "sandbox-exec", "none"}
 		if err := d.SetIsolationMode(sessionName, modes[i%len(modes)]); err != nil {
 			t.Fatalf("SetIsolationMode[%d]: %v", i, err)
 		}
@@ -209,7 +209,7 @@ func TestHotPathIndexes_QueryPlanUsesIndex(t *testing.T) {
 		{
 			name:      "ActiveSessionCountForMode",
 			query:     `SELECT COUNT(*) FROM agent_status WHERE ended_at IS NULL AND isolation_mode = ?`,
-			args:      []any{"podman"},
+			args:      []any{"bwrap"},
 			wantIndex: "idx_agent_status_active",
 		},
 	}

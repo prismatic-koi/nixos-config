@@ -174,7 +174,7 @@ the load-bearing check.
 ## Out of scope
 
 - Migrating the profile to `(version 3)` — separate spike in #1190.
-- Test convention work for other isolation modes (bwrap, podman). If
+- Test convention work for other isolation modes (bwrap). If
   symmetric work is warranted there, file a separate issue.
 
 ## References

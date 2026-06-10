@@ -42,15 +42,12 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 		_ = os.RemoveAll(stagingHome)
 	}
 
-	// Per-mode lifecycle cleanup (podman stop/rm for the podman isolator;
-	// no-op for the others) lives on the registered Isolator. See
+	// Per-mode lifecycle cleanup lives on the registered Isolator. See
 	// lifecycle_dispatch.go (issue #1140 A1.L1).
 	m.isolator.EnsureRemoved(ctx, m)
 }
 
-// Create creates and starts the podman container for this session.
-// It first calls EnsureRemoved to handle any stale container with the same name.
-// Returns an error if podman create or start fails.
+// Create dispatches session creation to the registered Isolator.
 //
 // Post A1.L5 (issue #1140): the per-mode session-start logic moved into the
 // registered Isolator's Create method. Manager.Create is a thin dispatcher.
@@ -106,9 +103,8 @@ func (m *Manager) WaitHealthy(ctx context.Context) error {
 	}
 }
 
-// dumpLogs writes the container's stdout/stderr to the sidecar log so that
-// startup failures are visible without needing to race `podman logs` before
-// the container is removed by Shutdown.
+// dumpLogs writes the sandboxed process's stdout/stderr to the sidecar log so
+// that startup failures are visible without racing the cleanup path.
 func (m *Manager) dumpLogs() {
 	m.isolator.DumpLogs()
 }
@@ -133,9 +129,9 @@ func (m *Manager) isHealthy(ctx context.Context) bool {
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
 
-// Shutdown stops and removes the container. Intended to be called on SIGTERM.
-// It delegates the podman stop/rm calls to the Isolator and then cleans up
-// the temp files created by Create.
+// Shutdown stops and removes the sandboxed process. Intended to be called on
+// SIGTERM. It delegates the per-mode teardown to the Isolator and then cleans
+// up the temp files created by Create.
 func (m *Manager) Shutdown() {
 	log.Printf("container: shutting down %q", m.name)
 

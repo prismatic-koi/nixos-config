@@ -75,7 +75,8 @@ func TestNameForSession_ReplacesDot(t *testing.T) {
 
 func TestNameForSession_ReplacesTilde(t *testing.T) {
 	// Review agent session names contain "~" (e.g. "nixos-config@feature~review-1~review-code").
-	// Podman rejects "~" in container names (allowed: [a-zA-Z0-9][a-zA-Z0-9_.-]*).
+	// "~" is outside the conservative sandbox-name charset
+	// ([a-zA-Z0-9][a-zA-Z0-9_.-]*), so it must be replaced.
 	name := NameForSession("nixos-config@feature~review-1~review-code")
 	want := "prism-nixos-config-feature-review-1-review-code"
 	if name != want {
@@ -562,7 +563,7 @@ func TestWriteGitconfig_BwrapMode_UsesHostHomePaths(t *testing.T) {
 	if !strings.Contains(content, wantAllowed) {
 		t.Errorf("bwrap gitconfig missing %q; content:\n%s", wantAllowed, content)
 	}
-	// Must NOT contain the podman-only /root/.ssh/... paths.
+	// Must NOT contain legacy container-path /root/.ssh/... paths.
 	if strings.Contains(content, "/root/.ssh/signing-key.pub") {
 		t.Errorf("bwrap gitconfig must not contain /root/.ssh/signing-key.pub; content:\n%s", content)
 	}
@@ -869,12 +870,6 @@ func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
 	}
 }
 
-// ── AgentEnvVars (--env K=V) ──────────────────────────────────────────────────
-
-// TestBuildRunArgs_AgentEnvVarsInjected verifies that plain entries in
-// Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --env KEY=VALUE in the
-// podman run arg list, while KUBECONFIG and AWS_CONFIG_FILE are suppressed
-// because those files are bind-mounted at their canonical default paths.
 // ── issue #1960: git identity must be hard-required ─────────────────────────
 //
 // writeGitconfig must refuse to write a gitconfig without [user] in every
@@ -886,10 +881,7 @@ func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
 
 // gitconfigIdentityModes is the per-mode matrix exercised by the regression
 // tests below. Each entry names the mode constant used by writeGitconfig and
-// a label used in error messages. Podman is intentionally NOT covered here —
-// the podman path is no longer reachable in the spawn lifecycle, but the same
-// writeGitconfig codepath gates it, so the bwrap/sandbox-exec coverage below
-// proves the invariant for all three modes.
+// a label used in error messages.
 var gitconfigIdentityModes = []struct {
 	name string
 	mode isolationMode

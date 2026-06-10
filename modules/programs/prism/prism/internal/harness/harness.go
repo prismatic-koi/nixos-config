@@ -81,7 +81,7 @@ type Harness interface {
 	// ConfigEnvVar returns the environment variable name this harness uses
 	// to receive its serialised config content (e.g. "OPENCODE_CONFIG_CONTENT"
 	// for opencode-compat harnesses — empty for pi). The returned name is used in both host-mode (inline
-	// shell env-var prefix) and container-mode (podman --env) session
+	// shell env-var prefix) and container-mode (sandbox env injection) session
 	// creation to inject config overrides into the agent runtime.
 	ConfigEnvVar() string
 

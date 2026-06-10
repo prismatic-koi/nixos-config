@@ -204,7 +204,7 @@ func TestBuildAgentCmd_BwrapMode(t *testing.T) {
 }
 
 // TestBuildAgentCmd_HostMode verifies that IsolationMode="host" produces
-// a direct agent command (not podman attach).
+// a direct agent command (not a sandbox launcher command).
 func TestBuildAgentCmd_HostMode(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "host",
@@ -213,9 +213,6 @@ func TestBuildAgentCmd_HostMode(t *testing.T) {
 		SessionName:   "nixos-config@feature",
 	}
 	cmd := BuildAgentCmd(opts)
-	if strings.HasPrefix(cmd, "podman") {
-		t.Errorf("host mode: got podman command %q, want direct pi invocation", cmd)
-	}
 	if strings.HasPrefix(cmd, "prism agent-run") {
 		t.Errorf("host mode: got prism agent-run command %q, want direct pi invocation", cmd)
 	}
@@ -225,7 +222,7 @@ func TestBuildAgentCmd_HostMode(t *testing.T) {
 }
 
 // TestBuildAgentCmd_EmptyIsolationMode verifies that an empty IsolationMode
-// falls back to the host command (not podman attach).
+// falls back to the host command (a direct pi invocation).
 func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 	opts := Opts{
 		SessionName: "nixos-config@feature",
@@ -233,8 +230,8 @@ func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 		Port:        14000,
 	}
 	cmd := BuildAgentCmd(opts)
-	if strings.HasPrefix(cmd, "podman attach") {
-		t.Errorf("empty IsolationMode: got podman command %q, want direct pi invocation", cmd)
+	if strings.HasPrefix(cmd, "prism agent-run") {
+		t.Errorf("empty IsolationMode: got %q, want direct pi invocation", cmd)
 	}
 	if !strings.Contains(cmd, "pi") {
 		t.Errorf("empty IsolationMode: cmd does not contain 'pi': %q", cmd)
@@ -400,7 +397,7 @@ func TestValidatePILaunchOpts(t *testing.T) {
 	})
 
 	t.Run("container modes pass the check (container paths have their own guard at agent_run.go:730)", func(t *testing.T) {
-		for _, mode := range []string{"bwrap", "sandbox-exec", "podman"} {
+		for _, mode := range []string{"bwrap", "sandbox-exec"} {
 			err := ValidatePILaunchOpts(Opts{
 				IsolationMode:  mode,
 				HarnessName:    "pi",

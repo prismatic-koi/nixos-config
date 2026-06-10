@@ -118,7 +118,7 @@ func TestBwrapAgentPaneCmd_PartialOverride_ModelOnly(t *testing.T) {
 }
 
 // TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues ensures values pass
-// through shellQuotePodman so weird characters in a model name (or in the
+// through shellQuoteContainer so weird characters in a model name (or in the
 // session name) cannot break out of the shell context. Cobra parses argv
 // regardless, but the tmux pane wraps the command in `sh -c "<cmd>"` so
 // unquoted values are a real injection risk.
@@ -127,7 +127,7 @@ func TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues(t *testing.T) {
 	got := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@bwrap",
 		// A value containing a single quote exercises the escape path in
-		// shellQuotePodman.
+		// shellQuoteContainer.
 		Model: "danger'name",
 	})
 	want := `--model 'danger'\''name'`

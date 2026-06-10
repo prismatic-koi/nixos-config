@@ -55,7 +55,7 @@ let
     color_bg0 = bg0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
     default_isolation_mode = isolationDefault;
-    # sidecar_plugin_path: unused since podman removal; kept for forward compat.
+    # sidecar_plugin_path: unused since container isolation removal; kept for forward compat.
     sidecar_plugin_path = "";
     worktree_exclude = config.nx.programs.prism.worktreeExclude;
     project_locations = config.nx.programs.prism.projects.locations;
@@ -111,7 +111,7 @@ in
       default = 0;
       description = ''
         Delay in milliseconds inserted between successive session creates in
-        `prism restore`, to flatten the podman startup burst on machines with
+        `prism restore`, to flatten the sidecar startup burst on machines with
         many sessions. 0 means use the compiled-in default (500ms). Set to a
         negative value to disable the stagger entirely.
       '';

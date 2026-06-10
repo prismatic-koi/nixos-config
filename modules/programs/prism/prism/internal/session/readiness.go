@@ -4,7 +4,7 @@ package session
 //
 // SpawnSession returns success as soon as it has created the tmux session and
 // kicked off the sidecar. That is "spawned", not "ready": the agent itself runs
-// inside the bwrap/podman/host process the tmux pane launches, several steps
+// inside the sandbox or host process the tmux pane launches, several steps
 // further along, and may take seconds to bind its TCP port — or never bind at
 // all if startup fails silently.
 //

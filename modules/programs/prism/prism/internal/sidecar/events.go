@@ -34,26 +34,26 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 		elapsed := time.Since(s.spawnTime).Round(time.Millisecond)
 		s.logger().Printf("sidecar: first event received from harness (%s after spawn)", elapsed)
 
-		// Bwrap path `[timing]` markers (#1052). The podman path emits these
-		// from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
+		// Bwrap path `[timing]` markers (#1052). The container path emitted
+		// these from sidecar.Run() around WaitHealthy / CreateSession; in bwrap
 		// mode the agent is launched by the tmux pane (via prism agent-run)
 		// and the sidecar's only signal of readiness is the first SSE event,
 		// so the markers are emitted here.
 		//
-		//   - agent listening: equivalent to the podman WaitHealthy ok
-		//     marker — the agent's HTTP endpoint is reachable, since SSE has
+		//   - agent listening: equivalent to the container path's WaitHealthy
+		//     ok marker — the agent's HTTP endpoint is reachable, since SSE has
 		//     successfully connected and delivered an event.
 		//   - ready: the sidecar is processing events. In bwrap there is no
 		//     CreateSession step (the agent is started with --prompt by
 		//     agent-run, so the session pre-exists), which means listening
-		//     and ready coincide. Both lines are still emitted so the bwrap
-		//     and podman timelines have the same shape for grepping.
+		//     and ready coincide. Both lines are still emitted so all
+		//     timelines have the same shape for grepping.
 		//   - prompt delivered: when InitialPrompt is non-empty, the prompt
 		//     was supplied to the agent via --prompt at agent-run time. From
 		//     the sidecar's POV "delivered" is observable when the agent
 		//     starts emitting events — the prompt is in flight by then.
-		//     Emitted at the same moment for symmetry with the podman line
-		//     at sidecar.go:489.
+		//     Emitted at the same moment for symmetry with the container
+		//     path's marker.
 		if !container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
 			s.logger().Printf("[timing] harness listening: %s from start", elapsed)
 			s.logger().Printf("[timing] ready: %s from start", elapsed)
