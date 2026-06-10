@@ -11,20 +11,24 @@ package sidecar
 //
 // The current implementation replaces the sleep with an ack signal: the writer
 // goroutine closes harnessPipeAbortAck after the abort frame's write attempt
-// completes. Shutdown selects on the ack or on time.After(ShutdownDrainTimeout)
-// — defaulting to DefaultShutdownDrainTimeout (250ms) — so:
+// completes. Shutdown selects on the ack or on a drain timer armed via
+// s.cfg.Clock with ShutdownDrainTimeout — defaulting to
+// DefaultShutdownDrainTimeout (250ms) — so:
 //
-//   - Healthy connection: Shutdown returns within a scheduler tick of the
-//     flush (well under 100ms).
+//   - Healthy connection: Shutdown returns as soon as the writer acks the
+//     flush, without waiting out the drain timer.
 //   - Unhealthy connection (writer blocked on a stalled conn / queue full):
-//     Shutdown returns within ShutdownDrainTimeout.
+//     Shutdown returns when the drain timer fires.
 //
-// These tests assert both bounds.
+// These tests assert both paths behaviourally on the fake clock (whose timers
+// fire only when a test calls Fire) rather than measuring wall-clock latency:
+// real-time latency budgets proved scheduler- and I/O-noise-dependent — the
+// nix build sandbox pushed the healthy path past a 50ms budget with no code
+// regression.
 
 import (
 	"bufio"
 	"encoding/json"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -32,21 +36,22 @@ import (
 
 // TestShutdown_AbortFlush_HealthyPath_FastAck verifies that on a healthy
 // connection (writer goroutine responsive, conn able to accept writes),
-// Shutdown returns very quickly after the abort frame is acked by the writer
-// — well under the previous 100ms hard sleep and well under the 250ms
-// ShutdownDrainTimeout bound. Issue #1849 AC: "On a healthy connection,
-// Shutdown returns within ~10ms of the abort frame being flushed".
+// Shutdown returns because the writer acked the abort-frame flush — NOT
+// because the drain timeout expired. Issue #1849 AC: "On a healthy
+// connection, Shutdown returns within ~10ms of the abort frame being
+// flushed" — i.e. the old unconditional 100ms hard sleep is gone.
+//
+// The assertion is behavioural, on the fake clock, rather than a wall-clock
+// latency budget: the sidecar's drain timer is registered on the injected
+// testClock, whose timers NEVER fire on their own. Shutdown can therefore
+// only return via the writer's ack — if the ack path were broken (or a hard
+// sleep-until-timeout were reintroduced on the drain timer), Shutdown would
+// block forever and the liveness bound below would catch it. This replaces a
+// previous `elapsed < 50ms` assertion that measured scheduler/I-O noise and
+// failed in the nix build sandbox (observed 104ms) with no code regression.
 func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
-	// In the nix build sandbox ($NIX_BUILD_TOP set), bwrap I/O overhead
-	// inflates the measured latency past the 50ms budget without indicating
-	// a real regression (observed: 104ms). The latency assertion's intent is
-	// "well under the old 100ms hard sleep on a host", and the nix sandbox
-	// is not a host. Tracked in issue #2169 § Cluster 3.
-	if os.Getenv("NIX_BUILD_TOP") != "" {
-		t.Skip("skipping latency-budget test in nix build sandbox: bwrap I/O overhead inflates measured latency past the 50ms budget; see issue #2169")
-	}
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
@@ -55,8 +60,8 @@ func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
 	// Drain frames from the conn in the background so the writer's
 	// c.Write(abortFrame) returns immediately. Without a concurrent reader the
 	// kernel send buffer would absorb the small frame anyway, but explicitly
-	// reading guarantees we're not measuring buffer-fill latency on a slow CI
-	// runner.
+	// reading guarantees the writer cannot block on a full buffer on a slow
+	// CI runner.
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
@@ -74,19 +79,26 @@ func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
 	// channel is in place. Belt-and-braces: poll briefly.
 	waitForOutChNonNil(t, sc, 2*time.Second)
 
-	start := time.Now()
-	sc.Shutdown()
-	elapsed := time.Since(start)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc.Shutdown()
+	}()
 
-	// 50ms is a conservative cap for a single in-process channel send +
-	// writer-goroutine ack close; in practice this completes in well under
-	// 1ms. We deliberately do NOT assert < 10ms because CI runners under load
-	// can easily blow past that without indicating a real regression. The
-	// important invariant is "well under the old 100ms hard sleep".
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("Shutdown took %s on a healthy connection; expected well under 50ms (old hard-sleep was 100ms)", elapsed)
+	select {
+	case <-done:
+		// Healthy path proven: the fake drain timer cannot fire, so Shutdown
+		// returning at all means the writer's ack released it.
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return on a healthy connection; the abort-frame ack never arrived (the fake drain timer cannot fire, so only the ack can release Shutdown)")
 	}
-	t.Logf("healthy-path Shutdown latency: %s", elapsed)
+
+	// The drain bound must still have been armed while waiting for the ack —
+	// it is the guard against an unresponsive writer, and the healthy path
+	// must not skip it.
+	if tm := clk.WaitForTimerWithDuration(DefaultShutdownDrainTimeout, 2*time.Second); tm == nil {
+		t.Errorf("no drain timer with the default %s bound was registered during Shutdown", DefaultShutdownDrainTimeout)
+	}
 
 	_ = conn.Close()
 	<-readerDone
@@ -95,17 +107,27 @@ func TestShutdown_AbortFlush_HealthyPath_FastAck(t *testing.T) {
 
 // TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout verifies that
 // when the writer goroutine cannot flush the abort frame (because a prior
-// frame is wedged on a stalled conn), Shutdown still returns within the
-// documented ShutdownDrainTimeout bound. Issue #1849 AC: "On an unhealthy
-// connection (writer goroutine blocked, conn stalled), Shutdown returns
-// within a bounded wait time (≤ 250ms, or the documented ShutdownDrainTimeout)".
+// frame is wedged on a stalled conn), Shutdown blocks until the drain timer
+// fires and then returns. Issue #1849 AC: "On an unhealthy connection (writer
+// goroutine blocked, conn stalled), Shutdown returns within a bounded wait
+// time (≤ 250ms, or the documented ShutdownDrainTimeout)".
+//
+// The bound is asserted behaviourally on the fake clock: Shutdown must (a)
+// arm a drain timer with the configured ShutdownDrainTimeout, (b) NOT return
+// while the writer is wedged and the timer has not fired — the only other
+// release path is the ack, which the wedged writer cannot deliver — and (c)
+// return promptly once the test fires the timer manually. This replaces the
+// previous real-sleep elapsed-time window (90ms–350ms), making the test
+// independent of scheduler and I/O latency.
 func TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout(t *testing.T) {
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
-	// Use a small ShutdownDrainTimeout so the test runs quickly while still
-	// exercising the bounded-wait branch. The default would be 250ms; 100ms
-	// here keeps total runtime tight.
-	sc.cfg.ShutdownDrainTimeout = 100 * time.Millisecond
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
+	// A distinctive drain timeout so the timer can be located unambiguously
+	// among any other timers registered on the fake clock (idle debounce is
+	// 2s, reconnect recovery 60s). The value itself never elapses — the fake
+	// clock only fires when the test says so.
+	const drainTimeout = 123 * time.Millisecond
+	sc.cfg.ShutdownDrainTimeout = drainTimeout
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
@@ -139,25 +161,43 @@ func TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout(t *testing.T) {
 	// Give the writer a chance to pick up the wedge frame and block on Write.
 	time.Sleep(50 * time.Millisecond)
 
-	// Now invoke Shutdown. The abort frame will be queued behind the wedged
-	// frame; the writer can't process it, so harnessPipeAbortAck will never
-	// be closed via the normal path. Shutdown must fall back to the timeout
-	// and proceed.
-	start := time.Now()
-	sc.Shutdown()
-	elapsed := time.Since(start)
+	// Now invoke Shutdown in the background. The abort frame will be queued
+	// behind the wedged frame; the writer can't process it, so
+	// harnessPipeAbortAck will never be closed via the normal path. Shutdown
+	// must arm the drain timer and wait for it.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc.Shutdown()
+	}()
 
-	// Lower bound: the timeout must actually be respected (not 0).
-	// Upper bound: timeout + slack for goroutine scheduling and the rest of
-	// Shutdown's teardown work. 250ms slack is generous but keeps the test
-	// stable on slow CI.
-	if elapsed < 90*time.Millisecond {
-		t.Errorf("Shutdown returned in %s — earlier than the configured 100ms ShutdownDrainTimeout; the bound is not being honoured", elapsed)
+	// (a) Shutdown reached the bounded wait: the drain timer was armed with
+	// the configured timeout.
+	tm := clk.WaitForTimerWithDuration(drainTimeout, 2*time.Second)
+	if tm == nil {
+		t.Fatal("Shutdown never armed the drain timer with the configured ShutdownDrainTimeout")
 	}
-	if elapsed > 100*time.Millisecond+250*time.Millisecond {
-		t.Errorf("Shutdown took %s; expected ≤ %s (drain timeout 100ms + 250ms slack)", elapsed, 350*time.Millisecond)
+
+	// (b) Shutdown must still be blocked: the writer is wedged (no ack
+	// possible) and the fake timer has not fired. The 100ms observation
+	// window is a detection bound for a violation, not a latency budget —
+	// a correct implementation blocks here indefinitely.
+	select {
+	case <-done:
+		t.Fatal("Shutdown returned before the drain timer fired; the bounded wait is not being honoured")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked — expected.
 	}
-	t.Logf("unhealthy-path Shutdown latency: %s (drain timeout 100ms)", elapsed)
+
+	// (c) Fire the drain timer: Shutdown must now complete.
+	tm.Fire()
+	select {
+	case <-done:
+		// Bounded-wait branch proven: the timer (and only the timer)
+		// released Shutdown.
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return after the drain timer fired")
+	}
 
 	_ = conn.Close()
 	// Closing the conn unblocks the writer's c.Write; outCh will drain and
@@ -166,21 +206,20 @@ func TestShutdown_AbortFlush_UnhealthyPath_BoundedByDrainTimeout(t *testing.T) {
 }
 
 // TestShutdown_AbortFlush_DefaultTimeoutApplies verifies that when
-// Config.ShutdownDrainTimeout is left at zero, Shutdown uses
-// DefaultShutdownDrainTimeout (250ms) as the upper bound. We don't actually
-// wait the full 250ms — we just assert that the constant is what's
-// documented and that Shutdown honours it on a healthy path (returning fast,
-// not waiting the default).
+// Config.ShutdownDrainTimeout is left at zero, Shutdown arms the drain timer
+// with DefaultShutdownDrainTimeout (250ms). The constant itself is asserted
+// against the documented AC value, and the timer registration is observed on
+// the fake clock — no wall-clock measurement.
 func TestShutdown_AbortFlush_DefaultTimeoutApplies(t *testing.T) {
 	if DefaultShutdownDrainTimeout != 250*time.Millisecond {
 		t.Errorf("DefaultShutdownDrainTimeout = %s, want 250ms (AC: ≤ 250ms)", DefaultShutdownDrainTimeout)
 	}
 
 	sockPath := shortSockPath(t)
-	sc := newSocketPipeSidecar(t, sockPath)
+	sc, clk := newSocketPipeSidecarWithClock(t, sockPath)
 	// Leave sc.cfg.ShutdownDrainTimeout at its zero value — the default
-	// should kick in. A healthy-path Shutdown must still return quickly
-	// (well under the default) because the writer acks promptly.
+	// should kick in. A healthy-path Shutdown still returns via the writer's
+	// ack (the fake drain timer never fires on its own).
 	wait := runSocketPipeSidecar(sc)
 
 	conn, _ := dialAndHandshake(t, sockPath)
@@ -196,11 +235,21 @@ func TestShutdown_AbortFlush_DefaultTimeoutApplies(t *testing.T) {
 	}()
 	waitForOutChNonNil(t, sc, 2*time.Second)
 
-	start := time.Now()
-	sc.Shutdown()
-	elapsed := time.Since(start)
-	if elapsed >= DefaultShutdownDrainTimeout {
-		t.Errorf("Shutdown took %s on a healthy connection with default timeout; the default should be an upper bound, not a floor", elapsed)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc.Shutdown()
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Shutdown did not return on a healthy connection with the default drain timeout")
+	}
+
+	// The drain timer must have been armed with the default bound — not 0,
+	// which would make the timeout branch a no-op fall-through.
+	if tm := clk.WaitForTimerWithDuration(DefaultShutdownDrainTimeout, 2*time.Second); tm == nil {
+		t.Errorf("no drain timer with the default %s bound was registered during Shutdown", DefaultShutdownDrainTimeout)
 	}
 
 	_ = conn.Close()

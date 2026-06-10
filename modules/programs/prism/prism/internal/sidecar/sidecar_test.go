@@ -28,6 +28,10 @@ type testTimer struct {
 	mu        sync.Mutex
 	stopped   bool
 	fn        func()
+	// d is the duration the timer was registered with via AfterFunc.
+	// Immutable after creation; used by tests to locate a specific timer
+	// (e.g. the Shutdown drain timer) among others on the same clock.
+	d time.Duration
 	// stoppedCh is closed exactly once when the timer transitions to the
 	// stopped state (via Stop or Fire). Tests can use this to synchronise on
 	// timer cancellation deterministically rather than polling the Stopped()
@@ -127,7 +131,7 @@ func (c *testClock) Now() time.Time {
 func (c *testClock) AfterFunc(d time.Duration, f func()) Timer {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := &testTimer{fn: f, stoppedCh: make(chan struct{})}
+	t := &testTimer{fn: f, d: d, stoppedCh: make(chan struct{})}
 	c.timers = append(c.timers, t)
 	// Notify any waiter blocked in WaitForTimerCount that a new timer was
 	// registered. Close-and-replace gives a broadcast semantics: every
@@ -211,6 +215,42 @@ func (c *testClock) WaitForNextTimer(timeout time.Duration) *testTimer {
 	n := len(c.timers)
 	c.mu.Unlock()
 	return c.WaitForTimerCount(n+1, timeout)
+}
+
+// WaitForTimerWithDuration blocks until a timer registered with duration d
+// exists on the clock, returning the first such timer in registration order,
+// or nil if none appears before timeout elapses. Like WaitForTimerCount it
+// observes the AfterFunc registration event via timerCreatedCh rather than
+// polling, so it is deterministic under scheduler load. Use this when the
+// timer of interest has a distinctive duration (e.g. Shutdown's drain timer)
+// and other timers may be registered concurrently (idle debounce, recovery).
+func (c *testClock) WaitForTimerWithDuration(d, timeout time.Duration) *testTimer {
+	deadline := time.Now().Add(timeout)
+	for {
+		c.mu.Lock()
+		var found *testTimer
+		for _, t := range c.timers {
+			if t.d == d {
+				found = t
+				break
+			}
+		}
+		ch := c.timerCreatedCh
+		c.mu.Unlock()
+		if found != nil {
+			return found
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil
+		}
+		select {
+		case <-ch:
+			// A new timer was registered; loop to re-check for a match.
+		case <-time.After(remaining):
+			return nil
+		}
+	}
 }
 
 // waitForCondition polls fn at a short interval until it returns true, or

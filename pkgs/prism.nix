@@ -44,15 +44,34 @@ buildGoModule {
   # runs `go test ./... -race` on an Ubuntu runner; this job's purpose
   # is the $HOME=/homeless-shelter signal, not race coverage.
   #
-  # The `-timeout 30m` flag overrides the default 10m per-package budget:
-  # the bwrap sandbox is slower than the host (the `internal/sidecar` and
-  # `internal/db` packages each push close to the default 10m limit there
-  # even when they finish in tens of seconds on a host). The sandbox
-  # slowdown is tracked in issue #2169 § Cluster 1; this is a sandbox
-  # workaround, not a logic fix.
+  # TMPDIR is redirected onto tmpfs (/dev/shm) because the test suite is
+  # fsync-bound, not CPU-bound. The `internal/db` and `internal/sidecar`
+  # packages open hundreds of throwaway SQLite databases under t.TempDir(),
+  # and SQLite (WAL mode, default `synchronous`) fsyncs on every committed
+  # transaction — ~36,000 fsync calls for a single `internal/db` package
+  # run (measured with strace). On a developer host $TMPDIR is tmpfs,
+  # where fsync is a no-op (~1µs) and the package finishes in ~4s. The
+  # nix sandbox's build directory is disk-backed, where each fsync costs
+  # milliseconds: the same package measured 245s with TMPDIR on btrfs
+  # (~68× slower), and overran the default 10m per-package `go test`
+  # budget in CI sandbox runs. Pointing TMPDIR at the sandbox's /dev/shm
+  # tmpfs removes the fsync cost entirely and restores host-comparable
+  # runtimes. The temp DBs are tiny (a few MiB each), so /dev/shm's size
+  # cap is not a concern. GOCACHE and the build outputs are unaffected —
+  # only paths derived from os.TempDir() move.
+  #
+  # The `-timeout 30m` flag is belt-and-braces for environments where
+  # /dev/shm is unavailable (e.g. a non-Linux sandbox) and TMPDIR stays
+  # disk-backed: the fsync-bound packages then need minutes, not seconds,
+  # and the default 10m per-package budget can fire spuriously. It is an
+  # upper bound for pathological environments, not an expectation — with
+  # TMPDIR on tmpfs the whole suite completes in well under the default.
   checkPhase = ''
     runHook preCheck
     export GOFLAGS=''${GOFLAGS//-trimpath/}
+    if [ -d /dev/shm ] && [ -w /dev/shm ]; then
+      export TMPDIR="$(mktemp -d /dev/shm/prism-go-test.XXXXXX)"
+    fi
     go test -timeout 30m ./...
     runHook postCheck
   '';
