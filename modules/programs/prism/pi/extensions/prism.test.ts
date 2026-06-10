@@ -33,9 +33,10 @@ import {
   processDoomLoop,
   isGitPush,
   EXCLUDED_BASH_BASES,
-  // Pre-tool-call bash deny list (#1528, #2180)
+  // Pre-tool-call bash deny list (#1528, #2180, #2202)
   BLOCKED_BASH_PATTERNS,
   checkBlockedBash,
+  isWorkerClassRole,
   stripCommandSubstitutions,
   newDoomLoopState,
   snapshotGuardState,
@@ -1606,8 +1607,8 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly three entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 3)
+  it("contains exactly four entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 4)
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -1623,6 +1624,21 @@ describe("BLOCKED_BASH_PATTERNS", () => {
   it("has the nix-build-with-env-override entry (#2180)", () => {
     const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
     assert.ok(ids.includes("nix-build-with-env-override"))
+  })
+
+  it("has the git-stash entry (#2202)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("git-stash"))
+  })
+
+  it("only the git-stash entry is role-scoped; the pre-#2202 entries are unscoped", () => {
+    for (const p of BLOCKED_BASH_PATTERNS) {
+      if (p.id === "git-stash") {
+        assert.equal(typeof p.appliesToRole, "function")
+      } else {
+        assert.equal(p.appliesToRole, undefined)
+      }
+    }
   })
 
   it("every entry has id, match, and reason fields", () => {
@@ -2001,6 +2017,256 @@ describe("checkBlockedBash — reason string content", () => {
 
   it("reason is prefixed with 'blocked by prism extension'", () => {
     const hit = checkBlockedBash("git worktree prune")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// git-stash deny entry (#2202)
+// ---------------------------------------------------------------------------
+
+describe("isWorkerClassRole (#2202)", () => {
+  it("is true for worker", () => {
+    assert.equal(isWorkerClassRole("worker"), true)
+  })
+
+  it("is true for every review-* role", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      assert.equal(isWorkerClassRole(role), true, role)
+    }
+  })
+
+  it("is true for the other non-coordinator prism roles", () => {
+    for (const role of ["ac", "investigate", "retro"]) {
+      assert.equal(isWorkerClassRole(role), true, role)
+    }
+  })
+
+  it("is false for coordinator", () => {
+    assert.equal(isWorkerClassRole("coordinator"), false)
+  })
+
+  it("is false for the empty role (pi launched outside prism)", () => {
+    assert.equal(isWorkerClassRole(""), false)
+  })
+})
+
+describe("checkBlockedBash — git stash (positive cases, worker role, #2202)", () => {
+  it("blocks plain 'git stash'", () => {
+    const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash -u' (the incident command)", () => {
+    const hit = checkBlockedBash("git stash -u", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash pop' (the other incident command)", () => {
+    const hit = checkBlockedBash("git stash pop", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash apply'", () => {
+    const hit = checkBlockedBash("git stash apply", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash list' (read-only subcommands included per AC)", () => {
+    const hit = checkBlockedBash("git stash list", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash push -m wip'", () => {
+    const hit = checkBlockedBash("git stash push -m wip", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash drop' and 'git stash clear'", () => {
+    for (const cmd of ["git stash drop", "git stash clear"]) {
+      const hit = checkBlockedBash(cmd, "worker")
+      assert.notEqual(hit, null, cmd)
+      assert.equal(hit!.id, "git-stash", cmd)
+    }
+  })
+
+  it("blocks 'git -C /path stash'", () => {
+    const hit = checkBlockedBash("git -C /some/path stash", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git --git-dir=/p/.git stash pop'", () => {
+    const hit = checkBlockedBash("git --git-dir=/p/.git stash pop", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks the second segment of 'cd /repo && git stash pop'", () => {
+    const hit = checkBlockedBash("cd /repo && git stash pop", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+
+  it("blocks 'git stash' inside a command substitution", () => {
+    const hit = checkBlockedBash("echo $(git stash list)", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-stash")
+  })
+})
+
+describe("checkBlockedBash — git stash role scoping (#2202)", () => {
+  it("blocks for every review-* role (defence-in-depth on top of prompt rules)", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      const hit = checkBlockedBash("git stash pop", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "git-stash", role)
+    }
+  })
+
+  it("does NOT block for the coordinator (AC: coordinator behaviour unchanged)", () => {
+    assert.equal(checkBlockedBash("git stash", "coordinator"), null)
+    assert.equal(checkBlockedBash("git stash pop", "coordinator"), null)
+    assert.equal(checkBlockedBash("git stash -u", "coordinator"), null)
+  })
+
+  it("does NOT block when no role is passed (non-prism pi launch / legacy call shape)", () => {
+    assert.equal(checkBlockedBash("git stash"), null)
+    assert.equal(checkBlockedBash("git stash", ""), null)
+  })
+
+  it("unscoped entries still fire regardless of role (coordinator included)", () => {
+    const prune = checkBlockedBash("git worktree prune", "coordinator")
+    assert.notEqual(prune, null)
+    assert.equal(prune!.id, "git-worktree-prune")
+    const nix = checkBlockedBash(
+      "XDG_DATA_HOME=/tmp/x nix build .#prism",
+      "coordinator",
+    )
+    assert.notEqual(nix, null)
+    assert.equal(nix!.id, "nix-build-with-env-override")
+  })
+})
+
+describe("checkBlockedBash — git stash (negative cases / false positives, #2202)", () => {
+  it("does NOT block 'stash' inside a double-quoted commit message", () => {
+    assert.equal(
+      checkBlockedBash('git commit -m "replace git stash with temp commit"', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block 'stash' inside a single-quoted commit message", () => {
+    assert.equal(
+      checkBlockedBash("git commit -am 'wip: do not git stash'", "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block 'stash' as part of a file path argument", () => {
+    assert.equal(
+      checkBlockedBash("git add docs/git-stash.md", "worker"),
+      null,
+    )
+    assert.equal(checkBlockedBash("cat notes/stash.txt", "worker"), null)
+  })
+
+  it("does NOT block 'stash' as part of a branch name", () => {
+    assert.equal(
+      checkBlockedBash("git push -u origin worker-git-stash-deny", "worker"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("git checkout stash-fix-branch", "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block rg/grep searching for the literal string", () => {
+    assert.equal(checkBlockedBash('rg "git stash" modules/', "worker"), null)
+    assert.equal(
+      checkBlockedBash('grep -rn "git stash" AGENTS.md', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block git log --grep with the literal string", () => {
+    assert.equal(
+      checkBlockedBash('git log --grep="git stash"', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block a heredoc body containing 'git stash'", () => {
+    const cmd = "cat <<'EOF'\ngit stash -u\ngit stash pop\nEOF"
+    assert.equal(checkBlockedBash(cmd, "worker"), null)
+  })
+
+  it("does NOT match 'stash' embedded in a longer word", () => {
+    assert.equal(checkBlockedBash("git stashed", "worker"), null)
+  })
+
+  it("does NOT match unrelated git subcommands", () => {
+    assert.equal(checkBlockedBash("git status", "worker"), null)
+    assert.equal(checkBlockedBash("git stat", "worker"), null)
+  })
+})
+
+describe("checkBlockedBash — git-stash reason string (#2202)", () => {
+  it("names the shared-stash hazard", () => {
+    const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.includes("refs/stash"),
+      `reason should name the shared stash stack: ${hit!.reason}`,
+    )
+    assert.ok(
+      hit!.reason.toLowerCase().includes("swap"),
+      `reason should name the WIP-swap failure mode: ${hit!.reason}`,
+    )
+  })
+
+  it("names the sanctioned temp-commit alternative", () => {
+    const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("git commit -am wip"))
+    assert.ok(hit!.reason.includes("git reset --soft HEAD~1"))
+  })
+
+  it("names the sanctioned patch-file alternative", () => {
+    const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("git diff > /tmp/wip.patch"))
+    assert.ok(hit!.reason.includes("git restore ."))
+  })
+
+  it("points the agent at the AGENTS.md subsection", () => {
+    const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("AGENTS.md"))
+  })
+
+  it("is prefixed with 'blocked by prism extension'", () => {
+    const hit = checkBlockedBash("git stash", "worker")
     assert.notEqual(hit, null)
     assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
   })

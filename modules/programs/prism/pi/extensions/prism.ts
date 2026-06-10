@@ -687,11 +687,41 @@ function segmentIsGitPush(segment: string): boolean {
  * when the segment is a real invocation of the blocked command. The `reason`
  * surfaces verbatim to the agent via pi's tool-result channel and should
  * name the recommended alternative.
+ *
+ * `appliesToRole` optionally scopes a pattern to specific agent roles.
+ * When present, the pattern fires only for sessions whose `--agent` role
+ * satisfies the predicate; when absent, the pattern applies to every
+ * session that loads the extension (the pre-existing convention — the
+ * git-worktree-* and nix-build entries are unscoped because their hazards
+ * apply to coordinators too).
  */
 export interface BlockedBashPattern {
   id: string
   match: (segment: string) => boolean
   reason: string
+  appliesToRole?: (agentRole: string) => boolean
+}
+
+/**
+ * Worker-class role predicate for role-scoped deny-list entries (#2202).
+ *
+ * "Worker-class" means any prism-spawned agent role other than the
+ * coordinator: worker, review-*, ac, investigate, retro, and any future
+ * non-coordinator role. The coordinator is excluded because it is the
+ * single session on the main worktree acting as the user's proxy — with
+ * every worker-class session denied stash access, the coordinator is the
+ * only prism writer to the shared stash stack, so the cross-session race
+ * cannot occur from prism sessions.
+ *
+ * An empty role means pi was launched outside prism's spawn path (no
+ * --agent flag) — e.g. a plain repo without the bare+worktree layout —
+ * where the shared-stash hazard does not apply, so worker-scoped entries
+ * do not fire. Prism always passes --agent for spawned sessions.
+ *
+ * Exported for unit testing.
+ */
+export function isWorkerClassRole(agentRole: string): boolean {
+  return agentRole !== "" && agentRole !== "coordinator"
 }
 
 /**
@@ -764,6 +794,34 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "than attempting environment workarounds; CI runs the authoritative " +
       "build so a local failure is not a merge blocker.",
   },
+  {
+    // #2202 — `git stash` is not worktree-scoped. In the bare+worktree
+    // layout the stash stack (refs/stash + its reflog) lives in the shared
+    // bare repo, so every prism session in the repo races on a single LIFO
+    // stack. On 2026-06-11 two concurrent workers ran `git stash -u` +
+    // `git stash pop` within the same minute and the pops crossed,
+    // silently swapping their WIP. All stash subcommands are blocked —
+    // including read-only ones like `stash list` — because any stash use
+    // normalises the stack as a workspace tool. Scoped to worker-class
+    // roles: the coordinator (single session on the main worktree) is
+    // exempt, consistent with the AC for #2202.
+    id: "git-stash",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+stash\b/.test(
+        segment,
+      ),
+    appliesToRole: isWorkerClassRole,
+    reason:
+      "blocked by prism extension: `git stash` is not worktree-scoped \u2014 " +
+      "the stash stack (refs/stash) lives in the shared bare repo and is " +
+      "shared by every prism session in this repo. Concurrent stash/pop " +
+      "across sessions race on a single LIFO stack and can silently swap " +
+      "WIP between workers (issue #2202). Set WIP aside with a temp commit " +
+      "(`git commit -am wip`, restore with `git reset --soft HEAD~1`) or a " +
+      "patch file (`git diff > /tmp/wip.patch` then `git restore .`, " +
+      "restore with `git apply /tmp/wip.patch`) instead \u2014 see AGENTS.md " +
+      "\u00a7 'Setting WIP aside \u2014 do not use git stash'.",
+  },
 ]
 
 /**
@@ -775,10 +833,17 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
  * does not fire a block but `cd /repo && git worktree prune` does
  * (the second segment).
  *
+ * `agentRole` is the session's `--agent` role (from pi.getFlag("agent")).
+ * Patterns with an `appliesToRole` predicate are skipped when the role
+ * does not satisfy it; unscoped patterns apply regardless of role. The
+ * default of "" preserves the pre-#2202 behaviour for callers that do
+ * not pass a role: unscoped patterns still fire, worker-scoped ones do not.
+ *
  * Exported for unit testing.
  */
 export function checkBlockedBash(
   command: string,
+  agentRole: string = "",
 ): { id: string; reason: string } | null {
   const stripped = stripQuotedAndHeredocRegions(command)
   // Two passes:
@@ -798,6 +863,12 @@ export function checkBlockedBash(
   ])
   for (const segment of segments) {
     for (const pattern of BLOCKED_BASH_PATTERNS) {
+      if (
+        pattern.appliesToRole !== undefined &&
+        !pattern.appliesToRole(agentRole)
+      ) {
+        continue
+      }
       if (pattern.match(segment)) {
         return { id: pattern.id, reason: pattern.reason }
       }
@@ -2494,7 +2565,13 @@ export default function prismExtension(pi: ExtensionAPI): void {
         ? (input as Record<string, unknown>).command
         : undefined
     if (typeof command !== "string") return
-    const hit = checkBlockedBash(command)
+    // Role-scoped entries (#2202) need the session's agent role. Sourced
+    // synchronously from pi.getFlag("agent") — bound before any hook fires
+    // (see the before_agent_start handler) — so this is race-free even on
+    // the first turn.
+    const roleFlagValue = pi.getFlag("agent")
+    const agentRole = typeof roleFlagValue === "string" ? roleFlagValue : ""
+    const hit = checkBlockedBash(command, agentRole)
     if (hit !== null) {
       return { block: true, reason: hit.reason }
     }
