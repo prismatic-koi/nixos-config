@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/container/sandboxexectest"
 )
 
 // writeProfileForIntegration writes the generated profile for the given
@@ -65,14 +67,6 @@ func runUnderSandbox(t *testing.T, profilePath string, env []string, args ...str
 		}
 	}
 	return output, exitCode
-}
-
-// sandboxExecAvailable returns true if /usr/bin/sandbox-exec exists.
-// Tests skip gracefully if it is absent (e.g. in a CI environment without
-// the full macOS toolchain).
-func sandboxExecAvailable() bool {
-	_, err := os.Stat("/usr/bin/sandbox-exec")
-	return err == nil
 }
 
 // newIntegrationManager returns a Manager wired up with a sandboxExecIsolator
@@ -139,9 +133,7 @@ func profileStagingHome(t *testing.T, m *Manager) string {
 // TestSandboxExecIntegration_EchoHi verifies that /bin/echo hi exits 0 under
 // the v3 profile (P1 in F.1 §3.1).
 func TestSandboxExecIntegration_EchoHi(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
@@ -157,9 +149,7 @@ func TestSandboxExecIntegration_EchoHi(t *testing.T) {
 // TestSandboxExecIntegration_LsEtcHosts verifies that /bin/ls /etc/hosts
 // exits 0 under the v3 profile (P2 in F.1 §3.1).
 func TestSandboxExecIntegration_LsEtcHosts(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
@@ -172,9 +162,7 @@ func TestSandboxExecIntegration_LsEtcHosts(t *testing.T) {
 // TestSandboxExecIntegration_CatEtcHosts verifies that /bin/cat /etc/hosts
 // exits 0 and prints the hosts file content under the v3 profile (P3 in F.1 §3.1).
 func TestSandboxExecIntegration_CatEtcHosts(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
@@ -194,9 +182,7 @@ func TestSandboxExecIntegration_CatEtcHosts(t *testing.T) {
 // On hosts where /var/select/developer_dir is absent, DEVELOPER_DIR is set
 // to /Library/Developer/CommandLineTools via baseEnv.
 func TestSandboxExecIntegration_GitVersion(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	if _, err := os.Stat("/usr/bin/git"); err != nil {
 		t.Skip("/usr/bin/git not present")
 	}
@@ -215,9 +201,7 @@ func TestSandboxExecIntegration_GitVersion(t *testing.T) {
 // TestSandboxExecIntegration_UnameDashA verifies that /usr/bin/uname -a exits
 // 0 and prints the Darwin uname line under the v3 profile (P5 in F.1 §3.1).
 func TestSandboxExecIntegration_UnameDashA(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	m, stagingHome := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
@@ -233,9 +217,7 @@ func TestSandboxExecIntegration_UnameDashA(t *testing.T) {
 // TestSandboxExecIntegration_WhichPi verifies that /usr/bin/which
 // pi exits 0 under the v3 profile (P6 in F.1 §3.1).
 func TestSandboxExecIntegration_WhichPi(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	// Only run this test if pi is resolvable in PATH.
 	whichOut, err := exec.Command("/usr/bin/which", "pi").Output()
 	if err != nil || strings.TrimSpace(string(whichOut)) == "" {
@@ -256,9 +238,7 @@ func TestSandboxExecIntegration_WhichPi(t *testing.T) {
 // TestSandboxExecIntegration_SSHVersion verifies that /usr/bin/ssh -V exits
 // 0 and prints the OpenSSH version string under the v3 profile (P7 in F.1 §3.1).
 func TestSandboxExecIntegration_SSHVersion(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	if _, err := os.Stat("/usr/bin/ssh"); err != nil {
 		t.Skip("/usr/bin/ssh not present")
 	}
@@ -280,9 +260,7 @@ func TestSandboxExecIntegration_SSHVersion(t *testing.T) {
 // Exit 0 or any non-SIGABRT exit code is acceptable — "unexpected error"
 // from a missing server is fine. SIGABRT (exit code 134 on Darwin) is not.
 func TestSandboxExecIntegration_PiNoSIGABRT(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	// Find pi in PATH.
 	piPath, err := exec.LookPath("pi")
 	if err != nil || piPath == "" {
@@ -302,9 +280,7 @@ func TestSandboxExecIntegration_PiNoSIGABRT(t *testing.T) {
 // TestSandboxExecIntegration_NixBashEchoHi verifies that a Nix-built bash
 // exits 0 and prints "hi" under the v3 profile (P9 in F.1 §3.1).
 func TestSandboxExecIntegration_NixBashEchoHi(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	// Find bash via PATH — on a Nix host this will resolve to a Nix store path.
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
@@ -332,9 +308,7 @@ func TestSandboxExecIntegration_NixBashEchoHi(t *testing.T) {
 // the host home directory is NOT readable from inside the sandbox (N1 in
 // F.1 §3.2). Uses a real (or dummy) key file.
 func TestSandboxExecIntegration_SSHKeyDenied(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home directory")
@@ -388,9 +362,7 @@ func TestSandboxExecIntegration_SSHKeyDenied(t *testing.T) {
 // TestSandboxExecIntegration_AWSCredentialsDenied verifies that the host
 // ~/.aws/credentials is NOT readable from inside the sandbox (N2 in F.1 §3.2).
 func TestSandboxExecIntegration_AWSCredentialsDenied(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home directory")
@@ -436,9 +408,7 @@ func TestSandboxExecIntegration_AWSCredentialsDenied(t *testing.T) {
 // TestSandboxExecIntegration_HomeCodeDirectoryDenied verifies that the host
 // ~/code directory is NOT accessible from inside the sandbox (N3 in F.1 §3.2).
 func TestSandboxExecIntegration_HomeCodeDirectoryDenied(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home directory")
@@ -473,9 +443,7 @@ func TestSandboxExecIntegration_HomeCodeDirectoryDenied(t *testing.T) {
 // TestSandboxExecIntegration_DocumentsDenied verifies that a file under
 // ~/Documents is NOT readable from inside the sandbox (N5 in F.1 §3.2).
 func TestSandboxExecIntegration_DocumentsDenied(t *testing.T) {
-	if !sandboxExecAvailable() {
-		t.Skip("sandbox-exec not available")
-	}
+	sandboxexectest.Require(t)
 	realHome, err := os.UserHomeDir()
 	if err != nil {
 		t.Skip("cannot determine home directory")
