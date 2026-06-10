@@ -99,6 +99,40 @@ This is not a hypothetical: PR #1455 (`TestDeliverToSession_PiPath_DeliverAsForw
 
 **Scope — this gate applies only to prism-touching PRs.** PRs that touch only non-prism files (other modules, dotfiles, docs) do **not** trigger the `go-tests` or `nix-build-prism-checked` jobs. The relaxation introduced in #1441 stands for those paths.
 
+### In-sandbox nix validation on this repo (flake CLI and trusted-settings)
+
+This repo's `flake.nix` has a `nixConfig` block (`extra-substituters` /
+`extra-trusted-public-keys`). Any flake-CLI nix command therefore makes nix
+consult `~/.local/share/nix/trusted-settings.json` in the **real** home
+(inside a sandbox, `XDG_DATA_HOME` points at the real `~/.local/share`).
+`--no-accept-flake-config` does NOT avoid the lookup.
+
+As of issue #2201 the sandbox-exec profile grants **read-only** access to
+that single file, so flake-CLI commands (`nix build .#prism --dry-run`,
+`nix flake metadata`, the pre-PR `nix build .#prism`, …) work inside worker
+sandboxes. Notes:
+
+- The allowance applies to sandboxes **spawned after the fix is deployed**
+  (next `nh switch`). In a sandbox pre-dating it, flake CLI fails with
+  `error: opening file "…/trusted-settings.json": Operation not permitted`.
+  The sanctioned fallback for eval-level validation in that case is the
+  non-flake pattern, which does not process flake `nixConfig` and so
+  sidesteps the read entirely:
+
+  ```bash
+  # From the repo root
+  nix-instantiate --eval --expr 'builtins.getFlake (toString ./.)'
+  ```
+
+- A `warning: ignoring untrusted flake configuration setting` from the flake
+  CLI is harmless — it means the host trust list does not (yet) cover this
+  repo's settings; eval proceeds without the extra substituters.
+- Do not try to accept-and-persist flake config from inside a sandbox
+  (e.g. answering an interactive trust prompt with "permanently mark"):
+  the write path to `trusted-settings.json` is still denied, by design.
+- Never reach for env overrides when nix misbehaves in a sandbox — see the
+  next section.
+
 ### When `nix build` fails inside a sandbox
 
 The local `nix build .#prism` is a *pre-PR* check, not the authoritative
