@@ -30,7 +30,7 @@ package pi
 //	/home/ben/code/nixos-config/main → --home-ben-code-nixos-config-main--
 //
 // The session UUID (HarnessSessionID) is embedded in the filename, NOT used as
-// a directory name. Pi 0.78 may produce multiple JSONLs in the same
+// a directory name. Pi 0.79 may produce multiple JSONLs in the same
 // <encoded-cwd> directory — one per `pi` invocation in that cwd — but each
 // file's filename carries the UUID that pi's SessionManager.newSession used
 // for that invocation, and the same UUID is mirrored into the JSONL's first
