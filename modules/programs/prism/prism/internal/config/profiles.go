@@ -66,27 +66,27 @@ type ProfilesFile struct {
 	// pi processes. Values are fully expanded absolute paths (no $HOME).
 	// Written by Nix under agent_env_vars.
 	AgentEnvVars map[string]string `json:"agent_env_vars,omitempty"`
-	// ContainerResources holds per-container resource cap values to be passed
-	// to podman run as --memory, --memory-swap, and --pids-limit.
-	// Written by Nix under container_resources.
+	// ContainerResources holds per-container resource cap values that the
+	// removed container isolation mode passed to the container runtime.
+	// Unused by current isolation modes; retained for config-shape
+	// compatibility. Written by Nix under container_resources.
 	ContainerResources ContainerResources `json:"container_resources,omitempty"`
 	// QuickProfiles holds lightweight model configs for prism quick subcommands.
 	// Written by Nix under quick_profiles.
 	QuickProfiles map[string]QuickProfile `json:"quick_profiles,omitempty"`
 }
 
-// ContainerResources holds the per-container resource cap values that are
-// passed to podman run via buildRunArgs. Zero values / empty strings mean
-// "no flag emitted".
+// ContainerResources holds the per-container resource cap values that the
+// removed container isolation mode consumed. Unused by current isolation
+// modes; retained for config-shape compatibility. Zero values / empty
+// strings mean "no flag emitted".
 type ContainerResources struct {
-	// MemoryMax is the value for podman run --memory (e.g. "8g").
-	// Empty string means no --memory flag.
+	// MemoryMax is the memory cap (e.g. "8g"). Empty string means no cap.
 	MemoryMax string `json:"memoryMax,omitempty"`
-	// MemorySwapMax is the value for podman run --memory-swap (e.g. "8g").
-	// Empty string means no --memory-swap flag.
+	// MemorySwapMax is the memory+swap cap (e.g. "8g"). Empty string means
+	// no cap.
 	MemorySwapMax string `json:"memorySwapMax,omitempty"`
-	// PidsLimit is the value for podman run --pids-limit.
-	// Zero means no --pids-limit flag.
+	// PidsLimit is the process-count cap. Zero means no cap.
 	PidsLimit int `json:"pidsLimit,omitempty"`
 }
 

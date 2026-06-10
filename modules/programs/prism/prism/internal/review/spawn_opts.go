@@ -110,8 +110,8 @@ func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
 	// `--agent review-<role> --prompt "..."` with `Unknown options`,
 	// leaving the review agent idle forever.
 	//
-	// bwrap / sandbox-exec / podman set PRISM_HARNESS_PIPE via their own
-	// paths (bwrap.go --setenv, sandbox-exec profile, podman --env); only
+	// bwrap / sandbox-exec set PRISM_HARNESS_PIPE via their own
+	// paths (bwrap.go --setenv, sandbox-exec profile); only
 	// inject here for host mode. Mirrors the same block in cmd/spawn.go,
 	// cmd/switch.go, cmd/restore.go, and cmd/investigate.go (issue #2114).
 	if hShape, hShapeOK := harness.ShapeOf(in.HarnessName); hShapeOK && hShape == harness.TransportSocketPipe && in.IsolationMode == "host" {

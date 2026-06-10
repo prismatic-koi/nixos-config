@@ -34,6 +34,8 @@ Prism is a tmux-based AI development environment that is developed and configure
 - **Custom agents**: `modules/programs/prism/agents/`
 - **Skills**: `modules/programs/prism/skills/`
 
+**Isolation modes.** The valid prism isolation modes are `bwrap` (Linux), `sandbox-exec` (Darwin), and `host` — the source of truth is `config.ValidIsolationModes` in `modules/programs/prism/prism/internal/config/config.go`. Podman is **not** a prism isolation mode; it was removed some time ago (issue #2189 cleaned up the stale references). The only remaining `podman` strings in prism source are legacy DB-row fallbacks (and the schema migrations that backfill them) which convert old `isolation_mode='podman'` rows to bwrap at read time — do not reintroduce podman as a mode, and do not "fix" those fallbacks without a dedicated audit. (Podman the container runtime is still used on these machines — `modules/programs/podman.nix` — that is unrelated to prism isolation.)
+
 When making changes to prism Go source, always build and test before committing:
 
 ```bash

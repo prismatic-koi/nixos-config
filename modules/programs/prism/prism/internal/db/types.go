@@ -29,7 +29,7 @@ type Status struct {
 	ModelID          *string
 	RootAgentName    *string
 	RootModelID      *string
-	IsolationMode    string // "podman", "bwrap", or "host"; "" means not recorded (back-compat)
+	IsolationMode    string // "bwrap", "sandbox-exec", or "host"; "" means not recorded (back-compat); legacy rows may carry other values
 	InstanceID       *string
 	LastSeen         time.Time
 	EndedAt          *time.Time

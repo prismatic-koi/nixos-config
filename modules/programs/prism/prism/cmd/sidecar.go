@@ -1,43 +1,35 @@
 package cmd
 
-// prism sidecar — long-running SSE consumer and (optionally) container manager
-// that drives agent state transitions.
+// prism sidecar — long-running SSE consumer that drives agent state
+// transitions.
 //
 // Flags:
 //
 //	--session <name>           prism session name (e.g. "nixos-config@main")
 //	--harness-url <url>        base URL of the harness HTTP endpoint
 //	                           (e.g. "http://localhost:14000")
-//	--isolation-mode <mode>    isolation mode: "podman", "bwrap", or "host"
-//	                           (default: "host" for back-compat when absent)
-//	--container                enable container mode: create and manage a podman
-//	                           container before connecting.
-//	                           Deprecated: use --isolation-mode=podman instead.
-//	--agent-role <role>        "worker" or "coordinator" (used in container mode
-//	                           to select the correct GitHub token; when empty,
-//	                           the role is inferred from events at runtime)
-//	--port <n>                 allocated host port (required in container/bwrap mode)
-//	--plugin-path <path>       host path to the prism-hooks plugin; mounted
-//	                           read-only into the container (container mode only)
-//	--config-content <json>    JSON blob for the container harness config;
-//	                           written to a temp file and mounted into the
-//	                           container (container mode only)
+//	--isolation-mode <mode>    isolation mode: "bwrap", "sandbox-exec", or
+//	                           "host" (default: "host" when absent); see
+//	                           config.ValidIsolationModes
+//	--agent-role <role>        "worker" or "coordinator" (used to select the
+//	                           correct GitHub token; when empty, the role is
+//	                           inferred from events at runtime)
+//	--port <n>                 allocated host port (required in bwrap/
+//	                           sandbox-exec mode)
 //
 // The sidecar connects to <harness-url>/event and maps harness events to
 // agent state transitions, writing them to prism.db. It handles idle debounce,
 // permission tracking, and dashboard sentinel updates.
 //
-// In bwrap mode (--isolation-mode=bwrap), the sidecar does NOT create a
-// container. The bwrap sandbox is launched and owned by the tmux pane via
-// "prism agent-run". The sidecar still sets up the host-API Unix socket,
-// selects the NewContainerMode harness adapter, and runs the full SSE loop.
+// In bwrap and sandbox-exec mode, the sandbox is launched and owned by the
+// tmux pane via "prism agent-run". The sidecar sets up the host-API Unix
+// socket, selects the container-mode harness adapter, and runs the full SSE
+// loop.
 //
-// In host mode (--isolation-mode=host or no --container flag), the sidecar
-// connects to an already-running agent process. No container or sandbox
-// management is performed.
+// In host mode (--isolation-mode=host or no flag), the sidecar connects to an
+// already-running agent process. No sandbox management is performed.
 //
-// Clean shutdown: SIGINT and SIGTERM write "interrupted" state and (in container
-// mode) stop/remove the container before exiting.
+// Clean shutdown: SIGINT and SIGTERM write "interrupted" state before exiting.
 
 import (
 	"context"
@@ -69,28 +61,23 @@ by prism spawn.
 The sidecar handles: state machine transitions, idle debounce (2s),
 permission tracking, event logging, and dashboard sentinel updates.
 
-In podman mode (--isolation-mode=podman or legacy --container), the sidecar
-also creates and manages the podman container running the harness in combined
-TUI + HTTP mode, health-checks it until ready, then writes a readiness signal
-so the tmux pane can run podman attach to bridge the container PTY (RFC #691).
-
-In bwrap mode (--isolation-mode=bwrap), the sidecar sets up the host-API Unix
-socket and runs the full SSE loop, but does NOT create a container or write a
-readiness signal. The bwrap sandbox is owned by the tmux pane.`,
+In bwrap and sandbox-exec mode, the sidecar sets up the host-API Unix socket
+and runs the full SSE loop. The sandbox itself is owned by the tmux pane via
+"prism agent-run". In host mode the sidecar connects to an already-running
+agent process.`,
 	RunE: runSidecar,
 }
 
 func init() {
 	sidecarCmd.Flags().String("session", "", "Prism session name (e.g. nixos-config@main)")
 	sidecarCmd.Flags().String("harness-url", "", "Base URL of the harness HTTP server (used by HTTP-transport harnesses)")
-	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: derived from --container flag)")
-	sidecarCmd.Flags().Bool("container", false, "Enable container mode (create/manage podman container) — deprecated, use --isolation-mode=podman")
-	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (used in container mode; inferred from SSE events when empty)")
-	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in container/bwrap mode)")
-	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (container mode only)")
-	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after container readiness (container mode only)")
-	sidecarCmd.Flags().String("config-content", "", "JSON blob for container harness config; written to temp file and mounted (container mode only)")
-	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for container labels and bus message scoping)")
+	sidecarCmd.Flags().String("isolation-mode", "", "Isolation mode: bwrap, sandbox-exec, or host (default: host)")
+	sidecarCmd.Flags().String("agent-role", "", "Agent role: worker or coordinator (inferred from SSE events when empty)")
+	sidecarCmd.Flags().Int("port", 0, "Allocated host port (required in bwrap/sandbox-exec mode)")
+	sidecarCmd.Flags().String("plugin-path", "", "Host path to prism-hooks.ts plugin (unused; retained for back-compat)")
+	sidecarCmd.Flags().String("initial-prompt", "", "Initial prompt to deliver to the agent after readiness")
+	sidecarCmd.Flags().String("config-content", "", "JSON blob for the harness config (unused; retained for back-compat)")
+	sidecarCmd.Flags().String("instance-id", "", "UUID instance identifier for this session incarnation (for bus message scoping)")
 	sidecarCmd.Flags().Bool("worktree-readonly", false, "Mount the worktree read-only inside the container (used for review agents)")
 	sidecarCmd.Flags().String("harness", "pi", "Agent harness to use")
 	sidecarCmd.Flags().String("harness-binary", "", "Path to the harness binary (required for stdio-pipe harnesses; ignored for http-port harnesses)")
@@ -105,11 +92,10 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	sessionName, _ := cmd.Flags().GetString("session")
 	harnessURL, _ := cmd.Flags().GetString("harness-url")
 	isolationModeFlag, _ := cmd.Flags().GetString("isolation-mode")
-	containerFlag, _ := cmd.Flags().GetBool("container")
 	agentRole, _ := cmd.Flags().GetString("agent-role")
 	port, _ := cmd.Flags().GetInt("port")
 	pluginPath, _ := cmd.Flags().GetString("plugin-path")
-	_ = pluginPath // was used for podman container config, now removed
+	_ = pluginPath // retained for back-compat; no longer consumed
 	initialPrompt, _ := cmd.Flags().GetString("initial-prompt")
 	configContent, _ := cmd.Flags().GetString("config-content")
 	_ = configContent
@@ -143,14 +129,11 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		modelsByRole = nil
 	}
 
-	// Resolve the effective isolation mode. When --isolation-mode is set it
-	// takes precedence. The --container flag is retained for back-compat but
-	// now maps to bwrap (podman isolation has been removed).
+	// Resolve the effective isolation mode. Valid values are defined by
+	// config.ValidIsolationModes; anything else falls back to host.
 	var isolationMode config.IsolationMode
 	if isolationModeFlag != "" && config.IsValidIsolationMode(isolationModeFlag) {
 		isolationMode = config.IsolationMode(isolationModeFlag)
-	} else if containerFlag {
-		isolationMode = config.IsolationBwrap
 	} else {
 		isolationMode = config.IsolationHost
 	}
@@ -160,12 +143,12 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	isoCaps := container.CapabilitiesFor(isolationMode)
 
 	// needsHostAPI is true for any mode where the agent runs in a sandbox
-	// without direct access to host tmux — podman (IsContainer), bwrap, and
-	// sandbox-exec (NeedsHostAPISocket) all require the host-API Unix socket.
+	// without direct access to host tmux — bwrap and sandbox-exec
+	// (NeedsHostAPISocket) both require the host-API Unix socket.
 	needsHostAPI := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
 	// useContainerHarness is true for modes where the agent is pre-created with
-	// --prompt at launch (podman, bwrap, sandbox-exec), so the harness uses
+	// --prompt at launch (bwrap, sandbox-exec), so the harness uses
 	// GET /session to retrieve the existing session ID rather than POST /session.
 	useContainerHarness := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
@@ -218,13 +201,14 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		agentModel = modelProbe.EffectiveModel(agentRole)
 	}
 
-	// ctrCfg is always nil now that podman isolation has been removed.
-	// The downstream nil checks gate all container-specific code paths.
+	// ctrCfg is always nil — no current isolation mode runs the agent in a
+	// sidecar-managed container. The downstream nil checks gate all
+	// container-specific code paths.
 	var ctrCfg *container.Config
 
-	// Build the host-API socket path for podman, bwrap, and sandbox-exec modes.
-	// The agent runs in a sandbox without direct access to host tmux in all
-	// three cases, so the host-API Unix socket is required for proxying prism
+	// Build the host-API socket path for bwrap and sandbox-exec modes.
+	// The agent runs in a sandbox without direct access to host tmux in both
+	// cases, so the host-API Unix socket is required for proxying prism
 	// CLI calls.
 	var hostAPISockPath string
 	if needsHostAPI {
@@ -282,7 +266,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Build the OnReady callback — only for podman mode (AC-18, AC-19).
+	// Build the OnReady callback — only for container-owning modes (AC-18,
+	// AC-19). No current isolation mode sets IsContainer, so onReady stays nil.
 	// In bwrap and sandbox-exec modes the sidecar does NOT write the readiness
 	// signal: "prism agent-run" in the tmux pane starts immediately without
 	// waiting. In host mode there is no readiness file at all.
@@ -314,7 +299,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// event mapping. The sidecar calls through the harness.Harness interface
 	// and has no direct dependency on the adapter package (#710).
 	//
-	// In podman and bwrap mode, use NewContainer so that:
+	// In bwrap and sandbox-exec mode, use NewContainer so that:
 	//   - CreateSession uses GET /session to retrieve the existing session ID
 	//     (the agent already created a session when the TUI started)
 	//   - DeliverInitialPrompt is a no-op (prompt was sent via --prompt CLI flag)
@@ -399,8 +384,8 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// This implements the TTL sweep that prevents ~/.cache/prism/clipboard/ from
 	// growing unboundedly across multiple paste operations. The sweep is
 	// fire-and-forget; errors are non-fatal (logged by runClipboardClean itself).
-	// Runs for podman and bwrap modes (both run the agent in a sandbox where
-	// the clipboard staging dir is mounted).
+	// Runs for bwrap and sandbox-exec modes (both run the agent in a sandbox
+	// where the clipboard staging dir is mounted).
 	if needsHostAPI {
 		go func() {
 			_ = runClipboardClean(nil, nil)

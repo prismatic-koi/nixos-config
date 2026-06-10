@@ -330,9 +330,9 @@ var switchCmd = &cobra.Command{
 		// below reads from isoCaps rather than comparing against raw mode constants.
 		isoCaps := container.CapabilitiesFor(isoMode)
 
-		// Load profiles.json for container/bwrap/sandbox-exec config injection and
+		// Load profiles.json for bwrap/sandbox-exec config injection and
 		// agent env var injection (host mode). Always attempt to load; treat missing
-		// file as fatal when sandboxed (podman, bwrap, or sandbox-exec), since those
+		// file as fatal when sandboxed (bwrap or sandbox-exec), since those
 		// paths require the role config blob.
 		var pf *config.ProfilesFile
 		{
@@ -376,8 +376,8 @@ var switchCmd = &cobra.Command{
 			PIExtensionDir: cfg.PIExtensionDir,
 		}
 		// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
-		// receive env vars via podman --env flags in the sidecar (podman) or
-		// via the bwrap environment pass-through.
+		// receive env vars via their own injection paths (bwrap --setenv,
+		// sandbox-exec profile).
 		if pf != nil && !isoCaps.NeedsConfigBlob {
 			opts.AgentEnvVars = pf.AgentEnvVars
 		}

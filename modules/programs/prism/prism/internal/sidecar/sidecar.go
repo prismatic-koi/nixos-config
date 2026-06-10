@@ -23,8 +23,9 @@
 // The Harness value is injected at construction time via Config.Harness
 // (Phase 0a of the multi-harness migration, RFC #691).
 //
-// In container mode (Config.Container != nil), the sidecar also manages the
-// podman container lifecycle: create, health-check, stop, remove.
+// In container mode (Config.Container != nil — a legacy of the removed
+// container isolation mode; no current mode sets it), the sidecar also
+// manages the container lifecycle: create, health-check, stop, remove.
 //
 // All timer and clock operations go through an abstracted Clock interface so
 // that tests can control time deterministically.
@@ -70,7 +71,7 @@ const IdleDebounce = 2 * time.Second
 // will wait for the first SSE event from the harness. If no event is received
 // within this window, the session is transitioned to StateError via
 // writeStartupError. This mirrors the WaitHealthy/CreateSession timeout
-// mechanism added in #1011 for the podman path.
+// mechanism added in #1011 for the legacy container path.
 const DefaultStartupConnectTimeout = 5 * time.Minute
 
 // DefaultShutdownDrainTimeout is the upper bound on how long Shutdown waits
@@ -200,14 +201,16 @@ type Config struct {
 	// HTTPClient is the HTTP client used for coordinator notification delivery.
 	// If nil, defaultNotifyHTTPClient is used.
 	HTTPClient *http.Client
-	// IsolationMode is the effective isolation mode for this session (e.g.
-	// "podman", "bwrap", "sandbox-exec", or "host"). It is used to derive
+	// IsolationMode is the effective isolation mode for this session
+	// ("bwrap", "sandbox-exec", or "host" — see config.ValidIsolationModes).
+	// It is used to derive
 	// capability flags via container.CapabilitiesFor so that Run can branch on
 	// typed caps rather than raw mode strings or the Container!=nil proxy.
 	IsolationMode config.IsolationMode
 	// Container, when non-nil, enables container mode: the sidecar creates and
-	// manages a podman container running the agent in combined TUI + HTTP mode
-	// instead of relying on a directly-launched agent process.
+	// manages a container running the agent in combined TUI + HTTP mode
+	// instead of relying on a directly-launched agent process. Always nil in
+	// current code — no isolation mode owns a container lifecycle.
 	Container *container.Config
 	// HostAPISockPath, when non-empty, is the path at which the sidecar starts a
 	// Unix socket HTTP server exposing host-side tmux operations to agents running
@@ -220,8 +223,7 @@ type Config struct {
 	HostAPITCPPort int
 	// OnReady is called (once, synchronously) after the container is healthy
 	// and before the SSE loop starts. Used in container mode to write the
-	// readiness signal file that unblocks the tmux pane running "podman attach".
-	// No-op when nil.
+	// readiness signal file that unblocks the tmux pane. No-op when nil.
 	OnReady func()
 	// InitialPrompt, when non-empty, is passed to the container via
 	// agent --prompt <text> at startup. The agent process creates its
@@ -237,8 +239,8 @@ type Config struct {
 	// StartupConnectTimeout is the duration the sidecar waits for the first
 	// SSE event before concluding the harness never bound to its port and
 	// transitioning to StateError via writeStartupError. Only applies when
-	// NeedsStartupConnectTimeout is true (currently bwrap mode): podman mode
-	// uses WaitHealthy/CreateSession for the same protection. Defaults to
+	// NeedsStartupConnectTimeout is true (currently bwrap mode): container
+	// mode used WaitHealthy/CreateSession for the same protection. Defaults to
 	// DefaultStartupConnectTimeout (5m) when zero. Set to a small value in
 	// tests to exercise the timeout path without real wall-clock waits.
 	StartupConnectTimeout time.Duration
@@ -300,9 +302,10 @@ type Config struct {
 	// listener on Darwin (where Unix socket bind-mounts inside sandbox-exec
 	// are not reliable). The sidecar binds 127.0.0.1:<port> and exposes it to
 	// the sandboxed extension as tcp://127.0.0.1:<port> via PRISM_HARNESS_PIPE.
-	// Zero means no TCP listener (Linux path). Note: unlike the podman/gvproxy
-	// path (which uses host.containers.internal), sandbox-exec runs directly on
-	// the host, so loopback-only is both correct and more secure.
+	// Zero means no TCP listener (Linux path). Note: unlike the legacy
+	// container path (which used the gvproxy host.containers.internal
+	// convention), sandbox-exec runs directly on the host, so loopback-only is
+	// both correct and more secure.
 	HarnessPipeTCPPort int
 	// PipeMaxLineBytes overrides the per-frame byte cap enforced by the
 	// socket-pipe inbound reader. Zero means use socketPipeMaxLineBytes (16
@@ -397,7 +400,7 @@ type Sidecar struct {
 	hostAPITCPSrv *http.Server
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
-	// probe succeeds during podman stop's grace period. Protected by mu.
+	// probe succeeds during the container-stop grace period. Protected by mu.
 	shuttingDown bool
 	// rootAgent is the name of the top-level agent for this session.
 	// Pre-set from Config.AgentRole in New() when non-empty (#555); falls back
@@ -661,7 +664,7 @@ type containerMgr struct {
 // permanent connection failure).
 //
 // When Config.Container is non-nil (container mode), Run first creates and
-// health-checks the podman container before subscribing to the SSE stream.
+// health-checks the container before subscribing to the SSE stream.
 // The container is stopped and removed by Shutdown().
 func (s *Sidecar) Run(ctx context.Context) error {
 	// Record spawn time for "first event received" log line (Gap 1b).
@@ -722,8 +725,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 		// host-side tooling.
 		// For bwrap mode, the per-session socket directory may not yet exist —
 		// prepareVolumeDirs runs in agent-run (after the sidecar starts). Create it
-		// here so net.Listen succeeds. For podman, prepareVolumeDirs already ran
-		// inside mgr.Create(), so this is a no-op.
+		// here so net.Listen succeeds.
 		if err := os.MkdirAll(filepath.Dir(s.cfg.HostAPISockPath), 0o700); err != nil {
 			s.logger().Printf("sidecar: host-API socket dir: %v", err)
 		}
@@ -987,7 +989,7 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// to StateError (same mechanism as #1011's WaitHealthy/CreateSession paths)
 	// and cancel the SSE loop so the sidecar exits cleanly.
 	//
-	// Podman mode already has WaitHealthy/CreateSession covering startup
+	// Container-owning modes have WaitHealthy/CreateSession covering startup
 	// failures, so NeedsStartupConnectTimeout is false there.
 	if container.CapabilitiesFor(s.cfg.IsolationMode).NeedsStartupConnectTimeout {
 		startupTimeout := s.cfg.StartupConnectTimeout
@@ -1258,7 +1260,7 @@ func (s *Sidecar) Shutdown() {
 // When OwnsContainerLifecycle is false (bwrap / host mode), this function is a
 // no-op: the harness is already running and the SSE loop connects directly. The
 // container startup sequence (mgr.Create → WaitHealthy → CreateSession →
-// OnReady → DeliverInitialPrompt) is only performed in podman container mode.
+// OnReady → DeliverInitialPrompt) is only performed in container mode.
 func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 	// Container mode: create and health-check the container before connecting.
 	if container.CapabilitiesFor(s.cfg.IsolationMode).OwnsContainerLifecycle {
@@ -1367,9 +1369,10 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 
 		// Signal readiness after the container is healthy (AC-7, AC-19).
 		// Guard with shuttingDown to prevent OnReady from firing after SIGTERM,
-		// even if WaitHealthy returned a genuine 200 during podman stop's grace
-		// period. Shutdown() sets shuttingDown=true before starting podman stop,
-		// so this check is reliable regardless of ctx cancellation timing.
+		// even if WaitHealthy returned a genuine 200 during the container-stop
+		// grace period. Shutdown() sets shuttingDown=true before stopping the
+		// container, so this check is reliable regardless of ctx cancellation
+		// timing.
 		s.mu.Lock()
 		isShuttingDown := s.shuttingDown
 		s.mu.Unlock()
@@ -1382,7 +1385,7 @@ func (s *Sidecar) runStartupHTTP(ctx context.Context) error {
 		// 1. GET /session  — retrieve the session the agent already created
 		//    (via --prompt on CLI). In non-container mode, POST /session creates
 		//    a new session. The harness adapter handles both cases.
-		// 2. Call OnReady  — unblocks the TUI pane, which runs "podman attach".
+		// 2. Call OnReady  — unblocks the TUI pane.
 		// 3. DeliverInitialPrompt — no-op in container mode (prompt already sent
 		//    via CLI). This entire block is inside `if s.cfg.Container != nil`
 		//    so it only runs in container mode; host-mode sessions never reach here.

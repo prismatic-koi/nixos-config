@@ -1592,7 +1592,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		{Name: "review-goal"},
 	}
 
-	// podman mode with nil ProfilesFile: with the RequireSlot gate (#1224),
+	// bwrap mode with nil ProfilesFile: with the RequireSlot gate (#1224),
 	// this now triggers a fan-out abort before the spawn loop, so no per-agent
 	// progress lines are emitted and Run returns a global error immediately.
 	opts := review.Opts{
@@ -1602,7 +1602,7 @@ func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 		Agents:        agents,
 		Timeout:       30 * time.Second,
 		DBPath:        dbPath,
-		IsolationMode: "podman",
+		IsolationMode: "bwrap",
 		ProfilesFile:  nil,
 	}
 

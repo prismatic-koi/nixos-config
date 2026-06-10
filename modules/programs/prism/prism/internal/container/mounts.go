@@ -1,6 +1,7 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines the shared MountSpec shape and StandardSandboxMounts walk
-// used by the podman and bwrap mount-emission paths (issue #1149 A2.M1; design
+// used by the sandbox mount-emission paths (issue #1149 A2.M1; design
 // proposal A2 §3.1, §3.S6).
 //
 // The common decision tree — "which host artefact lives at which canonical
@@ -8,11 +9,9 @@
 // expressed once here, mode-agnostic. Each isolator walks the slice and
 // translates the entries into its own argument grammar via per-mode appenders:
 //
-//   - podmanIsolator.appendVolume(args, spec)        → "--volume SRC:DST[:Z][:ro]"
-//   - bwrapIsolator.appendBind(args, spec)           → "--ro-bind|--bind SRC DST"
-//   - sandboxExecIsolator.appendAllow(profile, spec) → "(subpath \"...\")" in SBPL
+//   - AppendBwrapBind(args, spec) → "--ro-bind|--bind SRC DST"
 //
-// Today only the podman and bwrap appenders are wired through the slice; the
+// Today only the bwrap appender is wired through the slice; the
 // sandbox-exec staging HOME is built via collectStagingHomeSymlinkTargets in
 // sandbox_exec_home.go, which serves the same purpose with a different
 // implementation strategy (sandbox-exec has no bind-mount mechanism, so the
@@ -29,9 +28,9 @@ import (
 // sandbox interior at a canonical path. It is mode-agnostic — each isolator
 // emits the syntax it needs via its own appender.
 //
-// The SandboxPath is the path the agent inside the sandbox sees. For podman,
-// HOME-relative paths are rooted at /root/...; for bwrap and sandbox-exec
-// they are rooted at the host user's $HOME (or staging HOME for sandbox-exec).
+// The SandboxPath is the path the agent inside the sandbox sees. For bwrap
+// and sandbox-exec, HOME-relative paths are rooted at the host user's $HOME
+// (or staging HOME for sandbox-exec).
 // StandardSandboxMounts computes the SandboxPath using the sandboxHomeDir
 // argument the caller provides, so the per-mode HOME prefix is captured at
 // the call site rather than baked into MountSpec.
@@ -45,8 +44,8 @@ type MountSpec struct {
 	// the sandbox. May or may not equal HostPath depending on the mode.
 	SandboxPath string
 
-	// ReadOnly mounts the artefact read-only when true. Podman emits ":ro";
-	// bwrap emits "--ro-bind"; sandbox-exec emits the file-read* allow rule
+	// ReadOnly mounts the artefact read-only when true. Bwrap emits
+	// "--ro-bind"; sandbox-exec emits the file-read* allow rule
 	// without file-write*.
 	ReadOnly bool
 
@@ -65,10 +64,9 @@ type MountSpec struct {
 	// failure already implies "missing").
 	OptionalIfMissing bool
 
-	// SELinuxRelabel adds the ":Z" label suffix on podman so that the
-	// container can read/write the bind-mounted directory on
-	// SELinux-enforcing hosts (Fedora, RHEL). Ignored by bwrap and
-	// sandbox-exec — neither participates in SELinux labelling.
+	// SELinuxRelabel marked the mount for an SELinux ":Z" relabel in the
+	// removed container path. Ignored by bwrap and sandbox-exec — neither
+	// participates in SELinux labelling. Retained for shape compatibility.
 	SELinuxRelabel bool
 }
 
@@ -107,9 +105,9 @@ func resolveMountHostPath(spec MountSpec) (string, bool) {
 // configuration, mode-agnostic. Each isolator walks the slice and emits
 // per-mode syntax via its own appender.
 //
-// sandboxHomeDir is the in-sandbox $HOME path (e.g. "/root" for podman or the
-// host user's home directory for bwrap). It is used as the prefix for every
-// HOME-relative SandboxPath in the returned slice.
+// sandboxHomeDir is the in-sandbox $HOME path (the host user's home
+// directory for bwrap, or the staging HOME for sandbox-exec). It is used as
+// the prefix for every HOME-relative SandboxPath in the returned slice.
 //
 // hostHome is the absolute host home directory (the source of HOME-relative
 // host artefacts). When empty, host-relative entries fall back to
@@ -146,9 +144,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	// (issue #1558) and by listing .aws/sso and .aws/cli as writable in
 	// collectStagingHomeSymlinkTargets.
 	//
-	// Note: podman support was removed in #1327. This slice is only walked by
-	// bwrap (appendBwrapBind). The mode parameter is retained for potential
-	// future per-mode divergences.
+	// Note: this slice is only walked by bwrap (AppendBwrapBind). The mode
+	// parameter is retained for potential future per-mode divergences.
 	awsSSOReadOnly := false
 	awsCLIReadOnly := false
 	_ = mode // mode is retained for future per-mode mount tweaks
@@ -222,8 +219,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 
 		// ── AWS SSO cache (conditional, per-mode RO) ────────────────────
 		// Always written to ~/.aws/sso by the AWS CLI (regardless of
-		// AWS_CONFIG_FILE). Mounted at $HOME/.aws/sso. RO on podman
-		// (rationale: see awsSSOReadOnly above), RW on bwrap.
+		// AWS_CONFIG_FILE). Mounted at $HOME/.aws/sso. RW on bwrap
+		// (rationale: see awsSSOReadOnly above).
 		{
 			HostPath:          filepath.Join(hostHome, ".aws", "sso"),
 			SandboxPath:       filepath.Join(sandboxHomeDir, ".aws", "sso"),
@@ -285,38 +282,6 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	return specs
 }
 
-// appendPodmanVolume appends a podman --volume argument pair for the given
-// MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via
-// resolveMountHostPath and emits "--volume SRC:DST[:Z][:ro]" when the mount
-// should be active. Returns args unchanged when the mount is skipped.
-//
-// Podman has a subtle file-vs-directory distinction for SELinux-relabelled
-// mounts: directory mounts that the container should be able to populate use
-// "--mount type=bind,...", but for the canonical-name remap pattern used by
-// StandardSandboxMounts (where DST is created lazily by podman), --volume
-// SRC:DST[:Z][:ro] works for both files and directories. The existing
-// container.go always used --volume for these, so we keep that.
-//
-// Free function (not a method on podmanIsolator) because the emitter is
-// stateless and the podman mount block is exercised by tests that build a
-// Manager with a non-podman isolator, then call buildRunArgs directly. A
-// free function lets those tests continue to work without an awkward
-// type-cast or fresh-isolator instantiation.
-func appendPodmanVolume(args []string, spec MountSpec) []string {
-	src, ok := resolveMountHostPath(spec)
-	if !ok {
-		return args
-	}
-	flags := ""
-	if spec.SELinuxRelabel {
-		flags += ":Z"
-	}
-	if spec.ReadOnly {
-		flags += ":ro"
-	}
-	return append(args, "--volume", src+":"+spec.SandboxPath+flags)
-}
-
 // AppendBwrapBind appends a bwrap --ro-bind or --bind argument triple for the
 // given MountSpec. It applies the EvalSymlinks / OptionalIfMissing rules via
 // resolveMountHostPath and emits the correct flag based on spec.ReadOnly.
@@ -324,7 +289,7 @@ func appendPodmanVolume(args []string, spec MountSpec) []string {
 // Returns args unchanged when the mount is skipped.
 //
 // Free function (not a method on bwrapIsolator) — the emitter is stateless
-// and a free function is symmetric with appendPodmanVolume above.
+// and does not need access to isolator state.
 func AppendBwrapBind(args []string, spec MountSpec) []string {
 	src, ok := resolveMountHostPath(spec)
 	if !ok {

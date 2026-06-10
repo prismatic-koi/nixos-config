@@ -21,7 +21,7 @@ package review_test
 //     proves the gate does real work — for container-mode review
 //     invokers HarnessPipeSockPath stays empty, so the existing
 //     container-mode injection paths (bwrap --setenv, sandbox-exec
-//     profile, podman --env) remain responsible for PRISM_HARNESS_PIPE.
+//     profile) remain responsible for PRISM_HARNESS_PIPE.
 //   - TestNewReviewerSpawnOpts_SandboxExecMode_LeavesHarnessPipeSockPathEmpty
 //     mirrors the bwrap negative for sandbox-exec, the second container
 //     mode that the review fan-out can resolve to on Darwin hosts.
@@ -132,7 +132,7 @@ func TestNewReviewerSpawnOpts_BwrapMode_LeavesHarnessPipeSockPathEmpty(t *testin
 	}
 
 	if opts.HarnessPipeSockPath != "" {
-		t.Errorf("SpawnOpts.HarnessPipeSockPath = %q, want \"\" for bwrap review fan-out — container-mode injection paths (bwrap --setenv, sandbox-exec profile, podman --env) own PRISM_HARNESS_PIPE for container sessions; pre-computing the sock path here would double-inject (issue #2114 AC).",
+		t.Errorf("SpawnOpts.HarnessPipeSockPath = %q, want \"\" for bwrap review fan-out — container-mode injection paths (bwrap --setenv, sandbox-exec profile) own PRISM_HARNESS_PIPE for container sessions; pre-computing the sock path here would double-inject (issue #2114 AC).",
 			opts.HarnessPipeSockPath)
 	}
 }

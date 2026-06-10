@@ -23,7 +23,6 @@ let
   # variable, expanded by tmux before the shell receives it.
   #
   # Matched values:
-  #   podman   — legacy podman isolation (`podman attach` is the pane command).
   #   bwrap    — bwrap isolation: `prism agent-run` execs bwrap directly, so
   #              the pane's direct child is the bwrap process.
   #   agent — defensive fallback for bwrap cases where tmux reports the
@@ -37,7 +36,7 @@ let
   # no binding keeps a hand-rolled pane_current_command equality check.
   sandboxedPaneGuard = pkgs.writeShellScript "prism-tmux-sandboxed-pane" ''
     case "$1" in
-      podman|bwrap) exit 0 ;;
+      bwrap) exit 0 ;;
       *) exit 1 ;;
     esac
   '';
@@ -98,7 +97,7 @@ let
     # No image: fall back to text clipboard paste.
     # This preserves pre-PR behaviour: before this keybind existed, the terminal
     # emulator's own bracketed-paste handled text Ctrl-V transparently through
-    # the sandbox (podman attach PTY / bwrap PTY). Since we now intercept C-v
+    # the sandbox PTY (bwrap). Since we now intercept C-v
     # we must replicate this.
     if [ -n "$WAYLAND_DISPLAY" ]; then
       txt="$(wl-paste --no-newline 2>/dev/null)"
@@ -166,7 +165,7 @@ in
               # sensible debugging behavior
               set -g remain-on-exit on
               # Enable OSC 52 clipboard passthrough so agent running inside a
-              # sandbox (podman or bwrap) can write to the host clipboard via the
+              # sandbox (bwrap) can write to the host clipboard via the
               # sandbox PTY bridge. Without this, tmux drops OSC 52 sequences and
               # clipboard is silently broken.
               set -g set-clipboard on
@@ -291,7 +290,7 @@ in
               bind a run-shell 'path=$(${pkgs.tmux}/bin/tmux display-message -p "#{pane_current_path}"); ${pkgs.tmux}/bin/tmux display-popup -E -d "$path" -w 60% -h 20% -b single -e "PRISM_KEYBIND_SPAWN=1" "${prism} spawn --attach"'
 
               # agent scrolling keybinds — active when the pane is a prism agent
-              # running under either supported isolation mode (podman or bwrap),
+              # running under bwrap isolation,
               # or hosting pi directly. See sandboxedPaneGuard above for the
               # matching rules. In any other pane (plain shell, editor, dashboard)
               # the literal keystroke is sent through unchanged.
@@ -332,8 +331,8 @@ in
               # Clipboard paste bridge for sandboxed agent panes (issue #752).
               #
               # When Ctrl-V is pressed in a pane whose current command is one of
-              # the sandboxed-agent values matched by sandboxedPaneGuard (podman
-              # attach / bwrap / direct pi):
+              # the sandboxed-agent values matched by sandboxedPaneGuard
+              # (bwrap / direct pi):
               #
               #   Image path: `prism clipboard paste-image` reads the host clipboard,
               #   stages the PNG to ~/.cache/prism/clipboard/<uuid>.png, and prints

@@ -87,7 +87,7 @@ func runReviewsList(cmd *cobra.Command, _ []string) error {
 	jsonMode, _ := cmd.Flags().GetBool("json")
 	limit, _ := cmd.Flags().GetInt("limit")
 
-	// Inside a bwrap / podman / sandbox-exec sandbox: proxy the list to
+	// Inside a bwrap / sandbox-exec sandbox: proxy the list to
 	// the host sidecar (#1043 pattern). The host's prism.db is invisible
 	// to direct reads from inside the sandbox — falling through to the DB
 	// path would silently return an empty list (the shadow tmpfs DB has

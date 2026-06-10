@@ -1,4 +1,5 @@
-// Package container manages the agent session container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines the Isolator interface, which is the seam between the
 // Manager and the underlying isolation mechanism. Implementations are
 // bwrapIsolator (Linux), sandboxExecIsolator (Darwin), and hostIsolator.
@@ -18,12 +19,13 @@ import (
 // Each flag is cited with the call sites that would collapse to a capability
 // query after the per-phase migrations in A.1's §7.
 type Capabilities struct {
-	// IsContainer is always false now that podman isolation is removed.
+	// IsContainer is always false now that container isolation is removed
+	// (no current mode runs the agent in a separate container).
 	// Retained for call-site compatibility; callers checking IsContainer
 	// will consistently receive false.
 	IsContainer bool
 
-	// OwnsContainerLifecycle is always false now that podman isolation is
+	// OwnsContainerLifecycle is always false now that container isolation is
 	// removed. Retained for call-site compatibility; the sidecar's container
 	// startup branch will never fire.
 	OwnsContainerLifecycle bool
@@ -57,13 +59,13 @@ type Capabilities struct {
 	NeedsStartupConnectTimeout bool
 
 	// NeedsReadinessWait means the agent-pane command should be prefixed by
-	// the readiness-wait shell command. Always false now that podman is removed.
-	// Retained for call-site compatibility.
+	// the readiness-wait shell command. Always false now that container
+	// isolation is removed. Retained for call-site compatibility.
 	NeedsReadinessWait bool
 
 	// EmitsTmuxStatusColumns means the tmux event hooks should seed
 	// isolation-specific status columns for sessions in this mode. Always
-	// false now that podman is removed.
+	// false now that container isolation is removed.
 	// Retained for call-site compatibility.
 	EmitsTmuxStatusColumns bool
 }
@@ -93,9 +95,8 @@ type Isolator interface {
 	Capabilities() Capabilities
 
 	// BuildRunArgs returns the complete argument list for launching the isolated
-	// session process (e.g. all arguments after the "podman" binary for a
-	// podman run invocation). The returned slice must not be modified by the
-	// caller.
+	// session process (all arguments after the launcher binary). The returned
+	// slice must not be modified by the caller.
 	BuildRunArgs() []string
 
 	// Run launches the isolated process with the given argument list, using the
@@ -128,18 +129,16 @@ type Isolator interface {
 	// Returns nil for "yes" or a wrapped, user-facing error describing the
 	// missing prerequisite. For platform-only checks (bwrap → Linux,
 	// sandbox-exec → Darwin) the error names the required platform.
-	// Cites: cmd/spawn.go:190-204 (checkBwrapPlatform / checkSandboxExecPlatform);
-	//        internal/container/container.go:1315 (CheckAvailability for podman).
+	// Cites: cmd/spawn.go:190-204 (checkBwrapPlatform / checkSandboxExecPlatform).
 	Available() error
 
 	// Cap returns the soft concurrency-cap descriptor for this isolator.
-	// It is the unified replacement for cmd/concurrency.go's parallel
-	// checkConcurrencyCap (podman), checkBwrapConcurrencyCap (bwrap), and
-	// checkSandboxExecConcurrencyCap (sandbox-exec) functions.
+	// It is the unified replacement for the old per-mode concurrency-cap
+	// helpers that used to live in cmd/concurrency.go.
 	//
 	// dbPath is the path to prism.db; the implementation uses it to count
-	// active sessions of this isolation mode, may merge with a live process
-	// probe (podman), or may ignore it entirely (host: uncapped).
+	// active sessions of this isolation mode, or may ignore it entirely
+	// (host: uncapped).
 	//
 	// The returned CapStatus carries the count, limit, exceeded flag, the
 	// in-flight session list (for inclusion in the user-facing message), and
@@ -152,7 +151,7 @@ type Isolator interface {
 	// Implementations must NOT have side effects: Cap is called speculatively
 	// before any worktree, DB row, or tmux session is created.
 	//
-	// Cites: cmd/concurrency.go (podman, bwrap, sandbox-exec per-mode helpers).
+	// Cites: cmd/concurrency.go (per-mode helpers, since unified).
 	Cap(ctx context.Context, dbPath string) CapStatus
 
 	// WriteHarnessConfigBlob writes the harness configuration blob (the
@@ -169,7 +168,6 @@ type Isolator interface {
 
 	// AgentPaneCmd returns the shell command string emitted into the tmux
 	// agent pane for this session.
-	//   - podman:                "podman attach --sig-proxy=false <container>"
 	//   - bwrap, sandbox-exec:   "prism agent-run --session <session>"
 	//   - host:                  the DirectCmd supplied by the caller
 	// Cites: internal/session/session.go:265-298 (BuildOpencodeCmd switch).
@@ -187,8 +185,7 @@ type Isolator interface {
 	// archive copy step consumes. home is the value of os.UserHomeDir(); it
 	// is passed in rather than resolved here so callers can inject a temp
 	// directory under test. sessionName is the prism session name (used
-	// to derive the per-container storage path on podman and the agent-run
-	// log path on bwrap / sandbox-exec).
+	// to derive the agent-run log path on bwrap / sandbox-exec).
 	//
 	// Stopgap pending #1142 (B6.IF — ArchiveAdapter interface): once that
 	// lands, the archive-side dispatch moves to ArchiveAdapter and this
@@ -225,8 +222,8 @@ type Isolator interface {
 
 	// WriteGitconfig generates a minimal .gitconfig for this isolator's
 	// sandbox layout and writes it to the per-session temp path. The
-	// in-sandbox $HOME differs per mode — podman runs as root (/root),
-	// bwrap/sandbox-exec run as the host user — so each isolator picks
+	// in-sandbox $HOME differs per mode — bwrap runs as the host user,
+	// sandbox-exec uses a per-session staging HOME — so each isolator picks
 	// the correct $HOME prefix when emitting the signingKey and
 	// allowedSignersFile paths. Returns nil on success or a wrapped error.
 	// host: no-op (the agent reads the host gitconfig directly).
@@ -236,30 +233,29 @@ type Isolator interface {
 	WriteGitconfig(m *Manager) error
 
 	// Reset performs the heavier "wipe everything matching this mode"
-	// cleanup invoked by `prism reset`. For podman this is the existing
-	// `podman ps` / `podman rm -f prism-*` sweep. For bwrap, sandbox-exec,
+	// cleanup invoked by `prism reset`. For bwrap, sandbox-exec,
 	// and host the implementation is a no-op stub today; orphan-agent-run
 	// reaping is a future implementation. `prism reset` iterates over the
 	// registered isolators and calls Reset on each.
-	// Cites: cmd/reset.go:126 (resetRemovePodmanContainers).
+	// Cites: cmd/reset.go (runReset's per-isolator sweep).
 	Reset(ctx context.Context) error
 
 	// Prepare materialises any per-session temp files (SSH config,
 	// gitconfig, harness config, sandbox staging HOME, SBPL profile) that
 	// the sandbox needs at start time and returns the complete argument
 	// list for the sandbox launcher. Bwrap returns the bwrap argv;
-	// sandbox-exec returns the sandbox-exec argv. Podman/host return nil
-	// args and a non-nil error — they do not use this dispatch path
-	// (podman uses Create; host runs the agent directly in the tmux pane).
+	// sandbox-exec returns the sandbox-exec argv. Host returns nil
+	// args and a non-nil error — it does not use this dispatch path
+	// (host runs the agent directly in the tmux pane).
 	// Cites: internal/container/container.go:581 (Manager.PrepareBwrap);
 	//        internal/container/container.go:637 (Manager.PrepareSandboxExec).
 	Prepare(ctx context.Context, m *Manager) ([]string, error)
 
 	// Create starts a new isolated session: writes any pre-launch temp
 	// files, builds the launcher arg list, and runs it under the supplied
-	// context. Today only podman implements a non-stub body — bwrap and
+	// context. No current isolator implements a non-stub body — bwrap and
 	// sandbox-exec use Prepare + cmd/agent-run, and host runs the agent
-	// directly in the tmux pane. Non-podman implementations return nil
+	// directly in the tmux pane. Implementations return nil
 	// (host) or an error noting that Create is not the right entry point
 	// for that mode (bwrap, sandbox-exec).
 	// Cites: internal/container/lifecycle.go:79 (Manager.Create body).

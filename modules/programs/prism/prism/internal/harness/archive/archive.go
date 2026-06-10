@@ -24,7 +24,8 @@ type SourceParams struct {
 	// (e.g. pi's ses_<ULID>, from sessions.harness_session_id).
 	// May be empty when the harness failed to start.
 	HarnessSessionID string
-	// IsolationMode is "podman", "bwrap", "sandbox-exec", or "host".
+	// IsolationMode is "bwrap", "sandbox-exec", or "host" (see
+	// config.ValidIsolationModes).
 	IsolationMode string
 	// Worktree is the absolute path of the session's worktree (e.g.
 	// "/home/ben/code/nixos-config/feature"). Used by harnesses that

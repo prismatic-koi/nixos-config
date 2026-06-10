@@ -15,7 +15,7 @@ package cmd
 //	--model <name>               model identifier override (overrides profile's primary model)
 //	--variant <name>             model variant override (overrides all agents' variant)
 //	--model-override role=model  per-role model override (repeatable); overrides --model for that role
-//	--isolation <mode>           isolation mode: podman, bwrap, sandbox-exec, or host (default: from config.json)
+//	--isolation <mode>           isolation mode: bwrap, sandbox-exec, or host (default: from config.json)
 //	--harness <name>             agent harness to use (default: "pi")
 
 import (
@@ -295,7 +295,7 @@ func init() {
 	spawnCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	spawnCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")
 	spawnCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
-	spawnCmd.Flags().String("isolation", "", "Isolation mode: podman, bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
+	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
 	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
@@ -322,9 +322,9 @@ func init() {
 //
 // D1 (issue #1133): platform availability is checked via the registered
 // Isolator's Available() method — but only for non-container modes. The
-// podman binary/socket/image checks live in the runSpawn caller (gated by
-// isoCaps.IsContainer) so resolveIsolationMode keeps its pre-refactor
-// surface (no podman daemon required to resolve the mode under test).
+// container availability checks live in the runSpawn caller (gated by
+// isoCaps.IsContainer, always false today) so resolveIsolationMode keeps its
+// pre-refactor surface.
 func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.IsolationMode, error) {
 	isolationFlag, _ := cmd.Flags().GetString("isolation")
 
@@ -336,10 +336,9 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	if err != nil {
 		return "", err
 	}
-	// Skip Available() for container modes — the container availability
-	// check (podman binary, socket, image) runs later in runSpawn so it
-	// happens after the worktree-irrelevant pre-flight is complete and so
-	// resolveIsolationMode itself stays usable on hosts without podman.
+	// Skip Available() for container modes (none in current code) — the
+	// container availability check runs later in runSpawn so it
+	// happens after the worktree-irrelevant pre-flight is complete.
 	if container.CapabilitiesFor(mode).IsContainer {
 		return mode, nil
 	}
@@ -453,11 +452,12 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isolationMode)
 
-	// Container availability check: when container mode is active verify
-	// podman is available before touching anything. resolveIsolationMode
+	// Container availability check: when container mode is active (never, in
+	// current code) verify the runtime is available before touching anything.
+	// resolveIsolationMode
 	// has already validated platform availability for bwrap / sandbox-exec
-	// (D1: iso.Available()); the podman binary/socket/image checks remain
-	// here because they fire only when isoCaps.IsContainer.
+	// (D1: iso.Available()); this branch remains
+	// because it fires only when isoCaps.IsContainer.
 	if isoCaps.IsContainer {
 		iso, isoErr := container.For(isolationMode, container.ConstructorOpts{})
 		if isoErr != nil {
@@ -468,9 +468,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Concurrency cap checks: BEFORE any container-creation side effects
+	// Concurrency cap checks: BEFORE any session-creation side effects
 	// (no worktree, no tmux session, no DB row on refusal).
-	// The podman cap guards host memory against container overhead.
 	// The bwrap cap guards against process-count exhaustion from uncapped
 	// bwrap sessions (each is a host process with no per-session memory ceil).
 	// The sandbox-exec cap mirrors the bwrap cap for Darwin sessions.
@@ -659,8 +658,6 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// path. The bwrap.go mount-emission block checks file existence (os.Stat)
 	// rather than cfg.ConfigContent, so it picks this up correctly.
 	//
-	// Podman mode does NOT need this write — the sidecar's Create() path at
-	// container.go:580 already writes the file before the container starts.
 	// Host mode does NOT need this write — it uses ~/.config/opencode/opencode.json
 	// directly via xdg.configFile.
 	//
@@ -804,8 +801,8 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 			proglog.Warnf("[prism spawn] warning: could not resolve harness pipe path for %q: %v\n", sessionName, pipeErr)
 		}
 	}
-	// AgentEnvVars only applies to host-mode sessions; container sessions
-	// receive env vars via podman --env flags in the sidecar.
+	// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
+	// receive env vars via their own injection paths.
 	if pf != nil && !isoCaps.IsContainer {
 		spawnOpts.AgentEnvVars = pf.AgentEnvVars
 	}

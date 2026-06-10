@@ -803,7 +803,7 @@ func (d *DB) ReleasePort(sessionName string) error {
 }
 
 // SetIsolationMode records the resolved isolation mode for the given session.
-// mode is one of "podman", "bwrap", or "host". This is persisted so that
+// mode is one of "bwrap", "sandbox-exec", or "host". This is persisted so that
 // prism restore can re-spawn the session in the same isolation mode.
 // It is a no-op when no row exists for sessionName (returns nil).
 func (d *DB) SetIsolationMode(sessionName, mode string) error {

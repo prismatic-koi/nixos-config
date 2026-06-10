@@ -1,4 +1,5 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines IsolationRegistry — a name→constructor map populated at
 // init() time by each isolator file — and the Resolve helper that centralises
 // the back-compat resolution logic that is currently scattered across multiple
@@ -18,8 +19,8 @@ import (
 )
 
 // ConstructorOpts carries the per-session parameters passed to an isolator
-// constructor. Name is the stable session identifier (the container name for
-// podman, or the raw session name for the other modes).
+// constructor. Name is the stable session identifier (the raw session name
+// for every current mode).
 type ConstructorOpts struct {
 	Name string
 }

@@ -59,7 +59,7 @@ type CompareInputs struct {
 	// session ran under should read IsolationMode instead. Issue #2105.
 	IsolationFlag *string `json:"isolation_flag"`
 	// IsolationMode is the resolved effective isolation mode the session
-	// actually ran under (podman/bwrap/sandbox-exec/host), captured at
+	// actually ran under (bwrap/sandbox-exec/host), captured at
 	// spawn time post profile/config/Nix-default resolution. Always
 	// populated for sessions spawned post-#2105; nil only on pre-#2105 rows
 	// (the renderer falls back to IsolationFlag for those).

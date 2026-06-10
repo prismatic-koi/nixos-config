@@ -134,11 +134,12 @@ type SpawnOpts struct {
 	Layout Layout
 
 	// IsolationMode is the resolved isolation mode for this session.
-	// Valid values: "podman", "bwrap", "sandbox-exec", "host".
+	// Valid values: "bwrap", "sandbox-exec", "host" (see
+	// config.ValidIsolationModes).
 	IsolationMode string
 
-	// PluginHostPath is the host-side path to the agent plugin bind-mounted
-	// into the container.
+	// PluginHostPath is the host-side path to the agent plugin. Retained
+	// for back-compat; no current isolation mode consumes it.
 	PluginHostPath string
 
 	// InstanceID is the UUID for this session incarnation. For LayoutFull,
@@ -161,8 +162,8 @@ type SpawnOpts struct {
 
 	// AgentEnvVars are additional env vars prefixed to the agent command
 	// in host-mode sessions (see profiles.json agent_env_vars). Ignored in
-	// container/bwrap mode — those paths deliver env vars via podman --env
-	// in the sidecar.
+	// bwrap/sandbox-exec mode — those paths deliver env vars via their own
+	// injection mechanisms (bwrap --setenv, sandbox-exec profile).
 	AgentEnvVars map[string]string
 
 	// ForceFresh controls the startup guard for LayoutFull. When true, any
@@ -422,10 +423,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     reads the file when it sees the env var and feeds the contents
 	//     to the bwrap/sandbox-exec --prompt path.
 	//
-	// Podman mode delivers the prompt through the sidecar (StartSidecarOpts
-	// .InitialPrompt → agent --prompt inside the container), so it does
-	// not need a tmux-side env var at all and is intentionally skipped here.
-	// All other modes (host and sandbox) write the prompt file regardless of
+	// All modes (host and sandbox) write the prompt file regardless of
 	// layout — see the needsPromptFile gate below (#1195).
 	mode := resolveLayoutIsolationMode(opts)
 	var promptFilePath string
@@ -486,10 +484,6 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	//     mode in #1092. The "size" measured here adds the env-var
 	//     contribution so the guard reflects the bytes tmux actually
 	//     sees on its argv.
-	//
-	// Podman launch commands are `podman attach <ctr>`; the prompt is
-	// delivered through the sidecar and never touches tmux's argv, so the
-	// podman path is intentionally not guarded.
 	hostLaunchCmdSize := 0
 	switch {
 	case mode == "host" && opts.Layout == LayoutFull:
@@ -1046,10 +1040,9 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		mode = string(config.Load().DefaultIsolationMode)
 	}
 
-	// Start the sidecar BEFORE creating the agent window so that the
-	// readiness file (in podman mode) exists by the time the pane polls for
-	// it. For bwrap / host modes the sidecar still handles SSE, state, and
-	// host-API, and starting it up-front keeps the ordering consistent.
+	// Start the sidecar BEFORE creating the agent window — it handles SSE,
+	// state, and host-API, and starting it up-front keeps the ordering
+	// consistent across modes.
 	sidecarOpts := StartSidecarOpts{
 		Port:             port,
 		IsolationMode:    mode,
@@ -1072,10 +1065,8 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	}
 
 	// Build the agent command. BuildAgentCmd produces the right shape
-	// for the resolved isolation mode (podman attach / prism agent-run /
-	// direct pi). For podman mode, wrap it in the readiness-wait
-	// script so the pane blocks until the sidecar has health-checked the
-	// container.
+	// for the resolved isolation mode (prism agent-run for bwrap/sandbox-exec,
+	// direct pi for host).
 	buildOpts := Opts{
 		Prompt:           opts.Prompt,
 		PromptFilePath:   opts.PromptFilePath, // set by SpawnSession (#1195: keeps agentCmd O(1) in prompt size for host mode)
@@ -1100,8 +1091,8 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	// prism agent-run (the bwrap entry point) reads isolation_mode from
 	// agent_status immediately on startup to validate the session mode. If the
 	// write happens after tmux.NewWindow, agent-run races and sees NULL →
-	// agent-run rejects the bwrap session with "has isolation mode 'podman',
-	// not bwrap". Writing here, synchronously before NewWindow, removes the
+	// agent-run rejects the bwrap session with a mode-mismatch error.
+	// Writing here, synchronously before NewWindow, removes the
 	// race. Mirrors the identical write in setupFullLayout (session.go).
 	// Non-fatal: a DB failure is logged and spawn continues.
 	if mode != "" {

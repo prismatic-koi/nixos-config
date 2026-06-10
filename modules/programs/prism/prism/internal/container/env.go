@@ -5,8 +5,8 @@ import (
 )
 
 // EnvAppender appends a single environment variable (key, value) to args in
-// the isolator's native syntax and returns the extended slice. Podman uses
-// "--env", "K=V"; bwrap uses "--setenv", "K", "V".
+// the isolator's native syntax and returns the extended slice. Bwrap uses
+// "--setenv", "K", "V".
 type EnvAppender func(args []string, k, v string) []string
 
 // AppendStandardEnv appends the per-session environment variables derived
@@ -58,7 +58,7 @@ func AppendStandardEnv(args []string, cfg Config, appender EnvAppender) []string
 // canonical paths inside the sandbox).
 //
 // This is used by the sandbox-exec dispatch path in cmd/agent_run.go where
-// the env is a plain K=V slice (not a bwrap or podman argument list).
+// the env is a plain K=V slice (not a bwrap-style argument list).
 func AppendSandboxEnvVarsKV(env []string, cfg Config) []string {
 	sandboxMountedByDefault := map[string]bool{
 		"KUBECONFIG":      true,

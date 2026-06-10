@@ -471,8 +471,8 @@ func (m *Manager) writeSshConfigToDir(stagingHome string) error {
 
 // writeGitconfigToDir generates a .gitconfig and (when signing is available)
 // allowed_signers for the sandbox-exec staging HOME. It is a thin wrapper
-// around writeGitconfig(isolationSandboxExec) — the canonical helper used
-// by podman and bwrap — and then materialises the resulting temp files into
+// around writeGitconfig(isolationSandboxExec) — the canonical helper also
+// used by bwrap — and then materialises the resulting temp files into
 // the staging HOME at the canonical paths the agent expects:
 //
 //	<stagingHome>/.gitconfig

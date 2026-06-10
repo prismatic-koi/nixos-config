@@ -4,8 +4,8 @@ package cmd
 //
 // This command is invoked by the tmux agent window when the resolved isolation
 // mode is "bwrap" or "sandbox-exec". It reconstructs the container.Manager
-// from the session's DB row and config, writes the same temp files that
-// Manager.Create() writes for podman sessions (SSH config, gitconfig,
+// from the session's DB row and config, writes the per-session temp files
+// (SSH config, gitconfig,
 // opencode.json), and then runs:
 //
 //	bwrap <args...>        (bwrap mode — supervised child with PTY, Linux-only)
@@ -126,10 +126,10 @@ func init() {
 
 func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Capture wall-clock entry time so that the bwrap and sandbox-exec
-	// dispatch paths can emit `[timing]` markers symmetric to the podman
-	// path's sidecar-side instrumentation (see internal/sidecar/sidecar.go
+	// dispatch paths can emit `[timing]` markers symmetric to the
+	// sidecar-side instrumentation (see internal/sidecar/sidecar.go
 	// "from start" lines). All `[timing]` durations from agent-run are
-	// relative to this point, which is the closest analogue to the podman
+	// relative to this point, which is the closest analogue to the sidecar's
 	// `sessionStart` marker (taken when sidecar Run() begins).
 	agentRunStart := time.Now()
 
@@ -164,8 +164,8 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// Dispatch based on the session's isolation mode.
 	//
 	// Post A1.L6 (issue #1140): the per-mode switch collapses to a single
-	// container.For(mode).AgentRun(ctx, opts) call. host and podman are not
-	// valid modes for `prism agent-run`; the registered isolator returns
+	// container.For(mode).AgentRun(ctx, opts) call. host is not a
+	// valid mode for `prism agent-run`; the registered isolator returns
 	// the original "this command is only for bwrap and sandbox-exec
 	// sessions" error verbatim, replacing the manual `else` arm.
 	isoMode := config.IsolationMode(status.IsolationMode)
@@ -344,7 +344,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 
 	// `[timing] pre-exec`: covers everything between agent-run entry and the
 	// start of bwrap-args assembly — DB lookup, config load, profile load,
-	// Manager construction. Symmetric to the podman path's `[timing] pre-Create`
+	// Manager construction. Symmetric to the sidecar's `[timing] pre-Create`
 	// in internal/sidecar/sidecar.go.
 	logTimingTo(logFile, "pre-exec", time.Since(agentRunStart))
 
@@ -355,9 +355,8 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 	// `[timing] bwrap-args build`: time spent assembling the bwrap argv plus
 	// writing the per-session SSH config / gitconfig / opencode.json temp files
-	// (PrepareBwrap does both). Analogous to `[timing] buildRunArgs` on the
-	// podman side. Emitted before the binary lookup and exec so that an
-	// exec-stage failure still leaves this marker in the agent-run log.
+	// (PrepareBwrap does both). Emitted before the binary lookup and exec so
+	// that an exec-stage failure still leaves this marker in the agent-run log.
 	logTimingTo(logFile, "bwrap-args build", time.Since(argsBuildStart))
 
 	// Locate the bwrap binary.
@@ -657,7 +656,7 @@ func openAgentRunLog(sessionName string) *os.File {
 
 // logTimingTo writes a single `[timing] <phase>: <duration>` line to both the
 // per-session agent-run log file (when non-nil) and stderr. The format matches
-// the podman side's `[timing]` markers (see internal/sidecar/sidecar.go and
+// the sidecar-side `[timing]` markers (see internal/sidecar/sidecar.go and
 // internal/container/container.go) so the two timelines grep coherently:
 //
 //	grep '\[timing\]' ~/.local/state/prism/run/<session>/agent-run.log

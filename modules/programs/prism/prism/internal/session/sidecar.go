@@ -51,7 +51,7 @@ const sessionDirHashLen = 12
 // platform regardless of how long the session name itself is — see #1050.
 //
 // The mapping is pure and deterministic, so cleanup, debugging
-// (`prism logs <session>`), and bwrap/podman bind-mount construction can all
+// (`prism logs <session>`), and sandbox bind-mount construction can all
 // re-derive the directory from the session name without any persisted lookup.
 func SessionDirName(sessionName string) string {
 	sum := sha256.Sum256([]byte(sessionName))
@@ -81,8 +81,9 @@ func SidecarLogPath(sessionName string) (string, error) {
 }
 
 // SidecarReadyPath returns the readiness signal file path for the named session.
-// The sidecar creates this file after the container is healthy. The tmux pane
-// startup script polls for its existence before running "podman attach".
+// The sidecar's OnReady callback created this file in the removed container
+// isolation mode. No current isolation mode writes or polls it; the path
+// helper is retained so cleanup can remove stale files.
 //
 // Ready file: $XDG_STATE_HOME/prism/run/<session>-sidecar.ready
 func SidecarReadyPath(sessionName string) (string, error) {
@@ -103,12 +104,12 @@ func SidecarPIDPath(sessionName string) (string, error) {
 }
 
 // SidecarHostAPIPath returns the Unix socket path for the session's host-API server.
-// Each session gets its own subdirectory under run/ so that the podman container can
-// mount only that directory — providing socket isolation without exposing other
-// sessions' sockets (security fix #960). The subdirectory is pre-created by
-// container.prepareVolumeDirs before podman run, so the directory already exists
-// when podman evaluates the bind-mount, even though the socket file inside it is
-// created later by the sidecar (after the container becomes healthy).
+// Each session gets its own subdirectory under run/ so that the sandbox can
+// bind-mount only that directory — providing socket isolation without exposing
+// other sessions' sockets (security fix #960). The subdirectory is pre-created
+// by container.prepareVolumeDirs, so the directory already exists when the
+// sandbox evaluates the bind-mount, even though the socket file inside it is
+// created later by the sidecar.
 //
 // The directory name is a 12-hex-char SHA-256 prefix of the session name (see
 // SessionDirName) rather than the session name itself. This keeps the resulting
@@ -415,8 +416,8 @@ type StartSidecarOpts struct {
 	Port int
 	// IsolationMode is the resolved isolation mode for this session. When set,
 	// it is passed to the sidecar via --isolation-mode so the sidecar can
-	// branch on it (e.g. skip container creation for "bwrap", "sandbox-exec",
-	// and "host"). Valid values: "podman", "bwrap", "sandbox-exec", "host".
+	// branch on it. Valid values: "bwrap", "sandbox-exec", "host" (see
+	// config.ValidIsolationModes).
 	IsolationMode string
 	// AgentRole is "worker" or "coordinator". Passed via --agent-role when in
 	// container mode to select the appropriate credential set.
@@ -431,10 +432,8 @@ type StartSidecarOpts struct {
 	// readiness. Passed via --initial-prompt in container mode (#487).
 	// Empty string means no prompt delivery.
 	InitialPrompt string
-	// ConfigContent is the JSON blob for the container's harness config
-	// file. When non-empty and IsolationMode is "podman", it is forwarded to
-	// the sidecar via --config-content so the container can write it to a
-	// temp file and mount it at the harness config path inside the container.
+	// ConfigContent is the JSON blob for the session's harness config
+	// file.
 	//
 	// In host/bwrap/sandbox-exec mode, the config env var is injected
 	// directly by buildDirectAgentCmd (prepended to the agent shell
@@ -525,8 +524,7 @@ func StartSidecarWithOpts(sessionName string, opts StartSidecarOpts) error {
 	// D5 (issue #1133): the per-mode argv branches collapse into a single
 	// Isolator.SidecarFlags dispatch.
 	//
-	//   - podman:               --container --port --agent-role --plugin-path …
-	//   - bwrap, sandbox-exec:  --port --agent-role --plugin-path …  (no --container)
+	//   - bwrap, sandbox-exec:  --port --agent-role --plugin-path …
 	//   - host:                 --port --agent-role --plugin-path …  (same as bwrap/sandbox-exec)
 	//
 	// The pre-refactor branch lived at internal/session/sidecar.go:317-352.

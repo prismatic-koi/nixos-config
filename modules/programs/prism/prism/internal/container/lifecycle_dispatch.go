@@ -1,19 +1,20 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file extends the Isolator interface with the lifecycle dispatch methods
 // migrated from the per-mode branches in container.go, lifecycle.go, cmd/cleanup.go,
 // cmd/reset.go, and cmd/agent_run.go (issue #1140, A1.L1-L6).
 //
 // Methods added by this file:
 //
-//   - EnsureRemoved()   — L1: replaces Manager.EnsureRemoved + cleanup.go's open-coded podman stop/rm.
+//   - EnsureRemoved()   — L1: replaces Manager.EnsureRemoved + cleanup.go's open-coded teardown.
 //   - WriteGitconfig()  — L2: replaces (*Manager).writeGitconfig(mode) per-mode switch.
-//   - Reset()           — L3: replaces resetRemovePodmanContainers in cmd/reset.go.
+//   - Reset()           — L3: replaces the old container sweep in cmd/reset.go.
 //   - Prepare()         — L4: replaces Manager.PrepareBwrap / Manager.PrepareSandboxExec.
 //   - Create()          — L5: replaces Manager.Create body.
 //   - AgentRun()        — L6: replaces cmd/agent_run.go's per-mode dispatch switch.
 //
 // The methods are declared on the interface in isolator.go and implemented per
-// isolator (podman, bwrap, sandbox-exec, host) below.
+// isolator (bwrap, sandbox-exec, host) below.
 package container
 
 import (
@@ -45,7 +46,7 @@ type AgentRunOpts struct {
 
 	// StartTime is the wall-clock entry time captured by the cmd
 	// dispatcher. Handlers use it to emit `[timing]` markers symmetric to
-	// the podman path's sidecar-side instrumentation. Zero means "not
+	// the sidecar-side instrumentation. Zero means "not
 	// captured" — handlers fall back to time.Now() in that case.
 	StartTime time.Time
 
@@ -96,7 +97,7 @@ func lookupAgentRunHandler(mode config.IsolationMode) AgentRunHandler {
 // Bwrap sessions do not own a container lifecycle — there is nothing to stop
 // or rm — so this method is a temp-file unlink only. Mirrors the per-session
 // list in cmd/cleanup.go:1055-1059 (the legacy 5-file cleanup; the
-// harness-config file is intentionally excluded — see podmanIsolator.EnsureRemoved
+// harness-config file is intentionally excluded — see cleanupLegacyTempFiles
 // for the rationale).
 func (b *bwrapIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(b.name)
@@ -302,8 +303,8 @@ func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // The harness-config, Claude credentials, and sandbox-exec staging files
 // are deliberately NOT cleaned here: those are owned by the Manager-level
 // lifecycle (Manager.EnsureRemoved retains the full cleanup list). Tests
-// that exercise the cleanup.go shortcut path
-// (TestRestoreSession_PodmanMode_TempFileWritten) rely on the
+// that exercise the cleanup.go shortcut path (see cmd/restore_test.go's
+// legacy-mode coverage) rely on the
 // harness-config file surviving this cleanup.
 func cleanupLegacyTempFiles(name string) {
 	_ = os.Remove(sessionTempPath("gitdir", "", name))

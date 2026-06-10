@@ -1,18 +1,15 @@
-// Package container manages the podman container lifecycle for prism sidecar.
+// Package container manages sandbox lifecycle and mount preparation for
+// prism agent sessions.
 // This file defines the shared gracefulShutdown helper used by the bwrap and
 // sandbox-exec Isolator.Shutdown implementations (issue #1149 A2.GR; design
 // proposal A2 §3.7).
 //
 // Both bwrap and sandbox-exec sessions are supervised children rather than
-// long-lived container resources (only podman owns a container that survives
-// process death). When Manager.Shutdown is invoked on a bwrap or sandbox-exec
+// long-lived container resources. When Manager.Shutdown is invoked on a bwrap
+// or sandbox-exec
 // session, the polite teardown shape is the same: SIGTERM → grace period →
 // SIGKILL. Pre-A2.GR this body lived inline inside bwrapIsolator.Shutdown;
 // sandboxExecIsolator.Shutdown was a no-op.
-//
-// Podman's Shutdown stays separate (must-differ per A2 §3.7) because the
-// container's lifecycle is driven by `podman stop --time 10` followed by
-// `podman rm --force`, not by direct signal delivery.
 package container
 
 import (

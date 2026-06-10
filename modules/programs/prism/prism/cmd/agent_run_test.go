@@ -575,8 +575,8 @@ func TestLogTimingTo_NilLogFile(t *testing.T) {
 
 // TestLogTimingTo_RoundsToMillisecond verifies that sub-millisecond durations
 // are rounded up/down to the nearest millisecond, mirroring the format used
-// by the podman-side `[timing]` markers (`time.Since(...).Round(time.Millisecond)`).
-// This keeps the bwrap and podman log lines visually aligned for grep.
+// by the sidecar-side `[timing]` markers (`time.Since(...).Round(time.Millisecond)`).
+// This keeps the agent-run and sidecar log lines visually aligned for grep.
 func TestLogTimingTo_RoundsToMillisecond(t *testing.T) {
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "agent-run.log")

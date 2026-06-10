@@ -105,7 +105,7 @@ func requireNixBash(t *testing.T) string {
 // that read symlink targets under HOME) should use
 // newProfileManagerWithBareRoot.
 //
-// Note: container.New() initialises the Manager with a podmanIsolator by
+// Note: container.New() initialises the Manager with a hostIsolator by
 // default, but Manager.PrepareSandboxExec() creates its own
 // sandboxExecIsolator internally, so no isolator override is needed.
 func newProfileManager(t *testing.T) *container.Manager {

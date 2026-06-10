@@ -24,7 +24,7 @@
 //
 // Each per-agent session.SpawnSession call only returns "the tmux session was
 // created and the sidecar process was kicked off" — the agent itself runs
-// inside the bwrap/podman/host process the tmux pane launches, several steps
+// inside the sandbox or host process the tmux pane launches, several steps
 // further along, and may take seconds to bind its TCP port (≈8.5s observed
 // in the worst healthy case captured in #1051) or never bind at all if
 // startup fails silently. The spawn loop therefore runs a per-agent
@@ -286,7 +286,8 @@ type Opts struct {
 	// minimal fallback prompt is used instead.
 	PRCtx *PRContext
 	// IsolationMode is the resolved isolation mode to use when spawning review
-	// agent sessions. Valid values: "podman", "bwrap", "host". When set, it is
+	// agent sessions. Valid values: "bwrap", "sandbox-exec", "host" (see
+	// config.ValidIsolationModes). When set, it is
 	// forwarded to session.SpawnOpts.IsolationMode for every spawned agent.
 	// When empty, spawnAgentOnlyLayout resolves the machine default from
 	// cfg.DefaultIsolationMode rather than silently falling back to host.

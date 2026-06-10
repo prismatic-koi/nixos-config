@@ -143,7 +143,8 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
 		//
-		// In sandboxed mode (podman or bwrap) a missing or empty blob means the
+		// In sandboxed mode (bwrap or sandbox-exec) a missing or empty blob
+		// means the
 		// sandbox falls back to the host config (wrong agent identity).
 		// ResolveAgentConfigContent surfaces this as an explicit error to
 		// prevent silent wrong-agent spawns. activeProfile (resolved above)
@@ -184,8 +185,6 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		// checks for file existence (os.Stat) rather than reading ConfigContent
 		// from the session state, so it must be written here at spawn time.
 		// This mirrors the pattern in cmd/spawn.go:386-394 for regular bwrap spawns.
-		// Podman mode does NOT need this write — the sidecar's Create() path
-		// already writes the file before the container starts.
 		// Both bwrap and sandbox-exec write the per-agent opencode.json via
 		// Isolator.WriteHarnessConfigBlob so the dispatch goes via the
 		// registered isolator instead of the package-level WriteOpencodeConfig
