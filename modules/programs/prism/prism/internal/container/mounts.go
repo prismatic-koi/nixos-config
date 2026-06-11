@@ -199,23 +199,15 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			SELinuxRelabel: true,
 		},
 
-		// ── AWS readonly-config (RO, EvalSymlinks) ───────────────────────
-		// Host: ~/.config/aws/readonly-config (XDG, sops-managed symlink).
-		// Sandbox: $HOME/.aws/config (canonical AWS CLI default path).
-		{
-			HostPath:     filepath.Join(hostHome, ".config", "aws", "readonly-config"),
-			SandboxPath:  filepath.Join(sandboxHomeDir, ".aws", "config"),
-			ReadOnly:     true,
-			EvalSymlinks: true,
-		},
-
-		// ── AWS credentials (RO, EvalSymlinks) ───────────────────────────
-		{
-			HostPath:     filepath.Join(hostHome, ".config", "aws", "credentials"),
-			SandboxPath:  filepath.Join(sandboxHomeDir, ".aws", "credentials"),
-			ReadOnly:     true,
-			EvalSymlinks: true,
-		},
+		// ── AWS config / credentials: no canonical-path mounts ──────────
+		// The aws CLI resolves its config and shared-credentials files via
+		// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the
+		// host XDG paths (~/.config/aws/readonly-config and
+		// ~/.config/aws/credentials, declared in agent.envVars by the nix
+		// module). The former RO bind-mounts at $HOME/.aws/{config,credentials}
+		// were dropped in issue #2234 (Step 3a of #2132, bwrap convergence
+		// per design decision §5.1) — see env.go for the matching
+		// un-suppression.
 
 		// ── AWS SSO cache (conditional, per-mode RO) ────────────────────
 		// Always written to ~/.aws/sso by the AWS CLI (regardless of

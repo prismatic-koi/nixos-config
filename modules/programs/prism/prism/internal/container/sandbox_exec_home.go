@@ -216,24 +216,18 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// staging-HOME reads keep working until Step 5 of #2132 deletes them.
 
 	// ── AWS ───────────────────────────────────────────────────────────────────
-	// Use symlinkIfExists (not symlinkIfResolvable) for the config and
-	// credentials files so the staging HOME symlinks point at the stable
-	// intermediate sops symlinks rather than the fully-resolved concrete path
-	// inside secrets.d/<N>/. On Darwin, darwin-rebuild switch rotates
-	// secrets.d/<N>/ → secrets.d/<N+1>/, invalidating any staging symlink
-	// that captured the old concrete path (issue #1573).
+	// Note (#2234, Step 3a of #2132): the .aws/config and .aws/credentials
+	// staging symlinks are no longer created. The aws CLI resolves both files
+	// via the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the
+	// host XDG paths (~/.config/aws/readonly-config and
+	// ~/.config/aws/credentials). The in-sandbox read of the resolved sops
+	// targets rides the broad (subpath "/private/var/folders") allow narrowed
+	// by the #2211 secrets.d allowlist (collectSecretsDAllowlistNames derives
+	// the exceptions from the same stable XDG source paths, so the read
+	// survives sops rotations — #1410/#1573).
 	//
-	// The SBPL profile already grants (allow file-read* (subpath "/private/var/folders"))
-	// so the sandbox can follow the chain through whatever secrets.d/<current>
-	// is live at read time.
-	symlinkIfExists(
-		filepath.Join(home, ".config", "aws", "readonly-config"),
-		filepath.Join(stagingHome, ".aws", "config"),
-	)
-	symlinkIfExists(
-		filepath.Join(home, ".config", "aws", "credentials"),
-		filepath.Join(stagingHome, ".aws", "credentials"),
-	)
+	// Only the SDK-hardcoded ~/.aws/sso and ~/.aws/cli cache dirs are still
+	// symlinked (RW write-through); they are Step 3e scope.
 	symlinkIfExists(
 		filepath.Join(home, ".aws", "sso"),
 		filepath.Join(stagingHome, ".aws", "sso"),
@@ -507,7 +501,7 @@ type StagingSymlinkTarget struct {
 	// (RW) vs --ro-bind (RO) distinction:
 	//   RW: .cache/opencode, .cache/bun, .cache/nix,
 	//       .claude (write-through for credentials), .mcp-auth
-	//   RO: .ssh keys, .aws staged entries, .kube/config, .config/opencode/*,
+	//   RO: .ssh keys, .kube/config, .config/opencode/*,
 	//       .config/prism/agents (role prompts; issue #2032),
 	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
 	Writable bool
@@ -533,7 +527,7 @@ type StagingSymlinkTarget struct {
 //   - .claude          — write-through for .credentials.json on Darwin
 //   - .mcp-auth        — MCP auth token writes
 //
-// All other targets (.ssh, .aws, .kube, .config/opencode, .cache/prism/clipboard)
+// All other targets (.ssh, .kube, .config/opencode, .cache/prism/clipboard)
 // are read-only. .cache/prism/clipboard mirrors bwrap.go's --ro-bind treatment —
 // the agent only reads image files staged there by `prism clipboard paste-image`.
 //

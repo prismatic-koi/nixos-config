@@ -104,7 +104,8 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - sops secrets.d deny (read + write) with named re-allow exceptions for
 //     exactly the inventoried agent-needed secret names (issue #2211)
-//   - Host ~/.aws deny (only staged entries accessible)
+//   - Host ~/.aws deny with sso/cli carve-outs (config/credentials are
+//     delivered via env vars at the host XDG paths — issue #2234)
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //     (issue #2213)
 //   - Session work dir (covers the nested staging HOME) / worktree / bare
@@ -338,9 +339,10 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("\n")
 
 	// ── 5. Host ~/.aws deny with sso/ and cli/ carve-outs ────────────────
-	// The staging HOME contains symlinks to the staged .aws credential
-	// entries (per issue #1017). The host raw ~/.aws subtree must remain
-	// read-denied so that path traversal cannot bypass the staging map.
+	// The aws config/credentials are delivered via env vars at the host XDG
+	// paths (issue #2234) — nothing agent-needed lives at the raw ~/.aws
+	// canonical paths. The host raw ~/.aws subtree must remain read-denied
+	// so that path traversal cannot reach host credentials there.
 	//
 	// Exception: ~/.aws/sso and ~/.aws/cli must remain accessible so that
 	// AWS SSO auth and tools that read SSO tokens (e.g. kubectl) work inside
@@ -806,8 +808,8 @@ func generateProfile(m *Manager) string {
 //	~/.ssh/<SshAccessKeyName>.pub        — openssh public-half probe
 //	~/.ssh/<SshSigningKeyName>           — commit signing (ssh-keygen -Y sign)
 //	~/.ssh/<SshSigningKeyName>.pub       — gitconfig user.signingKey
-//	~/.config/aws/readonly-config        — staged at <stagingHome>/.aws/config
-//	~/.config/aws/credentials            — staged at <stagingHome>/.aws/credentials
+//	~/.config/aws/readonly-config        — read via AWS_CONFIG_FILE env (#2234)
+//	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env (#2234)
 //	~/.config/kube/agents-config         — staged at <stagingHome>/.kube/config
 //
 // Each source is resolved via filepath.EvalSymlinks; when the resolved

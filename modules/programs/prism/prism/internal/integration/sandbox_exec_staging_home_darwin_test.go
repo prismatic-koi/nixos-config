@@ -180,6 +180,11 @@ func hostCredentialDir(t *testing.T) string {
 // inside the sandbox via the staging HOME path and asserts the read
 // succeeds.
 //
+// Note (#2234): production no longer creates a .aws/credentials staging
+// symlink — the test plants its own purely as a vehicle for the generic
+// collectStagingHomeSymlinkTargets mechanism (the .aws/ staging dir is still
+// scanned for the sso/cli entries until Step 3e/5 of #2132 retire it).
+//
 // The negative test in StagingCredentialDeniedWithoutTargetAllow strips
 // that (literal ...) allow line from the profile and asserts the same read
 // fails — proving the read works specifically because of the symlink-

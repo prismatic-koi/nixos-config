@@ -3,14 +3,21 @@
 package integration_test
 
 // sandbox_exec_sops_rotation_darwin_test.go — integration coverage for the
-// sops-rotation fix applied to access-key, .aws/config, .aws/credentials, and
-// .kube/config (issue #1573, follow-up to #1410).
+// sops-rotation fix applied to the remaining staging-HOME symlinks:
+// access-key and .kube/config (issue #1573, follow-up to #1410).
 //
 // After darwin-rebuild switch, sops rotates secrets.d/<N>/ → secrets.d/<N+1>/
-// and removes the old directory. All four staging-HOME symlinks now use
+// and removes the old directory. The staging-HOME symlinks use
 // symlinkIfExists (not symlinkIfResolvable), so they point at the stable sops
 // intermediate rather than the concrete secrets.d/<N>/ path. This means reads
 // through the staging HOME symlinks continue to work after a rotation.
+//
+// Note (#2234, Step 3a of #2132): the .aws/config and .aws/credentials
+// staging symlinks no longer exist — the aws CLI reads those files via
+// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE at the host XDG paths, and
+// rotation safety for those reads rides the counter-independent #2211
+// secrets.d allowlist (see TestSandboxExecSecretsDeny_RotationSimulation and
+// the aws env-var tests in sandbox_exec_aws_config_envvar_darwin_test.go).
 //
 // Test design
 // ───────────
@@ -66,22 +73,13 @@ type sopsRotationEntry struct {
 	sentinel string
 }
 
-// sopsRotationEntries lists the four staging-HOME entries fixed by #1573.
+// sopsRotationEntries lists the staging-HOME entries still created by
+// PrepareSandboxExecHome (#1573 minus the .aws pair removed in #2234).
 var sopsRotationEntries = []sopsRotationEntry{
 	{
 		stagingRelPath:      ".ssh/access-key",
 		intermediateRelPath: ".ssh/prismatic-koi-ed25519",
 		sentinel:            "ssh-ed25519 AAAA1573-access-key-sentinel",
-	},
-	{
-		stagingRelPath:      ".aws/config",
-		intermediateRelPath: ".config/aws/readonly-config",
-		sentinel:            "[default]\nregion = us-east-1  ; sentinel-1573-aws-config",
-	},
-	{
-		stagingRelPath:      ".aws/credentials",
-		intermediateRelPath: ".config/aws/credentials",
-		sentinel:            "[default]\naws_access_key_id = sentinel-1573-creds",
 	},
 	{
 		stagingRelPath:      ".kube/config",
@@ -138,7 +136,7 @@ func setupSopsRotationChain(t *testing.T, entry sopsRotationEntry) (intermediate
 // TestSandboxExecSopsRotation_TwoHopChainReadable is the positive integration
 // test for the sops-rotation fix (issue #1573).
 //
-// For each of the four newly-rotation-safe staging entries, it sets up the
+// For each of the rotation-safe staging entries, it sets up the
 // two-hop chain:
 //
 //	<stagingHome>/<entry>
@@ -167,7 +165,7 @@ func TestSandboxExecSopsRotation_TwoHopChainReadable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// Install all four two-hop chains in the staging HOME.
+	// Install the two-hop chains in the staging HOME.
 	type installedEntry struct {
 		entry        sopsRotationEntry
 		stagingLink  string
@@ -229,7 +227,7 @@ func TestSandboxExecSopsRotation_TwoHopChainReadable(t *testing.T) {
 }
 
 // TestSandboxExecSopsRotation_TwoHopChainDeniedWithoutConcreteAllow is the
-// paired negative test. For each of the four entries, it removes the
+// paired negative test. For each of the entries, it removes the
 // (literal <concreteFile>) allow line from the profile and asserts that
 // reading the file via the staging HOME symlink chain fails.
 //

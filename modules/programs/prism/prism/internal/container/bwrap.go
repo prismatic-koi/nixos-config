@@ -435,10 +435,13 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--bind", bunCacheDir, bunCacheDir)
 	}
 
-	// AWS credentials, AWS SSO cache, AWS CLI cache, kube config, and the
-	// clipboard staging dir are all emitted earlier in this function via the
+	// AWS SSO cache, AWS CLI cache, kube config, and the clipboard staging
+	// dir are all emitted earlier in this function via the
 	// StandardSandboxMounts walk (A2.M1) — the inline blocks that previously
-	// duplicated those mounts here have been removed.
+	// duplicated those mounts here have been removed. The aws
+	// config/credentials canonical-path binds were dropped in #2234; those
+	// files are reached via AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE
+	// env vars at the host XDG paths instead.
 
 	// ── Environment variables ────────────────────────────────────────────────
 	// Inject the per-session env vars as --setenv K V pairs.
@@ -447,8 +450,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", k, v)
 	}
 
-	// Inject profile-level agent env vars (AgentEnvVars, with KUBECONFIG /
-	// AWS_CONFIG_FILE suppressed) and harness-specific runtime env vars
+	// Inject profile-level agent env vars (AgentEnvVars, with KUBECONFIG
+	// suppressed) and harness-specific runtime env vars
 	// (RuntimeEnv). The bwrap appender uses "--setenv K V" syntax (distinct
 	// argv elements — no shell quoting needed; special characters are verbatim).
 	// See env.go:AppendStandardEnv for the suppression rationale.
