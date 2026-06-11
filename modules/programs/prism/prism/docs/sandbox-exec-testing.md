@@ -154,6 +154,13 @@ integration test coverage exists for:
   need when the target flake declares a `nixConfig` block (issue #2201).
 - **Explicit denies** — `~/.aws`, `/private/etc/wireguard`,
   `/private/etc/wpa_supplicant`, `/private/etc/ssh` are blocked.
+- **sops secrets.d narrowing** — the secrets.d subtree deny (read + write)
+  with named require-not exceptions (issue #2211): real-tree denial of
+  `github_token` and the daily-driver RSA key, allowlisted stable-chain
+  reads (`~/.ssh/<key>`, `~/.config/aws/readonly-config`,
+  `~/.config/kube/agents-config`), and a fake-tree counter-rotation
+  simulation proving the exceptions are counter-independent (#1410/#1573).
+  See `sandbox_exec_secrets_deny_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to

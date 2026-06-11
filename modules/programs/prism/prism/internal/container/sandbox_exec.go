@@ -102,6 +102,8 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - /tmp read-write for xcrun and transient files
 //   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
+//   - sops secrets.d deny (read + write) with named re-allow exceptions for
+//     exactly the inventoried agent-needed secret names (issue #2211)
 //   - Host ~/.aws deny (only staged entries accessible)
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //     (issue #2213)
@@ -257,6 +259,69 @@ func generateProfile(m *Manager) string {
 		sb.WriteString(")\n")
 		sb.WriteString("\n")
 	}
+
+	// ── 3c. sops secrets.d deny + named re-allow exceptions (issue #2211) ─
+	// The broad /private/var/folders allows above (sections 2 and 3b) expose
+	// the entire home-manager sops-nix secrets tree
+	// (~/.config/sops-nix/secrets → /var/folders/<…>/T/secrets.d/<N>/) to the
+	// sandbox: the daily-driver GitHub PAT, full-power AWS config, admin kube
+	// configs, gitlab/hass/notion/syncthing keys, the non-prism SSH keys, and
+	// the secrets.d/age-keys.txt copy. None of those are read in-sandbox —
+	// GITHUB_TOKEN, OPENROUTER_API_KEY, etc. are resolved host-side by
+	// agent-run (credentialEnvVars, including the #2029 GitHubTokenPath file
+	// fallback) and injected into the sandbox env as VALUES before
+	// sandbox-exec starts.
+	//
+	// Shape:
+	//   1. deny file-write* on the secrets.d subtree, no exceptions — nothing
+	//      in-sandbox ever writes a secret; this also protects the allowlisted
+	//      names from in-sandbox tampering.
+	//   2. deny file-read* on the secrets.d subtree, with require-not
+	//      exceptions for exactly the inventoried agent-needed secret NAMES
+	//      (collectSecretsDAllowlistNames: ssh access key + .pub, signing key
+	//      + .pub, aws readonly-config, aws credentials, kube agents-config —
+	//      each derived from its stable host source path, so a source that is
+	//      absent or not sops-backed simply produces no exception).
+	//
+	// The exceptions live inside the deny rule itself (require-all +
+	// require-not) rather than as separate (allow ...) rules emitted after
+	// the deny, so the narrowing does not depend on inter-rule precedence
+	// between a regex allow and a regex deny: an allowlisted path simply does
+	// not match this deny and falls through to the broad allow above. The
+	// deny-after-broader-allow precedence this rule does rely on is the same
+	// proven shape as the /private/etc/ssh denies in section 4 (integration
+	// tested by sandbox_exec_denies_darwin_test.go).
+	//
+	// Rotation safety (#1410/#1573): sops rotates secrets.d/<N> → <N+1> on
+	// every activation, but secret NAMES are stable. The exception regexes
+	// match any counter ([0-9]+), so allowlisted reads survive a rotation
+	// mid-session and denied reads stay denied — by construction. The deny
+	// prefixes are static regexes covering both the /var and /private/var
+	// symlink forms (same dual-form pattern as 3b) and do not depend on
+	// os.TempDir(), so an unset or odd TMPDIR cannot silently re-expose the
+	// real tree.
+	//
+	// Accepted residual: file-test-existence on the subtree stays allowed
+	// (via the section-2 allow), so an in-sandbox process can probe which
+	// secret NAMES exist — but cannot read or write their content.
+	const (
+		secretsDDenyRegexVarForm     = `^/var/folders/.*/secrets\.d/`
+		secretsDDenyRegexPrivateForm = `^/private/var/folders/.*/secrets\.d/`
+	)
+	sb.WriteString("(deny file-write*\n")
+	sb.WriteString("  (regex #\"" + secretsDDenyRegexVarForm + "\")\n")
+	sb.WriteString("  (regex #\"" + secretsDDenyRegexPrivateForm + "\"))\n")
+	sb.WriteString("\n")
+	sb.WriteString("(deny file-read*\n")
+	sb.WriteString("  (require-all\n")
+	sb.WriteString("    (require-any\n")
+	sb.WriteString("      (regex #\"" + secretsDDenyRegexVarForm + "\")\n")
+	sb.WriteString("      (regex #\"" + secretsDDenyRegexPrivateForm + "\"))\n")
+	for _, name := range collectSecretsDAllowlistNames(m, home) {
+		sb.WriteString("    (require-not (regex #\"/secrets\\.d/[0-9]+/" + regexQuotePath(name) + "$\"))\n")
+	}
+	sb.WriteString("))\n")
+	sb.WriteString("\n")
 
 	// ── 4. Sensitive /etc subtree denies ──────────────────────────────────
 	// These deny rules must follow the broad /etc and /private/etc allows
@@ -731,6 +796,117 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("(allow user-preference-read)\n")
 
 	return sb.String()
+}
+
+// collectSecretsDAllowlistNames returns the secrets.d-relative names of the
+// agent-needed secrets, derived from the stable host source paths the
+// sandbox legitimately reads through (issue #2211):
+//
+//	~/.ssh/<SshAccessKeyName>            — ssh auth (generated ssh-config IdentityFile)
+//	~/.ssh/<SshAccessKeyName>.pub        — openssh public-half probe
+//	~/.ssh/<SshSigningKeyName>           — commit signing (ssh-keygen -Y sign)
+//	~/.ssh/<SshSigningKeyName>.pub       — gitconfig user.signingKey
+//	~/.config/aws/readonly-config        — staged at <stagingHome>/.aws/config
+//	~/.config/aws/credentials            — staged at <stagingHome>/.aws/credentials
+//	~/.config/kube/agents-config         — staged at <stagingHome>/.kube/config
+//
+// Each source is resolved via filepath.EvalSymlinks; when the resolved
+// target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is
+// returned. Sources that are absent, unresolvable, or not sops-backed are
+// skipped — they need no exception because the secrets.d deny never covers
+// them. The returned names are deduplicated and keep source order so the
+// emitted profile is deterministic.
+//
+// This list is the enforcement half of the inventory in issue #2211: every
+// other name under secrets.d/<N>/ (github_token, the role PATs, aws-config,
+// workkube, gitlab_token, …) stays denied. Do NOT add a source here merely
+// because a secret exists — only because an in-sandbox consumer reads it.
+func collectSecretsDAllowlistNames(m *Manager, home string) []string {
+	if home == "" {
+		return nil
+	}
+	accessKeyName := m.cfg.SshAccessKeyName
+	if accessKeyName == "" {
+		accessKeyName = "prismatic-koi-ed25519"
+	}
+	signingKeyName := m.cfg.SshSigningKeyName
+	if signingKeyName == "" {
+		signingKeyName = "prismatic-koi-ed25519-signingkey"
+	}
+	sources := []string{
+		filepath.Join(home, ".ssh", accessKeyName),
+		filepath.Join(home, ".ssh", accessKeyName+".pub"),
+		filepath.Join(home, ".ssh", signingKeyName),
+		filepath.Join(home, ".ssh", signingKeyName+".pub"),
+		filepath.Join(home, ".config", "aws", "readonly-config"),
+		filepath.Join(home, ".config", "aws", "credentials"),
+		filepath.Join(home, ".config", "kube", "agents-config"),
+	}
+	seen := map[string]bool{}
+	var names []string
+	for _, src := range sources {
+		resolved, err := filepath.EvalSymlinks(src)
+		if err != nil {
+			continue // absent on host — no exception needed (mirrors symlinkIfExists)
+		}
+		name, ok := secretsDRelativeName(resolved)
+		if !ok || seen[name] {
+			continue
+		}
+		if strings.Contains(name, `"`) {
+			// A double-quote cannot be safely embedded in the SBPL #"…"
+			// regex literal. No real sops secret name contains one; skip
+			// defensively rather than emit a malformed profile.
+			log.Printf("container: sandbox-exec: skipping secrets.d allowlist name with embedded quote: %q", name)
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// secretsDRelativeName extracts the secrets.d-relative secret name from a
+// resolved sops target path of the form …/secrets.d/<N>/<name…> where <N>
+// is the all-digits generation counter. Returns ("", false) when the path
+// is not a sops secrets.d path.
+func secretsDRelativeName(resolved string) (string, bool) {
+	const marker = "/secrets.d/"
+	idx := strings.Index(resolved, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := resolved[idx+len(marker):] // "<N>/<name…>"
+	slash := strings.IndexByte(rest, '/')
+	if slash <= 0 {
+		return "", false
+	}
+	for _, c := range rest[:slash] {
+		if c < '0' || c > '9' {
+			return "", false
+		}
+	}
+	name := rest[slash+1:]
+	if name == "" || strings.HasSuffix(name, "/") {
+		return "", false
+	}
+	return name, true
+}
+
+// regexQuotePath escapes the AppleMatch/POSIX-ERE metacharacters in s so it
+// matches literally inside an SBPL (regex #"…") filter. Only basic escapes
+// are used (backslash before the metacharacter) — no perl-style \Q…\E,
+// which Apple's regex engine does not support.
+func regexQuotePath(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case '\\', '.', '+', '*', '?', '(', ')', '[', ']', '{', '}', '|', '^', '$':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // quoteSBPL returns the path quoted for inclusion in an SBPL expression.

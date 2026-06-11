@@ -2261,3 +2261,209 @@ func firstNChars(s string, n int) string {
 func containerPortString() string {
 	return fmt.Sprintf("%d", ContainerPort)
 }
+
+// ── sops secrets.d deny + named re-allow exceptions (issue #2211) ────────────
+
+// secretsDDenyReadHeader is the verbatim opening of the secrets.d read-deny
+// rule as emitted by generateProfile. Kept as a constant so the assertions
+// below stay in lockstep with the generator.
+const secretsDDenyReadHeader = "(deny file-read*\n" +
+	"  (require-all\n" +
+	"    (require-any\n" +
+	"      (regex #\"^/var/folders/.*/secrets\\.d/\")\n" +
+	"      (regex #\"^/private/var/folders/.*/secrets\\.d/\"))\n"
+
+// secretsDDenyWriteRule is the verbatim secrets.d write-deny rule.
+const secretsDDenyWriteRule = "(deny file-write*\n" +
+	"  (regex #\"^/var/folders/.*/secrets\\.d/\")\n" +
+	"  (regex #\"^/private/var/folders/.*/secrets\\.d/\"))\n"
+
+// TestGenerateProfile_SecretsDDenyBlocksPresent verifies that the profile
+// contains the secrets.d write-deny and read-deny rules covering both the
+// /var and /private/var symlink forms, and that the read-deny appears AFTER
+// the broad /private/var/folders allow it narrows (the deny-after-broader-
+// allow precedence shape, issue #2211).
+func TestGenerateProfile_SecretsDDenyBlocksPresent(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, secretsDDenyWriteRule) {
+		t.Errorf("profile missing the secrets.d write-deny rule:\n%s\nfull profile:\n%s",
+			secretsDDenyWriteRule, profile)
+	}
+	if !strings.Contains(profile, secretsDDenyReadHeader) {
+		t.Errorf("profile missing the secrets.d read-deny rule header:\n%s\nfull profile:\n%s",
+			secretsDDenyReadHeader, profile)
+	}
+
+	broadAllow := "  (subpath \"/private/var/folders\")\n"
+	broadIdx := strings.Index(profile, broadAllow)
+	denyIdx := strings.Index(profile, secretsDDenyReadHeader)
+	if broadIdx < 0 {
+		t.Fatalf("profile missing the broad /private/var/folders allow; full profile:\n%s", profile)
+	}
+	if denyIdx < broadIdx {
+		t.Errorf("secrets.d read-deny (index %d) must appear after the broad /private/var/folders allow (index %d) — SBPL deny-after-broader-allow shape; full profile:\n%s",
+			denyIdx, broadIdx, profile)
+	}
+}
+
+// fakeSopsChain replaces the plain-file credential sources in a newFakeHome
+// tree with sops-style symlink chains:
+//
+//	<fakeHome>/<sourceRel>  →  <secretsRoot>/secrets.d/<counter>/<secretName>
+//
+// creating the concrete secret file with dummy content. Returns the secrets.d
+// base dir (the parent of the counter dir).
+func fakeSopsChain(t *testing.T, fakeHome, secretsBase, counter string, entries map[string]string) {
+	t.Helper()
+	for sourceRel, secretName := range entries {
+		concrete := filepath.Join(secretsBase, counter, filepath.FromSlash(secretName))
+		if err := os.MkdirAll(filepath.Dir(concrete), 0o700); err != nil {
+			t.Fatalf("create fake secrets dir for %s: %v", secretName, err)
+		}
+		if err := os.WriteFile(concrete, []byte("dummy-secret"), 0o600); err != nil {
+			t.Fatalf("write fake secret %s: %v", secretName, err)
+		}
+		source := filepath.Join(fakeHome, filepath.FromSlash(sourceRel))
+		_ = os.Remove(source) // replace the plain file newFakeHome created
+		if err := os.Symlink(concrete, source); err != nil {
+			t.Fatalf("symlink fake sops chain %s → %s: %v", source, concrete, err)
+		}
+	}
+}
+
+// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources verifies
+// that, when the stable host sources resolve into a sops secrets.d tree,
+// generateProfile emits a require-not exception for exactly each derived
+// secret name — counter-independent ([0-9]+) and $-anchored — and nothing
+// else (no wildcard matching future secrets, issue #2211 AC).
+func TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
+	fakeSopsChain(t, fakeHome, secretsBase, "389", map[string]string{
+		".ssh/prismatic-koi-ed25519":                "ssh/prismatic-koi-ed25519",
+		".ssh/prismatic-koi-ed25519.pub":            "ssh/prismatic-koi-ed25519.pub",
+		".ssh/prismatic-koi-ed25519-signingkey":     "ssh/prismatic-koi-ed25519-signingkey",
+		".ssh/prismatic-koi-ed25519-signingkey.pub": "ssh/prismatic-koi-ed25519-signingkey.pub",
+		".config/aws/readonly-config":               "aws-readonly-config",
+		".config/kube/agents-config":                "workreadonlykube",
+	})
+	// ~/.config/aws/credentials stays the plain file newFakeHome created —
+	// it resolves to itself (not a secrets.d path) and must produce no
+	// exception. Remove it entirely to also cover the absent-source path
+	// (currently absent on the real host).
+	if err := os.Remove(filepath.Join(fakeHome, ".config", "aws", "credentials")); err != nil {
+		t.Fatalf("remove fake aws credentials: %v", err)
+	}
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	expected := []string{
+		`    (require-not (regex #"/secrets\.d/[0-9]+/ssh/prismatic-koi-ed25519$"))` + "\n",
+		`    (require-not (regex #"/secrets\.d/[0-9]+/ssh/prismatic-koi-ed25519\.pub$"))` + "\n",
+		`    (require-not (regex #"/secrets\.d/[0-9]+/ssh/prismatic-koi-ed25519-signingkey$"))` + "\n",
+		`    (require-not (regex #"/secrets\.d/[0-9]+/ssh/prismatic-koi-ed25519-signingkey\.pub$"))` + "\n",
+		`    (require-not (regex #"/secrets\.d/[0-9]+/aws-readonly-config$"))` + "\n",
+		`    (require-not (regex #"/secrets\.d/[0-9]+/workreadonlykube$"))` + "\n",
+	}
+	for _, exp := range expected {
+		if !strings.Contains(profile, exp) {
+			t.Errorf("profile missing expected secrets.d allowlist exception:\n%s\nfull profile:\n%s", exp, profile)
+		}
+	}
+
+	// Exactly the six inventoried exceptions — nothing else. A higher count
+	// would mean a wildcard or an un-inventoried name slipped in.
+	if got := strings.Count(profile, "(require-not "); got != len(expected) {
+		t.Errorf("expected exactly %d require-not exceptions, got %d; full profile:\n%s",
+			len(expected), got, profile)
+	}
+	// The concrete counter must never be baked into an exception — that
+	// would break the #1410/#1573 rotation property.
+	if strings.Contains(profile, `/secrets\.d/389/`) {
+		t.Errorf("profile bakes the concrete secrets.d counter into a regex (must use [0-9]+); full profile:\n%s", profile)
+	}
+}
+
+// TestGenerateProfile_SecretsDAllowlistEmptyWithoutSopsChains verifies that
+// on a host whose credential sources are plain files (no sops), the secrets.d
+// deny rules are still emitted but carry zero exceptions.
+func TestGenerateProfile_SecretsDAllowlistEmptyWithoutSopsChains(t *testing.T) {
+	_ = newFakeHome(t) // plain files only — nothing resolves into secrets.d
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	if !strings.Contains(profile, secretsDDenyWriteRule) || !strings.Contains(profile, secretsDDenyReadHeader) {
+		t.Fatalf("secrets.d deny rules must be emitted even with no allowlist sources; full profile:\n%s", profile)
+	}
+	if got := strings.Count(profile, "(require-not "); got != 0 {
+		t.Errorf("expected zero require-not exceptions on a non-sops host, got %d; full profile:\n%s", got, profile)
+	}
+}
+
+// TestGenerateProfile_SecretsDAllowlistEscapesRegexMeta verifies that regex
+// metacharacters in a derived secret name are escaped so the emitted
+// exception matches the name literally.
+func TestGenerateProfile_SecretsDAllowlistEscapesRegexMeta(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	secretsBase := filepath.Join(t.TempDir(), "secrets.d")
+	fakeSopsChain(t, fakeHome, secretsBase, "7", map[string]string{
+		".ssh/we.ird+key": "ssh/we.ird+key",
+	})
+
+	m := newSandboxExecManager(Config{
+		SessionName:      "repo@main",
+		SshAccessKeyName: "we.ird+key",
+	})
+	profile := generateProfile(m)
+
+	exp := `    (require-not (regex #"/secrets\.d/[0-9]+/ssh/we\.ird\+key$"))` + "\n"
+	if !strings.Contains(profile, exp) {
+		t.Errorf("profile missing escaped exception %q; full profile:\n%s", exp, profile)
+	}
+}
+
+// TestSecretsDRelativeName covers the resolved-path → secret-name extraction.
+func TestSecretsDRelativeName(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantOK   bool
+	}{
+		{"/private/var/folders/hr/x/T/secrets.d/389/github_token", "github_token", true},
+		{"/private/var/folders/hr/x/T/secrets.d/389/ssh/prismatic-koi-ed25519", "ssh/prismatic-koi-ed25519", true},
+		{"/var/folders/hr/x/T/secrets.d/1/a", "a", true},
+		{"/private/var/folders/hr/x/T/secrets.d/age-keys.txt", "", false}, // no counter dir
+		{"/private/var/folders/hr/x/T/secrets.d/v389/name", "", false},    // non-numeric counter
+		{"/private/var/folders/hr/x/T/secrets.d/389/", "", false},         // empty name
+		{"/home/user/.ssh/plain-key", "", false},                          // not a secrets.d path
+		{"/private/var/folders/hr/x/T/secrets.d/389", "", false},          // counter only, no name
+	}
+	for _, tc := range cases {
+		gotName, gotOK := secretsDRelativeName(tc.in)
+		if gotName != tc.wantName || gotOK != tc.wantOK {
+			t.Errorf("secretsDRelativeName(%q) = (%q, %v); want (%q, %v)",
+				tc.in, gotName, gotOK, tc.wantName, tc.wantOK)
+		}
+	}
+}
+
+// TestRegexQuotePath covers the AppleMatch metacharacter escaping helper.
+func TestRegexQuotePath(t *testing.T) {
+	cases := map[string]string{
+		"plain-name":      "plain-name",
+		"ssh/key.pub":     `ssh/key\.pub`,
+		"we.ird+key":      `we\.ird\+key`,
+		`back\slash`:      `back\\slash`,
+		"a(b)[c]{d}|e^f$": `a\(b\)\[c\]\{d\}\|e\^f\$`,
+		"q?u*e":           `q\?u\*e`,
+	}
+	for in, want := range cases {
+		if got := regexQuotePath(in); got != want {
+			t.Errorf("regexQuotePath(%q) = %q; want %q", in, got, want)
+		}
+	}
+}
