@@ -612,7 +612,13 @@ func TestBwrapBuildArgs_AWSXDGPathROBound(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_KubeAgentsConfigROBound(t *testing.T) {
+func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
+	// Issue #2235: the env-var route needs the kube config content delivered
+	// INTO the bwrap namespace — bwrap builds its filesystem additively from
+	// an empty root, so KUBECONFIG pointing at an unbound path would resolve
+	// to nothing in-sandbox. The XDG host path is bound Dst==Src so
+	// KUBECONFIG (which carries exactly this path) resolves to a readable
+	// file. The former canonical-path ($HOME/.kube/config) remap is gone.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -623,12 +629,60 @@ func TestBwrapBuildArgs_KubeAgentsConfigROBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// SRC: host ~/.config/kube/agents-config (XDG-compliant, managed by sops-nix)
-	// DST: sandbox $HOME/.kube/config (canonical path kubectl reads by default)
+	// SRC: resolved host file (EvalSymlinks pins the sops target inode).
+	// DST: the same XDG path — the value KUBECONFIG carries.
 	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
-	kubeDst := filepath.Join(fakeHome, ".kube", "config")
-	if !hasROBindSrcDst(args, kubeSrc, kubeDst) {
-		t.Errorf("kube agents-config: want --ro-bind %q %q in args: %v", kubeSrc, kubeDst, args)
+	if !hasROBindSrcDst(args, kubeSrc, kubeSrc) {
+		t.Errorf("kube agents-config: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2235) in args: %v",
+			kubeSrc, kubeSrc, args)
+	}
+
+	// The canonical-path remap must be gone (issue #2235, bwrap convergence
+	// per #2132 design decision §5.1).
+	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
+	for i, arg := range args {
+		if arg != "--ro-bind" && arg != "--bind" {
+			continue
+		}
+		if i+2 >= len(args) {
+			continue
+		}
+		if args[i+1] == kubeCanonicalDst || args[i+2] == kubeCanonicalDst {
+			t.Errorf("kube canonical-path bind found (%s %q %q) — dropped in #2235 (env-var route); args: %v",
+				arg, args[i+1], args[i+2], args)
+		}
+	}
+}
+
+// TestBwrapBuildArgs_KubeCacheDirEnvInjected verifies the bwrap equivalent
+// of the sandbox-exec KUBECACHEDIR redirect (issue #2235): kubectl's cache
+// is pointed at /tmp/kube-cache on the per-session tmpfs (--tmpfs /tmp), so
+// cache writes are ephemeral and never reach the host. The injection is
+// unconditional — it must not depend on the kube config existing on the
+// host (kubectl creates the dir on first use).
+func TestBwrapBuildArgs_KubeCacheDirEnvInjected(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Remove the kube config to prove the env injection is unconditional.
+	if err := os.Remove(filepath.Join(fakeHome, ".config", "kube", "agents-config")); err != nil {
+		t.Fatalf("Remove kube agents-config: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasSetenv(args, "KUBECACHEDIR", bwrapKubeCacheDir) {
+		t.Errorf("--setenv KUBECACHEDIR %s not found in args: %v", bwrapKubeCacheDir, args)
+	}
+
+	// The value must live on the per-session /tmp tmpfs — never a host path.
+	if !strings.HasPrefix(bwrapKubeCacheDir, "/tmp/") {
+		t.Errorf("bwrapKubeCacheDir = %q, want a /tmp/ tmpfs path (ephemeral, never host-visible)", bwrapKubeCacheDir)
 	}
 }
 
@@ -1148,13 +1202,13 @@ func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
 
 // ── AgentEnvVars (--setenv K V) ───────────────────────────────────────────────
 
-// TestBwrapBuildArgs_AgentEnvVarsInjected verifies that plain entries in
-// Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --setenv K V in the
-// bwrap arg list. KUBECONFIG is suppressed because the kube config is still
-// bind-mounted at its canonical default path (un-suppression is Step 3b of
-// #2132); AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE flow through since
-// issue #2234 (Step 3a) — their canonical-path bind-mounts were dropped and
-// the aws CLI resolves the files via these env vars at the host XDG paths.
+// TestBwrapBuildArgs_AgentEnvVarsInjected verifies that every entry in
+// Config.AgentEnvVars is emitted as --setenv K V in the bwrap arg list.
+// KUBECONFIG flows through since issue #2235 (Step 3b of #2132) — the
+// canonical-path ($HOME/.kube/config) kube bind was dropped and kubectl
+// resolves the config via KUBECONFIG at the host XDG path. AWS_CONFIG_FILE
+// and AWS_SHARED_CREDENTIALS_FILE flow through since issue #2234 (Step 3a)
+// on the same pattern.
 func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
@@ -1187,19 +1241,22 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE not found in args (must flow since #2234): %v", args)
 	}
 
-	// KUBECONFIG must NOT be injected — the kube config is still bind-mounted
-	// at its canonical default path inside the sandbox (Step 3b scope).
-	for i, arg := range args {
-		if arg == "--setenv" && i+1 < len(args) && args[i+1] == "KUBECONFIG" {
-			t.Errorf("KUBECONFIG must not be injected in bwrap mode; found in args: %v", args)
-		}
+	// KUBECONFIG MUST be injected (issue #2235) — the canonical-path kube
+	// bind is gone and kubectl resolves the config via this env var at the
+	// host XDG path.
+	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
+		t.Errorf("--setenv KUBECONFIG not found in args (must flow since #2235): %v", args)
 	}
 }
 
-// TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent verifies that KUBECONFIG
-// is suppressed even when ~/.config/kube/agents-config does not exist (mount
-// is skipped but the host path is still wrong inside the sandbox).
-func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
+// TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent verifies that
+// KUBECONFIG is injected even when ~/.config/kube/agents-config does not
+// exist on the host, and that the absent file produces no bind args (the
+// XDG Dst==Src mount is EvalSymlinks-conditional). The env layer is a plain
+// value pass-through (issue #2235); kubectl tolerates a missing config file,
+// so injection must not depend on file existence — mirrors the AWS shape
+// from #2234.
+func TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent(t *testing.T) {
 	fakeHome := t.TempDir()
 	// Do NOT create kube dir — file absent.
 	origHome := os.Getenv("HOME")
@@ -1249,10 +1306,14 @@ func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	for i, arg := range args {
-		if arg == "--setenv" && i+1 < len(args) && args[i+1] == "KUBECONFIG" {
-			t.Errorf("KUBECONFIG must not be injected even when kube file is absent; found in args: %v", args)
-		}
+	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
+		t.Errorf("--setenv KUBECONFIG must be injected even when the host file is absent (#2235); args: %v", args)
+	}
+
+	// Absent file → no XDG bind emitted (EvalSymlinks silent skip).
+	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
+	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
+		t.Errorf("absent kube file %q must not produce a bind; args: %v", kubeSrc, args)
 	}
 }
 
@@ -1445,9 +1506,10 @@ func TestBwrapBuildArgs_ChdirIsNotSlashWorkspace(t *testing.T) {
 func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	// Create a fixture with all the standard paths present, then remove the
 	// kube agents-config to verify it is omitted from the arg list.
-	// (The vehicle was the AWS readonly-config until #2234 dropped its mount
-	// unconditionally — kube exercises the same EvalSymlinks silent-skip
-	// semantics in StandardSandboxMounts.)
+	// (The vehicle was the AWS readonly-config until #2234 dropped its
+	// canonical mount — kube exercises the same EvalSymlinks silent-skip
+	// semantics in StandardSandboxMounts, now on the Dst==Src XDG bind
+	// from #2235.)
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -1464,10 +1526,14 @@ func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Neither the src (old Dst==Src form) nor the remapped dst should appear.
-	kubeDst := filepath.Join(fakeHome, ".kube", "config")
-	if hasROBindSrcDst(args, kubeSrc, kubeDst) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeDst, args)
+	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
+	// should appear.
+	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, args)
+	}
+	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
+	if hasROBindSrcDst(args, kubeSrc, kubeCanonicalDst) {
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, args)
 	}
 }
 
@@ -1563,10 +1629,14 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Neither the src nor the remapped dst should appear.
-	kubeDst := filepath.Join(fakeHome, ".kube", "config")
-	if hasROBindSrcDst(args, kubeSrc, kubeDst) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeDst, args)
+	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
+	// should appear.
+	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, args)
+	}
+	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
+	if hasROBindSrcDst(args, kubeSrc, kubeCanonicalDst) {
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, args)
 	}
 }
 
@@ -1624,9 +1694,11 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// Note (#2234): the AWS readonly-config and credentials remaps are gone
-	// — the aws CLI reads both files via env vars at the host XDG paths. See
-	// TestBwrapBuildArgs_AWSConfigCanonicalBindsGone for the negative
+	// Note (#2234/#2235): the AWS readonly-config, AWS credentials, and kube
+	// agents-config remaps are gone — the CLIs read those files via env vars
+	// at the host XDG paths (bound Dst==Src). See
+	// TestBwrapBuildArgs_AWSConfigCanonicalBindsGone and
+	// TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound for the negative
 	// assertions.
 	cases := []struct {
 		name string
@@ -1642,11 +1714,6 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 			name: "generated gitconfig → $HOME/.gitconfig",
 			src:  m.gitconfigFilePath(),
 			dst:  filepath.Join(fakeHome, ".gitconfig"),
-		},
-		{
-			name: "kube agents-config → $HOME/.kube/config",
-			src:  filepath.Join(fakeHome, ".config", "kube", "agents-config"),
-			dst:  filepath.Join(fakeHome, ".kube", "config"),
 		},
 	}
 
@@ -1851,20 +1918,30 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 		t.Errorf("expected --extension flag near end (before --agent), got %q at [n-5]", args[n-5])
 	}
 
-	// Kube ro-bind present with the correct remapped destination. The AWS
-	// readonly-config remap is gone since #2234 (env-var route) — assert it
-	// stays gone.
+	// The canonical-path remaps are gone: AWS readonly-config since #2234,
+	// kube agents-config since #2235 (env-var route) — assert both stay
+	// gone, and that the kube XDG Dst==Src bind is present instead.
 	if hasROBindSrcDst(args,
 		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
 		filepath.Join(fakeHome, ".aws", "config"),
 	) {
 		t.Errorf("AWS readonly-config: --ro-bind src $HOME/.aws/config must NOT be emitted (env-var route since #2234)")
 	}
-	if !hasROBindSrcDst(args,
+	if hasROBindSrcDst(args,
 		filepath.Join(fakeHome, ".config", "kube", "agents-config"),
 		filepath.Join(fakeHome, ".kube", "config"),
 	) {
-		t.Errorf("kube agents-config: want --ro-bind src $HOME/.kube/config")
+		t.Errorf("kube agents-config: --ro-bind src $HOME/.kube/config must NOT be emitted (env-var route since #2235)")
+	}
+	kubeXDG := filepath.Join(fakeHome, ".config", "kube", "agents-config")
+	if !hasROBindSrcDst(args, kubeXDG, kubeXDG) {
+		t.Errorf("kube agents-config: want --ro-bind %q %q (Dst==Src XDG delivery, #2235)", kubeXDG, kubeXDG)
+	}
+
+	// KUBECACHEDIR redirects kubectl's cache to the per-session /tmp tmpfs
+	// (issue #2235).
+	if !hasSetenv(args, "KUBECACHEDIR", bwrapKubeCacheDir) {
+		t.Errorf("--setenv KUBECACHEDIR %s not found in args", bwrapKubeCacheDir)
 	}
 }
 

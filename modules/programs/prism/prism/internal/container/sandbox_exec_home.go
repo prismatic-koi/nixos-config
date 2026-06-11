@@ -107,7 +107,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		stagingHome,
 		filepath.Join(stagingHome, ".ssh"),
 		filepath.Join(stagingHome, ".aws"),
-		filepath.Join(stagingHome, ".kube"),
 		filepath.Join(stagingHome, ".cache"),
 		filepath.Join(stagingHome, ".pi"),
 		filepath.Join(stagingHome, ".config", "prism"),
@@ -238,10 +237,17 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	)
 
 	// ── Kube ──────────────────────────────────────────────────────────────────
-	// Use symlinkIfExists (not symlinkIfResolvable) so the staging symlink
-	// points at the stable intermediate (~/.config/kube/agents-config) rather
-	// than the fully-resolved sops concrete path that rotates on each
-	// darwin-rebuild switch (issue #1573).
+	// Note (#2235, Step 3b of #2132): the .kube/config staging symlink is no
+	// longer created (and no .kube/ staging dir exists). kubectl resolves the
+	// config via the KUBECONFIG env var at the host XDG path
+	// (~/.config/kube/agents-config); the in-sandbox read of the resolved sops
+	// target rides the broad (subpath "/private/var/folders") allow narrowed
+	// by the #2211 secrets.d allowlist (collectSecretsDAllowlistNames derives
+	// the exception from the same stable XDG source path, so the read survives
+	// sops rotations — #1410/#1573). kubectl's discovery/http cache is
+	// redirected to <sessionDir>/kube-cache via KUBECACHEDIR (see
+	// SessionWorkDirKubeEnv in session_work_dir.go).
+
 	// ── prism agent role prompts (issue #2032) ─────────────────────────
 	// Symlink ~/.config/prism/agents (deployed by pi.nix) into the staging
 	// HOME at the canonical XDG path so the prism PI extension can read
@@ -253,11 +259,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	symlinkIfExists(
 		filepath.Join(home, ".config", "prism", "agents"),
 		filepath.Join(stagingHome, ".config", "prism", "agents"),
-	)
-
-	symlinkIfExists(
-		filepath.Join(home, ".config", "kube", "agents-config"),
-		filepath.Join(stagingHome, ".kube", "config"),
 	)
 
 	// ── Library/Application Support/Google + Library/Caches/Google (issue #2021) ─
@@ -501,7 +502,7 @@ type StagingSymlinkTarget struct {
 	// (RW) vs --ro-bind (RO) distinction:
 	//   RW: .cache/opencode, .cache/bun, .cache/nix,
 	//       .claude (write-through for credentials), .mcp-auth
-	//   RO: .ssh keys, .kube/config, .config/opencode/*,
+	//   RO: .ssh keys, .config/opencode/*,
 	//       .config/prism/agents (role prompts; issue #2032),
 	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
 	Writable bool
@@ -527,7 +528,7 @@ type StagingSymlinkTarget struct {
 //   - .claude          — write-through for .credentials.json on Darwin
 //   - .mcp-auth        — MCP auth token writes
 //
-// All other targets (.ssh, .kube, .config/opencode, .cache/prism/clipboard)
+// All other targets (.ssh, .config/opencode, .cache/prism/clipboard)
 // are read-only. .cache/prism/clipboard mirrors bwrap.go's --ro-bind treatment —
 // the agent only reads image files staged there by `prism clipboard paste-image`.
 //
@@ -672,7 +673,7 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// Scan the top-level staging HOME and all immediate subdirectories that
 	// the staging HOME builder creates (one level deep).
 	scanDir("")
-	subDirs := []string{".ssh", ".aws", ".kube", ".cache", ".pi"}
+	subDirs := []string{".ssh", ".aws", ".cache", ".pi"}
 	for _, sub := range subDirs {
 		scanDir(sub)
 	}
