@@ -42,7 +42,7 @@ import (
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestMain serves three purposes:
+// TestMain serves several purposes:
 //
 //  1. Stub sidecar: when PRISM_CMD_TEST_STUB=1, the binary sleeps for 60
 //     seconds (simulating a long-running sidecar). The sleep is interruptible
@@ -89,6 +89,19 @@ import (
 //     PRISM_HOST_API, …) so tests see the same environment surface on CI,
 //     developer hosts, and inside prism worker sandboxes. See
 //     sandbox_env_isolation_test.go for the full rationale.
+//
+//  6. Re-exec stub interception (#2230 class, swept in #2237): production
+//     code reachable from this package re-execs os.Executable() — in tests,
+//     THIS binary — as `<self> sidecar …` / `<self> event …`
+//     (session.SpawnSession paths) and `<self> monitor-review …`
+//     (review.RunAsync → StartMonitorProcess with prismBinary=="").
+//     PRISM_TEST_SUBPROCESS=1 short-circuits an explicit stub re-invocation;
+//     the argv check covers paths reached without the env var, exiting
+//     instead of recursively running the suite. The argv check MUST stay
+//     after the PRISM_CMD_TEST_STUB check: startStubProcess re-invokes this
+//     binary with argv "sidecar --session …" and relies on the env stub's
+//     60-second sleep. (The host-API re-exec subcommands — prompt, spawn,
+//     … — are intercepted by internal/sidecar's own TestMain.)
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
@@ -96,6 +109,16 @@ func TestMain(m *testing.M) {
 	}
 	if os.Getenv(superviseHelperEnvVar) == "1" {
 		os.Exit(runSuperviseHelper())
+	}
+	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
+		// Stub subprocess convention shared with the internal/review,
+		// internal/session, and internal/integration TestMains (#2237).
+		time.Sleep(50 * time.Millisecond)
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event" || os.Args[1] == "monitor-review") {
+		// Re-exec argv defence — see purpose 6 in the doc comment above.
+		os.Exit(0)
 	}
 
 	// Register a SIGTERM handler that cleans up orphaned tmux test servers.
