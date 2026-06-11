@@ -62,16 +62,21 @@ import (
 //     overrides XDG_STATE_HOME), so it reliably reads the production
 //     database. The guard's original live-tmux-server session diff was
 //     dropped in #2227: since the suite-wide tmux isolation (#2214/#2224)
-//     the code under test cannot reach the live server by construction, so
-//     a live-server diff could only ever observe concurrent host activity
-//     (e.g. a parallel worker's review agents spawning mid-suite) and
-//     misattribute it to the suite — a false positive at ~1-in-6 full-suite
-//     runs on a multi-worker host. Isolation regressions are instead caught
-//     deterministically by TestSuiteTmuxIsolation_HostServerUnreachable
-//     (tmux_isolation_test.go). The DB-row and worktree diffs are retained
-//     because no equivalent by-construction isolation exists for them
-//     (tests opt in per-test via XDG_STATE_HOME / SetTestDBPath /
-//     PRISM_SPAWN_PATH overrides).
+//     THIS package's code under test cannot reach the live server by
+//     construction, so for cmd/ a live-server diff could only observe
+//     concurrent host activity (e.g. a parallel worker's review agents
+//     spawning mid-suite) and misattribute it to the suite — a false
+//     positive at ~1-in-6 full-suite runs on a multi-worker host. cmd/
+//     isolation regressions are instead caught deterministically by
+//     TestSuiteTmuxIsolation_HostServerUnreachable (tmux_isolation_test.go).
+//     One residual: the diff had also incidentally caught a CROSS-package
+//     leak (#1732, internal/review) via parallel `go test ./...` window
+//     overlap; that signal was indistinguishable from the false-positive
+//     class (both are live `*~review-N-review-*` sessions) and is gone —
+//     #2230 tracks #2224-style suite-wide isolation for internal/review.
+//     The DB-row and worktree diffs are retained because no equivalent
+//     by-construction isolation exists for them (tests opt in per-test via
+//     XDG_STATE_HOME / SetTestDBPath / PRISM_SPAWN_PATH overrides).
 //
 //  4. Tmux isolation (#2214): clears $TMUX and redirects $TMUX_TMPDIR to an
 //     empty directory so no code under test can reach the live host tmux

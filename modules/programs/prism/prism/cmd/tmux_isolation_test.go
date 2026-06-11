@@ -65,12 +65,15 @@ import (
 // environment back. TestMain calls restore after m.Run() so the test
 // process leaves the environment as it found it.
 //
-// Because this isolation makes the live host server unreachable from code
-// under test by construction, the #1180 leak guard's live-tmux-server
-// before/after session diff was dropped (#2227): it could no longer catch a
-// suite leak — only misattribute concurrent host activity (parallel
-// workers' spawns and review rounds) to the suite. The deterministic
-// regression guard for this isolation is
+// Because this isolation makes the live host server unreachable from this
+// package's code under test by construction, the #1180 leak guard's
+// live-tmux-server before/after session diff was dropped (#2227): it could
+// no longer catch a leak from THIS package — only misattribute concurrent
+// host activity (parallel workers' spawns and review rounds) to the suite,
+// or incidentally observe another package's leak during parallel
+// `go test ./...` window overlap (#1732 — a class now tracked by #2230,
+// which proposes this same isolation pattern for internal/review). The
+// deterministic regression guard for this package's isolation is
 // TestSuiteTmuxIsolation_HostServerUnreachable below.
 func isolateSuiteFromHostTmux() (restore func()) {
 	origTmux, hadTmux := os.LookupEnv("TMUX")
