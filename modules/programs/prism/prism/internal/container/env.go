@@ -14,10 +14,11 @@ type EnvAppender func(args []string, k, v string) []string
 // slice. It handles two sources:
 //
 //  1. cfg.AgentEnvVars — profile-level vars (e.g. GIT_EDITOR=true) emitted
-//     in sorted key order for determinism. KUBECONFIG and AWS_CONFIG_FILE are
-//     suppressed because both files are already bind-mounted at their canonical
-//     default paths inside the sandbox and the host XDG paths held in
-//     AgentEnvVars would only override the correctly-mounted locations.
+//     in sorted key order for determinism. KUBECONFIG, AWS_CONFIG_FILE, and
+//     AWS_SHARED_CREDENTIALS_FILE are suppressed because those files are
+//     already bind-mounted at their canonical default paths inside the sandbox
+//     and the host XDG paths held in AgentEnvVars would only override the
+//     correctly-mounted locations.
 //
 //  2. cfg.RuntimeEnv — harness-specific runtime vars (e.g. the bash-tool
 //     timeout) emitted as-is.
@@ -27,8 +28,9 @@ type EnvAppender func(args []string, k, v string) []string
 func AppendStandardEnv(args []string, cfg Config, appender EnvAppender) []string {
 	// Suppress keys that are already provided via bind-mounts.
 	sandboxMountedByDefault := map[string]bool{
-		"KUBECONFIG":      true,
-		"AWS_CONFIG_FILE": true,
+		"KUBECONFIG":                  true,
+		"AWS_CONFIG_FILE":             true,
+		"AWS_SHARED_CREDENTIALS_FILE": true,
 	}
 
 	if len(cfg.AgentEnvVars) > 0 {
@@ -53,16 +55,17 @@ func AppendStandardEnv(args []string, cfg Config, appender EnvAppender) []string
 
 // AppendSandboxEnvVarsKV appends K=V pairs from cfg.AgentEnvVars and
 // cfg.RuntimeEnv to env (a []string slice for use as a syscall.Exec env).
-// It applies the same suppression logic as AppendStandardEnv (KUBECONFIG and
-// AWS_CONFIG_FILE are omitted because they are already bind-mounted at their
-// canonical paths inside the sandbox).
+// It applies the same suppression logic as AppendStandardEnv (KUBECONFIG,
+// AWS_CONFIG_FILE, and AWS_SHARED_CREDENTIALS_FILE are omitted because they
+// are already bind-mounted at their canonical paths inside the sandbox).
 //
 // This is used by the sandbox-exec dispatch path in cmd/agent_run.go where
 // the env is a plain K=V slice (not a bwrap-style argument list).
 func AppendSandboxEnvVarsKV(env []string, cfg Config) []string {
 	sandboxMountedByDefault := map[string]bool{
-		"KUBECONFIG":      true,
-		"AWS_CONFIG_FILE": true,
+		"KUBECONFIG":                  true,
+		"AWS_CONFIG_FILE":             true,
+		"AWS_SHARED_CREDENTIALS_FILE": true,
 	}
 
 	if len(cfg.AgentEnvVars) > 0 {
