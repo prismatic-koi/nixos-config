@@ -174,16 +174,17 @@ func hostCredentialDir(t *testing.T) string {
 //
 // The test plants a sentinel credential file directly under HOME (NOT
 // /private/var/folders/, which is broadly allowed by the system-paths rule),
-// creates a symlink at $stagingHome/.aws/credentials → that file, then
+// creates a symlink at $stagingHome/.ssh/test-credential → that file, then
 // generates the production profile (which resolves the symlink and emits a
 // (literal "<resolved>") allow for the target). It reads the file from
 // inside the sandbox via the staging HOME path and asserts the read
 // succeeds.
 //
-// Note (#2234): production no longer creates a .aws/credentials staging
-// symlink — the test plants its own purely as a vehicle for the generic
-// collectStagingHomeSymlinkTargets mechanism (the .aws/ staging dir is still
-// scanned for the sso/cli entries until Step 3e/5 of #2132 retire it).
+// Note (#2234/#2245): production creates no credential staging symlinks any
+// more — the test plants its own purely as a vehicle for the generic
+// collectStagingHomeSymlinkTargets mechanism. It lives under .ssh/ because
+// post-#2245 that is the only staging subdirectory the collector still
+// scans (Step 5 of #2132 deletes the mechanism wholesale).
 //
 // The negative test in StagingCredentialDeniedWithoutTargetAllow strips
 // that (literal ...) allow line from the profile and asserts the same read
@@ -217,7 +218,7 @@ func TestSandboxExecProfile_StagingCredentialReadable(t *testing.T) {
 		t.Fatalf("write host credential file: %v", err)
 	}
 
-	stagingCredentialLink := filepath.Join(stagingHome, ".aws", "credentials")
+	stagingCredentialLink := filepath.Join(stagingHome, ".ssh", "test-credential")
 	_ = os.Remove(stagingCredentialLink) // overwrite whatever PrepareSandboxExecHome may have placed
 	if err := os.Symlink(hostCredentialFile, stagingCredentialLink); err != nil {
 		t.Fatalf("create staging credentials symlink: %v", err)
@@ -246,7 +247,7 @@ func TestSandboxExecProfile_StagingCredentialReadable(t *testing.T) {
 	// which the profile allows.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(filepath.Join(stagingHome, ".aws", "credentials")))
+		"cat "+shQuote(filepath.Join(stagingHome, ".ssh", "test-credential")))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("read staged credential symlink failed under production profile.\n"+
@@ -296,7 +297,7 @@ func TestSandboxExecProfile_StagingCredentialDeniedWithoutTargetAllow(t *testing
 		t.Fatalf("write host credential file: %v", err)
 	}
 
-	stagingCredentialLink := filepath.Join(stagingHome, ".aws", "credentials")
+	stagingCredentialLink := filepath.Join(stagingHome, ".ssh", "test-credential")
 	_ = os.Remove(stagingCredentialLink)
 	if err := os.Symlink(hostCredentialFile, stagingCredentialLink); err != nil {
 		t.Fatalf("create staging credentials symlink: %v", err)
@@ -318,7 +319,7 @@ func TestSandboxExecProfile_StagingCredentialDeniedWithoutTargetAllow(t *testing
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(filepath.Join(stagingHome, ".aws", "credentials")))
+		"cat "+shQuote(filepath.Join(stagingHome, ".ssh", "test-credential")))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("read staged credential succeeded WITHOUT the (literal ...) allow for the resolved target.\n"+

@@ -318,8 +318,8 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// each MountSpec into the correct --bind / --ro-bind triple.
 	//
 	// Note on ordering: StandardSandboxMounts emits ~/.config/claude, ~/.mcp-auth,
-	// ~/.cache/nix, AWS config, AWS credentials, AWS SSO, AWS CLI, kube
-	// config, clipboard-staging. The pre-A2.M1 bwrap order interleaved the
+	// ~/.cache/nix, ~/.cache/bun, AWS config, AWS credentials, AWS SSO, AWS CLI,
+	// kube config, clipboard-staging. The pre-A2.M1 bwrap order interleaved the
 	// AWS group with the SSH/known_hosts/SSH-config group; the new order
 	// keeps the AWS entries adjacent and emits all of them before the SSH
 	// keys. Bwrap argument order does not affect the runtime mount layout
@@ -432,18 +432,11 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	gitconfigPath := m.gitconfigFilePath()
 	args = append(args, "--ro-bind", gitconfigPath, filepath.Join(home, ".gitconfig"))
 
-	// ── bun transpiler cache (read-write, conditional) ──────────────────────
-	// Must be writable: bun writes transpile outputs and lockfile updates
-	// here on plugin load.
-	bunCacheDir := filepath.Join(home, ".cache", "bun")
-	if _, err := os.Stat(bunCacheDir); err == nil {
-		args = append(args, "--bind", bunCacheDir, bunCacheDir)
-	}
-
-	// AWS SSO cache, AWS CLI cache, kube config, and the clipboard staging
-	// dir are all emitted earlier in this function via the
-	// StandardSandboxMounts walk (A2.M1) — the inline blocks that previously
-	// duplicated those mounts here have been removed. The aws
+	// AWS SSO cache, AWS CLI cache, kube config, the bun transpiler cache,
+	// and the clipboard staging dir are all emitted earlier in this function
+	// via the StandardSandboxMounts walk (A2.M1) — the inline blocks that
+	// previously duplicated those mounts here have been removed (the bun
+	// cache block was converged in #2245, Step 3e of #2132). The aws
 	// config/credentials canonical-path ($HOME/.aws/*) binds were dropped in
 	// #2234; the files are now bound Dst==Src at the host XDG paths and
 	// reached via the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars

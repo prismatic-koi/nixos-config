@@ -23,16 +23,15 @@ package integration_test
 //	  (subpath "~/.aws/sso")
 //	  (subpath "~/.aws/cli"))
 //
-// Additionally, collectStagingHomeSymlinkTargets previously did not list
-// .aws/sso or .aws/cli in writableStagingPaths, so the per-symlink allow
-// block emitted the resolved host paths in the RO group. The fix adds
-// them to writableStagingPaths so the per-symlink allow emits file-write*
-// for their resolved targets too.
+// Since #2245 (Step 3e of #2132) the staging HOME no longer symlinks
+// .aws/sso or .aws/cli at all — the carve-out rules above are the SOLE
+// in-sandbox capability for the two cache dirs, exercised at the real host
+// paths.
 //
 // This file tests:
 //
 //  1. Positive case (SSO write): with the production profile, writing a
-//     file inside ~/.aws/sso via the staging HOME symlink chain succeeds.
+//     file inside the real ~/.aws/sso succeeds.
 //
 //  2. Negative case (SSO write denied without file-write*): removing the
 //     file-write* from the carve-out causes the same write to fail —
@@ -50,11 +49,10 @@ package integration_test
 //     ~/.aws subtree.
 //
 //  6. Edge-case: when ~/.aws/cli and ~/.aws/sso do NOT exist on the host
-//     at session-spawn time, PrepareSandboxExecHome creates no symlinks for
-//     them (symlinkIfExists skips missing sources), the generated profile
-//     still loads under /usr/bin/sandbox-exec, and a non-AWS workload exits 0.
-//     This validates that the carve-out rules (which reference non-existent
-//     paths) do not break sandbox initialisation — sandbox-exec silently ignores
+//     at session-spawn time, the generated profile still loads under
+//     /usr/bin/sandbox-exec and a non-AWS workload exits 0. This validates
+//     that the carve-out rules (which reference non-existent paths) do not
+//     break sandbox initialisation — sandbox-exec silently ignores
 //     (subpath ...) rules for paths that do not exist on the host.
 //
 // Shared helpers (requireSandboxExec, requireNixBash, newProfileManagerWithBareRoot,
@@ -84,12 +82,10 @@ const awsCacheCLIWriteContent = "prism-1558-aws-cli-write-sentinel"
 //
 //  1. Creates ~/.aws/sso under the real user HOME (so the write attempt
 //     targets the deny-covered path, not /private/var/folders).
-//  2. Calls PrepareSandboxExecHome so the staging HOME contains
-//     <stagingHome>/.aws/sso → ~/.aws/sso.
-//  3. Generates the production profile (which emits file-read* file-write*
+//  2. Generates the production profile (which emits file-read* file-write*
 //     for both ~/.aws/sso and ~/.aws/cli).
-//  4. Writes a file inside ~/.aws/sso via the staging HOME symlink from
-//     inside the sandbox and asserts exit 0.
+//  3. Writes a file inside the real ~/.aws/sso from inside the sandbox and
+//     asserts exit 0 (no staging symlink involved — #2245).
 func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -107,12 +103,6 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// Verify the staging HOME has the sso symlink before generating the profile.
-	ssoLink := filepath.Join(stagingHome, ".aws", "sso")
-	if _, lstatErr := os.Lstat(ssoLink); lstatErr != nil {
-		t.Fatalf("staging HOME must have a .aws/sso symlink after PrepareSandboxExecHome: %v", lstatErr)
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The carve-out must include file-write* in the generated profile.
@@ -126,9 +116,9 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	// Write a sentinel file inside <stagingHome>/.aws/sso from inside the sandbox.
-	// The write targets the host path via the staging HOME symlink.
-	writeTarget := filepath.Join(ssoLink, ".prism-1558-write-test")
+	// Write a sentinel file inside the REAL ~/.aws/sso from inside the
+	// sandbox — the carve-out grants the real path directly (#2245).
+	writeTarget := filepath.Join(ssoDir, ".prism-1558-write-test")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
@@ -149,8 +139,6 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	if !strings.Contains(string(got), awsCacheSSOWriteContent) {
 		t.Errorf("written file does not contain expected content.\nGot: %s", string(got))
 	}
-
-	_ = ssoDir
 }
 
 // TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite is the paired
@@ -174,8 +162,6 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	ssoLink := filepath.Join(stagingHome, ".aws", "sso")
-
 	// Remove file-write* from the carve-out allow block. The production
 	// profile emits:
 	//   (allow file-read* file-write*
@@ -189,7 +175,7 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 		)
 	})
 
-	writeTarget := filepath.Join(ssoLink, ".prism-1558-write-test-neg")
+	writeTarget := filepath.Join(ssoDir, ".prism-1558-write-test-neg")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
@@ -203,8 +189,6 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 	} else {
 		t.Logf("ka pai — ~/.aws/sso write correctly denied without file-write* (exit: %v)", runErr)
 	}
-
-	_ = ssoDir
 }
 
 // TestSandboxExecProfile_AWSCLIWritable is the positive integration test for
@@ -226,11 +210,6 @@ func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	cliLink := filepath.Join(stagingHome, ".aws", "cli")
-	if _, lstatErr := os.Lstat(cliLink); lstatErr != nil {
-		t.Fatalf("staging HOME must have a .aws/cli symlink after PrepareSandboxExecHome: %v", lstatErr)
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The carve-out must include file-write* and the cli path.
@@ -247,7 +226,7 @@ func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	writeTarget := filepath.Join(cliLink, ".prism-1558-write-test")
+	writeTarget := filepath.Join(cliDir, ".prism-1558-write-test")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
@@ -267,8 +246,6 @@ func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 	if !strings.Contains(string(got), awsCacheCLIWriteContent) {
 		t.Errorf("written file does not contain expected content.\nGot: %s", string(got))
 	}
-
-	_ = cliDir
 }
 
 // TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite is the paired
@@ -291,8 +268,6 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	cliLink := filepath.Join(stagingHome, ".aws", "cli")
-
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.ReplaceAll(p,
 			"(allow file-read* file-write*\n  (subpath "+sbplQuoteForTest(filepath.Join(realUserHome(t), ".aws", "sso")),
@@ -300,7 +275,7 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 		)
 	})
 
-	writeTarget := filepath.Join(cliLink, ".prism-1558-write-test-neg")
+	writeTarget := filepath.Join(cliDir, ".prism-1558-write-test-neg")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
@@ -314,8 +289,6 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 	} else {
 		t.Logf("ka pai — ~/.aws/cli write correctly denied without file-write* (exit: %v)", runErr)
 	}
-
-	_ = cliDir
 }
 
 // TestSandboxExecProfile_AWSOutsideCarveoutDenied is the security test for
@@ -382,13 +355,12 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 // exist on the host at session-spawn time, the generated profile still loads
 // under /usr/bin/sandbox-exec and a non-AWS workload exits 0.
 //
-// PrepareSandboxExecHome uses symlinkIfExists for the sso/ and cli/ entries,
-// so when the host directories are absent no symlinks are created — but
-// generateProfile still unconditionally emits the carve-out rules with the
-// host paths (filepath.Join(home, ".aws", "sso") and ".aws", "cli").
-// sandbox-exec silently ignores (subpath ...) rules for paths that do not
-// exist, so the profile must still load and allow a simple non-AWS workload
-// (echo) to succeed.
+// Since #2245 PrepareSandboxExecHome never creates sso/cli staging entries
+// (present or not) — but generateProfile still unconditionally emits the
+// carve-out rules with the host paths (filepath.Join(home, ".aws", "sso")
+// and ".aws", "cli"). sandbox-exec silently ignores (subpath ...) rules for
+// paths that do not exist, so the profile must still load and allow a
+// simple non-AWS workload (echo) to succeed.
 //
 // This guards against a regression where the carve-out rules cause sandbox
 // initialisation to fail when the host has no ~/.aws/sso or ~/.aws/cli.
@@ -429,13 +401,10 @@ func TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// Verify that no sso/cli symlinks were created in the staging HOME
-	// (they should be absent since symlinkIfExists skips missing sources).
-	for _, rel := range []string{".aws/sso", ".aws/cli"} {
-		link := filepath.Join(stagingHome, rel)
-		if _, lstatErr := os.Lstat(link); lstatErr == nil {
-			t.Errorf("staging HOME has %s symlink even though host dir is absent — symlinkIfExists should have skipped it", rel)
-		}
+	// Verify that no .aws staging entry exists at all (the sso/cli staging
+	// symlinks were removed wholesale in #2245).
+	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
+		t.Errorf("staging HOME has a .aws entry — removed in #2245, must not be recreated")
 	}
 
 	prepared, _ := preparePositiveProfile(t, m)
