@@ -284,8 +284,9 @@ Rounds that **do not count** toward the 3-cycle limit:
 - **Round-already-in-progress refusals** — a prior review is still
   active for the same parent. No agents spawned.
 - **Pure-infrastructure failures** — every agent failed to start
-  (container never bound its port). Header mentions "infrastructure
-  failure".
+  (no frames received — e.g. the container never bound its port) and/or
+  stalled mid-run (the agent ran, then stopped producing frames — #2239).
+  Header mentions "infrastructure failure".
 - **Ran-but-no-parseable-verdict rounds** (#1995) — one or more agents
   reached `finished` state without emitting a parseable
   `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag (e.g.
@@ -327,6 +328,27 @@ Signs of a no-start error in the per-agent findings:
 - `**Verdict:** ERROR`
 - Output contains `ERROR: agent failed to start (no-start):`
 - The delivery message header mentions "infrastructure failure" and instructs you to re-run
+
+### Handling mid-run stalls in review-complete prompts
+
+A **mid-run stall** is the sibling failure class to a no-start (#2239): the
+agent started and did real work — inbound frames flowed — then went silent
+long enough to trip the inactivity watchdog. The report distinguishes it
+from a no-start so you can tell "never ran" from "ran, then wedged".
+
+Treat a stall the same way you treat a no-start: it is an **infrastructure
+failure to re-run**, not a code-quality FAIL, and the round does **not**
+count toward the 3-cycle limit. One caveat: repeated stalls under concurrent
+load can indicate provider rate/subscription limits — if the same agent
+stalls across multiple consecutive rounds, escalate to the coordinator
+instead of burning further rounds on blind re-runs.
+
+Signs of a mid-run stall:
+- `**Verdict:** ERROR`
+- Output contains `ERROR: agent stalled mid-run after <elapsed> (<n>
+  frame(s) received, last at <t>)`
+- The delivery message header says "stalled mid-run" and mentions
+  "infrastructure failure"
 
 ### Handling ran-but-no-parseable-verdict in review-complete prompts
 

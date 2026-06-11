@@ -3,6 +3,7 @@ package sidecar
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -65,6 +66,22 @@ func (s *Sidecar) touchActivity() {
 	})
 }
 
+// recordInboundFrame notes the receipt of an inbound frame from the agent
+// harness (handlePipeFrame on the PI socket-pipe path, HandleEvent on the
+// SSE path) and resets the inactivity watchdog. The frame counter and
+// timestamps feed the watchdog's stall-vs-no-start classification (#2239):
+// when the watchdog fires with zero recorded frames the agent never started;
+// with one or more frames it stalled mid-run. Must be called with s.mu held.
+func (s *Sidecar) recordInboundFrame() {
+	now := s.cfg.Clock.Now()
+	if s.inboundFrameCount == 0 {
+		s.firstInboundFrameAt = now
+	}
+	s.inboundFrameCount++
+	s.lastInboundFrameAt = now
+	s.touchActivity()
+}
+
 // handleActivityTimeout is the inactivity-watchdog fire callback (#1709). It
 // runs on the Clock's timer goroutine without s.mu held. Acquires s.mu,
 // checks that the session is still in a non-terminal state, writes a
@@ -72,6 +89,25 @@ func (s *Sidecar) touchActivity() {
 // parent worker via the existing review-agent startup-failure delivery path
 // so a stalled review agent surfaces a real signal to its worker rather than
 // hanging silently.
+//
+// Failure-class labelling (#2239): the inbound-frame stats recorded by
+// recordInboundFrame distinguish two very different failure classes that the
+// watchdog previously collapsed into one "failed to start" label:
+//
+//   - never-started (inboundFrameCount == 0): no inbound frame was ever
+//     received — spawn/handshake/auth failure. A startup_error event is
+//     written so the review monitor reports it via the existing no-start
+//     path, and the parent notification retains the "failed to start"
+//     wording.
+//   - mid-run stall (inboundFrameCount > 0): frames flowed, then stopped —
+//     stream starvation, provider limit, payload wedge. A stall_error event
+//     is written with "stalled mid-run after <elapsed> (<n> frames received,
+//     last at <t>)" so the monitor and the parent notification carry the
+//     stall label instead of the misleading no-start one.
+//
+// Both classes remain non-counting infrastructure rounds for the review
+// cycle counter (#1995 contract): the session terminates in state "error",
+// which is never verdict-producing.
 func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	s.mu.Lock()
 	s.activityTimer = nil
@@ -92,7 +128,12 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 		return
 	}
 
-	s.logger().Printf("sidecar: inactivity watchdog fired after %v — transition -> error (cause=inactivity_timeout)", timeout)
+	// Classify the failure before mutating state (#2239).
+	frames := s.inboundFrameCount
+	firstFrameAt := s.firstInboundFrameAt
+	lastFrameAt := s.lastInboundFrameAt
+
+	s.logger().Printf("sidecar: inactivity watchdog fired after %v — transition -> error (cause=inactivity_timeout, inbound_frames=%d)", timeout, frames)
 	s.cancelIdleTimer()
 	s.cancelRecoveryTimer()
 	s.upsertState(agent.StateError, nil, nil)
@@ -101,6 +142,28 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 		"state": string(agent.StateError),
 		"note":  fmt.Sprintf("inactivity timeout after %v", timeout),
 	}, nil)
+
+	// Write the failure-class event so the review monitor's report carries
+	// the distinguishing label (#2239). failureText doubles as the
+	// parent-notification text below (notifyParentWorkerOnReviewFailure
+	// prefixes it with "review agent <name> ").
+	var failureText string
+	if frames > 0 {
+		elapsed := lastFrameAt.Sub(firstFrameAt).Round(time.Second)
+		failureText = fmt.Sprintf(
+			"stalled mid-run after %s (%d frame(s) received, last at %s): inactivity timeout: no inbound frame for %v",
+			elapsed, frames, lastFrameAt.Format(time.RFC3339), timeout)
+		s.writeEvent("stall_error", map[string]string{"reason": failureText}, nil)
+	} else {
+		failureText = fmt.Sprintf(
+			"failed to start (no frames received): inactivity timeout: no inbound frame for %v", timeout)
+		// The event reason omits the "failed to start" prefix because the
+		// monitor's no-start rendering already supplies it
+		// ("ERROR: agent failed to start (no-start): <reason>").
+		s.writeEvent("startup_error", map[string]string{"reason": fmt.Sprintf(
+			"inactivity timeout: no inbound frame for %v (no frames received)", timeout)}, nil)
+	}
+
 	s.lastState = agent.StateError
 	s.lastErrorAt = s.cfg.Clock.Now()
 	s.mu.Unlock()
@@ -116,7 +179,7 @@ func (s *Sidecar) handleActivityTimeout(timeout interface{}) {
 	// and tests can drain in-flight notifications via WaitNotifies() without
 	// sleeping or polling (#1842).
 	s.goNotify(func() {
-		s.notifyParentWorkerOnStartupFailure(fmt.Errorf("inactivity timeout: no inbound frame for %v", timeout))
+		s.notifyParentWorkerOnReviewFailure(failureText)
 	})
 }
 

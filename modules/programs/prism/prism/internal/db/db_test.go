@@ -3301,6 +3301,66 @@ func TestGroupResults_StartupError(t *testing.T) {
 	}
 }
 
+// TestGroupResults_StallError verifies that GroupResults populates StallError
+// from the stall_error event written by the sidecar's inactivity watchdog
+// when it fires after one or more inbound frames were received (#2239), and
+// that StartupError stays empty for such a member.
+func TestGroupResults_StallError(t *testing.T) {
+	d := openTestDB(t)
+
+	groupID, err := d.RegisterGroup("nixos-config@feature")
+	if err != nil {
+		t.Fatalf("RegisterGroup: %v", err)
+	}
+
+	stalledSession := "nixos-config@feature~review-1-review-security"
+	if err := d.UpsertStatus(stalledSession, "nixos-config", "/wt", "error", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %s: %v", stalledSession, err)
+	}
+	if err := d.QueryRow(
+		"UPDATE agent_status SET group_id = ? WHERE session_name = ? RETURNING 1",
+		groupID, stalledSession,
+	).Scan(new(int)); err != nil {
+		t.Fatalf("set group_id for %s: %v", stalledSession, err)
+	}
+
+	// Write the stall_error event that handleActivityTimeout emits when the
+	// session produced frames before going silent.
+	const stallReason = "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"
+	if err := d.WriteEvent(db.Event{
+		ID:          "evt-stall-err-1",
+		SessionName: stalledSession,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "stall_error",
+		Payload:     `{"reason":"` + stallReason + `"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent stall_error: %v", err)
+	}
+
+	results, err := d.GroupResults(groupID)
+	if err != nil {
+		t.Fatalf("GroupResults: %v", err)
+	}
+	r, ok := results[stalledSession]
+	if !ok {
+		t.Fatalf("GroupResults: missing entry for %q", stalledSession)
+	}
+	if r.State != "error" {
+		t.Errorf("StallError test: State = %q, want \"error\"", r.State)
+	}
+	if r.StallError != stallReason {
+		t.Errorf("StallError = %q, want %q", r.StallError, stallReason)
+	}
+	if r.StartupError != "" {
+		t.Errorf("StartupError = %q, want \"\" (no startup_error written for a mid-run stall)", r.StartupError)
+	}
+	if r.LastMessage != "" {
+		t.Errorf("LastMessage = %q, want \"\" (no msg_assistant written)", r.LastMessage)
+	}
+}
+
 // ── Foreign key enforcement tests ─────────────────────────────────────────────
 
 // TestGroupFK_Violation verifies that attempting to set agent_status.group_id to

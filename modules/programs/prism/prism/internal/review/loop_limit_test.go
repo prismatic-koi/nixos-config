@@ -82,6 +82,33 @@ func TestCurrentCycleProducedVerdicts_AllNoStartIsNotVerdictProducing(t *testing
 	}
 }
 
+// TestCurrentCycleProducedVerdicts_AllStalledIsNotVerdictProducing pins the
+// #2239 edge-case AC: a mid-run stall (state "error" + stall_error event) is
+// a non-counting infrastructure round under the #1995 contract, exactly like
+// a no-start — the new label must not change the cycle-counter behaviour.
+func TestCurrentCycleProducedVerdicts_AllStalledIsNotVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-goal":     {State: "error", StallError: "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"},
+		"a~review-1-review-security": {State: "error", StallError: "stalled mid-run after 30s (2 frame(s) received, last at 2026-06-11T13:50:12Z): inactivity timeout: no inbound frame for 15m0s"},
+	}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("an all-stalled group must not count as verdict-producing (#2239 / #1995 contract)")
+	}
+}
+
+// TestCurrentCycleProducedVerdicts_MixedStallIsNotVerdictProducing pins the
+// mixed shape: one mid-run stall alongside one PASS is not verdict-producing
+// — same as the mixed-no-start pin above.
+func TestCurrentCycleProducedVerdicts_MixedStallIsNotVerdictProducing(t *testing.T) {
+	groupData := map[string]db.GroupMemberResult{
+		"a~review-1-review-security": {State: "error", StallError: "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"},
+		"a~review-1-review-code":     {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
+	}
+	if review.CurrentCycleProducedVerdictsForTest(groupData) {
+		t.Error("a mixed group (one mid-run stall + one PASS) must NOT count as verdict-producing")
+	}
+}
+
 func TestCurrentCycleProducedVerdicts_FinishedButEmptyMessageIsNotVerdictProducing(t *testing.T) {
 	groupData := map[string]db.GroupMemberResult{
 		"a~review-1-review-goal": {State: "finished", LastMessage: ""},
@@ -349,6 +376,35 @@ func TestCompletedReviewCyclesForParent_ExcludesAllNoStartGroups(t *testing.T) {
 	}
 }
 
+// TestCompletedReviewCyclesForParent_ExcludesAllStalledGroups is the #2239
+// twin of the all-no-start exclusion above: a historical round where every
+// member stalled mid-run (state "error" + stall_error event, no verdict)
+// must not count toward the cycle total. This pins the edge-case AC that
+// the non-counting infra-round classification is unchanged for the new
+// stall class.
+func TestCompletedReviewCyclesForParent_ExcludesAllStalledGroups(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@stalled"
+
+	// Round 1: real verdict-producing cycle.
+	registerGroupAndSeedMembers(t, d, parent, 1,
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+	)
+	// Round 2: every member stalled mid-run — frames flowed, then stopped.
+	registerGroupAndSeedMembers(t, d, parent, 2,
+		memberSpec{role: "review-goal", state: "error", stallError: "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"},
+		memberSpec{role: "review-security", state: "error", stallError: "stalled mid-run after 30s (2 frame(s) received, last at 2026-06-11T13:50:12Z): inactivity timeout: no inbound frame for 15m0s"},
+	)
+
+	n, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("count = %d, want 1 (round 2 was an all-stalled infrastructure failure and must not count, #2239)", n)
+	}
+}
+
 // TestCompletedReviewCyclesForParent_ExcludesActiveGroups verifies that a
 // group whose members are still running does not count toward the cycle
 // total — only fully-terminated groups do.
@@ -509,6 +565,33 @@ func TestMonitorFunc_NoFooterOnInfrastructureFailureCycle(t *testing.T) {
 	}
 }
 
+// TestMonitorFunc_NoFooterOnAllStalledCycle is the #2239 twin of the
+// infrastructure-failure footer pin: a 3rd cycle in which every agent
+// stalled mid-run must NOT emit the LOOP-LIMIT footer — the worker keeps
+// getting the "stalled mid-run (infrastructure failure): re-run" framing
+// instead, exactly like the no-start class.
+func TestMonitorFunc_NoFooterOnAllStalledCycle(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@stall-third"
+
+	registerGroupAndSeedMembers(t, d, parent, 1,
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+	)
+	registerGroupAndSeedMembers(t, d, parent, 2,
+		memberSpec{role: "review-goal", state: "finished", text: `<verdict>FAIL</verdict>`},
+	)
+
+	// Round 3: all agents stalled mid-run.
+	body := mockMonitorRound3StallFailure(t, d, parent, "1512")
+
+	if strings.Contains(body, "REVIEW LOOP LIMIT") {
+		t.Errorf("3rd cycle that was an all-stalled infrastructure failure must NOT emit LOOP-LIMIT footer (#2239); got:\n%s", body)
+	}
+	if !strings.Contains(body, "stalled mid-run") {
+		t.Errorf("all-stalled 3rd cycle should carry the stall label in the delivery body; got:\n%s", body)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 type memberSpec struct {
@@ -516,6 +599,7 @@ type memberSpec struct {
 	state        string
 	text         string // assistant message text; empty → no msg_assistant event
 	startupError string // when set, write a startup_error event
+	stallError   string // when set, write a stall_error event (#2239)
 }
 
 // registerGroupAndSeedMembers creates a session group, inserts agent_status
@@ -541,6 +625,9 @@ func registerGroupAndSeedMembers(t *testing.T, d *db.DB, parent string, round in
 		if m.startupError != "" {
 			seedStartupErrorEvent(t, d, sess, m.startupError)
 		}
+		if m.stallError != "" {
+			seedStallErrorEvent(t, d, sess, m.stallError)
+		}
 	}
 	return groupID
 }
@@ -559,6 +646,24 @@ func seedStartupErrorEvent(t *testing.T, d *db.DB, sessionName, reason string) {
 	})
 	if err != nil {
 		t.Fatalf("WriteEvent (startup_error): %v", err)
+	}
+}
+
+// seedStallErrorEvent writes a stall_error event for the named session
+// (#2239 — the inactivity watchdog's mid-run-stall classification).
+func seedStallErrorEvent(t *testing.T, d *db.DB, sessionName, reason string) {
+	t.Helper()
+	payload := `{"reason":` + `"` + strings.ReplaceAll(reason, `"`, `\"`) + `"}`
+	err := d.WriteEvent(db.Event{
+		ID:          sessionName + "-stall-err",
+		SessionName: sessionName,
+		Repo:        "nixos-config",
+		Worktree:    "/wt",
+		Type:        "stall_error",
+		Payload:     payload,
+	})
+	if err != nil {
+		t.Fatalf("WriteEvent (stall_error): %v", err)
 	}
 }
 
@@ -593,6 +698,15 @@ func mockMonitorRound3InfraFailure(t *testing.T, d *db.DB, parent, prNumber stri
 	return assembleDeliveryBody(t, d, parent, prNumber, 3, gid, false /* allPassed */, true /* infra */)
 }
 
+func mockMonitorRound3StallFailure(t *testing.T, d *db.DB, parent, prNumber string) string {
+	t.Helper()
+	gid := registerGroupAndSeedMembers(t, d, parent, 3,
+		memberSpec{role: "review-goal", state: "error", stallError: "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s"},
+		memberSpec{role: "review-code", state: "error", stallError: "stalled mid-run after 45s (3 frame(s) received, last at 2026-06-11T13:50:30Z): inactivity timeout: no inbound frame for 15m0s"},
+	)
+	return assembleDeliveryBody(t, d, parent, prNumber, 3, gid, false /* allPassed */, true /* infra */)
+}
+
 // assembleDeliveryBody mirrors MonitorFunc's tail (FormatResults +
 // buildDeliveryMessage + LOOP-LIMIT footer) so we can unit-test the
 // integrated behaviour without spinning up an HTTP delivery target.
@@ -615,6 +729,13 @@ func assembleDeliveryBody(t *testing.T, d *db.DB, parent, prNumber string, round
 				Agent:   review.Agent{Name: role},
 				Passed:  false,
 				Output:  "ERROR: agent failed to start (no-start): " + mr.StartupError,
+				IsError: true,
+			})
+		case mr.StallError != "":
+			results = append(results, review.AgentResult{
+				Agent:   review.Agent{Name: role},
+				Passed:  false,
+				Output:  "ERROR: agent " + mr.StallError,
 				IsError: true,
 			})
 		case strings.Contains(mr.LastMessage, "PASS"):
