@@ -62,9 +62,16 @@ import (
 
 // isolateSuiteFromHostTmux applies the suite-wide tmux neutralisation
 // described above and returns a restore function that puts the original
-// environment back. TestMain calls restore after m.Run() so the #1180 leak
-// guard's after-snapshots consult the same live server as its
-// before-snapshots.
+// environment back. TestMain calls restore after m.Run() so the test
+// process leaves the environment as it found it.
+//
+// Because this isolation makes the live host server unreachable from code
+// under test by construction, the #1180 leak guard's live-tmux-server
+// before/after session diff was dropped (#2227): it could no longer catch a
+// suite leak — only misattribute concurrent host activity (parallel
+// workers' spawns and review rounds) to the suite. The deterministic
+// regression guard for this isolation is
+// TestSuiteTmuxIsolation_HostServerUnreachable below.
 func isolateSuiteFromHostTmux() (restore func()) {
 	origTmux, hadTmux := os.LookupEnv("TMUX")
 	origTmpdir, hadTmpdir := os.LookupEnv("TMUX_TMPDIR")
