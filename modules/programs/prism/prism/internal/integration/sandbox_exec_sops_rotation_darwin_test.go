@@ -3,8 +3,9 @@
 package integration_test
 
 // sandbox_exec_sops_rotation_darwin_test.go — integration coverage for the
-// sops-rotation fix applied to the remaining staging-HOME symlinks:
-// access-key and .kube/config (issue #1573, follow-up to #1410).
+// sops-rotation fix applied to the remaining staging-HOME symlinks: the
+// .ssh/access-key entry (issue #1573, follow-up to #1410). See the
+// Mechanism note below for why this PR's rotation suite only covers .ssh.
 //
 // After darwin-rebuild switch, sops rotates secrets.d/<N>/ → secrets.d/<N+1>/
 // and removes the old directory. The staging-HOME symlinks use
@@ -18,6 +19,22 @@ package integration_test
 // rotation safety for those reads rides the counter-independent #2211
 // secrets.d allowlist (see TestSandboxExecSecretsDeny_RotationSimulation and
 // the aws env-var tests in sandbox_exec_aws_config_envvar_darwin_test.go).
+//
+// Mechanism note — why this only covers .ssh/access-key in this PR:
+// PrepareSandboxExec re-runs PrepareSandboxExecHome internally (lifecycle_
+// dispatch.go:233), which idempotently recreates the default staging
+// symlinks via symlinkIfExists. When the canonical source path on the host
+// exists, that recreation clobbers any test replacement at the staging
+// destination BEFORE generateProfile walks the tree, so the collector sees
+// the default chain instead of the test-fabricated one. The .aws/credentials
+// vehicle worked on previous hosts only because credentials is absent
+// (symlinkIfExists short-circuits when SOURCE is missing). For .ssh the
+// test now sets SshAccessKeyName to a unique non-existent name so the same
+// short-circuit fires and the test's replacement survives. .kube/config has
+// no equivalent Config knob, and its staging symlink is itself on the
+// chopping block in #2235 (Step 3b), so this PR omits the kube entry from
+// the rotation suite. #2235's footprint covers the kube rotation guarantee
+// either via its own test or by removing the entry entirely.
 //
 // Test design
 // ───────────
@@ -57,6 +74,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // sopsRotationEntry describes one staging-HOME entry to test in the rotation
@@ -73,19 +92,60 @@ type sopsRotationEntry struct {
 	sentinel string
 }
 
-// sopsRotationEntries lists the staging-HOME entries still created by
-// PrepareSandboxExecHome (#1573 minus the .aws pair removed in #2234).
+// sopsRotationEntries lists the staging-HOME entries still exercised by the
+// rotation test (#1573 minus the .aws pair removed in #2234, minus
+// .kube/config — see the mechanism note in the file header).
 var sopsRotationEntries = []sopsRotationEntry{
 	{
 		stagingRelPath:      ".ssh/access-key",
 		intermediateRelPath: ".ssh/prismatic-koi-ed25519",
 		sentinel:            "ssh-ed25519 AAAA1573-access-key-sentinel",
 	},
-	{
-		stagingRelPath:      ".kube/config",
-		intermediateRelPath: ".config/kube/agents-config",
-		sentinel:            "apiVersion: v1  # sentinel-1573-kube-config",
-	},
+}
+
+// rotationTestAccessKeyName is the unique-per-test-run SshAccessKeyName
+// injected into the Manager Config below. Using a unique name whose
+// corresponding source path (~/.ssh/<name>) does not exist on the host makes
+// PrepareSandboxExecHome's symlinkIfExists short-circuit for .ssh/access-key,
+// so the second PrepareSandboxExecHome call inside iso.Prepare does NOT
+// recreate (and clobber) the test's replacement staging symlink.
+const rotationTestAccessKeyName = "prism-rotation-test-access-key-do-not-create"
+
+// newProfileManagerForRotationTest is the rotation-suite variant of
+// newProfileManagerWithBareRoot: same BareRoot wiring (so the ancestor block
+// fires and lets the kernel traverse intermediate symlinks under HOME), with
+// SshAccessKeyName forced to a unique non-existent name (see
+// rotationTestAccessKeyName above for the mechanism).
+func newProfileManagerForRotationTest(t *testing.T) *container.Manager {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	guardPath := filepath.Join(home, ".ssh", rotationTestAccessKeyName)
+	if _, statErr := os.Lstat(guardPath); statErr == nil {
+		t.Skipf("rotation test guard violated: %s exists; remove it or pick a different rotationTestAccessKeyName", guardPath)
+	}
+	wrap, err := os.MkdirTemp(home, ".prism-1573-rotation-bareroot-wrap-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp(home) for BareRoot wrap: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(wrap) })
+	bareRoot, err := os.MkdirTemp(wrap, "bareroot-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp(wrap) for BareRoot: %v", err)
+	}
+	instanceID := "integ-sbx-" + strings.ReplaceAll(t.Name(), "/", "-")
+	cfg := container.Config{
+		SessionName:      "integ-sandbox-exec-profile-test",
+		InstanceID:       instanceID,
+		Worktree:         t.TempDir(),
+		BareRoot:         bareRoot,
+		SshAccessKeyName: rotationTestAccessKeyName,
+		GitUserName:      "test-user",
+		GitUserEmail:     "test@example.com",
+	}
+	return container.New(cfg)
 }
 
 // setupSopsRotationChain sets up the two-hop symlink chain for a single entry:
@@ -147,7 +207,7 @@ func setupSopsRotationChain(t *testing.T, entry sopsRotationEntry) (intermediate
 // HOME path inside sandbox-exec. Asserts exit 0 and that the sentinel content
 // is visible — confirming the sandbox can follow the full two-hop chain.
 //
-// Uses newProfileManagerWithBareRoot so the BareRoot ancestor block fires and
+// Uses newProfileManagerForRotationTest so the BareRoot ancestor block fires and
 // grants file-read-metadata on (subpath HOME), enabling the kernel to traverse
 // intermediate symlinks under HOME.
 func TestSandboxExecSopsRotation_TwoHopChainReadable(t *testing.T) {
@@ -157,7 +217,7 @@ func TestSandboxExecSopsRotation_TwoHopChainReadable(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	m := newProfileManagerWithBareRoot(t)
+	m := newProfileManagerForRotationTest(t)
 
 	stagingHome, err := m.PrepareSandboxExecHome()
 	if err != nil {
@@ -250,7 +310,7 @@ func TestSandboxExecSopsRotation_TwoHopChainDeniedWithoutConcreteAllow(t *testin
 	for _, entry := range sopsRotationEntries {
 		entry := entry // capture loop variable
 		t.Run(entry.stagingRelPath, func(t *testing.T) {
-			m := newProfileManagerWithBareRoot(t)
+			m := newProfileManagerForRotationTest(t)
 
 			stagingHome, err := m.PrepareSandboxExecHome()
 			if err != nil {
