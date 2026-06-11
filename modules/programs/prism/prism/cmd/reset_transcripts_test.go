@@ -1,11 +1,19 @@
 package cmd
 
-// Tests for the issue #1947 reset transcript-wipe code path.
+// Tests for the `prism reset` transcript-removal code path (issue #2220,
+// superseding the dead-layout sweep from issue #1947).
 //
-// resetClearPiTranscripts removes the per-session pi-agent transcript JSONL
-// subtree under each per-session run directory (bwrap layout) and under each
-// sandbox-exec instance staging HOME. The enclosing per-session directory
-// must be preserved \u2014 only the inner `.../sessions/` subtree is removed.
+// resetClearPiTranscripts deletes exactly the *_<harness_session_id>.jsonl
+// files belonging to the snapshotted resume pointers from the shared host pi
+// sessions root (~/.pi/agent/sessions/--<encoded-cwd>--/, or
+// $PI_CODING_AGENT_DIR/sessions/... when the env var is set). The shared
+// root is NEVER swept wholesale: transcripts the DB does not know about —
+// other repos' sessions, non-prism pi conversations, sibling sessions on the
+// same worktree — must survive a reset untouched.
+//
+// Test helpers (clearPICodingAgentDir, piEncodeCWD, writeFakePiResumeJSONL)
+// are shared with the cleanup-side severance tests in
+// cleanup_pi_resume_test.go.
 
 import (
 	"os"
@@ -13,187 +21,207 @@ import (
 	"testing"
 )
 
-// TestResetClearPiTranscripts_RemovesBwrapSubtreePreservesParent is the
-// primary AC2 test for the bwrap layout:
-//
-//   <stateHome>/prism/run/<sessionDirHash>/pi-agent/sessions/...
-//
-// After resetClearPiTranscripts, the inner `pi-agent/sessions/` subtree is
-// gone, but the enclosing <sessionDirHash>/ directory is preserved (other
-// state like agent-run.log, *-sidecar.pid, hostapi.sock may live there).
-func TestResetClearPiTranscripts_RemovesBwrapSubtreePreservesParent(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+// TestResetClearPiTranscripts_RemovesExactlyTargetedJSONLs is the primary
+// issue #2220 AC test: transcripts are planted for two distinct cwd roots,
+// the reset covers only one of them, and the other root is untouched. A
+// sibling transcript with a different harness_session_id in the SAME
+// encoded-cwd directory must also survive — the removal is per-file, not
+// per-directory (matching cleanup's sever granularity).
+func TestResetClearPiTranscripts_RemovesExactlyTargetedJSONLs(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	// Synthesise two per-session dirs under prism/run/ with the canonical layout:
-	//   <hash>/pi-agent/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl
-	// and one sibling file under <hash>/ that must be preserved.
-	hashes := []string{"abc123def456", "feedfacecafe"}
-	for _, h := range hashes {
-		hashDir := filepath.Join(stateHome, "prism", "run", h)
-		// Plant a sibling file that MUST be preserved.
-		if err := os.MkdirAll(hashDir, 0o700); err != nil {
-			t.Fatalf("mkdir %s: %v", hashDir, err)
-		}
-		sibling := filepath.Join(hashDir, "agent-run.log")
-		if err := os.WriteFile(sibling, []byte("log content"), 0o600); err != nil {
-			t.Fatalf("write sibling: %v", err)
-		}
-		// Plant the transcript subtree to be removed.
-		transcriptDir := filepath.Join(hashDir, "pi-agent", "sessions", "--home-u-repo--")
-		if err := os.MkdirAll(transcriptDir, 0o700); err != nil {
-			t.Fatalf("mkdir transcripts %s: %v", transcriptDir, err)
-		}
-		transcript := filepath.Join(transcriptDir, "2026-05-22_019e00ed-1234.jsonl")
-		if err := os.WriteFile(transcript, []byte(`{"type":"session"}`), 0o600); err != nil {
-			t.Fatalf("write transcript: %v", err)
-		}
+	const (
+		wtA      = "/home/user/code/repo-a/feature"
+		wtB      = "/home/user/code/repo-b/main"
+		sidA     = "019e00ed-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		sidB     = "019e00ed-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+		sidOther = "019e00ed-cccc-cccc-cccc-cccccccccccc"
+	)
+	target := writeFakePiResumeJSONL(t, home, wtA, sidA)
+	siblingSameCwd := writeFakePiResumeJSONL(t, home, wtA, sidOther)
+	otherRoot := writeFakePiResumeJSONL(t, home, wtB, sidB)
+
+	pointers := []piResumePointer{
+		{sessionName: "repo-a@feature", worktree: wtA, harnessSessionID: sidA},
 	}
-
-	if err := resetClearPiTranscripts(); err != nil {
+	if err := resetClearPiTranscripts(pointers); err != nil {
 		t.Fatalf("resetClearPiTranscripts: %v", err)
 	}
 
-	for _, h := range hashes {
-		hashDir := filepath.Join(stateHome, "prism", "run", h)
+	// The targeted transcript is gone.
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("targeted transcript %s was not removed (stat err=%v)", target, err)
+	}
+	// The sibling transcript in the same cwd dir (different id) survives.
+	if _, err := os.Stat(siblingSameCwd); err != nil {
+		t.Errorf("sibling transcript %s was removed but must survive: %v", siblingSameCwd, err)
+	}
+	// The other cwd root is untouched.
+	if _, err := os.Stat(otherRoot); err != nil {
+		t.Errorf("other-root transcript %s was removed but must survive: %v", otherRoot, err)
+	}
+}
 
-		// (a) The hashDir itself MUST still exist (other state may live here).
-		if _, err := os.Stat(hashDir); err != nil {
-			t.Errorf("sessionDirHash %q was removed but must be preserved: %v", h, err)
-		}
+// TestResetClearPiTranscripts_MultiplePointersAllRemoved verifies that every
+// snapshotted pointer is processed: transcripts across two distinct cwd
+// roots are both removed when both sessions are being reset.
+func TestResetClearPiTranscripts_MultiplePointersAllRemoved(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-		// (b) The sibling file under hashDir MUST still exist.
-		sibling := filepath.Join(hashDir, "agent-run.log")
-		if _, err := os.Stat(sibling); err != nil {
-			t.Errorf("sibling file %s under %q was removed: %v", sibling, h, err)
-		}
+	const (
+		wtA  = "/home/user/code/repo-a/feature"
+		wtB  = "/home/user/code/repo-b/main"
+		sidA = "019e00ed-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+		sidB = "019e00ed-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	)
+	transcriptA := writeFakePiResumeJSONL(t, home, wtA, sidA)
+	transcriptB := writeFakePiResumeJSONL(t, home, wtB, sidB)
 
-		// (c) The pi-agent/sessions/ subtree MUST be gone.
-		subtree := filepath.Join(hashDir, "pi-agent", "sessions")
-		if _, err := os.Stat(subtree); !os.IsNotExist(err) {
-			t.Errorf("pi-agent/sessions/ subtree under %q was not removed (stat err=%v)", h, err)
+	pointers := []piResumePointer{
+		{sessionName: "repo-a@feature", worktree: wtA, harnessSessionID: sidA},
+		{sessionName: "repo-b@main", worktree: wtB, harnessSessionID: sidB},
+	}
+	if err := resetClearPiTranscripts(pointers); err != nil {
+		t.Fatalf("resetClearPiTranscripts: %v", err)
+	}
+
+	for _, p := range []string{transcriptA, transcriptB} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("transcript %s was not removed (stat err=%v)", p, err)
 		}
 	}
 }
 
-// TestResetClearPiTranscripts_RemovesSandboxExecSubtree exercises the
-// sandbox-exec layout:
-//
-//   <stateHome>/prism/sessions/<instanceID>/home/.pi/agent/sessions/...
-//
-// The `<instanceID>/home/` directory is preserved (the staging HOME root); only
-// the `.pi/agent/sessions/` subtree under it is removed.
-func TestResetClearPiTranscripts_RemovesSandboxExecSubtree(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+// TestResetClearPiTranscripts_NoTranscriptsNoError is the issue #2220
+// edge-case AC: `prism reset` on a host with no transcripts completes
+// without error, and the sessions root is not materialised as a side
+// effect.
+func TestResetClearPiTranscripts_NoTranscriptsNoError(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	const instanceID = "11111111-2222-3333-4444-555555555555"
-	homeDir := filepath.Join(stateHome, "prism", "sessions", instanceID, "home")
-	sessionsDir := filepath.Join(homeDir, ".pi", "agent", "sessions", "--home-u-repo--")
-	if err := os.MkdirAll(sessionsDir, 0o700); err != nil {
-		t.Fatalf("mkdir sessionsDir: %v", err)
+	pointers := []piResumePointer{
+		{sessionName: "repo@gone", worktree: "/wt/gone", harnessSessionID: "019e00ed-dddd"},
 	}
-	transcript := filepath.Join(sessionsDir, "2026-05-22_uuid.jsonl")
-	if err := os.WriteFile(transcript, []byte(`{}`), 0o600); err != nil {
-		t.Fatalf("write transcript: %v", err)
-	}
-	// Plant a sibling file in the staging HOME that MUST be preserved.
-	sibling := filepath.Join(homeDir, ".gitconfig")
-	if err := os.WriteFile(sibling, []byte("[user]"), 0o600); err != nil {
-		t.Fatalf("write sibling: %v", err)
+	if err := resetClearPiTranscripts(pointers); err != nil {
+		t.Fatalf("resetClearPiTranscripts with no transcripts on disk: %v", err)
 	}
 
-	if err := resetClearPiTranscripts(); err != nil {
-		t.Fatalf("resetClearPiTranscripts: %v", err)
-	}
-
-	// The staging HOME root must remain.
-	if _, err := os.Stat(homeDir); err != nil {
-		t.Errorf("staging HOME %s removed but must be preserved: %v", homeDir, err)
-	}
-	// The sibling file must remain.
-	if _, err := os.Stat(sibling); err != nil {
-		t.Errorf("sibling .gitconfig removed: %v", err)
-	}
-	// The .pi/agent/sessions subtree must be gone.
-	wiped := filepath.Join(homeDir, ".pi", "agent", "sessions")
-	if _, err := os.Stat(wiped); !os.IsNotExist(err) {
-		t.Errorf(".pi/agent/sessions/ not removed (stat err=%v)", err)
+	if _, err := os.Stat(filepath.Join(home, ".pi")); !os.IsNotExist(err) {
+		t.Errorf("~/.pi materialised by resetClearPiTranscripts (stat err=%v)", err)
 	}
 }
 
-// TestResetClearPiTranscripts_MissingDirsAreNoOp verifies the defensive
-// no-op contract: when neither prism/run/ nor prism/sessions/ exists,
-// resetClearPiTranscripts returns nil and does not create them.
-func TestResetClearPiTranscripts_MissingDirsAreNoOp(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+// TestResetClearPiTranscripts_EmptyPointerListIsNoOp verifies that with no
+// resume pointers recorded in the DB, the FS half does nothing: no error,
+// and existing transcripts on the shared root are untouched.
+func TestResetClearPiTranscripts_EmptyPointerListIsNoOp(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	if err := resetClearPiTranscripts(); err != nil {
-		t.Fatalf("resetClearPiTranscripts on empty stateHome: %v", err)
+	untracked := writeFakePiResumeJSONL(t, home, "/wt/untracked", "019e00ed-eeee")
+
+	if err := resetClearPiTranscripts(nil); err != nil {
+		t.Fatalf("resetClearPiTranscripts(nil): %v", err)
 	}
 
-	// Neither directory should have been created as a side effect.
-	for _, d := range []string{
-		filepath.Join(stateHome, "prism", "run"),
-		filepath.Join(stateHome, "prism", "sessions"),
-	} {
-		if _, err := os.Stat(d); !os.IsNotExist(err) {
-			t.Errorf("directory %s materialised by resetClearPiTranscripts (err=%v)", d, err)
-		}
+	if _, err := os.Stat(untracked); err != nil {
+		t.Errorf("untracked transcript %s was removed by an empty-pointer reset: %v", untracked, err)
 	}
 }
 
-// TestResetClearPiTranscripts_NoSubtreeUnderHashIsNoOp verifies that a
-// <sessionDirHash> directory without a pi-agent/sessions/ subtree (e.g. a
-// host-mode session, or a fresh dir with only agent-run.log) is left alone
-// without error.
-func TestResetClearPiTranscripts_NoSubtreeUnderHashIsNoOp(t *testing.T) {
-	stateHome := t.TempDir()
-	t.Setenv("XDG_STATE_HOME", stateHome)
+// TestResetClearPiTranscripts_BlankPointerFieldsSkipped is defence-in-depth
+// for the container.RemovePiResumeJSONL caller contract: pointers with an
+// empty worktree or empty harness_session_id are silently skipped (nothing
+// to scope to), without error and without touching unrelated transcripts.
+// resetMarkDBEnded filters such rows out of the snapshot, so this guards the
+// underlying helper's behaviour should that filter ever regress.
+func TestResetClearPiTranscripts_BlankPointerFieldsSkipped(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	hashDir := filepath.Join(stateHome, "prism", "run", "deadbeefcafe")
-	if err := os.MkdirAll(hashDir, 0o700); err != nil {
-		t.Fatalf("mkdir hashDir: %v", err)
+	bystander := writeFakePiResumeJSONL(t, home, "/wt/bystander", "019e00ed-ffff")
+
+	pointers := []piResumePointer{
+		{sessionName: "repo@no-worktree", worktree: "", harnessSessionID: "019e00ed-1111"},
+		{sessionName: "repo@no-sid", worktree: "/wt/bystander", harnessSessionID: ""},
 	}
-	keep := filepath.Join(hashDir, "agent-run.log")
-	if err := os.WriteFile(keep, []byte("log"), 0o600); err != nil {
-		t.Fatalf("write keep: %v", err)
+	if err := resetClearPiTranscripts(pointers); err != nil {
+		t.Fatalf("resetClearPiTranscripts with blank-field pointers: %v", err)
 	}
 
-	if err := resetClearPiTranscripts(); err != nil {
-		t.Fatalf("resetClearPiTranscripts: %v", err)
-	}
-
-	if _, err := os.Stat(hashDir); err != nil {
-		t.Errorf("hashDir removed: %v", err)
-	}
-	if _, err := os.Stat(keep); err != nil {
-		t.Errorf("keep file removed: %v", err)
+	if _, err := os.Stat(bystander); err != nil {
+		t.Errorf("bystander transcript %s was removed: %v", bystander, err)
 	}
 }
 
-// TestResetClearPiTranscripts_NonDirChildIsSkipped guards against a stray
-// regular file under prism/run/ being interpreted as a session dir. The
-// helper must filepath.Join(parent, ...) → stat → skip without erroring.
-func TestResetClearPiTranscripts_NonDirChildIsSkipped(t *testing.T) {
+// TestResetClearPiTranscripts_DeadLayoutsNotSwept pins the removal of the
+// pre-#2220 dead-layout sweeps. The old implementation deleted
+// $XDG_STATE_HOME/prism/run/<hash>/pi-agent/sessions/ (pre-#1985 bwrap
+// layout) and $XDG_STATE_HOME/prism/sessions/<instanceID>/home/.pi/agent/
+// sessions/ (sandbox-exec staging HOME). Both trees are planted here and
+// must survive a reset that DOES remove a targeted shared-root transcript —
+// proving the test is not vacuous and that reset no longer walks the prism
+// state root at all.
+func TestResetClearPiTranscripts_DeadLayoutsNotSwept(t *testing.T) {
+	clearPICodingAgentDir(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
-	runDir := filepath.Join(stateHome, "prism", "run")
-	if err := os.MkdirAll(runDir, 0o700); err != nil {
-		t.Fatalf("mkdir runDir: %v", err)
+	// Dead layout 1: pre-#1985 bwrap run-dir layout.
+	bwrapLegacy := filepath.Join(stateHome, "prism", "run", "abc123def456", "pi-agent", "sessions", "--wt--")
+	if err := os.MkdirAll(bwrapLegacy, 0o700); err != nil {
+		t.Fatalf("mkdir bwrap legacy: %v", err)
 	}
-	stray := filepath.Join(runDir, "stray-file.txt")
-	if err := os.WriteFile(stray, []byte("oops"), 0o600); err != nil {
-		t.Fatalf("write stray: %v", err)
+	bwrapLegacyFile := filepath.Join(bwrapLegacy, "2026-01-02_legacy.jsonl")
+	if err := os.WriteFile(bwrapLegacyFile, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write bwrap legacy: %v", err)
 	}
 
-	if err := resetClearPiTranscripts(); err != nil {
+	// Dead layout 2: sandbox-exec staging HOME.
+	stagingLegacy := filepath.Join(stateHome, "prism", "sessions", "11111111-2222-3333-4444-555555555555",
+		"home", ".pi", "agent", "sessions", "--wt--")
+	if err := os.MkdirAll(stagingLegacy, 0o700); err != nil {
+		t.Fatalf("mkdir staging legacy: %v", err)
+	}
+	stagingLegacyFile := filepath.Join(stagingLegacy, "2026-01-02_legacy.jsonl")
+	if err := os.WriteFile(stagingLegacyFile, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write staging legacy: %v", err)
+	}
+
+	// A live shared-root transcript targeted by the reset (non-vacuity
+	// anchor: the function must do real work in this run).
+	const (
+		wt  = "/home/user/code/repo/main"
+		sid = "019e00ed-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	)
+	target := writeFakePiResumeJSONL(t, home, wt, sid)
+
+	pointers := []piResumePointer{
+		{sessionName: "repo@main", worktree: wt, harnessSessionID: sid},
+	}
+	if err := resetClearPiTranscripts(pointers); err != nil {
 		t.Fatalf("resetClearPiTranscripts: %v", err)
 	}
 
-	if _, err := os.Stat(stray); err != nil {
-		t.Errorf("stray file removed unexpectedly: %v", err)
+	// The shared-root target is gone (the function ran for real)…
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Errorf("targeted transcript %s was not removed (stat err=%v)", target, err)
+	}
+	// …and both dead-layout trees are untouched.
+	if _, err := os.Stat(bwrapLegacyFile); err != nil {
+		t.Errorf("pre-#1985 bwrap layout was swept but the sweep should be gone: %v", err)
+	}
+	if _, err := os.Stat(stagingLegacyFile); err != nil {
+		t.Errorf("sandbox-exec staging HOME layout was swept but the sweep should be gone: %v", err)
 	}
 }

@@ -12,10 +12,13 @@ package cmd
 //     clear the per-session pi conversation resume pointer
 //     (agent_status.harness_session_id) on every row, so the next switch into
 //     a previously-active project starts pi with a fresh conversation
-//     (issue #1947).
+//     (issue #1947). The (worktree, harness_session_id) pairs are
+//     snapshotted BEFORE the clear so step 4b can scope its transcript
+//     removal to exactly the sessions being reset (issue #2220).
 //  4. Kill all sidecar processes and remove stale run files (PID, ready)
-//     from ~/.local/state/prism/run/, and remove the per-session pi-agent
-//     transcript JSONL subtree (issue #1947).
+//     from ~/.local/state/prism/run/, and delete exactly the pi transcript
+//     JSONLs belonging to the snapshotted resume pointers from the shared
+//     host pi sessions root (issues #1947, #2220).
 //  5. (Unless --no-launch) invoke `prism launch` to restart the server.
 //
 // Flags:
@@ -53,7 +56,8 @@ Steps (each attempted independently):
   3. Mark all non-ended rows in agent_status as ended and clear the pi
      conversation resume pointer (harness_session_id) on every row.
   4. Terminate all sidecar processes (reads PID files from
-     ~/.local/state/prism/run/) and remove pi-agent transcript JSONLs.
+     ~/.local/state/prism/run/) and remove the pi transcript JSONLs
+     belonging to the reset sessions from the shared pi sessions root.
   5. Invoke prism launch to restart (skipped with --no-launch).`,
 	Args: cobra.NoArgs,
 	RunE: runReset,
@@ -108,8 +112,11 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Step 3: Mark all agent_status rows as ended ───────────────────────────
+	// Also snapshots the pi resume pointers (worktree + harness_session_id)
+	// before clearing them, so step 4b can scope its transcript removal.
 	fmt.Println("Marking all sessions as ended in DB...")
-	if err := resetMarkDBEnded(); err != nil {
+	resumePointers, err := resetMarkDBEnded()
+	if err != nil {
 		proglog.Warnf("[prism reset] DB cleanup: %v (continuing)\n", err)
 	}
 
@@ -120,12 +127,12 @@ func runReset(cmd *cobra.Command, _ []string) error {
 	}
 
 	// ── Step 4b: Remove pi-agent transcript JSONLs ────────────────────────────
-	// Reset means forget: drop the on-disk pi session JSONLs so that even if
-	// a stale harness_session_id somehow survived (e.g. an external writer),
-	// piResolveResumeSession returns false and pi starts a fresh chat.
-	// See issue #1947.
+	// Reset means forget: drop the on-disk pi session JSONLs for the
+	// snapshotted resume pointers so that even if a stale harness_session_id
+	// somehow survived (e.g. an external writer), piResolveResumeSession
+	// returns false and pi starts a fresh chat. See issues #1947 and #2220.
 	fmt.Println("Removing pi-agent transcript JSONLs...")
-	if err := resetClearPiTranscripts(); err != nil {
+	if err := resetClearPiTranscripts(resumePointers); err != nil {
 		proglog.Warnf("[prism reset] transcript cleanup: %v (continuing)\n", err)
 	}
 
@@ -180,22 +187,66 @@ func resetIsolators() error {
 	return firstErr
 }
 
+// piResumePointer is the snapshot of one agent_status row's pi resume
+// linkage — captured by resetMarkDBEnded immediately BEFORE
+// ClearAllResumePointers nulls the harness_session_id column. The FS half of
+// the reset (resetClearPiTranscripts) consumes the snapshot to delete exactly
+// the transcript JSONLs belonging to the sessions being reset, mirroring
+// cleanup's capture-before-clear pattern in severPiResumeLinkage
+// (cmd/cleanup.go).
+type piResumePointer struct {
+	sessionName      string
+	worktree         string
+	harnessSessionID string
+}
+
 // resetMarkDBEnded opens the prism DB, calls MarkAllEnded to update all
 // non-ended agent_status rows, then calls ClearAllResumePointers to wipe the
 // per-session pi conversation resume pointer (harness_session_id) on every
 // row. The two operations are independent (different columns) but conceptually
 // paired by `prism reset`: end every session, then forget the resume pointer
 // (issue #1947).
-func resetMarkDBEnded() error {
+//
+// Before the clear, the (worktree, harness_session_id) pairs of every row
+// carrying a resume pointer are snapshotted and returned so the FS half of
+// the reset (resetClearPiTranscripts) can delete exactly those transcript
+// JSONLs (issue #2220). The snapshot deliberately covers ended rows too —
+// ClearAllResumePointers wipes the column on every row, and the FS half must
+// match that scope. A snapshot failure is logged and degrades the FS half to
+// a no-op; the DB-side clears (the load-bearing half) still run.
+//
+// The returned slice is valid even when err is non-nil, so the caller can
+// still hand whatever was captured to resetClearPiTranscripts — each reset
+// step is best-effort and attempted independently.
+func resetMarkDBEnded() ([]piResumePointer, error) {
 	d, err := openDB()
 	if err != nil {
-		return fmt.Errorf("open DB: %w", err)
+		return nil, fmt.Errorf("open DB: %w", err)
 	}
 	defer d.Close()
 
+	// Snapshot resume pointers BEFORE ClearAllResumePointers nulls the
+	// column. AllStatusesWithPrefix("") returns every agent_status row,
+	// active and ended.
+	var pointers []piResumePointer
+	statuses, err := d.AllStatusesWithPrefix("")
+	if err != nil {
+		proglog.Warnf("[prism reset] snapshot resume pointers: %v (transcript removal will be skipped)\n", err)
+	}
+	for _, s := range statuses {
+		if s.HarnessSessionID == nil || *s.HarnessSessionID == "" || s.Worktree == "" {
+			continue
+		}
+		pointers = append(pointers, piResumePointer{
+			sessionName:      s.SessionName,
+			worktree:         s.Worktree,
+			harnessSessionID: *s.HarnessSessionID,
+		})
+	}
+
 	n, err := d.MarkAllEnded()
 	if err != nil {
-		return err
+		return pointers, err
 	}
 	if n == 0 {
 		fmt.Println("  no active sessions in DB.")
@@ -208,12 +259,12 @@ func resetMarkDBEnded() error {
 	// resetClearPiTranscripts.
 	cleared, err := d.ClearAllResumePointers()
 	if err != nil {
-		return err
+		return pointers, err
 	}
 	if cleared > 0 {
 		fmt.Printf("  cleared pi resume pointer on %d row(s).\n", cleared)
 	}
-	return nil
+	return pointers, nil
 }
 
 // resetKillSidecars scans ~/.local/state/prism/run/ for *-sidecar.pid files,
@@ -275,98 +326,66 @@ func resetKillSidecars() error {
 	return nil
 }
 
-// resetClearPiTranscripts removes the per-session pi-agent transcript JSONL
-// subtree under each per-session run directory, and the sandbox-exec staging
-// HOME equivalent. This is the filesystem-side half of the issue #1947 fix
-// (the DB-side half is ClearAllResumePointers, called from resetMarkDBEnded).
+// resetClearPiTranscripts deletes the on-disk pi transcript JSONLs belonging
+// to the sessions being reset. This is the filesystem-side half of the issue
+// #1947 fix (the DB-side half is ClearAllResumePointers, called from
+// resetMarkDBEnded), re-scoped by issue #2220 to the shared host pi sessions
+// root where pi actually writes transcripts in EVERY isolation mode
+// (post #2186/#2210):
 //
-// Layouts walked (all defensively skipped when missing):
+//	$PI_CODING_AGENT_DIR/sessions/--<encoded-cwd>--/<ts>_<uuid>.jsonl
+//	(or ~/.pi/agent/sessions/... when the env var is unset)
 //
-//   bwrap:
-//     $XDG_STATE_HOME/prism/run/<sessionDirHash>/pi-agent/sessions/
+// That root is shared across all repos, sessions, and non-prism pi
+// invocations on the host, so it must NEVER be swept wholesale. Instead the
+// removal is keyed off the DB rows being reset: for each snapshotted
+// (worktree, harness_session_id) pair, exactly the *_<id>.jsonl files in that
+// worktree's encoded-cwd directory are deleted — the same per-file
+// granularity as cleanup's severPiResumeLinkage, via the same
+// container.RemovePiResumeJSONL(Count) mechanism. Conversations the DB does
+// not know about (other repos' sessions, non-prism pi chats, sessions whose
+// linkage was already severed) are untouched.
 //
-//   sandbox-exec (Darwin):
-//     $XDG_STATE_HOME/prism/sessions/<instanceID>/home/.pi/agent/sessions/
+// Unlike `prism cleanup` (which archives the transcript before severing —
+// see archiveThenSeverPiResume, issue #2219), reset deletes WITHOUT
+// archiving: reset is the destructive "forget everything" surface
+// (issue #1947: "Reset means forget"); cleanup is the lifecycle path that
+// preserves history.
 //
-//   host:
-//     $PI_CODING_AGENT_DIR/sessions/ (when set) or ~/.pi/agent/sessions/
-//     — NOT touched here. Host mode is already safe because
-//     `prism switch` leaves opts.HarnessSessionID empty (see
-//     internal/session/session.go ~line 181-182), so the host-mode
-//     buildDirectAgentCmd never appends --session even if a transcript
-//     remains on disk. Wiping the host PI sessions root would also touch
-//     state belonging to non-prism pi invocations — strictly out of scope.
-//     The host-mode resolution path now honours PI_CODING_AGENT_DIR (see
-//     internal/harness/pi/archive.go::piSessionsRoot) but is unchanged here:
-//     reset still skips host mode entirely.
+// The pre-#2220 implementation instead swept two dead layouts — the
+// pre-#1985 bwrap run-dir layout ($XDG_STATE_HOME/prism/run/<hash>/pi-agent/
+// sessions/) and the sandbox-exec staging HOME ($XDG_STATE_HOME/prism/
+// sessions/<instanceID>/home/.pi/agent/sessions/, which pi never wrote to) —
+// and was therefore a silent no-op in every current isolation mode.
 //
-// In every layout only the inner `.../sessions/` subtree is removed; the
-// enclosing per-session directory (`<sessionDirHash>` or `<instanceID>/home`)
-// is preserved because other state may live alongside the transcripts.
-//
-// All path joins are anchored at $XDG_STATE_HOME/prism/{run,sessions}/, so
-// the walk never traverses outside the prism state root.
-func resetClearPiTranscripts() error {
-	stateHome := os.Getenv("XDG_STATE_HOME")
-	if stateHome == "" {
-		home, err := os.UserHomeDir()
+// Best-effort: a per-pointer removal failure is logged and the remaining
+// pointers are still processed; the first error is returned so the caller
+// can emit its aggregate warning without aborting the reset pipeline.
+func resetClearPiTranscripts(pointers []piResumePointer) error {
+	if len(pointers) == 0 {
+		fmt.Println("  no pi resume pointers recorded — nothing to remove.")
+		return nil
+	}
+	removed := 0
+	var firstErr error
+	for _, p := range pointers {
+		n, err := container.RemovePiResumeJSONLCount(container.Config{
+			SessionName:      p.sessionName,
+			Worktree:         p.worktree,
+			HarnessSessionID: p.harnessSessionID,
+		})
+		removed += n
 		if err != nil {
-			return fmt.Errorf("resolve home dir: %w", err)
+			proglog.Warnf("[prism reset] remove pi transcript for %s: %v (continuing)\n", p.sessionName, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
-		stateHome = filepath.Join(home, ".local", "state")
 	}
-	prismRoot := filepath.Join(stateHome, "prism")
-
-	removed := 0
-	// Bwrap layout: prism/run/<sessionDirHash>/pi-agent/sessions/
-	removed += removePiSessionsSubtree(filepath.Join(prismRoot, "run"), "pi-agent", "sessions")
-
-	// Sandbox-exec layout: prism/sessions/<instanceID>/home/.pi/agent/sessions/
-	removed += removePiSessionsSubtree(filepath.Join(prismRoot, "sessions"), "home", ".pi", "agent", "sessions")
-
 	if removed == 0 {
-		fmt.Println("  no pi-agent transcript subtrees found.")
+		fmt.Println("  no matching pi transcript JSONLs found.")
 	} else {
-		fmt.Printf("  removed %d pi-agent transcript subtree(s).\n", removed)
+		fmt.Printf("  removed %d pi transcript JSONL(s) for %d resume pointer(s).\n", removed, len(pointers))
 	}
-	return nil
-}
-
-// removePiSessionsSubtree iterates over the immediate children of parent (each
-// expected to be a per-session directory like `<sessionDirHash>` or
-// `<instanceID>`) and removes the `subPath...` subtree under each child. The
-// child directory itself is preserved; only the inner subtree goes.
-//
-// Missing parent / missing subtree / non-dir child are silent no-ops — reset
-// is best-effort and must never abort the rest of the pipeline.
-//
-// Returns the number of child directories under which a subtree was actually
-// removed (i.e. the subtree existed before the call).
-func removePiSessionsSubtree(parent string, subPath ...string) int {
-	entries, err := os.ReadDir(parent)
-	if err != nil {
-		return 0 // parent missing — nothing to do
-	}
-	removed := 0
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		child := filepath.Join(parent, entry.Name())
-		target := filepath.Join(append([]string{child}, subPath...)...)
-		// Confirm the target is inside the parent root — belt-and-braces
-		// against a malformed entry name like "..". filepath.Join cleans
-		// the path so any traversal would surface here.
-		rel, err := filepath.Rel(parent, target)
-		if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
-			continue
-		}
-		if _, err := os.Stat(target); err != nil {
-			continue // subtree absent under this child
-		}
-		if err := os.RemoveAll(target); err == nil {
-			removed++
-		}
-	}
-	return removed
+	return firstErr
 }
