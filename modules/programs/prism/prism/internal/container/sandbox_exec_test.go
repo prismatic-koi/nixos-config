@@ -1272,15 +1272,16 @@ func TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath(t *testing.T) {
 }
 
 // TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks verifies that the
-// remaining sops-backed staging-HOME symlinks — access-key and .kube/config
-// (issue #1573) — survive a sops secrets.d/<N> → secrets.d/<N+1> rotation
-// after PrepareSandboxExecHome has already run.
+// remaining sops-backed staging-HOME symlink — access-key (issue #1573) —
+// survives a sops secrets.d/<N> → secrets.d/<N+1> rotation after
+// PrepareSandboxExecHome has already run.
 //
 // The .aws/config and .aws/credentials staging symlinks were removed in
-// issue #2234 (Step 3a of #2132): the aws CLI reads those files via the
-// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the host XDG
-// paths, and rotation safety for those reads rides the name-based #2211
-// secrets.d allowlist (counter-independent regexes — see
+// issue #2234 (Step 3a of #2132) and the .kube/config staging symlink in
+// issue #2235 (Step 3b): those files are read via the AWS_CONFIG_FILE /
+// AWS_SHARED_CREDENTIALS_FILE / KUBECONFIG env vars at the host XDG paths,
+// and rotation safety for those reads rides the name-based #2211 secrets.d
+// allowlist (counter-independent regexes — see
 // TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources and the
 // rotation-simulation integration tests).
 //
@@ -1298,13 +1299,12 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 
 	// ── set up v1 concrete files ───────────────────────────────────────
 	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
-	if err := os.MkdirAll(filepath.Join(sopsDir1, "kube"), 0o700); err != nil {
-		t.Fatalf("create sops-dir-1/kube: %v", err)
+	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
+		t.Fatalf("create sops-dir-1: %v", err)
 	}
 
 	v1Files := map[string]string{
 		"ssh/access-key": "access-key-v1",
-		"kube/config":    "kube-config-v1",
 	}
 	for rel, content := range v1Files {
 		path := filepath.Join(sopsDir1, rel)
@@ -1320,8 +1320,7 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 	// Each intermediate simulates the path that sops-nix keeps stable across
 	// rotations: e.g. ~/.ssh/prismatic-koi-ed25519 → secrets.d/<N>/...
 	intermediates := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):    filepath.Join(sopsDir1, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"): filepath.Join(sopsDir1, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"): filepath.Join(sopsDir1, "ssh", "access-key"),
 	}
 	for intermediate, target := range intermediates {
 		_ = os.Remove(intermediate) // remove plain file from newFakeHome
@@ -1351,19 +1350,19 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 			link:         filepath.Join(stagingHome, ".ssh", "access-key"),
 			intermediate: filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
 		},
-		{
-			link:         filepath.Join(stagingHome, ".kube", "config"),
-			intermediate: filepath.Join(fakeHome, ".config", "kube", "agents-config"),
-		},
 	}
 
-	// The AWS staging symlinks must NOT have been created (issue #2234).
+	// The AWS staging symlinks must NOT have been created (issue #2234),
+	// and neither the kube staging symlink nor its .kube parent dir
+	// (issue #2235).
 	for _, gone := range []string{
 		filepath.Join(stagingHome, ".aws", "config"),
 		filepath.Join(stagingHome, ".aws", "credentials"),
+		filepath.Join(stagingHome, ".kube", "config"),
+		filepath.Join(stagingHome, ".kube"),
 	} {
 		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging symlink %s should NOT exist (removed in #2234), but it does", gone)
+			t.Errorf("staging entry %s should NOT exist (removed in #2234/#2235), but it does", gone)
 		}
 	}
 	for _, e := range entries {
@@ -1384,7 +1383,6 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
 	v2Files := map[string]string{
 		"ssh/access-key": "access-key-v2",
-		"kube/config":    "kube-config-v2",
 	}
 	for rel, content := range v2Files {
 		path := filepath.Join(sopsDir2, rel)
@@ -1396,8 +1394,7 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 		}
 	}
 	v2Targets := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):    filepath.Join(sopsDir2, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"): filepath.Join(sopsDir2, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"): filepath.Join(sopsDir2, "ssh", "access-key"),
 	}
 	for intermediate, newTarget := range v2Targets {
 		_ = os.Remove(intermediate)
@@ -1410,7 +1407,6 @@ func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 	// ── verify reads through staging HOME still succeed after rotation ──────
 	v2Contents := map[string]string{
 		filepath.Join(stagingHome, ".ssh", "access-key"): "access-key-v2",
-		filepath.Join(stagingHome, ".kube", "config"):    "kube-config-v2",
 	}
 	for link, wantContent := range v2Contents {
 		content, readErr := os.ReadFile(link)
@@ -2161,6 +2157,58 @@ func TestPrepareSandboxExecHome_NoAWSConfigCredentialsSymlinks(t *testing.T) {
 	for _, target := range targets {
 		if target.ResolvedPath == resolvedCfg {
 			t.Errorf("collectStagingHomeSymlinkTargets emitted the aws readonly-config target %q — the .aws/config staging symlink should be gone (#2234)", resolvedCfg)
+		}
+	}
+}
+
+// TestPrepareSandboxExecHome_NoKubeConfigSymlink is the unit-level AC test
+// for issue #2235 (Step 3b of #2132): after PrepareSandboxExecHome, the
+// staging HOME contains no .kube/config symlink (nor a .kube directory at
+// all) even though the host XDG source exists, and
+// collectStagingHomeSymlinkTargets no longer emits its resolved target.
+// kubectl reads the config via KUBECONFIG at the host XDG path instead;
+// the in-sandbox read rides the #2211 secrets.d allowlist (see
+// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources — the kube
+// agents-config exception derives from the stable XDG source path, not
+// from any staging symlink, so it is unaffected by this removal).
+func TestPrepareSandboxExecHome_NoKubeConfigSymlink(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Resolve the XDG source before staging so we can assert its absence
+	// from the collector output below. newFakeHome writes a real file at
+	// ~/.config/kube/agents-config, so the source-present path is exercised.
+	resolvedKube, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".config", "kube", "agents-config"))
+	if err != nil {
+		t.Fatalf("fixture: EvalSymlinks kube agents-config: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "no-kube-symlink-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	for _, gone := range []string{
+		filepath.Join(stagingHome, ".kube", "config"),
+		filepath.Join(stagingHome, ".kube"),
+	} {
+		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
+			t.Errorf("staging HOME has %s entry — removed in #2235 (env-var route), must not be recreated", gone)
+		}
+	}
+
+	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
+	if err != nil {
+		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
+	}
+	for _, target := range targets {
+		if target.ResolvedPath == resolvedKube {
+			t.Errorf("collectStagingHomeSymlinkTargets emitted the kube agents-config target %q — the .kube/config staging symlink should be gone (#2235)", resolvedKube)
 		}
 	}
 }

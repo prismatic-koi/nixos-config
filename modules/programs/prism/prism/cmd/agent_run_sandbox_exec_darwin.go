@@ -347,8 +347,19 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// GIT_CONFIG_GLOBAL; they fall back to $HOME-derived config, which does
 	// not exist — benign for read-only operations (e.g. nix flake metadata),
 	// which need no git identity.
+	//
+	// KUBECACHEDIR: redirect kubectl's discovery/http cache into the session
+	// work dir (issue #2235, Step 3b of #2132). kubectl defaults to
+	// $HOME/.kube/cache, which exists on the host and would EPERM under the
+	// deny-default profile now that the staging .kube symlink is gone. The
+	// kube config itself arrives via KUBECONFIG from agent.envVars (injected
+	// by AppendSandboxEnvVarsKV above); only the cache dir is session-derived.
+	// The (subpath <sessionDir>) RW allow in the SBPL profile covers kubectl's
+	// MkdirAll of the cache dir — no extra profile rule is needed — and the
+	// per-session ephemeral semantics match the former staging-HOME behaviour.
 	if sessionDir, workDirErr := m.SessionWorkDir(); workDirErr == nil && sessionDir != "" {
 		env = append(env, container.SessionWorkDirGitEnv(sessionDir, ctrCfg.SshBin)...)
+		env = append(env, container.SessionWorkDirKubeEnv(sessionDir)...)
 	}
 
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path

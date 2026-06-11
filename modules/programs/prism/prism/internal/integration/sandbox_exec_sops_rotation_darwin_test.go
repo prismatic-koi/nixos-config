@@ -20,7 +20,7 @@ package integration_test
 // secrets.d allowlist (see TestSandboxExecSecretsDeny_RotationSimulation and
 // the aws env-var tests in sandbox_exec_aws_config_envvar_darwin_test.go).
 //
-// Mechanism note — why this only covers .ssh/access-key in this PR:
+// Mechanism note — why the staging-chain tests only cover .ssh/access-key:
 // PrepareSandboxExec re-runs PrepareSandboxExecHome internally (lifecycle_
 // dispatch.go:233), which idempotently recreates the default staging
 // symlinks via symlinkIfExists. When the canonical source path on the host
@@ -29,12 +29,22 @@ package integration_test
 // the default chain instead of the test-fabricated one. The .aws/credentials
 // vehicle worked on previous hosts only because credentials is absent
 // (symlinkIfExists short-circuits when SOURCE is missing). For .ssh the
-// test now sets SshAccessKeyName to a unique non-existent name so the same
-// short-circuit fires and the test's replacement survives. .kube/config has
-// no equivalent Config knob, and its staging symlink is itself on the
-// chopping block in #2235 (Step 3b), so this PR omits the kube entry from
-// the rotation suite. #2235's footprint covers the kube rotation guarantee
-// either via its own test or by removing the entry entirely.
+// test sets SshAccessKeyName to a unique non-existent name so the same
+// short-circuit fires and the test's replacement survives.
+//
+// Kube (issue #2235, Step 3b of #2132): the .kube/config staging symlink no
+// longer exists at all — kubectl reads the config via KUBECONFIG at the
+// host XDG path (~/.config/kube/agents-config), and rotation safety rides
+// the counter-independent #2211 secrets.d allowlist exception derived from
+// that same stable source. The kube rotation entries below
+// (TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent and
+// its paired negative) therefore do not touch the staging HOME: they derive
+// the kube secret NAME from the real host source, plant a fake secrets.d
+// tree under the per-user TMPDIR (where the production deny/exception
+// regexes apply with no profile mutation and no host-state writes), and
+// prove reads of that name survive a counter rotation. This sidesteps the
+// idempotent-re-run clobbering entirely — there is no staging symlink to
+// clobber and no Config knob is needed.
 //
 // Test design
 // ───────────
@@ -101,6 +111,156 @@ var sopsRotationEntries = []sopsRotationEntry{
 		intermediateRelPath: ".ssh/prismatic-koi-ed25519",
 		sentinel:            "ssh-ed25519 AAAA1573-access-key-sentinel",
 	},
+}
+
+// kubeRotationHostSource returns the stable host XDG path of the kube
+// agents config and its secrets.d-relative name, skipping when the source
+// is absent or not sops-backed on this host (the #2211 allowlist mechanism
+// under test does not apply then). This is the guard for the kube rotation
+// tests' indirection invariant: the secret NAME is derived from the same
+// stable source that feeds collectSecretsDAllowlistNames, so the fake-tree
+// reads below exercise exactly the exception the production profile carries
+// for the kube config.
+func kubeRotationHostSource(t *testing.T) (configPath, secretName string) {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	configPath = filepath.Join(home, ".config", "kube", "agents-config")
+	secretName = secretsDNameForTest(t, configPath)
+	return configPath, secretName
+}
+
+// assertNoStagingKubeEntry hard-fails when the staging HOME carries a
+// .kube/config entry (or a .kube dir at all). The kube rotation tests'
+// premise is that the env-var route — not a staging symlink — delivers the
+// kube config (issue #2235); if the staging symlink reappears, the
+// fake-tree mechanism below would no longer be testing the production read
+// path and the regression must surface loudly, not silently.
+func assertNoStagingKubeEntry(t *testing.T, stagingHome string) {
+	t.Helper()
+	for _, gone := range []string{
+		filepath.Join(stagingHome, ".kube", "config"),
+		filepath.Join(stagingHome, ".kube"),
+	} {
+		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
+			t.Fatalf("staging HOME has %s entry — removed in #2235; the kube rotation test premise (env-var route) is violated", gone)
+		}
+	}
+}
+
+// TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent is the
+// kube positive rotation entry (issue #2235 edge-case AC: a sops rotation
+// after spawn does not break kube config reads). The kube config rides the
+// #2211 allowlist: KUBECONFIG points at the stable XDG symlink, and the
+// in-sandbox read of the resolved secrets.d target is permitted by the
+// counter-independent ([0-9]+) require-not exception for the kube secret
+// name. The test derives that name from the real host source, plants a
+// fake secrets.d tree at counters 100 → 101, and asserts reads of the
+// kube-named secret succeed at both counters under the production profile
+// — the fake counters carry no per-symlink (literal …) allows, so the
+// exception is the only mechanism that can permit the read.
+func TestSandboxExecSopsRotation_KubeConfigAllowlistCounterIndependent(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	_, kubeName := kubeRotationHostSource(t)
+
+	m := newProfileManager(t)
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+	assertNoStagingKubeEntry(t, stagingHome)
+
+	prepared, _ := preparePositiveProfile(t, m)
+
+	// The profile must carry the kube exception — the grant the env-var
+	// route rides on (issue #2211 / #2235).
+	found := false
+	for _, name := range parseSecretsDAllowlist(prepared.content) {
+		if name == kubeName {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("profile allowlist does not carry the kube config exception %q — collectSecretsDAllowlistNames regressed (issue #2235).\nProfile:\n%s",
+			kubeName, prepared.content)
+	}
+
+	base := setupFakeSecretsTree(t, kubeName, "100")
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	readAtCounter := func(counter string) {
+		t.Helper()
+		target := filepath.Join(base, "secrets.d", counter, filepath.FromSlash(kubeName))
+		cmd := exec.Command(sandboxExecPath, "-f", profilePath,
+			nixBash, "-c", "cat "+shQuote(target))
+		out, runErr := cmd.CombinedOutput()
+		if runErr != nil {
+			t.Errorf("counter %s: in-sandbox read of kube secret name %q failed — the kube exception is not counter-independent (#1410/#1573 regression via #2235).\nExit: %v\nOutput: %s",
+				counter, kubeName, runErr, out)
+			return
+		}
+		if !strings.Contains(string(out), fakeAllowedSentinel) {
+			t.Errorf("counter %s: kube secret read exited 0 but sentinel missing.\nOutput: %s", counter, out)
+		}
+	}
+
+	// Generation 100, then simulate a sops rotation: write 101, prune 100.
+	readAtCounter("100")
+	writeFakeSecretsCounter(t, base, "101", kubeName)
+	if err := os.RemoveAll(filepath.Join(base, "secrets.d", "100")); err != nil {
+		t.Fatalf("prune fake counter 100: %v", err)
+	}
+	readAtCounter("101")
+}
+
+// TestSandboxExecSopsRotation_KubeConfigExceptionLoadBearing is the paired
+// negative for the kube rotation entry (sandbox-exec testing convention,
+// #1192): with the kube require-not exception stripped from the profile,
+// the same fake-counter read fails — proving the exception (not some
+// broader rule) is what permits the kube config read in the positive test.
+func TestSandboxExecSopsRotation_KubeConfigExceptionLoadBearing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	_, kubeName := kubeRotationHostSource(t)
+
+	m := newProfileManager(t)
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+	assertNoStagingKubeEntry(t, stagingHome)
+
+	base := setupFakeSecretsTree(t, kubeName, "100")
+	target := filepath.Join(base, "secrets.d", "100", filepath.FromSlash(kubeName))
+
+	exceptionLine := `    (require-not (regex #"/secrets\.d/[0-9]+/` + regexQuoteForTest(kubeName) + `$"))` + "\n"
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.ReplaceAll(p, exceptionLine, "")
+	})
+
+	runErr, out := sandboxCatDiscard(mutatedPath, nixBash, target)
+	if runErr == nil {
+		t.Errorf("in-sandbox read of kube secret name %q succeeded WITHOUT the allowlist exception.\n"+
+			"The exception is not the load-bearing grant — the positive rotation test is a no-op.\n"+
+			"Mutated profile: %s", kubeName, mutatedPath)
+	} else {
+		t.Logf("ka pai — kube secret read correctly denied without the exception (exit: %v, stderr: %s)", runErr, out)
+	}
 }
 
 // rotationTestAccessKeyName is the unique-per-test-run SshAccessKeyName

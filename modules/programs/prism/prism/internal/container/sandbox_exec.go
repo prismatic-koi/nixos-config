@@ -559,7 +559,7 @@ func generateProfile(m *Manager) string {
 	//   - File targets → (literal ...) to allow the specific file.
 	//   - Writable targets (cache dirs, write-through credential dirs) →
 	//     file-read* file-write* file-test-existence. Mirrors bwrap --bind (RW).
-	//   - RO targets (.ssh, .aws entries, .kube, .config/opencode) →
+	//   - RO targets (.ssh, .config/opencode) →
 	//     file-read* only. Mirrors bwrap --ro-bind.
 	//
 	// Targets that fall under the denied ~HOME/.aws subtree are excluded from
@@ -810,7 +810,7 @@ func generateProfile(m *Manager) string {
 //	~/.ssh/<SshSigningKeyName>.pub       — gitconfig user.signingKey
 //	~/.config/aws/readonly-config        — read via AWS_CONFIG_FILE env (#2234)
 //	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env (#2234)
-//	~/.config/kube/agents-config         — staged at <stagingHome>/.kube/config
+//	~/.config/kube/agents-config         — read via KUBECONFIG env (#2235)
 //
 // Each source is resolved via filepath.EvalSymlinks; when the resolved
 // target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is

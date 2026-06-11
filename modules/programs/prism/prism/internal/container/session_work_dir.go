@@ -99,6 +99,40 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "allowed_signers")
 }
 
+// SessionWorkDirKubeCacheDirPath returns the kubectl cache directory inside
+// the given session work dir (issue #2235, Step 3b of #2132):
+//
+//	<sessionDir>/kube-cache
+//
+// kubectl writes its discovery/http cache to $HOME/.kube/cache by default,
+// which exists on the host and would EPERM under the deny-default SBPL
+// profile once the staging .kube symlink is gone. KUBECACHEDIR (supported
+// since kubectl ≈ 1.26) redirects the cache here instead. The directory is
+// not pre-created — kubectl MkdirAll's it on first use, which the SBPL
+// profile's (subpath <sessionDir>) RW allow already covers; per-session
+// ephemeral semantics match the former staging-HOME behaviour (the work dir
+// is removed by RemoveSessionWorkDir on cleanup).
+func SessionWorkDirKubeCacheDirPath(sessionDir string) string {
+	return filepath.Join(sessionDir, "kube-cache")
+}
+
+// SessionWorkDirKubeEnv returns the env var pair (K=V form) that redirects
+// kubectl's cache inside the sandbox at the session work dir:
+//
+//	KUBECACHEDIR=<sessionDir>/kube-cache
+//
+// Injected by the sandbox-exec dispatcher
+// (cmd/agent_run_sandbox_exec_darwin.go) alongside SessionWorkDirGitEnv.
+// The kube config itself is delivered via KUBECONFIG from agent.envVars
+// (issue #2235); only the cache redirect is session-derived and therefore
+// injected here. The bwrap equivalent lives in bwrap.go BuildArgs
+// (KUBECACHEDIR=/tmp/kube-cache — the per-session tmpfs).
+func SessionWorkDirKubeEnv(sessionDir string) []string {
+	return []string{
+		"KUBECACHEDIR=" + SessionWorkDirKubeCacheDirPath(sessionDir),
+	}
+}
+
 // SessionWorkDirGitEnv returns the env var pairs (K=V form) that point git
 // and ssh inside the sandbox at the generated work-dir configs:
 //

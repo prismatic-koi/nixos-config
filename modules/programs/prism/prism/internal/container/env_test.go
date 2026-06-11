@@ -1,14 +1,15 @@
 package container
 
-// env_test.go — unit coverage for the sandboxMountedByDefault suppression
-// maps in AppendStandardEnv and AppendSandboxEnvVarsKV (issue #2234, Step 3a
-// of #2132): AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE must flow into
-// both isolators' env (the canonical-path delivery was dropped — the aws CLI
-// resolves the files via these env vars at the host XDG paths), while
-// KUBECONFIG remains suppressed until Step 3b.
+// env_test.go — unit coverage for the AgentEnvVars emission in
+// AppendStandardEnv and AppendSandboxEnvVarsKV. The former
+// sandboxMountedByDefault suppression maps are gone (issue #2235, Step 3b of
+// #2132): KUBECONFIG — their last entry — now flows into both isolators'
+// env alongside the AWS pair (un-suppressed in #2234, Step 3a). kubectl
+// resolves the kube config via KUBECONFIG at the host XDG path; the
+// canonical-path ($HOME/.kube/config) delivery was dropped from both
+// isolators.
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -23,9 +24,19 @@ func envSuppressionFixtureVars() map[string]string {
 	}
 }
 
-// TestAppendStandardEnv_AWSEnvVarsFlow_KubeconfigSuppressed verifies the
-// suppression-map shape used by the bwrap arg builder.
-func TestAppendStandardEnv_AWSEnvVarsFlow_KubeconfigSuppressed(t *testing.T) {
+// envFixtureWantPairs is the full K=V emission expected from the fixture —
+// every AgentEnvVars key flows through, including the historically
+// suppressed KUBECONFIG (#2235) and AWS pair (#2234).
+var envFixtureWantPairs = []string{
+	"AWS_CONFIG_FILE=/home/ben/.config/aws/readonly-config",
+	"AWS_SHARED_CREDENTIALS_FILE=/home/ben/.config/aws/credentials",
+	"GIT_EDITOR=true",
+	"KUBECONFIG=/home/ben/.config/kube/agents-config",
+}
+
+// TestAppendStandardEnv_AllAgentEnvVarsFlow verifies the bwrap arg builder
+// emits every AgentEnvVars key — no suppression map remains (issue #2235).
+func TestAppendStandardEnv_AllAgentEnvVarsFlow(t *testing.T) {
 	cfg := Config{AgentEnvVars: envSuppressionFixtureVars()}
 
 	var got []string
@@ -34,12 +45,7 @@ func TestAppendStandardEnv_AWSEnvVarsFlow_KubeconfigSuppressed(t *testing.T) {
 		return args
 	})
 
-	want := []string{
-		"AWS_CONFIG_FILE=/home/ben/.config/aws/readonly-config",
-		"AWS_SHARED_CREDENTIALS_FILE=/home/ben/.config/aws/credentials",
-		"GIT_EDITOR=true",
-	}
-	for _, w := range want {
+	for _, w := range envFixtureWantPairs {
 		found := false
 		for _, kv := range got {
 			if kv == w {
@@ -47,29 +53,22 @@ func TestAppendStandardEnv_AWSEnvVarsFlow_KubeconfigSuppressed(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("AppendStandardEnv must emit %q (AWS vars flow since #2234); got: %v", w, got)
+			t.Errorf("AppendStandardEnv must emit %q (all AgentEnvVars flow since #2235); got: %v", w, got)
 		}
 	}
-	for _, kv := range got {
-		if strings.HasPrefix(kv, "KUBECONFIG=") {
-			t.Errorf("AppendStandardEnv must suppress KUBECONFIG (canonical-path delivery until Step 3b of #2132); got: %v", got)
-		}
+	if len(got) != len(envFixtureWantPairs) {
+		t.Errorf("AppendStandardEnv emitted %d vars, want exactly %d: %v", len(got), len(envFixtureWantPairs), got)
 	}
 }
 
-// TestAppendSandboxEnvVarsKV_AWSEnvVarsFlow_KubeconfigSuppressed verifies the
-// same shape for the sandbox-exec K=V dispatch path.
-func TestAppendSandboxEnvVarsKV_AWSEnvVarsFlow_KubeconfigSuppressed(t *testing.T) {
+// TestAppendSandboxEnvVarsKV_AllAgentEnvVarsFlow verifies the same shape for
+// the sandbox-exec K=V dispatch path.
+func TestAppendSandboxEnvVarsKV_AllAgentEnvVarsFlow(t *testing.T) {
 	cfg := Config{AgentEnvVars: envSuppressionFixtureVars()}
 
 	env := AppendSandboxEnvVarsKV(nil, cfg)
 
-	want := []string{
-		"AWS_CONFIG_FILE=/home/ben/.config/aws/readonly-config",
-		"AWS_SHARED_CREDENTIALS_FILE=/home/ben/.config/aws/credentials",
-		"GIT_EDITOR=true",
-	}
-	for _, w := range want {
+	for _, w := range envFixtureWantPairs {
 		found := false
 		for _, kv := range env {
 			if kv == w {
@@ -77,12 +76,10 @@ func TestAppendSandboxEnvVarsKV_AWSEnvVarsFlow_KubeconfigSuppressed(t *testing.T
 			}
 		}
 		if !found {
-			t.Errorf("AppendSandboxEnvVarsKV must emit %q (AWS vars flow since #2234); got: %v", w, env)
+			t.Errorf("AppendSandboxEnvVarsKV must emit %q (all AgentEnvVars flow since #2235); got: %v", w, env)
 		}
 	}
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "KUBECONFIG=") {
-			t.Errorf("AppendSandboxEnvVarsKV must suppress KUBECONFIG (canonical-path delivery until Step 3b of #2132); got: %v", env)
-		}
+	if len(env) != len(envFixtureWantPairs) {
+		t.Errorf("AppendSandboxEnvVarsKV emitted %d vars, want exactly %d: %v", len(env), len(envFixtureWantPairs), env)
 	}
 }

@@ -255,12 +255,32 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			OptionalIfMissing: true,
 		},
 
-		// ── Kube agents config (RO, EvalSymlinks) ────────────────────────
-		// Host: ~/.config/kube/agents-config (XDG, sops-managed symlink).
-		// Sandbox: $HOME/.kube/config (canonical kubectl default path).
+		// ── Kube agents config (RO, EvalSymlinks, Dst==Src at XDG path) ─
+		// kubectl resolves its config via the KUBECONFIG env var at the host
+		// XDG path (~/.config/kube/agents-config, declared in agent.envVars
+		// by the nix module). The former RO bind-mount at the canonical
+		// $HOME/.kube/config path was dropped in issue #2235 (Step 3b of
+		// #2132, bwrap convergence per design decision §5.1) — see env.go for
+		// the matching un-suppression.
+		//
+		// Same shape as the AWS XDG binds above (#2234): the bwrap mount
+		// namespace is additive from an empty root, so the env-var route
+		// still needs the file content delivered INTO the namespace — bind
+		// the XDG path Dst==Src so KUBECONFIG resolves to a readable file
+		// in-sandbox. EvalSymlinks pins the sops-resolved target inode (same
+		// rotation semantics as the previous canonical bind); resolution
+		// failure (file absent on host) silently skips the mount while the
+		// env var still flows.
+		//
+		// kubectl's cache is redirected via KUBECACHEDIR (see BuildArgs in
+		// bwrap.go) so no writable kube path is needed in-namespace.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there the real host paths are visible modulo SBPL and the read
+		// rides the #2211 secrets.d allowlist.
 		{
 			HostPath:     filepath.Join(hostHome, ".config", "kube", "agents-config"),
-			SandboxPath:  filepath.Join(sandboxHomeDir, ".kube", "config"),
+			SandboxPath:  filepath.Join(sandboxHomeDir, ".config", "kube", "agents-config"),
 			ReadOnly:     true,
 			EvalSymlinks: true,
 		},

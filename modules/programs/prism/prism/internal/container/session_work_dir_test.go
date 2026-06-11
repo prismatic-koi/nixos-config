@@ -391,6 +391,30 @@ func TestSessionWorkDirGitEnv(t *testing.T) {
 	}
 }
 
+// TestSessionWorkDirKubeEnv verifies the kubectl cache redirect the
+// dispatcher injects (issue #2235, Step 3b of #2132): the sandbox env
+// carries KUBECACHEDIR=<sessionDir>/kube-cache so kubectl's discovery/http
+// cache lands inside the session work dir (already RW-granted in the SBPL
+// profile) instead of the host's ~/.kube/cache.
+func TestSessionWorkDirKubeEnv(t *testing.T) {
+	const dir = "/Users/u/.local/state/prism/sessions/abc"
+
+	got := SessionWorkDirKubeEnv(dir)
+	want := []string{"KUBECACHEDIR=" + dir + "/kube-cache"}
+	if len(got) != len(want) {
+		t.Fatalf("SessionWorkDirKubeEnv returned %d vars, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SessionWorkDirKubeEnv[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+
+	if p := SessionWorkDirKubeCacheDirPath(dir); p != dir+"/kube-cache" {
+		t.Errorf("SessionWorkDirKubeCacheDirPath = %q, want %q", p, dir+"/kube-cache")
+	}
+}
+
 // TestGenerateProfile_SessionWorkDirAndKnownHostsRules pins the SBPL profile
 // AC: the profile contains (subpath "<sessionDir>") and a read-only literal
 // for ~/.ssh/known_hosts, and contains no (subpath "<HOME>/.ssh") — the

@@ -76,6 +76,11 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 	return nil
 }
 
+// bwrapKubeCacheDir is the in-sandbox KUBECACHEDIR value for bwrap sessions:
+// kubectl's cache lands on the per-session /tmp tmpfs (ephemeral, never
+// host-visible). See the KUBECACHEDIR comment in BuildArgs (issue #2235).
+const bwrapKubeCacheDir = "/tmp/kube-cache"
+
 // fallbackPATH returns the PATH value used when os.Getenv("PATH") is empty.
 // It covers the per-user home-manager profile (when USER is set), the NixOS
 // system profile, and standard POSIX paths.
@@ -462,6 +467,19 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// NIX_CONFIG: tell nix to use the host daemon for store operations.
 	args = append(args, "--setenv", "NIX_CONFIG", "store = daemon")
+
+	// KUBECACHEDIR: redirect kubectl's discovery/http cache to the sandbox's
+	// private /tmp tmpfs (issue #2235, Step 3b of #2132). With the canonical
+	// $HOME/.kube/config bind gone, no kube path exists in-namespace and
+	// kubectl's default $HOME/.kube/cache would land wherever the root tmpfs
+	// happens to permit. /tmp is an explicit per-session tmpfs (--tmpfs /tmp
+	// in the baseline flags), so the cache is guaranteed writable, ephemeral,
+	// and never written through to the host — the bwrap equivalent of
+	// sandbox-exec's <sessionDir>/kube-cache redirect (the session work dir
+	// is a sandbox-exec mechanism; bwrap deliberately does not materialise
+	// host-side per-session state for a throwaway cache). kubectl MkdirAll's
+	// the directory on first use.
+	args = append(args, "--setenv", "KUBECACHEDIR", bwrapKubeCacheDir)
 
 	// TERM: pass through the host's TERM so that the sandbox sees the same
 	// terminal type as the tmux pane (e.g. tmux-256color). In bwrap mode the
