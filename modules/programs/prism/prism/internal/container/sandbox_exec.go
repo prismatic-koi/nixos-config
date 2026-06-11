@@ -103,7 +103,10 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - Deny of sensitive /private/etc subtrees (wireguard, wpa_supplicant, ssh),
 //     both /etc/... and /private/etc/... forms (symlink non-transparency)
 //   - Host ~/.aws deny (only staged entries accessible)
-//   - Staging HOME / worktree / bare repo / host-API socket dir (RW)
+//   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
+//     (issue #2213)
+//   - Session work dir (covers the nested staging HOME) / worktree / bare
+//     repo / host-API socket dir (RW)
 //   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*)
@@ -116,9 +119,12 @@ func generateProfile(m *Manager) string {
 		home = os.Getenv("HOME")
 	}
 
-	// Derive the staging HOME path. When it cannot be determined (e.g. no
-	// home dir) the staging-HOME-derived rules are simply omitted.
+	// Derive the staging HOME path (used for the symlink-target collection
+	// below) and the per-session work dir (issue #2213; the staging HOME is
+	// nested under it at <sessionDir>/home/). When they cannot be determined
+	// (e.g. no home dir) the derived rules are simply omitted.
 	stagingHome, stagingErr := m.sandboxExecHomePath()
+	sessionDir, sessionDirErr := m.sessionWorkDirPath()
 
 	var sb strings.Builder
 	// ── Version 3 header and deny-default ────────────────────────────────
@@ -325,13 +331,39 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
-	// ── 6. Staging HOME + worktree + bare repo + host-API socket (RW) ────
+	// ── 5c. Real ~/.ssh/known_hosts read-only literal (issue #2213) ──────
+	// The generated <sessionDir>/ssh-config is passed to ssh via -F
+	// (GIT_SSH_COMMAND), and openssh resolves its default UserKnownHostsFile
+	// against the real home (getpwuid → pw_dir, not $HOME) — so ssh inside
+	// the sandbox reads the real ~/.ssh/known_hosts. Previously that read was
+	// only possible via the staging-HOME symlink walk (the per-symlink
+	// literal emitted by collectStagingHomeSymlinkTargets); this explicit
+	// grant decouples it from the staging mechanism ahead of Step 5 of #2132.
+	//
+	// The grant is read-only and single-file. NEVER widen this to
+	// (subpath ~/.ssh): the real ~/.ssh may hold non-sops private keys (e.g.
+	// the daily-driver key) that must stay unreadable in-sandbox. With
+	// StrictHostKeyChecking accept-new, ssh's attempt to append an unknown
+	// host key fails (no write grant) with a non-fatal warning — accepted.
+	if home != "" {
+		knownHosts := filepath.Join(home, ".ssh", "known_hosts")
+		sb.WriteString("(allow file-read* file-test-existence\n")
+		sb.WriteString("  (literal " + quoteSBPL(knownHosts) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
 	// Session-specific read-write paths. Locked in #1012 and #1017.
 	// file-test-existence and file-read-metadata added alongside file-read*
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
-	if stagingErr == nil {
+	//
+	// The first entry is the per-session work dir (issue #2213) — it covers
+	// the generated ssh-config / gitconfig / allowed_signers AND the staging
+	// HOME nested under it at <sessionDir>/home/ (the staging HOME remains
+	// in place until Step 5 of #2132 deletes it).
+	if sessionDirErr == nil {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
-		sb.WriteString("  (subpath " + quoteSBPL(stagingHome) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(sessionDir) + ")\n")
 		// Worktree — the git checkout the agent works in.
 		if m.cfg.Worktree != "" {
 			sb.WriteString("  (subpath " + quoteSBPL(m.cfg.Worktree) + ")\n")

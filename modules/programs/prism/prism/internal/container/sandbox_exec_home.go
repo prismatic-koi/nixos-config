@@ -11,8 +11,9 @@ package container
 //
 // Design decisions locked by the coordinator in issue #1017:
 //
-//  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment at
-//     bwrap.go:306-308). Writes to .credentials.json (e.g. token refreshes)
+//  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment —
+//     the ~/.claude mount in mounts.go StandardSandboxMounts). Writes to
+//     .credentials.json (e.g. token refreshes)
 //     flow through the symlink to the host's ~/.claude/.credentials.json.
 //
 //  2. .config/prism/agents/ is symlinked into the staging HOME for ALL roles
@@ -20,8 +21,9 @@ package container
 //     before_agent_start. The dir is pure markdown with no secrets, so the
 //     former review-prefix exclusion was dropped (issue #2032; design #2031).
 //
-//  3. .cache/nix/ is included as an RW symlink to ~/.cache/nix (matches bwrap
-//     unconditional RW bind at bwrap.go:333-335).
+//  3. .cache/nix/ is included as an RW symlink to ~/.cache/nix (matches
+//     bwrap's unconditional RW bind — the ~/.cache/nix mount in mounts.go
+//     StandardSandboxMounts).
 
 import (
 	"fmt"
@@ -71,8 +73,11 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 // Rules:
 //   - When a source path does not exist on the host, the symlink is skipped.
 //     No dangling symlinks are created.
-//   - Generated regular files (.gitconfig, .ssh/config, opencode.json) are
-//     written as regular files, not symlinks.
+//   - The staging HOME contains symlinks only. The generated git/ssh config
+//     files (gitconfig, ssh-config, allowed_signers) live in the per-session
+//     work dir (the staging HOME's parent — see PrepareSessionWorkDir in
+//     session_work_dir.go, issue #2213) and are wired into the sandbox via
+//     GIT_CONFIG_GLOBAL / GIT_SSH_COMMAND rather than via $HOME paths.
 //   - .cache/nix/ is always included as an RW symlink to ~/.cache/nix.
 //   - .config/prism/agents/ is symlinked in for ALL roles (including review-*)
 //     so the PI extension can read <role>.md (issue #2032). The former
@@ -132,8 +137,8 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	}
 
 	// ── SSH keys ──────────────────────────────────────────────────────────────
-	// Mirror bwrap.go:369-388: resolve via EvalSymlinks and mount at generic
-	// canonical names under $HOME/.ssh/.
+	// Mirror bwrap's SSH-key staging (the EvalSymlinks block in
+	// bwrap.go BuildArgs): mount at generic canonical names under $HOME/.ssh/.
 	sshDir := filepath.Join(home, ".ssh")
 
 	accessKeyName := m.cfg.SshAccessKeyName
@@ -204,11 +209,11 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		filepath.Join(stagingHome, ".ssh", "allowed_signers"),
 	)
 
-	// .ssh/config — regular generated file (not a symlink), using staging HOME
-	// as the in-sandbox $HOME prefix so IdentityFile resolves correctly.
-	if err := m.writeSshConfigToDir(stagingHome); err != nil {
-		log.Printf("container: sandbox-exec: write staging .ssh/config: %v", err)
-	}
+	// Note (#2213): the generated ssh config is no longer written into the
+	// staging HOME. It lives at <sessionDir>/ssh-config (see
+	// writeSshConfigToDir in session_work_dir.go) and is passed to ssh via
+	// -F in GIT_SSH_COMMAND. The .ssh/* symlinks above remain so existing
+	// staging-HOME reads keep working until Step 5 of #2132 deletes them.
 
 	// ── AWS ───────────────────────────────────────────────────────────────────
 	// Use symlinkIfExists (not symlinkIfResolvable) for the config and
@@ -294,7 +299,8 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// ~/.claude/, and since this is a symlink to host ~/.claude, those writes
 	// flow through to the host path and are immediately reflected in subsequent
 	// sessions. On Linux, ~/.claude/.credentials.json already lives on disk;
-	// the bwrap path bind-mounts ~/.claude/ with RW access (bwrap.go:306-308).
+	// the bwrap path bind-mounts ~/.claude/ with RW access (mounts.go
+	// StandardSandboxMounts).
 	symlinkIfExists(
 		filepath.Join(home, ".claude"),
 		filepath.Join(stagingHome, ".claude"),
@@ -317,14 +323,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 
 	// ── .cache/ ───────────────────────────────────────────────────────────────
 
-	// bun cache — only linked when writable (mirrors bwrap.go:474-477).
+	// bun cache — only linked when writable (mirrors bwrap's conditional
+	// isWritable-gated bind of ~/.cache/bun).
 	bunCacheDir := filepath.Join(home, ".cache", "bun")
 	if isWritable(bunCacheDir) {
 		symlinkIfExists(bunCacheDir, filepath.Join(stagingHome, ".cache", "bun"))
 	}
 
-	// nix cache — always included as RW symlink (matches bwrap.go:333-335,
-	// unconditional RW bind of ~/.cache/nix).
+	// nix cache — always included as RW symlink (matches bwrap's
+	// unconditional RW bind of ~/.cache/nix in mounts.go).
 	nixCacheDir := filepath.Join(home, ".cache", "nix")
 	symlinkIfExists(nixCacheDir, filepath.Join(stagingHome, ".cache", "nix"))
 
@@ -336,19 +343,12 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		symlinkIfExists(clipboardCacheDir, filepath.Join(stagingHome, ".cache", "prism", "clipboard"))
 	}
 
-	// ── .gitconfig — regular generated file ──────────────────────────────────
-	// Use the existing writeGitconfig helper with a synthetic isolationMode
-	// that uses the staging HOME as $HOME. We write the gitconfig to the
-	// staging path directly.
-	//
-	// A failure here is fatal — return the error so the session does not
-	// start with a missing or broken gitconfig. Previously we logged and
-	// continued, which is what let issue #1960 (missing [user] section →
-	// synthetic in-sandbox identity → noisy Co-authored-by trailer) sneak
-	// through unnoticed.
-	if err := m.writeGitconfigToDir(stagingHome); err != nil {
-		return "", fmt.Errorf("container: sandbox-exec: write staging .gitconfig: %w", err)
-	}
+	// Note (#2213): the generated gitconfig is no longer written into the
+	// staging HOME. It lives at <sessionDir>/gitconfig (see
+	// writeGitconfigToDir in session_work_dir.go) and is wired in via
+	// GIT_CONFIG_GLOBAL. The missing-git-identity hard error (#1960) is
+	// preserved: PrepareSessionWorkDir fails Prepare before the session
+	// starts (see sandboxExecIsolator.Prepare in lifecycle_dispatch.go).
 
 	// ── .nix-profile symlink ──────────────────────────────────────────────────
 	symlinkIfExists(
@@ -452,74 +452,6 @@ func isWritable(path string) bool {
 	return true
 }
 
-// writeSshConfigToDir writes a generated .ssh/config file into the given
-// staging HOME directory. The IdentityFile path uses stagingHome as the
-// in-sandbox $HOME prefix so it resolves correctly inside the sandbox.
-func (m *Manager) writeSshConfigToDir(stagingHome string) error {
-	identityFile := filepath.Join(stagingHome, ".ssh", "access-key")
-	sshConfig := "Host github.com\n" +
-		"  StrictHostKeyChecking accept-new\n" +
-		"  IdentityFile " + identityFile + "\n" +
-		"  IdentitiesOnly yes\n"
-	dst := filepath.Join(stagingHome, ".ssh", "config")
-	_ = os.Remove(dst) // idempotent
-	if err := os.WriteFile(dst, []byte(sshConfig), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-	return nil
-}
-
-// writeGitconfigToDir generates a .gitconfig and (when signing is available)
-// allowed_signers for the sandbox-exec staging HOME. It is a thin wrapper
-// around writeGitconfig(isolationSandboxExec) — the canonical helper also
-// used by bwrap — and then materialises the resulting temp files into
-// the staging HOME at the canonical paths the agent expects:
-//
-//	<stagingHome>/.gitconfig
-//	<stagingHome>/.ssh/allowed_signers   (when signing is configured)
-//
-// The temp files written by writeGitconfig (m.gitconfigFilePath() and
-// m.allowedSignersFilePath()) embed sandbox-relative paths derived from
-// sandboxHome(m, isolationSandboxExec) — which resolves to stagingHome — so
-// the file content is identical whether read from the temp path or from the
-// staging HOME copy. We materialise into the staging HOME because
-// sandbox-exec has no bind-mount mechanism: the agent reads the file
-// directly from $HOME inside the sandbox.
-func (m *Manager) writeGitconfigToDir(stagingHome string) error {
-	if err := m.writeGitconfig(isolationSandboxExec); err != nil {
-		return fmt.Errorf("write gitconfig: %w", err)
-	}
-
-	// Copy the generated gitconfig into the staging HOME at the canonical
-	// path the agent expects (<stagingHome>/.gitconfig).
-	gitconfigContent, err := os.ReadFile(m.gitconfigFilePath())
-	if err != nil {
-		return fmt.Errorf("read generated gitconfig %s: %w", m.gitconfigFilePath(), err)
-	}
-	gitconfigDst := filepath.Join(stagingHome, ".gitconfig")
-	_ = os.Remove(gitconfigDst) // idempotent: replace any prior symlink/file
-	if err := os.WriteFile(gitconfigDst, gitconfigContent, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", gitconfigDst, err)
-	}
-
-	// When writeGitconfig produced an allowed_signers file (i.e. signing is
-	// configured and the public key was readable), copy it into the staging
-	// HOME's .ssh directory so git verify-commit succeeds inside the sandbox.
-	if m.allowedSignersReady {
-		signersContent, readErr := os.ReadFile(m.allowedSignersFilePath())
-		if readErr != nil {
-			return fmt.Errorf("read generated allowed_signers %s: %w", m.allowedSignersFilePath(), readErr)
-		}
-		signersDst := filepath.Join(stagingHome, ".ssh", "allowed_signers")
-		_ = os.Remove(signersDst) // idempotent: replace prior symlink/file
-		if err := os.WriteFile(signersDst, signersContent, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", signersDst, err)
-		}
-	}
-
-	return nil
-}
-
 // SandboxExecHomePath is the exported version of sandboxExecHomePath. It
 // returns the staging HOME path for this Manager's session/instance. Used by
 // cmd/agent_run.go to override HOME in the env passed to syscall.Exec.
@@ -597,7 +529,7 @@ type StagingSymlinkTarget struct {
 // writable, consistent with how PrepareSandboxExecHome populates them:
 //   - .cache/opencode  — opencode refreshes models.json and writes bin/ shims
 //   - .cache/bun       — bun writes transpile outputs and lockfile updates
-//   - .cache/nix       — unconditional RW (mirrors bwrap.go:333-335)
+//   - .cache/nix       — unconditional RW (mirrors bwrap's mounts.go bind)
 //   - .claude          — write-through for .credentials.json on Darwin
 //   - .mcp-auth        — MCP auth token writes
 //

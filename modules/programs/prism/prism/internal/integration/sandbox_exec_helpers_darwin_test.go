@@ -241,6 +241,13 @@ func preparePositiveProfile(t *testing.T, m *container.Manager) (preparedProfile
 		if stagingHome, homeErr := m.SandboxExecHomePath(); homeErr == nil {
 			_ = os.RemoveAll(stagingHome)
 		}
+		// PrepareSandboxExec also creates the per-session work dir (the
+		// staging HOME's parent — issue #2213) with the generated git/ssh
+		// configs; remove it so test instance dirs don't accumulate under
+		// the real ~/.local/state/prism/sessions/.
+		if sessionDir, dirErr := m.SessionWorkDir(); dirErr == nil {
+			_ = os.RemoveAll(sessionDir)
+		}
 		if len(args) >= 3 {
 			_ = os.Remove(args[2])
 		}

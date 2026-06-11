@@ -270,8 +270,10 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			// Other archive errors are non-fatal — cleanup continues.
 			if instanceIDForSessions != "" {
-				// Remove the sandbox-exec staging HOME for this session instance.
+				// Remove the sandbox-exec staging HOME for this session instance,
+				// then the per-session work dir that contains it (issue #2213).
 				container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+				container.RemoveSessionWorkDir(instanceIDForSessions)
 			}
 			_ = d.PurgeBusMessages(m.session)
 			d.Close()
@@ -760,10 +762,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance.
+			// Remove the sandbox-exec staging HOME for this session instance,
+			// then the per-session work dir that contains it (issue #2213).
 			// Non-fatal and idempotent — silently skips when the directory
 			// does not exist (e.g. non-sandbox-exec sessions).
 			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -846,8 +850,10 @@ func closeSession(session string) error {
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance.
+			// Remove the sandbox-exec staging HOME for this session instance,
+			// then the per-session work dir that contains it (issue #2213).
 			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()
@@ -960,8 +966,10 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance.
+			// Remove the sandbox-exec staging HOME for this session instance,
+			// then the per-session work dir that contains it (issue #2213).
 			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
 		d.Close()

@@ -316,17 +316,23 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, "PI_CODING_AGENT_DIR="+ctrCfg.PIAgentConfigSandboxDir)
 	}
 
-	// GIT_SSH_COMMAND: force ssh to use the staging HOME's .ssh/config, and
-	// use the Nix-built openssh binary when cfg.SshBin is set.
+	// GIT_CONFIG_GLOBAL + GIT_SSH_COMMAND: point git and ssh at the generated
+	// configs in the per-session work dir (issue #2213, Step 2 of #2132):
 	//
-	// Two problems solved here:
+	//   GIT_CONFIG_GLOBAL=<sessionDir>/gitconfig
+	//   GIT_SSH_COMMAND="<sshBin> -F <sessionDir>/ssh-config"
 	//
-	// 1. macOS's /usr/bin/ssh resolves its config file via getpwuid() rather
-	//    than $HOME, so it always reads /Users/<user>/.ssh/config regardless of
-	//    the HOME env var override. The staging .ssh/config has the correct
-	//    IdentityFile and StrictHostKeyChecking accept-new. Without -F, ssh
-	//    reads the host config, tries to write to the host known_hosts (not in
-	//    the SBPL profile's write-allow set), and aborts.
+	// The work dir was created by PrepareSessionWorkDir() inside
+	// PrepareSandboxExec() above. The embedded key paths are the stable sops
+	// symlink paths (~/.ssh/<keyname>), so they survive secrets.d/<N>
+	// rotation mid-session (#1410/#1573).
+	//
+	// Why -F with the Nix-built openssh binary (cfg.SshBin):
+	//
+	// 1. openssh resolves its default config via getpwuid() rather than
+	//    $HOME, so without -F it always reads /Users/<user>/.ssh/config
+	//    regardless of the HOME env var override. The generated ssh-config
+	//    has the correct IdentityFile and StrictHostKeyChecking accept-new.
 	//
 	// 2. /usr/bin/ssh links against Apple's libnetwork.dylib, which reads
 	//    /private/var/db/nsurlstoraged/dafsaData.bin (the DAFSA domain suffix
@@ -336,13 +342,13 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	//    The Nix-built openssh links against its own libresolv/libldns (Nix
 	//    store paths under /nix, which are fully allowed), bypassing Apple's
 	//    network stack entirely.
-	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
-		sshBin := ctrCfg.SshBin
-		if sshBin == "" {
-			sshBin = "ssh"
-		}
-		sshConfigPath := filepath.Join(stagingHome, ".ssh", "config")
-		env = append(env, "GIT_SSH_COMMAND="+sshBin+" -F "+sshConfigPath)
+	//
+	// Known gap, accepted in #2132 Step 2: libgit2/go-git-class tools ignore
+	// GIT_CONFIG_GLOBAL; they fall back to $HOME-derived config, which does
+	// not exist — benign for read-only operations (e.g. nix flake metadata),
+	// which need no git identity.
+	if sessionDir, workDirErr := m.SessionWorkDir(); workDirErr == nil && sessionDir != "" {
+		env = append(env, container.SessionWorkDirGitEnv(sessionDir, ctrCfg.SshBin)...)
 	}
 
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path
