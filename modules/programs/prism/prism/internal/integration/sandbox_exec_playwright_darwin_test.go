@@ -117,8 +117,8 @@ const killEPERMFingerprint = "kill EPERM"
 
 // crashpadEPERMFingerprint is the crashpad xattr write denial that
 // surfaces when chromium's user-data directory falls under a path the
-// sandbox does not allow writes to. Confirms the staging Library
-// directories are working.
+// sandbox does not allow writes to. Confirms the work-dir Library
+// skeleton (issue #2247) is working.
 const crashpadEPERMFingerprint = "Operation not permitted"
 
 // playwrightCLITimeout caps the playwright-cli invocation in case the
@@ -247,7 +247,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		t.Fatalf("playwright-cli open exited non-zero under production profile.\n"+
 			"This is the canonical issue #2021 failure mode \u2014 chromium SIGSEGV\n"+
 			"in IONotificationPortGetRunLoopSource because the iokit-open-user-client\n"+
-			"allow set is incomplete, or the signal/staging-Library rules are missing.\n"+
+			"allow set is incomplete, or the signal/work-dir-Library rules are missing.\n"+
 			"Exit: %v\nProfile: %s\nOutput:\n%s",
 			runErr, testProfilePath, combined)
 	}
