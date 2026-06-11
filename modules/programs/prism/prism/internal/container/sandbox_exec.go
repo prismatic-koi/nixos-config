@@ -105,11 +105,17 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - sops secrets.d deny (read + write) with named re-allow exceptions for
 //     exactly the inventoried agent-needed secret names (issue #2211)
 //   - Host ~/.aws deny with sso/cli carve-outs (config/credentials are
-//     delivered via env vars at the host XDG paths — issue #2234)
+//     delivered via env vars at the host XDG paths — issue #2234; the
+//     carve-outs are the sole capability for sso/cli since #2245)
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //     (issue #2213)
 //   - RW subpath grant for ~/.config/claude — claude-code's config dir,
 //     reached via the CLAUDE_CONFIG_DIR env var (issue #2243)
+//   - RW subpath grants for ~/.cache/nix, ~/.cache/bun, ~/.npm, ~/.mcp-auth
+//     (Step 3e of #2132, issue #2245)
+//   - RO subpath grants for ~/.cache/prism/clipboard and
+//     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
+//     symlink and its resolved target (Step 3f of #2132, issue #2245)
 //   - Session work dir (covers the nested staging HOME) / worktree / bare
 //     repo / host-API socket dir (RW)
 //   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
@@ -348,11 +354,12 @@ func generateProfile(m *Manager) string {
 	//
 	// Exception: ~/.aws/sso and ~/.aws/cli must remain accessible so that
 	// AWS SSO auth and tools that read SSO tokens (e.g. kubectl) work inside
-	// the sandbox. The staging HOME creates symlinks for these two subdirs
-	// pointing at the host paths, and collectStagingHomeSymlinkTargets emits
-	// per-symlink allow rules for them. The more-specific allow rules below
-	// override the broad deny for exactly these two subdirs (SBPL evaluates
-	// more-specific rules as overrides of broader ones). See issue #1380.
+	// the sandbox. Since #2245 (Step 3e of #2132) the staging HOME no longer
+	// symlinks these two subdirs — the carve-out allows below are the SOLE
+	// in-sandbox capability for them, at the real host paths. The
+	// more-specific allow rules below override the broad deny for exactly
+	// these two subdirs (SBPL evaluates more-specific rules as overrides of
+	// broader ones). See issue #1380.
 	if home != "" {
 		awsPath := filepath.Join(home, ".aws")
 		sb.WriteString("(deny file-read* file-write*\n")
@@ -440,6 +447,83 @@ func generateProfile(m *Manager) string {
 		claudeConfigDir := filepath.Join(home, ".config", "claude")
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(claudeConfigDir) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5e. RW cache/auth dir grants at the real host paths (issue #2245) ─
+	// Step 3e of #2132: the RW staging symlinks for ~/.cache/nix, ~/.cache/bun,
+	// ~/.npm, and ~/.mcp-auth are gone. These explicit RW subpath grants on
+	// the real host paths are the replacement capability. The consumers derive
+	// the paths from $HOME / XDG_CACHE_HOME (§2 of the #2132 design — "just
+	// work with real HOME"), which still point into the staging HOME until
+	// Step 5 flips them; the grants are emitted now so the flip is a pure env
+	// change. None of these paths is sops-backed — the #2211 allowlist plays
+	// no part; these grants are the sole capability.
+	//
+	// Mirrors bwrap's --bind (RW) treatment of the same dirs in mounts.go
+	// StandardSandboxMounts. Emitted even when a dir does not exist on the
+	// host — sandbox-exec silently ignores (subpath ...) rules for
+	// non-existent paths (same shape as the ~/.pi/agent rule in 6a), so fresh
+	// machines without e.g. ~/.mcp-auth are unaffected.
+	if home != "" {
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "nix")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "bun")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".npm")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".mcp-auth")) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5f. RO grants at the real host paths (issue #2245) ─────────────
+	// Step 3f of #2132: the RO staging symlinks for ~/.cache/prism/clipboard
+	// (images staged by `prism clipboard paste-image`; the agent reads them at
+	// the absolute host path) and ~/.config/prism/agents (role prompt markdown
+	// read by the prism PI extension at before_agent_start — issue #2032) are
+	// gone. These explicit RO subpath grants on the real host paths are the
+	// replacement capability. Read-only — agents never write their own role
+	// prompt and only read staged clipboard images; RO must not silently
+	// become RW. Emitted even when a dir does not exist on the host (see 5e).
+	if home != "" {
+		sb.WriteString("(allow file-read* file-test-existence\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".cache", "prism", "clipboard")) + ")\n")
+		sb.WriteString("  (subpath " + quoteSBPL(filepath.Join(home, ".config", "prism", "agents")) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5g. ~/.nix-profile RO grant — symlink node + resolved target ─────
+	// Step 3f of #2132 (issue #2245): the RO staging symlink for
+	// ~/.nix-profile is gone. ~/.nix-profile is itself a SYMLINK on the host
+	// (→ ~/.local/state/nix/profiles/profile → … → /nix/store/…), and SBPL
+	// path filters evaluate the RESOLVED target for open(2)-class operations
+	// (the #2132 §2 mechanism note) — so the grant must work through
+	// resolution:
+	//
+	//   - The (literal ~/.nix-profile) allow covers operations on the symlink
+	//     NODE itself — readlink(2)/lstat(2) — which are evaluated against
+	//     the link path, not the target.
+	//   - The EvalSymlinks-resolved target gets its own RO rule (subpath for
+	//     a dir, literal for a file) so reads THROUGH the link succeed. On
+	//     hm/nix-darwin hosts the chain typically lands in /nix/store (already
+	//     readable via the §2 /nix allow — the explicit rule is then a
+	//     harmless duplicate), but the rule is load-bearing wherever the
+	//     profile dir lives outside /nix. Resolution failure (no
+	//     ~/.nix-profile on the host) skips the target rule; the literal is
+	//     still emitted (sandbox-exec ignores rules for non-existent paths).
+	//
+	// Read-only throughout — nothing in-sandbox may mutate the profile.
+	if home != "" {
+		nixProfile := filepath.Join(home, ".nix-profile")
+		sb.WriteString("(allow file-read* file-test-existence\n")
+		sb.WriteString("  (literal " + quoteSBPL(nixProfile) + ")")
+		if resolved, evalErr := filepath.EvalSymlinks(nixProfile); evalErr == nil && resolved != nixProfile {
+			sb.WriteString("\n")
+			if info, statErr := os.Stat(resolved); statErr == nil && info.IsDir() {
+				sb.WriteString("  (subpath " + quoteSBPL(resolved) + ")")
+			} else {
+				sb.WriteString("  (literal " + quoteSBPL(resolved) + ")")
+			}
+		}
+		sb.WriteString(")\n")
 		sb.WriteString("\n")
 	}
 

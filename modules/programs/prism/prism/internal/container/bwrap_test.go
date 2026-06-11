@@ -509,6 +509,94 @@ func TestBwrapBuildArgs_NixCacheDirBound(t *testing.T) {
 	}
 }
 
+// TestBwrapBuildArgs_NixCacheDirAbsentNoBind pins the OptionalIfMissing
+// semantics added in #2245 (Step 3e of #2132): when ~/.cache/nix does not
+// exist on the host (fresh machine), no bind triple is emitted for it. The
+// entry used to be unconditional, which emits a --bind with a missing
+// source — and bwrap ABORTS on missing bind sources (the #2243 lesson), so
+// the absent dir would have broken every session on a fresh host.
+func TestBwrapBuildArgs_NixCacheDirAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// The fixture pre-creates ~/.cache/nix; remove it to simulate the fresh
+	// host before building args.
+	nixCacheDir := filepath.Join(fakeHome, ".cache", "nix")
+	if err := os.RemoveAll(nixCacheDir); err != nil {
+		t.Fatalf("RemoveAll ~/.cache/nix: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, nixCacheDir) {
+		t.Errorf("missing ~/.cache/nix should be omitted (OptionalIfMissing, #2245) but found as --bind in args: %v", args)
+	}
+}
+
+// TestBwrapBuildArgs_BunCacheDirBound pins the ~/.cache/bun RW bind after
+// its convergence from the inline bwrap.go block into the
+// StandardSandboxMounts walk (#2245, Step 3e of #2132). Behaviour must be
+// identical to the former inline block: RW, Dst==Src, present when the host
+// dir exists.
+func TestBwrapBuildArgs_BunCacheDirBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// The fixture does not pre-create ~/.cache/bun — create it so the
+	// conditional mount fires.
+	bunCacheDir := filepath.Join(fakeHome, ".cache", "bun")
+	if err := os.MkdirAll(bunCacheDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll ~/.cache/bun: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasBind(args, bunCacheDir) {
+		t.Errorf("~/.cache/bun %q not found as --bind SRC SRC in args: %v", bunCacheDir, args)
+	}
+	if hasROBind(args, bunCacheDir) {
+		t.Errorf("~/.cache/bun %q must be RW (--bind), not RO (--ro-bind): %v", bunCacheDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_BunCacheDirAbsentNoBind pins the conditional half of
+// the bun-cache convergence (#2245): when ~/.cache/bun does not exist on
+// the host, no bind triple is emitted (OptionalIfMissing — bwrap aborts on
+// missing bind sources).
+func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	bunCacheDir := filepath.Join(fakeHome, ".cache", "bun")
+	if _, err := os.Stat(bunCacheDir); err == nil {
+		t.Fatalf("fixture unexpectedly created ~/.cache/bun — update this test")
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, bunCacheDir) {
+		t.Errorf("missing ~/.cache/bun should be omitted but found as --bind in args: %v", args)
+	}
+	if hasROBind(args, bunCacheDir) {
+		t.Errorf("missing ~/.cache/bun should be omitted but found as --ro-bind in args: %v", args)
+	}
+}
+
 func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
 	// worktree private git state are both bound at their host paths (Dst == Src),

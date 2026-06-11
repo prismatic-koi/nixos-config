@@ -3,25 +3,23 @@
 package integration_test
 
 // sandbox_exec_aws_sso_darwin_test.go — integration coverage for the
-// ~/.aws/sso and ~/.aws/cli carve-outs in the SBPL profile (issue #1380).
+// ~/.aws/sso and ~/.aws/cli carve-outs in the SBPL profile (issue #1380;
+// real-path-only since #2245, Step 3e of #2132).
 //
 // The SBPL profile contains a broad (deny file-read* file-write* (subpath
-// ~/.aws)) to prevent host credential leakage. However, the staging HOME
-// creates symlinks for ~/.aws/sso and ~/.aws/cli pointing at the host paths
-// so that AWS SSO auth and kubectl (which reads SSO tokens) work inside the
-// sandbox.
-//
-// generateProfile emits explicit (allow file-read* (subpath ~/.aws/sso)) and
-// (allow file-read* (subpath ~/.aws/cli)) rules after the broad deny. In SBPL,
-// more-specific rules override broader ones, so these carve-outs let the
-// sandbox traverse into those two subdirs while the rest of ~/.aws remains
-// denied.
+// ~/.aws)) to prevent host credential leakage. generateProfile emits
+// explicit (allow ... (subpath ~/.aws/sso)) and (allow ... (subpath
+// ~/.aws/cli)) rules after the broad deny. In SBPL, more-specific rules
+// override broader ones, so these carve-outs let the sandbox access exactly
+// those two subdirs AT THEIR REAL HOST PATHS while the rest of ~/.aws
+// remains denied. Since #2245 the staging HOME no longer symlinks the two
+// dirs — the carve-outs are the sole in-sandbox capability for them.
 //
 // This file tests:
 //
 //  1. Positive case: when ~/.aws/sso exists on the host, a sentinel file
-//     inside it is readable from inside the sandbox via the staging HOME
-//     symlink chain.
+//     inside it is readable from inside the sandbox at the real host path
+//     (and the staging HOME contains no .aws entry).
 //
 //  2. Negative case: removing the (subpath ~/.aws/sso) carve-out from the
 //     profile causes the same read to fail — proving the positive is not
@@ -154,11 +152,11 @@ func prepareCLISentinel(t *testing.T) (cliDir, sentinelPath string) {
 // the ~/.aws/sso carve-out (issue #1380). It:
 //
 //  1. Creates ~/.aws/sso and plants a sentinel file inside it.
-//  2. Calls PrepareSandboxExecHome so the staging HOME contains
-//     <stagingHome>/.aws/sso → ~/.aws/sso.
+//  2. Calls PrepareSandboxExecHome and asserts the staging HOME contains
+//     no .aws entry (the sso/cli staging symlinks were removed in #2245).
 //  3. Generates the production profile (which emits the carve-out rule).
-//  4. Reads the sentinel via the staging HOME symlink chain from inside
-//     the sandbox and asserts exit 0 and correct content.
+//  4. Reads the sentinel at the REAL host path from inside the sandbox and
+//     asserts exit 0 and correct content.
 func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -178,10 +176,11 @@ func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// Verify the staging HOME has the sso symlink before generating the profile.
-	ssoLink := filepath.Join(stagingHome, ".aws", "sso")
-	if _, lstatErr := os.Lstat(ssoLink); lstatErr != nil {
-		t.Fatalf("staging HOME must have a .aws/sso symlink after PrepareSandboxExecHome: %v", lstatErr)
+	// The staging HOME must contain NO .aws entry — the sso/cli staging
+	// symlinks were removed in #2245 (Step 3e); the carve-out at the real
+	// path is the sole capability.
+	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
+		t.Fatalf("staging HOME has a .aws entry — the sso/cli staging symlinks were removed in #2245 and must not be recreated")
 	}
 
 	prepared, _ := preparePositiveProfile(t, m)
@@ -201,11 +200,10 @@ func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	// Read the sentinel via <stagingHome>/.aws/sso/<sentinel> inside the sandbox.
-	sentinelInSandbox := filepath.Join(ssoLink, filepath.Base(sentinelPath))
+	// Read the sentinel at its REAL host path inside the sandbox.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(sentinelInSandbox))
+		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("read ~/.aws/sso sentinel failed under production profile with carve-out.\n"+
@@ -237,8 +235,6 @@ func TestSandboxExecProfile_AWSSSODeniedWithoutCarveout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	ssoLink := filepath.Join(stagingHome, ".aws", "sso")
-
 	home, _ := os.UserHomeDir()
 	awsSSOPath := filepath.Join(home, ".aws", "sso")
 
@@ -250,10 +246,9 @@ func TestSandboxExecProfile_AWSSSODeniedWithoutCarveout(t *testing.T) {
 		return strings.ReplaceAll(p, carveoutLine, "")
 	})
 
-	sentinelInSandbox := filepath.Join(ssoLink, filepath.Base(sentinelPath))
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(sentinelInSandbox))
+		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("read ~/.aws/sso sentinel succeeded WITHOUT the (subpath %q) carve-out rule.\n"+
@@ -283,9 +278,9 @@ func TestSandboxExecProfile_AWSCLIReadable(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	cliLink := filepath.Join(stagingHome, ".aws", "cli")
-	if _, lstatErr := os.Lstat(cliLink); lstatErr != nil {
-		t.Fatalf("staging HOME must have a .aws/cli symlink after PrepareSandboxExecHome: %v", lstatErr)
+	// The staging HOME must contain NO .aws entry (see the sso positive).
+	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
+		t.Fatalf("staging HOME has a .aws entry — the sso/cli staging symlinks were removed in #2245 and must not be recreated")
 	}
 
 	prepared, _ := preparePositiveProfile(t, m)
@@ -300,10 +295,9 @@ func TestSandboxExecProfile_AWSCLIReadable(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	sentinelInSandbox := filepath.Join(cliLink, filepath.Base(sentinelPath))
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(sentinelInSandbox))
+		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("read ~/.aws/cli sentinel failed under production profile with carve-out.\n"+
@@ -335,20 +329,34 @@ func TestSandboxExecProfile_AWSCLIDeniedWithoutCarveout(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	cliLink := filepath.Join(stagingHome, ".aws", "cli")
-
 	home, _ := os.UserHomeDir()
+	awsSSOPath := filepath.Join(home, ".aws", "sso")
 	awsCLIPath := filepath.Join(home, ".aws", "cli")
 
-	carveoutLine := "  (subpath " + sbplQuoteForTest(awsCLIPath) + ")\n"
+	// The cli carve-out is the LAST entry of the carve-out allow block, so
+	// generateProfile emits it as `  (subpath "<cli>"))\n` — with the block's
+	// closing paren attached. A bare `  (subpath "<cli>")\n` substitution
+	// therefore never matches (withMutatedProfile's no-op detection catches
+	// exactly this). Strip the cli line by replacing the sso+cli tail of the
+	// block with an sso-only tail, keeping the block well-formed and removing
+	// ONLY the cli carve-out:
+	//
+	//   (allow file-read* file-write*        (allow file-read* file-write*
+	//     (subpath "<sso>")             →      (subpath "<sso>"))
+	//     (subpath "<cli>"))
+	//
+	// (The paired sso negative strips a middle line and needs no special
+	// handling.)
+	ssoLine := "  (subpath " + sbplQuoteForTest(awsSSOPath) + ")\n"
+	cliLastLine := "  (subpath " + sbplQuoteForTest(awsCLIPath) + "))\n"
+	ssoOnlyTail := "  (subpath " + sbplQuoteForTest(awsSSOPath) + "))\n"
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.ReplaceAll(p, carveoutLine, "")
+		return strings.ReplaceAll(p, ssoLine+cliLastLine, ssoOnlyTail)
 	})
 
-	sentinelInSandbox := filepath.Join(cliLink, filepath.Base(sentinelPath))
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(sentinelInSandbox))
+		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("read ~/.aws/cli sentinel succeeded WITHOUT the (subpath %q) carve-out rule.\n"+

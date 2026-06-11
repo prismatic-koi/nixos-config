@@ -17,14 +17,15 @@ package container
 //     host XDG path ~/.config/claude — generateProfile emits an explicit RW
 //     (subpath ~/.config/claude) grant instead.
 //
-//  2. .config/prism/agents/ is symlinked into the staging HOME for ALL roles
-//     (including review-*) so the prism PI extension can read <role>.md at
-//     before_agent_start. The dir is pure markdown with no secrets, so the
-//     former review-prefix exclusion was dropped (issue #2032; design #2031).
+//  2. (retired in #2245, Step 3f of #2132) .config/prism/agents/ used to be
+//     symlinked into the staging HOME for ALL roles (issue #2032; design
+//     #2031). generateProfile now emits an explicit RO
+//     (subpath ~/.config/prism/agents) grant on the real host path instead.
 //
-//  3. .cache/nix/ is included as an RW symlink to ~/.cache/nix (matches
-//     bwrap's unconditional RW bind — the ~/.cache/nix mount in mounts.go
-//     StandardSandboxMounts).
+//  3. (retired in #2245, Step 3e of #2132) .cache/nix/ used to be an RW
+//     symlink to ~/.cache/nix. generateProfile now emits an explicit RW
+//     (subpath ~/.cache/nix) grant on the real host path instead (and the
+//     bwrap mount in mounts.go StandardSandboxMounts is OptionalIfMissing).
 
 import (
 	"fmt"
@@ -79,11 +80,12 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 //     work dir (the staging HOME's parent — see PrepareSessionWorkDir in
 //     session_work_dir.go, issue #2213) and are wired into the sandbox via
 //     GIT_CONFIG_GLOBAL / GIT_SSH_COMMAND rather than via $HOME paths.
-//   - .cache/nix/ is always included as an RW symlink to ~/.cache/nix.
-//   - .config/prism/agents/ is symlinked in for ALL roles (including review-*)
-//     so the PI extension can read <role>.md (issue #2032). The former
-//     review-prefix exclusion was dropped — the dir is pure markdown with no
-//     secrets, so there is no isolation value in hiding sibling role prompts.
+//
+// Post-#2245 (Steps 3d–3f of #2132) the staging surface is reduced to the
+// .ssh/* symlinks (Step 5 scope) and the chromium Library skeleton (Step 4
+// scope). Every other capability is delivered by an explicit SBPL grant on
+// the real host path emitted by generateProfile — see sections 5, 5e, 5f,
+// 5g, and 6a in sandbox_exec.go.
 //
 // Calling PrepareSandboxExecHome a second time on an existing staging dir is
 // idempotent: existing symlinks are recreated (os.Symlink is preceded by
@@ -105,10 +107,6 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	dirs := []string{
 		stagingHome,
 		filepath.Join(stagingHome, ".ssh"),
-		filepath.Join(stagingHome, ".aws"),
-		filepath.Join(stagingHome, ".cache"),
-		filepath.Join(stagingHome, ".pi"),
-		filepath.Join(stagingHome, ".config", "prism"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -224,16 +222,13 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// the exceptions from the same stable XDG source paths, so the read
 	// survives sops rotations — #1410/#1573).
 	//
-	// Only the SDK-hardcoded ~/.aws/sso and ~/.aws/cli cache dirs are still
-	// symlinked (RW write-through); they are Step 3e scope.
-	symlinkIfExists(
-		filepath.Join(home, ".aws", "sso"),
-		filepath.Join(stagingHome, ".aws", "sso"),
-	)
-	symlinkIfExists(
-		filepath.Join(home, ".aws", "cli"),
-		filepath.Join(stagingHome, ".aws", "cli"),
-	)
+	// Note (#2245, Step 3e of #2132): the .aws/sso and .aws/cli RW staging
+	// symlinks are no longer created either (and no .aws/ staging dir exists).
+	// The SDK-hardcoded ~/.aws/sso and ~/.aws/cli cache dirs are reached at
+	// their real host paths via the §5 carve-out allows that generateProfile
+	// emits after the broad ~/.aws deny — the carve-outs are now the sole
+	// in-sandbox capability for those two subtrees. The broader ~/.aws
+	// subtree stays denied.
 
 	// ── Kube ──────────────────────────────────────────────────────────────────
 	// Note (#2235, Step 3b of #2132): the .kube/config staging symlink is no
@@ -248,17 +243,10 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// SessionWorkDirKubeEnv in session_work_dir.go).
 
 	// ── prism agent role prompts (issue #2032) ─────────────────────────
-	// Symlink ~/.config/prism/agents (deployed by pi.nix) into the staging
-	// HOME at the canonical XDG path so the prism PI extension can read
-	// <role>.md at before_agent_start. Included for ALL roles, including
-	// review-* — the dir is pure markdown with no secrets (locked decision on
-	// design #2031). collectStagingHomeSymlinkTargets scans .config/prism and
-	// emits the SBPL read-allow for the resolved target, so no manual
-	// generateProfile rule is needed.
-	symlinkIfExists(
-		filepath.Join(home, ".config", "prism", "agents"),
-		filepath.Join(stagingHome, ".config", "prism", "agents"),
-	)
+	// Note (#2245, Step 3f of #2132): the .config/prism/agents staging symlink
+	// is no longer created (and no .config/ staging dir exists).
+	// generateProfile emits an explicit RO (subpath ~/.config/prism/agents)
+	// grant on the real host path instead (section 5f).
 
 	// ── Library/Application Support/Google + Library/Caches/Google (issue #2021) ─
 	// playwright-cli launches the Nix-built `Google Chrome for Testing` binary
@@ -298,42 +286,21 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// not involved: the read/write capability comes from the explicit RW
 	// (subpath ~/.config/claude) grant emitted by generateProfile.
 
-	// ── .mcp-auth/ ────────────────────────────────────────────────────────────
-	symlinkIfExists(
-		filepath.Join(home, ".mcp-auth"),
-		filepath.Join(stagingHome, ".mcp-auth"),
-	)
+	// ── .mcp-auth/, .npm/, .cache/ ──────────────────────────────────────────
+	// Note (#2245, Step 3e of #2132): the RW staging symlinks for .mcp-auth/,
+	// .npm/, .cache/bun, and .cache/nix are no longer created (and no .cache/
+	// staging dir exists). generateProfile emits an explicit RW grant block on
+	// the real host paths instead (section 5e). The consumers derive these
+	// paths from $HOME / XDG_CACHE_HOME, which still point into the staging
+	// HOME until Step 5 of #2132 flips them to the real home — interim writes
+	// land ephemerally inside the staging HOME (covered by the session work
+	// dir RW allow) and the real-path grants become load-bearing at Step 5.
 
-	// ── .npm/ ─────────────────────────────────────────────────────────────────
-	// npx caches downloaded packages (e.g. mcp-remote) under ~/.npm/_npx/.
-	// Without this symlink, npx cannot find its cache and attempts to re-download
-	// packages, which fails due to network restrictions in the sandbox.
-	symlinkIfExists(
-		filepath.Join(home, ".npm"),
-		filepath.Join(stagingHome, ".npm"),
-	)
-
-	// ── .cache/ ───────────────────────────────────────────────────────────────
-
-	// bun cache — only linked when writable (mirrors bwrap's conditional
-	// isWritable-gated bind of ~/.cache/bun).
-	bunCacheDir := filepath.Join(home, ".cache", "bun")
-	if isWritable(bunCacheDir) {
-		symlinkIfExists(bunCacheDir, filepath.Join(stagingHome, ".cache", "bun"))
-	}
-
-	// nix cache — always included as RW symlink (matches bwrap's
-	// unconditional RW bind of ~/.cache/nix in mounts.go).
-	nixCacheDir := filepath.Join(home, ".cache", "nix")
-	symlinkIfExists(nixCacheDir, filepath.Join(stagingHome, ".cache", "nix"))
-
-	// prism clipboard cache — conditional on existence.
-	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
-	if _, err := os.Stat(clipboardCacheDir); err == nil {
-		// Create intermediate dir .cache/prism/ if needed.
-		_ = os.MkdirAll(filepath.Join(stagingHome, ".cache", "prism"), 0o700)
-		symlinkIfExists(clipboardCacheDir, filepath.Join(stagingHome, ".cache", "prism", "clipboard"))
-	}
+	// ── .cache/prism/clipboard ────────────────────────────────────────────────
+	// Note (#2245, Step 3f of #2132): the RO clipboard staging symlink is no
+	// longer created. The host writes images to the real
+	// ~/.cache/prism/clipboard and the agent reads them at that absolute path;
+	// generateProfile emits an explicit RO grant on the real path (section 5f).
 
 	// Note (#2213): the generated gitconfig is no longer written into the
 	// staging HOME. It lives at <sessionDir>/gitconfig (see
@@ -342,106 +309,24 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// preserved: PrepareSessionWorkDir fails Prepare before the session
 	// starts (see sandboxExecIsolator.Prepare in lifecycle_dispatch.go).
 
-	// ── .nix-profile symlink ──────────────────────────────────────────────────
-	symlinkIfExists(
-		filepath.Join(home, ".nix-profile"),
-		filepath.Join(stagingHome, ".nix-profile"),
-	)
+	// ── .nix-profile ──────────────────────────────────────────────────────────
+	// Note (#2245, Step 3f of #2132): the .nix-profile RO staging symlink is
+	// no longer created. ~/.nix-profile is itself a symlink on the host;
+	// generateProfile emits an RO literal allow on the symlink node plus an RO
+	// rule on its EvalSymlinks-resolved target (section 5g).
 
-	// ── PI Atlassian MCP OAuth token persistence (Darwin only) ───────────────
-	// The Atlassian MCP extension stores OAuth tokens at
-	// homedir()/.pi/agent/atlassian-mcp-oauth.json. On Darwin sandbox-exec,
-	// $HOME inside the session is the per-session staging HOME, so writes to
-	// that path land in the staging dir and are destroyed when the session
-	// ends. To persist tokens across sessions we:
-	//
-	//  1. Create <stagingHome>/.pi/agent/ as a real directory (so the
-	//     extension's mkdirSync({ recursive: true }) is a no-op).
-	//  2. Touch ~/.pi/agent/atlassian-mcp-oauth.json on the host with mode
-	//     0600 if absent — bwrap does the same in appendPIBwrapMounts.
-	//  3. Symlink <stagingHome>/.pi/agent/atlassian-mcp-oauth.json to the
-	//     real host path so reads and writes flow through to the host.
-	//
-	// The SBPL profile already emits
-	//   (allow file-read* file-write* ... (subpath ~/.pi/agent))
-	// for Harness == "pi" sessions, so no profile changes are required.
-	//
-	// The change is gated on BOTH runtime.GOOS == "darwin" AND
-	// m.cfg.Harness == "pi" so that non-pi sessions are unaffected.
-	if runtime.GOOS == "darwin" && m.cfg.Harness == "pi" {
-		if err := m.stagePIOAuthToken(home, stagingHome); err != nil {
-			log.Printf("container: sandbox-exec: stage PI OAuth token: %v", err)
-		}
-	}
+	// ── PI Atlassian MCP OAuth token (Step 3d of #2132, issue #2245) ─────────
+	// The dedicated touch-and-symlink staging step for
+	// ~/.pi/agent/atlassian-mcp-oauth.json (former stagePIOAuthToken, issue
+	// #1597) is gone. The capability collapses into the existing pi-gated RW
+	// (subpath ~/.pi/agent) grant (section 6a): the Atlassian MCP extension
+	// creates the file itself at the real path once $HOME resolution lands on
+	// the real home (Step 5 of #2132). Until then, in-sandbox homedir()-based
+	// writes land ephemerally inside the staging HOME (the extension's
+	// mkdirSync({recursive: true}) creates .pi/agent under the session work
+	// dir RW allow) — no host-side touch is needed for either window.
 
 	return stagingHome, nil
-}
-
-// stagePIOAuthToken creates the staging HOME infrastructure for the
-// Atlassian MCP OAuth token under a pi harness Darwin session:
-//
-//  1. Creates <stagingHome>/.pi/agent/ as a real directory (mode 0700).
-//  2. Ensures ~/.pi/agent/ exists on the host (mode 0700).
-//  3. Touches ~/.pi/agent/atlassian-mcp-oauth.json on the host with
-//     mode 0600 if absent (existing files are never modified).
-//  4. Symlinks <stagingHome>/.pi/agent/atlassian-mcp-oauth.json →
-//     ~/.pi/agent/atlassian-mcp-oauth.json (idempotent).
-//
-// This mirrors the bwrap touch-and-bind pattern in
-// pi_invocation.go::appendPIBwrapMounts.
-func (m *Manager) stagePIOAuthToken(home, stagingHome string) error {
-	// 1. Create <stagingHome>/.pi/agent/ as a real directory.
-	stagingAgentDir := filepath.Join(stagingHome, ".pi", "agent")
-	if err := os.MkdirAll(stagingAgentDir, 0o700); err != nil {
-		return fmt.Errorf("create staging .pi/agent dir %s: %w", stagingAgentDir, err)
-	}
-
-	// 2. Ensure ~/.pi/agent/ exists on the host.
-	hostAgentDir := filepath.Join(home, ".pi", "agent")
-	if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
-		return fmt.Errorf("create host .pi/agent dir %s: %w", hostAgentDir, err)
-	}
-
-	// 3. Touch ~/.pi/agent/atlassian-mcp-oauth.json on the host if absent.
-	// Use O_CREATE|O_EXCL so an existing file is never truncated or modified.
-	hostTokenPath := filepath.Join(hostAgentDir, "atlassian-mcp-oauth.json")
-	if _, statErr := os.Stat(hostTokenPath); os.IsNotExist(statErr) {
-		f, createErr := os.OpenFile(hostTokenPath, os.O_CREATE|os.O_EXCL, 0o600)
-		if createErr == nil {
-			_ = f.Close()
-		} else if !os.IsExist(createErr) {
-			return fmt.Errorf("touch host token file %s: %w", hostTokenPath, createErr)
-		}
-	}
-
-	// 4. Symlink <stagingHome>/.pi/agent/atlassian-mcp-oauth.json → host path.
-	// Remove any existing entry first (file, symlink, or otherwise) so
-	// the operation is idempotent.
-	stagingTokenPath := filepath.Join(stagingAgentDir, "atlassian-mcp-oauth.json")
-	_ = os.Remove(stagingTokenPath)
-	if err := os.Symlink(hostTokenPath, stagingTokenPath); err != nil {
-		return fmt.Errorf("symlink %s → %s: %w", stagingTokenPath, hostTokenPath, err)
-	}
-	return nil
-}
-
-// isWritable returns true when the path exists and is accessible for writing
-// by the current process. A nil error from a writable-test os.OpenFile call
-// indicates writeability; any error (including EACCES) returns false.
-func isWritable(path string) bool {
-	if _, err := os.Stat(path); err != nil {
-		return false // doesn't exist
-	}
-	// Attempt to open a temp file inside the directory. This is the most
-	// reliable way to test writeability without relying on access(2) (which
-	// has TOCTOU issues and doesn't honour ACLs on all platforms).
-	tmp, err := os.CreateTemp(path, ".prism-write-test-*")
-	if err != nil {
-		return false
-	}
-	_ = tmp.Close()
-	_ = os.Remove(tmp.Name())
-	return true
 }
 
 // SandboxExecHomePath is the exported version of sandboxExecHomePath. It
@@ -496,11 +381,10 @@ type StagingSymlinkTarget struct {
 	IsDir bool
 	// Writable is true when the sandbox must be allowed to write to this
 	// target (and, for directories, its contents). Mirrors the bwrap --bind
-	// (RW) vs --ro-bind (RO) distinction:
-	//   RW: .cache/opencode, .cache/bun, .cache/nix, .mcp-auth
-	//   RO: .ssh keys, .config/opencode/*,
-	//       .config/prism/agents (role prompts; issue #2032),
-	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
+	// (RW) vs --ro-bind (RO) distinction. Post-#2245 the staging surface is
+	// .ssh/* only — all RO — so Writable is always false in practice; the
+	// field is retained so the RW/RO emission split in generateProfile stays
+	// shape-stable until Step 5 of #2132 deletes the whole mechanism.
 	Writable bool
 }
 
@@ -512,20 +396,13 @@ type StagingSymlinkTarget struct {
 // the appropriate SBPL rules:
 //   - Directory targets → (subpath ...) rules.
 //   - File targets → (literal ...) rules.
-//   - Writable targets (cache dirs, write-through credential dirs) → file-write*
-//     alongside file-read*; RO targets → file-read* only.
+//   - Writable targets → file-write* alongside file-read*; RO targets →
+//     file-read* only.
 //
-// Writable classification mirrors the bwrap --bind (RW) vs --ro-bind (RO)
-// distinction from bwrap.go. The following staging HOME paths are treated as
-// writable, consistent with how PrepareSandboxExecHome populates them:
-//   - .cache/opencode  — opencode refreshes models.json and writes bin/ shims
-//   - .cache/bun       — bun writes transpile outputs and lockfile updates
-//   - .cache/nix       — unconditional RW (mirrors bwrap's mounts.go bind)
-//   - .mcp-auth        — MCP auth token writes
-//
-// All other targets (.ssh, .config/opencode, .cache/prism/clipboard)
-// are read-only. .cache/prism/clipboard mirrors bwrap.go's --ro-bind treatment —
-// the agent only reads image files staged there by `prism clipboard paste-image`.
+// Post-#2245 (Steps 3d–3f of #2132) the only staging symlinks left are the
+// .ssh/* entries, all read-only — every other category is delivered by an
+// explicit grant on the real host path in generateProfile. All collected
+// targets are therefore classified Writable=false.
 //
 // Symlink targets that fall under a path that will be denied by the profile
 // (e.g. host $HOME/.aws) are excluded from the results to avoid the
@@ -545,62 +422,23 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	// allow-literal/subpath block to avoid the literal-over-subpath precedence
 	// issue in Apple's SBPL.
 	//
-	// allowedUnderDenied lists specific sub-paths that are carved out of the
-	// denied region. generateProfile emits explicit (allow file-read* (subpath
-	// ...)) rules for these after the broad deny, so it is safe for the
-	// per-symlink allow block to reference their targets.
-	// Concretely: ~/.aws/sso and ~/.aws/cli are carved out so that the staging
-	// HOME symlinks for those dirs produce per-symlink allow rules.
+	// Post-#2245 no staging symlink targets ~/.aws any more (the sso/cli
+	// carve-out plumbing that used to live here moved entirely to the §5
+	// profile rules), but the deny-prefix exclusion is kept as defence in
+	// depth: if a future staging symlink ever resolves under ~/.aws, it must
+	// not silently punch a literal allow through the deny.
 	var deniedPrefixes []string
-	var allowedUnderDenied []string
 	if home != "" {
 		deniedPrefixes = append(deniedPrefixes, filepath.Join(home, ".aws")+"/")
-		// Carve sso/ and cli/ out of the denied region — generateProfile emits
-		// explicit (allow file-read* (subpath ~/.aws/sso)) and
-		// (allow file-read* (subpath ~/.aws/cli)) after the broad deny.
-		allowedUnderDenied = append(allowedUnderDenied,
-			filepath.Join(home, ".aws", "sso")+"/",
-			filepath.Join(home, ".aws", "cli")+"/",
-		)
 	}
 
 	isDenied := func(path string) bool {
-		// Check whether the path falls under any allowed carve-out first.
-		// If yes, it is not considered denied even if a broader deny prefix matches.
-		for _, allowed := range allowedUnderDenied {
-			if strings.HasPrefix(path+"/", allowed) || path == strings.TrimSuffix(allowed, "/") {
-				return false
-			}
-		}
 		for _, prefix := range deniedPrefixes {
 			if strings.HasPrefix(path+"/", prefix) || path == strings.TrimSuffix(prefix, "/") {
 				return true
 			}
 		}
 		return false
-	}
-
-	// writableStagingPaths is the set of staging HOME paths whose symlink
-	// targets must be granted write access in the SBPL profile. Keyed by the
-	// path relative to stagingHome (no leading slash). Matches the RW paths
-	// in PrepareSandboxExecHome and the bwrap --bind mounts in bwrap.go.
-	writableStagingPaths := map[string]bool{
-		".cache/bun": true, // bun transpile cache + lockfile
-		".cache/nix": true, // nix eval cache (unconditional RW)
-		// .cache/prism/clipboard is intentionally absent: agents only read
-		// images staged there; mirrors bwrap.go's --ro-bind treatment.
-		// .claude is gone (#2243): claude-code reads/writes ~/.config/claude
-		// via CLAUDE_CONFIG_DIR; generateProfile grants it RW directly.
-		".mcp-auth": true, // MCP auth token writes
-		".npm":      true, // npx package cache (mcp-remote et al.)
-		// AWS SSO and CLI cache dirs must be writable so the aws CLI can write
-		// STS token cache entries (~/.aws/cli/cache/) and refresh SSO tokens
-		// (~/.aws/sso/). Without write access the CLI gets EPERM and kubectl
-		// against EKS also fails (its exec-credential plugin shells out to aws).
-		// Mirrors bwrap's --bind (RW) treatment — awsSSOReadOnly/awsCLIReadOnly
-		// are both false in mounts.go (issue #1558).
-		".aws/sso": true, // AWS SSO token refresh writes
-		".aws/cli": true, // AWS CLI STS token cache writes
 	}
 
 	seen := map[string]bool{}
@@ -625,11 +463,15 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		// Determine whether the target is a directory or a file.
 		info, statErr := os.Stat(resolved)
 		isDir := statErr == nil && info.IsDir()
-		writable := writableStagingPaths[entryRelPath]
+		// Post-#2245 every remaining staging symlink (.ssh/*) is read-only;
+		// the RW categories moved to explicit real-path grants in
+		// generateProfile. entryRelPath is retained in the signature for
+		// shape stability until Step 5 of #2132 deletes the collector.
+		_ = entryRelPath
 		targets = append(targets, StagingSymlinkTarget{
 			ResolvedPath: resolved,
 			IsDir:        isDir,
-			Writable:     writable,
+			Writable:     false,
 		})
 	}
 
@@ -666,17 +508,11 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		}
 	}
 
-	// Scan the top-level staging HOME and all immediate subdirectories that
-	// the staging HOME builder creates (one level deep).
+	// Scan the top-level staging HOME and the .ssh subdirectory — the only
+	// staging surface that still holds symlinks post-#2245 (the chromium
+	// Library skeleton holds real directories, which scanDir ignores).
 	scanDir("")
-	subDirs := []string{".ssh", ".aws", ".cache", ".pi"}
-	for _, sub := range subDirs {
-		scanDir(sub)
-	}
-	// Also scan .cache/prism if it exists.
-	scanDir(".cache/prism")
-	// Scan .config/prism for the prism/agents role-prompt symlink (issue #2032).
-	scanDir(".config/prism")
+	scanDir(".ssh")
 
 	return targets, nil
 }

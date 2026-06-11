@@ -208,13 +208,35 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			OptionalIfMissing: true,
 		},
 
-		// ── ~/.cache/nix (RW) ────────────────────────────────────────────
+		// ── ~/.cache/nix (RW, conditional) ────────────────────────────────────────────
 		// Pre-populated nix flake input cache. Read-write because nix
 		// writes to its SQLite databases during evaluation.
+		//
+		// OptionalIfMissing since #2245 (Step 3e of #2132): the entry used to
+		// be unconditional, which emits a --bind for a missing source on a
+		// fresh host — and bwrap ABORTS on missing bind sources (the #2243
+		// lesson; the old unconditional shape predated that finding). When
+		// absent, nix simply creates an ephemeral in-namespace dir.
 		{
-			HostPath:       filepath.Join(hostHome, ".cache", "nix"),
-			SandboxPath:    filepath.Join(sandboxHomeDir, ".cache", "nix"),
-			SELinuxRelabel: true,
+			HostPath:          filepath.Join(hostHome, ".cache", "nix"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".cache", "nix"),
+			OptionalIfMissing: true,
+			SELinuxRelabel:    true,
+		},
+
+		// ── ~/.cache/bun (RW, conditional) ──────────────────────────────
+		// bun transpiler cache — bun writes transpile outputs and lockfile
+		// updates here on plugin load. Converged into the shared walk from
+		// the former inline bwrap.go block in #2245 (Step 3e of #2132);
+		// behaviour-identical (RW, Dst==Src, skipped when absent).
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RW (subpath ~/.cache/bun)
+		// grant on the real host path (section 5e).
+		{
+			HostPath:          filepath.Join(hostHome, ".cache", "bun"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".cache", "bun"),
+			OptionalIfMissing: true,
 		},
 
 		// ── AWS readonly-config (RO, EvalSymlinks, Dst==Src at XDG path) ─

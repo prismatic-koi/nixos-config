@@ -3,40 +3,33 @@
 package integration_test
 
 // sandbox_exec_pi_atlassian_oauth_darwin_test.go — integration tests for the
-// PI Atlassian MCP OAuth token persistence via sandbox-exec symlink (issue #1597).
+// PI Atlassian MCP OAuth token capability at its REAL host path (Step 3d of
+// #2132, issue #2245; original staging mechanism: issue #1597).
 //
 // Background:
 //
 //	The Atlassian MCP extension stores OAuth tokens at
-//	homedir()/.pi/agent/atlassian-mcp-oauth.json. Inside a Darwin
-//	sandbox-exec pi session, $HOME is overridden to a per-session staging
-//	HOME, so writes to that path land in the staging dir and are destroyed
-//	when the session ends. The fix in PrepareSandboxExecHome (for Harness ==
-//	"pi" on Darwin):
-//
-//	  1. Creates <stagingHome>/.pi/agent/ as a real directory.
-//	  2. Touches ~/.pi/agent/atlassian-mcp-oauth.json on the host with mode
-//	     0600 if absent.
-//	  3. Symlinks <stagingHome>/.pi/agent/atlassian-mcp-oauth.json → the
-//	     real host path.
-//
-//	The SBPL profile already emits (allow file-read* file-write* ...
-//	(subpath ~/.pi/agent)) for pi sessions, so writes inside the sandbox go
-//	through the symlink to the real host path.
+//	homedir()/.pi/agent/atlassian-mcp-oauth.json. The former
+//	stagePIOAuthToken step touch-and-symlinked the file into the per-session
+//	staging HOME; #2245 removed it. The capability now collapses into the
+//	pi-gated RW (subpath ~/.pi/agent) grant (sandbox_exec.go section 6a):
+//	reads and writes of the token file at the REAL host path succeed
+//	in-sandbox, with no staging entry involved.
 //
 // These tests verify:
 //
 //  1. Positive: a bash command running inside sandbox-exec (with the
-//     production SBPL profile for Harness == "pi") writes JSON bytes to
-//     $HOME/.pi/agent/atlassian-mcp-oauth.json; those exact bytes are
-//     readable from the real host ~/.pi/agent/atlassian-mcp-oauth.json
-//     after sandbox-exec exits. This confirms the symlink write-through
-//     works end-to-end.
+//     production SBPL profile for Harness == "pi") writes JSON bytes
+//     directly to the real ~/.pi/agent/atlassian-mcp-oauth.json and reads
+//     them back; the bytes are visible on the host after sandbox-exec
+//     exits. The staging HOME is asserted to contain NO .pi entry.
 //
-//  2. Negative: when the symlink at <stagingHome>/.pi/agent/atlassian-mcp-oauth.json
-//     is removed (breaking the write-through), the same write either fails
-//     or does NOT appear at the real host path, proving the positive test
-//     is not a no-op. (Per docs/sandbox-exec-testing.md, issue #1192.)
+//  2. Negative (whole-block strip, per the #2243 lesson): removing the
+//     entire section-6a allow block makes the same write fail and nothing
+//     appears at the host path — proving the 6a grant is the load-bearing
+//     capability for the token file, not some broader rule.
+//
+// Per docs/sandbox-exec-testing.md (issue #1192).
 
 import (
 	"os"
@@ -50,8 +43,8 @@ import (
 )
 
 // newPIOAuthPersistenceManager creates a Manager configured for a pi-harness
-// session with a BareRoot (required for the pi agent dir subpath allow in the
-// SBPL profile).
+// session with a BareRoot (required for the BareRoot-ancestor allow block,
+// which grants the metadata traversal of $HOME that real-path access needs).
 func newPIOAuthPersistenceManager(t *testing.T) *container.Manager {
 	t.Helper()
 	instanceID := "integ-sbx-pi-atlassian-oauth-" + strings.ReplaceAll(t.Name(), "/", "-")
@@ -69,37 +62,21 @@ func newPIOAuthPersistenceManager(t *testing.T) *container.Manager {
 	return container.New(cfg)
 }
 
-// TestSandboxExecPIAtlassianOAuth_WriteThrough is the positive integration
-// test. It verifies that:
-//
-//  1. PrepareSandboxExecHome for Harness=="pi" creates a symlink at
-//     <stagingHome>/.pi/agent/atlassian-mcp-oauth.json pointing at the real
-//     host ~/.pi/agent/atlassian-mcp-oauth.json.
-//  2. A bash command inside sandbox-exec (using the production SBPL profile)
-//     can write JSON bytes to $HOME/.pi/agent/atlassian-mcp-oauth.json.
-//  3. Those exact bytes are readable from the real host path after sandbox-exec
-//     exits, confirming the symlink write-through is functional end-to-end.
-func TestSandboxExecPIAtlassianOAuth_WriteThrough(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	nixBash := requireNixBash(t)
-
+// stashHostAtlassianToken moves any existing real
+// ~/.pi/agent/atlassian-mcp-oauth.json out of the way for the duration of
+// the test and registers a cleanup that restores it. Returns the host token
+// path. The host ~/.pi/agent dir is created when absent (and that creation
+// is NOT cleaned up — it matches what EnsurePIAgentConfigDir does at spawn).
+func stashHostAtlassianToken(t *testing.T) string {
+	t.Helper()
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
 	}
-
-	// Ensure ~/.pi/agent/ exists on the host so PrepareSandboxExecHome can
-	// create the host token file.
 	piAgentDir := filepath.Join(home, ".pi", "agent")
 	if mkErr := os.MkdirAll(piAgentDir, 0o700); mkErr != nil {
-		t.Fatalf("MkdirAll ~/.pi/agent: %v", mkErr)
+		t.Skipf("cannot create ~/.pi/agent for test: %v", mkErr)
 	}
-
-	// Stash any existing atlassian-mcp-oauth.json so we can restore it and
-	// so we start with a clean state for the write-through assertion.
 	hostTokenPath := filepath.Join(piAgentDir, "atlassian-mcp-oauth.json")
 	stashPath := hostTokenPath + ".integ-pi-atlassian-oauth-stash"
 	stashed := false
@@ -110,109 +87,42 @@ func TestSandboxExecPIAtlassianOAuth_WriteThrough(t *testing.T) {
 				_ = os.Remove(hostTokenPath)
 				_ = os.Rename(stashPath, hostTokenPath)
 			})
+		} else {
+			t.Skipf("cannot stash existing host token file: %v", renErr)
 		}
 	}
 	if !stashed {
 		t.Cleanup(func() { _ = os.Remove(hostTokenPath) })
 	}
-
-	m := newPIOAuthPersistenceManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Verify the symlink exists in the staging HOME before running sandbox-exec.
-	stagingTokenPath := filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json")
-	linkTarget, readlinkErr := os.Readlink(stagingTokenPath)
-	if readlinkErr != nil {
-		t.Fatalf("staging token symlink not created by PrepareSandboxExecHome: %v", readlinkErr)
-	}
-	if linkTarget != hostTokenPath {
-		t.Fatalf("staging token symlink target = %q, want %q", linkTarget, hostTokenPath)
-	}
-
-	prepared, _ := preparePositiveProfile(t, m)
-
-	// Confirm the profile contains the (subpath ~/.pi/agent) rule.
-	piAgentSubpath := "(subpath " + sbplQuoteForTest(piAgentDir) + ")"
-	if !strings.Contains(prepared.content, piAgentSubpath) {
-		t.Fatalf("generated profile does not contain %q\nProfile:\n%s", piAgentSubpath, prepared.content)
-	}
-
-	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
-
-	// Use a unique sentinel value for this test run so we can assert the
-	// specific bytes were written (not a leftover from a previous run).
-	const sentinel = `{"access_token":"integ-pi-atlassian-oauth-positive-sentinel"}`
-
-	// Inside sandbox-exec with HOME=<stagingHome>, write the sentinel JSON to
-	// $HOME/.pi/agent/atlassian-mcp-oauth.json. The symlink routes the write
-	// through to the real host path.
-	script := "printf '%s' " + shQuote(sentinel) + " > " +
-		shQuote(filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json"))
-	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
-	out, runErr := cmd.CombinedOutput()
-	if runErr != nil {
-		t.Fatalf("write to $HOME/.pi/agent/atlassian-mcp-oauth.json inside sandbox failed.\n"+
-			"Exit: %v\nOutput: %s\nProfile: %s\nStagingTokenPath: %s",
-			runErr, string(out), testProfilePath, stagingTokenPath)
-	}
-
-	// Assert the sentinel bytes are readable from the real host path.
-	got, readErr := os.ReadFile(hostTokenPath)
-	if readErr != nil {
-		t.Fatalf("cannot read host token file %s after sandbox write: %v", hostTokenPath, readErr)
-	}
-	if string(got) != sentinel {
-		t.Errorf("host token content = %q, want %q\n"+
-			"(write inside sandbox-exec did not reach the host path via symlink)",
-			string(got), sentinel)
-	}
+	return hostTokenPath
 }
 
-// TestSandboxExecPIAtlassianOAuth_WriteThroughBroken is the paired negative
-// test. It removes the symlink at <stagingHome>/.pi/agent/atlassian-mcp-oauth.json
-// (breaking the write-through) and asserts that the same write either fails or
-// does NOT appear at the real host path. This proves the positive test is not
-// green by accident — the symlink is the specific mechanism that routes writes
-// from the staging HOME to the host.
-func TestSandboxExecPIAtlassianOAuth_WriteThroughBroken(t *testing.T) {
+// piAgentSubpathBlock returns the exact section-6a allow block emitted by
+// generateProfile for the real ~/.pi/agent dir. Used for the presence
+// assertion in the positive test and the whole-block strip in the negative.
+func piAgentSubpathBlock(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	piAgentDir := filepath.Join(home, ".pi", "agent")
+	return "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
+		"  (subpath " + sbplQuoteForTest(piAgentDir) + "))\n"
+}
+
+// TestSandboxExecPIAtlassianOAuth_RealPathReadWrite is the positive
+// integration test for Step 3d of #2132: the oauth token file is read-write
+// in-sandbox at its REAL host path via the section-6a (subpath ~/.pi/agent)
+// grant, with no staging symlink involved.
+func TestSandboxExecPIAtlassianOAuth_RealPathReadWrite(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		t.Skipf("cannot determine user home: %v", err)
-	}
-
-	piAgentDir := filepath.Join(home, ".pi", "agent")
-	if mkErr := os.MkdirAll(piAgentDir, 0o700); mkErr != nil {
-		t.Fatalf("MkdirAll ~/.pi/agent: %v", mkErr)
-	}
-
-	// Stash any existing token file so we start clean.
-	hostTokenPath := filepath.Join(piAgentDir, "atlassian-mcp-oauth.json")
-	stashPath := hostTokenPath + ".integ-pi-atlassian-oauth-neg-stash"
-	stashed := false
-	if _, statErr := os.Lstat(hostTokenPath); statErr == nil {
-		if renErr := os.Rename(hostTokenPath, stashPath); renErr == nil {
-			stashed = true
-			t.Cleanup(func() {
-				_ = os.Remove(hostTokenPath)
-				_ = os.Rename(stashPath, hostTokenPath)
-			})
-		}
-	}
-	if !stashed {
-		t.Cleanup(func() { _ = os.Remove(hostTokenPath) })
-	}
+	hostTokenPath := stashHostAtlassianToken(t)
 
 	m := newPIOAuthPersistenceManager(t)
 
@@ -222,37 +132,92 @@ func TestSandboxExecPIAtlassianOAuth_WriteThroughBroken(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	// Break the write-through: remove the symlink from the staging HOME.
-	// The directory entry <stagingHome>/.pi/agent/atlassian-mcp-oauth.json
-	// becomes absent; the sandbox write will either fail or create a file
-	// inside the ephemeral staging dir rather than at the host path.
-	stagingTokenPath := filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json")
-	if err := os.Remove(stagingTokenPath); err != nil {
-		t.Fatalf("remove staging token symlink: %v", err)
+	// The staging HOME must contain NO .pi entry — the 3d staging step is gone.
+	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".pi")); lstatErr == nil {
+		t.Fatalf("staging HOME has a .pi entry — the 3d touch-and-symlink staging step was removed in #2245 and must not be recreated")
 	}
 
 	prepared, _ := preparePositiveProfile(t, m)
+
+	// The production profile must carry the section-6a block — the sole
+	// capability for the token path.
+	block := piAgentSubpathBlock(t)
+	if !strings.Contains(prepared.content, block) {
+		t.Fatalf("generated profile does not contain the section-6a ~/.pi/agent RW block:\n%s\nProfile:\n%s", block, prepared.content)
+	}
+
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	const sentinel = `{"access_token":"integ-pi-atlassian-oauth-negative-sentinel"}`
-
-	// Allow the sandbox write to fail OR succeed into the staging dir — either
-	// outcome is acceptable for the negative test; what matters is that the
-	// host path does NOT contain the sentinel.
-	script := "printf '%s' " + shQuote(sentinel) + " > " +
-		shQuote(filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json"))
+	// Write JSON to the REAL host token path from inside the sandbox, then
+	// read it back in the same invocation.
+	const tokenJSON = `{"access_token":"prism-2245-3d-real-path-sentinel"}`
+	script := "printf '%s' " + shQuote(tokenJSON) + " > " + shQuote(hostTokenPath) +
+		" && cat " + shQuote(hostTokenPath)
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
-	_, _ = cmd.CombinedOutput() // ignore exit code — the sandbox may deny or permit the write
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("in-sandbox RW round-trip of the oauth token at its real path failed.\n"+
+			"Exit: %v\nOutput: %s\nProfile: %s\nTarget: %s",
+			runErr, string(out), testProfilePath, hostTokenPath)
+	}
+	if !strings.Contains(string(out), "prism-2245-3d-real-path-sentinel") {
+		t.Errorf("in-sandbox read did not return the written token bytes.\nGot: %s", string(out))
+	}
 
-	// The host token file must NOT contain the negative sentinel: without the
-	// symlink, the sandbox write cannot reach the host path.
-	got, readErr := os.ReadFile(hostTokenPath)
-	if readErr == nil && string(got) == sentinel {
-		t.Errorf("host token contains negative sentinel %q even though the staging symlink was removed.\n"+
-			"The positive test is not catching the write-through — investigate.\n"+
-			"Host token path: %s", sentinel, hostTokenPath)
+	// The bytes must be visible on the host after sandbox-exec exits.
+	hostBytes, readErr := os.ReadFile(hostTokenPath)
+	if readErr != nil {
+		t.Fatalf("host-side read of the token file after sandbox exit: %v", readErr)
+	}
+	if string(hostBytes) != tokenJSON {
+		t.Errorf("host token content = %q, want %q", string(hostBytes), tokenJSON)
+	}
+}
+
+// TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant is the paired
+// negative test. It strips the ENTIRE section-6a allow block (whole-block
+// strip per the #2243 lesson — removing only the (subpath ...) line would
+// leave a filter-less allow-everything clause) and asserts the same write
+// fails and nothing lands at the host path — proving the 6a grant is
+// load-bearing for the token file.
+func TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	hostTokenPath := stashHostAtlassianToken(t)
+
+	m := newPIOAuthPersistenceManager(t)
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	block := piAgentSubpathBlock(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.Replace(p, block, "", 1)
+	})
+
+	const tokenJSON = `{"access_token":"prism-2245-3d-denied-sentinel"}`
+	script := "printf '%s' " + shQuote(tokenJSON) + " > " + shQuote(hostTokenPath)
+	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
+		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Errorf("oauth token write succeeded WITHOUT the section-6a ~/.pi/agent block.\n"+
+			"The 6a grant is not the load-bearing rule — investigate.\n"+
+			"Output: %s\nMutated profile: %s", string(out), mutatedPath)
 	} else {
-		t.Logf("ka pai — write did NOT reach host path without staging symlink (host content: %q)", string(got))
+		t.Logf("ka pai — oauth token write correctly denied without the 6a block (exit: %v)", runErr)
+	}
+
+	// Nothing may have landed at the host path.
+	if hostBytes, readErr := os.ReadFile(hostTokenPath); readErr == nil && string(hostBytes) == tokenJSON {
+		t.Errorf("token bytes appeared at the host path despite the stripped grant — the deny is not effective")
 	}
 }
