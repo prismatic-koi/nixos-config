@@ -2149,9 +2149,10 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	// #1728), back then caught incidentally by the cmd/-package leak guard
 	// under parallel `go test ./...` scheduling. That guard's live-tmux
 	// session diff was dropped in #2227 (it false-positived on concurrent
-	// host activity), so this per-test stub is now the ONLY line of defence
-	// against this leak class — there is no cross-package backstop. #2230
-	// tracks adding #2224-style suite-wide tmux isolation to this package.
+	// host activity). Since #2230 this package has suite-wide tmux
+	// isolation (TestMain in tmux_isolation_test.go), so the live server is
+	// unreachable by construction even without this stub — the stub remains
+	// as defence-in-depth and to let the test assert on recorded argv.
 	//
 	// Uses spawnSpyTmuxBin from spawn_prompt_file_test.go — the canonical
 	// tmux-isolation pattern in this package. Must NOT call t.Parallel:
