@@ -3,11 +3,14 @@
 package cmd
 
 // agent_run_sandbox_exec_darwin_test.go — unit tests for the Darwin
-// sandbox-exec env-construction path (issue #1482).
+// sandbox-exec env-construction path (issues #1482, #2247).
 //
 // These tests verify that PRISM_HARNESS_PIPE is injected with 127.0.0.1
 // (not host.containers.internal) when HarnessPipeTCPPort is non-zero,
-// covering the env-construction AC from issue #1482.
+// covering the env-construction AC from issue #1482, and that
+// buildSandboxExecHomeEnv carries CFFIXED_USER_HOME=<sessionDir> (the
+// per-session work dir) with the former staging-HOME value gone, covering
+// the env-construction AC from issue #2247 (Step 4 of #2132).
 
 import (
 	"fmt"
@@ -83,6 +86,124 @@ func TestSandboxExecEnv_HarnessPipeTCPPort_Zero_NoHarnessPipeVar(t *testing.T) {
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PRISM_HARNESS_PIPE=tcp://") {
 			t.Errorf("TCP PRISM_HARNESS_PIPE injected when HarnessPipeTCPPort==0: %q", kv)
+		}
+	}
+}
+
+// sandboxExecHomeEnvFixture returns representative inputs for
+// buildSandboxExecHomeEnv: a base env that already carries host-derived
+// HOME / XDG / CFFIXED_USER_HOME entries (all of which must be stripped),
+// plus the staging HOME, session work dir, and real home paths in their
+// production layout (<stagingHome> == <sessionDir>/home).
+func sandboxExecHomeEnvFixture() (env []string, stagingHome, sessionDir, realHome string) {
+	realHome = "/Users/u"
+	sessionDir = realHome + "/.local/state/prism/sessions/inst-2247"
+	stagingHome = sessionDir + "/home"
+	env = []string{
+		"PATH=/nix/store/abc/bin",
+		"HOME=" + realHome,
+		"XDG_CACHE_HOME=" + realHome + "/.cache",
+		"XDG_CONFIG_HOME=" + realHome + "/.config",
+		"XDG_DATA_HOME=" + realHome + "/.local/share",
+		"XDG_STATE_HOME=" + realHome + "/.local/state",
+		"CFFIXED_USER_HOME=" + realHome,
+		"TERM=xterm-256color",
+	}
+	return env, stagingHome, sessionDir, realHome
+}
+
+// TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir is the
+// env-construction AC for issue #2247 (Step 4 of #2132): the sandbox-exec
+// session env carries CFFIXED_USER_HOME=<sessionDir> (the per-session work
+// dir, #2213) and the former staging-HOME value is gone. Chromium resolves
+// its user-data root via CoreFoundation's NSHomeDirectory(), which honours
+// CFFIXED_USER_HOME — pointing it at the work dir lands chromium's writes
+// under <sessionDir>/Library/... (covered by the profile's existing
+// (subpath <sessionDir>) RW allow) with no host-Library grant.
+func TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir(t *testing.T) {
+	env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+
+	got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+
+	wantCFFixed := "CFFIXED_USER_HOME=" + sessionDir
+	stagingCFFixed := "CFFIXED_USER_HOME=" + stagingHome
+	hostCFFixed := "CFFIXED_USER_HOME=" + realHome
+	foundCFFixed := false
+	for _, kv := range got {
+		switch kv {
+		case wantCFFixed:
+			foundCFFixed = true
+		case stagingCFFixed:
+			t.Errorf("env carries the former staging-HOME CFFIXED_USER_HOME value %q — must be the session work dir (issue #2247)", kv)
+		case hostCFFixed:
+			t.Errorf("env carries the host-inherited CFFIXED_USER_HOME value %q — must be stripped and replaced", kv)
+		}
+	}
+	if !foundCFFixed {
+		t.Errorf("env does not contain %q\nenv: %v", wantCFFixed, got)
+	}
+
+	// Exactly one CFFIXED_USER_HOME entry: the strip must remove the
+	// host-inherited value before the session value is appended.
+	count := 0
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "CFFIXED_USER_HOME=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("env contains %d CFFIXED_USER_HOME entries, want exactly 1\nenv: %v", count, got)
+	}
+}
+
+// TestBuildSandboxExecHomeEnv_HomeAndXDGLayerUnchangedByStep4 pins the
+// rest of the home env layer across the #2247 change: HOME and
+// XDG_CACHE_HOME/XDG_CONFIG_HOME still point into the staging HOME (the
+// Step 5 flip has NOT happened), XDG_DATA_HOME/XDG_STATE_HOME still point
+// at the real host paths (hard constraint from #2205), and each key
+// appears exactly once.
+func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerUnchangedByStep4(t *testing.T) {
+	env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+
+	got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+
+	want := map[string]string{
+		"HOME":            stagingHome,
+		"XDG_CACHE_HOME":  stagingHome + "/.cache",
+		"XDG_CONFIG_HOME": stagingHome + "/.config",
+		"XDG_DATA_HOME":   realHome + "/.local/share",
+		"XDG_STATE_HOME":  realHome + "/.local/state",
+	}
+	seen := map[string]int{}
+	for _, kv := range got {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			continue
+		}
+		k, v := kv[:eq], kv[eq+1:]
+		if wantV, ok := want[k]; ok {
+			seen[k]++
+			if v != wantV {
+				t.Errorf("%s = %q, want %q", k, v, wantV)
+			}
+		}
+	}
+	for k := range want {
+		if seen[k] != 1 {
+			t.Errorf("%s appears %d times, want exactly 1\nenv: %v", k, seen[k], got)
+		}
+	}
+
+	// Non-home keys pass through untouched.
+	for _, passthrough := range []string{"PATH=/nix/store/abc/bin", "TERM=xterm-256color"} {
+		found := false
+		for _, kv := range got {
+			if kv == passthrough {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("passthrough env entry %q missing\nenv: %v", passthrough, got)
 		}
 	}
 }

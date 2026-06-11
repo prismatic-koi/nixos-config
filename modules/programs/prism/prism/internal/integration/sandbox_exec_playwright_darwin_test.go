@@ -23,9 +23,11 @@ package integration_test
 //      `Operation not permitted` (crashpad xattr) or `kill EPERM`
 //      (launcher signal denial).
 //   4. The chromium user-data directory created by playwright-cli during
-//      the session lives under <stagingHome>/Library/Application
-//      Support/Google/Chrome for Testing/, NOT under the host
-//      ~/Library/Application Support/...
+//      the session lives under <sessionDir>/Library/Application
+//      Support/Google/Chrome for Testing/ (the per-session work dir that
+//      CFFIXED_USER_HOME points at — issue #2247, Step 4 of #2132), NOT
+//      under the host ~/Library/Application Support/... and NOT under the
+//      staging HOME (which holds no Library/ entries post-#2247).
 //
 // The two negative tests use the `withMutatedProfile` helper to:
 //
@@ -59,6 +61,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/container"
 )
 
 // playwrightCLIBinaryName is the binary the test resolves via PATH. The
@@ -124,10 +128,12 @@ const playwrightCLITimeout = 60 * time.Second
 
 // runPlaywrightCLIOpen invokes sandbox-exec on the given profile path
 // against playwright-cli with `open <data-url>` followed by `close`.
-// The env passed in must include HOME, CFFIXED_USER_HOME, PATH, and
-// XDG_* set to the staging HOME values \u2014 mirroring what
-// agent_run_sandbox_exec_darwin.go does in production.
-func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome string) (combinedOutput string, runErr error) {
+// The env mirrors what agent_run_sandbox_exec_darwin.go does in
+// production: HOME and XDG_CACHE/CONFIG at the staging HOME, and
+// CFFIXED_USER_HOME at the per-session work dir (issue #2247, Step 4 of
+// #2132) so chromium's NSHomeDirectory()-derived writes land under
+// <sessionDir>/Library/...
+func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
 	t.Helper()
 
 	// The Nix-built playwright-cli is a #! /nix/store/.../bash script. We
@@ -139,7 +145,7 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome 
 	// becomes a no-op against an already-dead session.
 	envVars := []string{
 		"HOME=" + stagingHome,
-		"CFFIXED_USER_HOME=" + stagingHome,
+		"CFFIXED_USER_HOME=" + sessionDir,
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(stagingHome, ".cache"),
 		"XDG_CONFIG_HOME=" + filepath.Join(stagingHome, ".config"),
@@ -175,12 +181,13 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome 
 // positive integration test for the chromium-under-sandbox-exec fix
 // (issue #2021).
 //
-// It generates the production SBPL profile, prepares the staging HOME
-// (which now creates the chromium Library/Application Support/Google
-// directories), and invokes playwright-cli with `open <data-url>` under
-// sandbox-exec. Asserts exit 0 with no SEGV or kill-EPERM fingerprints
-// in stderr, and that the chromium user-data directory landed under the
-// staging Library (not the host Library).
+// It generates the production SBPL profile (which also prepares the
+// session work dir — creating the chromium Library/Application
+// Support/Google skeleton inside it — and the staging HOME), and invokes
+// playwright-cli with `open <data-url>` under sandbox-exec. Asserts exit 0
+// with no SEGV or kill-EPERM fingerprints in stderr, and that the chromium
+// user-data directory landed under the work-dir Library (not the host
+// Library, and not the staging HOME — which holds no Library/ post-#2247).
 func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -190,30 +197,35 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 
 	// Use BareRoot so the ancestor block grants HOME traversal for the
 	// chromium binary at /nix/store/... (already covered) and the
-	// staging-HOME Library subpath.
+	// session-work-dir Library subpath.
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+	prepared, _ := preparePositiveProfile(t, m)
 
-	// Sanity-check that PrepareSandboxExecHome created the chromium
-	// staging directories \u2014 the unit test
-	// TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs covers this
+	stagingHome, err := m.SandboxExecHomePath()
+	if err != nil {
+		t.Fatalf("SandboxExecHomePath: %v", err)
+	}
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+
+	// Sanity-check the #2247 layout before launching anything: the
+	// chromium skeleton lives in the session work dir, and the staging
+	// HOME holds no Library/ entries at all. The unit tests
+	// TestPrepareSessionWorkDir_ChromiumLibrarySkeleton and
+	// TestPrepareSandboxExecHome_NoChromiumLibraryStagingDirs cover this
 	// more thoroughly, but a failure here would explain a cascade of
 	// crashpad EPERMs below.
-	for _, d := range []string{
-		filepath.Join(stagingHome, "Library", "Application Support", "Google"),
-		filepath.Join(stagingHome, "Library", "Caches", "Google"),
-	} {
+	for _, d := range container.SessionWorkDirChromiumDirs(sessionDir) {
 		if _, statErr := os.Stat(d); statErr != nil {
-			t.Fatalf("chromium staging dir %q missing after PrepareSandboxExecHome: %v", d, statErr)
+			t.Fatalf("chromium skeleton dir %q missing after PrepareSandboxExec: %v", d, statErr)
 		}
 	}
-
-	prepared, _ := preparePositiveProfile(t, m)
+	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
+		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247)")
+	}
 
 	// Load-bearing regression guard: the iokit-open-user-client block
 	// must be present, and the signal widening must include
@@ -230,7 +242,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	combined, runErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, stagingHome)
+	combined, runErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, stagingHome, sessionDir)
 	if runErr != nil {
 		t.Fatalf("playwright-cli open exited non-zero under production profile.\n"+
 			"This is the canonical issue #2021 failure mode \u2014 chromium SIGSEGV\n"+
@@ -257,31 +269,38 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 	if strings.Contains(combined, crashpadEPERMFingerprint) {
 		t.Errorf("playwright-cli output contains %q (issue #2021).\n"+
 			"chromium's crashpad write fell on a host path the sandbox\n"+
-			"does not permit \u2014 likely the staging Library/Application\n"+
-			"Support/Google dir is not being honoured or CFFIXED_USER_HOME\n"+
-			"is not redirecting NSHomeDirectory().\nOutput:\n%s", crashpadEPERMFingerprint, combined)
+			"does not permit \u2014 likely the work-dir Library/Application\n"+
+			"Support/Google skeleton is not being honoured or CFFIXED_USER_HOME\n"+
+			"is not redirecting NSHomeDirectory() at the session work dir\n"+
+			"(issue #2247).\nOutput:\n%s", crashpadEPERMFingerprint, combined)
 	}
 
-	// The chromium user-data directory must live under the staging
-	// Library, not the host Library. We assert this by checking that
-	// the staging Library/Application Support/Google directory has a
-	// child entry after the run (chromium creates "Chrome for Testing/"
-	// underneath at startup). The negative assertion is implicit in the
-	// crashpadEPERMFingerprint check above \u2014 if chromium wrote to
-	// the host Library instead, the sandbox would deny the xattr write
-	// and the test would fail there.
-	stagingGoogleDir := filepath.Join(stagingHome, "Library", "Application Support", "Google")
-	entries, readErr := os.ReadDir(stagingGoogleDir)
+	// The chromium user-data directory must live under the work-dir
+	// Library, not the host Library (and not the staging HOME). We assert
+	// this by checking that the work-dir Library/Application Support/Google
+	// directory has a child entry after the run (chromium creates "Chrome
+	// for Testing/" underneath at startup). The negative assertion is
+	// implicit in the crashpadEPERMFingerprint check above — if chromium
+	// wrote to the host Library instead, the sandbox would deny the xattr
+	// write and the test would fail there.
+	workDirGoogleDir := filepath.Join(sessionDir, "Library", "Application Support", "Google")
+	entries, readErr := os.ReadDir(workDirGoogleDir)
 	if readErr != nil {
-		t.Errorf("staging Library/Application Support/Google not readable after run: %v", readErr)
+		t.Errorf("work-dir Library/Application Support/Google not readable after run: %v", readErr)
 	} else if len(entries) == 0 {
 		// playwright-cli may have used --user-data-dir=/tmp/playwright_*
 		// instead of the default profile path. The data-URL flow in
 		// recent versions does this, so an empty Google/ dir is not a
 		// failure per se. Log for diagnostic visibility.
-		t.Logf("staging Library/Application Support/Google is empty \u2014 chromium likely used --user-data-dir=/tmp/playwright_* override (informational, not a failure)")
+		t.Logf("work-dir Library/Application Support/Google is empty \u2014 chromium likely used --user-data-dir=/tmp/playwright_* override (informational, not a failure)")
 	} else {
-		t.Logf("staging Library/Application Support/Google has %d entries after run", len(entries))
+		t.Logf("work-dir Library/Application Support/Google has %d entries after run", len(entries))
+	}
+
+	// Post-run: the staging HOME must still hold no Library/ entries —
+	// nothing in the run may have re-created the pre-#2247 staging layout.
+	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
+		t.Errorf("staging HOME gained a Library/ entry during the run — chromium state must land in the session work dir (issue #2247)")
 	}
 }
 
@@ -303,15 +322,18 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOKitAllow(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	mutatedPath := withMutatedProfile(t, m, removeIOKitAllowBlock)
 
-	combined, runErr := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome)
+	stagingHome, err := m.SandboxExecHomePath()
+	if err != nil {
+		t.Fatalf("SandboxExecHomePath: %v", err)
+	}
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+
+	combined, runErr := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
 	if runErr == nil {
 		t.Errorf("playwright-cli open exited 0 WITHOUT the iokit-open-user-client allow block.\n"+
 			"The negative test is not catching the regression \u2014 chromium should\n"+
@@ -360,12 +382,6 @@ func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *tes
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	// Replace the widened signal clause with self-only. The mutation must
 	// produce a syntactically valid SBPL profile so the sandbox still
 	// loads \u2014 we want the failure to come from the runtime signal
@@ -376,7 +392,16 @@ func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *tes
 			"(allow signal (target self))")
 	})
 
-	combined, _ := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome)
+	stagingHome, err := m.SandboxExecHomePath()
+	if err != nil {
+		t.Fatalf("SandboxExecHomePath: %v", err)
+	}
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+
+	combined, _ := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
 
 	if !strings.Contains(combined, killEPERMFingerprint) {
 		t.Errorf("playwright-cli output does not contain %q after removing\n"+

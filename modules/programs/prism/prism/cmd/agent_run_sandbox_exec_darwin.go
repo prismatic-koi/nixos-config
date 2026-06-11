@@ -34,6 +34,71 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
+// buildSandboxExecHomeEnv rewrites the HOME / XDG_* / CFFIXED_USER_HOME
+// layer of the sandbox-exec env (K=V slice form). Any pre-existing entries
+// for those keys are stripped and replaced with:
+//
+//   - HOME=<stagingHome> — the per-session staging HOME (until Step 5 of
+//     #2132 flips it to the real home).
+//   - XDG_CACHE_HOME / XDG_CONFIG_HOME — staging-HOME-relative, so the
+//     agent's module-load mkdir calls land inside sandbox-allowed paths.
+//   - XDG_DATA_HOME / XDG_STATE_HOME — the REAL host paths so all sessions
+//     share a single agent DB and state store (both of which ARE in the
+//     SBPL profile's RW block). Hard constraint from #2205: the nix
+//     trusted-settings grant depends on XDG_DATA_HOME staying real-host.
+//   - CFFIXED_USER_HOME=<sessionDir> — redirects CoreFoundation's
+//     NSHomeDirectory() to the per-session work dir (issue #2247, Step 4 of
+//     #2132) so chromium (Google Chrome for Testing, invoked via
+//     playwright-cli) writes its crash database, code cache, profile, and
+//     SingletonLock under
+//     <sessionDir>/Library/Application Support/Google/...
+//     rather than under the real ~/Library/Application Support/... which
+//     would either leak the daily-driver Chrome profile or EPERM on every
+//     xattr write. Chromium uses NSHomeDirectory() (CoreFoundation) and not
+//     getenv("HOME") for the user-data directory root — Apple CF resolves
+//     home as CFFIXED_USER_HOME → getpwuid()->pw_dir and never consults
+//     $HOME (CFPlatform.c), so this override is the only env route (issues
+//     #2021, #2247). The Library skeleton dirs inside the work dir are
+//     created by PrepareSessionWorkDir; writes ride the profile's existing
+//     (subpath <sessionDir>) RW allow — no host-Library grant exists.
+//
+// Extracted from runAgentRunSandboxExec so the env construction is unit
+// testable (the dispatch function itself forks a supervised child).
+func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome string) []string {
+	// Strip any existing HOME and XDG vars from the filtered env — we
+	// replace them all below.
+	xdgKeys := map[string]bool{
+		"HOME":              true,
+		"XDG_CACHE_HOME":    true,
+		"XDG_DATA_HOME":     true,
+		"XDG_CONFIG_HOME":   true,
+		"XDG_STATE_HOME":    true,
+		"CFFIXED_USER_HOME": true,
+	}
+	filtered := make([]string, 0, len(env))
+	for _, kv := range env {
+		eq := -1
+		for i := 0; i < len(kv); i++ {
+			if kv[i] == '=' {
+				eq = i
+				break
+			}
+		}
+		if eq > 0 && xdgKeys[kv[:eq]] {
+			continue
+		}
+		filtered = append(filtered, kv)
+	}
+	return append(filtered,
+		"HOME="+stagingHome,
+		"XDG_CACHE_HOME="+filepath.Join(stagingHome, ".cache"),
+		"XDG_CONFIG_HOME="+filepath.Join(stagingHome, ".config"),
+		"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
+		"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
+		"CFFIXED_USER_HOME="+sessionDir,
+	)
+}
+
 // runAgentRunSandboxExec is the sandbox-exec dispatch path. It reconstructs
 // the container.Config from the session's DB status, calls
 // Manager.PrepareSandboxExec to materialise the SBPL profile, and then runs
@@ -208,29 +273,15 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// PrepareSandboxExec(). Only override when the staging dir exists on disk.
 	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
 		if _, statErr := os.Stat(stagingHome); statErr == nil {
-			// Strip any existing HOME and XDG vars from the filtered env —
-			// we replace them all with staging-HOME-relative paths below.
-			xdgKeys := map[string]bool{
-				"HOME":              true,
-				"XDG_CACHE_HOME":    true,
-				"XDG_DATA_HOME":     true,
-				"XDG_CONFIG_HOME":   true,
-				"XDG_STATE_HOME":    true,
-				"CFFIXED_USER_HOME": true,
-			}
-			filtered := make([]string, 0, len(env))
-			for _, kv := range env {
-				eq := -1
-				for i := 0; i < len(kv); i++ {
-					if kv[i] == '=' {
-						eq = i
-						break
-					}
-				}
-				if eq > 0 && xdgKeys[kv[:eq]] {
-					continue
-				}
-				filtered = append(filtered, kv)
+			// Resolve the per-session work dir (#2213) for CFFIXED_USER_HOME
+			// (issue #2247, Step 4 of #2132). PrepareSandboxExec() created it
+			// (hard-fail), so SessionWorkDir cannot error here in practice —
+			// it shares the failure modes of SandboxExecHomePath, which just
+			// succeeded. The work dir is by construction the staging HOME's
+			// parent, so fall back to that if it somehow does.
+			sessionDir, sessionDirErr := m.SessionWorkDir()
+			if sessionDirErr != nil || sessionDir == "" {
+				sessionDir = filepath.Dir(stagingHome)
 			}
 			// Resolve the real home directory for XDG_DATA_HOME and
 			// XDG_STATE_HOME. These must point to the host paths so all
@@ -245,31 +296,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 				// succeeded, so this path should be unreachable in practice).
 				realHome = stagingHome
 			}
-			env = append(filtered,
-				"HOME="+stagingHome,
-				// XDG_CACHE_HOME and XDG_CONFIG_HOME point into the staging
-				// HOME so the agent's module-load mkdir calls land inside
-				// sandbox-allowed paths.
-				"XDG_CACHE_HOME="+filepath.Join(stagingHome, ".cache"),
-				"XDG_CONFIG_HOME="+filepath.Join(stagingHome, ".config"),
-				// XDG_DATA_HOME and XDG_STATE_HOME point to the real host
-				// paths so all sessions share a single agent DB and state
-				// store (both of which ARE in the SBPL profile's RW block).
-				"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
-				"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
-				// CFFIXED_USER_HOME redirects CoreFoundation's NSHomeDirectory()
-				// to the staging HOME so chromium (Google Chrome for Testing,
-				// invoked via playwright-cli) writes its crash database, code
-				// cache, profile, and SingletonLock under
-				//   <stagingHome>/Library/Application Support/Google/...
-				// rather than under the real ~/Library/Application Support/...
-				// which would either leak the daily-driver Chrome profile or
-				// EPERM on every xattr write. Chromium uses NSHomeDirectory()
-				// (CoreFoundation) and not getenv("HOME") for the user-data
-				// directory root — setting HOME alone is insufficient. Issue
-				// #2021.
-				"CFFIXED_USER_HOME="+stagingHome,
-			)
+			env = buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
 		}
 	}
 

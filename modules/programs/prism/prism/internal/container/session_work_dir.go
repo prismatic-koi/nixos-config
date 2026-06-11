@@ -17,6 +17,17 @@ package container
 //	<sessionDir>/allowed_signers   — for git verify-commit (when signing
 //	                                 is configured)
 //
+// On Darwin it additionally holds the chromium Library skeleton (issue
+// #2247, Step 4 of #2132):
+//
+//	<sessionDir>/Library/Application Support/Google/
+//	<sessionDir>/Library/Caches/Google/
+//
+// — empty real directories that CFFIXED_USER_HOME (set by the dispatcher to
+// <sessionDir>) points chromium's NSHomeDirectory() at, so its crash
+// database, code cache, profile, and SingletonLock land per-session and
+// ephemeral rather than under the real ~/Library.
+//
 // The files are wired into the sandbox via env vars set by the dispatcher
 // (cmd/agent_run_sandbox_exec_darwin.go):
 //
@@ -35,8 +46,10 @@ package container
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // SessionWorkDirPath returns the per-session work directory path for the
@@ -133,6 +146,32 @@ func SessionWorkDirKubeEnv(sessionDir string) []string {
 	}
 }
 
+// SessionWorkDirChromiumDirs returns the chromium Library skeleton
+// directories inside the given session work dir (issue #2247, Step 4 of
+// #2132):
+//
+//	<sessionDir>/Library/Application Support/Google
+//	<sessionDir>/Library/Caches/Google
+//
+// The sandbox-exec dispatcher sets CFFIXED_USER_HOME=<sessionDir>, which
+// redirects CoreFoundation's NSHomeDirectory() — chromium (Google Chrome
+// for Testing, invoked via playwright-cli) derives its user-data and cache
+// roots from it and writes its crash database, code cache, profile, and
+// SingletonLock under these directories. They must be real directories,
+// never symlinks to the host ~/Library/Application Support/Google/ — that
+// path holds the daily-driver Chrome profile (cookies, sessions, password
+// store) and exposing it to a sandboxed chromium would be a material
+// confidentiality leak.
+//
+// No dedicated SBPL rule exists for the skeleton: writes ride the existing
+// (subpath <sessionDir>) RW allow in the profile (§6).
+func SessionWorkDirChromiumDirs(sessionDir string) []string {
+	return []string{
+		filepath.Join(sessionDir, "Library", "Application Support", "Google"),
+		filepath.Join(sessionDir, "Library", "Caches", "Google"),
+	}
+}
+
 // SessionWorkDirGitEnv returns the env var pairs (K=V form) that point git
 // and ssh inside the sandbox at the generated work-dir configs:
 //
@@ -177,6 +216,22 @@ func (m *Manager) PrepareSessionWorkDir() (string, error) {
 	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 		return "", fmt.Errorf("container: session work dir: create %s: %w", sessionDir, err)
 	}
+
+	// ── Chromium Library skeleton (issue #2247, Step 4 of #2132) ────────────
+	// Darwin-only: CFFIXED_USER_HOME is a CoreFoundation mechanism, so the
+	// skeleton is meaningless on other platforms. Failures are logged but do
+	// not fail session prep — chromium/playwright-cli is an optional
+	// capability, unlike the git/ssh configs below (which are hard errors).
+	// MkdirAll is idempotent: existing contents from a prior re-spawn are
+	// preserved.
+	if runtime.GOOS == "darwin" {
+		for _, d := range SessionWorkDirChromiumDirs(sessionDir) {
+			if err := os.MkdirAll(d, 0o700); err != nil {
+				log.Printf("container: session work dir: create chromium skeleton dir %s: %v", d, err)
+			}
+		}
+	}
+
 	if err := m.writeSshConfigToDir(sessionDir); err != nil {
 		return "", fmt.Errorf("container: session work dir: %w", err)
 	}
