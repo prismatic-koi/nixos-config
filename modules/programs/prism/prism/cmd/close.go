@@ -41,11 +41,35 @@ import (
 // ghProbeTimeout caps the `gh pr list` probe so a hung GitHub API never
 // wedges the tmux popup (issue #2179, AC: performance ≤ 5s). On timeout the
 // command fails safe to a soft close.
-const ghProbeTimeout = 5 * time.Second
+//
+// A var, not a const: tests shrink it so the timeout→fail-safe path is
+// covered without a real 5-second wall-clock wait (issue #2217).
+var ghProbeTimeout = 5 * time.Second
 
 // prProbe is the indirection used by decideClose to query PR state for a
 // branch. Replaced in tests with a fake that returns canned responses.
 var prProbe = probePRStateExec
+
+// ghExecOutput is the exec seam used by probePRStateExec to run the gh CLI
+// (issue #2217). Production points at ghExecOutputReal, which shells out to
+// `gh` on $PATH. Tests replace it with a stub returning canned stdout so the
+// probe's argv construction, JSON parsing, and state reduction run
+// in-process — no subprocess, no $PATH lookup, and no network. PATH-injected
+// fake binaries proved environment-fragile (the probe reached the real gh in
+// some worker sandboxes and hit its 5s network timeout), which is why the
+// seam sits at the exec boundary rather than on $PATH.
+var ghExecOutput = ghExecOutputReal
+
+// ghExecOutputReal runs `gh` with the given argv in workdir (empty = caller
+// cwd), returning its stdout. The context bounds the subprocess lifetime:
+// exec.CommandContext kills it when the deadline fires.
+func ghExecOutputReal(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if workdir != "" {
+		cmd.Dir = workdir
+	}
+	return cmd.Output()
+}
 
 // closeCmd is the public `prism close` cobra command.
 var closeCmd = &cobra.Command{
@@ -297,15 +321,11 @@ func probePRStateExec(workdir, branch string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ghProbeTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+	out, err := ghExecOutput(ctx, workdir, "pr", "list",
 		"--head", branch,
 		"--state", "all",
 		"--json", "state,number",
 		"--limit", "10")
-	if workdir != "" {
-		cmd.Dir = workdir
-	}
-	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}

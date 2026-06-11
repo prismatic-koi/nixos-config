@@ -68,6 +68,12 @@ import (
 //     tmux_isolation_test.go for the full rationale. The original
 //     environment is restored after m.Run() so the leak-guard
 //     after-snapshots consult the same live server as the before-snapshots.
+//
+//  5. Sandbox-env isolation (#2217): unsets the PRISM_* variables the
+//     sidecar injects into agent sessions (PRISM_SESSION_NAME,
+//     PRISM_HOST_API, …) so tests see the same environment surface on CI,
+//     developer hosts, and inside prism worker sandboxes. See
+//     sandbox_env_isolation_test.go for the full rationale.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
@@ -97,9 +103,13 @@ func TestMain(m *testing.M) {
 	// Tmux isolation (#2214): applied after the before-snapshots above (they
 	// must see the real live server), undone before the after-snapshots below.
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
+	// Sandbox-env isolation (#2217): unset the sidecar-injected PRISM_* vars
+	// so the suite controls its full environment surface.
+	restoreSandboxEnv := isolateSuiteFromSandboxEnv()
 
 	code := m.Run()
 
+	restoreSandboxEnv()
 	restoreTmuxEnv()
 
 	// Leak guard: assert no new sessions or DB rows were created in the live
