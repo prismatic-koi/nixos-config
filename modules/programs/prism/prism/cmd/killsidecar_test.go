@@ -60,6 +60,14 @@ import (
 //     any test that creates real sessions in the live environment. The guard
 //     uses the DB path that was live at suite start (before any test overrides
 //     XDG_STATE_HOME), so it reliably reads the production database.
+//
+//  4. Tmux isolation (#2214): after taking the leak-guard before-snapshots,
+//     clears $TMUX and redirects $TMUX_TMPDIR to an empty directory so no
+//     code under test can reach the live host tmux server via the
+//     default-socket fallback (tmux.CurrentSession et al.). See
+//     tmux_isolation_test.go for the full rationale. The original
+//     environment is restored after m.Run() so the leak-guard
+//     after-snapshots consult the same live server as the before-snapshots.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_CMD_TEST_STUB") == "1" {
 		time.Sleep(60 * time.Second)
@@ -86,7 +94,13 @@ func TestMain(m *testing.M) {
 	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
 	beforeWorktrees := snapshotWorktreeDirs()
 
+	// Tmux isolation (#2214): applied after the before-snapshots above (they
+	// must see the real live server), undone before the after-snapshots below.
+	restoreTmuxEnv := isolateSuiteFromHostTmux()
+
 	code := m.Run()
+
+	restoreTmuxEnv()
 
 	// Leak guard: assert no new sessions or DB rows were created in the live
 	// environment. We skip the check if the suite failed — a failing test may
