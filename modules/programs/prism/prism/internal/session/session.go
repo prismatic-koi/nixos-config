@@ -453,16 +453,18 @@ func buildDirectAgentCmd(opts Opts) string {
 	//  1. effectiveIsolationMode(opts) == "host" — BuildAgentCmd calls this
 	//     helper for every mode (the result is discarded for bwrap and
 	//     sandbox-exec by their AgentPaneCmd, which substitutes
-	//     `prism agent-run --session <name>`). Without this gate, the
-	//     resolver would run on every restore and — because the bwrap/
-	//     sandbox-exec pi sessions live under prism's per-session run dir
-	//     (or staging HOME), not under the host PI sessions root
-	//     ($PI_CODING_AGENT_DIR/sessions or ~/.pi/agent/sessions) — the
-	//     host-fallback lookup would miss and piLogResumeWarning would
-	//     spuriously write a misleading
-	//     "resume failed" line to the agent-run.log even though the actual
-	//     resume succeeds via prism agent-run's DB-read + PIInvocation
-	//     path. (Review round 2 / review-context.)
+	//     `prism agent-run --session <name>`). The gate keeps this host-side
+	//     probe from running redundantly on every restore: bwrap and
+	//     sandbox-exec resume via prism agent-run's DB-read + PIInvocation
+	//     path, which performs the same host-root lookup itself — post-#1985
+	//     (bwrap) and post-#2210 (sandbox-exec) all modes resolve to the same
+	//     host PI sessions root ($PI_CODING_AGENT_DIR/sessions or
+	//     ~/.pi/agent/sessions), so a lookup here would succeed but its
+	//     result would be discarded, and any transient miss would spuriously
+	//     write a misleading "resume failed" line to the agent-run.log via
+	//     piLogResumeWarning even though the actual resume happens in
+	//     agent-run. (Review round 2 / review-context; comment refreshed for
+	//     #2210.)
 	//  2. HarnessName ∈ {"pi", ""} — ResolvePIResumeSession's encoded-cwd /
 	//     sessions-root layout is pi-specific.
 	//  3. HarnessSessionID != "" — empty IDs are a silent no-op (AC5).

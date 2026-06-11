@@ -57,8 +57,8 @@ func writeBwrapResumeSession(t *testing.T, _ /*sessionName*/, worktree, sessionI
 	return path
 }
 
-// bwrapResumeCfg constructs a Config that piResumeSessionsRoot will identify
-// as bwrap mode (SessionName + PIAgentConfigSandboxDir != PIAgentConfigHostDir).
+// bwrapResumeCfg constructs a Config shaped like a bwrap-mode session
+// (SessionName + PIAgentConfigSandboxDir != PIAgentConfigHostDir).
 func bwrapResumeCfg(sessionName, worktree, harnessSessionID string) Config {
 	return Config{
 		SessionName:             sessionName,
@@ -66,6 +66,21 @@ func bwrapResumeCfg(sessionName, worktree, harnessSessionID string) Config {
 		HarnessSessionID:        harnessSessionID,
 		PIAgentConfigHostDir:    "/tmp/host-stage", // bwrap remaps to a different sandbox path
 		PIAgentConfigSandboxDir: "/run/prism/pi-agent",
+	}
+}
+
+// sandboxExecResumeCfg constructs a Config shaped like a sandbox-exec session:
+// InstanceID set and PIAgentConfigSandboxDir == PIAgentConfigHostDir
+// (sandbox-exec shares the host FS, so populatePIConfig collapses the two
+// paths — see cmd/agent_run_sandbox_exec_darwin.go).
+func sandboxExecResumeCfg(sessionName, worktree, harnessSessionID, instanceID string) Config {
+	return Config{
+		SessionName:             sessionName,
+		Worktree:                worktree,
+		HarnessSessionID:        harnessSessionID,
+		InstanceID:              instanceID,
+		PIAgentConfigHostDir:    "/Users/user/.pi/agent",
+		PIAgentConfigSandboxDir: "/Users/user/.pi/agent",
 	}
 }
 
@@ -205,12 +220,14 @@ func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 	}
 }
 
-// TestPIResumeSessionsRoot_AllModes verifies that the mode-aware resolver
-// covers the isolation modes pi can run in (AC6). Post-#1985 the bwrap
-// branch collapses into the host default (overlay-bound at launch):
+// TestPIResumeSessionsRoot_AllModes verifies that the resolver covers the
+// isolation modes pi can run in. Post-#1985 the bwrap branch collapses into
+// the host default (overlay-bound at launch), and post-#2210 sandbox-exec
+// does too (pi inside the sandbox honours the injected PI_CODING_AGENT_DIR,
+// which points at the host root):
 //   - host:         <home>/.pi/agent/sessions
 //   - bwrap:        <home>/.pi/agent/sessions  (same root as host)
-//   - sandbox-exec: <stagingHome>/.pi/agent/sessions
+//   - sandbox-exec: <home>/.pi/agent/sessions  (same root as host)
 func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 	clearPICodingAgentDir(t)
 	home := t.TempDir()
@@ -260,24 +277,73 @@ func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 
 	t.Run("sandbox-exec", func(t *testing.T) {
 		const instanceID = "11111111-2222-3333-4444-555555555555"
-		// PIAgentConfigSandboxDir == PIAgentConfigHostDir signals sandbox-exec.
-		cfg := Config{
-			InstanceID:              instanceID,
-			PIAgentConfigHostDir:    "/some/host/stage",
-			PIAgentConfigSandboxDir: "/some/host/stage",
-		}
+		cfg := sandboxExecResumeCfg("myrepo@sbx", "/tmp/wt", "some-id", instanceID)
 		got, ok := piResumeSessionsRoot(cfg)
 		if !ok {
 			t.Fatalf("piResumeSessionsRoot(sandbox-exec): ok=false, want true")
 		}
+		want := filepath.Join(home, ".pi", "agent", "sessions")
+		if got != want {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want %q", got, want)
+		}
+		// Defensive: must NOT point under the per-session staging HOME —
+		// pi writes to the host root, not the staging HOME (#2210).
 		stagingHome, err := SandboxExecStagingHomePath(instanceID)
 		if err != nil {
 			t.Fatalf("SandboxExecStagingHomePath: %v", err)
 		}
-		want := filepath.Join(stagingHome, ".pi", "agent", "sessions")
-		if got != want {
-			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want %q", got, want)
+		if strings.HasPrefix(got, stagingHome) {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the staging HOME %q (#2210)",
+				got, stagingHome)
 		}
+	})
+}
+
+// TestPIResumeSessionsRoot_SandboxExecEqualsHost is the #2210 regression
+// guard: the resolved sessions root for a sandbox-exec config must equal the
+// root resolved for an otherwise-identical host config, both with and
+// without PI_CODING_AGENT_DIR set. Pre-#2210 the sandbox-exec branch
+// resolved to the per-session staging HOME, so resume never found the
+// transcript pi had written to the host root.
+func TestPIResumeSessionsRoot_SandboxExecEqualsHost(t *testing.T) {
+	const instanceID = "22102210-2210-2210-2210-221022102210"
+	const sessionName = "myrepo@feature"
+	const worktree = "/tmp/test-2210-worktree"
+	const harnessSessionID = "019e2210-aaaa-bbbb-cccc-000000000000"
+
+	hostCfg := Config{
+		SessionName:      sessionName,
+		Worktree:         worktree,
+		HarnessSessionID: harnessSessionID,
+	}
+	sandboxCfg := sandboxExecResumeCfg(sessionName, worktree, harnessSessionID, instanceID)
+
+	assertEqualRoots := func(t *testing.T) {
+		t.Helper()
+		hostRoot, ok := piResumeSessionsRoot(hostCfg)
+		if !ok {
+			t.Fatalf("piResumeSessionsRoot(host): ok=false, want true")
+		}
+		sandboxRoot, ok := piResumeSessionsRoot(sandboxCfg)
+		if !ok {
+			t.Fatalf("piResumeSessionsRoot(sandbox-exec): ok=false, want true")
+		}
+		if sandboxRoot != hostRoot {
+			t.Errorf("piResumeSessionsRoot: sandbox-exec root %q != host root %q (#2210)",
+				sandboxRoot, hostRoot)
+		}
+	}
+
+	t.Run("home-fallback", func(t *testing.T) {
+		clearPICodingAgentDir(t)
+		t.Setenv("HOME", t.TempDir())
+		assertEqualRoots(t)
+	})
+
+	t.Run("pi-coding-agent-dir", func(t *testing.T) {
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+		assertEqualRoots(t)
 	})
 }
 
@@ -304,9 +370,10 @@ func TestEncodePiCWD_MatchesArchiveImpl(t *testing.T) {
 
 // TestPIResumeSessionsRoot_PICodingAgentDir verifies the issue #2185 fix at
 // the resume layer: when PI_CODING_AGENT_DIR is set on the host, the
-// resolver returns <dir>/sessions (NOT <home>/.pi/agent/sessions) for host
-// and bwrap modes. Sandbox-exec is unchanged - it always uses the staging
-// HOME formula regardless of host env vars.
+// resolver returns <dir>/sessions (NOT <home>/.pi/agent/sessions) for every
+// mode — including sandbox-exec, which post-#2210 follows the same host
+// resolution (the dispatcher injects PI_CODING_AGENT_DIR into the sandbox
+// env, so pi writes to the host root).
 func TestPIResumeSessionsRoot_PICodingAgentDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -348,29 +415,110 @@ func TestPIResumeSessionsRoot_PICodingAgentDir(t *testing.T) {
 
 	t.Run("sandbox-exec", func(t *testing.T) {
 		const instanceID = "99999999-2185-2185-2185-218521852185"
-		cfg := Config{
-			InstanceID:              instanceID,
-			PIAgentConfigHostDir:    "/some/host/stage",
-			PIAgentConfigSandboxDir: "/some/host/stage",
-		}
+		cfg := sandboxExecResumeCfg("myrepo@sbx", "/tmp/wt", "some-id", instanceID)
 		got, ok := piResumeSessionsRoot(cfg)
 		if !ok {
 			t.Fatalf("piResumeSessionsRoot(sandbox-exec): ok=false, want true")
 		}
-		// Sandbox-exec must NOT pick up the host's PI_CODING_AGENT_DIR.
-		if got == wantHostRoot {
-			t.Errorf("piResumeSessionsRoot(sandbox-exec) returned the host PI_CODING_AGENT_DIR root %q; want a staging-HOME path",
-				got)
+		// Post-#2210: sandbox-exec follows the host's PI_CODING_AGENT_DIR
+		// resolution — pi writes there, so resume must look there.
+		if got != wantHostRoot {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want host root %q (PI_CODING_AGENT_DIR=%q)",
+				got, wantHostRoot, piDataRoot)
 		}
+		// Defensive: must NOT resolve under the per-session staging HOME.
 		stagingHome, err := SandboxExecStagingHomePath(instanceID)
 		if err != nil {
 			t.Fatalf("SandboxExecStagingHomePath: %v", err)
 		}
-		wantSandbox := filepath.Join(stagingHome, ".pi", "agent", "sessions")
-		if got != wantSandbox {
-			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want %q", got, wantSandbox)
+		if strings.HasPrefix(got, stagingHome) {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the staging HOME %q (#2210)",
+				got, stagingHome)
 		}
 	})
+}
+
+// TestPIInvocation_Resume_SandboxExec_AppendsSessionFromHostRoot exercises
+// AC #1 of issue #2210 end-to-end: for a sandbox-exec-shaped config, when pi
+// wrote its transcript JSONL under the host root
+// ($PI_CODING_AGENT_DIR/sessions/<encoded-cwd>/), PIInvocation must find it
+// and append --session <id>. Pre-#2210 the resolver looked in the staging
+// HOME instead, so --session was never appended and every restore started a
+// fresh conversation.
+func TestPIInvocation_Resume_SandboxExec_AppendsSessionFromHostRoot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const sessionName = "myrepo@sbx-resume"
+	const worktree = "/Users/user/code/myrepo/sbx-resume"
+	const harnessSessionID = "019e2210-1111-2222-3333-444444444444"
+	const instanceID = "aaaa2210-bbbb-cccc-dddd-eeeeffff0000"
+
+	// Plant the JSONL under the HOST root — where pi actually writes for
+	// sandbox-exec sessions (the dispatcher injects PI_CODING_AGENT_DIR).
+	dir := filepath.Join(piDataRoot, "sessions", encodePiCWD(worktree))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir host-root sessions dir: %v", err)
+	}
+	jsonl := filepath.Join(dir, "2026-06-11T10-00-00-000Z_"+harnessSessionID+".jsonl")
+	if err := os.WriteFile(jsonl, []byte("{\"type\":\"session\"}\n"), 0o600); err != nil {
+		t.Fatalf("write host-root session file: %v", err)
+	}
+
+	cfg := sandboxExecResumeCfg(sessionName, worktree, harnessSessionID, instanceID)
+	cfg.InitialPrompt = "do the thing"
+
+	args := PIInvocation(cfg)
+
+	if !hasPair(args, "--session", harnessSessionID) {
+		t.Errorf("expected --session %s in args for sandbox-exec config (transcript at host root %q); got %v",
+			harnessSessionID, piDataRoot, args)
+	}
+}
+
+// TestPIInvocation_Resume_SandboxExec_MissingTranscriptStartsFresh exercises
+// the #2210 edge-case AC: when no prior transcript exists at the host root
+// for the given session ID, resume must log the not-found warning and start
+// a fresh conversation (no --session flag appended) — best-effort, never
+// fatal.
+func TestPIInvocation_Resume_SandboxExec_MissingTranscriptStartsFresh(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
+
+	const sessionName = "myrepo@sbx-fresh"
+	const worktree = "/Users/user/code/myrepo/sbx-fresh"
+	const harnessSessionID = "019e2210-9999-8888-7777-666666666666"
+	const instanceID = "ffff2210-0000-1111-2222-333344445555"
+
+	// Deliberately do NOT write a transcript anywhere.
+
+	cfg := sandboxExecResumeCfg(sessionName, worktree, harnessSessionID, instanceID)
+	cfg.InitialPrompt = "do the thing"
+
+	args := PIInvocation(cfg)
+
+	if hasArg(args, "--session") {
+		t.Errorf("expected --session to be absent when no transcript exists at the host root; got %v", args)
+	}
+	// InitialPrompt must still be present as the trailing positional.
+	if args[len(args)-1] != "do the thing" {
+		t.Errorf("expected initial prompt as last positional arg; got %v", args)
+	}
+
+	// Warning line must have been written to the agent-run log.
+	logPath := filepath.Join(stateHome, "prism", "run", sessionDirName(sessionName), "agent-run.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read agent-run.log: %v", err)
+	}
+	want := "[agent-run] warning: pi session " + harnessSessionID + " not found"
+	if !strings.Contains(string(body), want) {
+		t.Errorf("agent-run.log = %q, want substring %q", string(body), want)
+	}
 }
 
 // TestPIInvocation_Resume_PICodingAgentDir is the end-to-end fixture for the

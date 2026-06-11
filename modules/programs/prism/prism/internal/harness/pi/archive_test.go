@@ -380,39 +380,31 @@ func TestArchiveAdapter_Archive_MissingSrcPath_NoError(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_SandboxExec verifies that when IsolationMode
-// is "sandbox-exec", SourcePath uses the per-session staging HOME (not the
-// real home directory). This is bug #1538 fix: sandbox-exec sessions write PI
-// data under <stagingHome>/.pi/agent/sessions/<encoded-cwd>/, not ~/.pi/.
+// is "sandbox-exec", SourcePath resolves the sessions root to the same
+// PI_CODING_AGENT_DIR-honouring host root as host/bwrap mode. This is the
+// issue #2210 fix: pi inside a sandbox-exec session writes its transcripts
+// to the host root (the dispatcher injects PI_CODING_AGENT_DIR=<host
+// ~/.pi/agent> into the sandbox env), NOT the per-session staging HOME the
+// pre-fix branch resolved.
 //
 // The encoded-cwd is derived from the host worktree path because sandbox-exec
-// mounts the worktree at its native path (only $HOME is remapped to the staging
-// HOME inside the sandbox).
-//
-// Issue #2185: sandbox-exec resolution is unaffected by PI_CODING_AGENT_DIR
-// on the host — the env var is set for the in-sandbox launcher, and the
-// host-side adapter resolves the staging-home path directly.
+// mounts the worktree at its native path (only $HOME is remapped inside the
+// sandbox).
 func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
-	// Set a bogus PI_CODING_AGENT_DIR on the host to prove sandbox-exec
-	// ignores it.
-	t.Setenv("PI_CODING_AGENT_DIR", "/totally/bogus/path/that/should/not/be/used")
-	// Redirect $HOME to a temp dir so that SandboxExecStagingHomePath (which
-	// calls os.UserHomeDir internally) writes into a temp dir rather than the
-	// real home directory or /homeless-shelter in the Nix sandbox CI build.
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
 
 	const instanceID = "test-instance-uuid-1234"
 	const sessionID = "d13cc856-f919-4ce9-b733-cf0e25493e62"
 	const worktree = "/tmp/test-sandbox-worktree"
 
-	// Compute where SandboxExecStagingHomePath will resolve, now that $HOME
-	// points at fakeHome.
-	stagingHome := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
-
-	// Create the encoded-cwd directory inside the staging HOME and plant a
-	// matching session file so SourcePath can find it.
+	// Plant the session file under the HOST root —
+	// <piDataRoot>/sessions/<encoded-cwd>/ — where pi actually writes for
+	// sandbox-exec sessions.
 	encodedDir := encodePiCWDForTest(worktree) // --tmp-test-sandbox-worktree--
-	sessDir := filepath.Join(stagingHome, ".pi", "agent", "sessions", encodedDir)
+	sessDir := filepath.Join(piDataRoot, "sessions", encodedDir)
 	if err := os.MkdirAll(sessDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -438,20 +430,80 @@ func TestArchiveAdapter_SourcePath_SandboxExec(t *testing.T) {
 		t.Errorf("SourcePath (sandbox-exec): got %q, want %q", got, filePath)
 	}
 
-	// Must NOT point into the real (fakeHome) .pi directory (only the staging
-	// home inside fakeHome is acceptable).
-	if strings.HasPrefix(got, filepath.Join(fakeHome, ".pi")) {
-		t.Errorf("SourcePath (sandbox-exec) returned real home path %q; expected staging home", got)
+	// Must NOT point into the per-session staging HOME — the pre-#2210
+	// resolver looked there and archives came out transcript-less.
+	stagingHome := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
+	if strings.HasPrefix(got, stagingHome) {
+		t.Errorf("SourcePath (sandbox-exec) resolved under the staging HOME %q; got %q (#2210)",
+			stagingHome, got)
 	}
-	// Must NOT touch the bogus host PI_CODING_AGENT_DIR.
-	if strings.HasPrefix(got, "/totally/bogus") {
-		t.Errorf("SourcePath (sandbox-exec) consulted host PI_CODING_AGENT_DIR; got %q", got)
+}
+
+// TestArchiveAdapter_EndToEnd_SandboxExec is the #2210 regression fixture for
+// the archive path: a sandbox-exec session whose pi transcript lives at the
+// host root must produce an archive containing session.jsonl with that
+// transcript's content. Pre-fix this produced a manifest-only archive because
+// SourcePath looked in the per-session staging HOME, which pi never wrote to.
+func TestArchiveAdapter_EndToEnd_SandboxExec(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	piDataRoot := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", piDataRoot)
+
+	const instanceID = "e2e-sbx-instance-2210"
+	const sessionID = "22102210-aaaa-bbbb-cccc-dddddddddddd"
+	const worktree = "/tmp/prism-e2e-sbx-worktree"
+
+	encodedDir := encodePiCWDForTest(worktree)
+	sessDir := filepath.Join(piDataRoot, "sessions", encodedDir)
+	if err := os.MkdirAll(sessDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	sessionContent := `{"type":"session","version":3,"id":"` + sessionID + `"}` + "\n" +
+		`{"type":"msg_user","content":"hello sandbox-exec"}` + "\n"
+	piFile := filepath.Join(sessDir, "2026-06-11T09-00-00-000Z_"+sessionID+".jsonl")
+	if err := os.WriteFile(piFile, []byte(sessionContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := pi.NewArchiveAdapter()
+	p := harnessarchive.SourceParams{
+		HarnessSessionID: sessionID,
+		IsolationMode:    "sandbox-exec",
+		InstanceID:       instanceID,
+		Worktree:         worktree,
+	}
+
+	srcPath, err := a.SourcePath(p)
+	if err != nil {
+		t.Fatalf("SourcePath: %v", err)
+	}
+	if srcPath != piFile {
+		t.Errorf("SourcePath: got %q, want %q (PI_CODING_AGENT_DIR=%q)", srcPath, piFile, piDataRoot)
+	}
+
+	archiveDir := t.TempDir()
+	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	// The archive must contain the transcript — the pre-#2210 symptom was a
+	// manifest-only archive with no session.jsonl at all.
+	finalJSONL := filepath.Join(archiveDir, "session.jsonl")
+	got, err := os.ReadFile(finalJSONL)
+	if err != nil {
+		t.Fatalf("read archive session.jsonl: %v (#2210: archive must not be transcript-less)", err)
+	}
+	if string(got) != sessionContent {
+		t.Errorf("archive session.jsonl: got %q, want %q", got, sessionContent)
 	}
 }
 
 // TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID verifies that when
-// IsolationMode is "sandbox-exec" but InstanceID is empty, SourcePath falls
-// back to the real home directory rather than returning an error.
+// IsolationMode is "sandbox-exec" but InstanceID is empty, SourcePath resolves
+// to the host root like every other mode (post-#2210, InstanceID plays no part
+// in resolution at all) rather than returning an error.
 func TestArchiveAdapter_SourcePath_SandboxExec_EmptyInstanceID(t *testing.T) {
 	clearPICodingAgentDir(t)
 	// Redirect $HOME so the test does not touch the real home or fail under
@@ -902,13 +954,19 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 }
 
 // TestArchiveAdapter_SourcePath_CrossMode_NoContamination verifies that
-// SourcePath produces paths anchored in the right per-mode root:
+// SourcePath resolves every isolation mode to the SAME host PI sessions root:
 //
-//   - host and bwrap collapse to the SAME host PI sessions root
-//     (post-#1985, bwrap overlays this dir onto the sandbox path so the
-//     host-side resolution is identical).
-//   - sandbox-exec is anchored in the per-instance staging HOME and must
-//     NOT collide with the host/bwrap path.
+//   - host and bwrap collapse to the host root (post-#1985, bwrap overlays
+//     this dir onto the sandbox path so the host-side resolution is
+//     identical).
+//   - sandbox-exec also collapses to the host root (post-#2210, pi inside
+//     the sandbox honours the injected PI_CODING_AGENT_DIR which points at
+//     the host root) and must NOT resolve under the per-session staging
+//     HOME.
+//
+// This doubles as the #2210 regression test on the archive side: the
+// sandbox-exec root must equal the root of an otherwise-identical host
+// config.
 func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 	clearPICodingAgentDir(t)
 	fakeHome := t.TempDir()
@@ -950,42 +1008,44 @@ func TestArchiveAdapter_SourcePath_CrossMode_NoContamination(t *testing.T) {
 		t.Fatalf("SourcePath (sandbox-exec): %v", err)
 	}
 
-	// host and bwrap now collapse to the same root (#1985). sandbox-exec
-	// must still differ.
+	// host and bwrap collapse to the same root (#1985); sandbox-exec
+	// collapses to it too (#2210).
 	if hostPath != bwrapPath {
 		t.Errorf("host and bwrap should collapse to the same root post-#1985; host=%q bwrap=%q",
 			hostPath, bwrapPath)
 	}
-	if hostPath == sandboxPath {
-		t.Errorf("host and sandbox-exec returned the same path: %q", hostPath)
-	}
-	if bwrapPath == sandboxPath {
-		t.Errorf("bwrap and sandbox-exec returned the same path: %q", bwrapPath)
+	if sandboxPath != hostPath {
+		t.Errorf("sandbox-exec should collapse to the same root as host post-#2210; sandbox-exec=%q host=%q",
+			sandboxPath, hostPath)
 	}
 
-	// host: under <fakeHome>/.pi/agent/sessions/
+	// All modes: under <fakeHome>/.pi/agent/sessions/
 	hostPrefix := filepath.Join(fakeHome, ".pi", "agent", "sessions")
 	if !strings.HasPrefix(hostPath, hostPrefix) {
 		t.Errorf("host path %q does not have prefix %q", hostPath, hostPrefix)
 	}
-
-	// bwrap: also under <fakeHome>/.pi/agent/sessions/ (post-#1985).
-	// MUST NOT point under the pre-#1985 per-prism-session staging dir.
 	if !strings.HasPrefix(bwrapPath, hostPrefix) {
 		t.Errorf("bwrap path %q does not have prefix %q (post-#1985 collapses to host root)",
 			bwrapPath, hostPrefix)
 	}
+	if !strings.HasPrefix(sandboxPath, hostPrefix) {
+		t.Errorf("sandbox-exec path %q does not have prefix %q (post-#2210 collapses to host root)",
+			sandboxPath, hostPrefix)
+	}
+
+	// bwrap MUST NOT point under the pre-#1985 per-prism-session staging dir.
 	oldBwrapPrefix := filepath.Join(stateHome, "prism", "run")
 	if strings.HasPrefix(bwrapPath, oldBwrapPrefix) {
 		t.Errorf("bwrap path %q must not point under pre-#1985 staging dir %q",
 			bwrapPath, oldBwrapPrefix)
 	}
-	// sandbox-exec: under <fakeHome>/.local/state/prism/sessions/<instanceID>/home/.pi/agent/sessions/
-	sandboxPrefix := filepath.Join(
+	// sandbox-exec MUST NOT point under the pre-#2210 per-instance staging
+	// HOME — pi never wrote there.
+	oldSandboxPrefix := filepath.Join(
 		fakeHome, ".local", "state", "prism", "sessions", instanceID, "home",
-		".pi", "agent", "sessions",
 	)
-	if !strings.HasPrefix(sandboxPath, sandboxPrefix) {
-		t.Errorf("sandbox-exec path %q does not have prefix %q", sandboxPath, sandboxPrefix)
+	if strings.HasPrefix(sandboxPath, oldSandboxPrefix) {
+		t.Errorf("sandbox-exec path %q must not point under pre-#2210 staging HOME %q",
+			sandboxPath, oldSandboxPrefix)
 	}
 }

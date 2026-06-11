@@ -48,6 +48,42 @@ func TestRemovePiResumeJSONL_RemovesMatchingFile(t *testing.T) {
 	}
 }
 
+// TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot is the #2210
+// regression guard for cleanup: for a sandbox-exec-shaped config, the
+// transcript JSONL lives at the HOST sessions root (pi writes there because
+// the dispatcher injects PI_CODING_AGENT_DIR into the sandbox env), and
+// RemovePiResumeJSONL must remove it from there. Pre-#2210 the resolver
+// pointed at the per-session staging HOME, making the removal a silent no-op
+// that left dead transcripts accumulating under the host root.
+func TestRemovePiResumeJSONL_SandboxExec_RemovesFromHostRoot(t *testing.T) {
+	clearPICodingAgentDir(t)
+	t.Setenv("HOME", t.TempDir())
+
+	const sessionName = "myrepo@sbx-cleanup"
+	const worktree = "/Users/user/code/myrepo/sbx-cleanup"
+	const harnessSessionID = "019e2210-cccc-dddd-eeee-ffff00001111"
+	const instanceID = "12342210-5678-90ab-cdef-001122334455"
+
+	// Plant the transcript at the host root (~/.pi/agent/sessions/… with the
+	// temp HOME) — where pi actually writes for sandbox-exec sessions.
+	path := writeBwrapResumeSession(t, sessionName, worktree, harnessSessionID)
+
+	// Pre-condition.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("pre-condition: stat %s: %v", path, err)
+	}
+
+	cfg := sandboxExecResumeCfg(sessionName, worktree, harnessSessionID, instanceID)
+	if err := RemovePiResumeJSONL(cfg); err != nil {
+		t.Fatalf("RemovePiResumeJSONL (sandbox-exec): %v", err)
+	}
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("host-root transcript %s still exists after RemovePiResumeJSONL for a sandbox-exec config (err=%v); want removed (#2210)",
+			path, err)
+	}
+}
+
 // TestRemovePiResumeJSONL_LeavesSiblingTranscriptsAlone verifies the targeted
 // suffix match: a JSONL belonging to a DIFFERENT harness_session_id under the
 // same encoded-cwd directory must not be touched.
