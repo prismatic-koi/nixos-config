@@ -187,17 +187,29 @@ is written to `/tmp` — the full agent reasoning is available via
 5. Non-blocking observations on a failed round MAY also be actioned alongside
    the mandatory fix — the worker decides what to include.
 
-**On ERROR (one or more agents failed to start):**
+**On ERROR (one or more agents failed to start or stalled mid-run):**
 
 The review-complete header will say "infrastructure failure" and instruct you
-to re-run. This is **not** a code-quality verdict — the agent never ran, so
-there are no blocking issues to fix. Simply re-run `prism review <pr>`.
+to re-run. This is **not** a code-quality verdict — the affected agents
+produced no verdict — so there are no blocking issues to fix from them.
+The report distinguishes two infrastructure classes (#2239):
+
+- **failed to start (no frames received)** — the agent never ran
+  (spawn/handshake/auth failure). Worth an immediate re-run.
+- **stalled mid-run after `<elapsed>` (`<n>` frame(s) received, last at
+  `<t>`)** — the agent ran and did real work, then went silent (stream
+  starvation, provider limit, payload wedge). Re-run once; if the same
+  agent stalls across multiple consecutive rounds, escalate to the
+  coordinator instead of burning further rounds on blind re-runs —
+  repeated stalls under concurrent load suggest rate/subscription limits
+  that a retry will not fix.
 
 If the prompt is mixed — some agents returned FAIL verdicts **and** some
-failed to start — fix the blocking issues from the agents that ran, then
-re-run `prism review <pr>` to cover the agents that never started. Count
-re-run cycles from the first round that had a full set of agent results; do
-not count infrastructure-failure rounds toward your 3-cycle limit.
+failed to start or stalled mid-run — fix the blocking issues from the agents
+that ran, then re-run `prism review <pr>` to cover the agents that produced
+no verdict. Count re-run cycles from the first round that had a full set of
+agent results; do not count infrastructure-failure rounds toward your
+3-cycle limit.
 
 **On PASS:**
 

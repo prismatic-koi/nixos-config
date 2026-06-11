@@ -391,11 +391,22 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 
 		switch mr.State {
 		case "error":
-			// Distinguish a no-start failure from a mid-run crash: when a
-			// startup_error event was written by the sidecar's writeStartupError,
-			// StartupError is non-empty and indicates the container never bound
-			// its port. Label it clearly so the coordinator treats it as an
-			// infrastructure failure rather than a code-quality verdict (#1222).
+			// Distinguish the failure classes within state "error" (#1222,
+			// #2239):
+			//
+			//   - no-start: a startup_error event was written (by the
+			//     sidecar's writeStartupError, or by the inactivity watchdog
+			//     when it fired with zero inbound frames) — the agent never
+			//     ran. StartupError is non-empty.
+			//   - mid-run stall: a stall_error event was written by the
+			//     inactivity watchdog after one or more inbound frames were
+			//     received — the agent ran, then went silent. StallError is
+			//     non-empty and includes elapsed time, frame count, and the
+			//     last-frame timestamp.
+			//   - anything else: a mid-run crash.
+			//
+			// Label each clearly so the coordinator treats the first two as
+			// infrastructure failures rather than code-quality verdicts.
 			//
 			// Note: "interrupted" is intentionally NOT bucketed with "error" here
 			// (#1495). An interrupted agent that was redirected via `prism prompt`
@@ -411,6 +422,15 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 					Agent:   ag,
 					Passed:  false,
 					Output:  fmt.Sprintf("ERROR: agent failed to start (no-start): %s", mr.StartupError),
+					IsError: true,
+				}
+			} else if mr.StallError != "" {
+				// The StallError reason already begins with "stalled mid-run
+				// after <elapsed> (<n> frame(s) received, last at <t>)".
+				results[i] = AgentResult{
+					Agent:   ag,
+					Passed:  false,
+					Output:  fmt.Sprintf("ERROR: agent %s", mr.StallError),
 					IsError: true,
 				}
 			} else {
@@ -468,7 +488,8 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 	sb.WriteString(fmt.Sprintf("## Review complete: PR #%s (round %d)\n\n", prNumber, round))
 
 	// Count no-start failures: agents whose sidecar wrote a startup_error event
-	// (container never bound its port). These are infrastructure failures, not
+	// (container never bound its port, or the inactivity watchdog fired with
+	// zero inbound frames). These are infrastructure failures, not
 	// code-quality signals, and must be treated differently from FAIL verdicts.
 	var noStartSessions []string
 	for _, sess := range agentSessions {
@@ -476,6 +497,29 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 			noStartSessions = append(noStartSessions, sess)
 		}
 	}
+
+	// Count mid-run stalls (#2239): agents whose inactivity watchdog fired
+	// after one or more inbound frames were received — the agent ran, then
+	// went silent (stream starvation, provider limit, payload wedge). Like
+	// no-starts these are infrastructure failures, but they are labelled
+	// distinctly because the operational response differs: a never-started
+	// agent suggests config/infra and is worth an immediate retry, while
+	// repeated stalls under concurrent load suggest rate/subscription limits
+	// where blind retries burn rounds. Only counted when the member's
+	// terminal state is "error" — a stale stall_error event on a member that
+	// later recovered to "finished" (#1495-style resume) must not relabel a
+	// real verdict.
+	var stalledSessions []string
+	for _, sess := range agentSessions {
+		mr, ok := groupData[sess]
+		if !ok {
+			continue
+		}
+		if mr.State == "error" && mr.StartupError == "" && mr.StallError != "" {
+			stalledSessions = append(stalledSessions, sess)
+		}
+	}
+	infraFailureCount := len(noStartSessions) + len(stalledSessions)
 
 	// Count ran-but-no-parseable-verdict failures (#1995): agents that
 	// terminated in `finished` state with no startup_error, but whose
@@ -511,14 +555,41 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		sb.WriteString("**All review agents failed to start (infrastructure failure).** ")
 		sb.WriteString("This is NOT a code-quality verdict — no agents ran. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
-	case len(noStartSessions) > 0:
-		// Mixed: some agents returned FAIL/PASS verdicts; others failed to start.
-		// Surface both signals so the coordinator knows to both fix code issues
-		// AND re-run for the agents that never ran.
-		sb.WriteString("**One or more review agents failed AND one or more failed to start.** ")
-		sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
-		sb.WriteString("to cover the agents that failed to start (infrastructure failure). ")
-		sb.WriteString("Do not treat no-start errors as code-quality verdicts.\n\n")
+	case len(stalledSessions) > 0 && len(stalledSessions) == len(agentSessions):
+		// Every agent stalled mid-run — infrastructure failure, but distinct
+		// from no-start: the agents DID run and then went silent (#2239).
+		sb.WriteString("**All review agents stalled mid-run (infrastructure failure).** ")
+		sb.WriteString("This is NOT a code-quality verdict — the agents ran but stopped producing frames before completing. ")
+		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL. ")
+		sb.WriteString("Repeated mid-run stalls under concurrent load may indicate provider rate/subscription limits — escalate rather than burning rounds on blind re-runs if this recurs.\n\n")
+	case infraFailureCount > 0 && infraFailureCount == len(agentSessions):
+		// Every agent infra-failed, in a mix of the two classes (#2239).
+		sb.WriteString(fmt.Sprintf("**All review agents failed before completing (infrastructure failure): %d failed to start (no frames received), %d stalled mid-run.** ",
+			len(noStartSessions), len(stalledSessions)))
+		sb.WriteString("This is NOT a code-quality verdict — no agent produced a verdict. ")
+		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
+	case infraFailureCount > 0:
+		// Mixed: some agents returned FAIL/PASS verdicts; others failed to
+		// start and/or stalled mid-run. Surface both signals so the
+		// coordinator knows to both fix code issues AND re-run for the agents
+		// that produced no verdict.
+		switch {
+		case len(stalledSessions) == 0:
+			sb.WriteString("**One or more review agents failed AND one or more failed to start.** ")
+			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
+			sb.WriteString("to cover the agents that failed to start (infrastructure failure). ")
+			sb.WriteString("Do not treat no-start errors as code-quality verdicts.\n\n")
+		case len(noStartSessions) == 0:
+			sb.WriteString("**One or more review agents failed AND one or more stalled mid-run.** ")
+			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
+			sb.WriteString("to cover the agents that stalled mid-run (infrastructure failure). ")
+			sb.WriteString("Do not treat mid-run stalls as code-quality verdicts.\n\n")
+		default:
+			sb.WriteString("**One or more review agents failed AND one or more failed to start or stalled mid-run.** ")
+			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
+			sb.WriteString("to cover the agents that failed to start (no frames received) or stalled mid-run (infrastructure failure). ")
+			sb.WriteString("Do not treat no-start errors or mid-run stalls as code-quality verdicts.\n\n")
+		}
 	case len(noVerdictSessions) > 0:
 		// One or more agents ran to `finished` but produced no parseable
 		// `<verdict>` tag (#1995). The signal is incomplete — not a

@@ -589,3 +589,204 @@ func TestInactivityWatchdog_NotifyRegisteredWithWaitGroup(t *testing.T) {
 	conn.Close()
 	_ = wait()
 }
+
+// ── #2239: stall-vs-no-start classification ──────────────────────────────────
+//
+// The inactivity watchdog previously collapsed two failure classes into one
+// "failed to start" label. The sidecar now tracks inbound frames per session
+// (recordInboundFrame) and classifies the timeout on fire:
+//
+//   - zero frames  → never-started: a startup_error event is written and the
+//     parent notification retains the "failed to start" wording, with the
+//     "(no frames received)" distinguishing label.
+//   - ≥1 frame     → mid-run stall: a stall_error event is written and the
+//     parent notification reads "stalled mid-run after <elapsed> (<n>
+//     frame(s) received, last at <t>)".
+
+// TestInactivityWatchdog_NoFrames_ClassifiedAsFailedToStart drives a session
+// through a successful wire handshake but never sends a single frame, then
+// fires the watchdog. The failure must be classified as never-started: a
+// startup_error event (NOT stall_error) and a parent notification that says
+// "failed to start (no frames received)".
+func TestInactivityWatchdog_NoFrames_ClassifiedAsFailedToStart(t *testing.T) {
+	workerSession := "prism-test@worker-2239-nostart"
+	reviewSession := workerSession + "~review-1-review-security"
+
+	bus := sidecartest.NewIsolated(t, workerSession)
+
+	sockPath := shortSockPath(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           reviewSession,
+		Repo:                  "prism-test",
+		Worktree:              t.TempDir(),
+		DB:                    bus.DB,
+		Clock:                 clk,
+		AgentRole:             "review-security",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		ActivityTimeout:       30 * time.Second,
+		IsolationMode:         config.IsolationMode("host"),
+		Harness:               pih.New("", "", ""),
+	}
+	sc := New(cfg)
+	wait := runSocketPipeSidecar(sc)
+
+	// Handshake completes (hello/hello_ack) but no frame is ever sent — the
+	// hello is consumed by the handshake loop, not handlePipeFrame, so the
+	// inbound-frame count stays at zero.
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Timer #1 is armed by the post-handshake touchActivity.
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no activity watchdog timer registered after handshake")
+	}
+	timer.Fire()
+
+	if got := waitForState(t, bus.DB, reviewSession, string(agent.StateError), 2*time.Second); got != string(agent.StateError) {
+		t.Fatalf("state after watchdog fire: got %q, want %q", got, agent.StateError)
+	}
+	sc.WaitNotifies()
+
+	// Event classification: startup_error written, stall_error absent.
+	events := getEvents(t, bus.DB, reviewSession)
+	var startupErrReason string
+	for _, ev := range events {
+		switch ev.Type {
+		case "stall_error":
+			t.Errorf("no-frames timeout wrote a stall_error event (payload: %s) — must be classified as never-started", ev.Payload)
+		case "startup_error":
+			startupErrReason = ev.Payload
+		}
+	}
+	if startupErrReason == "" {
+		t.Fatal("no startup_error event written for a no-frames inactivity timeout")
+	}
+	if !strings.Contains(startupErrReason, "inactivity timeout") || !strings.Contains(startupErrReason, "no frames received") {
+		t.Errorf("startup_error reason missing classification detail: %s", startupErrReason)
+	}
+
+	// Parent notification retains the failed-to-start report with the
+	// distinguishing label.
+	bodies := bus.CopyBodies()
+	if len(bodies) == 0 {
+		t.Fatal("no notification delivered to parent worker")
+	}
+	var found bool
+	for _, b := range bodies {
+		if strings.Contains(b, "failed to start (no frames received)") && strings.Contains(b, "inactivity timeout") {
+			found = true
+		}
+		if strings.Contains(b, "stalled mid-run") {
+			t.Errorf("no-frames notification must not mention a mid-run stall: %q", b)
+		}
+	}
+	if !found {
+		t.Errorf("notification missing 'failed to start (no frames received)' + 'inactivity timeout'; bodies: %v", bodies)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestInactivityWatchdog_AfterFrames_ClassifiedAsMidRunStall drives a session
+// through real review work (turn_start, msg_assistant, turn_end — the exact
+// #2228 shape: assistant turns, then silence) and fires the watchdog. The
+// failure must be classified as a mid-run stall: a stall_error event (NOT
+// startup_error) whose reason includes elapsed time, frame count, and the
+// last-frame timestamp, and a parent notification that says "stalled mid-run"
+// rather than "failed to start".
+func TestInactivityWatchdog_AfterFrames_ClassifiedAsMidRunStall(t *testing.T) {
+	workerSession := "prism-test@worker-2239-stall"
+	reviewSession := workerSession + "~review-1-review-security"
+
+	bus := sidecartest.NewIsolated(t, workerSession)
+
+	sockPath := shortSockPath(t)
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:           reviewSession,
+		Repo:                  "prism-test",
+		Worktree:              t.TempDir(),
+		DB:                    bus.DB,
+		Clock:                 clk,
+		AgentRole:             "review-security",
+		HarnessName:           "pi",
+		HarnessPipeSockPath:   sockPath,
+		StartupConnectTimeout: 5 * time.Second,
+		PipeReconnectTimeout:  200 * time.Millisecond,
+		ActivityTimeout:       30 * time.Second,
+		IsolationMode:         config.IsolationMode("host"),
+		Harness:               pih.New("", "", ""),
+	}
+	sc := New(cfg)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Three frames of real work, then silence.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "Reading the diff…"})
+	sendJSON(t, conn, map[string]any{"type": "turn_end"})
+
+	if got := waitForState(t, bus.DB, reviewSession, string(agent.StateActive), 2*time.Second); got != string(agent.StateActive) {
+		t.Fatalf("state after turn_start: got %q, want %q", got, agent.StateActive)
+	}
+
+	// Timer registration: #1 post-handshake, #2 turn_start, #3 msg_assistant,
+	// #4 turn_end. Fire the live timer (#4).
+	timer := clk.WaitForTimerCount(4, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no activity watchdog timer registered after turn_end")
+	}
+	timer.Fire()
+
+	if got := waitForState(t, bus.DB, reviewSession, string(agent.StateError), 2*time.Second); got != string(agent.StateError) {
+		t.Fatalf("state after watchdog fire: got %q, want %q", got, agent.StateError)
+	}
+	sc.WaitNotifies()
+
+	// Event classification: stall_error written, startup_error absent.
+	events := getEvents(t, bus.DB, reviewSession)
+	var stallReason string
+	for _, ev := range events {
+		switch ev.Type {
+		case "startup_error":
+			t.Errorf("mid-run stall wrote a startup_error event (payload: %s) — must NOT be classified as never-started", ev.Payload)
+		case "stall_error":
+			stallReason = ev.Payload
+		}
+	}
+	if stallReason == "" {
+		t.Fatal("no stall_error event written for a post-frames inactivity timeout")
+	}
+	for _, wantSub := range []string{"stalled mid-run after", "3 frame(s) received", "last at", "inactivity timeout"} {
+		if !strings.Contains(stallReason, wantSub) {
+			t.Errorf("stall_error reason missing %q: %s", wantSub, stallReason)
+		}
+	}
+
+	// Parent notification carries the stall label, not failed-to-start.
+	bodies := bus.CopyBodies()
+	if len(bodies) == 0 {
+		t.Fatal("no notification delivered to parent worker")
+	}
+	var found bool
+	for _, b := range bodies {
+		if strings.Contains(b, "stalled mid-run after") && strings.Contains(b, "frame(s) received") {
+			found = true
+		}
+		if strings.Contains(b, "failed to start") {
+			t.Errorf("mid-run stall notification must not say 'failed to start': %q", b)
+		}
+	}
+	if !found {
+		t.Errorf("notification missing 'stalled mid-run after … frame(s) received'; bodies: %v", bodies)
+	}
+
+	conn.Close()
+	_ = wait()
+}

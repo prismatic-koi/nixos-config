@@ -141,6 +141,21 @@ func (s *Sidecar) notifyInvestigatorCompletion(state agent.AgentState, finalText
 // suppressed via the isReviewAgentSession guard in notifyCoordinator. This
 // function is an exception only for the startup-failure path.
 func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
+	s.notifyParentWorkerOnReviewFailure(fmt.Sprintf("failed to start: %v", startupErr))
+}
+
+// notifyParentWorkerOnReviewFailure is the shared delivery path for
+// review-agent failure notifications to the parent worker. failureText is
+// the failure description beginning with the failure-class verb — e.g.
+// "failed to start: …" (startup failures, watchdog fire with no frames
+// received) or "stalled mid-run after …" (watchdog fire after one or more
+// inbound frames, #2239). The delivered text is
+// "review agent <session> <failureText>".
+//
+// Same contract as notifyParentWorkerOnStartupFailure historically had: only
+// applies to review-agent session names (silent no-op otherwise), and
+// delivery failures are logged, never fatal.
+func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 	// Only apply to review-agent sessions.
 	parentSession, isReview := reviewAgentParentSession(s.cfg.SessionName)
 	if !isReview {
@@ -162,7 +177,7 @@ func (s *Sidecar) notifyParentWorkerOnStartupFailure(startupErr error) {
 		return
 	}
 
-	notifyText := fmt.Sprintf("review agent %s failed to start: %v", s.cfg.SessionName, startupErr)
+	notifyText := fmt.Sprintf("review agent %s %s", s.cfg.SessionName, failureText)
 
 	// All sessions use the pi harness — route through the host-API Unix socket.
 	if err := promptdelivery.DeliverToSession(parentSession, parentStatus, notifyText, buildNotifyPromptBody, "", "followUp"); err != nil {

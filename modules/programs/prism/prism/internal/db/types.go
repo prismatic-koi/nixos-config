@@ -97,6 +97,7 @@ type GroupMemberResult struct {
 	State       string // terminal state: finished / interrupted / error / deleted
 	LastMessage  string // last assistant turn from agent_events; empty when none
 	StartupError string // reason from startup_error event; empty when not a no-start failure
+	StallError   string // reason from stall_error event (inactivity watchdog fired after inbound frames were seen, #2239); empty when the agent did not stall mid-run
 }
 
 // TokenTurn holds per-turn token and cost data for a single msg_assistant event.
