@@ -54,20 +54,35 @@ import (
 //     test binary mid-run — t.Cleanup will not fire in that case, but the
 //     SIGTERM handler will.
 //
-//  3. Leak guard (#1180): snapshots the live tmux server's session list and
-//     the live agent_status and sessions tables before running tests, then
-//     asserts no new entries appear after the suite completes. This catches
-//     any test that creates real sessions in the live environment. The guard
-//     uses the DB path that was live at suite start (before any test overrides
-//     XDG_STATE_HOME), so it reliably reads the production database.
+//  3. Leak guard (#1180): snapshots the live agent_status and sessions
+//     tables and the live worktree root before running tests, then asserts
+//     no new entries appear after the suite completes. This catches any test
+//     that creates real DB rows or worktrees in the live environment. The
+//     guard uses the DB path that was live at suite start (before any test
+//     overrides XDG_STATE_HOME), so it reliably reads the production
+//     database. The guard's original live-tmux-server session diff was
+//     dropped in #2227: since the suite-wide tmux isolation (#2214/#2224)
+//     THIS package's code under test cannot reach the live server by
+//     construction, so for cmd/ a live-server diff could only observe
+//     concurrent host activity (e.g. a parallel worker's review agents
+//     spawning mid-suite) and misattribute it to the suite — a false
+//     positive at ~1-in-6 full-suite runs on a multi-worker host. cmd/
+//     isolation regressions are instead caught deterministically by
+//     TestSuiteTmuxIsolation_HostServerUnreachable (tmux_isolation_test.go).
+//     One residual: the diff had also incidentally caught a CROSS-package
+//     leak (#1732, internal/review) via parallel `go test ./...` window
+//     overlap; that signal was indistinguishable from the false-positive
+//     class (both are live `*~review-N-review-*` sessions) and is gone —
+//     #2230 tracks #2224-style suite-wide isolation for internal/review.
+//     The DB-row and worktree diffs are retained because no equivalent
+//     by-construction isolation exists for them (tests opt in per-test via
+//     XDG_STATE_HOME / SetTestDBPath / PRISM_SPAWN_PATH overrides).
 //
-//  4. Tmux isolation (#2214): after taking the leak-guard before-snapshots,
-//     clears $TMUX and redirects $TMUX_TMPDIR to an empty directory so no
-//     code under test can reach the live host tmux server via the
-//     default-socket fallback (tmux.CurrentSession et al.). See
-//     tmux_isolation_test.go for the full rationale. The original
-//     environment is restored after m.Run() so the leak-guard
-//     after-snapshots consult the same live server as the before-snapshots.
+//  4. Tmux isolation (#2214): clears $TMUX and redirects $TMUX_TMPDIR to an
+//     empty directory so no code under test can reach the live host tmux
+//     server via the default-socket fallback (tmux.CurrentSession et al.).
+//     See tmux_isolation_test.go for the full rationale. The original
+//     environment is restored after m.Run().
 //
 //  5. Sandbox-env isolation (#2217): unsets the PRISM_* variables the
 //     sidecar injects into agent sessions (PRISM_SESSION_NAME,
@@ -95,13 +110,11 @@ func TestMain(m *testing.M) {
 	// Leak guard: snapshot live environment before tests.
 	// Capture the DB path now, before any test overrides XDG_STATE_HOME.
 	liveDBPath := dbPath()
-	beforeSessions := snapshotTmuxSessions()
 	beforeAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
 	beforeSessionsRows := snapshotSessionsRows(liveDBPath)
 	beforeWorktrees := snapshotWorktreeDirs()
 
-	// Tmux isolation (#2214): applied after the before-snapshots above (they
-	// must see the real live server), undone before the after-snapshots below.
+	// Tmux isolation (#2214).
 	restoreTmuxEnv := isolateSuiteFromHostTmux()
 	// Sandbox-env isolation (#2217): unset the sidecar-injected PRISM_* vars
 	// so the suite controls its full environment surface.
@@ -117,20 +130,9 @@ func TestMain(m *testing.M) {
 	// have left intentional state, and we don't want to obscure the primary
 	// failure with a secondary leak report.
 	if code == 0 {
-		afterSessions := snapshotTmuxSessions()
 		afterAgentStatusRows := snapshotAgentStatusRows(liveDBPath)
 		afterSessionsRows := snapshotSessionsRows(liveDBPath)
 		afterWorktrees := snapshotWorktreeDirs()
-		if leaked := setDiff(afterSessions, beforeSessions); len(leaked) > 0 {
-			fmt.Fprintf(os.Stderr,
-				"\n[LEAK GUARD] cmd test suite created %d new live tmux session(s):\n",
-				len(leaked))
-			for _, s := range leaked {
-				fmt.Fprintf(os.Stderr, "  - %s\n", s)
-			}
-			fmt.Fprintln(os.Stderr, "Fix: ensure tests use withNoopTmux() or an isolated test server.")
-			code = 1
-		}
 		if leaked := setDiff(afterAgentStatusRows, beforeAgentStatusRows); len(leaked) > 0 {
 			fmt.Fprintf(os.Stderr,
 				"\n[LEAK GUARD] cmd test suite created %d new live agent_status row(s):\n",
@@ -164,23 +166,6 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
-}
-
-// snapshotTmuxSessions returns the sorted list of session names in the live
-// tmux server, or nil if tmux is not running.
-func snapshotTmuxSessions() []string {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
-	if err != nil {
-		return nil // tmux server not running — treat as empty
-	}
-	var names []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			names = append(names, line)
-		}
-	}
-	sort.Strings(names)
-	return names
 }
 
 // snapshotAgentStatusRows returns the sorted list of session_names in
