@@ -20,31 +20,10 @@
       envPrefix = lib.concatStringsSep " " (
         lib.mapAttrsToList (name: value: "${name}=${value}") claudeCodeEnvVars
       );
-      jsonFormat = pkgs.formats.json { };
-      # claude-code settings, rendered to the XDG config dir below
-      # (~/.config/claude/settings.json — NOT the upstream home-manager
-      # module's hardcoded ~/.claude/settings.json target; see the
-      # CLAUDE_CONFIG_DIR note further down). The $schema key mirrors what
-      # programs.claude-code.settings would have emitted.
-      claudeSettings = {
-        "$schema" = "https://json.schemastore.org/claude-code-settings.json";
-        permissions = {
-          defaultMode = "acceptEdits";
-          allow = [
-            # Kubernetes tools
-            "Bash(flux:*)"
-            "Bash(helm:*)"
-            "Bash(kubectl:*)"
-            # nix commands
-            "Bash(nix build:*)"
-            "Bash(nixfmt:*)"
-          ];
-        };
-      };
     in
     {
       home-manager.users.${config.nx.username} =
-        { lib, ... }:
+        { lib, config, ... }:
         {
           programs.zsh.shellAliases = {
             # set environment variables for claude-code
@@ -63,30 +42,42 @@
           #       )
           #     '';
 
-          # CLAUDE_CONFIG_DIR relocates claude-code's config dir AND
-          # ~/.claude.json to the XDG path (verified effective in claude-code
-          # 2.1.161). Set host-wide here and delivered into prism sandboxes
-          # via nx.programs.prism.agent.envVars (issue #2243, Step 3c of the
-          # #2132 staging-HOME elimination design).
-          #
-          # Residual risk, accepted by design (#2132 §4 Step 3c): a claude
-          # launch that does not source the home-manager session vars (e.g. a
-          # bare login shell without hm integration, or a GUI process) falls
-          # back to ~/.claude and forks its state from the migrated copy.
-          # CLI-only usage on these machines makes this low — documented, not
-          # engineered around.
-          home.sessionVariables.CLAUDE_CONFIG_DIR = "$HOME/.config/claude";
-
           programs.claude-code = {
-            # Installs the claude-code package only. Settings deliberately NOT
-            # set via programs.claude-code.settings: the upstream home-manager
-            # module hardcodes its settings.json target to ~/.claude/, which
-            # CLAUDE_CONFIG_DIR has relocated away from. The settings file is
-            # rendered at the XDG path via xdg.configFile below instead.
             enable = true;
+            # Relocates claude-code's config dir AND ~/.claude.json to the XDG
+            # path (verified effective in claude-code 2.1.161). The upstream
+            # home-manager module renders settings.json into this dir and
+            # auto-exports CLAUDE_CONFIG_DIR via home.sessionVariables
+            # whenever it differs from the ~/.claude default — no hand-rolled
+            # env var or settings-file emission needed here. The value is
+            # delivered into prism sandboxes via nx.programs.prism.agent.envVars
+            # (issue #2243, Step 3c of the #2132 staging-HOME elimination
+            # design); keep this literal path in agreement with agent.envVars
+            # (default.nix), the prism SBPL grant / bwrap mount, and the
+            # migration destination below.
+            #
+            # Residual risk, accepted by design (#2132 §4 Step 3c): a claude
+            # launch that does not source the home-manager session vars (e.g.
+            # a bare login shell without hm integration, or a GUI process)
+            # falls back to ~/.claude and forks its state from the migrated
+            # copy. CLI-only usage on these machines makes this low —
+            # documented, not engineered around.
+            configDir = "${config.home.homeDirectory}/.config/claude";
+            settings = {
+              permissions = {
+                defaultMode = "acceptEdits";
+                allow = [
+                  # Kubernetes tools
+                  "Bash(flux:*)"
+                  "Bash(helm:*)"
+                  "Bash(kubectl:*)"
+                  # nix commands
+                  "Bash(nix build:*)"
+                  "Bash(nixfmt:*)"
+                ];
+              };
+            };
           };
-          xdg.configFile."claude/settings.json".source =
-            jsonFormat.generate "claude-code-settings.json" claudeSettings;
 
           # One-time idempotent migration of pre-#2243 claude state
           # (~/.claude/{history.jsonl,projects,plugins,telemetry,backups} and
