@@ -439,9 +439,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// dir are all emitted earlier in this function via the
 	// StandardSandboxMounts walk (A2.M1) — the inline blocks that previously
 	// duplicated those mounts here have been removed. The aws
-	// config/credentials canonical-path binds were dropped in #2234; those
-	// files are reached via AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE
-	// env vars at the host XDG paths instead.
+	// config/credentials canonical-path ($HOME/.aws/*) binds were dropped in
+	// #2234; the files are now bound Dst==Src at the host XDG paths and
+	// reached via the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars
+	// pointing there.
 
 	// ── Environment variables ────────────────────────────────────────────────
 	// Inject the per-session env vars as --setenv K V pairs.

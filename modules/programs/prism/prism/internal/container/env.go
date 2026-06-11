@@ -20,9 +20,11 @@ type EnvAppender func(args []string, k, v string) []string
 //     only override the correctly-mounted location (un-suppression is
 //     Step 3b of #2132). AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE
 //     are NOT suppressed (issue #2234, Step 3a of #2132): the canonical-path
-//     delivery for the aws config/credentials was dropped from both
-//     isolators, and the aws CLI resolves them via these env vars at the
-//     host XDG paths instead.
+//     ($HOME/.aws/*) delivery for the aws config/credentials was dropped
+//     from both isolators, and the aws CLI resolves them via these env vars
+//     at the host XDG paths instead (bwrap binds those XDG paths Dst==Src —
+//     see StandardSandboxMounts; sandbox-exec reads ride the #2211
+//     allowlist).
 //
 //  2. cfg.RuntimeEnv — harness-specific runtime vars (e.g. the bash-tool
 //     timeout) emitted as-is.

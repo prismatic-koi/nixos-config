@@ -537,12 +537,13 @@ func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 
 func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
 	// Issue #2234 (Step 3a of #2132, design decision §5.1): the aws
-	// config/credentials canonical-path bind-mounts were dropped from
-	// StandardSandboxMounts. The aws CLI reaches both files via the
-	// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the host
-	// XDG paths (which are readable in bwrap — the host HOME is the sandbox
-	// HOME). The fixture creates ~/.config/aws/readonly-config, so a
-	// regression that reintroduces the mount would be caught here.
+	// config/credentials canonical-path ($HOME/.aws/*) bind-mounts were
+	// dropped from StandardSandboxMounts. The aws CLI reaches both files via
+	// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the host
+	// XDG paths. Because the bwrap namespace is additive from an empty root,
+	// the XDG paths themselves are bound Dst==Src (see
+	// TestBwrapBuildArgs_AWSXDGPathROBound) — only the canonical ~/.aws
+	// destinations must be gone.
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -553,11 +554,9 @@ func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// No bind of any kind (--ro-bind or --bind, any src/dst pairing) may
-	// reference the canonical sandbox destinations or the XDG host sources.
+	// No bind of any kind (--ro-bind or --bind, any src pairing) may deliver
+	// anything at the canonical sandbox destinations.
 	forbidden := []string{
-		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
-		filepath.Join(fakeHome, ".config", "aws", "credentials"),
 		filepath.Join(fakeHome, ".aws", "config"),
 		filepath.Join(fakeHome, ".aws", "credentials"),
 	}
@@ -574,6 +573,42 @@ func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
 					arg, args[i+1], args[i+2], args)
 			}
 		}
+	}
+}
+
+func TestBwrapBuildArgs_AWSXDGPathROBound(t *testing.T) {
+	// Issue #2234: the env-var route needs the aws config content delivered
+	// INTO the bwrap namespace — bwrap builds its filesystem additively from
+	// an empty root, so an env var pointing at an unbound path would resolve
+	// to nothing in-sandbox. The XDG host paths are bound Dst==Src so
+	// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE (which carry exactly
+	// these paths) resolve to readable files.
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Create the credentials file (bwrapFixture only creates readonly-config).
+	credsPath := filepath.Join(fakeHome, ".config", "aws", "credentials")
+	if err := os.WriteFile(credsPath, []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile aws credentials: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// SRC: resolved host file (EvalSymlinks pins the sops target inode).
+	// DST: the same XDG path — the value the env vars carry.
+	cfgPath := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
+	if !hasROBindSrcDst(args, cfgPath, cfgPath) {
+		t.Errorf("AWS readonly-config: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2234) in args: %v",
+			cfgPath, cfgPath, args)
+	}
+	if !hasROBindSrcDst(args, credsPath, credsPath) {
+		t.Errorf("AWS credentials: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2234) in args: %v",
+			credsPath, credsPath, args)
 	}
 }
 
@@ -1224,10 +1259,12 @@ func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
 // TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent verifies that
 // AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE are injected even when
 // ~/.config/aws/readonly-config and ~/.config/aws/credentials do not exist
-// on the host. The env layer is a plain value pass-through (issue #2234);
-// the aws CLI tolerates a missing credentials file (config-only operation —
-// the credentials file is deliberately absent on the current host) and a
-// missing config file, so injection must not depend on file existence.
+// on the host, and that the absent files produce no bind args (the XDG
+// Dst==Src mounts are EvalSymlinks-conditional). The env layer is a plain
+// value pass-through (issue #2234); the aws CLI tolerates a missing
+// credentials file (config-only operation — the credentials file is
+// deliberately absent on the current host) and a missing config file, so
+// injection must not depend on file existence.
 func TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent(t *testing.T) {
 	fakeHome := t.TempDir()
 	// Do NOT create aws dir — file absent.
@@ -1285,6 +1322,16 @@ func TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent(t *testing.T) {
 	}
 	if !hasSetenv(args, "AWS_SHARED_CREDENTIALS_FILE", "/home/ben/.config/aws/credentials") {
 		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE must be injected even when the host file is absent (#2234); args: %v", args)
+	}
+
+	// Absent files → no XDG bind emitted (EvalSymlinks silent skip).
+	for _, p := range []string{
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"),
+	} {
+		if hasROBindSrcDst(args, p, p) {
+			t.Errorf("absent aws file %q must not produce a bind; args: %v", p, args)
+		}
 	}
 }
 
@@ -1529,7 +1576,8 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 // credentials file is NOT mounted at the canonical $HOME/.aws/credentials
 // path even when the XDG source exists — the canonical-path remap was
 // dropped in issue #2234; the aws CLI reads the file via
-// AWS_SHARED_CREDENTIALS_FILE at the host XDG path instead.
+// AWS_SHARED_CREDENTIALS_FILE at the host XDG path, which is bound Dst==Src
+// (see TestBwrapBuildArgs_AWSXDGPathROBound).
 func TestBwrapBuildArgs_AWSCredentialsNotRemapped(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
