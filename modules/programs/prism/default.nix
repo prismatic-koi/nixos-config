@@ -19,6 +19,13 @@
             KUBECONFIG = "$HOME/.config/kube/agents-config";
             AWS_CONFIG_FILE = "$HOME/.config/aws/readonly-config";
             AWS_SHARED_CREDENTIALS_FILE = "$HOME/.config/aws/credentials";
+            # Relocates claude-code's config dir (and .claude.json) to the
+            # XDG path — matches the host-wide home.sessionVariables value in
+            # claude-code.nix (issue #2243, Step 3c of #2132). Both isolators
+            # deliver the value as-is; the in-sandbox capability is the RW
+            # SBPL (subpath ~/.config/claude) grant (sandbox-exec) / the
+            # Dst==Src RW bind (bwrap).
+            CLAUDE_CONFIG_DIR = "$HOME/.config/claude";
             GIT_EDITOR = "true";
           };
           description = "Environment variables to set for the AI agent (pi)";

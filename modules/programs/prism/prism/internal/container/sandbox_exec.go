@@ -108,6 +108,8 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //     delivered via env vars at the host XDG paths — issue #2234)
 //   - Literal RO grant for the real ~/.ssh/known_hosts — never (subpath ~/.ssh)
 //     (issue #2213)
+//   - RW subpath grant for ~/.config/claude — claude-code's config dir,
+//     reached via the CLAUDE_CONFIG_DIR env var (issue #2243)
 //   - Session work dir (covers the nested staging HOME) / worktree / bare
 //     repo / host-API socket dir (RW)
 //   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
@@ -416,6 +418,28 @@ func generateProfile(m *Manager) string {
 		knownHosts := filepath.Join(home, ".ssh", "known_hosts")
 		sb.WriteString("(allow file-read* file-test-existence\n")
 		sb.WriteString("  (literal " + quoteSBPL(knownHosts) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5d. Claude config dir read-write (issue #2243) ───────────────────
+	// claude-code resolves its config dir (and .claude.json) via the
+	// CLAUDE_CONFIG_DIR env var at the host XDG path ~/.config/claude
+	// (declared in agent.envVars by the nix module — Step 3c of #2132; the
+	// .claude write-through staging symlink is gone). Unlike the aws/kube
+	// XDG configs, ~/.config/claude is a plain host directory — NOT a sops
+	// symlink — so the #2211 secrets.d allowlist plays no part here: this
+	// explicit RW subpath grant is the sole capability for the path.
+	// Read-write because claude-code writes config, history, and OAuth
+	// token refreshes under it; mirrors bwrap's --bind (RW) treatment of
+	// the same dir in mounts.go StandardSandboxMounts.
+	// Emitted even when the dir does not yet exist — sandbox-exec silently
+	// ignores (subpath ...) rules for non-existent paths (same shape as the
+	// ~/.pi/agent rule in 6a); the nix module's hm activation creates the
+	// dir on managed hosts.
+	if home != "" {
+		claudeConfigDir := filepath.Join(home, ".config", "claude")
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (subpath " + quoteSBPL(claudeConfigDir) + "))\n")
 		sb.WriteString("\n")
 	}
 
