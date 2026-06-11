@@ -71,7 +71,16 @@ func plantRolePromptSentinel(t *testing.T) (string, bool) {
 	t.Helper()
 	home := realUserHome(t)
 	agentsDir := rolePromptAgentsDir(t)
+	prismDir := filepath.Join(home, ".config", "prism")
 
+	// Track pre-existence at each level so cleanup removes ONLY what this
+	// call created — a pre-existing ~/.config/prism (e.g. holding the live
+	// config.json on a non-hm dev machine) must never be deleted. Mirrors
+	// prepareClipboardSentinel's scoping.
+	prismDirExisted := false
+	if _, statErr := os.Stat(prismDir); statErr == nil {
+		prismDirExisted = true
+	}
 	agentsDirExisted := false
 	if _, statErr := os.Stat(agentsDir); statErr == nil {
 		agentsDirExisted = true
@@ -82,13 +91,29 @@ func plantRolePromptSentinel(t *testing.T) (string, bool) {
 
 	sentinel := filepath.Join(agentsDir, ".prism-2245-test-role.md")
 	if wErr := os.WriteFile(sentinel, []byte(rolePromptSentinelContent), 0o600); wErr != nil {
+		// MkdirAll may have created the dir(s) before the write failed —
+		// remove what was created even on the failure path.
+		if !agentsDirExisted {
+			if prismDirExisted {
+				_ = os.Remove(agentsDir)
+			} else {
+				_ = os.RemoveAll(prismDir)
+			}
+		}
 		return "", false
 	}
 
-	if agentsDirExisted {
+	switch {
+	case agentsDirExisted:
+		// Dir pre-existed — remove only the planted sentinel.
 		t.Cleanup(func() { _ = os.Remove(sentinel) })
-	} else {
-		t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(home, ".config", "prism")) })
+	case prismDirExisted:
+		// ~/.config/prism pre-existed but agents/ did not — remove only the
+		// agents dir this call created (with the sentinel inside it).
+		t.Cleanup(func() { _ = os.RemoveAll(agentsDir) })
+	default:
+		// Neither existed — this call created ~/.config/prism and below.
+		t.Cleanup(func() { _ = os.RemoveAll(prismDir) })
 	}
 	return sentinel, true
 }
