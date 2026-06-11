@@ -28,6 +28,22 @@ import (
 // When PRISM_TEST_STUB_LONG=1 the binary acts as a long-running stub that
 // sleeps for 60 seconds, interruptible by SIGTERM. This is used by tests that
 // exercise the KillSidecarAndWait wait path.
+//
+// The argv check is defence in depth for the #2230 recursion class: this
+// package's production code re-execs os.Executable() — in tests, THIS
+// binary — as `<self> sidecar …` (StartSidecarWithOpts) and `<self> event
+// tmux-session-start …` (setupFullLayout's status seed). A test that
+// reaches either path without setting the stub env var would otherwise run
+// the entire suite recursively as a detached (or, for the event seed,
+// synchronous) child. internal/review hit exactly this (93 detached
+// review.test processes after one suite run) because its tests relied on a
+// TestMain it did not have.
+//
+// Suite-wide tmux isolation (#2230): clears $TMUX and redirects
+// $TMUX_TMPDIR to an empty directory before m.Run() so no code under test
+// can reach the live host tmux server via the default-socket fallback. See
+// tmux_isolation_test.go for the full rationale and the regression guard.
+// The original environment is restored after m.Run().
 func TestMain(m *testing.M) {
 	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
 		// We are the child process acting as the sidecar stub.
@@ -40,7 +56,17 @@ func TestMain(m *testing.M) {
 		time.Sleep(60 * time.Second)
 		os.Exit(0)
 	}
-	os.Exit(m.Run())
+	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event") {
+		// Re-invoked as a prism subcommand without a stub env var (#2230
+		// recursion defence — see the doc comment above). Exit instead of
+		// recursively running the suite.
+		os.Exit(0)
+	}
+
+	restoreTmuxEnv := isolateSuiteFromHostTmux()
+	code := m.Run()
+	restoreTmuxEnv()
+	os.Exit(code)
 }
 
 // ── path helper tests ────────────────────────────────────────────────────────

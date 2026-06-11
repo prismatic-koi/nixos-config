@@ -15,8 +15,10 @@ package review_test
 //   - A fake tmux binary (shell script) that records its argv to a file is
 //     installed for the duration of each test via tmux.TmuxBin.
 //   - PRISM_TEST_SUBPROCESS=1 makes the StartSidecar call use the test binary
-//     as a stub sidecar (exits after 50ms — see TestMain in the session package
-//     which owns the PRISM_TEST_SUBPROCESS handling).
+//     as a stub sidecar (exits after 50ms — see TestMain in
+//     tmux_isolation_test.go, which owns the PRISM_TEST_SUBPROCESS handling
+//     for THIS test binary; the session package's TestMain only covers the
+//     session test binary).
 //   - XDG_STATE_HOME is redirected to a temp dir so no real state files are
 //     written to the user's home directory.
 //
@@ -107,7 +109,8 @@ func TestSpawnReviewAgent_LargePrompt_UsesPromptFile(t *testing.T) {
 	argsFile := spawnSpyTmuxBin(t)
 
 	// Stub the sidecar so StartSidecarWithOpts does not try to exec a real
-	// prism binary. The session package's TestMain handles PRISM_TEST_SUBPROCESS.
+	// prism binary. This package's TestMain (tmux_isolation_test.go) handles
+	// PRISM_TEST_SUBPROCESS.
 	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
 
 	// Route all XDG state writes to a temp dir.

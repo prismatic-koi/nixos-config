@@ -3,7 +3,6 @@ package session
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -454,21 +453,32 @@ func TestCreate_LayoutFull_FailsFastOnEmptyPIExtensionDir(t *testing.T) {
 		// blocked by the guard.
 		//
 		// The guard under test fires BEFORE any tmux invocation, so its
-		// behaviour is observable even when tmux is absent from $PATH
-		// (tmux is intentionally NOT in nativeCheckInputs in pkgs/prism.nix
-		// — see the long comment there — so the nix build sandbox runs
-		// this subtest without tmux):
+		// behaviour is observable even when tmux is unusable (tmux is
+		// intentionally NOT in nativeCheckInputs in pkgs/prism.nix — see
+		// the long comment there — so the nix build sandbox runs this
+		// subtest without tmux):
 		//
-		//   - tmux available: Create must succeed end-to-end.
-		//   - tmux absent: Create must fail at the tmux launch ("new-session"),
-		//     NOT at the PIExtensionDir guard. If the guard were wrongly
-		//     applied to LayoutBare it would reject before reaching tmux,
-		//     producing a "piExtensionDir" error in both environments — so
-		//     either branch catches the regression.
+		//   - tmux usable: Create must succeed end-to-end.
+		//   - tmux unusable: Create must fail at the tmux launch
+		//     ("new-session"), NOT at the PIExtensionDir guard. If the guard
+		//     were wrongly applied to LayoutBare it would reject before
+		//     reaching tmux, producing a "piExtensionDir" error in both
+		//     environments — so either branch catches the regression.
+		//
+		// "Usable" is decided by a functional probe, not exec.LookPath:
+		// since the suite-wide $TMUX_TMPDIR redirect (#2230) this subtest
+		// starts a fresh private tmux server instead of reusing the live
+		// host server (the old form created its session on the developer's
+		// LIVE server — exactly the leak class #2230 eliminates). Inside a
+		// prism worker sandbox the tmux binary is on $PATH but a fresh
+		// server cannot fork window processes ("fork failed: Operation not
+		// permitted"), so LookPath alone would put a sandboxed run in the
+		// wrong branch.
 		name := "unit-test-2065-bare"
-		_, tmuxErr := exec.LookPath("tmux")
-		tmuxAvailable := tmuxErr == nil
+		const probe = "unit-test-2065-probe"
+		tmuxAvailable := tmux.NewSessionDetached(probe, "/tmp") == nil
 		if tmuxAvailable {
+			_ = tmux.KillSession(probe)
 			defer tmux.KillSession(name)
 		}
 		err := Create(name, dir, Opts{
