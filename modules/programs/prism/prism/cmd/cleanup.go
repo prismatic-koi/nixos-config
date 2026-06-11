@@ -247,13 +247,6 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			instanceIDForSessions := instanceIDFromStatus(d, m.session)
 			isolationMode := isolationModeFromDB(d, m.session)
-			// Sever the pi resume linkage (issue #2035): remove the on-disk pi
-			// JSONL transcript and null agent_status.harness_session_id so a
-			// re-spawn on the same branch name starts a fresh pi conversation.
-			// Must run before SetEnded so the status read still sees the row.
-			// The TUI path does not surface the per-update outcome — failure
-			// is already logged via proglog inside severPiResumeLinkage.
-			_ = severPiResumeLinkage(d, m.session)
 			_ = d.SetEnded(m.session)
 			if instanceIDForSessions != "" {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -262,15 +255,21 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
 					proglog.Errorf("[prism] doCleanup: write spawn outcome: %v\n", outcomeErr)
 				}
-				// Archive the session storage after recording the end state.
-				if archiveErr := runSessionArchive(d, m.session, instanceIDForSessions, isolationMode); archiveErr != nil {
-					if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-						_ = d.PurgeBusMessages(m.session)
-						d.Close()
-						return cleanupDoneMsg{archiveErr}
-					}
-					// Other archive errors are non-fatal — cleanup continues.
-				}
+			}
+			// Archive the session storage, then sever the pi resume linkage
+			// (issue #2219): the archive copies the same transcript JSONL the
+			// sever deletes, so the sever runs second — and is skipped when
+			// the archive fails so the transcript is not lost. The TUI path
+			// does not surface the per-update outcome — failures are logged
+			// via proglog inside the helper.
+			archiveErr, _ := archiveThenSeverPiResume(d, m.session, instanceIDForSessions, isolationMode)
+			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+				_ = d.PurgeBusMessages(m.session)
+				d.Close()
+				return cleanupDoneMsg{archiveErr}
+			}
+			// Other archive errors are non-fatal — cleanup continues.
+			if instanceIDForSessions != "" {
 				// Remove the sandbox-exec staging HOME for this session instance.
 				container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 			}
@@ -531,22 +530,22 @@ type cleanupResult struct {
 	HarnessSessionIDCleared any     `json:"harness_session_id_cleared"`
 }
 
-// applyDBLifecycleClears performs the three agent_status lifecycle updates
-// for sessionName — release harness_port, clear harness_session_id, stamp
-// ended_at — and records per-update outcomes into result. Each outcome is
-// `true` on success (including idempotent no-ops where the column is already
-// in the cleaned-up state) or a string describing the failure.
+// applyDBLifecycleClears performs the agent_status lifecycle updates for
+// sessionName — release harness_port and stamp ended_at — and records
+// per-update outcomes into result. Each outcome is `true` on success
+// (including idempotent no-ops where the column is already in the cleaned-up
+// state) or a string describing the failure.
 //
 // Issue #2134: prior to this helper, errors from these calls were either
 // silently discarded (`_ = d.SetEnded(...)`) or only logged via proglog. The
 // JSON envelope had no fields for them, so operators had no way to verify
 // whether the bookkeeping actually ran.
 //
-// Call order is preserved from the prior inline form: ReleasePort first,
-// then severPiResumeLinkage (which clears harness_session_id and removes the
-// pi JSONL transcript per #2035), then SetEnded last. SetEnded stamps
-// ended_at on both the agent_status row and any review-child rows via the
-// existing LIKE cascade.
+// The harness_session_id clear (severPiResumeLinkage) is intentionally NOT
+// part of this helper: the sever deletes the pi transcript JSONL that the
+// session archive copies, so it must run after runSessionArchive — see
+// archiveThenSeverPiResume (issue #2219). Callers populate
+// result.HarnessSessionIDCleared from that helper's outcome.
 func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
 	// 1. Release the harness port. ReleasePort is idempotent on existing
 	//    rows (UPDATE on an already-NULL port is a no-op success); the
@@ -560,17 +559,7 @@ func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult)
 		result.HarnessPortReleased = true
 	}
 
-	// 2. Sever the pi resume linkage (issue #2035): clears
-	//    agent_status.harness_session_id (cascading to ~review-% children
-	//    via SQL LIKE) and removes the on-disk pi JSONL transcript so a
-	//    re-spawn on the same branch name starts a fresh conversation.
-	if err := severPiResumeLinkage(d, sessionName); err != nil {
-		result.HarnessSessionIDCleared = err.Error()
-	} else {
-		result.HarnessSessionIDCleared = true
-	}
-
-	// 3. Stamp ended_at. SetEnded internally guards with `AND ended_at IS
+	// 2. Stamp ended_at. SetEnded internally guards with `AND ended_at IS
 	//    NULL` so re-invocations on an already-ended row succeed as a
 	//    no-op (idempotent). The LIKE cascade also stamps ended_at on any
 	//    review-child rows whose parent is sessionName.
@@ -741,9 +730,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		// pre-cleanup row.
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		// Apply the three lifecycle clears — release harness_port, clear
-		// harness_session_id, stamp ended_at — and capture per-update
-		// outcomes for the JSON envelope (issue #2134).
+		// Apply the lifecycle clears — release harness_port and stamp
+		// ended_at — and capture per-update outcomes for the JSON envelope
+		// (issue #2134). The harness_session_id clear runs later, after the
+		// archive (issue #2219).
 		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -752,19 +742,24 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: write spawn outcome: %v\n", outcomeErr)
 			}
-			// Archive the session storage after recording the end state.
-			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
-				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-					// Non-fatal: by this point the worktree, branch, tmux
-					// session, and DB rows are already torn down. The collision
-					// just means a previous cleanup attempt for the same
-					// instance_id already wrote the archive directory. Surface
-					// it as a stderr warning instead of aborting (issue #1527
-					// follow-up).
-					archiveCollisionWarning = archiveErr.Error()
-				}
-				// Other archive errors are non-fatal — cleanup continues.
-			}
+		}
+		// Archive the session storage, then sever the pi resume linkage
+		// (issue #2219): the archive copies the same transcript JSONL the
+		// sever deletes, so the sever runs second — and is skipped when the
+		// archive fails so the transcript is not lost.
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		result.HarnessSessionIDCleared = severOutcome
+		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+			// Non-fatal: by this point the worktree, branch, tmux
+			// session, and DB rows are already torn down. The collision
+			// just means a previous cleanup attempt for the same
+			// instance_id already wrote the archive directory. Surface
+			// it as a stderr warning instead of aborting (issue #1527
+			// follow-up).
+			archiveCollisionWarning = archiveErr.Error()
+		}
+		// Other archive errors are non-fatal — cleanup continues.
+		if instanceIDForSessions != "" {
 			// Remove the sandbox-exec staging HOME for this session instance.
 			// Non-fatal and idempotent — silently skips when the directory
 			// does not exist (e.g. non-sandbox-exec sessions).
@@ -827,11 +822,6 @@ func closeSession(session string) error {
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		// Sever the pi resume linkage (issue #2035) before marking ended.
-		// closeSession is the interactive @main path and does not surface a
-		// JSON envelope — the per-update outcome is captured by the proglog
-		// warning in severPiResumeLinkage itself.
-		_ = severPiResumeLinkage(d, session)
 		_ = d.SetEnded(session)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -840,15 +830,22 @@ func closeSession(session string) error {
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
 				proglog.Errorf("[prism] closeSession: write spawn outcome: %v\n", outcomeErr)
 			}
-			// Archive the session storage after recording the end state.
-			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
-				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-					_ = d.PurgeBusMessages(session)
-					d.Close()
-					return archiveErr
-				}
-				// Other archive errors are non-fatal — cleanup continues.
-			}
+		}
+		// Archive the session storage, then sever the pi resume linkage
+		// (issue #2219): the archive copies the same transcript JSONL the
+		// sever deletes, so the sever runs second — and is skipped when the
+		// archive fails so the transcript is not lost. closeSession is the
+		// interactive @main path and does not surface a JSON envelope — the
+		// per-update outcome is captured by the proglog warnings inside the
+		// helper.
+		archiveErr, _ := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+			_ = d.PurgeBusMessages(session)
+			d.Close()
+			return archiveErr
+		}
+		// Other archive errors are non-fatal — cleanup continues.
+		if instanceIDForSessions != "" {
 			// Remove the sandbox-exec staging HOME for this session instance.
 			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 		}
@@ -938,9 +935,10 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
-		// Apply the three lifecycle clears — release harness_port, clear
-		// harness_session_id, stamp ended_at — and capture per-update
-		// outcomes for the JSON envelope (issue #2134).
+		// Apply the lifecycle clears — release harness_port and stamp
+		// ended_at — and capture per-update outcomes for the JSON envelope
+		// (issue #2134). The harness_session_id clear runs later, after the
+		// archive (issue #2219).
 		applyDBLifecycleClears(d, session, &result)
 		if instanceIDForSessions != "" {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
@@ -949,14 +947,19 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: write spawn outcome: %v\n", outcomeErr)
 			}
-			// Archive the session storage after recording the end state.
-			if archiveErr := runSessionArchive(d, session, instanceIDForSessions, isolationMode); archiveErr != nil {
-				if errors.Is(archiveErr, archive.ErrAlreadyExists) {
-					// Non-fatal: see headlessCleanup for rationale.
-					archiveCollisionWarning = archiveErr.Error()
-				}
-				// Other archive errors are non-fatal — cleanup continues.
-			}
+		}
+		// Archive the session storage, then sever the pi resume linkage
+		// (issue #2219): the archive copies the same transcript JSONL the
+		// sever deletes, so the sever runs second — and is skipped when the
+		// archive fails so the transcript is not lost.
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		result.HarnessSessionIDCleared = severOutcome
+		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
+			// Non-fatal: see headlessCleanup for rationale.
+			archiveCollisionWarning = archiveErr.Error()
+		}
+		// Other archive errors are non-fatal — cleanup continues.
+		if instanceIDForSessions != "" {
 			// Remove the sandbox-exec staging HOME for this session instance.
 			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
 		}
@@ -1299,11 +1302,11 @@ func init() {
 // Return value (issue #2134): the error from d.ClearHarnessSessionID (the
 // load-bearing DB clear), or nil on success / when the row is absent. The
 // on-disk JSONL removal is defence-in-depth and its failure is logged but
-// not propagated. Callers that surface the clear outcome in a JSON envelope
-// (headlessCleanupWithJSON / headlessCloseSessionWithJSON via
-// applyDBLifecycleClears) consume this return value; callers that don't
-// (doCleanup, closeSession) ignore it and rely on the proglog warning to
-// surface failures.
+// not propagated. All four cleanup paths reach this function via
+// archiveThenSeverPiResume (issue #2219), which converts the return value
+// into the JSON-envelope outcome for the headless paths; the interactive
+// paths (doCleanup, closeSession) rely on the proglog warning to surface
+// failures.
 func severPiResumeLinkage(d *db.DB, sessionName string) error {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
@@ -1328,6 +1331,50 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 		return clearErr
 	}
 	return nil
+}
+
+// archiveThenSeverPiResume runs the session archive for sessionName and then
+// — only when the archive step did not fail — severs the pi resume linkage.
+//
+// Ordering is load-bearing (issue #2219): runSessionArchive copies the pi
+// transcript JSONL (<piSessionsRoot>/<encodePiCWD(worktree)>/*_<id>.jsonl)
+// into the archive, and severPiResumeLinkage deletes that same file. Post
+// #2210 both resolve the same host-root path in every isolation mode, so
+// severing first produced manifest-only archives: lossy cleanup. All four
+// cleanup paths (doCleanup, headlessCleanupWithJSON, closeSession,
+// headlessCloseSessionWithJSON) route through this helper so the ordering
+// cannot silently diverge per-path again.
+//
+// Archive-failure semantic: when runSessionArchive returns an error
+// (including archive.ErrAlreadyExists), the sever is skipped ENTIRELY — the
+// transcript stays on disk and agent_status.harness_session_id stays
+// populated. Leaving both intact keeps cleanup re-runnable: a later attempt
+// can still locate and archive the transcript, whereas clearing the DB
+// pointer while keeping the file would orphan the transcript (the sever
+// scopes its FS removal to the stored id). The trade-off is that a re-spawn
+// on the same branch name could resume the defunct pi conversation (#2035)
+// until a cleanup succeeds — recoverable by the operator, unlike a deleted
+// transcript.
+//
+// Returns the archive error (nil on success or when there was nothing to
+// archive — runSessionArchive treats an empty instanceID and other
+// missing-precondition cases as skips) and the sever outcome in the
+// cleanupResult convention: true when the sever completed, or a string
+// describing why it did not (sever error, or skipped due to archive
+// failure). Headless callers assign the outcome to
+// result.HarnessSessionIDCleared; the interactive paths discard it and rely
+// on the proglog warnings emitted here and inside severPiResumeLinkage.
+func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode string) (archiveErr error, severOutcome any) {
+	archiveErr = runSessionArchive(d, sessionName, instanceID, isolationMode)
+	if archiveErr != nil {
+		proglog.Warnf("[prism] warning: pi resume sever skipped for %s — archive failed, leaving transcript in place: %v\n",
+			sessionName, archiveErr)
+		return archiveErr, fmt.Sprintf("skipped: archive failed: %v", archiveErr)
+	}
+	if severErr := severPiResumeLinkage(d, sessionName); severErr != nil {
+		return nil, severErr.Error()
+	}
+	return nil, true
 }
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for
