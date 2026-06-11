@@ -330,11 +330,28 @@ func TestSandboxExecProfile_AWSCLIDeniedWithoutCarveout(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
 	home, _ := os.UserHomeDir()
+	awsSSOPath := filepath.Join(home, ".aws", "sso")
 	awsCLIPath := filepath.Join(home, ".aws", "cli")
 
-	carveoutLine := "  (subpath " + sbplQuoteForTest(awsCLIPath) + ")\n"
+	// The cli carve-out is the LAST entry of the carve-out allow block, so
+	// generateProfile emits it as `  (subpath "<cli>"))\n` — with the block's
+	// closing paren attached. A bare `  (subpath "<cli>")\n` substitution
+	// therefore never matches (withMutatedProfile's no-op detection catches
+	// exactly this). Strip the cli line by replacing the sso+cli tail of the
+	// block with an sso-only tail, keeping the block well-formed and removing
+	// ONLY the cli carve-out:
+	//
+	//   (allow file-read* file-write*        (allow file-read* file-write*
+	//     (subpath "<sso>")             →      (subpath "<sso>"))
+	//     (subpath "<cli>"))
+	//
+	// (The paired sso negative strips a middle line and needs no special
+	// handling.)
+	ssoLine := "  (subpath " + sbplQuoteForTest(awsSSOPath) + ")\n"
+	cliLastLine := "  (subpath " + sbplQuoteForTest(awsCLIPath) + "))\n"
+	ssoOnlyTail := "  (subpath " + sbplQuoteForTest(awsSSOPath) + "))\n"
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.ReplaceAll(p, carveoutLine, "")
+		return strings.ReplaceAll(p, ssoLine+cliLastLine, ssoOnlyTail)
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,

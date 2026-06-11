@@ -10,14 +10,34 @@ package integration_test
 // (subpath ~/.config/prism/agents) grant in the section-5f block emitted by
 // generateProfile, evaluated at the REAL host path.
 //
+// Read-target strategy (#2245 host-run follow-up): on deployed hosts the
+// agents dir is home-manager-managed — typically a read-only symlink into
+// the nix store, overwritten on every switch — so planting a test sentinel
+// there is impossible. The tests therefore prefer the DEPLOYED role file
+// (worker.md) when one exists, and fall back to sentinel-planting only when
+// the dir is genuinely writable (dev machines without hm management).
+//
 // Per the #1192 convention this file carries:
 //
-//   - a positive (worker.md readable at the real path under the production
-//     profile),
+//   - a positive (the role file readable at the real path under the
+//     production profile — the exact capability the PI extension needs),
 //   - a whole-block strip negative (removing the ENTIRE 5f block makes the
 //     same read fail — per the #2243 lesson, stripping only the agents
-//     (subpath ...) line would leave the clipboard line carrying the block),
-//   - a write-denied negative (RO must not silently become RW).
+//     (subpath ...) line would leave the clipboard line carrying the block).
+//     The strip negative additionally requires a read target whose
+//     EvalSymlinks-resolved path is the lexical path itself: SBPL evaluates
+//     open(2)-class operations against the RESOLVED target (the #2132 §2
+//     mechanism note, same as the documented §5g no-strip-negative
+//     deviation), so a store-symlinked deployed role file remains readable
+//     via the §2 /nix allow even with 5f stripped — the denial is
+//     unobservable there. On hm-managed hosts where no in-place target can
+//     be planted either, the strip negative SKIPs with that justification;
+//     the 5f grant shape is pinned at unit level.
+//   - a write-denied negative (RO must not silently become RW). No sentinel
+//     needed: attempting to create a file in the agents dir from inside the
+//     sandbox and asserting denial suffices. On hm hosts the write is doubly
+//     denied (no SBPL write grant on the resolved store path + the store
+//     itself is unwritable) — both denials are correct outcomes.
 //
 // Build tag: darwin (sandbox-exec is Darwin-only).
 
@@ -30,60 +50,55 @@ import (
 	"testing"
 )
 
-// rolePromptSentinelContent is the sentinel written into the test worker.md
-// so the positive test can assert the bytes round-trip through the sandbox.
+// rolePromptSentinelContent is the sentinel written into a planted role file
+// on hosts where the agents dir is writable (dev machines without hm
+// management).
 const rolePromptSentinelContent = "PRISM-2032-ROLE-PROMPT-SENTINEL"
 
-// prepareRolePromptSentinel creates ~/.config/prism/agents/worker.md under
-// the user's real HOME (NOT t.TempDir, which resolves under
-// /private/var/folders and is broadly allowed) and plants a sentinel inside
-// it. Returns the real agents-dir path and the worker.md path.
-//
-// Skips when the directory cannot be created (e.g. running inside a
-// restricted sandbox that denies writes to ~/.config).
-func prepareRolePromptSentinel(t *testing.T) (agentsDir, workerMD string) {
+// rolePromptAgentsDir returns the real-host path of the role-prompt agents
+// dir governed by the section-5f grant.
+func rolePromptAgentsDir(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(realUserHome(t), ".config", "prism", "agents")
+}
+
+// plantRolePromptSentinel attempts to plant a sentinel role file in the real
+// agents dir. Returns (path, true) on success. Returns ("", false) when the
+// dir hierarchy cannot be created or written — e.g. on home-manager-managed
+// hosts where ~/.config/prism/agents is a read-only symlink into the nix
+// store. Cleanup removes only what this call created.
+func plantRolePromptSentinel(t *testing.T) (string, bool) {
 	t.Helper()
 	home := realUserHome(t)
-	agentsDir = filepath.Join(home, ".config", "prism", "agents")
+	agentsDir := rolePromptAgentsDir(t)
 
 	agentsDirExisted := false
 	if _, statErr := os.Stat(agentsDir); statErr == nil {
 		agentsDirExisted = true
 	}
 	if mkErr := os.MkdirAll(agentsDir, 0o700); mkErr != nil {
-		t.Skipf("cannot create ~/.config/prism/agents for test: %v", mkErr)
+		return "", false
 	}
 
-	workerMD = filepath.Join(agentsDir, "worker.md")
-	workerMDExisted := false
-	if _, statErr := os.Stat(workerMD); statErr == nil {
-		workerMDExisted = true
-	}
-	if workerMDExisted {
-		// Pre-existing worker.md (e.g. the real deployed prompt) — do not
-		// clobber it. Use a test-specific filename instead; the grant under
-		// test is the directory subpath, so any file inside it carries the
-		// same signal.
-		workerMD = filepath.Join(agentsDir, ".prism-2245-test-role.md")
-	}
-	if wErr := os.WriteFile(workerMD, []byte(rolePromptSentinelContent), 0o600); wErr != nil {
-		t.Skipf("cannot plant role-prompt sentinel (may be running inside a restricted sandbox): %v", wErr)
+	sentinel := filepath.Join(agentsDir, ".prism-2245-test-role.md")
+	if wErr := os.WriteFile(sentinel, []byte(rolePromptSentinelContent), 0o600); wErr != nil {
+		return "", false
 	}
 
 	if agentsDirExisted {
-		mdPath := workerMD
-		t.Cleanup(func() { _ = os.Remove(mdPath) })
+		t.Cleanup(func() { _ = os.Remove(sentinel) })
 	} else {
 		t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(home, ".config", "prism")) })
 	}
-	return agentsDir, workerMD
+	return sentinel, true
 }
 
 // TestSandboxExecProfile_RolePromptReadable is the positive integration test:
 // the role-prompt markdown is readable at its REAL host path under the
 // production profile via the section-5f RO grant — the same path shape the
 // PI extension will resolve once Step 5 of #2132 flips $HOME/XDG to the real
-// home.
+// home. The deployed worker.md is preferred as the read target (see the
+// file-top strategy note); a planted sentinel is the dev-machine fallback.
 func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -91,7 +106,17 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	_, workerMD := prepareRolePromptSentinel(t)
+	deployed := filepath.Join(rolePromptAgentsDir(t), "worker.md")
+	var readTarget, wantContent string
+	if content, readErr := os.ReadFile(deployed); readErr == nil && len(content) > 0 {
+		// Deployed role file present (hm-managed or otherwise) — read the
+		// real thing. This is the exact file the PI extension loads.
+		readTarget, wantContent = deployed, string(content)
+	} else if planted, ok := plantRolePromptSentinel(t); ok {
+		readTarget, wantContent = planted, rolePromptSentinelContent
+	} else {
+		t.Skipf("no readable deployed role file at %s and the agents dir is not writable for sentinel planting", deployed)
+	}
 
 	m := newProfileManagerWithBareRoot(t)
 
@@ -120,15 +145,15 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 	// Read the role prompt at the REAL path from inside the sandbox.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(workerMD))
+		"cat "+shQuote(readTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("reading the role prompt at its real path failed under the production profile.\n"+
 			"Exit: %v\nOutput: %s\nProfile: %s\nTarget: %s",
-			runErr, string(out), testProfilePath, workerMD)
+			runErr, string(out), testProfilePath, readTarget)
 	}
-	if !strings.Contains(string(out), rolePromptSentinelContent) {
-		t.Errorf("role-prompt read did not return the sentinel content.\nGot: %s", string(out))
+	if !strings.Contains(string(out), wantContent) {
+		t.Errorf("role-prompt read did not return the expected content.\nTarget: %s\nGot: %s", readTarget, string(out))
 	}
 }
 
@@ -136,6 +161,15 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 // strip negative: removing the ENTIRE section-5f block makes the same
 // real-path read fail — proving the block is load-bearing and the positive
 // is not green by accident (#1192; whole-block strip per the #2243 lesson).
+//
+// The read target must resolve to itself (no symlinks): SBPL evaluates
+// open(2) against the RESOLVED path, so a deployed role file that is a
+// symlink into /nix/store stays readable via the §2 /nix allow even with 5f
+// stripped — the denial cannot manifest (the same mechanism behind the
+// documented §5g no-strip-negative deviation). On hosts where no in-place
+// target exists or can be planted (hm-managed agents dir), the test SKIPs;
+// the 5f grant shape is pinned at unit level and the RO property is covered
+// by the write-denied negative below.
 func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -143,7 +177,22 @@ func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	_, workerMD := prepareRolePromptSentinel(t)
+	deployed := filepath.Join(rolePromptAgentsDir(t), "worker.md")
+	var readTarget string
+	if resolved, evalErr := filepath.EvalSymlinks(deployed); evalErr == nil && resolved == deployed {
+		// Deployed role file is a regular file at its lexical path — the
+		// 5f grant is the only rule covering it, so the strip is observable.
+		readTarget = deployed
+	} else if planted, ok := plantRolePromptSentinel(t); ok {
+		// Planted sentinel is a regular file in a real dir — resolves to
+		// itself by construction.
+		readTarget = planted
+	} else {
+		t.Skipf("no strip-negative-capable read target: the deployed role file resolves outside its lexical path "+
+			"(reads through it are independently allowed at the resolved target, e.g. the §2 /nix allow — "+
+			"same justification as the documented §5g no-strip-negative deviation) and the agents dir is not "+
+			"writable for sentinel planting; the 5f grant shape is pinned at unit level (deployed: %s)", deployed)
+	}
 
 	m := newProfileManagerWithBareRoot(t)
 
@@ -160,12 +209,12 @@ func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
 		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
-		"cat "+shQuote(workerMD))
+		"cat "+shQuote(readTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("role-prompt read succeeded WITHOUT the section-5f block.\n"+
 			"The 5f grant is not load-bearing — investigate.\n"+
-			"Output: %s\nMutated profile: %s", string(out), mutatedPath)
+			"Output: %s\nMutated profile: %s\nTarget: %s", string(out), mutatedPath, readTarget)
 	} else {
 		t.Logf("ka pai — role-prompt read correctly denied without the 5f block (exit: %v)", runErr)
 	}
@@ -174,7 +223,11 @@ func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 // TestSandboxExecProfile_RolePromptWriteDenied is the write-denied negative:
 // under the PRODUCTION profile, writing into the real agents dir fails — the
 // 5f grant is read-only and must not silently become RW (agents never write
-// their own role prompts).
+// their own role prompts). No sentinel is needed: the assertion is on the
+// in-sandbox CREATE attempt itself. On hm-managed hosts the write is doubly
+// denied (no SBPL write grant on the resolved store path + the nix store is
+// unwritable) — either denial is the correct outcome; the SBPL grant shape
+// is pinned at unit level.
 func TestSandboxExecProfile_RolePromptWriteDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -182,7 +235,26 @@ func TestSandboxExecProfile_RolePromptWriteDenied(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	agentsDir, _ := prepareRolePromptSentinel(t)
+	agentsDir := rolePromptAgentsDir(t)
+
+	// The dir must exist on the host so the in-sandbox failure is a denial,
+	// not a vacuous ENOENT. On deployed hosts it exists (hm-managed); on dev
+	// machines create it (and clean up what we created).
+	if _, statErr := os.Stat(agentsDir); statErr != nil {
+		home := realUserHome(t)
+		prismDirExisted := false
+		if _, pErr := os.Stat(filepath.Join(home, ".config", "prism")); pErr == nil {
+			prismDirExisted = true
+		}
+		if mkErr := os.MkdirAll(agentsDir, 0o700); mkErr != nil {
+			t.Skipf("agents dir %s does not exist and cannot be created: %v", agentsDir, mkErr)
+		}
+		if prismDirExisted {
+			t.Cleanup(func() { _ = os.Remove(agentsDir) })
+		} else {
+			t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(home, ".config", "prism")) })
+		}
+	}
 
 	m := newProfileManagerWithBareRoot(t)
 
