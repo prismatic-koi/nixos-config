@@ -1277,10 +1277,11 @@ func init() {
 //     internal/harness/pi/archive.go::piSessionsRoot for the authoritative
 //     resolution. The on-disk JSONL transcript. The encoded-cwd directory is keyed off
 //     cfg.Worktree, which is stable across a reused branch name (the worktree
-//     path is derived deterministically from the branch). For sandbox-exec
-//     the transcript also lives inside the staging HOME that
-//     RemoveSandboxExecStagingHome subsequently wipes, but we delete it
-//     explicitly here for symmetry across modes.
+//     path is derived deterministically from the branch). The same host root
+//     applies to sandbox-exec sessions (#2210): pi writes there because the
+//     dispatcher injects PI_CODING_AGENT_DIR into the sandbox env, so this
+//     removal is the only step that deletes the transcript — the staging-HOME
+//     wipe in RemoveSandboxExecStagingHome never touches it.
 //
 // Order:
 //
