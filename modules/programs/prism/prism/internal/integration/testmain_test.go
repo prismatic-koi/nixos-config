@@ -12,12 +12,16 @@ package integration_test
 //   - "silent": exits 0 immediately without writing any frames. Exercises the
 //     "pipe closed before first frame" error path in runStartupStdio.
 //
-// When PRISM_FAKE_STDIO_HARNESS is unset, TestMain runs the normal test suite.
+// TestMain also intercepts re-exec stub invocations of this test binary
+// (#2237, residual from #2230) — see the env and argv checks below.
+//
+// When no interception applies, TestMain runs the normal test suite.
 
 import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
@@ -29,6 +33,34 @@ func TestMain(m *testing.M) {
 		// Exit immediately without writing any frames.
 		os.Exit(0)
 	}
+
+	if os.Getenv("PRISM_TEST_SUBPROCESS") == "1" {
+		// We are a child process acting as a stub subprocess — the
+		// convention shared by the internal/review, internal/session, and
+		// cmd TestMains. Sleep briefly so a parent can observe a live PID,
+		// then exit instead of running the suite.
+		time.Sleep(50 * time.Millisecond)
+		os.Exit(0)
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event") {
+		// Re-invoked as a prism subcommand without the stub env var (#2230
+		// recursion class, swept in #2237). This package's reachable re-exec
+		// paths both exec os.Executable() — in tests, THIS binary:
+		//
+		//   - session.StartSidecarWithOpts → `<self> sidecar --session …`
+		//   - session.setupFullLayout's status seed →
+		//     `<self> event tmux-session-start --session … --worktree …`
+		//
+		// No current test reaches either path (Create(LayoutFull) is
+		// deliberately avoided — see TestTmuxHarness_ThreeWindowLayout), so
+		// this is a defence against a future test or forgotten stub
+		// recursively running the entire suite as a detached child
+		// (observed in internal/review: 93 detached test processes after a
+		// single run). Exit instead of running the suite — see
+		// reexec_interception_test.go for the regression guard.
+		os.Exit(0)
+	}
+
 	// Default: run the test suite.
 	os.Exit(m.Run())
 }
