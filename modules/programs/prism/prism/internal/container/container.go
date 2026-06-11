@@ -63,13 +63,14 @@ const (
 //     $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
 //     where $HOME is the host user's home directory.
 //   - sandbox-exec also runs as the host user but with a per-session staging
-//     HOME (e.g. ~/.local/state/prism/sandbox-exec/<instance>) — the agent
-//     sees this as $HOME and the SSH artefacts are referenced under it.
+//     HOME (~/.local/state/prism/sessions/<instance>/home/) — the agent
+//     sees this as $HOME and the staged SSH artefacts live under it. Post
+//     issue #2213 the generated git/ssh configs themselves live in the
+//     per-session work dir (the staging HOME's parent) and embed stable
+//     host key paths — see session_work_dir.go.
 //
-// Agents inside both sandboxes see the same generic filenames
-// (access-key, signing-key, …); only the $HOME prefix differs. The isolation
-// mode lets the generators substitute the correct prefix into the config
-// files they write.
+// The isolation mode lets the mode-based generators substitute the correct
+// $HOME prefix into the config files they write.
 type isolationMode int
 
 const (
@@ -515,8 +516,11 @@ func WriteHarnessConfig(sessionName, content string) error {
 // The config only needs to handle GitHub; other SSH hosts are not expected
 // inside agent sandboxes. The IdentityFile path is $HOME/.ssh/access-key
 // using the sandbox-specific $HOME prefix, which matches the generic name
-// used by the bwrap bind-mount (<hostHome>/.ssh/access-key) and the
-// sandbox-exec staging HOME.
+// used by the bwrap bind-mount (<hostHome>/.ssh/access-key).
+//
+// Only the bwrap Prepare path calls this; sandbox-exec generates its ssh
+// config into the per-session work dir instead (writeSshConfigToDir in
+// session_work_dir.go, issue #2213) with the stable host key path.
 func (m *Manager) writeSshConfig(mode isolationMode) error {
 	identityFile := filepath.Join(sandboxHome(m, mode), ".ssh", "access-key")
 	sshConfig := "Host github.com\n" +
@@ -563,7 +567,45 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 // only the $HOME prefix differs. Generic filenames (signing-key.pub,
 // allowed_signers, …) are used in every case so agents see a uniform layout
 // regardless of mode.
+//
+// Note: the production sandbox-exec path no longer consumes this writer —
+// writeGitconfigToDir (session_work_dir.go) generates the work-dir gitconfig
+// with stable host key paths instead (issue #2213, Step 2 of #2132). The
+// isolationSandboxExec mode value remains supported for the mode matrix
+// until the staging HOME is deleted in Step 5.
 func (m *Manager) writeGitconfig(mode isolationMode) error {
+	// Canonical in-sandbox paths for the signing artefacts. Both paths live
+	// at $HOME/.ssh/<generic-name> where $HOME depends on the isolation mode
+	// (see sandboxHome). Agents inside the sandbox see generic filenames —
+	// signing-key.pub / allowed_signers — regardless of which sandbox layer
+	// they're running under.
+	sandboxSshDir := filepath.Join(sandboxHome(m, mode), ".ssh")
+	return m.writeGitconfigArtefacts(
+		filepath.Join(sandboxSshDir, "signing-key.pub"),
+		filepath.Join(sandboxSshDir, "allowed_signers"),
+		m.gitconfigFilePath(),
+		m.allowedSignersFilePath(),
+	)
+}
+
+// writeGitconfigArtefacts is the canonical gitconfig generator shared by the
+// per-mode writeGitconfig (bwrap / sandbox-exec staging layout, temp-file
+// destinations) and the session-work-dir writer writeGitconfigToDir
+// (stable host key paths, work-dir destinations — issue #2213).
+//
+// Parameters:
+//
+//   - embedSigningKeyPub — the path embedded as user.signingKey in the
+//     generated gitconfig (what git/ssh-keygen will read inside the sandbox).
+//   - embedAllowedSigners — the path embedded as gpg.ssh.allowedSignersFile.
+//   - gitconfigDst — where the generated gitconfig is written on the host.
+//   - allowedSignersDst — where the generated allowed_signers is written on
+//     the host.
+//
+// The signing availability check and the allowed_signers content always read
+// the host's stable sops symlink paths (~/.ssh/<SshSigningKeyName>{,.pub});
+// only the embedded paths and destinations vary by caller.
+func (m *Manager) writeGitconfigArtefacts(embedSigningKeyPub, embedAllowedSigners, gitconfigDst, allowedSignersDst string) error {
 	// Reset allowedSignersReady so that a retry or second call doesn't carry
 	// stale state from a previous successful write into a new call that may fail.
 	m.allowedSignersReady = false
@@ -597,15 +639,6 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 
 	var sb strings.Builder
 
-	// Canonical in-sandbox paths for the signing artefacts. Both paths live
-	// at $HOME/.ssh/<generic-name> where $HOME depends on the isolation mode
-	// (see sandboxHome). Agents inside the sandbox see generic filenames —
-	// signing-key.pub / allowed_signers — regardless of which sandbox layer
-	// they're running under.
-	sandboxSshDir := filepath.Join(sandboxHome(m, mode), ".ssh")
-	sandboxSigningKeyPub := filepath.Join(sandboxSshDir, "signing-key.pub")
-	sandboxAllowedSigners := filepath.Join(sandboxSshDir, "allowed_signers")
-
 	// [user] section — required. Missing identity is a hard error (issue
 	// #1960): without a configured [user] section, git falls back to
 	// OS-level identity guessing inside the sandbox (e.g. `worker@prism`,
@@ -627,7 +660,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 	sb.WriteString("    name = " + m.cfg.GitUserName + "\n")
 	sb.WriteString("    email = " + m.cfg.GitUserEmail + "\n")
 	if hasSigning {
-		sb.WriteString("    signingKey = " + sandboxSigningKeyPub + "\n")
+		sb.WriteString("    signingKey = " + embedSigningKeyPub + "\n")
 	}
 
 	// [commit] and [gpg] sections — only when signing keys are available.
@@ -642,7 +675,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 			log.Printf("container: failed to read signing public key %q: %v; skipping allowed_signers", signingKeyPub, err)
 		} else {
 			allowedSignersContent := m.cfg.GitUserEmail + " " + strings.TrimSpace(string(pubKeyContent)) + "\n"
-			if err := os.WriteFile(m.allowedSignersFilePath(), []byte(allowedSignersContent), 0o644); err != nil {
+			if err := os.WriteFile(allowedSignersDst, []byte(allowedSignersContent), 0o644); err != nil {
 				log.Printf("container: failed to write allowed_signers file: %v", err)
 			} else {
 				m.allowedSignersReady = true
@@ -657,7 +690,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 			sb.WriteString("\n[gpg]\n")
 			sb.WriteString("    format = ssh\n")
 			sb.WriteString("\n[gpg \"ssh\"]\n")
-			sb.WriteString("    allowedSignersFile = " + sandboxAllowedSigners + "\n")
+			sb.WriteString("    allowedSignersFile = " + embedAllowedSigners + "\n")
 		}
 	}
 
@@ -667,7 +700,7 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 	sb.WriteString("\n[init]\n")
 	sb.WriteString("    defaultBranch = main\n")
 
-	if err := os.WriteFile(m.gitconfigFilePath(), []byte(sb.String()), 0o644); err != nil {
+	if err := os.WriteFile(gitconfigDst, []byte(sb.String()), 0o644); err != nil {
 		return err
 	}
 	return nil

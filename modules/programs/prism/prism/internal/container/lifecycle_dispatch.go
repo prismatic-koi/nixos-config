@@ -192,16 +192,21 @@ func (s *sandboxExecIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(s.name)
 }
 
-// WriteGitconfig generates a minimal .gitconfig for the sandbox-exec sandbox.
-// sandbox-exec runs as the host user but with a per-session staging HOME, so
-// the signingKey and allowedSignersFile paths embed <stagingHome>/.ssh/...
-// (post A2.G1: writeGitconfig now covers sandbox-exec via the third
-// isolationSandboxExec mode value, with sandboxHome(m, isolationSandboxExec)
-// resolving to the staging HOME). The temp file written here is then
-// materialised into <stagingHome>/.gitconfig by writeGitconfigToDir, which
-// is invoked from PrepareSandboxExecHome.
+// WriteGitconfig generates the gitconfig for the sandbox-exec sandbox. Post
+// issue #2213 (Step 2 of #2132) the generated gitconfig lives in the
+// per-session work dir (<sessionDir>/gitconfig) and embeds the stable sops
+// symlink key paths (~/.ssh/<keyname>) rather than staging-HOME paths; the
+// dispatcher wires it in via GIT_CONFIG_GLOBAL. This delegates to the same
+// work-dir writer that PrepareSessionWorkDir uses.
 func (s *sandboxExecIsolator) WriteGitconfig(m *Manager) error {
-	return m.writeGitconfig(isolationSandboxExec)
+	sessionDir, err := m.sessionWorkDirPath()
+	if err != nil {
+		return fmt.Errorf("container: sandbox-exec: %w", err)
+	}
+	if err := os.MkdirAll(sessionDir, 0o700); err != nil {
+		return fmt.Errorf("container: sandbox-exec: create session work dir %s: %w", sessionDir, err)
+	}
+	return m.writeGitconfigToDir(sessionDir)
 }
 
 // Reset is a no-op for sandbox-exec today — same rationale as bwrap.Reset.
@@ -231,6 +236,16 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 			stagingHome, err)
 	}
 	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
+
+	// Prepare the per-session work dir (issue #2213, Step 2 of #2132): the
+	// generated ssh-config / gitconfig / allowed_signers the dispatcher wires
+	// in via GIT_SSH_COMMAND / GIT_CONFIG_GLOBAL. Hard-fail on error — this
+	// preserves the #1960 missing-git-identity hard error at Prepare time,
+	// and a session without these configs would have no git identity and no
+	// ssh auth route.
+	if _, err := m.PrepareSessionWorkDir(); err != nil {
+		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
+	}
 
 	if _, err := writeProfile(m); err != nil {
 		return nil, err
