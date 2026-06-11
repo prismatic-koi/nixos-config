@@ -16,10 +16,12 @@ func (s *Sidecar) HandleEvent(evt harness.HarnessEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Reset the inactivity watchdog (#1709): any inbound event counts as
-	// activity. The watchdog only fires after cfg.ActivityTimeout of
-	// continuous silence (no-op when disabled).
-	s.touchActivity()
+	// Record the inbound event and reset the inactivity watchdog (#1709):
+	// any inbound event counts as activity. The watchdog only fires after
+	// cfg.ActivityTimeout of continuous silence (no-op when disabled). The
+	// frame counter feeds the stall-vs-no-start classification when the
+	// watchdog fires (#2239).
+	s.recordInboundFrame()
 
 	// Delegate harness-specific event type extraction to the harness adapter.
 	// Some harnesses send all events as plain `data:` lines with no `event:` field;

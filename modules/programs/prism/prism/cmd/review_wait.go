@@ -156,6 +156,10 @@ func emitReviewWaitTerminalAgg(prNumber, groupID string, allMembers []db.Status,
 				row.Error = "agent reached error state"
 				if mr.StartupError != "" {
 					row.Error = "startup error: " + mr.StartupError
+				} else if mr.StallError != "" {
+					// Mid-run stall (#2239): the reason already begins with
+					// "stalled mid-run after …".
+					row.Error = mr.StallError
 				}
 				allPass = false
 			default:

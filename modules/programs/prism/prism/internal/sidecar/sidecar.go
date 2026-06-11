@@ -537,6 +537,24 @@ type Sidecar struct {
 	// Protected by s.mu.
 	activityTimer Timer
 
+	// inboundFrameCount counts inbound frames received from the agent
+	// harness — every frame processed by handlePipeFrame (PI socket-pipe
+	// path) or HandleEvent (SSE path). The post-handshake watchdog arm does
+	// NOT count: a session that completes the wire handshake but never
+	// produces a frame has inboundFrameCount == 0. Used by the inactivity
+	// watchdog (#2239) to distinguish a mid-run stall (frames flowed, then
+	// stopped) from a never-started agent (no frames at all). Protected by
+	// s.mu.
+	inboundFrameCount int
+
+	// firstInboundFrameAt and lastInboundFrameAt record the Clock timestamps
+	// of the first and most recent inbound frames. Zero when no frame has
+	// been received. Used by handleActivityTimeout to report "stalled
+	// mid-run after <elapsed> (<n> frames received, last at <t>)" (#2239).
+	// Protected by s.mu.
+	firstInboundFrameAt time.Time
+	lastInboundFrameAt  time.Time
+
 	// reviewRecoveryCancel cancels the worker-sidecar's review-completion
 	// recovery watcher (#1709 reopen). Set in Run() when the watcher is
 	// started; called by Shutdown so the goroutine exits before the DB is
@@ -2316,10 +2334,13 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Reset the inactivity watchdog (#1709): any inbound frame counts as
-	// activity, so the watchdog only fires after a full silence window.
-	// No-op when cfg.ActivityTimeout is zero (disabled for non-review roles).
-	s.touchActivity()
+	// Record the inbound frame and reset the inactivity watchdog (#1709):
+	// any inbound frame counts as activity, so the watchdog only fires after
+	// a full silence window. The frame counter feeds the stall-vs-no-start
+	// classification when the watchdog fires (#2239). The watchdog reset is
+	// a no-op when cfg.ActivityTimeout is zero (disabled for non-review
+	// roles); the frame stats are recorded unconditionally.
+	s.recordInboundFrame()
 
 	switch frame.Type {
 	case "state_change":
@@ -2492,7 +2513,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// silence the wire long enough to trip the inactivity watchdog added
 		// in #1728.
 		//
-		// touchActivity (called at the top of handlePipeFrame) already
+		// recordInboundFrame (called at the top of handlePipeFrame) already
 		// resets the watchdog — the heartbeat needs no further action here.
 		// Deliberately do NOT writeEvent: the narrative renderer's default
 		// case prints unknown event types, and we don't want the heartbeat

@@ -241,11 +241,11 @@ WHERE group_id = ? AND ended_at IS NULL`
 		return results, nil
 	}
 
-	// Batched event fetch: pull every msg_assistant and startup_error event
-	// for the entire member set in a single query, ordered so that the most
-	// recent row per (session_name, type) comes first. The Go-side reduction
-	// below keeps only that first row per pair (#1868 F7 — replaces the
-	// previous N+1 shape of 2 QueryRow calls per member).
+	// Batched event fetch: pull every msg_assistant, startup_error, and
+	// stall_error event for the entire member set in a single query, ordered
+	// so that the most recent row per (session_name, type) comes first. The
+	// Go-side reduction below keeps only that first row per pair (#1868 F7 —
+	// replaces the previous N+1 shape of 2 QueryRow calls per member).
 	names := make([]string, 0, len(results))
 	for name := range results {
 		names = append(names, name)
@@ -256,7 +256,7 @@ WHERE group_id = ? AND ended_at IS NULL`
 SELECT session_name, type, payload
 FROM agent_events
 WHERE session_name IN (` + placeholders + `)
-  AND type IN ('msg_assistant', 'startup_error')
+  AND type IN ('msg_assistant', 'startup_error', 'stall_error')
 ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 	args := make([]any, 0, len(names))
 	for _, n := range names {
@@ -272,7 +272,7 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 	// recorded the most-recent row for. ORDER BY puts the most recent first
 	// within each (session_name, type) partition, so we accept the first row
 	// we see for each pair and ignore the rest.
-	seenLatest := make(map[string]struct{}, 2*len(names))
+	seenLatest := make(map[string]struct{}, 3*len(names))
 	for eventRows.Next() {
 		var sessName, evtType, payload string
 		if err := eventRows.Scan(&sessName, &evtType, &payload); err != nil {
@@ -306,6 +306,22 @@ ORDER BY session_name ASC, type ASC, created_at DESC, rowid DESC`
 					r.StartupError = p.Reason
 				} else {
 					r.StartupError = payload
+				}
+			}
+		case "stall_error":
+			// Extract the "reason" field from the JSON payload. This is
+			// written by the sidecar's inactivity watchdog when it fires
+			// after one or more inbound frames were received (#2239),
+			// allowing the review monitor to report a mid-run stall instead
+			// of mislabelling it as a no-start failure.
+			if payload != "" {
+				var p struct {
+					Reason string `json:"reason"`
+				}
+				if jsonErr := json.Unmarshal([]byte(payload), &p); jsonErr == nil && p.Reason != "" {
+					r.StallError = p.Reason
+				} else {
+					r.StallError = payload
 				}
 			}
 		}

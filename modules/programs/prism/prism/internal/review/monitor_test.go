@@ -742,6 +742,109 @@ func TestBuildMonitorResults_InterruptedState_FallsToDefault(t *testing.T) {
 	}
 }
 
+// TestBuildMonitorResults_StalledMidRun verifies the #2239 contract at the
+// buildMonitorResults layer: an agent whose inactivity watchdog fired AFTER
+// inbound frames were received (StallError set, StartupError empty) is
+// reported as a mid-run stall — elapsed time and frame count included via
+// the StallError reason — and NOT as failed-to-start.
+func TestBuildMonitorResults_StalledMidRun(t *testing.T) {
+	agents := []review.Agent{{Name: "review-security"}}
+	sess := "nixos-config@parent~review-1-review-security"
+	sessions := []string{sess}
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName: sess,
+			State:       "error",
+			StallError:  "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s",
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if r.Passed {
+		t.Errorf("stalled mid-run: Passed=true, want false")
+	}
+	if !r.IsError {
+		t.Errorf("stalled mid-run: IsError=false, want true")
+	}
+	for _, wantSub := range []string{"stalled mid-run after 1m20s", "4 frame(s) received", "last at"} {
+		if !findSubstring(r.Output, wantSub) {
+			t.Errorf("stalled mid-run: output missing %q: %q", wantSub, r.Output)
+		}
+	}
+	if findSubstring(r.Output, "failed to start") {
+		t.Errorf("stalled mid-run: output must NOT use the no-start wording (#2239 label accuracy): %q", r.Output)
+	}
+	if findSubstring(r.Output, "did not complete cleanly") {
+		t.Errorf("stalled mid-run: output must NOT fall back to the generic error wording: %q", r.Output)
+	}
+}
+
+// TestBuildMonitorResults_NoStartStillUsesStartupErrorBranch pins the other
+// half of the #2239 split: an agent with a StartupError (and no StallError)
+// retains the existing failed-to-start report.
+func TestBuildMonitorResults_NoStartStillUsesStartupErrorBranch(t *testing.T) {
+	agents := []review.Agent{{Name: "review-code"}}
+	sess := "nixos-config@parent~review-1-review-code"
+	sessions := []string{sess}
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName:  sess,
+			State:        "error",
+			StartupError: "inactivity timeout: no inbound frame for 15m0s (no frames received)",
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.IsError {
+		t.Errorf("no-start: IsError=false, want true")
+	}
+	if !findSubstring(r.Output, "failed to start (no-start)") {
+		t.Errorf("no-start: output should retain the failed-to-start wording: %q", r.Output)
+	}
+	if findSubstring(r.Output, "stalled mid-run") {
+		t.Errorf("no-start: output must NOT use the stall wording: %q", r.Output)
+	}
+}
+
+// TestBuildMonitorResults_StallRecoveredToFinishedPasses guards the
+// #1495-style resume edge against the new stall label: a member that has a
+// stale stall_error event but ultimately reached "finished" with a parseable
+// PASS verdict must be counted as a normal pass — StallError is only
+// consulted for members whose terminal state is "error".
+func TestBuildMonitorResults_StallRecoveredToFinishedPasses(t *testing.T) {
+	agents := []review.Agent{{Name: "review-goal"}}
+	sess := "nixos-config@parent~review-1-review-goal"
+	sessions := []string{sess}
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName: sess,
+			State:       "finished",
+			LastMessage: `{"text":"<verdict>PASS</verdict>"}`,
+			StallError:  "stalled mid-run after 10s (2 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s",
+		},
+	}
+
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	r := results[0]
+	if !r.Passed {
+		t.Errorf("stall-then-recovered: Passed=false, want true (stale stall_error must not relabel a real verdict)")
+	}
+	if r.IsError {
+		t.Errorf("stall-then-recovered: IsError=true, want false")
+	}
+}
+
 // TestBuildMonitorResults_InterruptedThenResumedToFinishedPasses verifies the
 // #1495 contract: an agent that was interrupted, redirected via `prism
 // prompt`, and ultimately reached "finished" with a PASS verdict must be
@@ -1326,5 +1429,142 @@ func TestBuildDeliveryMessage_NoStartTakesPrecedenceOverNoVerdict(t *testing.T) 
 	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessGoal, sessCode})
 	if !findSubstring(msg, "failed to start") {
 		t.Errorf("mixed no-start + no-verdict: existing mixed-no-start framing should win: %q", msg)
+	}
+}
+
+// ── buildDeliveryMessage: stall-vs-no-start labels (#2239) ─────────────────
+
+// stalledMember builds a GroupMemberResult in the shape the inactivity
+// watchdog leaves behind for a mid-run stall: state "error", StallError set,
+// StartupError empty.
+func stalledMember(sess string) db.GroupMemberResult {
+	return db.GroupMemberResult{
+		SessionName: sess,
+		State:       "error",
+		StallError:  "stalled mid-run after 1m20s (4 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s",
+	}
+}
+
+// TestBuildDeliveryMessage_AllStalled verifies the #2239 header when EVERY
+// agent stalled mid-run: the header carries the stall label and the
+// infrastructure-failure framing (re-run, not a code-quality FAIL), and does
+// NOT use the failed-to-start wording.
+func TestBuildDeliveryMessage_AllStalled(t *testing.T) {
+	sess := "nixos-config@parent~review-1-review-security"
+	groupData := map[string]db.GroupMemberResult{sess: stalledMember(sess)}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sess})
+	if !findSubstring(msg, "stalled mid-run") {
+		t.Errorf("all-stalled: header should carry the stall label: %q", msg)
+	}
+	if !findSubstring(msg, "infrastructure failure") {
+		t.Errorf("all-stalled: header should mention 'infrastructure failure': %q", msg)
+	}
+	if !findSubstring(msg, "Re-run") {
+		t.Errorf("all-stalled: header should instruct re-run: %q", msg)
+	}
+	if !findSubstring(msg, "NOT a code-quality verdict") {
+		t.Errorf("all-stalled: header should clarify this is not a code-quality verdict: %q", msg)
+	}
+	if findSubstring(msg, "failed to start") {
+		t.Errorf("all-stalled: header must NOT say 'failed to start' (the agents did start — #2239 label accuracy): %q", msg)
+	}
+	if findSubstring(msg, "Fix the blocking issues") {
+		t.Errorf("all-stalled: header should NOT say 'Fix the blocking issues': %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_MixedStallAndCodeFail verifies that when some
+// agents returned verdicts and one stalled mid-run, both signals appear and
+// the stall is labelled as such (not as a no-start).
+func TestBuildDeliveryMessage_MixedStallAndCodeFail(t *testing.T) {
+	sessSec := "nixos-config@parent~review-1-review-security"
+	sessGoal := "nixos-config@parent~review-1-review-goal"
+	groupData := map[string]db.GroupMemberResult{
+		sessSec:  stalledMember(sessSec),
+		sessGoal: {SessionName: sessGoal, State: "finished", LastMessage: `{"text":"<verdict>FAIL</verdict>"}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessSec, sessGoal})
+	if !findSubstring(msg, "stalled mid-run") {
+		t.Errorf("mixed stall+fail: header should carry the stall label: %q", msg)
+	}
+	if !findSubstring(msg, "infrastructure failure") {
+		t.Errorf("mixed stall+fail: header should mention 'infrastructure failure': %q", msg)
+	}
+	if !findSubstring(msg, "blocking issues") {
+		t.Errorf("mixed stall+fail: header should mention 'blocking issues': %q", msg)
+	}
+	if !findSubstring(msg, "re-run") && !findSubstring(msg, "Re-run") {
+		t.Errorf("mixed stall+fail: header should instruct re-run: %q", msg)
+	}
+	if findSubstring(msg, "failed to start") {
+		t.Errorf("mixed stall+fail: header must NOT say 'failed to start' when no agent no-started: %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_AllInfraMixedNoStartAndStall verifies the header
+// when every agent infra-failed but in a mix of the two classes: both labels
+// appear with their counts, framed as an infrastructure failure.
+func TestBuildDeliveryMessage_AllInfraMixedNoStartAndStall(t *testing.T) {
+	sessSec := "nixos-config@parent~review-1-review-security"
+	sessCode := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sessSec:  stalledMember(sessSec),
+		sessCode: {SessionName: sessCode, State: "error", StartupError: "health check timed out"},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessSec, sessCode})
+	if !findSubstring(msg, "stalled mid-run") {
+		t.Errorf("all-infra mixed: header should carry the stall label: %q", msg)
+	}
+	if !findSubstring(msg, "failed to start") {
+		t.Errorf("all-infra mixed: header should carry the no-start label: %q", msg)
+	}
+	if !findSubstring(msg, "infrastructure failure") {
+		t.Errorf("all-infra mixed: header should mention 'infrastructure failure': %q", msg)
+	}
+	if !findSubstring(msg, "Re-run") {
+		t.Errorf("all-infra mixed: header should instruct re-run: %q", msg)
+	}
+	if findSubstring(msg, "Fix the blocking issues") {
+		t.Errorf("all-infra mixed: header should NOT say 'Fix the blocking issues' (no agent produced a verdict): %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_StallTakesPrecedenceOverNoVerdict mirrors the
+// no-start precedence pin for the stall class: when a round mixes a mid-run
+// stall AND a ran-but-no-verdict agent, the infra framing (with the stall
+// label) wins — re-running addresses both.
+func TestBuildDeliveryMessage_StallTakesPrecedenceOverNoVerdict(t *testing.T) {
+	sessSec := "nixos-config@parent~review-1-review-security"
+	sessCode := "nixos-config@parent~review-1-review-code"
+	groupData := map[string]db.GroupMemberResult{
+		sessSec:  stalledMember(sessSec),
+		sessCode: {SessionName: sessCode, State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", false, groupData, []string{sessSec, sessCode})
+	if !findSubstring(msg, "stalled mid-run") {
+		t.Errorf("stall + no-verdict: stall framing should win: %q", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_StaleStallOnFinishedMemberIgnored guards the
+// #1495-style resume edge at the header layer: a member with a stale
+// stall_error event that ultimately finished with a PASS verdict must not
+// trigger the stall framing.
+func TestBuildDeliveryMessage_StaleStallOnFinishedMemberIgnored(t *testing.T) {
+	sess := "nixos-config@parent~review-1-review-goal"
+	groupData := map[string]db.GroupMemberResult{
+		sess: {
+			SessionName: sess,
+			State:       "finished",
+			LastMessage: `{"text":"<verdict>PASS</verdict>"}`,
+			StallError:  "stalled mid-run after 10s (2 frame(s) received, last at 2026-06-11T13:51:04Z): inactivity timeout: no inbound frame for 15m0s",
+		},
+	}
+	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", true, groupData, []string{sess})
+	if !findSubstring(msg, "All 5 review agents passed") {
+		t.Errorf("stale stall on finished member: all-passed header expected: %q", msg)
+	}
+	if findSubstring(msg, "stalled mid-run") {
+		t.Errorf("stale stall on finished member: header must NOT carry the stall label: %q", msg)
 	}
 }
