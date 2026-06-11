@@ -97,8 +97,10 @@ func bwrapFixture(t *testing.T, cfg Config) (m *Manager, fakeHome string, cleanu
 	}
 
 	// Pre-create directories that BuildArgs expects unconditionally.
+	// ~/.config/claude is conditional (OptionalIfMissing) but pre-created
+	// here so the fixture exercises the bound path (issue #2243).
 	dirs := []string{
-		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
 		filepath.Join(fakeHome, ".npm"),
 		filepath.Join(fakeHome, ".cache", "nix"),
@@ -376,7 +378,13 @@ func TestBwrapBuildArgs_WorktreeBound(t *testing.T) {
 	}
 }
 
-func TestBwrapBuildArgs_ClaudeDirBound(t *testing.T) {
+// TestBwrapBuildArgs_ClaudeConfigXDGDirBound verifies the claude config dir
+// is RW-bound Dst==Src at the host XDG path (~/.config/claude) and that the
+// former canonical ~/.claude bind is gone (issue #2243, Step 3c of #2132).
+// claude-code reaches the dir via the CLAUDE_CONFIG_DIR env var; the bwrap
+// namespace is additive from an empty root, so the Dst==Src bind delivers
+// the host directory at the path the env var carries.
+func TestBwrapBuildArgs_ClaudeConfigXDGDirBound(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
@@ -387,9 +395,45 @@ func TestBwrapBuildArgs_ClaudeDirBound(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	claudeDir := filepath.Join(fakeHome, ".claude")
-	if !hasBind(args, claudeDir) {
-		t.Errorf("~/.claude %q not found as --bind SRC SRC in args: %v", claudeDir, args)
+	claudeXDGDir := filepath.Join(fakeHome, ".config", "claude")
+	if !hasBind(args, claudeXDGDir) {
+		t.Errorf("~/.config/claude %q not found as --bind SRC SRC in args: %v", claudeXDGDir, args)
+	}
+
+	// The canonical ~/.claude path must not appear anywhere in the args —
+	// neither as a bind source nor as a destination (env-var route, #2243).
+	canonical := filepath.Join(fakeHome, ".claude")
+	if hasArg(args, canonical) {
+		t.Errorf("canonical ~/.claude %q must not appear in args (XDG relocation, #2243): %v", canonical, args)
+	}
+}
+
+// TestBwrapBuildArgs_ClaudeConfigDirAbsentNoBind verifies the claude XDG
+// mount is OptionalIfMissing: a host without ~/.config/claude produces no
+// bind args for it (bwrap aborts on missing --bind sources), and no
+// canonical ~/.claude bind reappears (issue #2243).
+func TestBwrapBuildArgs_ClaudeConfigDirAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// Remove the fixture's pre-created ~/.config/claude.
+	claudeXDGDir := filepath.Join(fakeHome, ".config", "claude")
+	if err := os.RemoveAll(claudeXDGDir); err != nil {
+		t.Fatalf("RemoveAll %q: %v", claudeXDGDir, err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasArg(args, claudeXDGDir) {
+		t.Errorf("absent ~/.config/claude %q must not be referenced in args (OptionalIfMissing): %v", claudeXDGDir, args)
+	}
+	if hasArg(args, filepath.Join(fakeHome, ".claude")) {
+		t.Errorf("canonical ~/.claude must not appear in args (XDG relocation, #2243): %v", args)
 	}
 }
 
@@ -1219,6 +1263,7 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 			"KUBECONFIG":                  "/home/ben/.config/kube/agents-config",
 			"AWS_CONFIG_FILE":             "/home/ben/.config/aws/readonly-config",
 			"AWS_SHARED_CREDENTIALS_FILE": "/home/ben/.config/aws/credentials",
+			"CLAUDE_CONFIG_DIR":           "/home/ben/.config/claude",
 		},
 	})
 	defer cleanup()
@@ -1247,6 +1292,13 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
 		t.Errorf("--setenv KUBECONFIG not found in args (must flow since #2235): %v", args)
 	}
+
+	// CLAUDE_CONFIG_DIR MUST be injected (issue #2243) — the canonical-path
+	// ~/.claude bind is gone and claude-code resolves its config dir via
+	// this env var at the host XDG path.
+	if !hasSetenv(args, "CLAUDE_CONFIG_DIR", "/home/ben/.config/claude") {
+		t.Errorf("--setenv CLAUDE_CONFIG_DIR not found in args (must flow since #2243): %v", args)
+	}
 }
 
 // TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent verifies that
@@ -1267,7 +1319,7 @@ func TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent(t *testing.T) {
 
 	// Minimal fixture: create the dirs/files required by BuildArgs.
 	for _, d := range []string{
-		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
 		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
@@ -1336,7 +1388,7 @@ func TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent(t *testing.T) {
 	defer func() { _ = os.Setenv("HOME", origHome) }()
 
 	for _, d := range []string{
-		filepath.Join(fakeHome, ".claude"),
+		filepath.Join(fakeHome, ".config", "claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
 		filepath.Join(fakeHome, ".local", "share", "pi"),
 		filepath.Join(fakeHome, ".cache", "nix"),
@@ -1936,6 +1988,17 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	kubeXDG := filepath.Join(fakeHome, ".config", "kube", "agents-config")
 	if !hasROBindSrcDst(args, kubeXDG, kubeXDG) {
 		t.Errorf("kube agents-config: want --ro-bind %q %q (Dst==Src XDG delivery, #2235)", kubeXDG, kubeXDG)
+	}
+
+	// Claude config dir: the canonical ~/.claude bind is gone since #2243
+	// (env-var route via CLAUDE_CONFIG_DIR); the XDG path is RW-bound
+	// Dst==Src instead.
+	if hasArg(args, filepath.Join(fakeHome, ".claude")) {
+		t.Errorf("canonical ~/.claude must NOT appear in args (XDG relocation, #2243)")
+	}
+	claudeXDG := filepath.Join(fakeHome, ".config", "claude")
+	if !hasBind(args, claudeXDG) {
+		t.Errorf("claude config dir: want --bind %q %q (Dst==Src XDG delivery, #2243)", claudeXDG, claudeXDG)
 	}
 
 	// KUBECACHEDIR redirects kubectl's cache to the per-session /tmp tmpfs

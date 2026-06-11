@@ -312,12 +312,12 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// ── Standard sandbox mounts via the shared spec walk ─────────────────
 	// StandardSandboxMounts (mounts.go, A2.M1) returns the mode-agnostic
-	// mount set for ~/.claude, ~/.mcp-auth, ~/.cache/nix, AWS config, AWS
+	// mount set for ~/.config/claude, ~/.mcp-auth, ~/.cache/nix, AWS config, AWS
 	// credentials, AWS SSO/CLI cache, kube config, and the clipboard
 	// staging dir. The bwrap appendBind appender (mounts.go) translates
 	// each MountSpec into the correct --bind / --ro-bind triple.
 	//
-	// Note on ordering: StandardSandboxMounts emits ~/.claude, ~/.mcp-auth,
+	// Note on ordering: StandardSandboxMounts emits ~/.config/claude, ~/.mcp-auth,
 	// ~/.cache/nix, AWS config, AWS credentials, AWS SSO, AWS CLI, kube
 	// config, clipboard-staging. The pre-A2.M1 bwrap order interleaved the
 	// AWS group with the SSH/known_hosts/SSH-config group; the new order

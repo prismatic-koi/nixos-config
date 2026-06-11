@@ -7,29 +7,35 @@ package container
 // env alongside the AWS pair (un-suppressed in #2234, Step 3a). kubectl
 // resolves the kube config via KUBECONFIG at the host XDG path; the
 // canonical-path ($HOME/.kube/config) delivery was dropped from both
-// isolators.
+// isolators. CLAUDE_CONFIG_DIR (issue #2243, Step 3c) flows the same way:
+// claude-code resolves its config dir at the host XDG path ~/.config/claude.
 
 import (
 	"testing"
 )
 
-// envSuppressionFixtureVars returns an AgentEnvVars map carrying the three
-// historically-suppressed keys plus a plain key.
+// envSuppressionFixtureVars returns an AgentEnvVars map carrying the
+// historically-suppressed keys, the claude XDG relocation key (#2243), and
+// a plain key — mirroring the production agent.envVars set declared by the
+// nix module.
 func envSuppressionFixtureVars() map[string]string {
 	return map[string]string{
 		"GIT_EDITOR":                  "true",
 		"KUBECONFIG":                  "/home/ben/.config/kube/agents-config",
 		"AWS_CONFIG_FILE":             "/home/ben/.config/aws/readonly-config",
 		"AWS_SHARED_CREDENTIALS_FILE": "/home/ben/.config/aws/credentials",
+		"CLAUDE_CONFIG_DIR":           "/home/ben/.config/claude",
 	}
 }
 
 // envFixtureWantPairs is the full K=V emission expected from the fixture —
 // every AgentEnvVars key flows through, including the historically
-// suppressed KUBECONFIG (#2235) and AWS pair (#2234).
+// suppressed KUBECONFIG (#2235), the AWS pair (#2234), and the claude
+// config dir (#2243).
 var envFixtureWantPairs = []string{
 	"AWS_CONFIG_FILE=/home/ben/.config/aws/readonly-config",
 	"AWS_SHARED_CREDENTIALS_FILE=/home/ben/.config/aws/credentials",
+	"CLAUDE_CONFIG_DIR=/home/ben/.config/claude",
 	"GIT_EDITOR=true",
 	"KUBECONFIG=/home/ben/.config/kube/agents-config",
 }

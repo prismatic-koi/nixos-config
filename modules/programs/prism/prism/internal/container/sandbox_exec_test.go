@@ -801,7 +801,13 @@ func newFakeHome(t *testing.T) string {
 		".config/kube",
 		".cache/bun",
 		".cache/nix",
+		// .claude is the OLD (pre-#2243) canonical claude dir. It is kept in
+		// the fixture so tests can prove the staging builder no longer
+		// symlinks it even when it exists on the host.
 		".claude",
+		// .config/claude is the XDG path claude-code reaches via
+		// CLAUDE_CONFIG_DIR (issue #2243).
+		".config/claude",
 		".mcp-auth",
 		".local/share/pi",
 	}
@@ -1918,12 +1924,14 @@ func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
 		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
 	}
 
-	// .cache/bun, .cache/nix, .claude, .mcp-auth are RW — the
-	// profile must grant file-write* on their resolved targets.
+	// .cache/bun, .cache/nix, .mcp-auth are RW — the profile must grant
+	// file-write* on their resolved targets. (.claude is gone since #2243:
+	// claude-code reads/writes ~/.config/claude via CLAUDE_CONFIG_DIR and
+	// generateProfile grants that path directly — see
+	// TestGenerateProfile_ClaudeConfigDirRWSubpathRule.)
 	rwPaths := []string{
 		filepath.Join(fakeHome, ".cache", "bun"),
 		filepath.Join(fakeHome, ".cache", "nix"),
-		filepath.Join(fakeHome, ".claude"),
 		filepath.Join(fakeHome, ".mcp-auth"),
 	}
 	for _, rwPath := range rwPaths {
@@ -2210,6 +2218,97 @@ func TestPrepareSandboxExecHome_NoKubeConfigSymlink(t *testing.T) {
 		if target.ResolvedPath == resolvedKube {
 			t.Errorf("collectStagingHomeSymlinkTargets emitted the kube agents-config target %q — the .kube/config staging symlink should be gone (#2235)", resolvedKube)
 		}
+	}
+}
+
+// TestPrepareSandboxExecHome_NoClaudeSymlink is the unit-level AC test for
+// issue #2243 (Step 3c of #2132): after PrepareSandboxExecHome, the staging
+// HOME contains no .claude symlink even though the old canonical dir exists
+// on the host, and collectStagingHomeSymlinkTargets no longer emits its
+// resolved target. claude-code reads/writes its config dir at the host XDG
+// path ~/.config/claude via the CLAUDE_CONFIG_DIR env var; the in-sandbox
+// capability is the explicit RW (subpath ~/.config/claude) grant (see
+// TestGenerateProfile_ClaudeConfigDirRWSubpathRule) — the dir is a plain
+// host directory, not sops-backed, so the #2211 allowlist is not involved.
+func TestPrepareSandboxExecHome_NoClaudeSymlink(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Resolve the old canonical dir before staging so we can assert its
+	// absence from the collector output below. newFakeHome creates a real
+	// dir at ~/.claude, so the source-present path is exercised.
+	resolvedClaude, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".claude"))
+	if err != nil {
+		t.Fatalf("fixture: EvalSymlinks ~/.claude: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "no-claude-symlink-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".claude")); lstatErr == nil {
+		t.Errorf("staging HOME has .claude entry — removed in #2243 (CLAUDE_CONFIG_DIR env-var route), must not be recreated")
+	}
+
+	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
+	if err != nil {
+		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
+	}
+	for _, target := range targets {
+		if target.ResolvedPath == resolvedClaude {
+			t.Errorf("collectStagingHomeSymlinkTargets emitted the ~/.claude target %q — the .claude staging symlink should be gone (#2243)", resolvedClaude)
+		}
+	}
+}
+
+// TestGenerateProfile_ClaudeConfigDirRWSubpathRule verifies that
+// generateProfile emits an RW (subpath ~/.config/claude) rule (issue #2243,
+// Step 3c of #2132). claude-code resolves its config dir (and .claude.json)
+// via CLAUDE_CONFIG_DIR at the host XDG path; the dir is a plain host
+// directory (not sops-backed), so this explicit grant — not the #2211
+// secrets.d allowlist — is the sole in-sandbox capability for the path.
+//
+// The rule must be emitted even when the dir does not yet exist —
+// sandbox-exec silently ignores (subpath ...) rules for non-existent paths
+// (same shape as the ~/.pi/agent rule), and the nix module's hm activation
+// creates the dir on managed hosts.
+func TestGenerateProfile_ClaudeConfigDirRWSubpathRule(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately do NOT create ~/.config/claude — the rule must be
+	// emitted unconditionally.
+
+	m := newSandboxExecManager(Config{
+		SessionName: "repo@claude-grant",
+	})
+	profile := generateProfile(m)
+
+	claudeConfigDir := filepath.Join(fakeHome, ".config", "claude")
+	subpathRule := "(subpath " + quoteSBPL(claudeConfigDir) + ")"
+	idx := strings.Index(profile, subpathRule)
+	if idx < 0 {
+		t.Fatalf("profile missing %s rule; full profile:\n%s", subpathRule, profile)
+	}
+
+	// The rule must sit inside an (allow ... file-write* ...) clause — RW,
+	// not RO — and inside an allow, not a deny.
+	clauseStart := strings.LastIndex(profile[:idx], "(allow ")
+	denyStart := strings.LastIndex(profile[:idx], "(deny ")
+	if clauseStart < 0 || denyStart > clauseStart {
+		t.Fatalf("~/.config/claude subpath rule is not inside an (allow ...) clause; full profile:\n%s", profile)
+	}
+	clause := profile[clauseStart:idx]
+	if !strings.Contains(clause, "file-write*") {
+		t.Errorf("~/.config/claude allow clause lacks file-write* (must be RW — claude writes config/history/token refreshes); clause: %q", clause)
+	}
+	if !strings.Contains(clause, "file-read*") {
+		t.Errorf("~/.config/claude allow clause lacks file-read*; clause: %q", clause)
 	}
 }
 

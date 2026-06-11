@@ -151,13 +151,31 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	_ = mode // mode is retained for future per-mode mount tweaks
 
 	specs := []MountSpec{
-		// ── ~/.claude (RW) ───────────────────────────────────────────────
-		// Anthropic API credentials directory. Read-write so the
-		// pi-anthropic-oauth extension can refresh OAuth tokens. Mounted
-		// unconditionally — the agent fails gracefully when absent.
+		// ── ~/.config/claude (RW, conditional, Dst==Src at XDG path) ─────
+		// claude-code's config dir (settings, history, .claude.json, OAuth
+		// token refreshes), resolved via the CLAUDE_CONFIG_DIR env var at
+		// the host XDG path — declared in agent.envVars by the nix module
+		// (issue #2243, Step 3c of #2132; bwrap convergence per design
+		// decision §5.1). The former canonical ~/.claude RW bind is gone.
+		//
+		// The bwrap mount namespace is additive from an empty root, so the
+		// env-var route still needs the directory delivered INTO the
+		// namespace: bind it Dst==Src so CLAUDE_CONFIG_DIR resolves to a
+		// real read-write directory in-namespace, with writes flowing
+		// through to the host (same semantics as the bind it replaces).
+		// Unlike the aws/kube XDG entries this is a plain host directory,
+		// not a sops symlink — no EvalSymlinks. Mounted only when present
+		// (bwrap aborts on missing --bind sources); on a host without the
+		// dir, claude-code simply creates an ephemeral in-namespace dir at
+		// the env var path.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RW
+		// (subpath ~/.config/claude) grant on the real host path.
 		{
-			HostPath:    filepath.Join(hostHome, ".claude"),
-			SandboxPath: filepath.Join(sandboxHomeDir, ".claude"),
+			HostPath:          filepath.Join(hostHome, ".config", "claude"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".config", "claude"),
+			OptionalIfMissing: true,
 		},
 
 		// ── ~/.mcp-auth (RW, conditional) ────────────────────────────────

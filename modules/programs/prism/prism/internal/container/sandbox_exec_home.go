@@ -11,10 +11,11 @@ package container
 //
 // Design decisions locked by the coordinator in issue #1017:
 //
-//  1. .claude/ is a symlink to host ~/.claude (matches bwrap's RW treatment —
-//     the ~/.claude mount in mounts.go StandardSandboxMounts). Writes to
-//     .credentials.json (e.g. token refreshes)
-//     flow through the symlink to the host's ~/.claude/.credentials.json.
+//  1. (retired in #2243, Step 3c of #2132) .claude/ used to be a
+//     write-through symlink to host ~/.claude. claude-code now resolves its
+//     config dir (and .claude.json) via the CLAUDE_CONFIG_DIR env var at the
+//     host XDG path ~/.config/claude — generateProfile emits an explicit RW
+//     (subpath ~/.config/claude) grant instead.
 //
 //  2. .config/prism/agents/ is symlinked into the staging HOME for ALL roles
 //     (including review-*) so the prism PI extension can read <role>.md at
@@ -83,8 +84,6 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 //     so the PI extension can read <role>.md (issue #2032). The former
 //     review-prefix exclusion was dropped — the dir is pure markdown with no
 //     secrets, so there is no isolation value in hiding sibling role prompts.
-//   - .claude/ is a symlink to host ~/.claude with a comment explaining the
-//     Darwin write-through behaviour.
 //
 // Calling PrepareSandboxExecHome a second time on an existing staging dir is
 // idempotent: existing symlinks are recreated (os.Symlink is preceded by
@@ -289,17 +288,15 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 		}
 	}
 
-	// ── .claude/ — symlink to host ~/.claude (RW write-through) ──────────────
-	// opencode-claude-auth token refreshes write .credentials.json inside
-	// ~/.claude/, and since this is a symlink to host ~/.claude, those writes
-	// flow through to the host path and are immediately reflected in subsequent
-	// sessions. On Linux, ~/.claude/.credentials.json already lives on disk;
-	// the bwrap path bind-mounts ~/.claude/ with RW access (mounts.go
-	// StandardSandboxMounts).
-	symlinkIfExists(
-		filepath.Join(home, ".claude"),
-		filepath.Join(stagingHome, ".claude"),
-	)
+	// ── Claude ────────────────────────────────────────────────────────────────
+	// Note (#2243, Step 3c of #2132): the .claude write-through staging symlink
+	// is no longer created. claude-code resolves its config dir (and
+	// .claude.json) via the CLAUDE_CONFIG_DIR env var at the host XDG path
+	// (~/.config/claude, declared in agent.envVars by the nix module).
+	// Unlike the aws/kube XDG configs, ~/.config/claude is a plain host
+	// directory — NOT a sops symlink — so the #2211 secrets.d allowlist is
+	// not involved: the read/write capability comes from the explicit RW
+	// (subpath ~/.config/claude) grant emitted by generateProfile.
 
 	// ── .mcp-auth/ ────────────────────────────────────────────────────────────
 	symlinkIfExists(
@@ -500,8 +497,7 @@ type StagingSymlinkTarget struct {
 	// Writable is true when the sandbox must be allowed to write to this
 	// target (and, for directories, its contents). Mirrors the bwrap --bind
 	// (RW) vs --ro-bind (RO) distinction:
-	//   RW: .cache/opencode, .cache/bun, .cache/nix,
-	//       .claude (write-through for credentials), .mcp-auth
+	//   RW: .cache/opencode, .cache/bun, .cache/nix, .mcp-auth
 	//   RO: .ssh keys, .config/opencode/*,
 	//       .config/prism/agents (role prompts; issue #2032),
 	//       .cache/prism/clipboard (read-only; mirrors bwrap.go --ro-bind)
@@ -525,7 +521,6 @@ type StagingSymlinkTarget struct {
 //   - .cache/opencode  — opencode refreshes models.json and writes bin/ shims
 //   - .cache/bun       — bun writes transpile outputs and lockfile updates
 //   - .cache/nix       — unconditional RW (mirrors bwrap's mounts.go bind)
-//   - .claude          — write-through for .credentials.json on Darwin
 //   - .mcp-auth        — MCP auth token writes
 //
 // All other targets (.ssh, .config/opencode, .cache/prism/clipboard)
@@ -594,7 +589,8 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 		".cache/nix": true, // nix eval cache (unconditional RW)
 		// .cache/prism/clipboard is intentionally absent: agents only read
 		// images staged there; mirrors bwrap.go's --ro-bind treatment.
-		".claude":   true, // write-through for .credentials.json
+		// .claude is gone (#2243): claude-code reads/writes ~/.config/claude
+		// via CLAUDE_CONFIG_DIR; generateProfile grants it RW directly.
 		".mcp-auth": true, // MCP auth token writes
 		".npm":      true, // npx package cache (mcp-remote et al.)
 		// AWS SSO and CLI cache dirs must be writable so the aws CLI can write
