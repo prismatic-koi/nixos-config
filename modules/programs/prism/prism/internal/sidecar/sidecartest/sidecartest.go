@@ -98,7 +98,9 @@ func (b *Bus) CopyBodies() []string {
 //     redirected to the tempdir.
 //   - Sets PRISM_TEST_MODE_RESTRICT_HOSTAPI=1 so deliverViaSidecarSocket
 //     refuses to dial sockets outside the tempdir.
-//   - Opens an isolated SQLite DB under a private os.MkdirTemp() directory.
+//   - Opens an isolated SQLite DB at $XDG_STATE_HOME/prism/prism.db (the
+//     production-resolved path under the redirected tempdir), so tests can
+//     assert DB isolation by construction via Bus.DB.Path().
 //   - Starts an httptest.Server that records received prompt bodies.
 //   - Starts a Unix-socket listener at the test-session hostapi.sock path so
 //     that the socket-pipe delivery path is also exercised in-process.
@@ -126,21 +128,21 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 	//    dial sockets outside the tempdir.
 	t.Setenv(EnvRestrictHostAPI, "1")
 
-	// 3. Open an isolated DB.
-	dbDir, err := os.MkdirTemp("", "sidecartest-db-")
-	if err != nil {
-		t.Fatalf("sidecartest: create DB temp dir: %v", err)
+	// 3. Open an isolated DB at the exact path production resolution would
+	//    compute under the redirected $XDG_STATE_HOME
+	//    ($XDG_STATE_HOME/prism/prism.db). Keeping the DB inside the
+	//    test-scoped XDG tempdir makes the isolation assertable by
+	//    construction: a test can verify Bus.DB.Path() resides under
+	//    Bus.XDGStateHome instead of probing live host state (#2227).
+	prismDir := filepath.Join(xdgTmp, "prism")
+	if err := os.MkdirAll(prismDir, 0o700); err != nil {
+		t.Fatalf("sidecartest: create prism state dir: %v", err)
 	}
-	dbPath := filepath.Join(dbDir, "test.db")
-	d, err := db.Open(dbPath)
+	d, err := db.Open(filepath.Join(prismDir, "prism.db"))
 	if err != nil {
-		_ = os.RemoveAll(dbDir)
 		t.Fatalf("sidecartest: open test DB: %v", err)
 	}
-	t.Cleanup(func() {
-		d.Close()
-		_ = os.RemoveAll(dbDir)
-	})
+	t.Cleanup(func() { d.Close() })
 
 	bus := &Bus{
 		DB:           d,

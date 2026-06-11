@@ -2145,9 +2145,13 @@ func TestRun_RequireSlot_AllSlotsPresent_DoesNotAbort(t *testing.T) {
 	// default tmux server. Without this, SpawnSession's tmux-new-session
 	// call lands on the live tmux server and the post-readiness-gate
 	// cleanup (`tmux.KillSession`, best-effort) can leak the 5 review-agent
-	// sessions under parallel `go test ./...` scheduling — picked up by the
-	// cmd/-package TestMain leak guard as `nixos-config@require-slot-ok~
-	// review-1-review-{role}` (#1732, regression introduced by #1728).
+	// sessions — exactly what happened in #1732 (regression introduced by
+	// #1728), back then caught incidentally by the cmd/-package leak guard
+	// under parallel `go test ./...` scheduling. That guard's live-tmux
+	// session diff was dropped in #2227 (it false-positived on concurrent
+	// host activity), so this per-test stub is now the ONLY line of defence
+	// against this leak class — there is no cross-package backstop. #2230
+	// tracks adding #2224-style suite-wide tmux isolation to this package.
 	//
 	// Uses spawnSpyTmuxBin from spawn_prompt_file_test.go — the canonical
 	// tmux-isolation pattern in this package. Must NOT call t.Parallel:

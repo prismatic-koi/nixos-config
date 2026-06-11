@@ -14,8 +14,8 @@
 package sidecar
 
 import (
-	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -450,37 +450,32 @@ func TestInvestigatorNoIntermediatePings(t *testing.T) {
 // TestNotifyInvestigatorCompletion_NoHostBusLeak asserts that constructing a
 // sidecar with a session name that looks like a real coordinator
 // ("nixos-config@main~investigate-leakcheck") against an isolated DB + bus
-// does NOT write any file under the process-default $XDG_STATE_HOME/prism/
-// path (i.e. the path that would be used if the test had NOT set the env var).
+// cannot touch the real host prism state, and that the delivery lands on the
+// isolated httptest.Server.
 //
 // This is the "defence in depth" test for issue #1608: it verifies that the
 // isolation invariants hold even when the test session name collides with a
 // live coordinator slug.
+//
+// Isolation is asserted BY CONSTRUCTION — every path the sidecar can write
+// through (resolved DB path, host-API socket path, $XDG_STATE_HOME-derived
+// resolution) must reside under the test-scoped XDG_STATE_HOME tempdir and
+// must not reside under the real host state dir. Earlier versions of this
+// test instead observed host quiescence (snapshotting the real prism/run/
+// directory and probing the real prism.db mtime before/after the test). On a
+// multi-worker host those probes raced live sidecars: any concurrent session
+// writing the real prism.db during the test window tripped the mtime check,
+// a false positive that asserted "the host is quiet", not "this test is
+// isolated" (issue #2227). Path-comparison assertions are race-free and hold
+// regardless of concurrent host activity.
 func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
-	// Capture the real XDG_STATE_HOME *before* NewIsolated redirects it.
-	// We need to record this now so we can verify it's untouched after the test.
-	//
-	// Unlike the other tests in this file, this one *intentionally* references
-	// the real host path: its whole purpose is to prove that NewIsolated
-	// prevents writes from leaking to ~/.local/state/prism/ on the developer's
-	// host (the exact failure mode of issue #1608). Refactoring this to
-	// t.TempDir() would degenerate the test into "an empty temp dir stays
-	// empty", which proves nothing about the host-leak invariant.
-	//
-	// In sandboxed environments where XDG_STATE_HOME is unset (notably the
-	// nix-build sandbox where HOME=/homeless-shelter), there is no meaningful
-	// host path to protect — skip rather than fall back to UserHomeDir, which
-	// would resolve to /homeless-shelter/.local/state and reintroduce the
-	// inconsistency this test was meant to guard against (see issue #1857).
+	// Capture the real XDG_STATE_HOME *before* NewIsolated redirects it, so we
+	// can assert nothing resolves under it. It may legitimately be unset (CI,
+	// nix sandbox where HOME=/homeless-shelter — issue #1857); the
+	// by-construction assertions below don't need a real host path to exist,
+	// so the real-path comparisons are simply skipped in that case rather than
+	// falling back to UserHomeDir.
 	realXDGStateHome := os.Getenv("XDG_STATE_HOME")
-	if realXDGStateHome == "" {
-		t.Skip("test requires XDG_STATE_HOME to be set; it verifies that NewIsolated does not leak writes to the real host state directory, which is only meaningful when a real host path exists")
-	}
-	realPrismDir := realXDGStateHome + "/prism"
-
-	// Record the current state of the real prism/ directory before the test.
-	beforeSnapshot := snapshotDirNames(realPrismDir + "/run")
-	beforeDBMtime := fileModTime(realPrismDir + "/prism.db")
 
 	// Use a session name that matches a real coordinator slug — this is the
 	// exact scenario that caused the observed leak in issue #1608. The
@@ -509,25 +504,48 @@ func TestNotifyInvestigatorCompletion_NoHostBusLeak(t *testing.T) {
 	}
 	s := New(cfg)
 
+	// ── Isolation by construction (#2227) ──────────────────────────────────
+
+	// The env redirect must be in effect: any code that resolves prism paths
+	// from $XDG_STATE_HOME during this test lands in the tempdir.
+	if got := os.Getenv("XDG_STATE_HOME"); got != bus.XDGStateHome {
+		t.Fatalf("XDG_STATE_HOME = %q, want test-scoped %q — NewIsolated env redirect not in effect", got, bus.XDGStateHome)
+	}
+	if realXDGStateHome != "" && bus.XDGStateHome == realXDGStateHome {
+		t.Fatalf("test-scoped XDG_STATE_HOME equals the real host value %q — no isolation", realXDGStateHome)
+	}
+
+	// The sidecar's resolved DB path must reside under the test-scoped
+	// XDG_STATE_HOME. This is the by-construction replacement for the old
+	// real-prism.db mtime probe.
+	if dbPath := cfg.DB.Path(); !pathWithin(dbPath, bus.XDGStateHome) {
+		t.Errorf("test sidecar DB path %q resolves outside the test-scoped XDG_STATE_HOME %q — DB isolation breach", dbPath, bus.XDGStateHome)
+	} else if realXDGStateHome != "" && pathWithin(dbPath, realXDGStateHome) {
+		t.Errorf("test sidecar DB path %q resolves under the real host XDG_STATE_HOME %q — DB isolation breach", dbPath, realXDGStateHome)
+	}
+
+	// The host-API socket the bus listens on (the socket-pipe delivery path)
+	// must also reside under the test-scoped XDG_STATE_HOME — the
+	// by-construction replacement for the old real prism/run/ snapshot.
+	if !pathWithin(bus.SockPath, bus.XDGStateHome) {
+		t.Errorf("host-API socket path %q resolves outside the test-scoped XDG_STATE_HOME %q — socket isolation breach", bus.SockPath, bus.XDGStateHome)
+	} else if realXDGStateHome != "" && pathWithin(bus.SockPath, realXDGStateHome) {
+		t.Errorf("host-API socket path %q resolves under the real host XDG_STATE_HOME %q — socket isolation breach", bus.SockPath, realXDGStateHome)
+	}
+
+	// ── Delivery routing ────────────────────────────────────────────────────
+
 	s.notifyInvestigatorCompletion(agent.StateFinished, "leakcheck findings")
-
-	// Give async delivery a moment to settle.
-	time.Sleep(200 * time.Millisecond)
-
-	// Assert: the real prism/run/ directory is unchanged (no socket files created).
-	afterSnapshot := snapshotDirNames(realPrismDir + "/run")
-	if beforeSnapshot != afterSnapshot {
-		t.Errorf("real $XDG_STATE_HOME/prism/run/ changed during test:\nbefore: %q\nafter:  %q\nThis indicates isolation breach — test wrote to host prism state.", beforeSnapshot, afterSnapshot)
-	}
-
-	// Assert: the real prism.db mtime is unchanged (no writes to the real DB).
-	afterDBMtime := fileModTime(realPrismDir + "/prism.db")
-	if beforeDBMtime != afterDBMtime {
-		t.Errorf("real prism.db mtime changed during test (before=%d after=%d) — DB isolation breach", beforeDBMtime, afterDBMtime)
-	}
 
 	// Assert: all HTTP traffic went to the isolated httptest.Server.
 	// The delivery must have been captured — not dropped silently.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(bus.CopyBodies()) > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	bodies := bus.CopyBodies()
 	if len(bodies) == 0 {
 		t.Error("expected delivery to be captured by the isolated httptest.Server, got none — delivery was either dropped or escaped to host")
@@ -569,27 +587,13 @@ func seedEndedSessionInvestigate(t *testing.T, database *db.DB, sessionName, rep
 
 // ── OS helpers ────────────────────────────────────────────────────────────────
 
-// snapshotDirNames returns a sorted string of all filenames in dir (non-recursive,
-// first level only). Returns "" if the directory does not exist or cannot be read.
-func snapshotDirNames(dir string) string {
-	entries, err := os.ReadDir(dir)
+// pathWithin reports whether path resides inside dir (or equals it). Pure
+// lexical comparison — no filesystem access, so it cannot race concurrent
+// host activity (#2227).
+func pathWithin(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
 	if err != nil {
-		// Directory doesn't exist — return empty (no files to change).
-		return ""
+		return false
 	}
-	var names []string
-	for _, e := range entries {
-		names = append(names, fmt.Sprintf("%s:%v", e.Name(), e.IsDir()))
-	}
-	return strings.Join(names, ",")
-}
-
-// fileModTime returns the modification time of path as Unix nanoseconds.
-// Returns 0 if the file does not exist.
-func fileModTime(path string) int64 {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0
-	}
-	return info.ModTime().UnixNano()
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
