@@ -420,10 +420,22 @@ func New(cfg Config) *Manager {
 // Name returns the container name.
 func (m *Manager) Name() string { return m.name }
 
+// tempDir returns the directory under which per-session temp artefact files
+// are created. It is a test seam: production code never reassigns it, so
+// every real binary uses the prior default, os.TempDir. The container test
+// suite replaces it once in TestMain (container_test.go) with a per-process
+// directory — fixture session names (e.g. "repo@feat") repeat across the
+// suite, so without per-process namespacing two concurrent `go test`
+// processes in different worktrees on the same host would read/write the
+// same /tmp/prism-gitconfig-prism-repo-feat file (issue #2222).
+var tempDir = os.TempDir
+
 // sessionTempPath is the package-level building block for per-session temp
 // file paths. All per-session artefact files follow the shape:
 //
-//	<os.TempDir()>/prism-<stem>-<session_name><suffix>
+//	<tempDir()>/prism-<stem>-<session_name><suffix>
+//
+// where tempDir() is os.TempDir() outside tests (see the tempDir seam).
 //
 // stem identifies the artefact (e.g. "gitdir", "ssh-config"); suffix is ""
 // for most artefacts and ".sb" for the sandbox-exec SBPL profile.
@@ -431,7 +443,7 @@ func (m *Manager) Name() string { return m.name }
 // It is a free function so that exported helpers like HarnessConfigFilePath
 // can share the same path logic without requiring a Manager receiver.
 func sessionTempPath(stem, suffix, name string) string {
-	return filepath.Join(os.TempDir(), "prism-"+stem+"-"+name+suffix)
+	return filepath.Join(tempDir(), "prism-"+stem+"-"+name+suffix)
 }
 
 // tempPath returns the host path for a temporary per-session artefact file.
