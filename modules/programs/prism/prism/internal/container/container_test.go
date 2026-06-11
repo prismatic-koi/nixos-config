@@ -13,6 +13,28 @@ import (
 	"time"
 )
 
+// TestMain points the package temp-path seam (tempDir, container.go) at a
+// directory unique to this test process for the entire suite. Per-session
+// temp artefacts (gitconfig, ssh-config, sandbox-exec profile, …) are named
+// after slugified fixture session names like "repo@feat" that repeat across
+// the suite, so two concurrent `go test` processes in different worktrees on
+// the same host would otherwise collide on shared /tmp filenames — observed
+// as TestWriteGitconfig_AllModes_EmptyIdentityRefused flaking on a file
+// written by a sibling worker's test process (issue #2222). The directory is
+// removed after the run, so the suite also stops accumulating stale
+// prism-* files under the host temp dir.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "prism-container-test-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "container: TestMain: MkdirTemp: %v\n", err)
+		os.Exit(1)
+	}
+	tempDir = func() string { return dir }
+	code := m.Run()
+	_ = os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // ── containerName tests ──────────────────────────────────────────────────────
 
 func TestContainerName_ReplacesAt(t *testing.T) {
@@ -805,10 +827,13 @@ func TestHarnessConfigFilePath_Deterministic(t *testing.T) {
 }
 
 func TestHarnessConfigFilePath_Format(t *testing.T) {
-	// The path must equal filepath.Join(os.TempDir(), "prism-harness-config-"+sessionName).
+	// The path must equal filepath.Join(tempDir(), "prism-harness-config-"+sessionName).
+	// tempDir() rather than os.TempDir(): TestMain points the package
+	// temp-path seam at a per-process directory for the whole suite
+	// (issue #2222); outside tests tempDir() is os.TempDir().
 	const sessionName = "my-repo@branch"
 	got := HarnessConfigFilePath(sessionName)
-	want := filepath.Join(os.TempDir(), "prism-harness-config-"+sessionName)
+	want := filepath.Join(tempDir(), "prism-harness-config-"+sessionName)
 	if got != want {
 		t.Errorf("HarnessConfigFilePath(%q) = %q, want %q", sessionName, got, want)
 	}
@@ -968,6 +993,15 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 					GitUserName:   c.name,
 					GitUserEmail:  c.email,
 				})
+				// Own the precondition: the "must not exist after refusal"
+				// assertion below is about THIS call's behaviour, so any
+				// stale file at the path (e.g. left by a crashed earlier
+				// run) must be cleared before the call under test. The
+				// TestMain seam already namespaces the path per-process;
+				// this guards the within-process stale-file case on top
+				// (issue #2222).
+				_ = os.Remove(m.gitconfigFilePath())
+
 				err := m.writeGitconfig(mode.mode)
 				if err == nil {
 					t.Fatalf("mode=%s name=%q email=%q: writeGitconfig returned nil, want error",
