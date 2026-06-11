@@ -3,9 +3,10 @@
 // The tests fall into three groups:
 //
 //  1. decideClose — pure decision-tree tests that swap prProbe for a stub.
-//  2. probePRStateExec — exercises the production gh shell-out via a PATH-
-//     injected `gh` stub, so we test the JSON-parse branches without depending
-//     on a real network call.
+//  2. probePRStateExec — exercises the probe against the ghExecOutput exec
+//     seam with canned outputs (issue #2217), so the JSON-parse and
+//     state-reduction branches run in-process with no subprocess, no $PATH
+//     dependence, and no network.
 //  3. runCloseCmd — flag validation (mutually-exclusive force flags, --json
 //     requires --yes, unknown --session) and the integration with the
 //     existing cleanup-soft / cleanup-hard paths.
@@ -18,11 +19,13 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -225,41 +228,46 @@ func TestDecideClose_WorkerUnknownState(t *testing.T) {
 }
 
 // ── probePRStateExec ─────────────────────────────────────────────────────────
-
-// withFakeGhInPath writes a fake `gh` to a tempdir, prepends it to $PATH, and
-// returns the tempdir so the test can also inspect what gh was invoked with.
 //
-// The fake gh writes the contents of $FAKE_GH_STDOUT to stdout, the contents
-// of $FAKE_GH_STDERR to stderr, and exits with $FAKE_GH_EXIT (default 0). It
-// also records its argv to $FAKE_GH_ARGV_FILE if that env var is set.
-func withFakeGhInPath(t *testing.T) string {
+// These tests inject the gh exec seam (ghExecOutput, issue #2217) with canned
+// outputs so the probe's argv construction, JSON parsing, and state reduction
+// are exercised in-process: no subprocess, no $PATH lookup, no network, and
+// no dependence on a gh binary existing in the environment. The previous
+// PATH-injected fake-gh fixture proved environment-fragile — in some worker
+// sandboxes the probe reached the real gh and failed at its 5s network
+// timeout (issue #2217).
+
+// withGhExecStub swaps the ghExecOutput exec seam for the duration of the
+// test.
+func withGhExecStub(t *testing.T, fn func(ctx context.Context, workdir string, args ...string) ([]byte, error)) {
 	t.Helper()
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "gh")
-	script := `#!/bin/sh
-if [ -n "$FAKE_GH_ARGV_FILE" ]; then
-  echo "$@" >> "$FAKE_GH_ARGV_FILE"
-fi
-if [ -n "$FAKE_GH_STDOUT" ]; then
-  printf '%s' "$FAKE_GH_STDOUT"
-fi
-if [ -n "$FAKE_GH_STDERR" ]; then
-  printf '%s' "$FAKE_GH_STDERR" >&2
-fi
-exit "${FAKE_GH_EXIT:-0}"
-`
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake gh: %v", err)
-	}
-	origPath := os.Getenv("PATH")
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+origPath)
-	return dir
+	orig := ghExecOutput
+	ghExecOutput = fn
+	t.Cleanup(func() { ghExecOutput = orig })
+}
+
+// cannedGhOutput stubs the gh exec seam to return the given stdout with a
+// zero exit.
+func cannedGhOutput(t *testing.T, stdout string) {
+	t.Helper()
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		return []byte(stdout), nil
+	})
+}
+
+// withGhProbeTimeout shrinks the probe's context deadline for the duration of
+// the test, so timeout behaviour is covered without the production 5-second
+// wall-clock wait (issue #2217 AC: edge-case).
+func withGhProbeTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	orig := ghProbeTimeout
+	ghProbeTimeout = d
+	t.Cleanup(func() { ghProbeTimeout = orig })
 }
 
 // TestProbePRStateExec_OpenPR verifies the happy path: a single OPEN PR.
 func TestProbePRStateExec_OpenPR(t *testing.T) {
-	withFakeGhInPath(t)
-	t.Setenv("FAKE_GH_STDOUT", `[{"number":42,"state":"OPEN"}]`)
+	cannedGhOutput(t, `[{"number":42,"state":"OPEN"}]`)
 
 	state, err := probePRStateExec("", "feature-foo")
 	if err != nil {
@@ -272,8 +280,7 @@ func TestProbePRStateExec_OpenPR(t *testing.T) {
 
 // TestProbePRStateExec_MergedPR verifies a single MERGED PR returns MERGED.
 func TestProbePRStateExec_MergedPR(t *testing.T) {
-	withFakeGhInPath(t)
-	t.Setenv("FAKE_GH_STDOUT", `[{"number":42,"state":"MERGED"}]`)
+	cannedGhOutput(t, `[{"number":42,"state":"MERGED"}]`)
 
 	state, err := probePRStateExec("", "feature-merged")
 	if err != nil {
@@ -287,8 +294,7 @@ func TestProbePRStateExec_MergedPR(t *testing.T) {
 // TestProbePRStateExec_NoPR verifies an empty result returns ("", nil), which
 // the caller treats as "no PR found → hard cleanup".
 func TestProbePRStateExec_NoPR(t *testing.T) {
-	withFakeGhInPath(t)
-	t.Setenv("FAKE_GH_STDOUT", `[]`)
+	cannedGhOutput(t, `[]`)
 
 	state, err := probePRStateExec("", "orphan-branch")
 	if err != nil {
@@ -302,9 +308,8 @@ func TestProbePRStateExec_NoPR(t *testing.T) {
 // TestProbePRStateExec_MultiPROpenWins verifies the AC: when multiple PRs
 // exist for the same head branch and any is OPEN, the probe returns OPEN.
 func TestProbePRStateExec_MultiPROpenWins(t *testing.T) {
-	withFakeGhInPath(t)
 	// Two PRs: one MERGED, one OPEN. OPEN must win regardless of order.
-	t.Setenv("FAKE_GH_STDOUT", `[{"number":1,"state":"MERGED"},{"number":2,"state":"OPEN"}]`)
+	cannedGhOutput(t, `[{"number":1,"state":"MERGED"},{"number":2,"state":"OPEN"}]`)
 
 	state, err := probePRStateExec("", "branch-with-multiple-prs")
 	if err != nil {
@@ -315,12 +320,13 @@ func TestProbePRStateExec_MultiPROpenWins(t *testing.T) {
 	}
 }
 
-// TestProbePRStateExec_GhExitsNonZero verifies an error exit propagates,
-// so decideClose can fail-safe to soft close.
+// TestProbePRStateExec_GhExitsNonZero verifies an error from the gh runner
+// (e.g. a non-zero exit from an unauthenticated gh) propagates, so
+// decideClose can fail-safe to soft close.
 func TestProbePRStateExec_GhExitsNonZero(t *testing.T) {
-	withFakeGhInPath(t)
-	t.Setenv("FAKE_GH_EXIT", "1")
-	t.Setenv("FAKE_GH_STDERR", "gh: not authenticated\n")
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("exit status 1: gh: not authenticated")
+	})
 
 	state, err := probePRStateExec("", "some-branch")
 	if err == nil {
@@ -328,9 +334,23 @@ func TestProbePRStateExec_GhExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestProbePRStateExec_GhMissing verifies the probe returns an error when gh
-// is not on $PATH. PATH is set to an empty tempdir to guarantee no gh on
-// PATH for this test, decoupled from the test runner's environment.
+// TestProbePRStateExec_MalformedJSON verifies that gh stdout which fails to
+// parse propagates as an error (caller fails safe to soft close).
+func TestProbePRStateExec_MalformedJSON(t *testing.T) {
+	cannedGhOutput(t, `{not json`)
+
+	state, err := probePRStateExec("", "some-branch")
+	if err == nil {
+		t.Errorf("expected non-nil error for malformed gh output; got state=%q", state)
+	}
+}
+
+// TestProbePRStateExec_GhMissing verifies the production runner
+// (ghExecOutputReal, reached through the default seam) returns an error when
+// gh is not on $PATH. PATH is set to an empty tempdir to guarantee no gh on
+// PATH for this test, decoupled from the test runner's environment. The
+// exec.LookPath failure is immediate — no subprocess is spawned and no
+// network is touched.
 func TestProbePRStateExec_GhMissing(t *testing.T) {
 	emptyDir := t.TempDir()
 	t.Setenv("PATH", emptyDir)
@@ -342,71 +362,136 @@ func TestProbePRStateExec_GhMissing(t *testing.T) {
 }
 
 // TestProbePRStateExec_EmptyBranch verifies the early-return on an empty
-// branch (defensive guard).
+// branch (defensive guard) — the gh runner must never be invoked.
 func TestProbePRStateExec_EmptyBranch(t *testing.T) {
-	withFakeGhInPath(t)
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		t.Error("gh runner should not be invoked for an empty branch")
+		return nil, fmt.Errorf("unreachable")
+	})
 	if state, err := probePRStateExec("", ""); err == nil {
 		t.Errorf("expected error for empty branch; got state=%q", state)
 	}
 }
 
-// TestProbePRStateExec_PassesArgv verifies the exact argv shape sent to gh:
-// `gh pr list --head <branch> --state all --json state,number --limit 10`.
-// This is a regression guard on the AC: multi-PR support requires
-// `gh pr list --head`, not `gh pr view`.
+// TestProbePRStateExec_PassesArgv verifies the exact argv shape handed to the
+// gh runner: `pr list --head <branch> --state all --json state,number
+// --limit 10`, plus workdir passthrough. This is a regression guard on the
+// AC: multi-PR support requires `gh pr list --head`, not `gh pr view`.
 func TestProbePRStateExec_PassesArgv(t *testing.T) {
-	dir := withFakeGhInPath(t)
-	argvFile := filepath.Join(dir, "argv.log")
-	t.Setenv("FAKE_GH_STDOUT", `[]`)
-	t.Setenv("FAKE_GH_ARGV_FILE", argvFile)
+	var gotWorkdir string
+	var gotArgs []string
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		gotWorkdir = workdir
+		gotArgs = args
+		return []byte(`[]`), nil
+	})
 
-	if _, err := probePRStateExec("", "my-branch"); err != nil {
+	if _, err := probePRStateExec("/some/workdir", "my-branch"); err != nil {
 		t.Fatalf("probePRStateExec: %v", err)
 	}
 
-	data, err := os.ReadFile(argvFile)
-	if err != nil {
-		t.Fatalf("read argv: %v", err)
+	if gotWorkdir != "/some/workdir" {
+		t.Errorf("workdir = %q, want /some/workdir", gotWorkdir)
 	}
-	argv := strings.TrimSpace(string(data))
-	wantSubstrings := []string{
-		"pr list",
-		"--head my-branch",
-		"--state all",
-		"--json state,number",
-		"--limit 10",
-	}
-	for _, want := range wantSubstrings {
-		if !strings.Contains(argv, want) {
-			t.Errorf("argv %q missing %q", argv, want)
-		}
+	wantArgs := []string{"pr", "list", "--head", "my-branch", "--state", "all", "--json", "state,number", "--limit", "10"}
+	if !slices.Equal(gotArgs, wantArgs) {
+		t.Errorf("argv = %q, want %q", gotArgs, wantArgs)
 	}
 }
 
-// TestProbePRStateExec_HangingProbeRespectsTimeout verifies the 5s context
-// timeout. The fake gh execs sleep so SIGKILL on context cancellation tears
-// down the actual sleep process (a wrapping shell would leave the sleep
-// child holding the stdout pipe open, hanging cmd.Output past the deadline).
-func TestProbePRStateExec_HangingProbeRespectsTimeout(t *testing.T) {
-	dir := t.TempDir()
-	stub := filepath.Join(dir, "gh")
-	// `exec sleep` replaces the shell with sleep so SIGKILL hits sleep
-	// directly, closing the stdout pipe and unblocking probePRStateExec.
-	script := "#!/bin/sh\nexec sleep 30\n"
-	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
-		t.Fatalf("write hanging gh: %v", err)
-	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+// TestProbePRStateExec_TimeoutFailsSafe verifies the probe applies the
+// ghProbeTimeout deadline to the context it hands the gh runner and
+// propagates the cancellation error — the input decideClose relies on for its
+// fail-safe-to-soft-close path (#2179). The deadline is shrunk to 50ms via
+// the ghProbeTimeout seam so real cancellation behaviour is asserted without
+// the production 5-second wall-clock wait (issue #2217 AC: edge-case).
+func TestProbePRStateExec_TimeoutFailsSafe(t *testing.T) {
+	withGhProbeTimeout(t, 50*time.Millisecond)
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("probe context has no deadline — ghProbeTimeout not applied")
+		}
+		// Simulate a hung gh that only returns when the context is cancelled.
+		// The bounded escape hatch keeps the failure mode crisp (a named
+		// error within 3s, not a suite hang) if the deadline is ever dropped.
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+			return nil, fmt.Errorf("probe context was never cancelled")
+		}
+	})
 
 	start := time.Now()
-	_, err := probePRStateExec("", "stuck-branch")
+	state, err := probePRStateExec("", "stuck-branch")
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Errorf("expected error from hanging gh probe; got nil after %v", elapsed)
+		t.Errorf("expected error from hung probe; got state=%q", state)
 	}
-	if elapsed > ghProbeTimeout+2*time.Second {
-		t.Errorf("probe took %v, want < %v (timeout not enforced)", elapsed, ghProbeTimeout+2*time.Second)
+	if elapsed > 2*time.Second {
+		t.Errorf("probe returned after %v, want ~50ms (deadline not enforced)", elapsed)
+	}
+}
+
+// TestProbePRStateExec_HangingSubprocessKilledAtDeadline exercises the
+// production runner (ghExecOutputReal) end to end against a hanging fake gh,
+// proving exec.CommandContext actually kills the subprocess at the deadline
+// and cmd.Output returns promptly. The deadline is shrunk to 250ms so there
+// is no 5-second wall-clock wait, and $PATH is set to ONLY the fake's dir so
+// the real gh is unreachable in every environment — if the fake cannot be
+// executed at all, exec fails fast instead, and either way the probe must
+// return an error well inside the bound (issue #2217).
+//
+// The fake holds the stdout pipe itself (a shell busy-loop, no children) so
+// SIGKILL on the process closes the pipe and unblocks cmd.Output; it needs
+// no external binaries (`sleep` is not guaranteed on PATH inside the nix
+// build sandbox).
+func TestProbePRStateExec_HangingSubprocessKilledAtDeadline(t *testing.T) {
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "gh")
+	script := "#!/bin/sh\nwhile :; do :; done\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write hanging gh: %v", err)
+	}
+	t.Setenv("PATH", dir) // fake-only PATH: the real gh must be unreachable
+
+	withGhProbeTimeout(t, 250*time.Millisecond)
+
+	start := time.Now()
+	state, err := probePRStateExec("", "stuck-branch")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Errorf("expected error from hanging gh probe; got state=%q after %v", state, elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("probe took %v, want ≲250ms (timeout not enforced)", elapsed)
+	}
+}
+
+// TestDecideClose_ProbeTimeoutFailsSafeToSoftClose wires the real
+// probePRStateExec (hung runner, shrunk deadline) into decideClose and
+// asserts the probe timeout routes to soft close — the #2179 fail-safe —
+// without any wall-clock wait near the production 5s (issue #2217 AC:
+// edge-case).
+func TestDecideClose_ProbeTimeoutFailsSafeToSoftClose(t *testing.T) {
+	// Empty DB — no coordinator rows; decideClose must consult the probe.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, _ := db.Open(dbFile)
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	withGhProbeTimeout(t, 50*time.Millisecond)
+	withGhExecStub(t, func(ctx context.Context, workdir string, args ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+
+	soft, hard := decideClose("myrepo@stuck-branch", false, false)
+	if !soft || hard {
+		t.Errorf("decideClose(probe timeout) = (soft=%v, hard=%v), want (true, false) — fail-safe", soft, hard)
 	}
 }
 
