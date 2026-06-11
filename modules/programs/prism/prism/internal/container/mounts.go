@@ -199,20 +199,39 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			SELinuxRelabel: true,
 		},
 
-		// ── AWS readonly-config (RO, EvalSymlinks) ───────────────────────
-		// Host: ~/.config/aws/readonly-config (XDG, sops-managed symlink).
-		// Sandbox: $HOME/.aws/config (canonical AWS CLI default path).
+		// ── AWS readonly-config (RO, EvalSymlinks, Dst==Src at XDG path) ─
+		// The aws CLI resolves its config and shared-credentials files via
+		// the AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the
+		// host XDG paths (~/.config/aws/readonly-config and
+		// ~/.config/aws/credentials, declared in agent.envVars by the nix
+		// module). The former RO bind-mounts at the canonical
+		// $HOME/.aws/{config,credentials} paths were dropped in issue #2234
+		// (Step 3a of #2132, bwrap convergence per design decision §5.1) —
+		// see env.go for the matching un-suppression.
+		//
+		// The bwrap mount namespace is additive from an empty root, so the
+		// env-var route still needs the file content delivered INTO the
+		// namespace: bind the XDG paths Dst==Src so the env vars resolve to
+		// a readable file in-sandbox. EvalSymlinks pins the sops-resolved
+		// target inode (same rotation semantics as the previous canonical
+		// binds); resolution failure (file absent — credentials is absent on
+		// the current host) silently skips the mount while the env var still
+		// flows, which the aws CLI tolerates (config-only operation).
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there the real host paths are visible modulo SBPL and the read
+		// rides the #2211 secrets.d allowlist.
 		{
 			HostPath:     filepath.Join(hostHome, ".config", "aws", "readonly-config"),
-			SandboxPath:  filepath.Join(sandboxHomeDir, ".aws", "config"),
+			SandboxPath:  filepath.Join(sandboxHomeDir, ".config", "aws", "readonly-config"),
 			ReadOnly:     true,
 			EvalSymlinks: true,
 		},
 
-		// ── AWS credentials (RO, EvalSymlinks) ───────────────────────────
+		// ── AWS credentials (RO, EvalSymlinks, Dst==Src at XDG path) ────
 		{
 			HostPath:     filepath.Join(hostHome, ".config", "aws", "credentials"),
-			SandboxPath:  filepath.Join(sandboxHomeDir, ".aws", "credentials"),
+			SandboxPath:  filepath.Join(sandboxHomeDir, ".config", "aws", "credentials"),
 			ReadOnly:     true,
 			EvalSymlinks: true,
 		},

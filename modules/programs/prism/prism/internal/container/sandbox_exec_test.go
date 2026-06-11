@@ -659,6 +659,7 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 			mA.sandboxExecProfilePath(), mA.name)
 	}
 }
+
 // TestSandboxExecPrepare_StagingHomeFailurePropagated verifies that when
 // PrepareSandboxExecHome fails (e.g. because the staging-home path is
 // blocked by a pre-existing regular file), sandboxExecIsolator.Prepare
@@ -930,6 +931,7 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 		}
 	}
 }
+
 // TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs verifies that
 // PrepareSandboxExecHome creates empty, writable staging directories for
 // chromium's user-data layout under <stagingHome>/Library/Application
@@ -1042,7 +1044,6 @@ func TestPrepareSandboxExecHome_NixCacheAlwaysIncluded(t *testing.T) {
 // using the intermediate symlink means the staging HOME stays valid across sops
 // rotations (when secrets.d/<N>/ increments), whereas using the resolved path
 // would produce a dangling symlink after the rotation.
-//
 func TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
@@ -1270,11 +1271,18 @@ func TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath(t *testing.T) {
 	}
 }
 
-// TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks verifies that the
-// four staging-HOME symlinks introduced by issue #1573 — access-key,
-// .aws/config, .aws/credentials, and .kube/config — survive a sops
-// secrets.d/<N> → secrets.d/<N+1> rotation after PrepareSandboxExecHome has
-// already run.
+// TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks verifies that the
+// remaining sops-backed staging-HOME symlinks — access-key and .kube/config
+// (issue #1573) — survive a sops secrets.d/<N> → secrets.d/<N+1> rotation
+// after PrepareSandboxExecHome has already run.
+//
+// The .aws/config and .aws/credentials staging symlinks were removed in
+// issue #2234 (Step 3a of #2132): the aws CLI reads those files via the
+// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars at the host XDG
+// paths, and rotation safety for those reads rides the name-based #2211
+// secrets.d allowlist (counter-independent regexes — see
+// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources and the
+// rotation-simulation integration tests).
 //
 // The test follows the same pattern as
 // TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath (which covers
@@ -1285,23 +1293,18 @@ func TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath(t *testing.T) {
 //  4. Verify each staging symlink points at the stable intermediate.
 //  5. Rotate: update the intermediates to point at v2, delete v1.
 //  6. Verify reads through each staging symlink still succeed (resolve to v2).
-func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
+func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
 	// ── set up v1 concrete files ───────────────────────────────────────
 	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
-	if err := os.MkdirAll(filepath.Join(sopsDir1, "aws"), 0o700); err != nil {
-		t.Fatalf("create sops-dir-1/aws: %v", err)
-	}
 	if err := os.MkdirAll(filepath.Join(sopsDir1, "kube"), 0o700); err != nil {
 		t.Fatalf("create sops-dir-1/kube: %v", err)
 	}
 
 	v1Files := map[string]string{
-		"ssh/access-key":   "access-key-v1",
-		"aws/config":       "aws-config-v1",
-		"aws/credentials":  "aws-credentials-v1",
-		"kube/config":      "kube-config-v1",
+		"ssh/access-key": "access-key-v1",
+		"kube/config":    "kube-config-v1",
 	}
 	for rel, content := range v1Files {
 		path := filepath.Join(sopsDir1, rel)
@@ -1317,10 +1320,8 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	// Each intermediate simulates the path that sops-nix keeps stable across
 	// rotations: e.g. ~/.ssh/prismatic-koi-ed25519 → secrets.d/<N>/...
 	intermediates := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir1, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir1, "aws", "config"),
-		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir1, "aws", "credentials"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir1, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):    filepath.Join(sopsDir1, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"): filepath.Join(sopsDir1, "kube", "config"),
 	}
 	for intermediate, target := range intermediates {
 		_ = os.Remove(intermediate) // remove plain file from newFakeHome
@@ -1351,17 +1352,19 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 			intermediate: filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
 		},
 		{
-			link:         filepath.Join(stagingHome, ".aws", "config"),
-			intermediate: filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
-		},
-		{
-			link:         filepath.Join(stagingHome, ".aws", "credentials"),
-			intermediate: filepath.Join(fakeHome, ".config", "aws", "credentials"),
-		},
-		{
 			link:         filepath.Join(stagingHome, ".kube", "config"),
 			intermediate: filepath.Join(fakeHome, ".config", "kube", "agents-config"),
 		},
+	}
+
+	// The AWS staging symlinks must NOT have been created (issue #2234).
+	for _, gone := range []string{
+		filepath.Join(stagingHome, ".aws", "config"),
+		filepath.Join(stagingHome, ".aws", "credentials"),
+	} {
+		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
+			t.Errorf("staging symlink %s should NOT exist (removed in #2234), but it does", gone)
+		}
 	}
 	for _, e := range entries {
 		target, readErr := os.Readlink(e.link)
@@ -1380,10 +1383,8 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 	// ── rotate: update intermediates to v2, delete v1 ───────────────────────
 	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
 	v2Files := map[string]string{
-		"ssh/access-key":   "access-key-v2",
-		"aws/config":       "aws-config-v2",
-		"aws/credentials":  "aws-credentials-v2",
-		"kube/config":      "kube-config-v2",
+		"ssh/access-key": "access-key-v2",
+		"kube/config":    "kube-config-v2",
 	}
 	for rel, content := range v2Files {
 		path := filepath.Join(sopsDir2, rel)
@@ -1395,10 +1396,8 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 		}
 	}
 	v2Targets := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):          filepath.Join(sopsDir2, "ssh", "access-key"),
-		filepath.Join(fakeHome, ".config", "aws", "readonly-config"):      filepath.Join(sopsDir2, "aws", "config"),
-		filepath.Join(fakeHome, ".config", "aws", "credentials"):          filepath.Join(sopsDir2, "aws", "credentials"),
-		filepath.Join(fakeHome, ".config", "kube", "agents-config"):       filepath.Join(sopsDir2, "kube", "config"),
+		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"):    filepath.Join(sopsDir2, "ssh", "access-key"),
+		filepath.Join(fakeHome, ".config", "kube", "agents-config"): filepath.Join(sopsDir2, "kube", "config"),
 	}
 	for intermediate, newTarget := range v2Targets {
 		_ = os.Remove(intermediate)
@@ -1410,10 +1409,8 @@ func TestPrepareSandboxExecHome_SopsRotation_AllFourSymlinks(t *testing.T) {
 
 	// ── verify reads through staging HOME still succeed after rotation ──────
 	v2Contents := map[string]string{
-		filepath.Join(stagingHome, ".ssh", "access-key"):  "access-key-v2",
-		filepath.Join(stagingHome, ".aws", "config"):       "aws-config-v2",
-		filepath.Join(stagingHome, ".aws", "credentials"):  "aws-credentials-v2",
-		filepath.Join(stagingHome, ".kube", "config"):      "kube-config-v2",
+		filepath.Join(stagingHome, ".ssh", "access-key"): "access-key-v2",
+		filepath.Join(stagingHome, ".kube", "config"):    "kube-config-v2",
 	}
 	for link, wantContent := range v2Contents {
 		content, readErr := os.ReadFile(link)
@@ -2048,15 +2045,21 @@ func TestGenerateProfile_PiAuthJSONAbsentForNonPiSession(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed verifies AC11:
-// (a) the profile denies the host ~/.aws subtree and
-// (b) the resolved target of the staged ~/.aws/config symlink appears as an
-// allow rule in the same profile output.
-// Both assertions are in the same test — this is the "combined test" that AC11 requires.
-func TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed(t *testing.T) {
+// TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig verifies the post-#2234
+// AWS shape of the profile and staging HOME:
+// (a) the profile still denies the host ~/.aws subtree (the deny and its
+//
+//	sso/cli carve-outs are Step 3e scope and must survive Step 3a), and
+//
+// (b) no staged ~/.aws/config or ~/.aws/credentials symlink exists, so the
+//
+//	per-symlink allow block must NOT reference the resolved XDG targets
+//	(the read capability rides the env-var route + #2211 allowlist instead).
+func TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig(t *testing.T) {
 	fakeHome := newFakeHome(t)
-	// The fake home has ~/.config/aws/readonly-config written by newFakeHome.
-	// PrepareSandboxExecHome creates a symlink ~/.aws/config → <resolved readonly-config>.
+	// The fake home has ~/.config/aws/readonly-config and
+	// ~/.config/aws/credentials written by newFakeHome. Since #2234,
+	// PrepareSandboxExecHome must NOT symlink them into the staging HOME.
 
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
@@ -2088,25 +2091,76 @@ func TestGenerateProfile_AWSDenyAndStagedAWSConfigAllowed(t *testing.T) {
 		t.Errorf("host ~/.aws path appears in profile but NOT inside a (deny ...) clause before it; full profile:\n%s", profile)
 	}
 
-	// (b) The allow clause must include the resolved target of the staged
-	// ~/.aws/config symlink (which points at ~/.config/aws/readonly-config).
-	awsConfigSymlink := filepath.Join(stagingHome, ".aws", "config")
-	resolvedTarget, resolveErr := filepath.EvalSymlinks(awsConfigSymlink)
-	if resolveErr != nil {
-		t.Skipf("staged ~/.aws/config symlink not present (skipping allow assertion): %v", resolveErr)
+	// (b) The staged symlinks are gone and their would-be resolved targets
+	// must not appear in the per-symlink allow block.
+	for _, rel := range []string{"config", "credentials"} {
+		staged := filepath.Join(stagingHome, ".aws", rel)
+		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
+			t.Errorf("staging HOME has .aws/%s symlink — removed in #2234, must not be recreated", rel)
+		}
 	}
-	if !strings.Contains(profile, resolvedTarget) {
-		t.Errorf("profile missing allow for resolved staged ~/.aws/config target %q; full profile:\n%s", resolvedTarget, profile)
+	for _, xdgSrc := range []string{
+		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
+		filepath.Join(fakeHome, ".config", "aws", "credentials"),
+	} {
+		resolved, resolveErr := filepath.EvalSymlinks(xdgSrc)
+		if resolveErr != nil {
+			t.Fatalf("fixture: EvalSymlinks(%s): %v", xdgSrc, resolveErr)
+		}
+		if strings.Contains(profile, resolved) {
+			t.Errorf("profile references resolved aws XDG target %q — the staged-symlink allow should be gone since #2234; full profile:\n%s",
+				resolved, profile)
+		}
 	}
-	// Verify it's inside an (allow ...) clause.
-	targetIdx := strings.Index(profile, resolvedTarget)
-	if targetIdx < 0 {
-		t.Errorf("resolved target %q not in profile", resolvedTarget)
-	} else {
-		allowBeforeTarget := strings.LastIndex(profile[:targetIdx], "(allow")
-		denyBeforeTarget := strings.LastIndex(profile[:targetIdx], "(deny")
-		if allowBeforeTarget < 0 || denyBeforeTarget > allowBeforeTarget {
-			t.Errorf("resolved target %q appears in profile but NOT inside an (allow ...) clause before it; full profile:\n%s", resolvedTarget, profile)
+}
+
+// TestPrepareSandboxExecHome_NoAWSConfigCredentialsSymlinks is the unit-level
+// AC test for issue #2234: after PrepareSandboxExecHome, the staging HOME
+// contains no .aws/config or .aws/credentials symlink even though the host
+// XDG sources exist, and collectStagingHomeSymlinkTargets no longer emits
+// their resolved targets. It also covers the credentials-absent edge case
+// (the host's current reality): session prep must succeed without error
+// when ~/.config/aws/credentials does not exist.
+func TestPrepareSandboxExecHome_NoAWSConfigCredentialsSymlinks(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	// Resolve the XDG sources before staging so we can assert their absence
+	// from the collector output below.
+	resolvedCfg, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".config", "aws", "readonly-config"))
+	if err != nil {
+		t.Fatalf("fixture: EvalSymlinks readonly-config: %v", err)
+	}
+
+	// Edge case (current host reality): the credentials file is absent.
+	if err := os.Remove(filepath.Join(fakeHome, ".config", "aws", "credentials")); err != nil {
+		t.Fatalf("remove fake aws credentials: %v", err)
+	}
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "no-aws-symlinks-test",
+	})
+
+	stagingHome, err := m.PrepareSandboxExecHome()
+	if err != nil {
+		t.Fatalf("PrepareSandboxExecHome must succeed with ~/.config/aws/credentials absent: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
+
+	for _, rel := range []string{"config", "credentials"} {
+		staged := filepath.Join(stagingHome, ".aws", rel)
+		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
+			t.Errorf("staging HOME has .aws/%s entry — removed in #2234, must not be recreated", rel)
+		}
+	}
+
+	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
+	if err != nil {
+		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
+	}
+	for _, target := range targets {
+		if target.ResolvedPath == resolvedCfg {
+			t.Errorf("collectStagingHomeSymlinkTargets emitted the aws readonly-config target %q — the .aws/config staging symlink should be gone (#2234)", resolvedCfg)
 		}
 	}
 }
