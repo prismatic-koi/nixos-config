@@ -1,31 +1,34 @@
 package cmd
 
-// End-to-end seam test for the issue #1947 fix, updated for #1985.
+// End-to-end seam test for the issue #1947 fix, updated for #1985 and #2220.
 //
 // Pins the post-reset invariant: given a DB row with a non-empty
 // harness_session_id AND a transcript JSONL on disk, after the
 // `prism reset` DB + FS code paths run, the `--session <id>` injection
-// trigger in pi_invocation.go no longer fires — via the DB-side guard alone.
+// trigger in pi_invocation.go no longer fires — on BOTH surfaces.
 //
-// Post-#1985 update: bwrap pi sessions now write into the host's global
-// ~/.pi/agent/sessions/ tree (the per-prism-session staging dir was removed
-// to restore cross-session per-cwd history). `resetClearPiTranscripts` does
-// NOT touch that global tree — same intentional skip as host mode, because
-// the dir holds state belonging to non-prism pi invocations too. The FS
-// transcript therefore survives the reset; the DB-side `HarnessSessionID =
-// nil` clear is what prevents the resume.
+// Post-#2220 update: since #2186/#2210 pi writes its transcripts to the
+// shared host sessions root (~/.pi/agent/sessions/--<encoded-cwd>--/, or
+// $PI_CODING_AGENT_DIR/sessions/...) in every isolation mode. `prism reset`
+// snapshots the (worktree, harness_session_id) pairs from the DB before
+// clearing them and deletes exactly those *_<id>.jsonl files from the shared
+// root — per-file, never a wholesale sweep.
 //
 // Invariants pinned here:
 //
 //   (1) DB:  CurrentStatus.HarnessSessionID is nil (so cmd/agent_run.go feeds
 //       the empty string into container.Config.HarnessSessionID).
-//   (2) FS:  the transcript JSONL survives by design (matches host mode).
+//   (2) FS:  the transcript JSONL for the reset session is REMOVED from the
+//       shared root ("reset means forget"); transcripts the DB does not know
+//       about — sibling ids on the same worktree, other cwd roots — survive.
 //   (3) PIInvocation: with HarnessSessionID="" the helper short-circuits and
-//       does not append --session at all (issue #1838 contract) — this is
-//       the load-bearing half of the reset guard now.
+//       does not append --session (issue #1838 contract); and even with a
+//       stale id, ResolvePIResumeSession finds no transcript, so the flag is
+//       not emitted either — the reset guard is now double-layered.
 //
-// Host-mode behaviour has not changed and is pinned separately by
-// TestReset_E2E_HostModeUnchanged below.
+// Transcripts with no corresponding DB resume pointer (e.g. non-prism pi
+// conversations) are pinned separately by
+// TestReset_E2E_UntrackedTranscriptsSurvive below.
 
 import (
 	"os"
@@ -37,21 +40,25 @@ import (
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 )
 
-// TestReset_E2E_NoSessionFlagAfterReset is the AC8 end-to-end invariant:
-// reset \u2192 (DB cleared + FS cleared) \u2192 PIInvocation does NOT emit --session.
+// TestReset_E2E_NoSessionFlagAfterReset is the end-to-end invariant:
+// reset → (DB cleared + targeted FS removal) → PIInvocation does NOT emit
+// --session.
 func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
-	// Some downstream helpers (piResumeSessionsRoot host fallback,
-	// SandboxExecStagingHomePath) consult $HOME via os.UserHomeDir(). Pin
-	// it to a tempdir too so we never touch the real home.
+	// Downstream helpers (piResumeSessionsRoot host fallback) consult $HOME
+	// via os.UserHomeDir(). Pin it to a tempdir so we never touch the real
+	// home.
 	t.Setenv("HOME", t.TempDir())
 
 	const (
 		sessionName      = "myrepo@feature"
 		worktree         = "/home/user/code/myrepo/feature"
 		harnessSessionID = "019e00ed-aaaa-bbbb-cccc-deadbeef1947"
+		siblingSessionID = "019e00ed-1111-2222-3333-aaaabbbbcccc"
+		otherWorktree    = "/home/user/code/otherrepo/main"
+		otherSessionID   = "019e00ed-4444-5555-6666-777788889999"
 	)
 
 	// ---- Seed DB ----
@@ -73,23 +80,20 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	}
 	d.Close()
 
-	// ---- Seed FS (post-#1985 bwrap layout: host-global ~/.pi/agent/sessions/) ----
-	// Pi inside the bwrap sandbox writes to $PI_CODING_AGENT_DIR/sessions/,
-	// which is overlay-bound to the host's ~/.pi/agent/sessions/. So the
-	// host-side transcript path matches host mode.
+	// ---- Seed FS (shared host root: ~/.pi/agent/sessions/) ----
 	home := os.Getenv("HOME")
-	transcriptDir := filepath.Join(home, ".pi", "agent", "sessions",
-		"--home-user-code-myrepo-feature--")
-	if err := os.MkdirAll(transcriptDir, 0o700); err != nil {
-		t.Fatalf("mkdir transcriptDir: %v", err)
-	}
-	transcript := filepath.Join(transcriptDir, "2026-05-22T03-04-05-000Z_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(transcript, []byte(`{"type":"session"}`), 0o600); err != nil {
-		t.Fatalf("write transcript: %v", err)
-	}
-	// Plant a sibling file under the legacy per-prism-session hash dir that
-	// must survive the reset — the run/<hash>/ subtree still holds
-	// agent-run.log, hostapi.sock, sidecar.pid etc.
+	// The transcript belonging to the session being reset — must be removed.
+	transcript := writeFakePiResumeJSONL(t, home, worktree, harnessSessionID)
+	// A sibling transcript in the SAME encoded-cwd dir with a different id
+	// (no DB row) — must survive: removal is per-file, not per-directory.
+	sibling := writeFakePiResumeJSONL(t, home, worktree, siblingSessionID)
+	// A transcript under a DIFFERENT cwd root with no DB row — must survive.
+	otherRoot := writeFakePiResumeJSONL(t, home, otherWorktree, otherSessionID)
+
+	// Plant a sibling file under the per-prism-session hash dir that must
+	// survive the reset — the run/<hash>/ subtree holds agent-run.log,
+	// hostapi.sock, sidecar.pid etc., and reset's transcript step no longer
+	// walks the prism state root at all.
 	hash := prismSession.SessionDirName(sessionName)
 	hashDir := filepath.Join(stateHome, "prism", "run", hash)
 	if err := os.MkdirAll(hashDir, 0o700); err != nil {
@@ -115,10 +119,11 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	// ---- Run the reset code paths ----
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
-	if err := resetMarkDBEnded(); err != nil {
+	pointers, err := resetMarkDBEnded()
+	if err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
-	if err := resetClearPiTranscripts(); err != nil {
+	if err := resetClearPiTranscripts(pointers); err != nil {
 		t.Fatalf("resetClearPiTranscripts: %v", err)
 	}
 
@@ -143,13 +148,17 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 		t.Errorf("post-reset DB EndedAt = nil, want non-nil")
 	}
 
-	// (2) FS: post-#1985, the transcript JSONL SURVIVES the reset by design
-	//     (it lives in the user's global ~/.pi/agent/sessions/, which holds
-	//     state belonging to non-prism pi invocations too — same intentional
-	//     skip as host mode). The hashDir and its sibling files are also
-	//     preserved.
-	if _, err := os.Stat(transcript); err != nil {
-		t.Errorf("transcript was removed by reset; post-#1985 bwrap transcripts must survive: %v", err)
+	// (2) FS: the reset session's transcript is REMOVED from the shared root
+	//     (issue #2220: reset means forget, scoped per-id). Transcripts the
+	//     DB does not know about survive, as do the run/<hash>/ files.
+	if _, err := os.Stat(transcript); !os.IsNotExist(err) {
+		t.Errorf("reset session's transcript was not removed (stat err=%v)", err)
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		t.Errorf("sibling transcript (different id, same cwd) was removed but must survive: %v", err)
+	}
+	if _, err := os.Stat(otherRoot); err != nil {
+		t.Errorf("other-root transcript was removed but must survive: %v", err)
 	}
 	if _, err := os.Stat(hashDir); err != nil {
 		t.Errorf("hashDir removed: %v", err)
@@ -158,17 +167,22 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 		t.Errorf("sibling file removed: %v", err)
 	}
 
-	// (3) container.ResolvePIResumeSession still returns true post-reset
-	//     when invoked with the stale UUID — the transcript is still there.
-	//     This is intentional: the reset guard is now the DB-side clear, not
-	//     the FS-side clear. The realistic path (next assertion) proves the
-	//     full chain is safe.
-	if !container.ResolvePIResumeSession(preCfg) {
-		t.Errorf("post-reset: ResolvePIResumeSession = false, want true " +
-			"(transcript intentionally survives reset; DB-side clear is the guard)")
+	// (3) Even a caller holding the STALE id can no longer resume: the
+	//     transcript is gone, so ResolvePIResumeSession returns false and
+	//     PIInvocation omits --session. This is the FS-side guard the
+	//     pre-#2220 sweep never actually provided.
+	if container.ResolvePIResumeSession(preCfg) {
+		t.Errorf("post-reset: ResolvePIResumeSession = true, want false (transcript must be gone)")
+	}
+	staleCfg := preCfg
+	staleCfg.InitialPrompt = "hello after reset"
+	for i, a := range container.PIInvocation(staleCfg) {
+		if a == "--session" {
+			t.Errorf("PIInvocation with stale SID emitted --session at args[%d] post-reset", i)
+		}
 	}
 
-	// (4) The realistic post-reset path \u2014 cmd/agent_run.go feeds
+	// (4) The realistic post-reset path — cmd/agent_run.go feeds
 	//     status.HarnessSessionID into container.Config. With the DB row now
 	//     carrying nil, that lowers to "". PIInvocation must NOT contain
 	//     --session in its args.
@@ -192,17 +206,18 @@ func TestReset_E2E_NoSessionFlagAfterReset(t *testing.T) {
 	}
 }
 
-// TestReset_E2E_HostModeUnchanged pins AC4: host mode is incidentally safe.
-// It does not rely on the reset code path because `prism switch` already
-// leaves opts.HarnessSessionID empty for host mode (see
-// internal/session/session.go:181-182). The test mirrors that contract by
-// constructing a host-mode container.Config (no PIAgentConfig* dirs, no
-// InstanceID) and verifying PIInvocation does not emit --session even when
-// transcripts and a DB SID still exist on disk.
+// TestReset_E2E_UntrackedTranscriptsSurvive pins the shared-root safety
+// property of the #2220 design: transcripts with NO corresponding resume
+// pointer in prism's DB — non-prism pi conversations, other repos' sessions,
+// sessions whose linkage was already severed at cleanup — survive a reset
+// untouched. The removal is keyed off DB rows, so an empty DB means zero FS
+// deletions.
 //
-// In other words: the reset fix changes bwrap / sandbox-exec behaviour; it
-// does NOT regress host mode, which was already correct.
-func TestReset_E2E_HostModeUnchanged(t *testing.T) {
+// It also pins the #1838 resume regression guard: because the untracked
+// transcript survives, a caller that (re)acquires the id can still resume —
+// reset must not break the legitimate resume path for conversations it does
+// not own.
+func TestReset_E2E_UntrackedTranscriptsSurvive(t *testing.T) {
 	clearPICodingAgentDir(t)
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
@@ -214,58 +229,49 @@ func TestReset_E2E_HostModeUnchanged(t *testing.T) {
 		harnessSessionID = "019e00ed-1111-2222-3333-444444444444"
 	)
 
-	// Plant a host-mode transcript at ~/.pi/agent/sessions/<encoded-cwd>/...
-	// (resetClearPiTranscripts intentionally does NOT touch this.)
+	// Plant a transcript at the shared root with NO DB row referencing it
+	// (e.g. a pi conversation started outside prism).
 	home := os.Getenv("HOME")
-	hostTranscriptDir := filepath.Join(home, ".pi", "agent", "sessions", "--home-user-host-repo-main--")
-	if err := os.MkdirAll(hostTranscriptDir, 0o700); err != nil {
-		t.Fatalf("mkdir host transcript: %v", err)
-	}
-	hostTranscript := filepath.Join(hostTranscriptDir, "2026-05-22_"+harnessSessionID+".jsonl")
-	if err := os.WriteFile(hostTranscript, []byte(`{}`), 0o600); err != nil {
-		t.Fatalf("write host transcript: %v", err)
-	}
+	untracked := writeFakePiResumeJSONL(t, home, worktree, harnessSessionID)
 
-	// Run the FS-side reset.
-	if err := resetClearPiTranscripts(); err != nil {
+	// Run both reset halves against an empty DB: the snapshot is empty, so
+	// the FS half must be a no-op.
+	dbFile := filepath.Join(stateHome, "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("db.Open: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	pointers, err := resetMarkDBEnded()
+	if err != nil {
+		t.Fatalf("resetMarkDBEnded: %v", err)
+	}
+	if len(pointers) != 0 {
+		t.Fatalf("snapshot from empty DB has %d pointer(s), want 0: %+v", len(pointers), pointers)
+	}
+	if err := resetClearPiTranscripts(pointers); err != nil {
 		t.Fatalf("resetClearPiTranscripts: %v", err)
 	}
 
-	// AC4(a): the host-mode transcript is preserved (out of scope).
-	if _, err := os.Stat(hostTranscript); err != nil {
-		t.Errorf("host-mode transcript was removed by reset; reset must not touch ~/.pi/agent/sessions/: %v", err)
+	// The untracked transcript is preserved.
+	if _, err := os.Stat(untracked); err != nil {
+		t.Errorf("untracked transcript was removed by reset; reset must only delete transcripts it has resume pointers for: %v", err)
 	}
 
-	// AC4(b): the host-mode invocation path that cmd does not feed
-	// HarnessSessionID into (mirrors internal/session.buildDirectAgentCmd's
-	// opts.HarnessSessionID="" contract). PIInvocation should not emit
-	// --session for a Config with empty HarnessSessionID regardless of
-	// what is on disk.
-	hostCfg := container.Config{
-		SessionName: sessionName,
-		Worktree:    worktree,
-		// HarnessSessionID intentionally empty \u2014 host-mode switch/spawn path.
-	}
-	args := container.PIInvocation(hostCfg)
-	for i, a := range args {
-		if a == "--session" {
-			t.Errorf("PIInvocation host-mode emitted --session at args[%d]; full args=%v", i, args)
-		}
-	}
-	// Even if a caller did populate the host config with a SID, host mode
-	// resolves to ~/.pi/agent/sessions/, so the transcript is still there and
-	// resume WOULD succeed (intentional \u2014 the host-mode resume path is the
-	// regression guard described in AC5 / #1838).
-	hostCfgWithSID := container.Config{
+	// #1838 regression guard: the surviving transcript is still resumable by
+	// a caller that holds the id — PIInvocation appends --session for it.
+	cfgWithSID := container.Config{
 		SessionName:      sessionName,
 		Worktree:         worktree,
 		HarnessSessionID: harnessSessionID,
 	}
-	if !container.ResolvePIResumeSession(hostCfgWithSID) {
-		t.Errorf("AC5 regression: host-mode resume should still work after reset (the transcript survives, the host path doesn't auto-fetch the SID from the DB)")
+	if !container.ResolvePIResumeSession(cfgWithSID) {
+		t.Errorf("resume should still work for an untracked transcript after reset")
 	}
-	// And if it does get the SID, PIInvocation appends --session per #1838.
-	argsWithSID := container.PIInvocation(hostCfgWithSID)
+	argsWithSID := container.PIInvocation(cfgWithSID)
 	foundSession := false
 	for i, a := range argsWithSID {
 		if a == "--session" && i+1 < len(argsWithSID) && argsWithSID[i+1] == harnessSessionID {
@@ -274,7 +280,19 @@ func TestReset_E2E_HostModeUnchanged(t *testing.T) {
 		}
 	}
 	if !foundSession {
-		t.Errorf("AC5 regression: PIInvocation should append --session %s when host-mode transcript exists; got %v",
+		t.Errorf("PIInvocation should append --session %s when the transcript exists; got %v",
 			harnessSessionID, argsWithSID)
+	}
+
+	// And the empty-HarnessSessionID path (what `prism switch` produces for
+	// host mode) still never emits --session regardless of what is on disk.
+	hostCfg := container.Config{
+		SessionName: sessionName,
+		Worktree:    worktree,
+	}
+	for i, a := range container.PIInvocation(hostCfg) {
+		if a == "--session" {
+			t.Errorf("PIInvocation with empty HarnessSessionID emitted --session at args[%d]", i)
+		}
 	}
 }

@@ -42,7 +42,7 @@ func TestResetMarkDBEnded_MarksAllNonEndedRows(t *testing.T) {
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Run the DB cleanup step.
-	if err := resetMarkDBEnded(); err != nil {
+	if _, err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error: %v", err)
 	}
 
@@ -99,7 +99,7 @@ func TestResetMarkDBEnded_NoActiveRows(t *testing.T) {
 	t.Cleanup(func() { SetTestDBPath("") })
 
 	// Should succeed even with nothing to update.
-	if err := resetMarkDBEnded(); err != nil {
+	if _, err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error on empty active set: %v", err)
 	}
 }
@@ -117,7 +117,7 @@ func TestResetMarkDBEnded_EmptyDB(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	if err := resetMarkDBEnded(); err != nil {
+	if _, err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded returned error on empty DB: %v", err)
 	}
 }
@@ -155,7 +155,7 @@ func TestResetMarkDBEnded_AlreadyEndedRowsUntouched(t *testing.T) {
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
 
-	if err := resetMarkDBEnded(); err != nil {
+	if _, err := resetMarkDBEnded(); err != nil {
 		t.Fatalf("resetMarkDBEnded: %v", err)
 	}
 
@@ -185,5 +185,79 @@ func TestResetMarkDBEnded_AlreadyEndedRowsUntouched(t *testing.T) {
 	if ended.EndedAt.UnixMilli() != origEndedAt {
 		t.Errorf("ended session %q ended_at changed: got %d, want %d",
 			endedSession, ended.EndedAt.UnixMilli(), origEndedAt)
+	}
+}
+
+// TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear verifies the issue
+// #2220 capture-before-clear contract: resetMarkDBEnded returns the
+// (sessionName, worktree, harness_session_id) snapshot of every row that
+// carried a resume pointer — including already-ended rows, since
+// ClearAllResumePointers wipes the column on every row — and the DB column is
+// NULL afterwards. Rows with no harness_session_id are excluded from the
+// snapshot.
+func TestResetMarkDBEnded_SnapshotsResumePointersBeforeClear(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Active row with a resume pointer.
+	if err := d.UpsertStatus("repo@active", "repo", "/wt/active", "running", nil, strPtr("sid-active")); err != nil {
+		t.Fatalf("UpsertStatus active: %v", err)
+	}
+	// Already-ended row with a resume pointer — must still be snapshotted.
+	if err := d.UpsertStatus("repo@ended", "repo", "/wt/ended", "idle", nil, strPtr("sid-ended")); err != nil {
+		t.Fatalf("UpsertStatus ended: %v", err)
+	}
+	if err := d.SetEnded("repo@ended"); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+	// Row with no resume pointer — must be excluded from the snapshot.
+	if err := d.UpsertStatus("repo@nosid", "repo", "/wt/nosid", "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus nosid: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	pointers, err := resetMarkDBEnded()
+	if err != nil {
+		t.Fatalf("resetMarkDBEnded: %v", err)
+	}
+
+	got := map[string]piResumePointer{}
+	for _, p := range pointers {
+		got[p.sessionName] = p
+	}
+	if len(got) != 2 {
+		t.Fatalf("snapshot has %d pointer(s), want 2: %+v", len(got), pointers)
+	}
+	if p := got["repo@active"]; p.worktree != "/wt/active" || p.harnessSessionID != "sid-active" {
+		t.Errorf("repo@active pointer = %+v, want worktree=/wt/active sid=sid-active", p)
+	}
+	if p := got["repo@ended"]; p.worktree != "/wt/ended" || p.harnessSessionID != "sid-ended" {
+		t.Errorf("repo@ended pointer = %+v, want worktree=/wt/ended sid=sid-ended", p)
+	}
+	if _, ok := got["repo@nosid"]; ok {
+		t.Errorf("repo@nosid must not appear in the snapshot (no resume pointer): %+v", pointers)
+	}
+
+	// And the DB-side pointers are cleared AFTER the snapshot was taken.
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	for _, name := range []string{"repo@active", "repo@ended"} {
+		st, err := d2.CurrentStatus(name)
+		if err != nil || st == nil {
+			t.Fatalf("CurrentStatus %q: %v", name, err)
+		}
+		if st.HarnessSessionID != nil {
+			t.Errorf("session %q: harness_session_id = %q, want NULL after reset",
+				name, *st.HarnessSessionID)
+		}
 	}
 }

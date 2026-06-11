@@ -296,31 +296,52 @@ func piResumeHostSessionsRoot() (string, bool) {
 // the same worktree path (e.g. the legitimate-resume case in #1838 where a
 // still-active session is being restarted) must not be touched.
 func RemovePiResumeJSONL(cfg Config) error {
+	_, err := RemovePiResumeJSONLCount(cfg)
+	return err
+}
+
+// RemovePiResumeJSONLCount is RemovePiResumeJSONL additionally reporting the
+// number of transcript files actually removed. The error semantics, scoping
+// and best-effort contract are identical to RemovePiResumeJSONL (which is a
+// thin wrapper over this function) — see its doc comment for the full
+// reference.
+//
+// The count exists for callers that aggregate removals across many sessions
+// and want honest summary output: `prism reset` (issue #2220) snapshots every
+// (worktree, harness_session_id) pair being reset and removes exactly those
+// transcripts from the shared host sessions root, reporting the total. The
+// per-session cleanup paths keep using the error-only wrapper.
+func RemovePiResumeJSONLCount(cfg Config) (int, error) {
 	if cfg.HarnessSessionID == "" || cfg.Worktree == "" {
-		return nil
+		return 0, nil
 	}
 	root, ok := piResumeSessionsRoot(cfg)
 	if !ok {
-		return nil
+		return 0, nil
 	}
 	cwdDir := filepath.Join(root, encodePiCWD(cfg.Worktree))
 	entries, err := os.ReadDir(cwdDir)
 	if err != nil {
 		// Missing dir / unreadable — nothing to do. Cleanup is best-effort.
-		return nil
+		return 0, nil
 	}
 	suffix := "_" + cfg.HarnessSessionID + ".jsonl"
+	removed := 0
 	var firstErr error
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), suffix) {
 			continue
 		}
 		path := filepath.Join(cwdDir, e.Name())
-		if rmErr := os.Remove(path); rmErr != nil && !os.IsNotExist(rmErr) && firstErr == nil {
-			firstErr = fmt.Errorf("remove pi resume jsonl %s: %w", path, rmErr)
+		if rmErr := os.Remove(path); rmErr != nil {
+			if !os.IsNotExist(rmErr) && firstErr == nil {
+				firstErr = fmt.Errorf("remove pi resume jsonl %s: %w", path, rmErr)
+			}
+			continue
 		}
+		removed++
 	}
-	return firstErr
+	return removed, firstErr
 }
 
 // encodePiCWD mirrors internal/harness/pi.EncodePiCWD: pi's session-dir naming
