@@ -40,17 +40,16 @@ package pi
 // adapter locates the right file by scanning the encoded-cwd directory for
 // an entry whose name ends in `_<HarnessSessionID>.jsonl`.
 //
-// For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes to the
-// per-session staging HOME instead of the real home directory (bug #1538 fix).
-// The staging HOME is ~/.local/state/prism/sessions/<instance_id>/home/.
-// The worktree path that pi sees as its CWD is the same as the host worktree
-// path (sandbox-exec mounts it at its native path, only $HOME is remapped).
-// Therefore the encoded-cwd is derived from p.Worktree in both cases; only the
-// sessions root base (home) differs between host and sandbox-exec modes.
-// PI_CODING_AGENT_DIR set on the host has no effect on sandbox-exec mode: the
-// in-sandbox launcher points pi at a staging-home path that the host-side
-// adapter already resolves via the staging-home formula, not via the host's
-// environment.
+// Sandbox-exec sessions (IsolationMode == "sandbox-exec") resolve to the same
+// host root: the dispatcher injects PI_CODING_AGENT_DIR=<host ~/.pi/agent>
+// into the sandbox env and sandbox-exec shares the host filesystem
+// (cmd/agent_run_sandbox_exec_darwin.go), so pi writes its transcripts to the
+// host root, not the per-session staging HOME. The worktree path that pi sees
+// as its CWD is the same as the host worktree path (only $HOME is remapped
+// inside the sandbox), so the encoded-cwd is derived from p.Worktree the same
+// way in every mode. A pre-#2210 sandbox-exec branch resolved the staging-HOME
+// formula here; it had been stale since #1286 and meant archives were
+// transcript-less (issue #2210).
 //
 // Archive copies the matched JSONL file directly into archiveDir/session.jsonl
 // (single file, no `raw/` indirection). The opencode raw-archive → pi-mono v3
@@ -68,7 +67,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/prismatic-koi/prism/internal/container"
 	harnessarchive "github.com/prismatic-koi/prism/internal/harness/archive"
 )
 
@@ -98,11 +96,11 @@ func NewArchiveAdapter() harnessarchive.ArchiveAdapter {
 // os.IsNotExist handling treats it as a no-op.
 //
 // For sandbox-exec sessions (IsolationMode == "sandbox-exec"), PI writes under
-// the staging HOME (<stagingHome>/.pi/agent/sessions/...) instead of the real
-// home directory. The worktree path pi uses as its CWD is the same host path in
-// both modes (sandbox-exec mounts the worktree at its native path), so the
-// encoded-cwd is derived from p.Worktree in both cases. Bug #1538 fix: only
-// the home base differs for sandbox-exec sessions.
+// the same host root as host mode: the dispatcher injects PI_CODING_AGENT_DIR
+// into the sandbox env and sandbox-exec shares the host filesystem (issue
+// #2210). The worktree path pi uses as its CWD is the same host path in all
+// modes (sandbox-exec mounts the worktree at its native path), so the
+// encoded-cwd is derived from p.Worktree in all cases.
 //
 // For bwrap sessions (IsolationMode == "bwrap"), PI writes into the host's
 // $PI_CODING_AGENT_DIR/sessions/ (or ~/.pi/agent/sessions/ when the env var
@@ -156,13 +154,11 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 	return filepath.Join(cwdDir, "session_"+p.HarnessSessionID+".jsonl"), nil
 }
 
-// piSessionsRoot returns the per-mode sessions directory — the directory under
-// which pi creates one subdirectory per encoded CWD. The two distinct branches
-// are:
-//
-//	host / bwrap / "" → $PI_CODING_AGENT_DIR/sessions when the env var
-//	                     is set; else <home>/.pi/agent/sessions
-//	sandbox-exec      → <stagingHome>/.pi/agent/sessions
+// piSessionsRoot returns the sessions directory — the directory under which
+// pi creates one subdirectory per encoded CWD. Every IsolationMode (host,
+// bwrap, sandbox-exec, "", or unknown) resolves to the SAME host root:
+// $PI_CODING_AGENT_DIR/sessions when the env var is set; else
+// <home>/.pi/agent/sessions.
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi reads it
 // as the agent data root at startup; see pi 0.79 dist/core/session-manager.js
@@ -171,11 +167,14 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // branch is fallback-only — but it still matches pi's behaviour on hosts
 // where the env var is not set.
 //
-// Sandbox-exec is unaffected by PI_CODING_AGENT_DIR on the host: the
-// in-sandbox launcher points pi at a path under the per-session staging
-// HOME (see container.appendPISandboxExecConfig), so the host-side adapter
-// resolves the staging-home formula directly regardless of the operator's
-// host environment.
+// Sandbox-exec follows the host root because the dispatcher injects
+// PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
+// sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
+// A pre-#2210 branch here resolved sandbox-exec to the per-session staging
+// HOME (<stagingHome>/.pi/agent/sessions) via
+// container.SandboxExecStagingHomePath; that formula had been stale since
+// #1286 (pi has honoured the injected env var ever since) and meant archives
+// for sandbox-exec sessions never contained the transcript (issue #2210).
 //
 // Before #1985 bwrap pointed at
 // <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/, but that
@@ -184,24 +183,12 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // onto $PI_CODING_AGENT_DIR/sessions/ inside the sandbox (see
 // container.appendPIBwrapMounts), so the host-side root is the same as host
 // mode and the bwrap branch collapses into the default.
-func piSessionsRoot(p harnessarchive.SourceParams) (string, error) {
-	switch {
-	case p.IsolationMode == "sandbox-exec" && p.InstanceID != "":
-		// sandbox-exec: PI writes into the per-session staging HOME, not
-		// the real home directory. Use the same path formula as
-		// container.SandboxExecStagingHomePath.
-		stagingHome, err := container.SandboxExecStagingHomePath(p.InstanceID)
-		if err != nil {
-			return "", fmt.Errorf("pi archive: resolve sandbox-exec staging home: %w", err)
-		}
-		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), nil
-
-	default:
-		// host, bwrap, empty, or unknown IsolationMode — all resolve to the
-		// host PI data root: $PI_CODING_AGENT_DIR/sessions when set,
-		// else <home>/.pi/agent/sessions.
-		return hostPISessionsRoot()
-	}
+//
+// The SourceParams parameter is retained for signature stability with callers
+// and the resume-side mirror (internal/container.piResumeSessionsRoot);
+// resolution no longer depends on any field.
+func piSessionsRoot(_ harnessarchive.SourceParams) (string, error) {
+	return hostPISessionsRoot()
 }
 
 // hostPISessionsRoot returns the host-side PI sessions directory:

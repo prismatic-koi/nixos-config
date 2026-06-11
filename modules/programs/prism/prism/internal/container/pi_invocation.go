@@ -147,7 +147,7 @@ func PIInvocation(cfg Config) []string {
 }
 
 // ResolvePIResumeSession returns true when the on-disk pi session JSONL for
-// cfg.HarnessSessionID exists under the mode-aware sessions root and pi can
+// cfg.HarnessSessionID exists under the host sessions root and pi can
 // be told to resume it. Returns false when the file is missing, in which case
 // it also writes a tagged warning line to the per-session agent-run log so
 // the operator can see why the conversation didn't resume.
@@ -159,7 +159,7 @@ func PIInvocation(cfg Config) []string {
 //     set (as the host-mode launch path in internal/session does, since it has
 //     no container fields).
 //
-// The mode-aware sessions root mirrors internal/harness/pi/archive.go's
+// The sessions root mirrors internal/harness/pi/archive.go's
 // piSessionsRoot helper (see that file for the authoritative reference). It
 // is duplicated here rather than imported because internal/harness/pi already
 // imports internal/container, so the reverse dependency would create an
@@ -206,53 +206,35 @@ func piResolveResumeSession(cfg Config) bool {
 }
 
 // piResumeSessionsRoot returns the host-side sessions root directory that pi
-// writes session JSONL files under, given the isolation mode implied by cfg.
-// The three branches mirror internal/harness/pi/archive.go::piSessionsRoot:
+// writes session JSONL files under. Every isolation mode resolves to the SAME
+// host root — $PI_CODING_AGENT_DIR/sessions when the env var is set, else
+// <home>/.pi/agent/sessions — mirroring
+// internal/harness/pi/archive.go::piSessionsRoot:
 //
-//	host         → $PI_CODING_AGENT_DIR/sessions (when set) else
-//	               <home>/.pi/agent/sessions
-//	bwrap        → same as host (overlay-mounted into the sandbox at
-//	               $PI_CODING_AGENT_DIR/sessions; see appendPIBwrapMounts
-//	               and #1985)
-//	sandbox-exec → <stagingHome>/.pi/agent/sessions
+//	host         → pi runs against the host environment directly.
+//	bwrap        → the host's PI sessions root is overlay-mounted into the
+//	               sandbox at $PI_CODING_AGENT_DIR/sessions (see
+//	               appendPIBwrapMounts and #1985).
+//	sandbox-exec → the dispatcher injects PI_CODING_AGENT_DIR=<host
+//	               ~/.pi/agent> into the sandbox env and sandbox-exec shares
+//	               the host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
+//	               so pi writes to the host root there too. A pre-#2210
+//	               branch here resolved sandbox-exec to the per-session
+//	               staging HOME (<stagingHome>/.pi/agent/sessions); that
+//	               formula had been stale since #1286 and meant resume never
+//	               found the transcript (issue #2210).
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.79
 // dist/core/session-manager.js getDefaultAgentDir / getDefaultSessionDirPath
 // — see internal/harness/pi/archive.go for the full citation). The prism
 // developer host sets it system-wide to /run/prism/pi-agent.
 //
-// Mode is inferred from cfg fields rather than carried explicitly:
+// The Config parameter is retained for signature stability with callers and
+// the archive-side mirror; resolution no longer depends on any cfg field.
 //
-//   - sandbox-exec is identified by InstanceID being set AND
-//     PIAgentConfigSandboxDir == PIAgentConfigHostDir (sandbox-exec shares the
-//     host FS, so populatePIConfig deliberately collapses the two paths).
-//   - bwrap is identified by SessionName being set AND
-//     PIAgentConfigSandboxDir != PIAgentConfigHostDir. As of #1985 bwrap
-//     overlays the host's PI sessions root directly under the in-sandbox
-//     $PI_CODING_AGENT_DIR, so the host-side resolution is the same as host
-//     mode — collapsed into the fallback branch below.
-//   - host is the fallback when neither condition matches.
-//
-// Returns ok=false only when host-mode resolution fails (no home dir, and
+// Returns ok=false only when host resolution fails (no home dir, and
 // PI_CODING_AGENT_DIR is unset).
-func piResumeSessionsRoot(cfg Config) (string, bool) {
-	// sandbox-exec: per-session staging HOME.
-	if cfg.InstanceID != "" && cfg.PIAgentConfigSandboxDir != "" &&
-		cfg.PIAgentConfigSandboxDir == cfg.PIAgentConfigHostDir {
-		stagingHome, err := SandboxExecStagingHomePath(cfg.InstanceID)
-		if err != nil || stagingHome == "" {
-			return "", false
-		}
-		return filepath.Join(stagingHome, ".pi", "agent", "sessions"), true
-	}
-
-	// bwrap and host: both resolve to the host PI sessions root —
-	// $PI_CODING_AGENT_DIR/sessions when set, else ~/.pi/agent/sessions.
-	// (Before #1985 bwrap pointed at <XDG_STATE_HOME>/prism/run/<hash>/pi-agent/
-	// sessions/; that directory disappeared on `prism cleanup`, taking the
-	// history with it. The sessions subtree is now overlay-bound from the
-	// host's PI sessions root in appendPIBwrapMounts so writes persist
-	// across prism-session lifetimes.)
+func piResumeSessionsRoot(_ Config) (string, bool) {
 	return piResumeHostSessionsRoot()
 }
 
@@ -289,12 +271,13 @@ func piResumeHostSessionsRoot() (string, bool) {
 // keeps ~/.pi/agent/sessions/ from accumulating dead conversations across
 // reused branch names.
 //
-// Resolution mirrors piResumeSessionsRoot (sandbox-exec staging home vs.
-// host/bwrap `~/.pi/agent/sessions/`). For sandbox-exec the JSONL also lives
-// inside the staging HOME that RemoveSandboxExecStagingHome subsequently
-// wipes — calling RemovePiResumeJSONL first is therefore redundant for that
-// mode but harmless (the targeted delete is a no-op when the broader wipe
-// has already run, and vice-versa).
+// Resolution mirrors piResumeSessionsRoot: every isolation mode (host,
+// bwrap, sandbox-exec) resolves to the host sessions root —
+// $PI_CODING_AGENT_DIR/sessions when set, else `~/.pi/agent/sessions/`.
+// For sandbox-exec this removal is load-bearing, not redundant: pi writes
+// its transcripts to the host root (the dispatcher injects
+// PI_CODING_AGENT_DIR into the sandbox env), so the staging-HOME wipe in
+// RemoveSandboxExecStagingHome never touches them (issue #2210).
 //
 // Best-effort and non-fatal:
 //
