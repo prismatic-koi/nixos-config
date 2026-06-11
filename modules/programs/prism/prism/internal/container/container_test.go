@@ -998,12 +998,17 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 	}
 }
 
-// TestPrepareSandboxExecHome_EmptyIdentityAborts asserts that the failure
-// from writeGitconfig propagates up through PrepareSandboxExecHome (the
-// sandbox-exec staging entry point) so the session does not start. The
-// previous behaviour logged the error and continued, which is what allowed
+// TestSandboxExecPrepare_EmptyIdentityAborts asserts that the failure from
+// the gitconfig generator propagates up through sandboxExecIsolator.Prepare
+// (the sandbox-exec session entry point) so the session does not start. The
+// pre-#1960 behaviour logged the error and continued, which is what allowed
 // the bug to surface only post-merge.
-func TestPrepareSandboxExecHome_EmptyIdentityAborts(t *testing.T) {
+//
+// Post issue #2213 (Step 2 of #2132) the generated gitconfig lives in the
+// per-session work dir, so the hard error surfaces from
+// PrepareSessionWorkDir rather than PrepareSandboxExecHome — both stations
+// are asserted here to pin the #1960 "hard-fails at Prepare" guarantee.
+func TestSandboxExecPrepare_EmptyIdentityAborts(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 	// PrepareSandboxExecHome requires the various host dirs that newFakeHome
@@ -1018,14 +1023,31 @@ func TestPrepareSandboxExecHome_EmptyIdentityAborts(t *testing.T) {
 	m := New(Config{
 		SessionName: "repo@feat",
 		InstanceID:  "empty-identity-test",
+		Worktree:    t.TempDir(),
 		// Explicitly leave GitUserName and GitUserEmail unset to exercise
 		// the refusal path.
 	})
-	stagingHome, err := m.PrepareSandboxExecHome()
+
+	// Station 1: the work-dir writer itself refuses.
+	sessionDir, err := m.PrepareSessionWorkDir()
 	if err == nil {
-		t.Fatalf("PrepareSandboxExecHome returned stagingHome=%q nil error, want error", stagingHome)
+		t.Fatalf("PrepareSessionWorkDir returned sessionDir=%q nil error, want error", sessionDir)
 	}
 	if !strings.Contains(err.Error(), "git identity missing") {
-		t.Errorf("PrepareSandboxExecHome error %q must mention 'git identity missing'", err.Error())
+		t.Errorf("PrepareSessionWorkDir error %q must mention 'git identity missing'", err.Error())
+	}
+
+	// Station 2: the isolator Prepare entry point propagates the refusal and
+	// produces no args — the session must not launch.
+	iso := &sandboxExecIsolator{name: m.name}
+	args, prepErr := iso.Prepare(context.Background(), m)
+	if prepErr == nil {
+		t.Fatalf("Prepare returned nil error, want git-identity error (args=%v)", args)
+	}
+	if !strings.Contains(prepErr.Error(), "git identity missing") {
+		t.Errorf("Prepare error %q must mention 'git identity missing'", prepErr.Error())
+	}
+	if args != nil {
+		t.Errorf("Prepare args must be nil on error; got %v", args)
 	}
 }

@@ -26,9 +26,12 @@ import (
 )
 
 // TestSandboxExecProfile_StagingHomeWritable is the positive integration
-// test for the staging-HOME write allow. It generates the production
-// profile, prepares the staging HOME, and runs `bash -c 'echo hi > $HOME/foo'`
-// inside the sandbox. Asserts the file is created (exit 0).
+// test for the staging-HOME write coverage. Post issue #2213 the profile's
+// RW rule is (subpath "<sessionDir>") — the per-session work dir — which
+// covers the staging HOME nested under it at <sessionDir>/home/. The test
+// generates the production profile, prepares the staging HOME, and runs
+// `bash -c 'echo hi > $HOME/foo'` inside the sandbox. Asserts the file is
+// created (exit 0).
 func TestSandboxExecProfile_StagingHomeWritable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -66,23 +69,25 @@ func TestSandboxExecProfile_StagingHomeWritable(t *testing.T) {
 }
 
 // TestSandboxExecProfile_StagingHomeWriteDenied is the paired negative test.
-// It removes the single (subpath "<stagingHome>") line from the
-// staging-HOME write allow block and asserts the same write operation
-// fails with a non-zero exit.
+// It removes the single (subpath "<sessionDir>") line — the per-session
+// work dir rule that covers the staging HOME nested under it (issue #2213)
+// — from the RW allow block and asserts the same write operation fails with
+// a non-zero exit.
 //
 // Mutation strategy: targeted single-line ReplaceAll on the indented
-// `  (subpath "<stagingHome>")\n` form. This leaves the rest of the
+// `  (subpath "<sessionDir>")\n` form. This leaves the rest of the
 // (allow file-read* file-write* ...) block intact (worktree, bare repo,
 // host-API socket dir, agent shared dirs) so the profile remains
 // syntactically valid SBPL — the only behaviour change is that the
-// staging-HOME path itself is no longer covered by the write allow,
-// which is exactly the rule we are testing. Removing the entire block
-// would make the profile malformed (orphaned subpath lines from the
-// trailing entries in the block) and sandbox-exec would reject the
-// profile at parse time, making the test pass for the wrong reason.
+// session dir (and therefore the staging HOME under it) is no longer
+// covered by the write allow, which is exactly the rule we are testing.
+// Removing the entire block would make the profile malformed (orphaned
+// subpath lines from the trailing entries in the block) and sandbox-exec
+// would reject the profile at parse time, making the test pass for the
+// wrong reason.
 //
 // This proves StagingHomeWritable is not green by accident — the staging
-// HOME is writable specifically because of the (subpath "<stagingHome>")
+// HOME is writable specifically because of the (subpath "<sessionDir>")
 // entry in the write allow block, not because of some unrelated rule.
 func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -99,9 +104,13 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	stagingHomeRule := "  (subpath " + sbplQuoteForTest(stagingHome) + ")\n"
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+	sessionDirRule := "  (subpath " + sbplQuoteForTest(sessionDir) + ")\n"
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.ReplaceAll(p, stagingHomeRule, "")
+		return strings.ReplaceAll(p, sessionDirRule, "")
 	})
 
 	// Belt-and-suspenders check on top of withMutatedProfile's no-op

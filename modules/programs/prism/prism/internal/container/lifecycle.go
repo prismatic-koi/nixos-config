@@ -41,6 +41,12 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
 		_ = os.RemoveAll(stagingHome)
 	}
+	// Remove the per-session work dir (generated ssh-config / gitconfig /
+	// allowed_signers — issue #2213). The staging HOME is nested under it,
+	// so this also covers any staging remnants.
+	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
+		_ = os.RemoveAll(sessionDir)
+	}
 
 	// Per-mode lifecycle cleanup lives on the registered Isolator. See
 	// lifecycle_dispatch.go (issue #1140 A1.L1).
@@ -148,6 +154,10 @@ func (m *Manager) Shutdown() {
 	// Remove the per-session sandbox-exec staging HOME directory tree.
 	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
 		_ = os.RemoveAll(stagingHome)
+	}
+	// Remove the per-session work dir (issue #2213).
+	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
+		_ = os.RemoveAll(sessionDir)
 	}
 
 	log.Printf("container: %q removed", m.name)
