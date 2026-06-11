@@ -1092,17 +1092,19 @@ func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
 
 // TestBwrapBuildArgs_AgentEnvVarsInjected verifies that plain entries in
 // Config.AgentEnvVars (e.g. GIT_EDITOR) are emitted as --setenv K V in the
-// bwrap arg list, while KUBECONFIG and AWS_CONFIG_FILE are suppressed because
-// those files are bind-mounted at their canonical default paths.
+// bwrap arg list, while KUBECONFIG, AWS_CONFIG_FILE, and
+// AWS_SHARED_CREDENTIALS_FILE are suppressed because those files are
+// bind-mounted at their canonical default paths.
 func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 	m, _, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
 		AgentEnvVars: map[string]string{
-			"GIT_EDITOR":      "true",
-			"KUBECONFIG":      "/home/ben/.config/kube/agents-config",
-			"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config",
+			"GIT_EDITOR":                  "true",
+			"KUBECONFIG":                  "/home/ben/.config/kube/agents-config",
+			"AWS_CONFIG_FILE":             "/home/ben/.config/aws/readonly-config",
+			"AWS_SHARED_CREDENTIALS_FILE": "/home/ben/.config/aws/credentials",
 		},
 	})
 	defer cleanup()
@@ -1115,8 +1117,9 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 		t.Errorf("--setenv GIT_EDITOR true not found in args: %v", args)
 	}
 
-	// KUBECONFIG and AWS_CONFIG_FILE must NOT be injected — the files are
-	// already bind-mounted at their canonical default paths inside the sandbox.
+	// KUBECONFIG, AWS_CONFIG_FILE, and AWS_SHARED_CREDENTIALS_FILE must NOT
+	// be injected — the files are already bind-mounted at their canonical
+	// default paths inside the sandbox.
 	for i, arg := range args {
 		if arg == "--setenv" && i+1 < len(args) {
 			key := args[i+1]
@@ -1125,6 +1128,9 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 			}
 			if key == "AWS_CONFIG_FILE" {
 				t.Errorf("AWS_CONFIG_FILE must not be injected in bwrap mode; found in args: %v", args)
+			}
+			if key == "AWS_SHARED_CREDENTIALS_FILE" {
+				t.Errorf("AWS_SHARED_CREDENTIALS_FILE must not be injected in bwrap mode; found in args: %v", args)
 			}
 		}
 	}
@@ -1191,8 +1197,10 @@ func TestBwrapBuildArgs_KubeconfigNotInjectedWhenAbsent(t *testing.T) {
 }
 
 // TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent verifies that
-// AWS_CONFIG_FILE is suppressed even when ~/.config/aws/readonly-config does
-// not exist.
+// AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE are suppressed even when
+// ~/.config/aws/readonly-config and ~/.config/aws/credentials do not exist.
+// (The credentials file is deliberately absent on the host — suppression
+// must not depend on the file existing.)
 func TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
 	fakeHome := t.TempDir()
 	// Do NOT create aws dir — file absent.
@@ -1230,7 +1238,10 @@ func TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
 		SessionName:   "repo@main",
 		Worktree:      t.TempDir(),
 		AllocatedPort: 14010,
-		AgentEnvVars:  map[string]string{"AWS_CONFIG_FILE": "/home/ben/.config/aws/readonly-config"},
+		AgentEnvVars: map[string]string{
+			"AWS_CONFIG_FILE":             "/home/ben/.config/aws/readonly-config",
+			"AWS_SHARED_CREDENTIALS_FILE": "/home/ben/.config/aws/credentials",
+		},
 	})
 	if err := os.WriteFile(m.sshConfigFilePath(), []byte("fake"), 0o600); err != nil {
 		t.Fatalf("WriteFile ssh config: %v", err)
@@ -1243,8 +1254,13 @@ func TestBwrapBuildArgs_AwsConfigFileNotInjectedWhenAbsent(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	for i, arg := range args {
-		if arg == "--setenv" && i+1 < len(args) && args[i+1] == "AWS_CONFIG_FILE" {
-			t.Errorf("AWS_CONFIG_FILE must not be injected even when aws file is absent; found in args: %v", args)
+		if arg == "--setenv" && i+1 < len(args) {
+			if args[i+1] == "AWS_CONFIG_FILE" {
+				t.Errorf("AWS_CONFIG_FILE must not be injected even when aws file is absent; found in args: %v", args)
+			}
+			if args[i+1] == "AWS_SHARED_CREDENTIALS_FILE" {
+				t.Errorf("AWS_SHARED_CREDENTIALS_FILE must not be injected even when aws file is absent; found in args: %v", args)
+			}
 		}
 	}
 }
