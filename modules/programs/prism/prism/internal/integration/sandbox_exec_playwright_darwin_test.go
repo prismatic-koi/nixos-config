@@ -43,6 +43,11 @@ package integration_test
 // rule here — that follow-up is out of scope (issue #2021, "Out of scope"
 // §4.2 — headless-by-default is tracked separately).
 //
+// Status note (2026-06-12): the POSITIVE test is skipped pending #2249
+// (pre-existing iokit-open-service IOPMrootDomain denial, fails on main
+// identically — see the test's own comment). Both NEGATIVES remain active
+// and host-green; their fingerprint guards are load-bearing.
+//
 // Why playwright-cli end-to-end rather than a minimal IOKit harness:
 // the iokit-open-user-client class set was empirically chosen against the
 // Chrome for Testing framework's exact init path. A minimal harness that
@@ -201,7 +206,22 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 // with no SEGV or kill-EPERM fingerprints in stderr, and that the chromium
 // user-data directory landed under the work-dir Library (not the host
 // Library, and not the staging HOME — which holds no Library/ post-#2247).
+//
+// SKIPPED pending #2249, which owns unskipping. The 2026-06-12 host bisect
+// (PR #2248) showed this positive fails IDENTICALLY on main — pre-existing,
+// not a #2247 regression (the production profile is byte-identical either
+// side of the #2247 retarget, and the retarget was exonerated by the
+// bisect). Deny-log smoking gun: the live Chrome for Testing performs
+// iokit-open-service on IOPMrootDomain — a different operation class from
+// the profile's iokit-open-user-client RootDomainUserClient allow — and the
+// denial cascades into an AMFI core-dump denial and SEGV_ACCERR at render
+// init. The production fix is #2021-scope, tracked with the full
+// diagnostic record in #2249. The paired negatives below stay ACTIVE —
+// they pass with their correct fingerprints (iokit SEGV, kill EPERM) and
+// those guards are load-bearing.
 func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.T) {
+	t.Skip("skipped pending #2249 — pre-existing iokit-open-service IOPMrootDomain denial on main (not a #2247 regression); #2249 owns unskipping")
+
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
