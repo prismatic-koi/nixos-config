@@ -180,6 +180,22 @@ func ensureAndSwitch(path string, projectRoot string, opts session.Opts) error {
 		}
 		st, _ := d.CurrentStatus(sessionName)
 		isLive := st != nil && time.Since(st.LastSeen) < 60*time.Second
+		if !isLive && session.SidecarAlive(sessionName) {
+			// The DB row is quiet but the sidecar is responsive on its socket.
+			// Paused-by-design states (escalated awaiting coordinator guidance,
+			// reviewing awaiting verdicts) freeze last_seen for arbitrarily
+			// long while the session is perfectly healthy — killing the
+			// sidecar here would sever prompt delivery, finish notifications,
+			// and event recording for the session (issue #2255). Treat a
+			// responsive sidecar as live and attach instead.
+			lastSeenAge := "no DB row"
+			if st != nil {
+				lastSeenAge = "last_seen " + time.Since(st.LastSeen).Round(time.Second).String() + " ago"
+			}
+			proglog.Infof("[prism switch] session %q has a stale DB row (%s) but a responsive sidecar — treating as live\n",
+				sessionName, lastSeenAge)
+			isLive = true
+		}
 		if isLive {
 			// Live session — attach without touching DB state.
 			if opts.Headless {

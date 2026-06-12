@@ -276,6 +276,14 @@ func (s *Sidecar) handleSessionFinished() {
 
 		s.logger().Printf("sidecar: finished debounce fired -> finished")
 
+		// The debounce firing marks the end of the turn. If that turn invoked
+		// `prism escalate`, its same-turn clobber guard has done its job —
+		// release it so the NEXT turn_start (incoming guidance or a human
+		// typing into tmux) transitions escalated→active per the documented
+		// contract (issue #2255). The DB-state check below still suppresses
+		// the finished write for the escalated session.
+		s.escalatedInFlight = false
+
 		// If the user manually denied a permission, write interrupted not finished.
 		if s.manualDenial {
 			s.manualDenial = false

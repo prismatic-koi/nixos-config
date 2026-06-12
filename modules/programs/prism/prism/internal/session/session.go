@@ -673,6 +673,12 @@ func startupGuardKillOld(name string, d *db.DB, forceFresh bool) bool {
 			// No DB handle, can't determine liveness — legacy no-op: skip creation.
 			return false
 		}
+		if SidecarAlive(name) {
+			// The DB row is quiet but the sidecar is responsive. Paused-by-
+			// design states (escalated, reviewing, waiting) freeze last_seen
+			// while the session is healthy — do not kill it (issue #2255).
+			return false
+		}
 		// Stale or zombie session — kill it silently and recreate.
 		if killErr := tmux.KillSession(name); killErr != nil {
 			fmt.Fprintf(os.Stderr,
