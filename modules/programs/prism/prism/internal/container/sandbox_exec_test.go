@@ -192,7 +192,6 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 		t.Errorf("profile must not contain unqualified (allow iokit-open-service) — only the IOPMrootDomain registry entry is granted (issue #2249); full profile:\n%s", profile)
 	}
 
-
 	// The signal widening MUST NOT include (target others) — that would
 	// permit signalling arbitrary host PIDs. Only (target self) and
 	// (target children) are allowed (issue #2021).

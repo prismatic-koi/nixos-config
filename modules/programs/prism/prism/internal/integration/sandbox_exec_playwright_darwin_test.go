@@ -28,6 +28,9 @@ package integration_test
 //      CFFIXED_USER_HOME points at — issue #2247, Step 4 of #2132), NOT
 //      under the host ~/Library/Application Support/... and NOT under the
 //      staging HOME (which holds no Library/ entries post-#2247).
+//   5. A full open → close → re-open cycle succeeds under the same
+//      profile (issue #2249) — the launch path is repeatable in-sandbox,
+//      not green only on first-boot state.
 //
 // The three negative tests use the `withMutatedProfile` helper to:
 //
@@ -133,8 +136,8 @@ const crashpadEPERMFingerprint = "Operation not permitted"
 // even on a cold box; a successful run typically completes in ~3 s.
 const playwrightCLITimeout = 60 * time.Second
 
-// runPlaywrightCLIOpen invokes sandbox-exec on the given profile path
-// against playwright-cli with `open <data-url>` followed by `close`.
+// runPlaywrightCLI invokes sandbox-exec on the given profile path against
+// playwright-cli with the given CLI args (e.g. "open", <url> — or "close").
 // The env mirrors what agent_run_sandbox_exec_darwin.go does in
 // production: HOME and XDG_CACHE/CONFIG at the staging HOME, and
 // CFFIXED_USER_HOME at the per-session work dir (issue #2247, Step 4 of
@@ -152,16 +155,12 @@ const playwrightCLITimeout = 60 * time.Second
 // inherited from the go-test binary, ungranted) these tests could never
 // have passed a host run — a pre-existing hole from #2022, surfaced by the
 // first host run that exercised them (#2247).
-func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
+func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string, cliArgs ...string) (combinedOutput string, runErr error) {
 	t.Helper()
 
 	// The Nix-built playwright-cli is a #! /nix/store/.../bash script. We
 	// run it directly via sandbox-exec; the shebang line resolves to a
 	// Nix store bash that is covered by the system-paths /nix allow.
-	//
-	// open <url> then close releases the chromium child so the test does
-	// not leak a long-running daemon. If the open SIGSEGVs, the close
-	// becomes a no-op against an already-dead session.
 	envVars := []string{
 		"HOME=" + stagingHome,
 		"CFFIXED_USER_HOME=" + sessionDir,
@@ -176,7 +175,8 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env", "-i")
 	cmd.Args = append(cmd.Args, envVars...)
-	cmd.Args = append(cmd.Args, playwrightBin, "open", playwrightDataURL)
+	cmd.Args = append(cmd.Args, playwrightBin)
+	cmd.Args = append(cmd.Args, cliArgs...)
 	cmd.Dir = sessionDir
 
 	// Belt-and-suspenders timeout: spawn a goroutine that kills the
@@ -197,6 +197,15 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 	return string(out), err
 }
 
+// runPlaywrightCLIOpen invokes runPlaywrightCLI with `open <data-url>`.
+// If the open SIGSEGVs (the negative tests' expected outcome), the
+// playwright daemon never establishes a session, so no close is needed
+// against the dead session.
+func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
+	t.Helper()
+	return runPlaywrightCLI(t, profilePath, playwrightBin, stagingHome, sessionDir, "open", playwrightDataURL)
+}
+
 // TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile is the
 // positive integration test for the chromium-under-sandbox-exec fix
 // (issue #2021).
@@ -204,7 +213,8 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 // It generates the production SBPL profile (which also prepares the
 // session work dir — creating the chromium Library/Application
 // Support/Google skeleton inside it — and the staging HOME), and invokes
-// playwright-cli with `open <data-url>` under sandbox-exec. Asserts exit 0
+// playwright-cli with `open <data-url>` (then close → re-open → close,
+// issue #2249) under sandbox-exec. Asserts exit 0
 // with no SEGV or kill-EPERM fingerprints in stderr, and that the chromium
 // user-data directory landed under the work-dir Library (not the host
 // Library, and not the staging HOME — which holds no Library/ post-#2247).
@@ -304,6 +314,31 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 			"Support/Google skeleton is not being honoured or CFFIXED_USER_HOME\n"+
 			"is not redirecting NSHomeDirectory() at the session work dir\n"+
 			"(issue #2247).\nOutput:\n%s", crashpadEPERMFingerprint, combined)
+	}
+
+	// open → close → re-open cycle (issue #2249 AC): the first open above
+	// spawned the playwright daemon; close must tear the session down
+	// cleanly, and a second open must then succeed from scratch — proving
+	// the in-sandbox launch path is repeatable, not green only on
+	// first-boot state.
+	closeOut, closeErr := runPlaywrightCLI(t, testProfilePath, playwrightBin, stagingHome, sessionDir, "close")
+	if closeErr != nil {
+		t.Errorf("playwright-cli close exited non-zero under production profile (issue #2249).\nExit: %v\nOutput:\n%s", closeErr, closeOut)
+	}
+
+	reopenOut, reopenErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, stagingHome, sessionDir)
+	if reopenErr != nil {
+		t.Errorf("playwright-cli re-open exited non-zero under production profile (issue #2249).\nExit: %v\nOutput:\n%s", reopenErr, reopenOut)
+	}
+	for _, fp := range segVFingerprint {
+		if strings.Contains(reopenOut, fp) {
+			t.Errorf("re-open output contains SEGV fingerprint %q (issue #2249).\nOutput:\n%s", fp, reopenOut)
+		}
+	}
+
+	// Final close so the test does not leak a long-running daemon.
+	if finalCloseOut, finalCloseErr := runPlaywrightCLI(t, testProfilePath, playwrightBin, stagingHome, sessionDir, "close"); finalCloseErr != nil {
+		t.Errorf("final playwright-cli close exited non-zero (issue #2249).\nExit: %v\nOutput:\n%s", finalCloseErr, finalCloseOut)
 	}
 
 	// The chromium user-data directory must live under the work-dir
