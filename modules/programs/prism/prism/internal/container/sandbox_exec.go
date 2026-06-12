@@ -828,6 +828,35 @@ func generateProfile(m *Manager) string {
 	sb.WriteString("  (iokit-user-client-class \"RootDomainUserClient\"))\n")
 	sb.WriteString("\n")
 
+	// ── 9c. iokit-open-service — IOPMrootDomain (#2249) ──────────────────
+	// Current Chrome for Testing acquires its power-management port via
+	// iokit-open-service on the IOPMrootDomain registry entry — a different
+	// operation class from the iokit-open-user-client RootDomainUserClient
+	// allow above (§9b). Without this rule the open is denied and chromium
+	// SIGSEGVs (SEGV_ACCERR) during early init — the same observable
+	// fingerprint as the #2021 user-client denial. Deny-log smoking gun:
+	//
+	//   Sandbox: Google Chrome for Testing(NNN) deny(1) iokit-open-service IOPMrootDomain
+	//
+	// The rule shape mirrors Apple's own power-assertions definition in
+	// /System/Library/Sandbox/Profiles/appsandbox-common.sb, which pairs
+	// exactly these two allows:
+	//
+	//   (allow iokit-open-service (iokit-registry-entry-class "IOPMrootDomain"))
+	//   (allow iokit-open-user-client
+	//          (iokit-user-client-class "RootDomainUserClient"))
+	//
+	// The filter is iokit-registry-entry-class (the class of the IOService
+	// being opened), NOT iokit-user-client-class (which filters the
+	// user-client connection type and applies to iokit-open-user-client).
+	//
+	// The unqualified form `(allow iokit-open-service)` MUST NOT be used —
+	// it would permit opening arbitrary IOKit services. Only the
+	// IOPMrootDomain registry entry is granted.
+	sb.WriteString("(allow iokit-open-service\n")
+	sb.WriteString("  (iokit-registry-entry-class \"IOPMrootDomain\"))\n")
+	sb.WriteString("\n")
+
 	// ── 12. POSIX shared memory ────────────────────────────────────────────
 	// CRITICAL: The v1 (allow ipc-posix-shm) is an UNBOUND VARIABLE in v3.
 	// Use the split read*/write* variants instead. See F.1 §2 rule 12.

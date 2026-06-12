@@ -188,6 +188,9 @@ func TestGenerateProfile_ProcessAndIPCAllows(t *testing.T) {
 	if strings.Contains(profile, "(allow iokit-open-user-client)") {
 		t.Errorf("profile must not contain unqualified (allow iokit-open-user-client) — enumerate iokit-user-client-class entries instead (issue #2021); full profile:\n%s", profile)
 	}
+	if strings.Contains(profile, "(allow iokit-open-service)") {
+		t.Errorf("profile must not contain unqualified (allow iokit-open-service) — only the IOPMrootDomain registry entry is granted (issue #2249); full profile:\n%s", profile)
+	}
 
 	// The signal widening MUST NOT include (target others) — that would
 	// permit signalling arbitrary host PIDs. Only (target self) and
@@ -263,6 +266,43 @@ func TestGenerateProfile_IOKitChromiumClasses(t *testing.T) {
 		if !strings.Contains(iokitBlock, want) {
 			t.Errorf("iokit-open block missing required class %q; block:\n%s", want, iokitBlock)
 		}
+	}
+}
+
+// TestGenerateProfile_IOKitOpenServiceIOPMrootDomain verifies the
+// iokit-open-service allow for the IOPMrootDomain registry entry
+// (issue #2249). Current Chrome for Testing acquires its power-management
+// port via iokit-open-service on IOPMrootDomain — a different operation
+// class from the iokit-open-user-client RootDomainUserClient allow — and
+// SIGSEGVs during early init when it is denied.
+//
+// The allow must be scoped to exactly the IOPMrootDomain registry entry:
+// no unqualified (allow iokit-open-service), no registry-entry-class-prefix
+// wildcard, and no additional registry entries beyond IOPMrootDomain.
+func TestGenerateProfile_IOKitOpenServiceIOPMrootDomain(t *testing.T) {
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	serviceBlock := extractClause(t, profile, "(allow iokit-open-service")
+	if !strings.Contains(serviceBlock, "(iokit-registry-entry-class \"IOPMrootDomain\")") {
+		t.Errorf("iokit-open-service block missing the IOPMrootDomain registry-entry-class filter (issue #2249); block:\n%s", serviceBlock)
+	}
+
+	// Exactly one registry-entry filter is granted — the block must not
+	// grow extra entries or switch to a prefix wildcard without a paired
+	// integration test per docs/sandbox-exec-testing.md.
+	if got := strings.Count(serviceBlock, "iokit-registry-entry-class"); got != 1 {
+		t.Errorf("iokit-open-service block must contain exactly one iokit-registry-entry-class filter, got %d; block:\n%s", got, serviceBlock)
+	}
+	if strings.Contains(serviceBlock, "iokit-registry-entry-class-prefix") {
+		t.Errorf("iokit-open-service block must not use a registry-entry-class-prefix wildcard (issue #2249); block:\n%s", serviceBlock)
+	}
+
+	// The iokit-open-service operation must appear exactly once in the
+	// profile — a second occurrence would indicate an unqualified or
+	// duplicate grant sneaking in elsewhere.
+	if got := strings.Count(profile, "iokit-open-service"); got != 1 {
+		t.Errorf("profile must contain exactly one iokit-open-service occurrence, got %d; full profile:\n%s", got, profile)
 	}
 }
 

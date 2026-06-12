@@ -28,26 +28,34 @@ package integration_test
 //      CFFIXED_USER_HOME points at — issue #2247, Step 4 of #2132), NOT
 //      under the host ~/Library/Application Support/... and NOT under the
 //      staging HOME (which holds no Library/ entries post-#2247).
+//   5. A full open → close → re-open cycle succeeds under the same
+//      profile (issue #2249) — the launch path is repeatable in-sandbox,
+//      not green only on first-boot state.
 //
-// The two negative tests use the `withMutatedProfile` helper to:
+// The two negative tests in this file use the `withMutatedProfile` helper
+// to:
 //
 //   - Remove the iokit-open-user-client allow block. The positive test
 //     above must then fail with the SEGV fingerprint, proving the
 //     iokit-open-user-client rule is load-bearing.
-//   - Remove the `(target children)` qualifier from the signal allow.
-//     The positive test above must then surface a `kill EPERM` warning
-//     in the launcher stderr, proving the signal widening is
-//     load-bearing.
+//   - Remove the iokit-open-service IOPMrootDomain allow (issue #2249).
+//     The positive test above must then fail with the SEGV fingerprint,
+//     proving the iokit-open-service rule is load-bearing — current
+//     Chrome for Testing acquires its power-management port via
+//     iokit-open-service on IOPMrootDomain, a different operation class
+//     from the user-client allow.
+//
+// The signal `(target children)` widening is covered by the deterministic
+// positive/negative pair in sandbox_exec_signal_darwin_test.go (issue
+// #2249 — the former playwright-based kill-EPERM negative lost its
+// distinguishing premise once the browser stopped SEGVing; see the NOTE
+// near the end of this file).
 //
 // We intentionally do not exercise the headless / WindowServer-bootstrap
 // rule here — that follow-up is out of scope (issue #2021, "Out of scope"
 // §4.2 — headless-by-default is tracked separately).
 //
-// Status note (2026-06-12): the POSITIVE test is skipped pending #2249
-// (pre-existing iokit-open-service IOPMrootDomain denial, fails on main
-// identically — see the test's own comment). Both NEGATIVES remain active
-// and host-green; their fingerprint guards are load-bearing.
-//
+
 // Why playwright-cli end-to-end rather than a minimal IOKit harness:
 // the iokit-open-user-client class set was empirically chosen against the
 // Chrome for Testing framework's exact init path. A minimal harness that
@@ -63,6 +71,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -131,8 +140,8 @@ const crashpadEPERMFingerprint = "Operation not permitted"
 // even on a cold box; a successful run typically completes in ~3 s.
 const playwrightCLITimeout = 60 * time.Second
 
-// runPlaywrightCLIOpen invokes sandbox-exec on the given profile path
-// against playwright-cli with `open <data-url>` followed by `close`.
+// runPlaywrightCLI invokes sandbox-exec on the given profile path against
+// playwright-cli with the given CLI args (e.g. "open", <url> — or "close").
 // The env mirrors what agent_run_sandbox_exec_darwin.go does in
 // production: HOME and XDG_CACHE/CONFIG at the staging HOME, and
 // CFFIXED_USER_HOME at the per-session work dir (issue #2247, Step 4 of
@@ -150,22 +159,27 @@ const playwrightCLITimeout = 60 * time.Second
 // inherited from the go-test binary, ungranted) these tests could never
 // have passed a host run — a pre-existing hole from #2022, surfaced by the
 // first host run that exercised them (#2247).
-func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
+func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string, cliArgs ...string) (combinedOutput string, runErr error) {
 	t.Helper()
 
 	// The Nix-built playwright-cli is a #! /nix/store/.../bash script. We
 	// run it directly via sandbox-exec; the shebang line resolves to a
 	// Nix store bash that is covered by the system-paths /nix allow.
-	//
-	// open <url> then close releases the chromium child so the test does
-	// not leak a long-running daemon. If the open SIGSEGVs, the close
-	// becomes a no-op against an already-dead session.
 	envVars := []string{
 		"HOME=" + stagingHome,
 		"CFFIXED_USER_HOME=" + sessionDir,
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(stagingHome, ".cache"),
 		"XDG_CONFIG_HOME=" + filepath.Join(stagingHome, ".config"),
+		// Mirrors buildSandboxExecHomeEnv (issue #2249): without these,
+		// playwright-core on Darwin derives its daemon registry/log dir
+		// AND its browser-server descriptor registry from POSIX $HOME
+		// (os.homedir()/Library/Caches — XDG_CACHE_HOME is ignored on
+		// darwin), writing <stagingHome>/Library/Caches/ms-playwright/
+		// daemon/... and .../b respectively, tripping the #2247
+		// no-staging-Library assertion below.
+		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
+		"PLAYWRIGHT_SERVER_REGISTRY=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
 	}
 	if term := os.Getenv("TERM"); term != "" {
 		envVars = append(envVars, "TERM="+term)
@@ -174,7 +188,8 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env", "-i")
 	cmd.Args = append(cmd.Args, envVars...)
-	cmd.Args = append(cmd.Args, playwrightBin, "open", playwrightDataURL)
+	cmd.Args = append(cmd.Args, playwrightBin)
+	cmd.Args = append(cmd.Args, cliArgs...)
 	cmd.Dir = sessionDir
 
 	// Belt-and-suspenders timeout: spawn a goroutine that kills the
@@ -195,6 +210,15 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 	return string(out), err
 }
 
+// runPlaywrightCLIOpen invokes runPlaywrightCLI with `open <data-url>`.
+// If the open SIGSEGVs (the negative tests' expected outcome), the
+// playwright daemon never establishes a session, so no close is needed
+// against the dead session.
+func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
+	t.Helper()
+	return runPlaywrightCLI(t, profilePath, playwrightBin, stagingHome, sessionDir, "open", playwrightDataURL)
+}
+
 // TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile is the
 // positive integration test for the chromium-under-sandbox-exec fix
 // (issue #2021).
@@ -202,26 +226,23 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 // It generates the production SBPL profile (which also prepares the
 // session work dir — creating the chromium Library/Application
 // Support/Google skeleton inside it — and the staging HOME), and invokes
-// playwright-cli with `open <data-url>` under sandbox-exec. Asserts exit 0
+// playwright-cli with `open <data-url>` (then close → re-open → close,
+// issue #2249) under sandbox-exec. Asserts exit 0
 // with no SEGV or kill-EPERM fingerprints in stderr, and that the chromium
 // user-data directory landed under the work-dir Library (not the host
 // Library, and not the staging HOME — which holds no Library/ post-#2247).
 //
-// SKIPPED pending #2249, which owns unskipping. The 2026-06-12 host bisect
-// (PR #2248) showed this positive fails IDENTICALLY on main — pre-existing,
-// not a #2247 regression (the production profile is byte-identical either
-// side of the #2247 retarget, and the retarget was exonerated by the
-// bisect). Deny-log smoking gun: the live Chrome for Testing performs
-// iokit-open-service on IOPMrootDomain — a different operation class from
-// the profile's iokit-open-user-client RootDomainUserClient allow — and the
-// denial cascades into an AMFI core-dump denial and SEGV_ACCERR at render
-// init. The production fix is #2021-scope, tracked with the full
-// diagnostic record in #2249. The paired negatives below stay ACTIVE —
-// they pass with their correct fingerprints (iokit SEGV, kill EPERM) and
-// those guards are load-bearing.
+// History: this positive was skipped between 2026-06-12 and #2249's fix.
+// The 2026-06-12 host bisect (PR #2248) showed it failing identically on
+// main — the live Chrome for Testing performs iokit-open-service on
+// IOPMrootDomain, a different operation class from the profile's
+// iokit-open-user-client RootDomainUserClient allow, and the denial
+// cascades into an AMFI core-dump denial and SEGV_ACCERR at render init.
+// The §9c iokit-open-service IOPMrootDomain allow (issue #2249) closed the
+// gap; the paired negative
+// TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow
+// proves it is load-bearing.
 func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.T) {
-	t.Skip("skipped pending #2249 — pre-existing iokit-open-service IOPMrootDomain denial on main (not a #2247 regression); #2249 owns unskipping")
-
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -257,7 +278,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		}
 	}
 	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247)")
+		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247).\nOffending entries:\n%s", listTreeForDiag(filepath.Join(stagingHome, "Library")))
 	}
 
 	// Load-bearing regression guard: the iokit-open-user-client block
@@ -308,6 +329,31 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 			"(issue #2247).\nOutput:\n%s", crashpadEPERMFingerprint, combined)
 	}
 
+	// open → close → re-open cycle (issue #2249 AC): the first open above
+	// spawned the playwright daemon; close must tear the session down
+	// cleanly, and a second open must then succeed from scratch — proving
+	// the in-sandbox launch path is repeatable, not green only on
+	// first-boot state.
+	closeOut, closeErr := runPlaywrightCLI(t, testProfilePath, playwrightBin, stagingHome, sessionDir, "close")
+	if closeErr != nil {
+		t.Errorf("playwright-cli close exited non-zero under production profile (issue #2249).\nExit: %v\nOutput:\n%s", closeErr, closeOut)
+	}
+
+	reopenOut, reopenErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, stagingHome, sessionDir)
+	if reopenErr != nil {
+		t.Errorf("playwright-cli re-open exited non-zero under production profile (issue #2249).\nExit: %v\nOutput:\n%s", reopenErr, reopenOut)
+	}
+	for _, fp := range segVFingerprint {
+		if strings.Contains(reopenOut, fp) {
+			t.Errorf("re-open output contains SEGV fingerprint %q (issue #2249).\nOutput:\n%s", fp, reopenOut)
+		}
+	}
+
+	// Final close so the test does not leak a long-running daemon.
+	if finalCloseOut, finalCloseErr := runPlaywrightCLI(t, testProfilePath, playwrightBin, stagingHome, sessionDir, "close"); finalCloseErr != nil {
+		t.Errorf("final playwright-cli close exited non-zero (issue #2249).\nExit: %v\nOutput:\n%s", finalCloseErr, finalCloseOut)
+	}
+
 	// The chromium user-data directory must live under the work-dir
 	// Library, not the host Library (and not the staging HOME). We assert
 	// this by checking that the work-dir Library/Application Support/Google
@@ -333,7 +379,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 	// Post-run: the staging HOME must still hold no Library/ entries —
 	// nothing in the run may have re-created the pre-#2247 staging layout.
 	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Errorf("staging HOME gained a Library/ entry during the run — chromium state must land in the session work dir (issue #2247)")
+		t.Errorf("staging HOME gained a Library/ entry during the run — chromium state must land in the session work dir (issue #2247).\nOffending entries:\n%s", listTreeForDiag(filepath.Join(stagingHome, "Library")))
 	}
 }
 
@@ -399,17 +445,18 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOKitAllow(t *testing.T) {
 	}
 }
 
-// TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren
-// is the paired negative test for the signal (target children) widening.
-// It removes the (target children) qualifier from the signal allow and
-// asserts that the playwright-cli launcher now surfaces a `kill EPERM`
-// warning when trying to clean up its chromium grandchild.
+// TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow is
+// the paired negative test for the iokit-open-service IOPMrootDomain allow
+// (issue #2249). It strips only the iokit-open-service clause from the
+// profile — leaving the iokit-open-user-client block (#2021) fully intact —
+// and asserts that playwright-cli now fails with the SEGV fingerprint.
 //
-// Note: this negative test does NOT necessarily produce a non-zero exit
-// code from playwright-cli \u2014 the open itself may still succeed,
-// and the kill EPERM is a warning during cleanup. The assertion is on
-// the stderr substring, not the exit code.
-func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *testing.T) {
+// This proves the new allow is load-bearing on its own: the user-client
+// allow set from #2021 is NOT sufficient for current Chrome for Testing,
+// which acquires its power-management port via iokit-open-service on the
+// IOPMrootDomain registry entry (deny-log smoking gun from 2026-06-12:
+// `deny(1) iokit-open-service IOPMrootDomain`).
+func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -427,29 +474,86 @@ func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *tes
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
 
-	// Replace the widened signal clause with self-only. The mutation must
-	// produce a syntactically valid SBPL profile so the sandbox still
-	// loads \u2014 we want the failure to come from the runtime signal
-	// denial, not a profile parse error. The mutation leaves the sessionDir
-	// grant intact, so the launch-dir variant keeps node's CWD resolvable
-	// and the surfaced failure is the kill EPERM, not a getcwd bootstrap
-	// death.
-	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, func(p string) string {
-		return strings.ReplaceAll(p,
-			"(allow signal (target self) (target children))",
-			"(allow signal (target self))")
-	})
+	// The iokit-open-service mutation leaves the sessionDir grant intact,
+	// so the launch-dir variant keeps node's CWD resolvable and the failure
+	// under test is the SEGV, not a getcwd bootstrap death.
+	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, removeIOPMrootDomainAllowBlock)
 
-	combined, _ := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
-
-	if !strings.Contains(combined, killEPERMFingerprint) {
-		t.Errorf("playwright-cli output does not contain %q after removing\n"+
-			"(target children) from the signal allow.\n"+
-			"The negative test is not catching the signal-widening regression.\n"+
-			"Profile: %s\nOutput:\n%s", killEPERMFingerprint, mutatedPath, combined)
-	} else {
-		t.Logf("ka pai \u2014 launcher correctly surfaced %q without (target children)", killEPERMFingerprint)
+	combined, runErr := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
+	if runErr == nil {
+		t.Errorf("playwright-cli open exited 0 WITHOUT the iokit-open-service IOPMrootDomain allow.\n"+
+			"The negative test is not catching the regression \u2014 chromium should\n"+
+			"have SIGSEGV'd acquiring its power-management port (issue #2249).\n"+
+			"Mutated profile: %s\nOutput:\n%s", mutatedPath, combined)
+		return
 	}
+
+	// At least one of the SEGV fingerprints must appear in the launcher
+	// stderr. If chromium failed for a different reason (e.g. parse error
+	// in the mutated profile), the negative test is not isolating the
+	// iokit-open-service rule.
+	sawSegV := false
+	for _, fp := range segVFingerprint {
+		if strings.Contains(combined, fp) {
+			sawSegV = true
+			break
+		}
+	}
+	if !sawSegV {
+		t.Errorf("playwright-cli failed under the mutated profile, but the failure mode\n"+
+			"does not match the iokit-denial SEGV fingerprint (issue #2249).\n"+
+			"Expected one of %v in output.\nExit: %v\nProfile: %s\nOutput:\n%s",
+			segVFingerprint, runErr, mutatedPath, combined)
+	} else {
+		t.Logf("ka pai \u2014 chromium correctly SIGSEGV'd without the iokit-open-service IOPMrootDomain allow (exit: %v)", runErr)
+	}
+}
+
+// NOTE (issue #2249): the former
+// TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren
+// negative was REMOVED here. Its premise broke with the #2249 fix: pre-fix,
+// the SEGVd browser forced the node launcher down the force-kill path,
+// surfacing `kill EPERM` when (target children) was absent. Post-fix the
+// browser runs healthily, `playwright-cli close` tears the session down
+// gracefully over CDP (no signal is sent), and the launcher never exercises
+// the kill path — so the EPERM fingerprint cannot manifest without
+// contriving a SEGV. The signal (target children) widening is instead
+// covered by the deterministic positive/negative pair in
+// sandbox_exec_signal_darwin_test.go, which proves the rule's semantics
+// (child-signalling allowed with the rule, EPERM without it) directly with
+// a bash child-kill probe. The killEPERMFingerprint absence assertion in
+// the positive test above is retained — it guards any future close-path
+// force-kill regression.
+
+// listTreeForDiag returns a newline-separated recursive listing of root
+// (relative paths), capped at 200 entries, for assertion diagnostics. When
+// the #2247 staging-Library assertions fire, the listing names the
+// offending writer (e.g. Caches/ms-playwright/daemon/... → the playwright
+// daemon log dir, issue #2249) instead of leaving the operator to re-run
+// with manual instrumentation.
+func listTreeForDiag(root string) string {
+	const maxEntries = 200
+	var entries []string
+	_ = filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			entries = append(entries, path+" (walk error: "+err.Error()+")")
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		entries = append(entries, rel)
+		if len(entries) >= maxEntries {
+			entries = append(entries, "... (truncated at "+strconv.Itoa(maxEntries)+" entries)")
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if len(entries) == 0 {
+		return "(empty or unreadable: " + root + ")"
+	}
+	return strings.Join(entries, "\n")
 }
 
 // removeIOKitAllowBlock returns a copy of the generated profile with the
@@ -475,6 +579,24 @@ func removeIOKitAllowBlock(p string) string {
   (iokit-user-client-class "IOAudioEngineUserClient")
   (iokit-user-client-class "IOFramebufferSharedUserClient")
   (iokit-user-client-class "RootDomainUserClient"))
+`
+	return strings.Replace(p, block, "", 1)
+}
+
+// removeIOPMrootDomainAllowBlock returns a copy of the generated profile
+// with the (allow iokit-open-service ...) clause stripped (issue #2249).
+// The clause spans two lines in the current generator output:
+//
+//	(allow iokit-open-service
+//	  (iokit-registry-entry-class "IOPMrootDomain"))
+//
+// We match the verbatim block so the substitution is unambiguous and any
+// future addition of a second registry entry would invalidate the match —
+// at which point the test fails loudly (withMutatedProfile rejects no-op
+// mutations) rather than silently mutating the wrong region.
+func removeIOPMrootDomainAllowBlock(p string) string {
+	const block = `(allow iokit-open-service
+  (iokit-registry-entry-class "IOPMrootDomain"))
 `
 	return strings.Replace(p, block, "", 1)
 }
