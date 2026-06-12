@@ -120,8 +120,18 @@ func TestSandboxExecChromiumWorkDir_LibraryWritable(t *testing.T) {
 	probeDir := filepath.Join(sessionDir, "Library", "Application Support", "Google", "Chrome for Testing")
 	probe := filepath.Join(probeDir, "prism-2247-write-probe.tmp")
 
+	// Leaf-only mkdir (NOT mkdir -p): the parent skeleton dir is
+	// host-prepped by PrepareSessionWorkDir (asserted by the fixture), so a
+	// single mkdir(2) syscall against the granted subtree suffices. A deep
+	// absolute `mkdir -p` issues a mkdir(2) per path component — and under
+	// deny-default each EXISTING but ungranted ancestor (/Users, ...)
+	// returns EPERM rather than EEXIST, which mkdir -p treats as fatal
+	// (observed on the first host run of this test). Launch CWD is the
+	// session work dir so the in-sandbox process starts in a granted
+	// directory, mirroring production (agent CWD = granted worktree).
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		nixBash, "-c", "mkdir -p "+shQuote(probeDir)+" && echo prism-2247 > "+shQuote(probe))
+		nixBash, "-c", "mkdir "+shQuote(probeDir)+" && echo prism-2247 > "+shQuote(probe))
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("work-dir Library write failed under production profile.\n"+
@@ -167,8 +177,15 @@ func TestSandboxExecChromiumWorkDir_DeniedWithoutSessionDirSubpath(t *testing.T)
 	probeDir := filepath.Join(sessionDir, "Library", "Application Support", "Google", "Chrome for Testing")
 	probe := filepath.Join(probeDir, "prism-2247-write-probe-denied.tmp")
 
+	// Same command shape as the positive (leaf-only mkdir, CWD =
+	// sessionDir). Under the mutated profile the launch dir's own grant is
+	// gone, so bash starts with an unresolvable CWD — bash tolerates that
+	// (warns and continues; node/git would not, which is why this negative
+	// must stay bash-based) and the assertion lands on the leaf operations
+	// being denied.
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		nixBash, "-c", "mkdir -p "+shQuote(probeDir)+" && echo prism-2247 > "+shQuote(probe))
+		nixBash, "-c", "mkdir "+shQuote(probeDir)+" && echo prism-2247 > "+shQuote(probe))
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("work-dir Library write succeeded WITHOUT the (subpath \"<sessionDir>\") rule.\n"+
@@ -215,7 +232,7 @@ func TestSandboxExecChromiumHostLibrary_WriteDenied(t *testing.T) {
 	}
 
 	m := newProfileManagerWithBareRoot(t)
-	_, prepared := chromiumWorkDirFixture(t, m)
+	sessionDir, prepared := chromiumWorkDirFixture(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	// Uniquely-named probe so a failure cannot collide with real Chrome
@@ -224,6 +241,7 @@ func TestSandboxExecChromiumHostLibrary_WriteDenied(t *testing.T) {
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		nixBash, "-c", "echo leak > "+shQuote(probe))
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		_ = os.Remove(probe)

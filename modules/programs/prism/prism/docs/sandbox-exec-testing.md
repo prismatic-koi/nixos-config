@@ -84,6 +84,46 @@ The Darwin-only integration tests live in
   testing, writes it to a temp file, and returns the path. Used in
   negative-case integration tests to confirm that removing a specific allow
   rule causes the test operation to fail.
+- `writeAugmentedPositiveProfileWithLaunchDir(t, p, launchDir)` /
+  `withMutatedProfileAndLaunchDir(t, m, launchDir, mutate)` — variants that
+  additionally append getcwd ancestor allows for `launchDir` (see "Launch
+  CWD" below). Defined in `sandbox_exec_launch_dir_darwin_test.go`.
+
+## Launch CWD — sandboxed binaries that hard-require a resolvable CWD
+
+`exec.Command` without `cmd.Dir` inherits the go-test binary's CWD — the
+integration package dir inside the repo checkout — which no fixture profile
+grants. Under deny-default, getcwd then fails inside the sandbox:
+
+- **bash** merely warns (`shell-init: error retrieving current directory`)
+  and continues — bash-based tests tolerate the hole.
+- **node** dies at bootstrap (`EPERM: process.cwd failed ... uv_cwd`);
+  **git** dies at startup (`fatal: Unable to read current working
+  directory`) — tests built on these binaries fail before exercising the
+  rule under test (this is how the #2022 playwright trio and the #2221
+  GitConfigGlobalUsable test shipped without ever being host-green; the
+  hole surfaced on the #2247 host run).
+
+Production sessions never hit this: the agent's CWD is the worktree, which
+the production profile grants RW, with §6b ancestor metadata up the chain.
+Fixture tests using node/git must mirror that shape — a fixture problem is
+never a reason to widen the production profile:
+
+1. Set `cmd.Dir` to a directory the profile under test grants (typically
+   the session work dir, covered by the §6 `(subpath "<sessionDir>")`
+   rule).
+2. Build the test profile with the launch-dir helper variants above, which
+   append `(literal ...)` ancestor-node allows for the getcwd walk. Literal
+   rules match the directory node only — never contents beneath it — so
+   they cannot mask subtree-scoped negatives.
+3. The launch dir itself deliberately gets no extra rule — its
+   accessibility must come from the production rule under test. Strip
+   negatives that disable that rule make the CWD unresolvable by design;
+   such negatives must use bash (tolerant), not node/git.
+4. Keep in-sandbox commands free of deep absolute `mkdir -p` chains: each
+   existing-but-ungranted ancestor returns EPERM (not EEXIST), which
+   `mkdir -p` treats as fatal. Create only the leaf against an
+   already-granted, host-prepped parent.
 
 ## Negative test pattern
 

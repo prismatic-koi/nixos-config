@@ -133,6 +133,18 @@ const playwrightCLITimeout = 60 * time.Second
 // CFFIXED_USER_HOME at the per-session work dir (issue #2247, Step 4 of
 // #2132) so chromium's NSHomeDirectory()-derived writes land under
 // <sessionDir>/Library/...
+//
+// The launch CWD is the session work dir: node hard-fails at bootstrap
+// ("EPERM: process.cwd failed ... uv_cwd") when the sandboxed CWD is
+// unresolvable, so the process must start in a directory the profile
+// grants — mirroring production, where the agent's CWD is the granted
+// worktree. Callers must build the profile with the getcwd ancestor extras
+// (writeAugmentedPositiveProfileWithLaunchDir /
+// withMutatedProfileAndLaunchDir — see
+// sandbox_exec_launch_dir_darwin_test.go). With the old fixture shape (CWD
+// inherited from the go-test binary, ungranted) these tests could never
+// have passed a host run — a pre-existing hole from #2022, surfaced by the
+// first host run that exercised them (#2247).
 func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome, sessionDir string) (combinedOutput string, runErr error) {
 	t.Helper()
 
@@ -158,6 +170,7 @@ func runPlaywrightCLIOpen(t *testing.T, profilePath, playwrightBin, stagingHome,
 		"/usr/bin/env", "-i")
 	cmd.Args = append(cmd.Args, envVars...)
 	cmd.Args = append(cmd.Args, playwrightBin, "open", playwrightDataURL)
+	cmd.Dir = sessionDir
 
 	// Belt-and-suspenders timeout: spawn a goroutine that kills the
 	// process if it overruns playwrightCLITimeout.
@@ -240,7 +253,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		t.Fatalf("generated profile is missing the signal (target self) (target children) widening (issue #2021).\nProfile:\n%s", prepared.content)
 	}
 
-	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
+	testProfilePath := writeAugmentedPositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	combined, runErr := runPlaywrightCLIOpen(t, testProfilePath, playwrightBin, stagingHome, sessionDir)
 	if runErr != nil {
@@ -322,8 +335,6 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOKitAllow(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	mutatedPath := withMutatedProfile(t, m, removeIOKitAllowBlock)
-
 	stagingHome, err := m.SandboxExecHomePath()
 	if err != nil {
 		t.Fatalf("SandboxExecHomePath: %v", err)
@@ -332,6 +343,11 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOKitAllow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
+
+	// The iokit mutation leaves the sessionDir grant intact, so the
+	// launch-dir variant keeps node's CWD resolvable and the failure under
+	// test is the SEGV, not a getcwd bootstrap death.
+	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, removeIOKitAllowBlock)
 
 	combined, runErr := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
 	if runErr == nil {
@@ -382,16 +398,6 @@ func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *tes
 
 	m := newProfileManagerWithBareRoot(t)
 
-	// Replace the widened signal clause with self-only. The mutation must
-	// produce a syntactically valid SBPL profile so the sandbox still
-	// loads \u2014 we want the failure to come from the runtime signal
-	// denial, not a profile parse error.
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		return strings.ReplaceAll(p,
-			"(allow signal (target self) (target children))",
-			"(allow signal (target self))")
-	})
-
 	stagingHome, err := m.SandboxExecHomePath()
 	if err != nil {
 		t.Fatalf("SandboxExecHomePath: %v", err)
@@ -400,6 +406,19 @@ func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *tes
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
+
+	// Replace the widened signal clause with self-only. The mutation must
+	// produce a syntactically valid SBPL profile so the sandbox still
+	// loads \u2014 we want the failure to come from the runtime signal
+	// denial, not a profile parse error. The mutation leaves the sessionDir
+	// grant intact, so the launch-dir variant keeps node's CWD resolvable
+	// and the surfaced failure is the kill EPERM, not a getcwd bootstrap
+	// death.
+	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, func(p string) string {
+		return strings.ReplaceAll(p,
+			"(allow signal (target self) (target children))",
+			"(allow signal (target self))")
+	})
 
 	combined, _ := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
 
