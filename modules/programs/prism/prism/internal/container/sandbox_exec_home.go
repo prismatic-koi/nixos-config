@@ -32,7 +32,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -81,11 +80,13 @@ func (m *Manager) sandboxExecHomePath() (string, error) {
 //     session_work_dir.go, issue #2213) and are wired into the sandbox via
 //     GIT_CONFIG_GLOBAL / GIT_SSH_COMMAND rather than via $HOME paths.
 //
-// Post-#2245 (Steps 3d–3f of #2132) the staging surface is reduced to the
-// .ssh/* symlinks (Step 5 scope) and the chromium Library skeleton (Step 4
-// scope). Every other capability is delivered by an explicit SBPL grant on
-// the real host path emitted by generateProfile — see sections 5, 5e, 5f,
-// 5g, and 6a in sandbox_exec.go.
+// Post-#2247 (Step 4 of #2132) the staging surface is reduced to the
+// .ssh/* symlinks alone (Step 5 removes-wholesale scope). The chromium
+// Library skeleton moved to the per-session work dir (the staging HOME's
+// parent — see PrepareSessionWorkDir in session_work_dir.go), where
+// CFFIXED_USER_HOME now points. Every other capability is delivered by an
+// explicit SBPL grant on the real host path emitted by generateProfile —
+// see sections 5, 5e, 5f, 5g, and 6a in sandbox_exec.go.
 //
 // Calling PrepareSandboxExecHome a second time on an existing staging dir is
 // idempotent: existing symlinks are recreated (os.Symlink is preceded by
@@ -248,33 +249,13 @@ func (m *Manager) PrepareSandboxExecHome() (string, error) {
 	// generateProfile emits an explicit RO (subpath ~/.config/prism/agents)
 	// grant on the real host path instead (section 5f).
 
-	// ── Library/Application Support/Google + Library/Caches/Google (issue #2021) ─
-	// playwright-cli launches the Nix-built `Google Chrome for Testing` binary
-	// (chromium). Chromium reads NSHomeDirectory() (which the sandbox-exec
-	// dispatch in agent_run_sandbox_exec_darwin.go redirects to stagingHome via
-	// CFFIXED_USER_HOME) and writes its crash database, code cache, profile, and
-	// SingletonLock under <home>/Library/Application Support/Google/Chrome for
-	// Testing/ and <home>/Library/Caches/Google/Chrome for Testing/.
-	//
-	// We create empty, writable Google/ subdirectories under the staging Library
-	// so chromium has somewhere to land its writes. We deliberately do NOT
-	// symlink to the real ~/Library/Application Support/Google/ on the host —
-	// that path holds the daily-driver Chrome's profile (cookies, sessions,
-	// password store) and exposing it to a sandboxed chromium would be a
-	// material confidentiality leak. The staging directories are fresh per
-	// session and discarded when the staging HOME is cleaned up.
-	//
-	// MkdirAll is idempotent: if the directories already exist from a prior
-	// re-spawn the call is a no-op and existing contents are preserved.
-	if runtime.GOOS == "darwin" {
-		chromeAppSupport := filepath.Join(stagingHome, "Library", "Application Support", "Google")
-		chromeCaches := filepath.Join(stagingHome, "Library", "Caches", "Google")
-		for _, d := range []string{chromeAppSupport, chromeCaches} {
-			if err := os.MkdirAll(d, 0o700); err != nil {
-				log.Printf("container: sandbox-exec: create chromium staging dir %s: %v", d, err)
-			}
-		}
-	}
+	// ── Library/Application Support/Google + Library/Caches/Google ─────────
+	// Note (#2247, Step 4 of #2132): the empty chromium Library skeleton dirs
+	// are no longer created in the staging HOME. They live in the per-session
+	// work dir (the staging HOME's parent — see SessionWorkDirChromiumDirs in
+	// session_work_dir.go), which is where the dispatcher now points
+	// CFFIXED_USER_HOME. Writes ride the existing (subpath <sessionDir>) RW
+	// allow — no staging surface and no new SBPL rule.
 
 	// ── Claude ────────────────────────────────────────────────────────────────
 	// Note (#2243, Step 3c of #2132): the .claude write-through staging symlink
@@ -509,8 +490,8 @@ func collectStagingHomeSymlinkTargets(stagingHome string) ([]StagingSymlinkTarge
 	}
 
 	// Scan the top-level staging HOME and the .ssh subdirectory — the only
-	// staging surface that still holds symlinks post-#2245 (the chromium
-	// Library skeleton holds real directories, which scanDir ignores).
+	// staging surface left post-#2247 (the chromium Library skeleton moved to
+	// the per-session work dir in Step 4 of #2132).
 	scanDir("")
 	scanDir(".ssh")
 

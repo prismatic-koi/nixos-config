@@ -188,6 +188,15 @@ func TestSandboxExecSessionWorkDir_DeniedWithoutSubpath(t *testing.T) {
 // GIT_CONFIG_GLOBAL pointing at the work-dir gitconfig, resolves the
 // configured identity from it. The read rides the same (subpath
 // "<sessionDir>") rule negatively covered by DeniedWithoutSubpath above.
+//
+// git hard-fails at startup ("fatal: Unable to read current working
+// directory") when the sandboxed CWD is unresolvable, so the launch must
+// use cmd.Dir = sessionDir (a granted directory, mirroring production
+// where the agent's CWD is the granted worktree) plus the getcwd ancestor
+// extras — see sandbox_exec_launch_dir_darwin_test.go. With the old
+// fixture shape (CWD inherited from the go-test binary, ungranted) this
+// test could never have passed a host run — a pre-existing hole from
+// #2221, surfaced by the first host run that exercised it (#2247).
 func TestSandboxExecSessionWorkDir_GitConfigGlobalUsable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -197,12 +206,28 @@ func TestSandboxExecSessionWorkDir_GitConfigGlobalUsable(t *testing.T) {
 
 	m := newProfileManager(t)
 	sessionDir, prepared := sessionWorkDirFixture(t, m)
-	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
+	testProfilePath := writeAugmentedPositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	gitEnv := container.SessionWorkDirGitEnv(sessionDir, "")
+	// GIT_CEILING_DIRECTORIES stops git's repository discovery before it
+	// crosses out of the launch dir: discovery walks up from CWD statting
+	// .git at each level, and the stat of <parent>/.git (sessions/.git)
+	// lands on a CHILD of an ancestor node — which the launch-dir extras
+	// deliberately do not grant — so it returns EPERM, which git treats as
+	// fatal ("fatal: error reading .../sessions/.git", observed on the
+	// round-2 host run). With the ceiling set to the parent, git checks
+	// <sessionDir>/.git (granted subtree → clean ENOENT) and stops without
+	// touching the parent. The leading empty entry (":") tells git the
+	// entry needs no symlink resolution (git(1)), avoiding realpath
+	// syscalls on the ancestor chain. Production sessions never need this:
+	// the agent's CWD is a real worktree, so discovery succeeds at the
+	// first level.
+	ceiling := "GIT_CEILING_DIRECTORIES=:" + filepath.Dir(sessionDir)
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", gitEnv[0], // GIT_CONFIG_GLOBAL=<sessionDir>/gitconfig
+		ceiling,
 		nixGit, "config", "--global", "user.name")
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("git config --global user.name failed under production profile with GIT_CONFIG_GLOBAL.\n"+

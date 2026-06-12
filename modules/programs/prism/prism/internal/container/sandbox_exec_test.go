@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -924,26 +923,23 @@ func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
 	}
 }
 
-// TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs verifies that
-// PrepareSandboxExecHome creates empty, writable staging directories for
-// chromium's user-data layout under <stagingHome>/Library/Application
-// Support/Google and <stagingHome>/Library/Caches/Google (issue #2021).
+// TestPrepareSandboxExecHome_NoChromiumLibraryStagingDirs is the unit-level
+// staging-half AC for issue #2247 (Step 4 of #2132): after
+// PrepareSandboxExecHome, the staging HOME contains NO Library/ entries —
+// the chromium skeleton moved to the per-session work dir, where
+// CFFIXED_USER_HOME now points (see
+// TestPrepareSessionWorkDir_ChromiumLibrarySkeleton in
+// session_work_dir_test.go for the work-dir half).
 //
-// These directories must NOT be symlinks to the real ~/Library/Application
-// Support/Google/ — doing so would expose the daily-driver Chrome's profile
-// (cookies, sessions, password store) to the sandboxed chromium instance.
-//
-// Idempotency: calling PrepareSandboxExecHome a second time on the same
-// staging dir must NOT error and must leave existing contents intact.
-func TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("chromium staging dirs are Darwin-only")
-	}
+// It also pins the exact post-#2247 staging inventory — the top level
+// holds ONLY .ssh/ — which is the precise state Step 5 of #2132 will be
+// specified against (removes-wholesale).
+func TestPrepareSandboxExecHome_NoChromiumLibraryStagingDirs(t *testing.T) {
 	newFakeHome(t)
 
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
-		InstanceID:  "chromium-staging-test",
+		InstanceID:  "chromium-staging-gone-test",
 	})
 
 	stagingHome, err := m.PrepareSandboxExecHome()
@@ -952,52 +948,20 @@ func TestPrepareSandboxExecHome_ChromiumLibraryStagingDirs(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	wantDirs := []string{
-		filepath.Join(stagingHome, "Library", "Application Support", "Google"),
-		filepath.Join(stagingHome, "Library", "Caches", "Google"),
-	}
-	for _, d := range wantDirs {
-		info, statErr := os.Lstat(d)
-		if statErr != nil {
-			t.Errorf("expected chromium staging dir %q to exist: %v", d, statErr)
-			continue
-		}
-		// Must be a real directory, NOT a symlink. Symlinking to the host
-		// ~/Library/Application Support/Google/ would leak the daily-driver
-		// Chrome profile contents to the sandboxed chromium instance.
-		if info.Mode()&os.ModeSymlink != 0 {
-			t.Errorf("chromium staging dir %q must be a real directory, not a symlink: mode=%v", d, info.Mode())
-		}
-		if !info.IsDir() {
-			t.Errorf("chromium staging dir %q must be a directory: mode=%v", d, info.Mode())
-		}
+	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
+		t.Errorf("staging HOME still contains a Library/ entry — the chromium skeleton must live in the session work dir (issue #2247)")
 	}
 
-	// Idempotency: plant a sentinel file under one of the staging dirs and
-	// call PrepareSandboxExecHome again. The sentinel must survive (no
-	// clobber, no permissions reset).
-	sentinelDir := filepath.Join(stagingHome, "Library", "Application Support", "Google", "Chrome for Testing")
-	if err := os.MkdirAll(sentinelDir, 0o700); err != nil {
-		t.Fatalf("mkdir sentinel dir: %v", err)
-	}
-	sentinelPath := filepath.Join(sentinelDir, "prism-2021-idempotency-sentinel")
-	const sentinelData = "prism-2021-idempotency"
-	if err := os.WriteFile(sentinelPath, []byte(sentinelData), 0o600); err != nil {
-		t.Fatalf("plant sentinel: %v", err)
-	}
-
-	stagingHome2, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("second PrepareSandboxExecHome (idempotency): %v", err)
-	}
-	if stagingHome2 != stagingHome {
-		t.Errorf("staging HOME changed across calls: %q -> %q", stagingHome, stagingHome2)
-	}
-	got, readErr := os.ReadFile(sentinelPath)
+	// Exact top-level inventory: .ssh/ only. Any other entry is a
+	// regression against the Step 5 removes-wholesale contract.
+	entries, readErr := os.ReadDir(stagingHome)
 	if readErr != nil {
-		t.Errorf("sentinel file disappeared after second PrepareSandboxExecHome: %v", readErr)
-	} else if string(got) != sentinelData {
-		t.Errorf("sentinel file contents clobbered: got %q, want %q", string(got), sentinelData)
+		t.Fatalf("ReadDir(stagingHome): %v", readErr)
+	}
+	for _, e := range entries {
+		if e.Name() != ".ssh" {
+			t.Errorf("unexpected staging HOME entry %q — post-#2247 the staging HOME holds ONLY .ssh/", e.Name())
+		}
 	}
 }
 

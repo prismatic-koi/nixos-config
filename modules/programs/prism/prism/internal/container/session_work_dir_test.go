@@ -13,6 +13,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -332,7 +333,9 @@ func TestPrepareSessionWorkDir_Idempotent(t *testing.T) {
 }
 
 // TestRemoveSessionWorkDir verifies removal of the work dir tree, including
-// the staging HOME nested under it.
+// the staging HOME nested under it and (on Darwin) the chromium Library
+// skeleton with any per-session chromium state inside it — the edge-case AC
+// for issue #2247: session cleanup keeps chromium prefs/state ephemeral.
 func TestRemoveSessionWorkDir(t *testing.T) {
 	newFakeHome(t)
 
@@ -351,6 +354,21 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 		t.Fatalf("PrepareSandboxExecHome: %v", err)
 	}
 
+	// Plant per-session chromium state inside the skeleton (Darwin-only —
+	// the skeleton is only created there) so the removal assertion covers
+	// populated chromium dirs, not just empty ones.
+	var chromiumState string
+	if runtime.GOOS == "darwin" {
+		chromiumState = filepath.Join(sessionDir, "Library", "Application Support", "Google",
+			"Chrome for Testing", "prism-2247-cleanup-sentinel")
+		if err := os.MkdirAll(filepath.Dir(chromiumState), 0o700); err != nil {
+			t.Fatalf("mkdir chromium state dir: %v", err)
+		}
+		if err := os.WriteFile(chromiumState, []byte("ephemeral"), 0o600); err != nil {
+			t.Fatalf("plant chromium state sentinel: %v", err)
+		}
+	}
+
 	RemoveSessionWorkDir(instanceID)
 
 	if _, err := os.Stat(sessionDir); err == nil {
@@ -359,9 +377,146 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 	if _, err := os.Stat(stagingHome); err == nil {
 		t.Errorf("nested staging HOME still exists after RemoveSessionWorkDir: %s", stagingHome)
 	}
+	if chromiumState != "" {
+		if _, err := os.Stat(chromiumState); err == nil {
+			t.Errorf("chromium per-session state still exists after RemoveSessionWorkDir: %s", chromiumState)
+		}
+	}
 
 	// Idempotent: a second removal is a no-op.
 	RemoveSessionWorkDir(instanceID)
+}
+
+// TestSessionWorkDirChromiumDirs pins the skeleton path shape (issue #2247,
+// Step 4 of #2132): exactly the two Google dirs CF-derived chromium writes
+// under, both inside the session work dir.
+func TestSessionWorkDirChromiumDirs(t *testing.T) {
+	const dir = "/Users/u/.local/state/prism/sessions/abc"
+
+	got := SessionWorkDirChromiumDirs(dir)
+	want := []string{
+		dir + "/Library/Application Support/Google",
+		dir + "/Library/Caches/Google",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("SessionWorkDirChromiumDirs returned %d dirs, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("SessionWorkDirChromiumDirs[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestPrepareSessionWorkDir_ChromiumLibrarySkeleton is the work-dir half of
+// the issue #2247 AC: after session prep, the two Google skeleton dirs
+// exist inside the session work dir as real directories (never symlinks —
+// a symlink to the host ~/Library/Application Support/Google/ would leak
+// the daily-driver Chrome profile), and a second prep call preserves any
+// chromium state written in between (re-spawn idempotency).
+func TestPrepareSessionWorkDir_ChromiumLibrarySkeleton(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("the chromium skeleton is Darwin-only (CFFIXED_USER_HOME is a CoreFoundation mechanism)")
+	}
+	newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "chromium-workdir-skeleton-test",
+	})
+
+	sessionDir, err := m.PrepareSessionWorkDir()
+	if err != nil {
+		t.Fatalf("PrepareSessionWorkDir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(sessionDir) })
+
+	for _, d := range SessionWorkDirChromiumDirs(sessionDir) {
+		info, statErr := os.Lstat(d)
+		if statErr != nil {
+			t.Errorf("expected chromium skeleton dir %q to exist after session prep: %v", d, statErr)
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Errorf("chromium skeleton dir %q must be a real directory, not a symlink: mode=%v", d, info.Mode())
+		}
+		if !info.IsDir() {
+			t.Errorf("chromium skeleton dir %q must be a directory: mode=%v", d, info.Mode())
+		}
+	}
+
+	// Idempotency: plant a sentinel under the skeleton and re-prep. The
+	// sentinel must survive (MkdirAll is a no-op on existing dirs; chromium
+	// state from a prior spawn is preserved across re-spawns).
+	sentinelDir := filepath.Join(sessionDir, "Library", "Application Support", "Google", "Chrome for Testing")
+	if err := os.MkdirAll(sentinelDir, 0o700); err != nil {
+		t.Fatalf("mkdir sentinel dir: %v", err)
+	}
+	sentinelPath := filepath.Join(sentinelDir, "prism-2247-idempotency-sentinel")
+	const sentinelData = "prism-2247-idempotency"
+	if err := os.WriteFile(sentinelPath, []byte(sentinelData), 0o600); err != nil {
+		t.Fatalf("plant sentinel: %v", err)
+	}
+
+	second, err := m.PrepareSessionWorkDir()
+	if err != nil {
+		t.Fatalf("second PrepareSessionWorkDir (idempotency): %v", err)
+	}
+	if second != sessionDir {
+		t.Errorf("session work dir changed across calls: %q -> %q", sessionDir, second)
+	}
+	got, readErr := os.ReadFile(sentinelPath)
+	if readErr != nil {
+		t.Errorf("sentinel file disappeared after second PrepareSessionWorkDir: %v", readErr)
+	} else if string(got) != sentinelData {
+		t.Errorf("sentinel file contents clobbered: got %q, want %q", string(got), sentinelData)
+	}
+}
+
+// TestGenerateProfile_NoHostLibraryRulesForChromium is the profile
+// diff-level AC for issue #2247: Step 4 adds NO new SBPL rules. The
+// chromium skeleton rides the existing (subpath <sessionDir>) RW allow, so
+// the profile must contain no rule referencing the user's real ~/Library
+// (in particular not ~/Library/Application Support/Google — the
+// daily-driver Chrome profile) while the system /Library allow and the
+// session work dir rule are unchanged.
+func TestGenerateProfile_NoHostLibraryRulesForChromium(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@feat",
+		InstanceID:  "chromium-profile-test",
+		Worktree:    t.TempDir(),
+	})
+
+	sessionDir, err := m.sessionWorkDirPath()
+	if err != nil {
+		t.Fatalf("sessionWorkDirPath: %v", err)
+	}
+
+	profile := generateProfile(m)
+
+	// No rule may reference the host home Library subtree. Substring check
+	// on the unquoted path prefix catches (subpath ...), (literal ...), and
+	// (regex ...) forms alike. The sessionDir rule cannot false-positive
+	// here: <sessionDir>/Library is never emitted as a rule (the skeleton
+	// deliberately has no dedicated rule), and the quoted sessionDir path
+	// itself does not contain "Library".
+	if hostLibrary := filepath.Join(fakeHome, "Library"); strings.Contains(profile, hostLibrary) {
+		t.Errorf("profile references the host home Library %q — #2247 must add no host-Library grants; full profile:\n%s",
+			hostLibrary, profile)
+	}
+
+	// Sanity: the assertion above is about ~/Library, not the system
+	// /Library allow, which must remain.
+	if !strings.Contains(profile, "(subpath \"/Library\")") {
+		t.Errorf("system (subpath \"/Library\") allow missing — the no-host-Library assertion is checking the wrong thing; full profile:\n%s", profile)
+	}
+
+	// The capability the skeleton rides: the existing session work dir rule.
+	if want := "(subpath " + quoteSBPL(sessionDir) + ")"; !strings.Contains(profile, want) {
+		t.Errorf("profile missing the session work dir rule %q that the chromium skeleton rides; full profile:\n%s", want, profile)
+	}
 }
 
 // TestSessionWorkDirGitEnv verifies the env-var pairs the dispatcher injects

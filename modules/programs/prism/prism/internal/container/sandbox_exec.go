@@ -533,9 +533,12 @@ func generateProfile(m *Manager) string {
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
 	//
 	// The first entry is the per-session work dir (issue #2213) — it covers
-	// the generated ssh-config / gitconfig / allowed_signers AND the staging
-	// HOME nested under it at <sessionDir>/home/ (the staging HOME remains
-	// in place until Step 5 of #2132 deletes it).
+	// the generated ssh-config / gitconfig / allowed_signers, the chromium
+	// Library skeleton (issue #2247 — CFFIXED_USER_HOME points chromium's
+	// NSHomeDirectory() at <sessionDir>, so its writes land under
+	// <sessionDir>/Library/... with NO dedicated rule and NO host-Library
+	// grant), AND the staging HOME nested under it at <sessionDir>/home/
+	// (the staging HOME remains in place until Step 5 of #2132 deletes it).
 	if sessionDirErr == nil {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(sessionDir) + ")\n")
