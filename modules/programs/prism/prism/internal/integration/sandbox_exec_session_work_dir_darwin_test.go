@@ -209,8 +209,23 @@ func TestSandboxExecSessionWorkDir_GitConfigGlobalUsable(t *testing.T) {
 	testProfilePath := writeAugmentedPositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	gitEnv := container.SessionWorkDirGitEnv(sessionDir, "")
+	// GIT_CEILING_DIRECTORIES stops git's repository discovery before it
+	// crosses out of the launch dir: discovery walks up from CWD statting
+	// .git at each level, and the stat of <parent>/.git (sessions/.git)
+	// lands on a CHILD of an ancestor node — which the launch-dir extras
+	// deliberately do not grant — so it returns EPERM, which git treats as
+	// fatal ("fatal: error reading .../sessions/.git", observed on the
+	// round-2 host run). With the ceiling set to the parent, git checks
+	// <sessionDir>/.git (granted subtree → clean ENOENT) and stops without
+	// touching the parent. The leading empty entry (":") tells git the
+	// entry needs no symlink resolution (git(1)), avoiding realpath
+	// syscalls on the ancestor chain. Production sessions never need this:
+	// the agent's CWD is a real worktree, so discovery succeeds at the
+	// first level.
+	ceiling := "GIT_CEILING_DIRECTORIES=:" + filepath.Dir(sessionDir)
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
 		"/usr/bin/env", gitEnv[0], // GIT_CONFIG_GLOBAL=<sessionDir>/gitconfig
+		ceiling,
 		nixGit, "config", "--global", "user.name")
 	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()

@@ -124,6 +124,16 @@ never a reason to widen the production profile:
    existing-but-ungranted ancestor returns EPERM (not EEXIST), which
    `mkdir -p` treats as fatal. Create only the leaf against an
    already-granted, host-prepped parent.
+5. The ancestor extras grant the ancestor **nodes** only — never their
+   children. Tools that probe children of ancestors hit EPERM: git's
+   repository discovery walks up from CWD statting `.git` at each level,
+   and the stat of `<parent-of-launch-dir>/.git` is fatal to git ("fatal:
+   error reading …/.git" — EPERM, unlike a clean ENOENT). Set
+   `GIT_CEILING_DIRECTORIES=:<parent-of-launch-dir>` in the in-sandbox env
+   so discovery stops inside the launch dir (the leading empty entry skips
+   symlink resolution of the ceiling path, per git(1)). Do not widen the
+   extras to cover ancestor children instead — that would erode the
+   masking guarantee in point 2.
 
 ## Negative test pattern
 

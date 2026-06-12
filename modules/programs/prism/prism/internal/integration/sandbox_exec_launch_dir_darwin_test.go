@@ -49,6 +49,15 @@ package integration_test
 // that is the production-mirroring claim. In strip negatives that disable
 // the sessionDir rule, bash (tolerant of getcwd failure) is the required
 // in-sandbox binary.
+//
+// Equally deliberate: CHILDREN of the ancestor nodes are not granted
+// (that is what keeps the masking guarantee). Tools that probe them fail
+// with EPERM — notably git's repository discovery, which stats
+// <parent-of-launch-dir>/.git on its way up and treats the EPERM as fatal.
+// Cap the walk with GIT_CEILING_DIRECTORIES=:<parent-of-launch-dir> in the
+// in-sandbox env instead of widening these extras — see the "Launch CWD"
+// section of docs/sandbox-exec-testing.md and
+// TestSandboxExecSessionWorkDir_GitConfigGlobalUsable.
 
 import (
 	"os"
