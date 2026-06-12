@@ -73,6 +73,18 @@ import (
 //     real home, an unredirected daemon would pollute the real
 //     ~/Library/Caches. Routed to the session work dir alongside the
 //     CF-routed chromium state.
+//   - PLAYWRIGHT_SERVER_REGISTRY=<sessionDir>/Library/Caches/ms-playwright/b
+//     — same class, second writer (issue #2249, round-2 host capture):
+//     playwright-core's ServerRegistry (browser-server descriptor
+//     registry + chokidar watcher) derives `ms-playwright/b` from the
+//     same POSIX-$HOME cache root and mkdirSync's it on every successful
+//     browser-server launch (coreBundle.js registryDirectory2 — the env
+//     override is read in ServerRegistry._browsersDir). Note
+//     PLAYWRIGHT_BROWSERS_PATH (the browser-download registry,
+//     `ms-playwright` itself) is deliberately NOT overridden: in this
+//     deployment browsers come from the Nix store via
+//     PLAYWRIGHT_MCP_EXECUTABLE_PATH, the download registry is read-side
+//     only, and it did not appear as a writer in either host capture.
 //
 // Extracted from runAgentRunSandboxExec so the env construction is unit
 // testable (the dispatch function itself forks a supervised child).
@@ -88,6 +100,7 @@ func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome str
 		"CFFIXED_USER_HOME": true,
 
 		"PLAYWRIGHT_DAEMON_SESSION_DIR": true,
+		"PLAYWRIGHT_SERVER_REGISTRY":    true,
 	}
 	filtered := make([]string, 0, len(env))
 	for _, kv := range env {
@@ -111,6 +124,7 @@ func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome str
 		"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
 		"CFFIXED_USER_HOME="+sessionDir,
 		"PLAYWRIGHT_DAEMON_SESSION_DIR="+filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
+		"PLAYWRIGHT_SERVER_REGISTRY="+filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
 	)
 }
 

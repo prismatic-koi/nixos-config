@@ -156,43 +156,57 @@ func TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir(t *testin
 	}
 }
 
-// TestBuildSandboxExecHomeEnv_PlaywrightDaemonSessionDirPointsAtWorkDir is
-// the env-construction AC for the playwright-daemon redirect (issue #2249):
-// the sandbox-exec session env carries
+// TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir is the
+// env-construction AC for the playwright POSIX-$HOME redirects (issue
+// #2249): the sandbox-exec session env carries
 // PLAYWRIGHT_DAEMON_SESSION_DIR=<sessionDir>/Library/Caches/ms-playwright/daemon
-// exactly once, and any host-inherited value is stripped. Without the
-// override, playwright-core on Darwin derives the daemon dir from POSIX
-// $HOME (os.homedir()/Library/Caches — it ignores XDG_CACHE_HOME on
-// darwin), landing daemon logs in the staging HOME's Library/ and
-// violating the #2247 no-staging-Library invariant.
-func TestBuildSandboxExecHomeEnv_PlaywrightDaemonSessionDirPointsAtWorkDir(t *testing.T) {
-	env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
-
-	// Simulate a host-inherited value to prove the strip works.
-	env = append(env, "PLAYWRIGHT_DAEMON_SESSION_DIR="+realHome+"/Library/Caches/ms-playwright/daemon")
-
-	got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
-
-	want := "PLAYWRIGHT_DAEMON_SESSION_DIR=" + sessionDir + "/Library/Caches/ms-playwright/daemon"
-	stagingValue := "PLAYWRIGHT_DAEMON_SESSION_DIR=" + stagingHome + "/Library/Caches/ms-playwright/daemon"
-	count := 0
-	found := false
-	for _, kv := range got {
-		if strings.HasPrefix(kv, "PLAYWRIGHT_DAEMON_SESSION_DIR=") {
-			count++
-		}
-		switch kv {
-		case want:
-			found = true
-		case stagingValue:
-			t.Errorf("env carries a staging-HOME PLAYWRIGHT_DAEMON_SESSION_DIR value %q — must be the session work dir (issue #2249)", kv)
-		}
+// (daemon registry + logs) and
+// PLAYWRIGHT_SERVER_REGISTRY=<sessionDir>/Library/Caches/ms-playwright/b
+// (browser-server descriptor registry) exactly once each, with any
+// host-inherited values stripped. Without the overrides, playwright-core
+// on Darwin derives both dirs from POSIX $HOME
+// (os.homedir()/Library/Caches — it ignores XDG_CACHE_HOME on darwin),
+// landing them in the staging HOME's Library/ and violating the #2247
+// no-staging-Library invariant.
+func TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir(t *testing.T) {
+	cases := []struct {
+		key    string
+		subdir string
+	}{
+		{"PLAYWRIGHT_DAEMON_SESSION_DIR", "/Library/Caches/ms-playwright/daemon"},
+		{"PLAYWRIGHT_SERVER_REGISTRY", "/Library/Caches/ms-playwright/b"},
 	}
-	if !found {
-		t.Errorf("env does not contain %q\nenv: %v", want, got)
-	}
-	if count != 1 {
-		t.Errorf("env contains %d PLAYWRIGHT_DAEMON_SESSION_DIR entries, want exactly 1 (host-inherited value must be stripped)\nenv: %v", count, got)
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+
+			// Simulate a host-inherited value to prove the strip works.
+			env = append(env, tc.key+"="+realHome+tc.subdir)
+
+			got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+
+			want := tc.key + "=" + sessionDir + tc.subdir
+			stagingValue := tc.key + "=" + stagingHome + tc.subdir
+			count := 0
+			found := false
+			for _, kv := range got {
+				if strings.HasPrefix(kv, tc.key+"=") {
+					count++
+				}
+				switch kv {
+				case want:
+					found = true
+				case stagingValue:
+					t.Errorf("env carries a staging-HOME %s value %q — must be the session work dir (issue #2249)", tc.key, kv)
+				}
+			}
+			if !found {
+				t.Errorf("env does not contain %q\nenv: %v", want, got)
+			}
+			if count != 1 {
+				t.Errorf("env contains %d %s entries, want exactly 1 (host-inherited value must be stripped)\nenv: %v", count, tc.key, got)
+			}
+		})
 	}
 }
 

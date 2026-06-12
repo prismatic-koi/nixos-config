@@ -36,10 +36,17 @@ package integration_test
 // sandbox_exec_playwright_darwin_test.go retains its killEPERMFingerprint
 // absence assertion as a guard on the close-path force-kill case.
 //
-// Per docs/sandbox-exec-testing.md: bash is the right probe binary here —
-// the strip negative leaves the launch CWD ungranted-tolerant (bash only
-// warns on an unresolvable CWD), and requireNixBash skips when bash is not
-// a Nix store binary.
+// Per docs/sandbox-exec-testing.md: bash is the probe binary
+// (requireNixBash skips when bash is not a Nix store binary), and both
+// tests launch with cmd.Dir set to the session work dir using the
+// launch-dir profile variants — otherwise bash inherits the go-test
+// binary's ungranted CWD and emits shell-init getcwd noise
+// ("Operation not permitted") that is indistinguishable from a kill
+// denial by naive substring matching. That exact false positive surfaced
+// on the 2026-06-13 round-2 host run. Belt and braces, the assertions
+// additionally key on the kill-specific denial fingerprint (bash's kill
+// builtin reports `kill: (<pid>) - Operation not permitted`), not on any
+// bare EPERM substring.
 
 import (
 	"os/exec"
@@ -57,6 +64,21 @@ import (
 // script exits non-zero.
 const signalChildScript = `sleep 5 >/dev/null 2>&1 & kill -TERM $!`
 
+// killDenialFingerprint is the bash kill-builtin failure prefix — the
+// full line is `kill: (<pid>) - Operation not permitted`. Both substrings
+// below must co-occur for output to count as a kill denial; shell-init
+// getcwd noise contains "Operation not permitted" but never "kill: (".
+const killDenialFingerprint = "kill: ("
+
+// epermText is the errno string shared by all seatbelt denials.
+const epermText = "Operation not permitted"
+
+// containsKillDenial reports whether out contains the kill-specific
+// denial fingerprint (both the kill-builtin prefix and the EPERM text).
+func containsKillDenial(out string) bool {
+	return strings.Contains(out, killDenialFingerprint) && strings.Contains(out, epermText)
+}
+
 // TestSandboxExecProfile_SignalChildAllowed is the positive: under the
 // production profile, a sandboxed process can signal its own child.
 func TestSandboxExecProfile_SignalChildAllowed(t *testing.T) {
@@ -70,6 +92,11 @@ func TestSandboxExecProfile_SignalChildAllowed(t *testing.T) {
 
 	prepared, _ := preparePositiveProfile(t, m)
 
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+
 	// Regression guard at the string level first: a generator change that
 	// drops the widening should fail here with a precise message before
 	// the behavioural probe below.
@@ -77,17 +104,20 @@ func TestSandboxExecProfile_SignalChildAllowed(t *testing.T) {
 		t.Fatalf("generated profile is missing the signal (target self) (target children) widening (issues #2021, #2249).\nProfile:\n%s", prepared.content)
 	}
 
-	profilePath := writeAugmentedPositiveProfile(t, prepared)
+	// Launch-dir variant + cmd.Dir: keep bash's CWD resolvable so the
+	// output is free of shell-init getcwd EPERM noise (see file header).
+	profilePath := writeAugmentedPositiveProfileWithLaunchDir(t, prepared, sessionDir)
 
 	cmd := exec.Command(sandboxExecPath, "-f", profilePath, nixBash, "-c", signalChildScript)
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Errorf("signalling a direct child failed under the production profile.\n"+
 			"The signal (target children) allow should permit kill(2) on a\n"+
 			"child process (issues #2021, #2249).\nExit: %v\nOutput:\n%s", runErr, out)
 	}
-	if strings.Contains(string(out), "Operation not permitted") {
-		t.Errorf("child-kill output contains an EPERM under the production profile.\nOutput:\n%s", out)
+	if containsKillDenial(string(out)) {
+		t.Errorf("child-kill output contains the kill-denial fingerprint under the production profile.\nOutput:\n%s", out)
 	}
 }
 
@@ -105,19 +135,27 @@ func TestSandboxExecProfile_SignalChildEPERMWithoutTargetChildren(t *testing.T) 
 
 	m := newProfileManager(t)
 
+	sessionDir, err := m.SessionWorkDir()
+	if err != nil {
+		t.Fatalf("SessionWorkDir: %v", err)
+	}
+
 	// Replace the widened signal clause with self-only. The mutation must
 	// produce a syntactically valid SBPL profile so the sandbox still
 	// loads — the failure under test is the runtime signal denial, not a
 	// profile parse error. withMutatedProfile fatals if the substitution
 	// matches nothing, so a generator reshape cannot silently turn this
-	// negative into a no-op.
-	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+	// negative into a no-op. The mutation leaves the sessionDir grant
+	// intact, so the launch-dir variant keeps bash's CWD resolvable and
+	// the only EPERM in the output can be the kill denial itself.
+	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, func(p string) string {
 		return strings.ReplaceAll(p,
 			"(allow signal (target self) (target children))",
 			"(allow signal (target self))")
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath, nixBash, "-c", signalChildScript)
+	cmd.Dir = sessionDir
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("signalling a direct child succeeded WITHOUT (target children).\n"+
@@ -125,10 +163,12 @@ func TestSandboxExecProfile_SignalChildEPERMWithoutTargetChildren(t *testing.T) 
 			"(issues #2021, #2249).\nMutated profile: %s\nOutput:\n%s", mutatedPath, out)
 		return
 	}
-	if !strings.Contains(string(out), "Operation not permitted") {
+	if !containsKillDenial(string(out)) {
 		t.Errorf("child-kill failed under the mutated profile, but not with the\n"+
-			"expected EPERM fingerprint — the failure mode does not isolate the\n"+
-			"signal rule.\nExit: %v\nProfile: %s\nOutput:\n%s", runErr, mutatedPath, out)
+			"kill-specific denial fingerprint (%q + %q) — the failure mode does\n"+
+			"not isolate the signal rule (a getcwd or other EPERM would be a\n"+
+			"different failure).\nExit: %v\nProfile: %s\nOutput:\n%s",
+			killDenialFingerprint, epermText, runErr, mutatedPath, out)
 	} else {
 		t.Logf("ka pai — child-kill correctly denied EPERM without (target children) (exit: %v)", runErr)
 	}

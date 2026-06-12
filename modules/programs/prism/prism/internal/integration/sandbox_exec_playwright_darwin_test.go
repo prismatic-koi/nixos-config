@@ -171,13 +171,15 @@ func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, stagingHome, ses
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(stagingHome, ".cache"),
 		"XDG_CONFIG_HOME=" + filepath.Join(stagingHome, ".config"),
-		// Mirrors buildSandboxExecHomeEnv (issue #2249): without this,
+		// Mirrors buildSandboxExecHomeEnv (issue #2249): without these,
 		// playwright-core on Darwin derives its daemon registry/log dir
-		// from POSIX $HOME (os.homedir()/Library/Caches — XDG_CACHE_HOME
-		// is ignored on darwin), writing
-		// <stagingHome>/Library/Caches/ms-playwright/daemon/... and
-		// tripping the #2247 no-staging-Library assertion below.
+		// AND its browser-server descriptor registry from POSIX $HOME
+		// (os.homedir()/Library/Caches — XDG_CACHE_HOME is ignored on
+		// darwin), writing <stagingHome>/Library/Caches/ms-playwright/
+		// daemon/... and .../b respectively, tripping the #2247
+		// no-staging-Library assertion below.
 		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
+		"PLAYWRIGHT_SERVER_REGISTRY=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "b"),
 	}
 	if term := os.Getenv("TERM"); term != "" {
 		envVars = append(envVars, "TERM="+term)
