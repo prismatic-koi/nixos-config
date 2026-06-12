@@ -61,6 +61,18 @@ import (
 //     #2021, #2247). The Library skeleton dirs inside the work dir are
 //     created by PrepareSessionWorkDir; writes ride the profile's existing
 //     (subpath <sessionDir>) RW allow — no host-Library grant exists.
+//   - PLAYWRIGHT_DAEMON_SESSION_DIR=<sessionDir>/Library/Caches/ms-playwright/daemon
+//     — redirects the playwright-cli daemon's session registry and log
+//     directory (issue #2249). On Darwin playwright-core derives this dir
+//     from os.homedir()/Library/Caches (POSIX $HOME — it ignores
+//     XDG_CACHE_HOME on darwin, see cli-client/registry.js baseDaemonDir),
+//     which would land `Library/Caches/ms-playwright/daemon/...` inside
+//     the staging HOME — violating the #2247 invariant that the staging
+//     HOME holds no Library/ entries. The explicit override is also the
+//     #2250 (Step 5 of #2132) robustness story: once HOME flips to the
+//     real home, an unredirected daemon would pollute the real
+//     ~/Library/Caches. Routed to the session work dir alongside the
+//     CF-routed chromium state.
 //
 // Extracted from runAgentRunSandboxExec so the env construction is unit
 // testable (the dispatch function itself forks a supervised child).
@@ -74,6 +86,8 @@ func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome str
 		"XDG_CONFIG_HOME":   true,
 		"XDG_STATE_HOME":    true,
 		"CFFIXED_USER_HOME": true,
+
+		"PLAYWRIGHT_DAEMON_SESSION_DIR": true,
 	}
 	filtered := make([]string, 0, len(env))
 	for _, kv := range env {
@@ -96,6 +110,7 @@ func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome str
 		"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
 		"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
 		"CFFIXED_USER_HOME="+sessionDir,
+		"PLAYWRIGHT_DAEMON_SESSION_DIR="+filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
 	)
 }
 

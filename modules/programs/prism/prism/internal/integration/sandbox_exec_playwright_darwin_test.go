@@ -32,7 +32,8 @@ package integration_test
 //      profile (issue #2249) — the launch path is repeatable in-sandbox,
 //      not green only on first-boot state.
 //
-// The three negative tests use the `withMutatedProfile` helper to:
+// The two negative tests in this file use the `withMutatedProfile` helper
+// to:
 //
 //   - Remove the iokit-open-user-client allow block. The positive test
 //     above must then fail with the SEGV fingerprint, proving the
@@ -43,10 +44,12 @@ package integration_test
 //     Chrome for Testing acquires its power-management port via
 //     iokit-open-service on IOPMrootDomain, a different operation class
 //     from the user-client allow.
-//   - Remove the `(target children)` qualifier from the signal allow.
-//     The positive test above must then surface a `kill EPERM` warning
-//     in the launcher stderr, proving the signal widening is
-//     load-bearing.
+//
+// The signal `(target children)` widening is covered by the deterministic
+// positive/negative pair in sandbox_exec_signal_darwin_test.go (issue
+// #2249 — the former playwright-based kill-EPERM negative lost its
+// distinguishing premise once the browser stopped SEGVing; see the NOTE
+// near the end of this file).
 //
 // We intentionally do not exercise the headless / WindowServer-bootstrap
 // rule here — that follow-up is out of scope (issue #2021, "Out of scope"
@@ -68,6 +71,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -167,6 +171,13 @@ func runPlaywrightCLI(t *testing.T, profilePath, playwrightBin, stagingHome, ses
 		"PATH=" + os.Getenv("PATH"),
 		"XDG_CACHE_HOME=" + filepath.Join(stagingHome, ".cache"),
 		"XDG_CONFIG_HOME=" + filepath.Join(stagingHome, ".config"),
+		// Mirrors buildSandboxExecHomeEnv (issue #2249): without this,
+		// playwright-core on Darwin derives its daemon registry/log dir
+		// from POSIX $HOME (os.homedir()/Library/Caches — XDG_CACHE_HOME
+		// is ignored on darwin), writing
+		// <stagingHome>/Library/Caches/ms-playwright/daemon/... and
+		// tripping the #2247 no-staging-Library assertion below.
+		"PLAYWRIGHT_DAEMON_SESSION_DIR=" + filepath.Join(sessionDir, "Library", "Caches", "ms-playwright", "daemon"),
 	}
 	if term := os.Getenv("TERM"); term != "" {
 		envVars = append(envVars, "TERM="+term)
@@ -265,7 +276,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 		}
 	}
 	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247)")
+		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247).\nOffending entries:\n%s", listTreeForDiag(filepath.Join(stagingHome, "Library")))
 	}
 
 	// Load-bearing regression guard: the iokit-open-user-client block
@@ -366,7 +377,7 @@ func TestSandboxExecProfile_PlaywrightCLIOpensUnderProductionProfile(t *testing.
 	// Post-run: the staging HOME must still hold no Library/ entries —
 	// nothing in the run may have re-created the pre-#2247 staging layout.
 	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Errorf("staging HOME gained a Library/ entry during the run — chromium state must land in the session work dir (issue #2247)")
+		t.Errorf("staging HOME gained a Library/ entry during the run — chromium state must land in the session work dir (issue #2247).\nOffending entries:\n%s", listTreeForDiag(filepath.Join(stagingHome, "Library")))
 	}
 }
 
@@ -496,57 +507,51 @@ func TestSandboxExecProfile_PlaywrightCLIFailsWithoutIOPMrootDomainAllow(t *test
 	}
 }
 
+// NOTE (issue #2249): the former
 // TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren
-// is the paired negative test for the signal (target children) widening.
-// It removes the (target children) qualifier from the signal allow and
-// asserts that the playwright-cli launcher now surfaces a `kill EPERM`
-// warning when trying to clean up its chromium grandchild.
-//
-// Note: this negative test does NOT necessarily produce a non-zero exit
-// code from playwright-cli \u2014 the open itself may still succeed,
-// and the kill EPERM is a warning during cleanup. The assertion is on
-// the stderr substring, not the exit code.
-func TestSandboxExecProfile_PlaywrightCLISignalEPERMWithoutTargetChildren(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-	requireSandboxExec(t)
-	playwrightBin := requirePlaywrightCLI(t)
+// negative was REMOVED here. Its premise broke with the #2249 fix: pre-fix,
+// the SEGVd browser forced the node launcher down the force-kill path,
+// surfacing `kill EPERM` when (target children) was absent. Post-fix the
+// browser runs healthily, `playwright-cli close` tears the session down
+// gracefully over CDP (no signal is sent), and the launcher never exercises
+// the kill path — so the EPERM fingerprint cannot manifest without
+// contriving a SEGV. The signal (target children) widening is instead
+// covered by the deterministic positive/negative pair in
+// sandbox_exec_signal_darwin_test.go, which proves the rule's semantics
+// (child-signalling allowed with the rule, EPERM without it) directly with
+// a bash child-kill probe. The killEPERMFingerprint absence assertion in
+// the positive test above is retained — it guards any future close-path
+// force-kill regression.
 
-	m := newProfileManagerWithBareRoot(t)
-
-	stagingHome, err := m.SandboxExecHomePath()
-	if err != nil {
-		t.Fatalf("SandboxExecHomePath: %v", err)
-	}
-	sessionDir, err := m.SessionWorkDir()
-	if err != nil {
-		t.Fatalf("SessionWorkDir: %v", err)
-	}
-
-	// Replace the widened signal clause with self-only. The mutation must
-	// produce a syntactically valid SBPL profile so the sandbox still
-	// loads \u2014 we want the failure to come from the runtime signal
-	// denial, not a profile parse error. The mutation leaves the sessionDir
-	// grant intact, so the launch-dir variant keeps node's CWD resolvable
-	// and the surfaced failure is the kill EPERM, not a getcwd bootstrap
-	// death.
-	mutatedPath := withMutatedProfileAndLaunchDir(t, m, sessionDir, func(p string) string {
-		return strings.ReplaceAll(p,
-			"(allow signal (target self) (target children))",
-			"(allow signal (target self))")
+// listTreeForDiag returns a newline-separated recursive listing of root
+// (relative paths), capped at 200 entries, for assertion diagnostics. When
+// the #2247 staging-Library assertions fire, the listing names the
+// offending writer (e.g. Caches/ms-playwright/daemon/... → the playwright
+// daemon log dir, issue #2249) instead of leaving the operator to re-run
+// with manual instrumentation.
+func listTreeForDiag(root string) string {
+	const maxEntries = 200
+	var entries []string
+	_ = filepath.WalkDir(root, func(path string, _ os.DirEntry, err error) error {
+		if err != nil {
+			entries = append(entries, path+" (walk error: "+err.Error()+")")
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			rel = path
+		}
+		entries = append(entries, rel)
+		if len(entries) >= maxEntries {
+			entries = append(entries, "... (truncated at "+strconv.Itoa(maxEntries)+" entries)")
+			return filepath.SkipAll
+		}
+		return nil
 	})
-
-	combined, _ := runPlaywrightCLIOpen(t, mutatedPath, playwrightBin, stagingHome, sessionDir)
-
-	if !strings.Contains(combined, killEPERMFingerprint) {
-		t.Errorf("playwright-cli output does not contain %q after removing\n"+
-			"(target children) from the signal allow.\n"+
-			"The negative test is not catching the signal-widening regression.\n"+
-			"Profile: %s\nOutput:\n%s", killEPERMFingerprint, mutatedPath, combined)
-	} else {
-		t.Logf("ka pai \u2014 launcher correctly surfaced %q without (target children)", killEPERMFingerprint)
+	if len(entries) == 0 {
+		return "(empty or unreadable: " + root + ")"
 	}
+	return strings.Join(entries, "\n")
 }
 
 // removeIOKitAllowBlock returns a copy of the generated profile with the
