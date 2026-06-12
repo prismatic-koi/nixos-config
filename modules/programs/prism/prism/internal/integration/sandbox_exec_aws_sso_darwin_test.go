@@ -152,10 +152,8 @@ func prepareCLISentinel(t *testing.T) (cliDir, sentinelPath string) {
 // the ~/.aws/sso carve-out (issue #1380). It:
 //
 //  1. Creates ~/.aws/sso and plants a sentinel file inside it.
-//  2. Calls PrepareSandboxExecHome and asserts the staging HOME contains
-//     no .aws entry (the sso/cli staging symlinks were removed in #2245).
-//  3. Generates the production profile (which emits the carve-out rule).
-//  4. Reads the sentinel at the REAL host path from inside the sandbox and
+//  2. Generates the production profile (which emits the carve-out rule).
+//  3. Reads the sentinel at the REAL host path from inside the sandbox and
 //     asserts exit 0 and correct content.
 func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
@@ -169,19 +167,6 @@ func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 	// BareRoot manager: the carve-out path resolution under HOME requires the
 	// BareRoot-ancestor block's file-read-metadata allow on (subpath HOME).
 	m := newProfileManagerWithBareRoot(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The staging HOME must contain NO .aws entry — the sso/cli staging
-	// symlinks were removed in #2245 (Step 3e); the carve-out at the real
-	// path is the sole capability.
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .aws entry — the sso/cli staging symlinks were removed in #2245 and must not be recreated")
-	}
 
 	prepared, _ := preparePositiveProfile(t, m)
 
@@ -202,7 +187,7 @@ func TestSandboxExecProfile_AWSSSOReadable(t *testing.T) {
 
 	// Read the sentinel at its REAL host path inside the sandbox.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -229,12 +214,6 @@ func TestSandboxExecProfile_AWSSSODeniedWithoutCarveout(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	home, _ := os.UserHomeDir()
 	awsSSOPath := filepath.Join(home, ".aws", "sso")
 
@@ -247,7 +226,7 @@ func TestSandboxExecProfile_AWSSSODeniedWithoutCarveout(t *testing.T) {
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -272,17 +251,6 @@ func TestSandboxExecProfile_AWSCLIReadable(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The staging HOME must contain NO .aws entry (see the sso positive).
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .aws entry — the sso/cli staging symlinks were removed in #2245 and must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	home, _ := os.UserHomeDir()
@@ -296,7 +264,7 @@ func TestSandboxExecProfile_AWSCLIReadable(t *testing.T) {
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -322,12 +290,6 @@ func TestSandboxExecProfile_AWSCLIDeniedWithoutCarveout(t *testing.T) {
 	_, sentinelPath := prepareCLISentinel(t)
 
 	m := newProfileManagerWithBareRoot(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
 	home, _ := os.UserHomeDir()
 	awsSSOPath := filepath.Join(home, ".aws", "sso")
@@ -355,7 +317,7 @@ func TestSandboxExecProfile_AWSCLIDeniedWithoutCarveout(t *testing.T) {
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {

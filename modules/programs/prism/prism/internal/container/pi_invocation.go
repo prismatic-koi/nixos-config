@@ -220,9 +220,9 @@ func piResolveResumeSession(cfg Config) bool {
 //	               the host filesystem (cmd/agent_run_sandbox_exec_darwin.go),
 //	               so pi writes to the host root there too. A pre-#2210
 //	               branch here resolved sandbox-exec to the per-session
-//	               staging HOME (<stagingHome>/.pi/agent/sessions); that
-//	               formula had been stale since #1286 and meant resume never
-//	               found the transcript (issue #2210).
+//	               staging-HOME sessions dir (deleted in Step 5 of #2132);
+//	               that formula had been stale since #1286 and meant resume
+//	               never found the transcript (issue #2210).
 //
 // PI_CODING_AGENT_DIR mirrors pi's own ENV_AGENT_DIR honouring (pi 0.79
 // dist/core/session-manager.js getDefaultAgentDir / getDefaultSessionDirPath
@@ -276,8 +276,8 @@ func piResumeHostSessionsRoot() (string, bool) {
 // $PI_CODING_AGENT_DIR/sessions when set, else `~/.pi/agent/sessions/`.
 // For sandbox-exec this removal is load-bearing, not redundant: pi writes
 // its transcripts to the host root (the dispatcher injects
-// PI_CODING_AGENT_DIR into the sandbox env), so the staging-HOME wipe in
-// RemoveSandboxExecStagingHome never touches them (issue #2210).
+// PI_CODING_AGENT_DIR into the sandbox env), so the per-session work-dir
+// wipe in RemoveSessionWorkDir never touches them (issue #2210).
 //
 // Best-effort and non-fatal:
 //

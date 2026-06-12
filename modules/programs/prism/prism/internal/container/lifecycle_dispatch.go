@@ -184,10 +184,10 @@ func (b *bwrapIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // ----------------------------------------------------------------------------
 
 // EnsureRemoved cleans up the legacy per-session temp files. The
-// sandbox-exec specific files (SBPL profile, staging HOME, Claude
-// credentials, harness config) are owned by the Manager-level lifecycle
-// (Manager.EnsureRemoved); EnsureRemoved here mirrors the legacy cleanup.go
-// behaviour which only touched the 5-file legacy set.
+// sandbox-exec specific files (SBPL profile, session work dir, harness
+// config) are owned by the Manager-level lifecycle (Manager.EnsureRemoved);
+// EnsureRemoved here mirrors the legacy cleanup.go behaviour which only
+// touched the 5-file legacy set.
 func (s *sandboxExecIsolator) EnsureRemoved(ctx context.Context, m *Manager) {
 	cleanupLegacyTempFiles(s.name)
 }
@@ -214,35 +214,20 @@ func (s *sandboxExecIsolator) Reset(ctx context.Context) error {
 	return nil
 }
 
-// Prepare prepares the per-session staging HOME, writes the SBPL profile,
-// and returns the complete sandbox-exec argument list. Mirrors the
-// pre-refactor body of Manager.PrepareSandboxExec
-// (internal/container/container.go:637).
+// Prepare prepares the per-session work dir, writes the SBPL profile, and
+// returns the complete sandbox-exec argument list. Mirrors the pre-refactor
+// body of Manager.PrepareSandboxExec (internal/container/container.go:637).
 //
-// If PrepareSandboxExecHome fails, Prepare returns an error immediately
-// and does not write the profile or launch the session. A staging-HOME
-// failure causes generateProfile to silently omit every (subpath …) rule
-// for the worktree, bare repo, host-API socket, and pi data dirs, producing
-// a profile that denies all worktree access — the session would crash with
-// opaque EPERM on first file open. There is no usable degraded-profile
-// fallback, so we hard-fail here (issue #1879).
+// If PrepareSessionWorkDir fails, Prepare returns an error immediately and
+// does not write the profile or launch the session (issue #1879 hard-fail
+// posture): a session without the work-dir configs would have no git
+// identity and no ssh auth route, and the #1960 missing-git-identity hard
+// error must surface at Prepare time.
 func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string, error) {
-	// Populate the staging HOME with symlinks. Fail hard if the staging HOME
-	// cannot be created: without it, generateProfile omits every session-specific
-	// (subpath …) rule and the resulting profile denies worktree access entirely.
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare staging HOME %s: %w",
-			stagingHome, err)
-	}
-	_ = stagingHome // consumed by generateProfile via m.sandboxExecHomePath()
-
 	// Prepare the per-session work dir (issue #2213, Step 2 of #2132): the
 	// generated ssh-config / gitconfig / allowed_signers the dispatcher wires
-	// in via GIT_SSH_COMMAND / GIT_CONFIG_GLOBAL. Hard-fail on error — this
-	// preserves the #1960 missing-git-identity hard error at Prepare time,
-	// and a session without these configs would have no git identity and no
-	// ssh auth route.
+	// in via GIT_SSH_COMMAND / GIT_CONFIG_GLOBAL, plus the chromium Library
+	// skeleton (issue #2247).
 	if _, err := m.PrepareSessionWorkDir(); err != nil {
 		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
 	}
@@ -315,8 +300,8 @@ func (h *hostIsolator) AgentRun(ctx context.Context, opts AgentRunOpts) error {
 // 5-file list: gitdir, wt-gitdir, ssh-config, gitconfig, allowed-signers).
 // The removals are best-effort — missing files are silently ignored.
 //
-// The harness-config, Claude credentials, and sandbox-exec staging files
-// are deliberately NOT cleaned here: those are owned by the Manager-level
+// The harness-config, SBPL-profile, and session-work-dir files are
+// deliberately NOT cleaned here: those are owned by the Manager-level
 // lifecycle (Manager.EnsureRemoved retains the full cleanup list). Tests
 // that exercise the cleanup.go shortcut path (see cmd/restore_test.go's
 // legacy-mode coverage) rely on the

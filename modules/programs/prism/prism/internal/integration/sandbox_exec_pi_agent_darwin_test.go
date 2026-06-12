@@ -52,12 +52,6 @@ func TestSandboxExecPI_AgentDirReadable(t *testing.T) {
 	// (subpath ~/.pi/agent) allow.
 	m := newProfileManagerWithBareRootAndPi(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
@@ -112,7 +106,7 @@ func TestSandboxExecPI_AgentDirReadable(t *testing.T) {
 	// Run: sandbox-exec reads auth.json directly from the shared host path.
 	authPath := filepath.Join(realPiAgentPath, "auth.json")
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(authPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -137,12 +131,6 @@ func TestSandboxExecPI_AgentDirDeniedWithoutSubpathAllow(t *testing.T) {
 	nixBash := requireNixBash(t)
 
 	m := newProfileManagerWithBareRootAndPi(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -182,7 +170,7 @@ func TestSandboxExecPI_AgentDirDeniedWithoutSubpathAllow(t *testing.T) {
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(authPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {

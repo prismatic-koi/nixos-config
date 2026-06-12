@@ -26,8 +26,8 @@ package integration_test
 // security AC (`ulimit -n <above hard>` fails inside the sandbox) has its
 // own subtest.
 //
-// This file does not modify generateProfile / PrepareSandboxExec /
-// PrepareSandboxExecHome — the profile is used as generated (plus the
+// This file does not modify generateProfile / PrepareSandboxExec —
+// the profile is used as generated (plus the
 // standard test-harness extras from augmentProfileForTest that let a
 // Nix-built binary start under the sandbox).
 

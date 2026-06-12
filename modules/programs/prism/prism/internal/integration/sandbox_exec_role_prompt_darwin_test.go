@@ -145,18 +145,6 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The staging HOME must NOT contain a .config entry — the agents staging
-	// symlink was removed in #2245 (Step 3f).
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".config")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .config entry — the agents staging symlink was removed in #2245 and must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The production profile must carry the whole 5f block.
@@ -169,7 +157,7 @@ func TestSandboxExecProfile_RolePromptReadable(t *testing.T) {
 
 	// Read the role prompt at the REAL path from inside the sandbox.
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(readTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -221,19 +209,13 @@ func TestSandboxExecProfile_RolePromptDeniedWithoutGrantBlock(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	block := roGrantBlock5f(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, block, "", 1)
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(readTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -283,19 +265,13 @@ func TestSandboxExecProfile_RolePromptWriteDenied(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	writeTarget := filepath.Join(agentsDir, ".prism-2245-write-denied.md")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) }) // in case the deny fails
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo prism-2245-write > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {

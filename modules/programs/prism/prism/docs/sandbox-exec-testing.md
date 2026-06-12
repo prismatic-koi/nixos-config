@@ -14,7 +14,7 @@ This issue is tracked in #1192.
 ## The convention
 
 > Any change to `internal/container/sandbox_exec.go::generateProfile`,
-> `Manager.PrepareSandboxExec`, or `Manager.PrepareSandboxExecHome` must be
+> `Manager.PrepareSandboxExec`, or `Manager.PrepareSessionWorkDir` must be
 > accompanied by at least one Darwin-only integration test under
 > `internal/integration/` that:
 >
@@ -144,11 +144,11 @@ not green by accident.
 
 The `withMutatedProfile` helper exists to make this pattern easy to write.
 The pattern below mirrors the actual
-`TestSandboxExecProfile_StagingHomeWriteDenied` in
-`internal/integration/sandbox_exec_staging_home_darwin_test.go`:
+`TestSandboxExecSessionWorkDir_DeniedWithoutSubpath` in
+`internal/integration/sandbox_exec_session_work_dir_darwin_test.go`:
 
 ```go
-func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
+func TestSandboxExecSessionWorkDir_DeniedWithoutSubpath(t *testing.T) {
     if runtime.GOOS != "darwin" {
         t.Skip("sandbox-exec is Darwin-only")
     }
@@ -156,35 +156,33 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
     nixBash := requireNixBash(t)
 
     m := newProfileManager(t)
-    stagingHome, err := m.PrepareSandboxExecHome()
+    sessionDir, err := m.SessionWorkDir()
     if err != nil {
-        t.Fatalf("PrepareSandboxExecHome: %v", err)
+        t.Fatalf("SessionWorkDir: %v", err)
     }
-    t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-    // Remove only the indented (subpath "<stagingHome>") line from the
-    // staging-HOME write allow block, leaving the rest of the block
-    // (worktree, bare repo, opencode shared dirs) intact so the profile
-    // remains syntactically valid SBPL. The only behaviour change is
-    // that writes to <stagingHome> are no longer covered by any allow.
-    //
-    // Removing the entire (allow ...) block instead would leave orphaned
-    // (subpath ...) lines from the trailing entries — sandbox-exec would
-    // reject the malformed profile at parse time and the negative test
-    // would pass for the wrong reason.
-    stagingHomeRule := "  (subpath " + sbplQuoteForTest(stagingHome) + ")\n"
-    profilePath := withMutatedProfile(t, m, func(p string) string {
-        return strings.ReplaceAll(p, stagingHomeRule, "")
+    // Re-target the (subpath "<sessionDir>") entry at a non-existent
+    // sibling path rather than deleting the line — this keeps the SBPL
+    // syntactically valid regardless of where the entry sits in its allow
+    // block, and sandbox-exec silently ignores rules for non-existent
+    // paths. Deleting an entire (allow ...) block instead can leave
+    // orphaned (subpath ...) lines — sandbox-exec would reject the
+    // malformed profile at parse time and the negative test would pass
+    // for the wrong reason.
+    mutatedPath := withMutatedProfile(t, m, func(p string) string {
+        return strings.ReplaceAll(p,
+            sbplQuoteForTest(sessionDir),
+            sbplQuoteForTest(sessionDir+".prism-2213-disabled"))
     })
 
-    // Attempt to write a file inside the staging HOME. Without the
-    // staging-HOME write allow, the operation must fail.
-    target := filepath.Join(stagingHome, "negative-test.tmp")
-    cmd := exec.Command(sandboxExecPath, "-f", profilePath,
-        nixBash, "-c", "echo hi > "+shQuote(target))
+    // Attempt to write a file inside the work dir. Without the work-dir
+    // (subpath ...) allow, the operation must fail.
+    probe := filepath.Join(sessionDir, "prism-2213-write-probe-denied.tmp")
+    cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
+        nixBash, "-c", "echo hi > "+shQuote(probe))
     out, runErr := cmd.CombinedOutput()
     if runErr == nil {
-        t.Errorf("write to staging HOME succeeded WITHOUT the staging-HOME write allow: %s", out)
+        t.Errorf("work-dir write succeeded WITHOUT the work-dir (subpath ...) rule: %s", out)
     }
 }
 ```
@@ -194,11 +192,14 @@ func TestSandboxExecProfile_StagingHomeWriteDenied(t *testing.T) {
 In addition to the system-paths allow set (covered first by #1187 / #1192),
 integration test coverage exists for:
 
-- **Staging HOME writes** — the worktree, bare repo, host-API socket dir,
-  opencode shared SQLite directory.
-- **Staging-HOME credential reads** — symlink targets resolved at staging
-  time (e.g. `~/.config/aws/readonly-config`, the SSH access key) accessed
-  via the in-sandbox `$HOME` path.
+- **Session work dir writes** — the per-session work dir
+  (`(subpath "<sessionDir>")`, the only per-session writable grant), plus
+  the worktree, bare repo, and host-API socket dir.
+- **Env-var credential reads** — sops-backed configs read through stable
+  host paths (e.g. `~/.config/aws/readonly-config` via `AWS_CONFIG_FILE`,
+  `~/.config/kube/agents-config` via `KUBECONFIG`, the SSH keys via the
+  work-dir ssh-config/gitconfig), riding the broad var-folders allow
+  narrowed by the #2211 secrets.d allowlist.
 - **Nix flake trusted-settings read** — the single-file read-only allow on
   `~/.local/share/nix/trusted-settings.json` that flake-CLI nix commands
   need when the target flake declares a `nixConfig` block (issue #2201).
@@ -224,8 +225,9 @@ Apply this convention to any change that touches:
   or precedence change)
 - `Manager.PrepareSandboxExec` (the wrapper that writes the profile and
   builds args)
-- `Manager.PrepareSandboxExecHome` (staging HOME layout — affects which
-  symlink targets the profile resolves)
+- `Manager.PrepareSessionWorkDir` (work-dir layout — the generated
+  configs, kube cache, and chromium Library skeleton the env redirects
+  point at)
 
 Pure refactors that do not change the generated SBPL output are exempt — but
 the integration tests must continue to pass on the refactored code, which is

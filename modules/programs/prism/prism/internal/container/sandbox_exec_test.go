@@ -34,9 +34,9 @@ func newSandboxExecManager(cfg Config) *Manager {
 }
 
 // newSandboxExecManagerWithInstance is like newSandboxExecManager but ensures
-// the Config has an InstanceID so sandboxExecHomePath uses the instance ID
+// the Config has an InstanceID so sessionWorkDirPath uses the instance ID
 // rather than falling back to the container name. Used in tests that exercise
-// staging HOME generation (#1017).
+// the per-session work dir and profile generation.
 func newSandboxExecManagerWithInstance(cfg Config) *Manager {
 	if cfg.InstanceID == "" {
 		cfg.InstanceID = "test-instance-id"
@@ -350,12 +350,13 @@ func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_StagingHomeAndWorktreeRules verifies that the profile
-// emitted by generateProfile includes the staging HOME, worktree, and bare
-// repo as (allow file-read* file-write* (subpath ...)) clauses when the
-// Manager has InstanceID, Worktree, and BareRoot set. This is the PR #1017
-// replacement for TestGenerateProfile_NoOutOfScopeRules.
-func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
+// TestGenerateProfile_SessionWorkDirAndWorktreeRules verifies that the
+// profile emitted by generateProfile includes the per-session work dir,
+// worktree, and bare repo as (allow file-read* file-write* (subpath ...))
+// clauses when the Manager has InstanceID, Worktree, and BareRoot set.
+func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@main",
 		Worktree:    "/tmp/fake-worktree",
@@ -365,7 +366,7 @@ func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
 	profile := generateProfile(m)
 
 	// The profile must contain (allow file-read* file-write* file-test-existence
-	// file-read-metadata ...) with the staging home, worktree, and bare repo subpaths.
+	// file-read-metadata ...) with the work dir, worktree, and bare repo subpaths.
 	// The v3 profile adds file-test-existence and file-read-metadata to the RW block.
 	if !strings.Contains(profile, "(allow file-read* file-write* file-test-existence file-read-metadata") {
 		t.Errorf("profile missing (allow file-read* file-write* file-test-existence file-read-metadata ...) clause; full profile:\n%s", profile)
@@ -378,16 +379,46 @@ func TestGenerateProfile_StagingHomeAndWorktreeRules(t *testing.T) {
 	if !strings.Contains(profile, "/tmp/fake-bare") {
 		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
 	}
-	// The staging home path must be present (namespaced by InstanceID).
-	if !strings.Contains(profile, "test-instance-id") {
-		t.Errorf("profile missing staging HOME path containing instance ID 'test-instance-id'; full profile:\n%s", profile)
+	// The per-session work dir subpath must be present (namespaced by
+	// InstanceID).
+	sessionDir := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", "test-instance-id")
+	if !strings.Contains(profile, "(subpath "+quoteSBPL(sessionDir)+")") {
+		t.Errorf("profile missing the session work dir subpath %q; full profile:\n%s", sessionDir, profile)
+	}
+}
+
+// TestGenerateProfile_NoStagingHomeGrant is the Step 5 of #2132 (issue
+// #2250) profile-shape AC: the generated profile contains NO staging-home
+// (subpath <sessionDir>/home) grant — the per-session writable scope is
+// exactly the work-dir (subpath <sessionDir>) rule from PR #2221.
+func TestGenerateProfile_NoStagingHomeGrant(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	m := newSandboxExecManagerWithInstance(Config{
+		SessionName: "repo@main",
+		Worktree:    "/tmp/fake-worktree",
+		InstanceID:  "test-instance-id",
+	})
+	profile := generateProfile(m)
+
+	sessionDir := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", "test-instance-id")
+	stagingHome := filepath.Join(sessionDir, "home")
+
+	// The legacy staging-home path must not appear anywhere in the profile —
+	// not as a subpath grant, not as a literal.
+	if strings.Contains(profile, stagingHome) {
+		t.Errorf("profile references the deleted staging-home path %q (Step 5 of #2132); full profile:\n%s", stagingHome, profile)
+	}
+	// The work-dir grant is present and is the per-session writable scope.
+	if !strings.Contains(profile, "(subpath "+quoteSBPL(sessionDir)+")") {
+		t.Errorf("profile missing the work-dir (subpath %q) grant (PR #2221); full profile:\n%s", sessionDir, profile)
 	}
 }
 
 // TestGenerateProfile_AWSHomePathDenied verifies that the profile contains a
 // (deny file-read* file-write* (subpath "$HOME/.aws")) clause to prevent the
-// sandbox from accessing the host's raw ~/.aws directory. Only the staged
-// entries (symlinked through the staging HOME) are accessible.
+// sandbox from accessing the host's raw ~/.aws directory. Only the sso/cli
+// carve-outs are accessible (issue #1380/#1558).
 func TestGenerateProfile_AWSHomePathDenied(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@main"})
 	profile := generateProfile(m)
@@ -414,15 +445,6 @@ func TestGenerateProfile_AWSSSOAndCLICarveouts(t *testing.T) {
 		SessionName: "repo@feat",
 		InstanceID:  "aws-carveout-test",
 		Worktree:    t.TempDir(),
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stagingHome)
-		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
 	})
 
 	profile := generateProfile(m)
@@ -536,62 +558,6 @@ func TestGenerateProfile_NixTrustedSettingsReadAllow(t *testing.T) {
 	}
 }
 
-// TestPrepareSandboxExecHome_NoAWSSSOCLISymlinks is the unit-level AC test
-// for the AWS half of issue #2245 (Step 3e of #2132): after
-// PrepareSandboxExecHome, the staging HOME contains no .aws/sso or .aws/cli
-// symlink (nor a .aws directory at all) even though the host dirs exist, and
-// collectStagingHomeSymlinkTargets emits no target under ~/.aws. The
-// in-sandbox capability for the two cache dirs is the §5 carve-out pair
-// emitted after the broad ~/.aws deny (see
-// TestGenerateProfile_AWSSSOAndCLICarveouts) — now the SOLE capability, with
-// the broader ~/.aws subtree still denied.
-func TestPrepareSandboxExecHome_NoAWSSSOCLISymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Create ~/.aws/sso and ~/.aws/cli in the fake home so the test proves
-	// the symlinks stay gone even when the host sources EXIST.
-	for _, dir := range []string{
-		filepath.Join(fakeHome, ".aws", "sso"),
-		filepath.Join(fakeHome, ".aws", "cli"),
-	} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-aws-sso-cli-symlinks-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".aws", "sso"),
-		filepath.Join(stagingHome, ".aws", "cli"),
-		filepath.Join(stagingHome, ".aws"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging entry %s should NOT exist (removed in #2245, Step 3e), but it does", gone)
-		}
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	awsPrefix := filepath.Join(fakeHome, ".aws")
-	for _, target := range targets {
-		if strings.HasPrefix(target.ResolvedPath, awsPrefix) {
-			t.Errorf("collectStagingHomeSymlinkTargets emitted a ~/.aws target %q — the sso/cli staging symlinks should be gone (#2245)", target.ResolvedPath)
-		}
-	}
-}
-
 // ── PrepareSandboxExec ──────────────────────────────────────────────────────
 
 // TestPrepareSandboxExec_WritesProfileAndReturnsArgs verifies that
@@ -599,8 +565,8 @@ func TestPrepareSandboxExecHome_NoAWSSSOCLISymlinks(t *testing.T) {
 // per-session state dir and returns args of the shape
 // ["sandbox-exec", "-f", <profile_path>, <harness>, ...].
 func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
-	// PrepareSandboxExec derives the staging HOME from os.UserHomeDir(); in
-	// the nix build sandbox $HOME is /homeless-shelter (unwritable), so we
+	// PrepareSandboxExec derives the session work dir from os.UserHomeDir();
+	// in the nix build sandbox $HOME is /homeless-shelter (unwritable), so we
 	// redirect HOME to a tempdir. This is the AGENTS.md § "the
 	// homeless-shelter failure class" pattern — the gate this test exercises
 	// (issue #2168) exists to catch the inverse of this missing guard.
@@ -612,8 +578,8 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	})
 	t.Cleanup(func() {
 		_ = os.Remove(m.sandboxExecProfilePath())
-		if stagingHome, err := m.sandboxExecHomePath(); err == nil {
-			_ = os.RemoveAll(stagingHome)
+		if sessionDir, err := m.sessionWorkDirPath(); err == nil {
+			_ = os.RemoveAll(sessionDir)
 		}
 	})
 
@@ -681,60 +647,57 @@ func TestPrepareSandboxExec_ProfilePathIsSessionScoped(t *testing.T) {
 	}
 }
 
-// TestSandboxExecPrepare_StagingHomeFailurePropagated verifies that when
-// PrepareSandboxExecHome fails (e.g. because the staging-home path is
-// blocked by a pre-existing regular file), sandboxExecIsolator.Prepare
-// returns a non-nil error whose message mentions the staging HOME failure.
-// The session must NOT launch: no profile file is written and no
-// sandbox-exec subprocess is started (issue #1879).
-func TestSandboxExecPrepare_StagingHomeFailurePropagated(t *testing.T) {
-	// Redirect HOME for the sandbox-exec staging-home path derivation. See
+// TestSandboxExecPrepare_WorkDirFailurePropagated verifies that when
+// PrepareSessionWorkDir fails (e.g. because the work-dir path is blocked by
+// a pre-existing regular file), sandboxExecIsolator.Prepare returns a
+// non-nil error whose message mentions the work-dir failure. The session
+// must NOT launch: no profile file is written and no sandbox-exec
+// subprocess is started (issue #1879 hard-fail posture).
+func TestSandboxExecPrepare_WorkDirFailurePropagated(t *testing.T) {
+	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
 	t.Setenv("HOME", t.TempDir())
-	// Build the manager and derive the staging home path before injecting the
+	// Build the manager and derive the work-dir path before injecting the
 	// failure, so we know which path to block.
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
-		InstanceID:  "staging-home-fail-test",
+		InstanceID:  "work-dir-fail-test",
 		Worktree:    t.TempDir(),
 	})
 
-	// sandboxExecHomePath relies on os.UserHomeDir() (or $HOME fallback).
-	// Call it directly so the test knows the exact path that will be blocked.
-	stagingHome, err := m.sandboxExecHomePath()
+	sessionDir, err := m.sessionWorkDirPath()
 	if err != nil {
-		t.Fatalf("sandboxExecHomePath: %v", err)
+		t.Fatalf("sessionWorkDirPath: %v", err)
 	}
 
-	// Ensure the staging home's parent exists so we can create the blocker file.
-	if err := os.MkdirAll(filepath.Dir(stagingHome), 0o755); err != nil {
-		t.Fatalf("MkdirAll parent of staging home: %v", err)
+	// Ensure the work dir's parent exists so we can create the blocker file.
+	if err := os.MkdirAll(filepath.Dir(sessionDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll parent of work dir: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(stagingHome)) })
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(sessionDir)) })
 
-	// Plant a regular file at the staging home path. When PrepareSandboxExecHome
-	// calls os.MkdirAll(stagingHome, ...) it will fail with ENOTDIR because the
-	// path already exists as a file, not a directory.
-	if err := os.WriteFile(stagingHome, []byte("blocker"), 0o644); err != nil {
-		t.Fatalf("WriteFile blocker at staging home path %s: %v", stagingHome, err)
+	// Plant a regular file at the work-dir path. When PrepareSessionWorkDir
+	// calls os.MkdirAll(sessionDir, ...) it will fail with ENOTDIR because
+	// the path already exists as a file, not a directory.
+	if err := os.WriteFile(sessionDir, []byte("blocker"), 0o644); err != nil {
+		t.Fatalf("WriteFile blocker at work-dir path %s: %v", sessionDir, err)
 	}
 
 	// Prepare must return a non-nil error.
 	iso := &sandboxExecIsolator{name: m.name}
 	args, prepErr := iso.Prepare(context.Background(), m)
 	if prepErr == nil {
-		t.Fatalf("Prepare: expected non-nil error when staging home cannot be created, got nil (args=%v)", args)
+		t.Fatalf("Prepare: expected non-nil error when the work dir cannot be created, got nil (args=%v)", args)
 	}
 
-	// The error message must name the staging HOME failure so the operator
-	// knows what went wrong (AC: "clear error message naming the staging HOME
-	// path and the underlying cause").
+	// The error message must name the work-dir failure so the operator knows
+	// what went wrong.
 	errMsg := prepErr.Error()
-	if !strings.Contains(errMsg, "staging HOME") && !strings.Contains(errMsg, "staging home") {
-		t.Errorf("error message must mention staging HOME; got: %q", errMsg)
+	if !strings.Contains(errMsg, "session work dir") {
+		t.Errorf("error message must mention the session work dir; got: %q", errMsg)
 	}
-	if !strings.Contains(errMsg, stagingHome) {
-		t.Errorf("error message must include the staging HOME path %q; got: %q", stagingHome, errMsg)
+	if !strings.Contains(errMsg, sessionDir) {
+		t.Errorf("error message must include the work-dir path %q; got: %q", sessionDir, errMsg)
 	}
 
 	// No profile file must be written — the session did not advance to the
@@ -746,29 +709,29 @@ func TestSandboxExecPrepare_StagingHomeFailurePropagated(t *testing.T) {
 	}
 }
 
-// TestSandboxExecPrepare_StagingHomeFailurePropagated_NilArgs verifies that
+// TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs verifies that
 // the Prepare error is a hard fail and the returned args slice is nil,
 // confirming no sandbox-exec argument list was produced for the caller to
 // use (regression guard for issue #1879).
-func TestSandboxExecPrepare_StagingHomeFailurePropagated_NilArgs(t *testing.T) {
-	// Redirect HOME for the sandbox-exec staging-home path derivation. See
+func TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs(t *testing.T) {
+	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
 	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
-		InstanceID:  "staging-home-fail-nil-args-test",
+		InstanceID:  "work-dir-fail-nil-args-test",
 		Worktree:    t.TempDir(),
 	})
 
-	stagingHome, err := m.sandboxExecHomePath()
+	sessionDir, err := m.sessionWorkDirPath()
 	if err != nil {
-		t.Fatalf("sandboxExecHomePath: %v", err)
+		t.Fatalf("sessionWorkDirPath: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(stagingHome), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sessionDir), 0o755); err != nil {
 		t.Fatalf("MkdirAll parent: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(stagingHome)) })
-	if err := os.WriteFile(stagingHome, []byte("blocker"), 0o644); err != nil {
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(sessionDir)) })
+	if err := os.WriteFile(sessionDir, []byte("blocker"), 0o644); err != nil {
 		t.Fatalf("WriteFile blocker: %v", err)
 	}
 
@@ -804,16 +767,16 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 	}
 }
 
-// ── PrepareSandboxExecHome ───────────────────────────────────────────────────
+// ── per-session prep (work dir; no staging HOME — Step 5 of #2132) ───────────────────────────────────────────────────
 
 // newFakeHome creates a temp directory tree that mimics the credential and
-// config paths that PrepareSandboxExecHome reads from $HOME. It sets HOME to
-// the fake home dir for the duration of the test and returns the fake home path.
+// config paths that generateProfile and the work-dir writers read from
+// $HOME. It sets HOME to the fake home dir for the duration of the test and
+// returns the fake home path.
 func newFakeHome(t *testing.T) string {
 	t.Helper()
 	fakeHome := t.TempDir()
 
-	// Create all the directories and files that PrepareSandboxExecHome expects.
 	dirs := []string{
 		".ssh",
 		".aws",
@@ -822,12 +785,10 @@ func newFakeHome(t *testing.T) string {
 		".config/kube",
 		".cache/bun",
 		".cache/nix",
-		// .claude is the OLD (pre-#2243) canonical claude dir. It is kept in
-		// the fixture so tests can prove the staging builder no longer
-		// symlinks it even when it exists on the host.
+		// .claude is the OLD (pre-#2243) canonical claude dir; the XDG path
+		// claude-code reaches via CLAUDE_CONFIG_DIR is .config/claude
+		// (issue #2243).
 		".claude",
-		// .config/claude is the XDG path claude-code reaches via
-		// CLAUDE_CONFIG_DIR (issue #2243).
 		".config/claude",
 		".mcp-auth",
 		".local/share/pi",
@@ -851,7 +812,8 @@ func newFakeHome(t *testing.T) string {
 		}
 	}
 
-	// AWS readonly-config and credentials (in XDG location, symlinked by the staging builder).
+	// AWS readonly-config and credentials (in XDG location, delivered via
+	// AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE env vars — issue #2234).
 	if err := os.WriteFile(filepath.Join(fakeHome, ".config", "aws", "readonly-config"), []byte("dummy-aws-cfg"), 0o644); err != nil {
 		t.Fatalf("write aws config: %v", err)
 	}
@@ -869,905 +831,46 @@ func newFakeHome(t *testing.T) string {
 	return fakeHome
 }
 
-// TestPrepareSandboxExecHome_CreatesDirectoryAtExpectedPath verifies that
-// PrepareSandboxExecHome creates the staging HOME at
-// ~/.local/state/prism/sessions/<instance_id>/home/.
-func TestPrepareSandboxExecHome_CreatesDirectoryAtExpectedPath(t *testing.T) {
-	fakeHome := newFakeHome(t)
-	instanceID := "test-instance-abc"
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  instanceID,
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	wantPath := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", instanceID, "home")
-	if stagingHome != wantPath {
-		t.Errorf("staging HOME = %q, want %q", stagingHome, wantPath)
-	}
-	if _, err := os.Stat(stagingHome); err != nil {
-		t.Errorf("staging HOME does not exist on disk: %v", err)
-	}
-}
-
-// TestPrepareSandboxExecHome_SSHSymlinks verifies that the staging HOME
-// contains symlinks for access-key, signing-key, signing-key.pub, and
-// known_hosts when the corresponding files exist in the fake $HOME/.ssh/.
-func TestPrepareSandboxExecHome_SSHSymlinks(t *testing.T) {
-	newFakeHome(t)
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "ssh-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, name := range []string{"access-key", "signing-key", "signing-key.pub", "known_hosts"} {
-		p := filepath.Join(stagingHome, ".ssh", name)
-		if _, err := os.Lstat(p); err != nil {
-			t.Errorf("expected symlink %s to exist: %v", p, err)
-			continue
-		}
-		target, readErr := os.Readlink(p)
-		if readErr != nil {
-			t.Errorf("%s is not a symlink: %v", p, readErr)
-			continue
-		}
-		if target == "" {
-			t.Errorf("%s symlink has empty target", p)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_MissingSourceSkipped verifies that when a source
-// path does not exist, the corresponding symlink is NOT created (no dangling
-// symlinks). Post-#2245 the conditional staging surface is the .ssh entries.
-func TestPrepareSandboxExecHome_MissingSourceSkipped(t *testing.T) {
+// TestPrepareSandboxExec_CreatesNoStagingHomeDir is the Step 5 of #2132
+// (issue #2250) filesystem-shape AC at unit level: full session prep
+// creates the per-session work dir but NO
+// ~/.local/state/prism/sessions/<id>/home/ directory — the staging-HOME
+// mechanism is deleted.
+func TestPrepareSandboxExec_CreatesNoStagingHomeDir(t *testing.T) {
 	fakeHome := newFakeHome(t)
 
-	// newFakeHome writes known_hosts but never allowed_signers; additionally
-	// remove known_hosts so both missing-source paths are exercised.
-	if err := os.Remove(filepath.Join(fakeHome, ".ssh", "known_hosts")); err != nil {
-		t.Fatalf("remove fixture known_hosts: %v", err)
-	}
-
 	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "missing-test",
+		SessionName:   "repo@feat",
+		InstanceID:    "no-staging-home-test",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14012,
 	})
+	t.Cleanup(func() { _ = os.Remove(m.sandboxExecProfilePath()) })
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	if _, err := m.PrepareSandboxExec(); err != nil {
+		t.Fatalf("PrepareSandboxExec: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
-	for _, absent := range []string{
-		filepath.Join(stagingHome, ".ssh", "known_hosts"),
-		filepath.Join(stagingHome, ".ssh", "allowed_signers"),
-	} {
-		if _, err := os.Lstat(absent); err == nil {
-			t.Errorf("symlink %s should NOT exist (source absent), but it does", absent)
-		}
+	sessionDir := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", "no-staging-home-test")
+	t.Cleanup(func() { _ = os.RemoveAll(sessionDir) })
+
+	// The work dir exists with the generated configs.
+	if _, err := os.Stat(sessionDir); err != nil {
+		t.Fatalf("session work dir not created: %v", err)
+	}
+
+	// The staging HOME does NOT exist — nothing creates <sessionDir>/home/
+	// any more (issue #2250 functional AC).
+	if _, err := os.Lstat(filepath.Join(sessionDir, "home")); err == nil {
+		t.Errorf("staging HOME dir %s/home was created — the mechanism was deleted in Step 5 of #2132", sessionDir)
 	}
 }
 
-// TestPrepareSandboxExecHome_NoChromiumLibraryStagingDirs is the unit-level
-// staging-half AC for issue #2247 (Step 4 of #2132): after
-// PrepareSandboxExecHome, the staging HOME contains NO Library/ entries —
-// the chromium skeleton moved to the per-session work dir, where
-// CFFIXED_USER_HOME now points (see
-// TestPrepareSessionWorkDir_ChromiumLibrarySkeleton in
-// session_work_dir_test.go for the work-dir half).
-//
-// It also pins the exact post-#2247 staging inventory — the top level
-// holds ONLY .ssh/ — which is the precise state Step 5 of #2132 will be
-// specified against (removes-wholesale).
-func TestPrepareSandboxExecHome_NoChromiumLibraryStagingDirs(t *testing.T) {
-	newFakeHome(t)
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "chromium-staging-gone-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Errorf("staging HOME still contains a Library/ entry — the chromium skeleton must live in the session work dir (issue #2247)")
-	}
-
-	// Exact top-level inventory: .ssh/ only. Any other entry is a
-	// regression against the Step 5 removes-wholesale contract.
-	entries, readErr := os.ReadDir(stagingHome)
-	if readErr != nil {
-		t.Fatalf("ReadDir(stagingHome): %v", readErr)
-	}
-	for _, e := range entries {
-		if e.Name() != ".ssh" {
-			t.Errorf("unexpected staging HOME entry %q — post-#2247 the staging HOME holds ONLY .ssh/", e.Name())
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_No3eStagingSymlinks is the unit-level AC test
-// for the cache/auth half of issue #2245 (Step 3e of #2132): after
-// PrepareSandboxExecHome, the staging HOME contains no .cache/nix,
-// .cache/bun, .npm, or .mcp-auth symlink (nor a .cache directory at all)
-// even though the host sources exist, and collectStagingHomeSymlinkTargets
-// emits no target for them. The in-sandbox capability is the explicit RW
-// grant block on the real host paths (section 5e — see
-// TestGenerateProfile_RWRealPathGrants3e).
-func TestPrepareSandboxExecHome_No3eStagingSymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// newFakeHome creates .cache/bun, .cache/nix, and .mcp-auth; add .npm so
-	// every 3e source exists on the host.
-	if err := os.MkdirAll(filepath.Join(fakeHome, ".npm"), 0o700); err != nil {
-		t.Fatalf("create ~/.npm: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-3e-symlinks-test",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".cache", "nix"),
-		filepath.Join(stagingHome, ".cache", "bun"),
-		filepath.Join(stagingHome, ".cache"),
-		filepath.Join(stagingHome, ".npm"),
-		filepath.Join(stagingHome, ".mcp-auth"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging entry %s should NOT exist (removed in #2245, Step 3e), but it does", gone)
-		}
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	for _, src := range []string{
-		filepath.Join(fakeHome, ".cache", "nix"),
-		filepath.Join(fakeHome, ".cache", "bun"),
-		filepath.Join(fakeHome, ".npm"),
-		filepath.Join(fakeHome, ".mcp-auth"),
-	} {
-		resolved, evalErr := filepath.EvalSymlinks(src)
-		if evalErr != nil {
-			t.Fatalf("fixture: EvalSymlinks(%s): %v", src, evalErr)
-		}
-		for _, target := range targets {
-			if target.ResolvedPath == resolved {
-				t.Errorf("collectStagingHomeSymlinkTargets emitted 3e target %q — its staging symlink should be gone (#2245)", resolved)
-			}
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_No3fStagingSymlinks is the unit-level AC test
-// for the RO trio of issue #2245 (Step 3f of #2132): after
-// PrepareSandboxExecHome, the staging HOME contains no
-// .cache/prism/clipboard, .config/prism/agents, or .nix-profile symlink
-// (nor .cache/ or .config/ staging dirs at all) even though the host
-// sources exist, and collectStagingHomeSymlinkTargets emits no target for
-// them. The in-sandbox capability is the explicit RO grant blocks on the
-// real host paths (sections 5f and 5g).
-func TestPrepareSandboxExecHome_No3fStagingSymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Create every 3f source in the fake home so the test proves the
-	// symlinks stay gone even when the host sources EXIST. ~/.nix-profile is
-	// a symlink on real hosts — mirror that shape.
-	for _, dir := range []string{
-		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
-		filepath.Join(fakeHome, ".config", "prism", "agents"),
-		filepath.Join(fakeHome, "nix-profile-target"),
-	} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatalf("create %s: %v", dir, err)
-		}
-	}
-	if err := os.Symlink(filepath.Join(fakeHome, "nix-profile-target"), filepath.Join(fakeHome, ".nix-profile")); err != nil {
-		t.Fatalf("symlink ~/.nix-profile: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-3f-symlinks-test",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".cache", "prism", "clipboard"),
-		filepath.Join(stagingHome, ".cache", "prism"),
-		filepath.Join(stagingHome, ".config", "prism", "agents"),
-		filepath.Join(stagingHome, ".config", "prism"),
-		filepath.Join(stagingHome, ".config"),
-		filepath.Join(stagingHome, ".nix-profile"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging entry %s should NOT exist (removed in #2245, Step 3f), but it does", gone)
-		}
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	for _, src := range []string{
-		filepath.Join(fakeHome, ".cache", "prism", "clipboard"),
-		filepath.Join(fakeHome, ".config", "prism", "agents"),
-		filepath.Join(fakeHome, ".nix-profile"),
-	} {
-		resolved, evalErr := filepath.EvalSymlinks(src)
-		if evalErr != nil {
-			t.Fatalf("fixture: EvalSymlinks(%s): %v", src, evalErr)
-		}
-		for _, target := range targets {
-			if target.ResolvedPath == resolved {
-				t.Errorf("collectStagingHomeSymlinkTargets emitted 3f target %q — its staging symlink should be gone (#2245)", resolved)
-			}
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath verifies that the
-// signing-key and signing-key.pub symlinks in the staging HOME point at the
-// intermediate ~/.ssh/<name> path (i.e. the stable sops symlink), not the
-// fully-resolved concrete path underneath it. This is the fix for issue #1410:
-// using the intermediate symlink means the staging HOME stays valid across sops
-// rotations (when secrets.d/<N>/ increments), whereas using the resolved path
-// would produce a dangling symlink after the rotation.
-func TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// In newFakeHome, the signing key files are plain files directly under
-	// ~/.ssh/. For this test, we simulate the sops-managed layout:
-	// ~/.ssh/prismatic-koi-ed25519-signingkey.pub → a "concrete" sops path,
-	// and later rotate that concrete path.
-	//
-	// We replace the plain files with symlinks that point at a "current" dir,
-	// mimicking secrets.d/271/.
-	sshDir := filepath.Join(fakeHome, ".ssh")
-	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
-	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
-		t.Fatalf("create sops-dir-1: %v", err)
-	}
-	keyPrivPath1 := filepath.Join(sopsDir1, "signing-key")
-	keyPubPath1 := filepath.Join(sopsDir1, "signing-key.pub")
-	if err := os.WriteFile(keyPrivPath1, []byte("priv-v1"), 0o600); err != nil {
-		t.Fatalf("write sops priv key v1: %v", err)
-	}
-	if err := os.WriteFile(keyPubPath1, []byte("pub-v1"), 0o600); err != nil {
-		t.Fatalf("write sops pub key v1: %v", err)
-	}
-
-	// Replace the plain files with symlinks to the "sops v1" concrete paths.
-	intermediatePriv := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey")
-	intermediatePub := filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub")
-	_ = os.Remove(intermediatePriv)
-	_ = os.Remove(intermediatePub)
-	if err := os.Symlink(keyPrivPath1, intermediatePriv); err != nil {
-		t.Fatalf("symlink intermediate priv: %v", err)
-	}
-	if err := os.Symlink(keyPubPath1, intermediatePub); err != nil {
-		t.Fatalf("symlink intermediate pub: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@signing-key-test",
-		InstanceID:  "signing-key-intermediate-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Verify signing-key.pub symlink points at the INTERMEDIATE path, not the
-	// fully-resolved sops-dir-1/signing-key.pub path.
-	pubLink := filepath.Join(stagingHome, ".ssh", "signing-key.pub")
-	pubTarget, err := os.Readlink(pubLink)
-	if err != nil {
-		t.Fatalf("signing-key.pub is not a symlink: %v", err)
-	}
-	if pubTarget != intermediatePub {
-		t.Errorf("signing-key.pub symlink points at %q, want intermediate path %q\n"+
-			"(the symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
-			"so it stays valid after a sops rotation)",
-			pubTarget, intermediatePub)
-	}
-
-	// Same for signing-key (private).
-	privLink := filepath.Join(stagingHome, ".ssh", "signing-key")
-	privTarget, err := os.Readlink(privLink)
-	if err != nil {
-		t.Fatalf("signing-key is not a symlink: %v", err)
-	}
-	if privTarget != intermediatePriv {
-		t.Errorf("signing-key symlink points at %q, want intermediate path %q",
-			privTarget, intermediatePriv)
-	}
-
-	// Now simulate a sops rotation: update the intermediate symlinks to point
-	// at a new secrets.d/v2 directory, leaving sops-dir-1 in place but unreachable.
-	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
-	if err := os.MkdirAll(sopsDir2, 0o700); err != nil {
-		t.Fatalf("create sops-dir-2: %v", err)
-	}
-	keyPrivPath2 := filepath.Join(sopsDir2, "signing-key")
-	keyPubPath2 := filepath.Join(sopsDir2, "signing-key.pub")
-	if err := os.WriteFile(keyPrivPath2, []byte("priv-v2"), 0o600); err != nil {
-		t.Fatalf("write sops priv key v2: %v", err)
-	}
-	if err := os.WriteFile(keyPubPath2, []byte("pub-v2"), 0o600); err != nil {
-		t.Fatalf("write sops pub key v2: %v", err)
-	}
-	// Rotate: update intermediate symlinks to point at v2.
-	_ = os.Remove(intermediatePriv)
-	_ = os.Remove(intermediatePub)
-	if err := os.Symlink(keyPrivPath2, intermediatePriv); err != nil {
-		t.Fatalf("rotate intermediate priv to v2: %v", err)
-	}
-	if err := os.Symlink(keyPubPath2, intermediatePub); err != nil {
-		t.Fatalf("rotate intermediate pub to v2: %v", err)
-	}
-
-	// After rotation, the staging HOME signing-key.pub still points at
-	// intermediatePub, which now resolves to sops-dir-2. Verify the chain
-	// resolves (os.Stat follows symlinks) and the content is from v2.
-	content, err := os.ReadFile(pubLink)
-	if err != nil {
-		t.Fatalf("cannot read signing-key.pub through staging HOME after rotation: %v\n"+
-			"(this would cause 'Couldn't load public key' in git push — the fix for #1410)", err)
-	}
-	if string(content) != "pub-v2" {
-		t.Errorf("signing-key.pub after rotation: got %q, want %q", string(content), "pub-v2")
-	}
-}
-
-// TestPrepareSandboxExecHome_SigningKeyAbsentNoDanglingSymlink verifies that
-// when the signing key intermediate symlink does not exist (genuinely absent,
-// not just stale), no dangling symlink is created in the staging HOME.
-// This covers AC: "if signing keys are genuinely absent, git push still works
-// — it pushes without signing rather than crashing."
-func TestPrepareSandboxExecHome_SigningKeyAbsentNoDanglingSymlink(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Remove the signing key files from the fake home (simulate absent keys).
-	sshDir := filepath.Join(fakeHome, ".ssh")
-	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey"))
-	_ = os.Remove(filepath.Join(sshDir, "prismatic-koi-ed25519-signingkey.pub"))
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@absent-signing-key",
-		InstanceID:  "signing-key-absent-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Signing key symlinks must NOT exist in staging HOME when source is absent.
-	for _, name := range []string{"signing-key", "signing-key.pub"} {
-		p := filepath.Join(stagingHome, ".ssh", name)
-		if _, err := os.Lstat(p); err == nil {
-			t.Errorf("%s must not exist when source is absent (no dangling symlinks)", name)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath verifies that the
-// access-key symlink in the staging HOME points at the stable intermediate
-// sops symlink (~/.ssh/<accessKeyName>), not the fully-resolved concrete path
-// inside secrets.d/<N>/. This is the fix for issue #1573: on Darwin the access
-// key is managed by sops-nix and its concrete path rotates on each
-// darwin-rebuild switch, so the staging symlink must anchor to the stable
-// intermediate to survive rotations.
-func TestPrepareSandboxExecHome_AccessKeyUsesIntermediatePath(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Set up a two-hop chain simulating the sops-managed layout:
-	//   ~/.ssh/prismatic-koi-ed25519  (intermediate)
-	//     → sopsDir1/access-key       (concrete v1)
-	//
-	// After PrepareSandboxExecHome runs, we rotate the intermediate to v2
-	// and verify the staging HOME symlink still resolves.
-	sshDir := filepath.Join(fakeHome, ".ssh")
-	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
-	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
-		t.Fatalf("create sops-dir-1: %v", err)
-	}
-	keyPath1 := filepath.Join(sopsDir1, "access-key")
-	if err := os.WriteFile(keyPath1, []byte("access-key-v1"), 0o600); err != nil {
-		t.Fatalf("write access key v1: %v", err)
-	}
-
-	// Replace the plain key file with a symlink pointing at the v1 concrete path.
-	intermediate := filepath.Join(sshDir, "prismatic-koi-ed25519")
-	_ = os.Remove(intermediate)
-	if err := os.Symlink(keyPath1, intermediate); err != nil {
-		t.Fatalf("symlink intermediate access key: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@access-key-test",
-		InstanceID:  "access-key-intermediate-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The access-key symlink must point at the INTERMEDIATE path, not the
-	// fully-resolved sops-dir-1/access-key path (fix for #1573).
-	accessLink := filepath.Join(stagingHome, ".ssh", "access-key")
-	accessTarget, err := os.Readlink(accessLink)
-	if err != nil {
-		t.Fatalf("access-key is not a symlink: %v", err)
-	}
-	if accessTarget != intermediate {
-		t.Errorf("access-key symlink points at %q, want intermediate path %q\n"+
-			"(the symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
-			"so it stays valid after a sops rotation — issue #1573)",
-			accessTarget, intermediate)
-	}
-
-	// Simulate a sops rotation: update the intermediate to point at v2 and
-	// remove v1. The staging HOME symlink must still resolve.
-	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
-	if err := os.MkdirAll(sopsDir2, 0o700); err != nil {
-		t.Fatalf("create sops-dir-2: %v", err)
-	}
-	keyPath2 := filepath.Join(sopsDir2, "access-key")
-	if err := os.WriteFile(keyPath2, []byte("access-key-v2"), 0o600); err != nil {
-		t.Fatalf("write access key v2: %v", err)
-	}
-	_ = os.Remove(intermediate)
-	if err := os.Symlink(keyPath2, intermediate); err != nil {
-		t.Fatalf("rotate intermediate to v2: %v", err)
-	}
-	_ = os.RemoveAll(sopsDir1) // simulate rotation removing old secrets.d/<N>
-
-	// After rotation, reads through the staging HOME symlink must succeed.
-	content, err := os.ReadFile(accessLink)
-	if err != nil {
-		t.Fatalf("cannot read access-key through staging HOME after rotation: %v\n"+
-			"(this would break SSH inside running sessions — the fix for #1573)", err)
-	}
-	if string(content) != "access-key-v2" {
-		t.Errorf("access-key after rotation: got %q, want %q", string(content), "access-key-v2")
-	}
-}
-
-// TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks verifies that the
-// remaining sops-backed staging-HOME symlink — access-key (issue #1573) —
-// survives a sops secrets.d/<N> → secrets.d/<N+1> rotation after
-// PrepareSandboxExecHome has already run.
-//
-// The .aws/config and .aws/credentials staging symlinks were removed in
-// issue #2234 (Step 3a of #2132) and the .kube/config staging symlink in
-// issue #2235 (Step 3b): those files are read via the AWS_CONFIG_FILE /
-// AWS_SHARED_CREDENTIALS_FILE / KUBECONFIG env vars at the host XDG paths,
-// and rotation safety for those reads rides the name-based #2211 secrets.d
-// allowlist (counter-independent regexes — see
-// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources and the
-// rotation-simulation integration tests).
-//
-// The test follows the same pattern as
-// TestPrepareSandboxExecHome_SigningKeyUsesIntermediatePath (which covers
-// signing-key{,.pub} from issue #1410):
-//  1. Plant v1 concrete files under sopsDir1.
-//  2. Create intermediate symlinks pointing at v1.
-//  3. Run PrepareSandboxExecHome.
-//  4. Verify each staging symlink points at the stable intermediate.
-//  5. Rotate: update the intermediates to point at v2, delete v1.
-//  6. Verify reads through each staging symlink still succeed (resolve to v2).
-func TestPrepareSandboxExecHome_SopsRotation_StagingSymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// ── set up v1 concrete files ───────────────────────────────────────
-	sopsDir1 := filepath.Join(fakeHome, "sops-dir-1")
-	if err := os.MkdirAll(sopsDir1, 0o700); err != nil {
-		t.Fatalf("create sops-dir-1: %v", err)
-	}
-
-	v1Files := map[string]string{
-		"ssh/access-key": "access-key-v1",
-	}
-	for rel, content := range v1Files {
-		path := filepath.Join(sopsDir1, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatalf("mkdir for %s: %v", rel, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatalf("write %s: %v", rel, err)
-		}
-	}
-
-	// ── install intermediate symlinks (stable sops intermediates) ────────────
-	// Each intermediate simulates the path that sops-nix keeps stable across
-	// rotations: e.g. ~/.ssh/prismatic-koi-ed25519 → secrets.d/<N>/...
-	intermediates := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"): filepath.Join(sopsDir1, "ssh", "access-key"),
-	}
-	for intermediate, target := range intermediates {
-		_ = os.Remove(intermediate) // remove plain file from newFakeHome
-		if err := os.Symlink(target, intermediate); err != nil {
-			t.Fatalf("symlink intermediate %s → %s: %v", intermediate, target, err)
-		}
-	}
-
-	// ── run PrepareSandboxExecHome ─────────────────────────────────────────
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@sops-rotation-all",
-		InstanceID:  "sops-rotation-all-four-test",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// ── verify each staging symlink points at the intermediate ──────────────
-	type stagingEntry struct {
-		link         string // path in staging HOME
-		intermediate string // expected symlink target (the stable sops intermediate)
-	}
-	entries := []stagingEntry{
-		{
-			link:         filepath.Join(stagingHome, ".ssh", "access-key"),
-			intermediate: filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"),
-		},
-	}
-
-	// The AWS staging symlinks must NOT have been created (issue #2234),
-	// and neither the kube staging symlink nor its .kube parent dir
-	// (issue #2235).
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".aws", "config"),
-		filepath.Join(stagingHome, ".aws", "credentials"),
-		filepath.Join(stagingHome, ".kube", "config"),
-		filepath.Join(stagingHome, ".kube"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging entry %s should NOT exist (removed in #2234/#2235), but it does", gone)
-		}
-	}
-	for _, e := range entries {
-		target, readErr := os.Readlink(e.link)
-		if readErr != nil {
-			t.Errorf("%s is not a symlink: %v", e.link, readErr)
-			continue
-		}
-		if target != e.intermediate {
-			t.Errorf("%s → %q, want intermediate %q\n"+
-				"(symlink must point at the stable sops intermediate, not the resolved concrete path,\n"+
-				"so it stays valid after a sops rotation — issue #1573)",
-				e.link, target, e.intermediate)
-		}
-	}
-
-	// ── rotate: update intermediates to v2, delete v1 ───────────────────────
-	sopsDir2 := filepath.Join(fakeHome, "sops-dir-2")
-	v2Files := map[string]string{
-		"ssh/access-key": "access-key-v2",
-	}
-	for rel, content := range v2Files {
-		path := filepath.Join(sopsDir2, rel)
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			t.Fatalf("mkdir for sops-dir-2/%s: %v", rel, err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatalf("write sops-dir-2/%s: %v", rel, err)
-		}
-	}
-	v2Targets := map[string]string{
-		filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519"): filepath.Join(sopsDir2, "ssh", "access-key"),
-	}
-	for intermediate, newTarget := range v2Targets {
-		_ = os.Remove(intermediate)
-		if err := os.Symlink(newTarget, intermediate); err != nil {
-			t.Fatalf("rotate intermediate %s → %s: %v", intermediate, newTarget, err)
-		}
-	}
-	_ = os.RemoveAll(sopsDir1) // simulate sops deleting the old secrets.d/<N>
-
-	// ── verify reads through staging HOME still succeed after rotation ──────
-	v2Contents := map[string]string{
-		filepath.Join(stagingHome, ".ssh", "access-key"): "access-key-v2",
-	}
-	for link, wantContent := range v2Contents {
-		content, readErr := os.ReadFile(link)
-		if readErr != nil {
-			t.Errorf("cannot read %s through staging HOME after rotation: %v\n"+
-				"(this means the staging symlink is dangling after sops rotate — issue #1573)",
-				link, readErr)
-			continue
-		}
-		if string(content) != wantContent {
-			t.Errorf("%s after rotation: got %q, want %q", link, string(content), wantContent)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_PiAgentDirNotSymlinked verifies that
-// PrepareSandboxExecHome does NOT create a ~/.pi/agent entry under the
-// staging HOME. Since #2034 the in-sandbox PI_CODING_AGENT_DIR resolves
-// directly to the host ~/.pi/agent via the SBPL (subpath ~/.pi/agent) RW
-// allow for pi sessions; no staging-HOME-relative symlink is required or
-// desirable.
-func TestPrepareSandboxExecHome_PiAgentDirNotSymlinked(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Create ~/.pi/agent in the fake home.
-	piAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	if err := os.MkdirAll(piAgentDir, 0o700); err != nil {
-		t.Fatalf("create ~/.pi/agent: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@pi-agent-test",
-		InstanceID:  "pi-agent-symlink-test",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// No symlink must be created at <stagingHome>/.pi/agent — PI reads the
-	// host ~/.pi/agent directly via the SBPL allow (since #2034).
-	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
-	if _, err := os.Lstat(symlinkPath); err == nil {
-		t.Errorf(".pi/agent must not be symlinked by PrepareSandboxExecHome (PI reads the host dir directly via the SBPL subpath allow)")
-	}
-}
-
-// TestPrepareSandboxExecHome_PiAgentDirMissingSkipped verifies that when
-// ~/.pi/agent does not exist, PrepareSandboxExecHome succeeds without creating
-// a dangling symlink.
-func TestPrepareSandboxExecHome_PiAgentDirMissingSkipped(t *testing.T) {
-	fakeHome := newFakeHome(t)
-	// Ensure ~/.pi/agent does NOT exist.
-	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@pi-agent-missing",
-		InstanceID:  "pi-agent-missing-test",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// No symlink must exist for .pi/agent when source is absent.
-	symlinkPath := filepath.Join(stagingHome, ".pi", "agent")
-	if _, err := os.Lstat(symlinkPath); err == nil {
-		t.Errorf(".pi/agent must not exist when ~/.pi/agent is absent")
-	}
-}
-
-// ── PI Atlassian MCP OAuth token — no staging (Step 3d of #2132) ───────────
-
-// TestPrepareSandboxExecHome_NoPiOAuthStaging is the unit-level AC test for
-// Step 3d of #2132 (issue #2245): after PrepareSandboxExecHome for a
-// Harness=="pi" session, the staging HOME contains no .pi entry at all (the
-// former touch-and-symlink stagePIOAuthToken step is gone), the host token
-// file is left untouched, and collectStagingHomeSymlinkTargets emits no
-// target for it. The in-sandbox capability is the existing pi-gated RW
-// (subpath ~/.pi/agent) grant (section 6a — see
-// TestGenerateProfile_PiAgentDirSubpathRule).
-func TestPrepareSandboxExecHome_NoPiOAuthStaging(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Pre-create the host token file with sentinel content so the test
-	// proves (a) staging stays empty even when the host file exists and
-	// (b) the host file is never modified.
-	hostAgentDir := filepath.Join(fakeHome, ".pi", "agent")
-	if err := os.MkdirAll(hostAgentDir, 0o700); err != nil {
-		t.Fatalf("create host agent dir: %v", err)
-	}
-	hostTokenPath := filepath.Join(hostAgentDir, "atlassian-mcp-oauth.json")
-	const sentinel = `{"access_token":"sentinel-2245-untouched"}`
-	if err := os.WriteFile(hostTokenPath, []byte(sentinel), 0o600); err != nil {
-		t.Fatalf("write sentinel token: %v", err)
-	}
-	origStat, err := os.Stat(hostTokenPath)
-	if err != nil {
-		t.Fatalf("stat sentinel token: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@pi-oauth-no-staging",
-		InstanceID:  "pi-oauth-no-staging-test",
-		Harness:     "pi",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// No .pi staging entry of any kind (dir, symlink, file).
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".pi", "agent", "atlassian-mcp-oauth.json"),
-		filepath.Join(stagingHome, ".pi", "agent"),
-		filepath.Join(stagingHome, ".pi"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging entry %s should NOT exist (removed in #2245, Step 3d), but it does", gone)
-		}
-	}
-
-	// Host token file untouched: content and mtime unchanged.
-	got, readErr := os.ReadFile(hostTokenPath)
-	if readErr != nil {
-		t.Fatalf("read host token after staging: %v", readErr)
-	}
-	if string(got) != sentinel {
-		t.Errorf("host token content changed: got %q, want %q", string(got), sentinel)
-	}
-	afterStat, statErr := os.Stat(hostTokenPath)
-	if statErr != nil {
-		t.Fatalf("stat host token after: %v", statErr)
-	}
-	if !afterStat.ModTime().Equal(origStat.ModTime()) {
-		t.Errorf("host token mtime changed: orig %v, after %v", origStat.ModTime(), afterStat.ModTime())
-	}
-
-	// Collector silence for the host token path.
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	resolvedToken, evalErr := filepath.EvalSymlinks(hostTokenPath)
-	if evalErr != nil {
-		t.Fatalf("fixture: EvalSymlinks(%s): %v", hostTokenPath, evalErr)
-	}
-	for _, target := range targets {
-		if target.ResolvedPath == resolvedToken {
-			t.Errorf("collectStagingHomeSymlinkTargets emitted the pi oauth token target %q — staging should be gone (#2245)", resolvedToken)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_PiOAuthHostAbsent_NoTouch verifies that with the
-// 3d staging step gone, PrepareSandboxExecHome no longer creates ~/.pi/agent
-// or touches the host token file when they are absent (a fresh machine). The
-// host dir is created at spawn time by EnsurePIAgentConfigDir instead, and
-// the Atlassian MCP extension creates the token file itself on first login
-// (the §6a subpath grant covers the create).
-func TestPrepareSandboxExecHome_PiOAuthHostAbsent_NoTouch(t *testing.T) {
-	fakeHome := newFakeHome(t)
-	_ = os.RemoveAll(filepath.Join(fakeHome, ".pi"))
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@pi-oauth-host-absent",
-		InstanceID:  "pi-oauth-host-absent-test",
-		Harness:     "pi",
-	})
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome with host ~/.pi absent: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Host ~/.pi must NOT have been created by the staging builder.
-	if _, statErr := os.Stat(filepath.Join(fakeHome, ".pi")); statErr == nil {
-		t.Errorf("host ~/.pi was created by PrepareSandboxExecHome — the 3d host-touch is gone (#2245); EnsurePIAgentConfigDir owns host-dir creation")
-	}
-	// And no staging .pi entry either.
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".pi")); lstatErr == nil {
-		t.Errorf("staging .pi entry should NOT exist (removed in #2245, Step 3d)")
-	}
-}
-
-// TestPrepareSandboxExecHome_IdempotentReCreation verifies that calling
-// PrepareSandboxExecHome a second time on an existing staging dir succeeds
-// without error and does not corrupt symlinks.
-func TestPrepareSandboxExecHome_IdempotentReCreation(t *testing.T) {
-	newFakeHome(t)
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "idempotent-test",
-	})
-
-	// First call.
-	stagingHome1, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("first PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome1) })
-
-	// Second call — must not fail.
-	stagingHome2, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("second PrepareSandboxExecHome: %v", err)
-	}
-	if stagingHome1 != stagingHome2 {
-		t.Errorf("staging HOME changed between calls: %q != %q", stagingHome1, stagingHome2)
-	}
-
-	// Verify that the .ssh/access-key symlink is still valid after
-	// re-creation (the .ssh entries are the only staging symlinks left
-	// post-#2245).
-	accessKeyLink := filepath.Join(stagingHome2, ".ssh", "access-key")
-	if _, err := os.Lstat(accessKeyLink); err != nil {
-		t.Errorf(".ssh/access-key not present after re-creation: %v", err)
-	}
-}
-
-// TestPrepareSandboxExecHome_TwoConcurrentSessions verifies that two sessions
-// with different InstanceIDs have independent staging dirs (no collisions).
-func TestPrepareSandboxExecHome_TwoConcurrentSessions(t *testing.T) {
-	newFakeHome(t)
-
-	mA := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat-a",
-		InstanceID:  "instance-aaa",
-	})
-	mB := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat-b",
-		InstanceID:  "instance-bbb",
-	})
-
-	homeA, errA := mA.PrepareSandboxExecHome()
-	if errA != nil {
-		t.Fatalf("session A: %v", errA)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(homeA) })
-
-	homeB, errB := mB.PrepareSandboxExecHome()
-	if errB != nil {
-		t.Fatalf("session B: %v", errB)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(homeB) })
-
-	if homeA == homeB {
-		t.Errorf("two sessions have the same staging HOME: %q", homeA)
-	}
-	if strings.Contains(homeA, "instance-bbb") || strings.Contains(homeB, "instance-aaa") {
-		t.Errorf("staging HOME paths are not properly namespaced: A=%q B=%q", homeA, homeB)
-	}
-}
-
-// TestSandboxExecCleanup_RemovesStagingHome verifies that EnsureRemoved removes
-// the staging HOME directory created by PrepareSandboxExecHome.
-func TestSandboxExecCleanup_RemovesStagingHome(t *testing.T) {
+// TestSandboxExecCleanup_RemovesSessionWorkDir verifies that EnsureRemoved
+// removes the per-session work dir created by PrepareSessionWorkDir, leaving
+// no orphaned per-session directory (issue #2250 edge-case AC at unit
+// level).
+func TestSandboxExecCleanup_RemovesSessionWorkDir(t *testing.T) {
 	newFakeHome(t)
 
 	m := newSandboxExecManagerWithInstance(Config{
@@ -1775,79 +878,23 @@ func TestSandboxExecCleanup_RemovesStagingHome(t *testing.T) {
 		InstanceID:  "cleanup-test",
 	})
 
-	stagingHome, err := m.PrepareSandboxExecHome()
+	sessionDir, err := m.PrepareSessionWorkDir()
 	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
+		t.Fatalf("PrepareSessionWorkDir: %v", err)
 	}
 
 	// Verify it exists.
-	if _, statErr := os.Stat(stagingHome); statErr != nil {
-		t.Fatalf("staging HOME not created: %v", statErr)
+	if _, statErr := os.Stat(sessionDir); statErr != nil {
+		t.Fatalf("session work dir not created: %v", statErr)
 	}
 
 	// Call EnsureRemoved (uses a background context;
 	// sandboxExecIsolator.Shutdown is a no-op).
 	m.EnsureRemoved(context.Background())
 
-	// Staging HOME must be gone.
-	if _, statErr := os.Stat(stagingHome); statErr == nil {
-		t.Errorf("staging HOME still exists after EnsureRemoved: %s", stagingHome)
-	}
-}
-
-// TestGenerateProfile_ProfileIncludesSymlinkTargetAllows verifies that the
-// profile emitted by generateProfile includes read-only allow rules for the
-// resolved targets of the remaining staging symlinks (.ssh/* — post-#2245
-// the only staging surface left), and that none of them lands in a
-// file-write* block.
-func TestGenerateProfile_ProfileIncludesSymlinkTargetAllows(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "profile-targets-test",
-		Worktree:    t.TempDir(),
-	})
-
-	// Pre-build the staging HOME so generateProfile can collect targets.
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stagingHome)
-		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
-	})
-
-	profile := generateProfile(m)
-
-	if !strings.Contains(profile, "(allow file-read*") {
-		t.Errorf("profile missing (allow file-read* ...) clause; full profile:\n%s", profile)
-	}
-
-	// The .ssh staging symlinks resolve to the fixture key files; each
-	// resolved target must appear as an RO (literal ...) — NOT inside a
-	// file-write* block.
-	for _, name := range []string{"prismatic-koi-ed25519", "known_hosts"} {
-		resolved, evalErr := filepath.EvalSymlinks(filepath.Join(fakeHome, ".ssh", name))
-		if evalErr != nil {
-			t.Fatalf("fixture: EvalSymlinks(.ssh/%s): %v", name, evalErr)
-		}
-		literalRule := "(literal " + quoteSBPL(resolved) + ")"
-		idx := strings.Index(profile, literalRule)
-		if idx < 0 {
-			t.Errorf("resolved .ssh/%s target %q missing from profile;\nfull profile:\n%s", name, resolved, profile)
-			continue
-		}
-		clauseStart := strings.LastIndex(profile[:idx], "(allow ")
-		if clauseStart < 0 {
-			t.Errorf("resolved .ssh/%s target: no preceding (allow clause found", name)
-			continue
-		}
-		clause := profile[clauseStart:idx]
-		if strings.Contains(clause, "file-write*") {
-			t.Errorf(".ssh/%s target %q sits inside a file-write* allow block — staging symlink targets must be read-only (post-#2245 there are no RW staging targets);\nclause: %q", name, resolved, clause)
-		}
+	// The work dir must be gone.
+	if _, statErr := os.Stat(sessionDir); statErr == nil {
+		t.Errorf("session work dir still exists after EnsureRemoved: %s", sessionDir)
 	}
 }
 
@@ -1940,35 +987,20 @@ func TestGenerateProfile_PiAuthJSONAbsentForNonPiSession(t *testing.T) {
 	}
 }
 
-// TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig verifies the post-#2234
-// AWS shape of the profile and staging HOME:
-// (a) the profile still denies the host ~/.aws subtree (the deny and its
-//
-//	sso/cli carve-outs are Step 3e scope and must survive Step 3a), and
-//
-// (b) no staged ~/.aws/config or ~/.aws/credentials symlink exists, so the
-//
-//	per-symlink allow block must NOT reference the resolved XDG targets
-//	(the read capability rides the env-var route + #2211 allowlist instead).
-func TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig(t *testing.T) {
+// TestGenerateProfile_AWSDenyPresent_NoXDGTargetAllows verifies the
+// post-#2234 AWS shape of the profile:
+// (a) the profile denies the host ~/.aws subtree, and
+// (b) the profile carries no allow referencing the resolved aws XDG targets
+// (the read capability rides the env-var route + #2211 allowlist instead —
+// a literal grant on the XDG symlink path would be inert per the #2132 §2
+// mechanism note).
+func TestGenerateProfile_AWSDenyPresent_NoXDGTargetAllows(t *testing.T) {
 	fakeHome := newFakeHome(t)
-	// The fake home has ~/.config/aws/readonly-config and
-	// ~/.config/aws/credentials written by newFakeHome. Since #2234,
-	// PrepareSandboxExecHome must NOT symlink them into the staging HOME.
 
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
 		InstanceID:  "ac11-test",
 		Worktree:    t.TempDir(),
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stagingHome)
-		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
 	})
 
 	profile := generateProfile(m)
@@ -1986,14 +1018,7 @@ func TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig(t *testing.T) {
 		t.Errorf("host ~/.aws path appears in profile but NOT inside a (deny ...) clause before it; full profile:\n%s", profile)
 	}
 
-	// (b) The staged symlinks are gone and their would-be resolved targets
-	// must not appear in the per-symlink allow block.
-	for _, rel := range []string{"config", "credentials"} {
-		staged := filepath.Join(stagingHome, ".aws", rel)
-		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
-			t.Errorf("staging HOME has .aws/%s symlink — removed in #2234, must not be recreated", rel)
-		}
-	}
+	// (b) The resolved XDG targets must not appear anywhere in the profile.
 	for _, xdgSrc := range []string{
 		filepath.Join(fakeHome, ".config", "aws", "readonly-config"),
 		filepath.Join(fakeHome, ".config", "aws", "credentials"),
@@ -2003,157 +1028,8 @@ func TestGenerateProfile_AWSDenyPresent_NoStagedAWSConfig(t *testing.T) {
 			t.Fatalf("fixture: EvalSymlinks(%s): %v", xdgSrc, resolveErr)
 		}
 		if strings.Contains(profile, resolved) {
-			t.Errorf("profile references resolved aws XDG target %q — the staged-symlink allow should be gone since #2234; full profile:\n%s",
+			t.Errorf("profile references resolved aws XDG target %q — the read rides the env-var route + #2211 allowlist (#2234); full profile:\n%s",
 				resolved, profile)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_NoAWSConfigCredentialsSymlinks is the unit-level
-// AC test for issue #2234: after PrepareSandboxExecHome, the staging HOME
-// contains no .aws/config or .aws/credentials symlink even though the host
-// XDG sources exist, and collectStagingHomeSymlinkTargets no longer emits
-// their resolved targets. It also covers the credentials-absent edge case
-// (the host's current reality): session prep must succeed without error
-// when ~/.config/aws/credentials does not exist.
-func TestPrepareSandboxExecHome_NoAWSConfigCredentialsSymlinks(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Resolve the XDG sources before staging so we can assert their absence
-	// from the collector output below.
-	resolvedCfg, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".config", "aws", "readonly-config"))
-	if err != nil {
-		t.Fatalf("fixture: EvalSymlinks readonly-config: %v", err)
-	}
-
-	// Edge case (current host reality): the credentials file is absent.
-	if err := os.Remove(filepath.Join(fakeHome, ".config", "aws", "credentials")); err != nil {
-		t.Fatalf("remove fake aws credentials: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-aws-symlinks-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome must succeed with ~/.config/aws/credentials absent: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, rel := range []string{"config", "credentials"} {
-		staged := filepath.Join(stagingHome, ".aws", rel)
-		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
-			t.Errorf("staging HOME has .aws/%s entry — removed in #2234, must not be recreated", rel)
-		}
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	for _, target := range targets {
-		if target.ResolvedPath == resolvedCfg {
-			t.Errorf("collectStagingHomeSymlinkTargets emitted the aws readonly-config target %q — the .aws/config staging symlink should be gone (#2234)", resolvedCfg)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_NoKubeConfigSymlink is the unit-level AC test
-// for issue #2235 (Step 3b of #2132): after PrepareSandboxExecHome, the
-// staging HOME contains no .kube/config symlink (nor a .kube directory at
-// all) even though the host XDG source exists, and
-// collectStagingHomeSymlinkTargets no longer emits its resolved target.
-// kubectl reads the config via KUBECONFIG at the host XDG path instead;
-// the in-sandbox read rides the #2211 secrets.d allowlist (see
-// TestGenerateProfile_SecretsDAllowlistDerivedFromStableSources — the kube
-// agents-config exception derives from the stable XDG source path, not
-// from any staging symlink, so it is unaffected by this removal).
-func TestPrepareSandboxExecHome_NoKubeConfigSymlink(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Resolve the XDG source before staging so we can assert its absence
-	// from the collector output below. newFakeHome writes a real file at
-	// ~/.config/kube/agents-config, so the source-present path is exercised.
-	resolvedKube, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".config", "kube", "agents-config"))
-	if err != nil {
-		t.Fatalf("fixture: EvalSymlinks kube agents-config: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-kube-symlink-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, gone := range []string{
-		filepath.Join(stagingHome, ".kube", "config"),
-		filepath.Join(stagingHome, ".kube"),
-	} {
-		if _, lstatErr := os.Lstat(gone); lstatErr == nil {
-			t.Errorf("staging HOME has %s entry — removed in #2235 (env-var route), must not be recreated", gone)
-		}
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	for _, target := range targets {
-		if target.ResolvedPath == resolvedKube {
-			t.Errorf("collectStagingHomeSymlinkTargets emitted the kube agents-config target %q — the .kube/config staging symlink should be gone (#2235)", resolvedKube)
-		}
-	}
-}
-
-// TestPrepareSandboxExecHome_NoClaudeSymlink is the unit-level AC test for
-// issue #2243 (Step 3c of #2132): after PrepareSandboxExecHome, the staging
-// HOME contains no .claude symlink even though the old canonical dir exists
-// on the host, and collectStagingHomeSymlinkTargets no longer emits its
-// resolved target. claude-code reads/writes its config dir at the host XDG
-// path ~/.config/claude via the CLAUDE_CONFIG_DIR env var; the in-sandbox
-// capability is the explicit RW (subpath ~/.config/claude) grant (see
-// TestGenerateProfile_ClaudeConfigDirRWSubpathRule) — the dir is a plain
-// host directory, not sops-backed, so the #2211 allowlist is not involved.
-func TestPrepareSandboxExecHome_NoClaudeSymlink(t *testing.T) {
-	fakeHome := newFakeHome(t)
-
-	// Resolve the old canonical dir before staging so we can assert its
-	// absence from the collector output below. newFakeHome creates a real
-	// dir at ~/.claude, so the source-present path is exercised.
-	resolvedClaude, err := filepath.EvalSymlinks(filepath.Join(fakeHome, ".claude"))
-	if err != nil {
-		t.Fatalf("fixture: EvalSymlinks ~/.claude: %v", err)
-	}
-
-	m := newSandboxExecManagerWithInstance(Config{
-		SessionName: "repo@feat",
-		InstanceID:  "no-claude-symlink-test",
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".claude")); lstatErr == nil {
-		t.Errorf("staging HOME has .claude entry — removed in #2243 (CLAUDE_CONFIG_DIR env-var route), must not be recreated")
-	}
-
-	targets, err := collectStagingHomeSymlinkTargets(stagingHome)
-	if err != nil {
-		t.Fatalf("collectStagingHomeSymlinkTargets: %v", err)
-	}
-	for _, target := range targets {
-		if target.ResolvedPath == resolvedClaude {
-			t.Errorf("collectStagingHomeSymlinkTargets emitted the ~/.claude target %q — the .claude staging symlink should be gone (#2243)", resolvedClaude)
 		}
 	}
 }
@@ -2351,9 +1227,9 @@ func TestGenerateProfile_NixProfileAbsent_LiteralStillEmitted(t *testing.T) {
 // TestPrepareSandboxExec_MinimalHomeNoOptionalDirs is the absent-host-dirs
 // edge-case AC for issue #2245: on a host with NONE of the 3d/3e/3f source
 // dirs (fresh machine — no ~/.mcp-auth, ~/.npm, caches, ~/.nix-profile,
-// ~/.pi, prism config), full session prep (staging HOME + work dir + profile
-// write) must succeed and the generated profile must still carry the 3e/3f
-// grant blocks.
+// ~/.pi, prism config), full session prep (work dir + profile write) must
+// succeed and the generated profile must still carry the 3e/3f grant
+// blocks.
 func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
@@ -2365,8 +1241,8 @@ func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 	})
 	t.Cleanup(func() {
 		_ = os.Remove(m.sandboxExecProfilePath())
-		if stagingHome, err := m.sandboxExecHomePath(); err == nil {
-			_ = os.RemoveAll(stagingHome)
+		if sessionDir, err := m.sessionWorkDirPath(); err == nil {
+			_ = os.RemoveAll(sessionDir)
 		}
 	})
 
@@ -2398,21 +1274,12 @@ func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 // (deny file-read* file-write* (subpath ".../.aws")) clause for the host's
 // ~/.aws directory, to prevent the sandbox from accessing host credentials.
 func TestGenerateProfile_AWSDenyClause(t *testing.T) {
-	fakeHome := newFakeHome(t)
+	newFakeHome(t)
 
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
 		InstanceID:  "aws-deny-test",
 		Worktree:    t.TempDir(),
-	})
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.RemoveAll(stagingHome)
-		_ = os.RemoveAll(filepath.Join(fakeHome, ".local", "state", "prism"))
 	})
 
 	profile := generateProfile(m)

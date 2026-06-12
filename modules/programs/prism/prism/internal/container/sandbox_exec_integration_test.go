@@ -70,62 +70,44 @@ func runUnderSandbox(t *testing.T, profilePath string, env []string, args ...str
 }
 
 // newIntegrationManager returns a Manager wired up with a sandboxExecIsolator
-// for integration tests. The returned stagingHome is the path embedded into
-// the generated profile (from sandboxExecHomePath), which is what must be
-// used as HOME in the sandbox environment.
-func newIntegrationManager(t *testing.T) (*Manager, string) {
+// for integration tests.
+func newIntegrationManager(t *testing.T) *Manager {
 	t.Helper()
 	// We use a fake worktree so the RW allow covers a real path that exists.
 	worktree := t.TempDir()
-	m := newSandboxExecManager(Config{
+	return newSandboxExecManager(Config{
 		SessionName: "integration-test@main",
 		Worktree:    worktree,
 		InstanceID:  "integration-test",
 	})
-	// Use the profile's own staging home path so HOME in the sandbox matches
-	// what the profile allows. Ensures that git/ssh can read the home dir.
-	stagingHome := profileStagingHome(t, m)
-	return m, stagingHome
 }
 
 // baseEnv returns a minimal environment for sandbox-exec test invocations.
-// We pass PATH (required for binary lookup), HOME pointing at the staging dir
-// used by the profile (from sandboxExecHomePath), and DEVELOPER_DIR set to the
-// CommandLineTools location so that /usr/bin/git does not fail due to an absent
-// /var/select/developer_dir symlink.
+// We pass PATH (required for binary lookup), HOME pointing at the REAL host
+// home (the production env shape since Step 5 of #2132 deleted the staging
+// HOME), and DEVELOPER_DIR set to the CommandLineTools location so that
+// /usr/bin/git does not fail due to an absent /var/select/developer_dir
+// symlink.
 //
 // GIT_CONFIG_NOSYSTEM=1 prevents /usr/bin/git from reading /etc/gitconfig.
 // GIT_CONFIG_GLOBAL=/dev/null prevents git from reading $HOME/.config/git/config
-// or $HOME/.gitconfig, avoiding a write-permission failure on the staging home
-// when the profile only grants read access to the var/folders TMPDIR subtree.
-func baseEnv(stagingHome string) []string {
+// or $HOME/.gitconfig, keeping the invocations hermetic.
+func baseEnv(t *testing.T) []string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		home = os.Getenv("HOME")
+	}
+	if home == "" {
+		t.Skip("cannot determine home directory")
+	}
 	return []string{
 		"PATH=" + os.Getenv("PATH"),
-		"HOME=" + stagingHome,
+		"HOME=" + home,
 		"DEVELOPER_DIR=/Library/Developer/CommandLineTools",
 		"GIT_CONFIG_NOSYSTEM=1",
 		"GIT_CONFIG_GLOBAL=/dev/null",
 	}
-}
-
-// profileStagingHome returns the staging HOME path that generateProfile will
-// embed into the profile for the given manager. This is the path that must be
-// used as HOME in the sandbox environment so git and other tools can access it.
-//
-// If the home directory cannot be created (e.g. in a nix build sandbox where
-// HOME=/homeless-shelter is a read-only filesystem), the test is skipped.
-func profileStagingHome(t *testing.T, m *Manager) string {
-	t.Helper()
-	path, err := m.sandboxExecHomePath()
-	if err != nil {
-		t.Skipf("sandboxExecHomePath unavailable (likely build sandbox): %v", err)
-	}
-	// Ensure the directory exists so programs that probe it succeed.
-	if err := os.MkdirAll(path, 0o755); err != nil {
-		t.Skipf("mkdir staging home %s: %v (likely read-only build sandbox — skipping integration test)", path, err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(path) })
-	return path
 }
 
 // ── Positive cases ────────────────────────────────────────────────────────────
@@ -134,10 +116,10 @@ func profileStagingHome(t *testing.T, m *Manager) string {
 // the v3 profile (P1 in F.1 §3.1).
 func TestSandboxExecIntegration_EchoHi(t *testing.T) {
 	sandboxexectest.Require(t)
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/bin/echo", "hi")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/bin/echo", "hi")
 	if code != 0 {
 		t.Errorf("/bin/echo hi: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -150,10 +132,10 @@ func TestSandboxExecIntegration_EchoHi(t *testing.T) {
 // exits 0 under the v3 profile (P2 in F.1 §3.1).
 func TestSandboxExecIntegration_LsEtcHosts(t *testing.T) {
 	sandboxexectest.Require(t)
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/bin/ls", "/etc/hosts")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/bin/ls", "/etc/hosts")
 	if code != 0 {
 		t.Errorf("/bin/ls /etc/hosts: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -163,10 +145,10 @@ func TestSandboxExecIntegration_LsEtcHosts(t *testing.T) {
 // exits 0 and prints the hosts file content under the v3 profile (P3 in F.1 §3.1).
 func TestSandboxExecIntegration_CatEtcHosts(t *testing.T) {
 	sandboxexectest.Require(t)
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/bin/cat", "/etc/hosts")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/bin/cat", "/etc/hosts")
 	if code != 0 {
 		t.Errorf("/bin/cat /etc/hosts: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -186,10 +168,10 @@ func TestSandboxExecIntegration_GitVersion(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/git"); err != nil {
 		t.Skip("/usr/bin/git not present")
 	}
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/git", "--version")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/usr/bin/git", "--version")
 	if code != 0 {
 		t.Errorf("/usr/bin/git --version: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -202,10 +184,10 @@ func TestSandboxExecIntegration_GitVersion(t *testing.T) {
 // 0 and prints the Darwin uname line under the v3 profile (P5 in F.1 §3.1).
 func TestSandboxExecIntegration_UnameDashA(t *testing.T) {
 	sandboxexectest.Require(t)
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/uname", "-a")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/usr/bin/uname", "-a")
 	if code != 0 {
 		t.Errorf("/usr/bin/uname -a: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -223,10 +205,10 @@ func TestSandboxExecIntegration_WhichPi(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(whichOut)) == "" {
 		t.Skip("pi not in PATH — skipping which test")
 	}
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/which", "pi")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/usr/bin/which", "pi")
 	if code != 0 {
 		t.Errorf("/usr/bin/which pi: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -242,10 +224,10 @@ func TestSandboxExecIntegration_SSHVersion(t *testing.T) {
 	if _, err := os.Stat("/usr/bin/ssh"); err != nil {
 		t.Skip("/usr/bin/ssh not present")
 	}
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), "/usr/bin/ssh", "-V")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), "/usr/bin/ssh", "-V")
 	if code != 0 {
 		t.Errorf("/usr/bin/ssh -V: want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -266,10 +248,10 @@ func TestSandboxExecIntegration_PiNoSIGABRT(t *testing.T) {
 	if err != nil || piPath == "" {
 		t.Skip("pi not in PATH — skipping pi SIGABRT test")
 	}
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	_, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), piPath, "--help")
+	_, code := runUnderSandbox(t, profilePath, baseEnv(t), piPath, "--help")
 	// SIGABRT = signal 6, which becomes exit code 134 on Darwin (128+6).
 	const sigabrtExit = 134
 	if code == sigabrtExit {
@@ -290,10 +272,10 @@ func TestSandboxExecIntegration_NixBashEchoHi(t *testing.T) {
 	if !strings.HasPrefix(bashPath, "/nix/store/") {
 		t.Skipf("bash at %q is not Nix-built — skipping Nix bash test", bashPath)
 	}
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
 
-	out, code := runUnderSandbox(t, profilePath, baseEnv(stagingHome), bashPath, "-c", "echo hi")
+	out, code := runUnderSandbox(t, profilePath, baseEnv(t), bashPath, "-c", "echo hi")
 	if code != 0 {
 		t.Errorf("Nix bash -c 'echo hi': want exit 0, got %d\noutput: %s", code, out)
 	}
@@ -333,24 +315,11 @@ func TestSandboxExecIntegration_SSHKeyDenied(t *testing.T) {
 		sshKeyPath = tmpKey
 	}
 
-	m, stagingHome := newIntegrationManager(t)
-	env := baseEnv(stagingHome)
-	// Set HOME to the real home so the deny rule for ~/.aws is exercised with
-	// the real path; the staging home is a separate temp dir.
-	for i, kv := range env {
-		if strings.HasPrefix(kv, "HOME=") {
-			env[i] = "HOME=" + realHome
-		}
-	}
-	// Re-generate profile with the real home so the deny covers the right path.
-	realM := newSandboxExecManager(Config{
-		SessionName: "integration-test@main",
-		Worktree:    m.cfg.Worktree,
-		InstanceID:  "integration-test",
-	})
-	realProfilePath := writeProfileForIntegration(t, realM)
+	m := newIntegrationManager(t)
+	profilePath := writeProfileForIntegration(t, m)
+	env := baseEnv(t)
 
-	out, code := runUnderSandbox(t, realProfilePath, env, "/bin/cat", sshKeyPath)
+	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", sshKeyPath)
 	if code == 0 {
 		t.Errorf("cat SSH key: expected non-zero exit (denied), got exit 0\noutput: %s", out)
 	}
@@ -380,23 +349,13 @@ func TestSandboxExecIntegration_AWSCredentialsDenied(t *testing.T) {
 		t.Skip("no ~/.aws/credentials on this machine; skipping AWS deny test")
 	}
 
-	// Real ~/.aws/credentials exists — use the real home in the manager.
-	m, stagingHome := newIntegrationManager(t)
-	env := baseEnv(stagingHome)
-	// Pass the real HOME so the deny rule is generated for ~/.aws.
-	for i, kv := range env {
-		if strings.HasPrefix(kv, "HOME=") {
-			env[i] = "HOME=" + realHome
-		}
-	}
-	realM := newSandboxExecManager(Config{
-		SessionName: "integration-test@main",
-		Worktree:    m.cfg.Worktree,
-		InstanceID:  "integration-test",
-	})
-	realProfilePath := writeProfileForIntegration(t, realM)
+	// Real ~/.aws/credentials exists — the profile's deny is keyed off
+	// os.UserHomeDir(), which matches the HOME baseEnv passes.
+	m := newIntegrationManager(t)
+	profilePath := writeProfileForIntegration(t, m)
+	env := baseEnv(t)
 
-	out, code := runUnderSandbox(t, realProfilePath, env, "/bin/cat", awsCredPath)
+	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", awsCredPath)
 	if code == 0 {
 		t.Errorf("cat ~/.aws/credentials: expected non-zero exit (denied), got exit 0\noutput: %s", out)
 	}
@@ -418,9 +377,9 @@ func TestSandboxExecIntegration_HomeCodeDirectoryDenied(t *testing.T) {
 		t.Skipf("~/code does not exist on this host — skipping: %v", err)
 	}
 
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
-	env := baseEnv(stagingHome)
+	env := baseEnv(t)
 
 	// find ~/code -name '.env' — should produce no results (directory is inaccessible).
 	// Note: find exits 0 even when the root path is denied (operation not permitted
@@ -473,9 +432,9 @@ func TestSandboxExecIntegration_DocumentsDenied(t *testing.T) {
 		defer os.Remove(testFilePath)
 	}
 
-	m, stagingHome := newIntegrationManager(t)
+	m := newIntegrationManager(t)
 	profilePath := writeProfileForIntegration(t, m)
-	env := baseEnv(stagingHome)
+	env := baseEnv(t)
 
 	out, code := runUnderSandbox(t, profilePath, env, "/bin/cat", testFilePath)
 	if code == 0 {

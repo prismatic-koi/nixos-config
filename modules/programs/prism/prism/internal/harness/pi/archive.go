@@ -170,11 +170,11 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // Sandbox-exec follows the host root because the dispatcher injects
 // PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
 // sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
-// A pre-#2210 branch here resolved sandbox-exec to the per-session staging
-// HOME (<stagingHome>/.pi/agent/sessions) via
-// container.SandboxExecStagingHomePath; that formula had been stale since
-// #1286 (pi has honoured the injected env var ever since) and meant archives
-// for sandbox-exec sessions never contained the transcript (issue #2210).
+// A pre-#2210 branch here resolved sandbox-exec to a sessions dir under the
+// per-session staging HOME (a mechanism deleted in Step 5 of #2132); that
+// formula had been stale since #1286 (pi has honoured the injected env var
+// ever since) and meant archives for sandbox-exec sessions never contained
+// the transcript (issue #2210).
 //
 // Before #1985 bwrap pointed at
 // <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/, but that

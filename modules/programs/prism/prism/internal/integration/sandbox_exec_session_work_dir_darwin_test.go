@@ -72,18 +72,17 @@ func sessionWorkDirFixture(t *testing.T, m *container.Manager) (string, prepared
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
-	stagingHome, err := m.SandboxExecHomePath()
-	if err != nil {
-		t.Fatalf("SandboxExecHomePath: %v", err)
-	}
+	// The legacy staging-HOME path (deleted in Step 5 of #2132) — generated
+	// configs must never reference anything under it.
+	legacyStagingHome := filepath.Join(sessionDir, "home")
 
 	for _, name := range []string{"ssh-config", "gitconfig"} {
 		content, readErr := os.ReadFile(filepath.Join(sessionDir, name))
 		if readErr != nil {
 			t.Fatalf("generated %s missing from work dir: %v", name, readErr)
 		}
-		if strings.Contains(string(content), stagingHome) {
-			t.Fatalf("generated %s embeds the staging-HOME path %q:\n%s", name, stagingHome, content)
+		if strings.Contains(string(content), legacyStagingHome) {
+			t.Fatalf("generated %s embeds the legacy staging-HOME path %q:\n%s", name, legacyStagingHome, content)
 		}
 		if strings.Contains(string(content), "secrets.d") {
 			t.Fatalf("generated %s embeds a resolved secrets.d path (#1410/#1573):\n%s", name, content)
@@ -303,10 +302,8 @@ func TestSandboxExecKnownHosts_ReadableViaLiteral(t *testing.T) {
 
 // TestSandboxExecKnownHosts_DeniedWithoutLiteral is the paired negative
 // test. It re-targets every rule referencing the known_hosts path (the
-// explicit #2213 literal AND the per-symlink literal that
-// collectStagingHomeSymlinkTargets emits for the staging .ssh/known_hosts
-// symlink — on a host where known_hosts is a regular file both quote to the
-// same string) at a non-existent path, then asserts the read fails.
+// explicit #2213 literal) at a non-existent path, then asserts the read
+// fails.
 //
 // Re-targeting (ReplaceAll on the quoted path) rather than line deletion
 // keeps the SBPL valid regardless of each rule's position in its block.

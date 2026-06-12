@@ -57,56 +57,28 @@ const (
 // isolationMode identifies which sandbox layer will consume the temp files
 // (gitconfig, ssh config) that writeGitconfig / writeSshConfig generate.
 //
-// The sandboxes mount the SSH artefacts at different in-sandbox paths:
-//
-//   - bwrap runs as the host user, so canonical paths are
-//     $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
-//     where $HOME is the host user's home directory.
-//   - sandbox-exec also runs as the host user but with a per-session staging
-//     HOME (~/.local/state/prism/sessions/<instance>/home/) — the agent
-//     sees this as $HOME and the staged SSH artefacts live under it. Post
-//     issue #2213 the generated git/ssh configs themselves live in the
-//     per-session work dir (the staging HOME's parent) and embed stable
-//     host key paths — see session_work_dir.go.
-//
-// The isolation mode lets the mode-based generators substitute the correct
-// $HOME prefix into the config files they write.
+// Only bwrap consumes the mode-based generators today: it runs as the host
+// user, so canonical paths are
+// $HOME/.ssh/{access-key,signing-key,signing-key.pub,allowed_signers}
+// where $HOME is the host user's home directory. sandbox-exec generates its
+// configs into the per-session work dir instead (session_work_dir.go,
+// issue #2213) with stable host key paths — the former isolationSandboxExec
+// mode value was deleted with the staging HOME in Step 5 of #2132.
 type isolationMode int
 
 const (
 	isolationBwrap isolationMode = iota
-	isolationSandboxExec
 )
 
 // sandboxHome returns the in-sandbox $HOME directory for the given isolation
 // mode and Manager. For bwrap this is the host user's home directory, because
-// bwrap shares the host user namespace. For sandbox-exec it is the per-session
-// staging HOME (which is what the agent sees as $HOME inside the sandbox);
-// when the staging HOME cannot be resolved the helper falls back to the host
-// home so that callers always receive a non-empty path.
+// bwrap shares the host user namespace.
 //
 // m may be nil for callers that do not yet have a Manager (e.g. early
-// dispatch paths that only need the static bwrap mapping); in that case
-// sandbox-exec falls back to the host home.
-func sandboxHome(m *Manager, mode isolationMode) string {
+// dispatch paths that only need the static bwrap mapping).
+func sandboxHome(_ *Manager, mode isolationMode) string {
 	switch mode {
 	case isolationBwrap:
-		home, err := os.UserHomeDir()
-		if err != nil || home == "" {
-			home = os.Getenv("HOME")
-		}
-		return home
-	case isolationSandboxExec:
-		if m != nil {
-			if stagingHome, err := m.sandboxExecHomePath(); err == nil && stagingHome != "" {
-				return stagingHome
-			}
-		}
-		// Fallback: host home. Used in the rare case where the staging
-		// HOME cannot be derived (no instance ID, no UserHomeDir). The
-		// resulting gitconfig still points at $HOME-relative SSH paths,
-		// matching the bwrap layout — which is the closest valid mapping
-		// for sandbox-exec when staging is unavailable.
 		home, err := os.UserHomeDir()
 		if err != nil || home == "" {
 			home = os.Getenv("HOME")
@@ -570,21 +542,10 @@ func (m *Manager) writeSshConfig(mode isolationMode) error {
 //   - isolationBwrap: signingKey = <hostHome>/.ssh/signing-key.pub,
 //     allowedSignersFile = <hostHome>/.ssh/allowed_signers (paths inside
 //     the bwrap sandbox, where the agent runs as the host user).
-//   - isolationSandboxExec: signingKey = <stagingHome>/.ssh/signing-key.pub,
-//     allowedSignersFile = <stagingHome>/.ssh/allowed_signers (paths inside
-//     the sandbox-exec staging HOME, which is what the agent sees as $HOME
-//     under sandbox-exec).
 //
-// All three sandboxes mount or stage the same underlying host key files —
-// only the $HOME prefix differs. Generic filenames (signing-key.pub,
-// allowed_signers, …) are used in every case so agents see a uniform layout
-// regardless of mode.
-//
-// Note: the production sandbox-exec path no longer consumes this writer —
+// Note: the sandbox-exec path does not consume this writer —
 // writeGitconfigToDir (session_work_dir.go) generates the work-dir gitconfig
-// with stable host key paths instead (issue #2213, Step 2 of #2132). The
-// isolationSandboxExec mode value remains supported for the mode matrix
-// until the staging HOME is deleted in Step 5.
+// with stable host key paths instead (issue #2213, Step 2 of #2132).
 func (m *Manager) writeGitconfig(mode isolationMode) error {
 	// Canonical in-sandbox paths for the signing artefacts. Both paths live
 	// at $HOME/.ssh/<generic-name> where $HOME depends on the isolation mode
@@ -601,9 +562,9 @@ func (m *Manager) writeGitconfig(mode isolationMode) error {
 }
 
 // writeGitconfigArtefacts is the canonical gitconfig generator shared by the
-// per-mode writeGitconfig (bwrap / sandbox-exec staging layout, temp-file
-// destinations) and the session-work-dir writer writeGitconfigToDir
-// (stable host key paths, work-dir destinations — issue #2213).
+// per-mode writeGitconfig (bwrap layout, temp-file destinations) and the
+// session-work-dir writer writeGitconfigToDir (stable host key paths,
+// work-dir destinations — issue #2213, used by sandbox-exec).
 //
 // Parameters:
 //
@@ -754,16 +715,15 @@ func (m *Manager) PrepareBwrap() ([]string, error) {
 	return iso.Prepare(context.Background(), m)
 }
 
-// PrepareSandboxExec prepares the per-session staging HOME, writes the SBPL
+// PrepareSandboxExec prepares the per-session work dir, writes the SBPL
 // profile, and returns the complete sandbox-exec argument list.
 //
 // The returned args slice is suitable for passing directly to
 // syscall.Exec("/usr/bin/sandbox-exec", args, env). The first element of
 // args is "sandbox-exec" itself (argv[0] under syscall.Exec).
 //
-// The env passed to syscall.Exec should set HOME=<staging_home> so that
-// the agent and its tools find credentials and config at their canonical paths
-// inside the staging HOME. agent_run.go constructs that env after this call.
+// $HOME inside the sandbox is the real host home (Step 5 of #2132);
+// cmd/agent_run_sandbox_exec_darwin.go constructs the env after this call.
 //
 // Post A1.L4 (issue #1140): the body of this method moved into
 // sandboxExecIsolator.Prepare; this method is now a thin dispatcher.

@@ -15,14 +15,11 @@ package integration_test
 //
 // This file tests:
 //
-//  1. Shape: after PrepareSandboxExecHome, the staging HOME contains no
-//     .claude symlink (issue #2243 AC).
-//
-//  2. Positive: a process inside sandbox-exec under the production profile
+//  1. Positive: a process inside sandbox-exec under the production profile
 //     can create, read back, and remove a file under ~/.config/claude — a
 //     real RW round-trip at the host XDG path.
 //
-//  3. Negative: stripping the (subpath ~/.config/claude) RW allow block
+//  2. Negative: stripping the (subpath ~/.config/claude) RW allow block
 //     makes the same write fail — proving the explicit grant is
 //     load-bearing (sandbox-exec testing convention, #1192). Because the
 //     path is not sops-backed there is no allowlist fallback to mask the
@@ -81,27 +78,6 @@ func claudeAllowBlock(claudeDir string) string {
 		"  (subpath " + sbplQuoteForTest(claudeDir) + "))\n"
 }
 
-// TestSandboxExecClaudeConfig_StagingSymlinkGone asserts the issue #2243
-// shape of the staging HOME on the real host: PrepareSandboxExecHome creates
-// no .claude symlink.
-func TestSandboxExecClaudeConfig_StagingSymlinkGone(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-
-	m := newProfileManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".claude")); lstatErr == nil {
-		t.Errorf("staging HOME has .claude entry — removed in #2243 (CLAUDE_CONFIG_DIR env-var route), must not be recreated")
-	}
-}
-
 // TestSandboxExecClaudeConfig_XDGDirReadWrite is the positive integration
 // test for the #2243 RW grant: under the production profile, a sandboxed
 // process can create, read, and remove a file under the host
@@ -117,17 +93,6 @@ func TestSandboxExecClaudeConfig_XDGDirReadWrite(t *testing.T) {
 	claudeDir := claudeXDGDirForTest(t)
 
 	m := newProfileManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Shape check inside the real flow: the staging symlink is gone.
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".claude")); lstatErr == nil {
-		t.Fatalf("staging HOME has .claude entry — removed in #2243, must not be recreated")
-	}
 
 	prepared, _ := preparePositiveProfile(t, m)
 
@@ -168,12 +133,6 @@ func TestSandboxExecClaudeConfig_WriteDeniedWithoutSubpathGrant(t *testing.T) {
 	claudeDir := claudeXDGDirForTest(t)
 
 	m := newProfileManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
 
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.ReplaceAll(p, claudeAllowBlock(claudeDir), "")

@@ -286,15 +286,13 @@ func TestPIResumeSessionsRoot_AllModes(t *testing.T) {
 		if got != want {
 			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want %q", got, want)
 		}
-		// Defensive: must NOT point under the per-session staging HOME —
-		// pi writes to the host root, not the staging HOME (#2210).
-		stagingHome, err := SandboxExecStagingHomePath(instanceID)
-		if err != nil {
-			t.Fatalf("SandboxExecStagingHomePath: %v", err)
-		}
-		if strings.HasPrefix(got, stagingHome) {
-			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the staging HOME %q (#2210)",
-				got, stagingHome)
+		// Defensive: must NOT point under the legacy per-session staging
+		// HOME path (deleted in Step 5 of #2132) — pi writes to the host
+		// root, not any per-session dir (#2210).
+		legacyStagingHome := filepath.Join(home, ".local", "state", "prism", "sessions", instanceID, "home")
+		if strings.HasPrefix(got, legacyStagingHome) {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the legacy staging HOME %q (#2210)",
+				got, legacyStagingHome)
 		}
 	})
 }
@@ -426,14 +424,12 @@ func TestPIResumeSessionsRoot_PICodingAgentDir(t *testing.T) {
 			t.Errorf("piResumeSessionsRoot(sandbox-exec) = %q, want host root %q (PI_CODING_AGENT_DIR=%q)",
 				got, wantHostRoot, piDataRoot)
 		}
-		// Defensive: must NOT resolve under the per-session staging HOME.
-		stagingHome, err := SandboxExecStagingHomePath(instanceID)
-		if err != nil {
-			t.Fatalf("SandboxExecStagingHomePath: %v", err)
-		}
-		if strings.HasPrefix(got, stagingHome) {
-			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the staging HOME %q (#2210)",
-				got, stagingHome)
+		// Defensive: must NOT resolve under the legacy per-session staging
+		// HOME path (deleted in Step 5 of #2132).
+		legacyStagingHome := filepath.Join(home, ".local", "state", "prism", "sessions", instanceID, "home")
+		if strings.HasPrefix(got, legacyStagingHome) {
+			t.Errorf("piResumeSessionsRoot(sandbox-exec) %q must not point under the legacy staging HOME %q (#2210)",
+				got, legacyStagingHome)
 		}
 	})
 }

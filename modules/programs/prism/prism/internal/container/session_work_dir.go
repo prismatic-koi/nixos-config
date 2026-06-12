@@ -7,10 +7,8 @@ package container
 //
 //	~/.local/state/prism/sessions/<instance_id>/
 //
-// — the parent of the sandbox-exec staging HOME
-// (~/.local/state/prism/sessions/<instance_id>/home/). Unlike the staging
-// HOME it contains no symlinks: just the generated regular files that git
-// and ssh need inside a sandbox-exec session:
+// It contains no symlinks: just the generated regular files that git and
+// ssh need inside a sandbox-exec session:
 //
 //	<sessionDir>/ssh-config        — minimal ssh config for github.com
 //	<sessionDir>/gitconfig         — git identity + signing config
@@ -57,9 +55,8 @@ import (
 //
 //	~/.local/state/prism/sessions/<instanceID>/
 //
-// This is the parent directory of the sandbox-exec staging HOME
-// (SandboxExecStagingHomePath returns <sessionDir>/home). Callers that have
-// an instance_id but no Manager (e.g. cmd/cleanup.go) use this directly.
+// Callers that have an instance_id but no Manager (e.g. cmd/cleanup.go)
+// use this directly.
 func SessionWorkDirPath(instanceID string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -76,9 +73,9 @@ func SessionWorkDirPath(instanceID string) (string, error) {
 
 // sessionWorkDirPath returns the session work dir path for this Manager's
 // session. InstanceID namespaces the directory so concurrent sessions have
-// independent work dirs; like sandboxExecHomePath, it falls back to the
-// container name when InstanceID is unset (e.g. tests that construct a
-// Manager directly without a full spawn lifecycle).
+// independent work dirs; it falls back to the container name when
+// InstanceID is unset (e.g. tests that construct a Manager directly
+// without a full spawn lifecycle).
 func (m *Manager) sessionWorkDirPath() (string, error) {
 	instanceID := m.cfg.InstanceID
 	if instanceID == "" {
@@ -119,12 +116,12 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 //
 // kubectl writes its discovery/http cache to $HOME/.kube/cache by default,
 // which exists on the host and would EPERM under the deny-default SBPL
-// profile once the staging .kube symlink is gone. KUBECACHEDIR (supported
-// since kubectl ≈ 1.26) redirects the cache here instead. The directory is
-// not pre-created — kubectl MkdirAll's it on first use, which the SBPL
-// profile's (subpath <sessionDir>) RW allow already covers; per-session
-// ephemeral semantics match the former staging-HOME behaviour (the work dir
-// is removed by RemoveSessionWorkDir on cleanup).
+// profile. KUBECACHEDIR (supported since kubectl ≈ 1.26) redirects the
+// cache here instead. The directory is not pre-created — kubectl
+// MkdirAll's it on first use, which the SBPL profile's
+// (subpath <sessionDir>) RW allow already covers; the cache stays
+// per-session and ephemeral (the work dir is removed by
+// RemoveSessionWorkDir on cleanup).
 func SessionWorkDirKubeCacheDirPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "kube-cache")
 }
@@ -322,13 +319,13 @@ func (m *Manager) writeGitconfigToDir(sessionDir string) error {
 	)
 }
 
-// RemoveSessionWorkDir removes the session work directory tree for the given
-// instance ID, including the sandbox-exec staging HOME nested under it at
-// <sessionDir>/home/. It is idempotent — calling it when the directory does
+// RemoveSessionWorkDir removes the session work directory tree for the
+// given instance ID. It is idempotent — calling it when the directory does
 // not exist is a no-op.
 //
-// Called from cmd/cleanup.go alongside RemoveSandboxExecStagingHome so the
-// generated work-dir configs do not accumulate after sessions end.
+// Called from cmd/cleanup.go so the generated work-dir configs do not
+// accumulate after sessions end. Any legacy staging-HOME remnant from a
+// pre-Step-5-of-#2132 session (nested at <sessionDir>/home/) is swept too.
 func RemoveSessionWorkDir(instanceID string) {
 	sessionDir, err := SessionWorkDirPath(instanceID)
 	if err != nil {

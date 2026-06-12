@@ -211,6 +211,16 @@ func augmentProfileForTest(profile string) string {
 	return profile + extras
 }
 
+// sbplQuoteForTest is a test-local copy of the SBPL quoter from
+// sandbox_exec.go (which is unexported). It must produce identical output
+// to container.quoteSBPL so substring matches against generated profiles
+// find the exact emitted rule text.
+func sbplQuoteForTest(path string) string {
+	escaped := strings.ReplaceAll(path, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "\"", "\\\"")
+	return "\"" + escaped + "\""
+}
+
 // preparedProfile is the result of Manager.PrepareSandboxExec(): the
 // generated profile path plus the original (un-augmented) content. Tests use
 // this struct as the input to writeAugmentedProfile / withMutatedProfile.
@@ -228,23 +238,19 @@ type preparedProfile struct {
 }
 
 // preparePositiveProfile invokes Manager.PrepareSandboxExec() and reads the
-// generated profile from disk. It registers cleanups for the staging HOME and
-// the generated profile file. Returns the prepared profile (path + content)
-// and the args slice — callers that need the args (e.g. to inspect the
-// argument shape) can use args; tests that only need the profile content can
-// ignore it.
+// generated profile from disk. It registers cleanups for the per-session
+// work dir and the generated profile file. Returns the prepared profile
+// (path + content) and the args slice — callers that need the args (e.g. to
+// inspect the argument shape) can use args; tests that only need the
+// profile content can ignore it.
 func preparePositiveProfile(t *testing.T, m *container.Manager) (preparedProfile, []string) {
 	t.Helper()
 
 	args, err := m.PrepareSandboxExec()
 	t.Cleanup(func() {
-		if stagingHome, homeErr := m.SandboxExecHomePath(); homeErr == nil {
-			_ = os.RemoveAll(stagingHome)
-		}
-		// PrepareSandboxExec also creates the per-session work dir (the
-		// staging HOME's parent — issue #2213) with the generated git/ssh
-		// configs; remove it so test instance dirs don't accumulate under
-		// the real ~/.local/state/prism/sessions/.
+		// PrepareSandboxExec creates the per-session work dir (issue #2213)
+		// with the generated git/ssh configs; remove it so test instance
+		// dirs don't accumulate under the real ~/.local/state/prism/sessions/.
 		if sessionDir, dirErr := m.SessionWorkDir(); dirErr == nil {
 			_ = os.RemoveAll(sessionDir)
 		}
@@ -326,7 +332,7 @@ func withMutatedProfile(t *testing.T, m *container.Manager, mutate func(string) 
 }
 
 // shQuote returns s wrapped in single quotes, with any embedded single
-// quotes escaped using the standard '\'' Bourne-shell idiom. Used when
+// quotes escaped using the standard '\” Bourne-shell idiom. Used when
 // composing `bash -c '<script>'` invocations from absolute paths that may
 // contain spaces.
 func shQuote(s string) string {

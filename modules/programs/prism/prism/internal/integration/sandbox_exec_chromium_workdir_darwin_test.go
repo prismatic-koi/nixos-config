@@ -54,9 +54,9 @@ import (
 // chromiumWorkDirFixture prepares the production profile for m and returns
 // the session work dir plus the prepared profile. It asserts the #2247
 // layout before any sandbox is launched: the two Google skeleton dirs
-// exist inside the work dir, the staging HOME holds no Library/ entries,
-// and the profile contains the (subpath "<sessionDir>") rule the skeleton
-// rides but no rule referencing the host ~/Library.
+// exist inside the work dir, and the profile contains the
+// (subpath "<sessionDir>") rule the skeleton rides but no rule referencing
+// the host ~/Library.
 func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, preparedProfile) {
 	t.Helper()
 
@@ -65,10 +65,6 @@ func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, prepare
 	sessionDir, err := m.SessionWorkDir()
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
-	}
-	stagingHome, err := m.SandboxExecHomePath()
-	if err != nil {
-		t.Fatalf("SandboxExecHomePath: %v", err)
 	}
 
 	for _, d := range container.SessionWorkDirChromiumDirs(sessionDir) {
@@ -79,9 +75,6 @@ func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, prepare
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			t.Fatalf("chromium skeleton dir %q must be a real directory: mode=%v", d, info.Mode())
 		}
-	}
-	if _, statErr := os.Lstat(filepath.Join(stagingHome, "Library")); statErr == nil {
-		t.Fatalf("staging HOME still contains a Library/ entry — the chromium skeleton must live only in the session work dir (issue #2247)")
 	}
 
 	// The capability under test: the existing work-dir subpath rule.
