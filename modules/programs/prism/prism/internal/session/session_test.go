@@ -187,18 +187,26 @@ func TestBuildDirectAgentCmd_AgentEnvVarsNil(t *testing.T) {
 // ── Isolation mode command construction ─────────────────────────────────────
 
 // TestBuildAgentCmd_BwrapMode verifies that IsolationMode="bwrap" produces
-// "prism agent-run --session <session-name>".
+// "<abs-path>/prism agent-run --session '<session-name>'". Post-#2260 the
+// command begins with a shell-quoted absolute path (os.Executable resolves
+// to the running go-test binary under `go test`, hence we only assert the
+// shape rather than a specific path).
 func TestBuildAgentCmd_BwrapMode(t *testing.T) {
 	opts := Opts{
 		IsolationMode: "bwrap",
 		SessionName:   "nixos-config@feature",
 	}
-	cmd := BuildAgentCmd(opts)
-	if !strings.HasPrefix(cmd, "prism agent-run --session") {
-		t.Errorf("bwrap mode: got %q, want prefix 'prism agent-run --session'", cmd)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
 	}
-	if !strings.Contains(cmd, "nixos-config@feature") {
-		t.Errorf("bwrap mode: session name not in cmd: %q", cmd)
+	// The bwrap shape carries an absolute path to the running binary
+	// (issue #2260), shell-quoted, followed by ` agent-run --session`.
+	if !strings.HasPrefix(cmd, "'/") {
+		t.Errorf("bwrap mode: cmd must start with a shell-quoted absolute path; got %q", cmd)
+	}
+	if !strings.Contains(cmd, " agent-run --session 'nixos-config@feature'") {
+		t.Errorf("bwrap mode: cmd missing agent-run subcommand and session; got %q", cmd)
 	}
 }
 
@@ -211,8 +219,11 @@ func TestBuildAgentCmd_HostMode(t *testing.T) {
 		Port:          14000,
 		SessionName:   "nixos-config@feature",
 	}
-	cmd := BuildAgentCmd(opts)
-	if strings.HasPrefix(cmd, "prism agent-run") {
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
+	if strings.Contains(cmd, " agent-run ") {
 		t.Errorf("host mode: got prism agent-run command %q, want direct pi invocation", cmd)
 	}
 	if !strings.Contains(cmd, "pi") {
@@ -228,8 +239,11 @@ func TestBuildAgentCmd_EmptyIsolationMode(t *testing.T) {
 		Agent:       "worker",
 		Port:        14000,
 	}
-	cmd := BuildAgentCmd(opts)
-	if strings.HasPrefix(cmd, "prism agent-run") {
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
+	if strings.Contains(cmd, " agent-run ") {
 		t.Errorf("empty IsolationMode: got %q, want direct pi invocation", cmd)
 	}
 	if !strings.Contains(cmd, "pi") {

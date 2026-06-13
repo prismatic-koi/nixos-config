@@ -313,16 +313,27 @@ func (b *bwrapIsolator) WriteHarnessConfigBlob(sessionName, content string) erro
 	return WriteHarnessConfig(NameForSession(sessionName), content)
 }
 
-// AgentPaneCmd returns the tmux pane command for bwrap: "prism agent-run
-// --session <name>". The bwrap sandbox is owned by the tmux pane (not the
-// sidecar), so the agent-run dispatch reads the session's isolation mode
-// from the DB and invokes the bwrap arg builder there. Mirrors the
-// pre-refactor branch in BuildOpencodeCmd (internal/session/session.go:286-294).
-func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
+// AgentPaneCmd returns the tmux pane command for bwrap:
+// "<abs-path>/prism agent-run --session <name>". The bwrap sandbox is owned
+// by the tmux pane (not the sidecar), so the agent-run dispatch reads the
+// session's isolation mode from the DB and invokes the bwrap arg builder
+// there. Mirrors the pre-refactor branch in BuildOpencodeCmd
+// (internal/session/session.go:286-294).
+//
+// The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
+// in production) and shell-quoted into the rendered command so the agent-run
+// pane exec'd from the tmux shell is the same binary the operator is running
+// today — not whatever a PATH lookup happens to land on. Issue #2260.
+func (b *bwrapIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 	if opts.SessionName == "" {
-		return opts.DirectCmd
+		return opts.DirectCmd, nil
 	}
-	return appendAgentRunOverrides("prism agent-run --session "+shellQuoteContainer(opts.SessionName), opts)
+	self, err := prismBinaryPathFn()
+	if err != nil {
+		return "", fmt.Errorf("bwrap AgentPaneCmd: resolve prism binary path: %w", err)
+	}
+	cmd := shellQuoteContainer(self) + " agent-run --session " + shellQuoteContainer(opts.SessionName)
+	return appendAgentRunOverrides(cmd, opts), nil
 }
 
 // SidecarFlags returns the sidecar argv extensions for bwrap: --port and the
@@ -398,14 +409,24 @@ func (s *sandboxExecIsolator) WriteHarnessConfigBlob(sessionName, content string
 }
 
 // AgentPaneCmd returns the tmux pane command for sandbox-exec — same shape
-// as bwrap because both modes are pane-owned: "prism agent-run --session
-// <name>". Mirrors the pre-refactor branch in BuildOpencodeCmd
-// (internal/session/session.go:286-294).
-func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
+// as bwrap because both modes are pane-owned:
+// "<abs-path>/prism agent-run --session <name>". Mirrors the pre-refactor
+// branch in BuildOpencodeCmd (internal/session/session.go:286-294).
+//
+// The prism binary's absolute path is resolved via prismBinaryPathFn (os.Executable
+// in production) and shell-quoted into the rendered command so the agent-run
+// pane exec'd from the tmux shell is the same binary the operator is running
+// today — not whatever a PATH lookup happens to land on. Issue #2260.
+func (s *sandboxExecIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
 	if opts.SessionName == "" {
-		return opts.DirectCmd
+		return opts.DirectCmd, nil
 	}
-	return appendAgentRunOverrides("prism agent-run --session "+shellQuoteContainer(opts.SessionName), opts)
+	self, err := prismBinaryPathFn()
+	if err != nil {
+		return "", fmt.Errorf("sandbox-exec AgentPaneCmd: resolve prism binary path: %w", err)
+	}
+	cmd := shellQuoteContainer(self) + " agent-run --session " + shellQuoteContainer(opts.SessionName)
+	return appendAgentRunOverrides(cmd, opts), nil
 }
 
 // SidecarFlags returns the sidecar argv extensions for sandbox-exec — same
@@ -460,8 +481,13 @@ func (h *hostIsolator) WriteHarnessConfigBlob(sessionName, content string) error
 // AgentPaneCmd returns DirectCmd unchanged — host mode runs the agent
 // directly in the tmux pane and has no sandbox wrapper command. The caller
 // is responsible for constructing DirectCmd with all env vars and flags.
-func (h *hostIsolator) AgentPaneCmd(opts AgentPaneOpts) string {
-	return opts.DirectCmd
+//
+// Host mode never needs to resolve the prism binary path (no `prism
+// agent-run` indirection), so this method does not call prismBinaryPathFn and
+// cannot return an error — the signature still returns one purely for
+// interface conformance with the bwrap / sandbox-exec implementations.
+func (h *hostIsolator) AgentPaneCmd(opts AgentPaneOpts) (string, error) {
+	return opts.DirectCmd, nil
 }
 
 // SidecarFlags returns the sidecar argv extensions for host mode. Host
@@ -518,6 +544,14 @@ func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 func shellQuoteContainer(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
+
+// prismBinaryPathFn returns the absolute path of the currently-running prism
+// binary. Production uses os.Executable; tests override this hook to inject
+// deterministic values (and to exercise the os.Executable-returns-error
+// branch in AgentPaneCmd). Issue #2260 — emitting bare "prism" into the
+// agent-run pane command lets a PATH shadow silently run the wrong binary,
+// so the rendered command must carry the absolute path of THIS binary.
+var prismBinaryPathFn = os.Executable
 
 // commonHostAPISidecarFlags returns the SidecarFlags shared by bwrap,
 // sandbox-exec, and host. All three modes set up a host-API socket and

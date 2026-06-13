@@ -24,22 +24,47 @@ import (
 	"testing"
 )
 
+// withFakePrismBinary stubs prismBinaryPathFn for the duration of t so
+// AgentPaneCmd renders a deterministic absolute path instead of os.Executable()'s
+// runtime value (which is the go-test binary under `go test`). Restored on
+// cleanup. This is the canonical test fixture for any case that needs to
+// assert the rendered command contains a specific binary path.
+func withFakePrismBinary(t *testing.T, path string) {
+	t.Helper()
+	orig := prismBinaryPathFn
+	prismBinaryPathFn = func() (string, error) { return path, nil }
+	t.Cleanup(func() { prismBinaryPathFn = orig })
+}
+
+// withErrorPrismBinary stubs prismBinaryPathFn to return an error so
+// AgentPaneCmd exercises the os.Executable-failed branch. Restored on cleanup.
+func withErrorPrismBinary(t *testing.T, err error) {
+	t.Helper()
+	orig := prismBinaryPathFn
+	prismBinaryPathFn = func() (string, error) { return "", err }
+	t.Cleanup(func() { prismBinaryPathFn = orig })
+}
+
 // TestBwrapAgentPaneCmd_OverrideFlagsAppended asserts that --model and
 // --variant land on the tmux pane command when AgentPaneOpts carries them.
 func TestBwrapAgentPaneCmd_OverrideFlagsAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &bwrapIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@bwrap",
 		Model:       "anthropic/claude-opus-4-8",
 		Variant:     "high",
 	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
 
 	// Order is load-bearing for readability of `ps` output but not for
 	// cobra's flag parser. Use substring checks so a reordering inside
 	// appendAgentRunOverrides does not break the test (cobra still parses
 	// the flags correctly regardless of position).
 	for _, want := range []string{
-		"prism agent-run --session 'prism-test@bwrap'",
+		"'/nix/store/abcd-prism/bin/prism' agent-run --session 'prism-test@bwrap'",
 		"--model 'anthropic/claude-opus-4-8'",
 		"--variant 'high'",
 	} {
@@ -54,11 +79,15 @@ func TestBwrapAgentPaneCmd_OverrideFlagsAppended(t *testing.T) {
 // the pre-#2086 shape so existing tests, restore semantics, and operator
 // expectations are preserved.
 func TestBwrapAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &bwrapIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@bwrap",
 	})
-	want := "prism agent-run --session 'prism-test@bwrap'"
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	want := "'/nix/store/abcd-prism/bin/prism' agent-run --session 'prism-test@bwrap'"
 	if got != want {
 		t.Errorf("bwrap AgentPaneCmd = %q, want %q", got, want)
 	}
@@ -71,14 +100,18 @@ func TestBwrapAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
 // for sandbox-exec — both isolators dispatch through the same
 // appendAgentRunOverrides helper so a divergence would be a real bug.
 func TestSandboxExecAgentPaneCmd_OverrideFlagsAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &sandboxExecIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@sbx",
 		Model:       "anthropic/claude-opus-4-8",
 		Variant:     "high",
 	})
+	if err != nil {
+		t.Fatalf("sandbox-exec AgentPaneCmd: unexpected error: %v", err)
+	}
 	for _, want := range []string{
-		"prism agent-run --session 'prism-test@sbx'",
+		"'/nix/store/abcd-prism/bin/prism' agent-run --session 'prism-test@sbx'",
 		"--model 'anthropic/claude-opus-4-8'",
 		"--variant 'high'",
 	} {
@@ -90,11 +123,15 @@ func TestSandboxExecAgentPaneCmd_OverrideFlagsAppended(t *testing.T) {
 
 // TestSandboxExecAgentPaneCmd_NoOverrideFlagsByDefault — no-regression case.
 func TestSandboxExecAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &sandboxExecIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@sbx",
 	})
-	want := "prism agent-run --session 'prism-test@sbx'"
+	if err != nil {
+		t.Fatalf("sandbox-exec AgentPaneCmd: unexpected error: %v", err)
+	}
+	want := "'/nix/store/abcd-prism/bin/prism' agent-run --session 'prism-test@sbx'"
 	if got != want {
 		t.Errorf("sandbox-exec AgentPaneCmd = %q, want %q", got, want)
 	}
@@ -104,11 +141,15 @@ func TestSandboxExecAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
 // only Model (no Variant) emits --model but not --variant. Mirrors the
 // operator workflow where one axis is varied for an A/B test.
 func TestBwrapAgentPaneCmd_PartialOverride_ModelOnly(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &bwrapIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@bwrap",
 		Model:       "anthropic/claude-opus-4-8",
 	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
 	if !strings.Contains(got, "--model 'anthropic/claude-opus-4-8'") {
 		t.Errorf("expected --model in pane cmd; got %q", got)
 	}
@@ -123,13 +164,17 @@ func TestBwrapAgentPaneCmd_PartialOverride_ModelOnly(t *testing.T) {
 // regardless, but the tmux pane wraps the command in `sh -c "<cmd>"` so
 // unquoted values are a real injection risk.
 func TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
 	iso := &bwrapIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		SessionName: "prism-test@bwrap",
 		// A value containing a single quote exercises the escape path in
 		// shellQuoteContainer.
 		Model: "danger'name",
 	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
 	want := `--model 'danger'\''name'`
 	if !strings.Contains(got, want) {
 		t.Errorf("expected shell-escaped Model %q in cmd; got %q", want, got)
@@ -143,11 +188,14 @@ func TestBwrapAgentPaneCmd_ShellQuoting_SingleQuotedValues(t *testing.T) {
 // by `prism agent-run`, not by the direct pi launch).
 func TestBwrapAgentPaneCmd_EmptySessionName_FallsBackToDirect(t *testing.T) {
 	iso := &bwrapIsolator{}
-	got := iso.AgentPaneCmd(AgentPaneOpts{
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
 		DirectCmd: "pi --agent worker",
 		Model:     "anthropic/claude-opus-4-8",
 		Variant:   "high",
 	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
 	if got != "pi --agent worker" {
 		t.Errorf("expected fallback to DirectCmd; got %q", got)
 	}
