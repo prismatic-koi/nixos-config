@@ -143,6 +143,7 @@ in
 
   homebrew = {
     enable = true;
+    taps = [ "datadog-labs/pack" ];
     onActivation = {
       autoUpdate = true;
       cleanup = "uninstall";
