@@ -329,14 +329,47 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
 		}
 
-		// Determine the instance_id for this session incarnation. When the
-		// caller (ensureAndSwitch) has already written an instance_id to the DB
-		// (e.g. before starting the sidecar), we preserve it so the sidecar and
-		// the DB remain in sync. For standalone invocations (tmux hook, restore
-		// path) where no instance_id has been pre-written, generate a fresh UUID.
+		// Determine the instance_id for this session incarnation. Three cases:
+		//
+		//  1. agent_status has no instance_id (cleared by tmux-session-end, or
+		//     never written for this session) — mint a fresh UUID.
+		//
+		//  2. agent_status has an instance_id AND the corresponding sessions
+		//     row has ended_at unset (live incarnation) — reuse it. This
+		//     preserves the post-#1507 host-side mint (SpawnSession writes the
+		//     fresh instance_id before tmux-session-start fires) and the
+		//     within-incarnation profile-pin semantics from #2092 (an
+		//     agent-pane restart while ended_at is unset must keep resolving
+		//     to the same spawn_inputs.profile_name, including legitimate
+		//     `prism spawn --profile X` / `--abtest A B` pins).
+		//
+		//  3. agent_status has an instance_id AND the corresponding sessions
+		//     row has ended_at set (previous incarnation is over) — mint a
+		//     fresh UUID (#2253). Reusing the instance_id would otherwise
+		//     carry the previous incarnation's `spawn_inputs.profile_name`
+		//     pin forward forever, so respawned long-lived coordinators (e.g.
+		//     `home-ops@main` reopened via `prism switch`) ignore the
+		//     currently-active profile. A fresh instance_id has no
+		//     spawn_inputs row, so profile resolution at agent-run time falls
+		//     through to the state file / nix default (the user's active
+		//     profile). Historical spawn_inputs rows are left intact as the
+		//     #2090 audit trail that `prism stats` / archive queries
+		//     aggregate by profile_name — see SessionByInstanceID lookup
+		//     below; we never UPDATE or DELETE the ended row.
+		//
+		// A nil prevSess (legacy pre-#1606 agent_status row whose instance_id
+		// has no matching sessions entry) and any lookup error preserve the
+		// existing reuse behaviour — only a positive "previous incarnation
+		// has ended" signal triggers a fresh mint.
 		var instanceID string
 		currentStatus, stErr := d.CurrentStatus(session)
-		if stErr == nil && currentStatus != nil && currentStatus.InstanceID != nil {
+		reuseInstance := stErr == nil && currentStatus != nil && currentStatus.InstanceID != nil
+		if reuseInstance {
+			if prevSess, prevErr := d.SessionByInstanceID(*currentStatus.InstanceID); prevErr == nil && prevSess != nil && prevSess.EndedAt != nil {
+				reuseInstance = false
+			}
+		}
+		if reuseInstance {
 			instanceID = *currentStatus.InstanceID
 		} else {
 			instanceID = uuid.New().String()
