@@ -97,12 +97,6 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The carve-out must include file-write* in the generated profile.
@@ -122,7 +116,7 @@ func TestSandboxExecProfile_AWSSSOWritable(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo "+shQuote(awsCacheSSOWriteContent)+" > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -156,12 +150,6 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	// Remove file-write* from the carve-out allow block. The production
 	// profile emits:
 	//   (allow file-read* file-write*
@@ -179,7 +167,7 @@ func TestSandboxExecProfile_AWSSSOWriteDeniedWithoutFileWrite(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo "+shQuote(awsCacheSSOWriteContent)+" > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -204,12 +192,6 @@ func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The carve-out must include file-write* and the cli path.
@@ -230,7 +212,7 @@ func TestSandboxExecProfile_AWSCLIWritable(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo "+shQuote(awsCacheCLIWriteContent)+" > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -262,12 +244,6 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.ReplaceAll(p,
 			"(allow file-read* file-write*\n  (subpath "+sbplQuoteForTest(filepath.Join(realUserHome(t), ".aws", "sso")),
@@ -279,7 +255,7 @@ func TestSandboxExecProfile_AWSCLIWriteDeniedWithoutFileWrite(t *testing.T) {
 	t.Cleanup(func() { _ = os.Remove(writeTarget) })
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo "+shQuote(awsCacheCLIWriteContent)+" > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -325,12 +301,6 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
@@ -338,7 +308,7 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 	// outside the sso/ and cli/ carve-outs). The broad deny must block this.
 	writeTarget := filepath.Join(otherDir, ".prism-1558-security-test")
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo prism-1558-security > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -355,12 +325,11 @@ func TestSandboxExecProfile_AWSOutsideCarveoutDenied(t *testing.T) {
 // exist on the host at session-spawn time, the generated profile still loads
 // under /usr/bin/sandbox-exec and a non-AWS workload exits 0.
 //
-// Since #2245 PrepareSandboxExecHome never creates sso/cli staging entries
-// (present or not) — but generateProfile still unconditionally emits the
-// carve-out rules with the host paths (filepath.Join(home, ".aws", "sso")
-// and ".aws", "cli"). sandbox-exec silently ignores (subpath ...) rules for
-// paths that do not exist, so the profile must still load and allow a
-// simple non-AWS workload (echo) to succeed.
+// generateProfile unconditionally emits the carve-out rules with the host
+// paths (filepath.Join(home, ".aws", "sso") and ".aws", "cli").
+// sandbox-exec silently ignores (subpath ...) rules for paths that do not
+// exist, so the profile must still load and allow a simple non-AWS
+// workload (echo) to succeed.
 //
 // This guards against a regression where the carve-out rules cause sandbox
 // initialisation to fail when the host has no ~/.aws/sso or ~/.aws/cli.
@@ -395,18 +364,6 @@ func TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Verify that no .aws staging entry exists at all (the sso/cli staging
-	// symlinks were removed wholesale in #2245).
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".aws")); lstatErr == nil {
-		t.Errorf("staging HOME has a .aws entry — removed in #2245, must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
@@ -415,7 +372,7 @@ func TestSandboxExecProfile_AWSCarveoutAbsent_ProfileLoads(t *testing.T) {
 	// do not exist on the host.
 	const echoSentinel = "prism-1558-absent-carveout-ok"
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo "+shQuote(echoSentinel))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {

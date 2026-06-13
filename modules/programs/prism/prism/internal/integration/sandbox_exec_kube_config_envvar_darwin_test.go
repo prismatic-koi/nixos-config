@@ -19,10 +19,7 @@ package integration_test
 //
 // This file tests:
 //
-//  1. Shape: after PrepareSandboxExecHome, the staging HOME contains no
-//     .kube/config symlink and no .kube directory at all (issue #2235 AC).
-//
-//  2. Positive: a real config-resolving kubectl invocation —
+//  1. Positive: a real config-resolving kubectl invocation —
 //     `kubectl config view` with KUBECONFIG at the host XDG path — exits 0
 //     inside sandbox-exec AND its output carries the current-context name
 //     parsed from the host config. kubectl prints an EMPTY config (exit 0)
@@ -34,7 +31,7 @@ package integration_test
 //     exec-plugin env propagation (AWS_CONFIG_FILE et al., Step 3a pair) is
 //     covered at unit level by env_test.go and the dispatcher tests.)
 //
-//  3. Negative: stripping the kube agents-config require-not exception from
+//  2. Negative: stripping the kube agents-config require-not exception from
 //     the #2211 secrets.d deny makes the same invocation fail — proving the
 //     allowlist exception is the load-bearing grant for the env-var route
 //     (sandbox-exec testing convention, #1192).
@@ -134,46 +131,23 @@ func kubeHostConfigForTest(t *testing.T) (configPath, currentContext string) {
 }
 
 // kubectlConfigViewCmd builds the in-sandbox `kubectl config view`
-// invocation with the production env-var shape: HOME at the staging HOME
-// (still present until Step 5 of #2132), KUBECONFIG at the host XDG path,
-// KUBECACHEDIR at the session work dir, and the Step 3a AWS pair at the
-// host XDG paths (production parity — config view does not invoke the
-// exec plugin, so the pair is inert here).
-func kubectlConfigViewCmd(profilePath, stagingHome, sessionDir, kubectlBin, nixBash, configPath string) *exec.Cmd {
+// invocation with the production env-var shape: HOME at the real host home
+// (Step 5 of #2132), KUBECONFIG at the host XDG path, KUBECACHEDIR at the
+// session work dir, and the Step 3a AWS pair at the host XDG paths
+// (production parity — config view does not invoke the exec plugin, so the
+// pair is inert here).
+func kubectlConfigViewCmd(t *testing.T, profilePath, sessionDir, kubectlBin, nixBash, configPath string) *exec.Cmd {
+	t.Helper()
 	home, _ := os.UserHomeDir()
 	script := shQuote(kubectlBin) + " config view"
 	return exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env",
-		"HOME="+stagingHome,
+		"HOME="+realUserHome(t),
 		"KUBECONFIG="+configPath,
 		"KUBECACHEDIR="+container.SessionWorkDirKubeCacheDirPath(sessionDir),
 		"AWS_CONFIG_FILE="+filepath.Join(home, ".config", "aws", "readonly-config"),
 		"AWS_SHARED_CREDENTIALS_FILE="+filepath.Join(home, ".config", "aws", "credentials"),
 		nixBash, "-c", script)
-}
-
-// TestSandboxExecKubeConfig_StagingSymlinkGone asserts the issue #2235 shape
-// of the staging HOME on the real host: PrepareSandboxExecHome creates no
-// .kube/config symlink and no .kube directory at all.
-func TestSandboxExecKubeConfig_StagingSymlinkGone(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-
-	m := newProfileManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, rel := range []string{".kube/config", ".kube"} {
-		staged := filepath.Join(stagingHome, filepath.FromSlash(rel))
-		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
-			t.Errorf("staging HOME has %s entry — removed in #2235 (env-var route), must not be recreated", rel)
-		}
-	}
 }
 
 // TestSandboxExecKubeConfig_EnvVarResolution is the positive integration
@@ -198,19 +172,6 @@ func TestSandboxExecKubeConfig_EnvVarResolution(t *testing.T) {
 	// stable-chain tests and the aws env-var tests).
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Shape check inside the real flow: the staging kube entries are gone.
-	for _, rel := range []string{".kube/config", ".kube"} {
-		if _, lstatErr := os.Lstat(filepath.Join(stagingHome, filepath.FromSlash(rel))); lstatErr == nil {
-			t.Fatalf("staging HOME has %s entry — removed in #2235, must not be recreated", rel)
-		}
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the kube agents-config allowlist exception —
@@ -234,7 +195,7 @@ func TestSandboxExecKubeConfig_EnvVarResolution(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	cmd := kubectlConfigViewCmd(testProfilePath, stagingHome, sessionDir, kubectlBin, nixBash, configPath)
+	cmd := kubectlConfigViewCmd(t, testProfilePath, sessionDir, kubectlBin, nixBash, configPath)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("kubectl config view failed in-sandbox under the production profile.\n"+
@@ -268,12 +229,6 @@ func TestSandboxExecKubeConfig_EnvVarResolutionDeniedWithoutAllowlistException(t
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	resolvedName := secretsDNameForTest(t, configPath)
 
 	// Remove the require-not exception line for the kube config name,
@@ -289,7 +244,7 @@ func TestSandboxExecKubeConfig_EnvVarResolutionDeniedWithoutAllowlistException(t
 		t.Fatalf("SessionWorkDir: %v", err)
 	}
 
-	cmd := kubectlConfigViewCmd(mutatedPath, stagingHome, sessionDir, kubectlBin, nixBash, configPath)
+	cmd := kubectlConfigViewCmd(t, mutatedPath, sessionDir, kubectlBin, nixBash, configPath)
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("kubectl config view succeeded WITHOUT the %q allowlist exception.\n"+
@@ -368,11 +323,12 @@ users:
 // kubectlAPIResourcesCmd builds the in-sandbox `kubectl api-resources`
 // invocation against the fake API server with the production KUBECACHEDIR
 // shape.
-func kubectlAPIResourcesCmd(profilePath, stagingHome, sessionDir, kubectlBin, nixBash, kubeconfigPath string) *exec.Cmd {
+func kubectlAPIResourcesCmd(t *testing.T, profilePath, sessionDir, kubectlBin, nixBash, kubeconfigPath string) *exec.Cmd {
+	t.Helper()
 	script := shQuote(kubectlBin) + " api-resources --request-timeout=10s"
 	return exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env",
-		"HOME="+stagingHome,
+		"HOME="+realUserHome(t),
 		"KUBECONFIG="+kubeconfigPath,
 		"KUBECACHEDIR="+container.SessionWorkDirKubeCacheDirPath(sessionDir),
 		nixBash, "-c", script)
@@ -421,12 +377,6 @@ func TestSandboxExecKubeConfig_CacheWritesLandInSessionWorkDir(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
@@ -441,7 +391,7 @@ func TestSandboxExecKubeConfig_CacheWritesLandInSessionWorkDir(t *testing.T) {
 	// assertion below cannot be confused by unrelated host cache content.
 	hostPortKey := strings.ReplaceAll(server.Host, ":", "_")
 
-	cmd := kubectlAPIResourcesCmd(testProfilePath, stagingHome, sessionDir, kubectlBin, nixBash, kubeconfigPath)
+	cmd := kubectlAPIResourcesCmd(t, testProfilePath, sessionDir, kubectlBin, nixBash, kubeconfigPath)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("kubectl api-resources against the fake API server failed in-sandbox.\n"+
@@ -498,12 +448,6 @@ func TestSandboxExecKubeConfig_CacheWriteDeniedWithoutSessionWorkDirGrant(t *tes
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	sessionDir, err := m.SessionWorkDir()
 	if err != nil {
 		t.Fatalf("SessionWorkDir: %v", err)
@@ -518,7 +462,7 @@ func TestSandboxExecKubeConfig_CacheWriteDeniedWithoutSessionWorkDirGrant(t *tes
 		return strings.ReplaceAll(p, sessionDirLine, "")
 	})
 
-	cmd := kubectlAPIResourcesCmd(mutatedPath, stagingHome, sessionDir, kubectlBin, nixBash, kubeconfigPath)
+	cmd := kubectlAPIResourcesCmd(t, mutatedPath, sessionDir, kubectlBin, nixBash, kubeconfigPath)
 	out, runErr := cmd.CombinedOutput()
 	t.Logf("kubectl api-resources without the session-work-dir grant: exit=%v", runErr)
 	_ = out

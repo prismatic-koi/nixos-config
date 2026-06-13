@@ -94,17 +94,6 @@ func TestSandboxExecClipboard_RealPathReadable(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// No clipboard staging entry (nor a .cache staging dir at all).
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".cache")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .cache entry — the 3e/3f staging symlinks were removed in #2245 and must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	block := roGrantBlock5f(t)
@@ -115,7 +104,7 @@ func TestSandboxExecClipboard_RealPathReadable(t *testing.T) {
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
@@ -144,19 +133,13 @@ func TestSandboxExecClipboard_DeniedWithoutGrantBlock(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	block := roGrantBlock5f(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, block, "", 1)
 	})
 
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"cat "+shQuote(sentinelPath))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -182,19 +165,13 @@ func TestSandboxExecClipboard_WriteDenied(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	writeTarget := filepath.Join(clipboardDir, ".prism-2245-3f-write-denied")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) }) // in case the deny fails
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"echo prism-2245-write > "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
@@ -224,17 +201,6 @@ func TestSandboxExecNixProfile_ReadableThroughSymlink(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// No nix-profile staging entry.
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".nix-profile")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .nix-profile entry — removed in #2245 (Step 3f), must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The 5g literal on the link node must be present.
@@ -250,7 +216,7 @@ func TestSandboxExecNixProfile_ReadableThroughSymlink(t *testing.T) {
 	// resolution to the target.
 	script := "readlink " + shQuote(nixProfile) + " && ls -1 " + shQuote(nixProfile)
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c", script)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("in-sandbox readlink/ls of ~/.nix-profile failed under the production profile.\n"+
@@ -279,19 +245,13 @@ func TestSandboxExecNixProfile_WriteDenied(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	prepared, _ := preparePositiveProfile(t, m)
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	writeTarget := filepath.Join(nixProfile, ".prism-2245-5g-write-denied")
 	t.Cleanup(func() { _ = os.Remove(writeTarget) }) // in case the deny fails
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c",
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c",
 		"touch "+shQuote(writeTarget))
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {

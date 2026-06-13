@@ -208,7 +208,7 @@ type Isolator interface {
 	// per-method comments in lifecycle_dispatch.go for the call-site citations.
 
 	// EnsureRemoved tears down any per-session state owned by this isolator
-	// (containers, sandbox processes, temp files, staging directories).
+	// (containers, sandbox processes, temp files, per-session work dirs).
 	// It must use the supplied context for deadlines but proceed on
 	// best-effort — errors for "already gone" are silently swallowed by the
 	// implementation. m carries the Manager state (temp file paths,
@@ -221,11 +221,10 @@ type Isolator interface {
 	EnsureRemoved(ctx context.Context, m *Manager)
 
 	// WriteGitconfig generates a minimal .gitconfig for this isolator's
-	// sandbox layout and writes it to the per-session temp path. The
-	// in-sandbox $HOME differs per mode — bwrap runs as the host user,
-	// sandbox-exec uses a per-session staging HOME — so each isolator picks
-	// the correct $HOME prefix when emitting the signingKey and
-	// allowedSignersFile paths. Returns nil on success or a wrapped error.
+	// sandbox layout. bwrap writes it to the per-session temp path with the
+	// host user's $HOME prefix; sandbox-exec writes it into the per-session
+	// work dir (writeGitconfigToDir — issue #2213) with stable host key
+	// paths. Returns nil on success or a wrapped error.
 	// host: no-op (the agent reads the host gitconfig directly).
 	// Cites: internal/container/container.go:451 (writeGitconfig with mode);
 	//        internal/container/lifecycle.go:121 (Create caller);
@@ -241,7 +240,7 @@ type Isolator interface {
 	Reset(ctx context.Context) error
 
 	// Prepare materialises any per-session temp files (SSH config,
-	// gitconfig, harness config, sandbox staging HOME, SBPL profile) that
+	// gitconfig, harness config, session work dir, SBPL profile) that
 	// the sandbox needs at start time and returns the complete argument
 	// list for the sandbox launcher. Bwrap returns the bwrap argv;
 	// sandbox-exec returns the sandbox-exec argv. Host returns nil

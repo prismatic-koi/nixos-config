@@ -195,7 +195,7 @@ root-cause fix.
 ### sandbox-exec testing convention
 
 Any change to `internal/container/sandbox_exec.go::generateProfile`,
-`Manager.PrepareSandboxExec`, or `Manager.PrepareSandboxExecHome` must be paired
+`Manager.PrepareSandboxExec`, or `Manager.PrepareSessionWorkDir` must be paired
 with a Darwin-only integration test under `internal/integration/` that invokes
 `/usr/bin/sandbox-exec` against a Nix-built test binary, plus a negative test
 that mutates the profile to prove the positive is not a no-op. Substring

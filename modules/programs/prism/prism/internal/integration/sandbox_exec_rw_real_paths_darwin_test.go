@@ -95,19 +95,6 @@ func TestSandboxExecRWRealPaths_RoundTrip(t *testing.T) {
 	// BareRoot-ancestor block's metadata allow on (subpath HOME).
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The staging HOME must contain no 3e entries.
-	for _, rel := range []string{".cache", ".npm", ".mcp-auth"} {
-		if _, lstatErr := os.Lstat(filepath.Join(stagingHome, rel)); lstatErr == nil {
-			t.Fatalf("staging HOME has a %s entry — the 3e staging symlinks were removed in #2245 and must not be recreated", rel)
-		}
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	block := rwGrantBlock5e(t)
@@ -126,7 +113,7 @@ func TestSandboxExecRWRealPaths_RoundTrip(t *testing.T) {
 				" && cat " + shQuote(testFile) +
 				" && rm " + shQuote(testFile)
 			cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-				"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+				"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c", script)
 			out, runErr := cmd.CombinedOutput()
 			if runErr != nil {
 				t.Fatalf("in-sandbox RW round-trip in %s failed under the production profile.\n"+
@@ -153,12 +140,6 @@ func TestSandboxExecRWRealPaths_DeniedWithoutGrantBlock(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	block := rwGrantBlock5e(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, block, "", 1)
@@ -170,7 +151,7 @@ func TestSandboxExecRWRealPaths_DeniedWithoutGrantBlock(t *testing.T) {
 			t.Cleanup(func() { _ = os.Remove(testFile) }) // in case the deny fails
 			script := "echo prism-2245-denied > " + shQuote(testFile)
 			cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-				"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+				"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c", script)
 			out, runErr := cmd.CombinedOutput()
 			if runErr == nil {
 				t.Errorf("write into %s succeeded WITHOUT the section-5e block.\n"+

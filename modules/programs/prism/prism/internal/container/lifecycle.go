@@ -38,12 +38,10 @@ func (m *Manager) EnsureRemoved(ctx context.Context) {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
-	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
-		_ = os.RemoveAll(stagingHome)
-	}
 	// Remove the per-session work dir (generated ssh-config / gitconfig /
-	// allowed_signers — issue #2213). The staging HOME is nested under it,
-	// so this also covers any staging remnants.
+	// allowed_signers, kube-cache, chromium skeleton — issue #2213). This
+	// also covers any staging-HOME remnants from pre-Step-5 sessions (the
+	// staging HOME was nested under it at <sessionDir>/home/).
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)
 	}
@@ -151,10 +149,6 @@ func (m *Manager) Shutdown() {
 	_ = os.Remove(m.allowedSignersFilePath())
 	_ = os.Remove(m.harnessConfigFilePath())
 	_ = os.Remove(m.sandboxExecProfilePath())
-	// Remove the per-session sandbox-exec staging HOME directory tree.
-	if stagingHome, err := m.sandboxExecHomePath(); err == nil {
-		_ = os.RemoveAll(stagingHome)
-	}
 	// Remove the per-session work dir (issue #2213).
 	if sessionDir, err := m.sessionWorkDirPath(); err == nil {
 		_ = os.RemoveAll(sessionDir)

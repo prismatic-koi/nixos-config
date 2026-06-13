@@ -11,12 +11,10 @@
 //
 //   - AppendBwrapBind(args, spec) → "--ro-bind|--bind SRC DST"
 //
-// Today only the bwrap appender is wired through the slice; the
-// sandbox-exec staging HOME is built via collectStagingHomeSymlinkTargets in
-// sandbox_exec_home.go, which serves the same purpose with a different
-// implementation strategy (sandbox-exec has no bind-mount mechanism, so the
-// staging HOME is materialised as real symlinks rather than emitted as mount
-// arguments).
+// Today only the bwrap appender is wired through the slice; sandbox-exec
+// has no bind-mount mechanism — it delivers the same capabilities via
+// explicit SBPL grants on the real host paths emitted by generateProfile
+// (sandbox_exec.go) plus env-var injection at host XDG paths (#2132).
 package container
 
 import (
@@ -29,8 +27,7 @@ import (
 // emits the syntax it needs via its own appender.
 //
 // The SandboxPath is the path the agent inside the sandbox sees. For bwrap
-// and sandbox-exec, HOME-relative paths are rooted at the host user's $HOME
-// (or staging HOME for sandbox-exec).
+// and sandbox-exec, HOME-relative paths are rooted at the host user's $HOME.
 // StandardSandboxMounts computes the SandboxPath using the sandboxHomeDir
 // argument the caller provides, so the per-mode HOME prefix is captured at
 // the call site rather than baked into MountSpec.
@@ -106,8 +103,9 @@ func resolveMountHostPath(spec MountSpec) (string, bool) {
 // per-mode syntax via its own appender.
 //
 // sandboxHomeDir is the in-sandbox $HOME path (the host user's home
-// directory for bwrap, or the staging HOME for sandbox-exec). It is used as
-// the prefix for every HOME-relative SandboxPath in the returned slice.
+// directory — both bwrap and sandbox-exec run with the real host $HOME
+// since Step 5 of #2132). It is used as the prefix for every HOME-relative
+// SandboxPath in the returned slice.
 //
 // hostHome is the absolute host home directory (the source of HOME-relative
 // host artefacts). When empty, host-relative entries fall back to
@@ -141,8 +139,7 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	// bwrap uses --bind (RW) for both dirs. sandbox-exec mirrors this by
 	// emitting (allow file-read* file-write* (subpath ~/.aws/sso)) and
 	// (allow file-read* file-write* (subpath ~/.aws/cli)) in generateProfile
-	// (issue #1558) and by listing .aws/sso and .aws/cli as writable in
-	// collectStagingHomeSymlinkTargets.
+	// (issue #1558).
 	//
 	// Note: this slice is only walked by bwrap (AppendBwrapBind). The mode
 	// parameter is retained for potential future per-mode divergences.
@@ -200,8 +197,8 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		// sandboxHomeDir == hostHome) so the canonical $HOME/.npm path
 		// inside the sandbox matches the host path.
 		//
-		// Parity with sandbox-exec's staging-HOME entry at
-		// sandbox_exec_home.go:309-316. See issue #2127.
+		// Parity with sandbox-exec's §5e RW grant on the real ~/.npm
+		// (generateProfile in sandbox_exec.go). See issue #2127.
 		{
 			HostPath:          filepath.Join(hostHome, ".npm"),
 			SandboxPath:       filepath.Join(sandboxHomeDir, ".npm"),

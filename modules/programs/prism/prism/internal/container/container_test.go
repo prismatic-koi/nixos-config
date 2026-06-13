@@ -906,13 +906,15 @@ func TestHarnessConfigFilePath_MatchesManagerMethod(t *testing.T) {
 
 // gitconfigIdentityModes is the per-mode matrix exercised by the regression
 // tests below. Each entry names the mode constant used by writeGitconfig and
-// a label used in error messages.
+// a label used in error messages. Only bwrap consumes the mode-based
+// generator today — sandbox-exec writes its gitconfig into the per-session
+// work dir (writeGitconfigToDir; the identity refusal for that path is
+// pinned by TestSandboxExecPrepare_EmptyIdentityAborts below).
 var gitconfigIdentityModes = []struct {
 	name string
 	mode isolationMode
 }{
 	{"bwrap", isolationBwrap},
-	{"sandbox-exec", isolationSandboxExec},
 }
 
 // TestWriteGitconfig_AllModes_UserSectionRequired asserts the AC: the staged
@@ -1040,14 +1042,11 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 //
 // Post issue #2213 (Step 2 of #2132) the generated gitconfig lives in the
 // per-session work dir, so the hard error surfaces from
-// PrepareSessionWorkDir rather than PrepareSandboxExecHome — both stations
-// are asserted here to pin the #1960 "hard-fails at Prepare" guarantee.
+// PrepareSessionWorkDir — both stations are asserted here to pin the #1960
+// "hard-fails at Prepare" guarantee.
 func TestSandboxExecPrepare_EmptyIdentityAborts(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
-	// PrepareSandboxExecHome requires the various host dirs that newFakeHome
-	// creates for the broader sandbox-exec test suite. Re-create the minimal
-	// subset here so the test stands on its own.
 	for _, d := range []string{".ssh", ".config/pi", ".cache/nix"} {
 		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o700); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)

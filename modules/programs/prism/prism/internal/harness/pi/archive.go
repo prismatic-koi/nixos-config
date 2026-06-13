@@ -44,10 +44,11 @@ package pi
 // host root: the dispatcher injects PI_CODING_AGENT_DIR=<host ~/.pi/agent>
 // into the sandbox env and sandbox-exec shares the host filesystem
 // (cmd/agent_run_sandbox_exec_darwin.go), so pi writes its transcripts to the
-// host root, not the per-session staging HOME. The worktree path that pi sees
-// as its CWD is the same as the host worktree path (only $HOME is remapped
-// inside the sandbox), so the encoded-cwd is derived from p.Worktree the same
-// way in every mode. A pre-#2210 sandbox-exec branch resolved the staging-HOME
+// host root. Since Step 5 of #2132 the in-sandbox $HOME is the real host
+// home and there is no per-session staging HOME at all; the worktree path
+// that pi sees as its CWD is the same as the host worktree path (nothing is
+// remapped), so the encoded-cwd is derived from p.Worktree the same way in
+// every mode. A pre-#2210 sandbox-exec branch resolved a staging-HOME
 // formula here; it had been stale since #1286 and meant archives were
 // transcript-less (issue #2210).
 //
@@ -170,11 +171,11 @@ func (a *piArchiveAdapter) SourcePath(p harnessarchive.SourceParams) (string, er
 // Sandbox-exec follows the host root because the dispatcher injects
 // PI_CODING_AGENT_DIR=<host ~/.pi/agent> into the sandbox env and
 // sandbox-exec shares the host filesystem (cmd/agent_run_sandbox_exec_darwin.go).
-// A pre-#2210 branch here resolved sandbox-exec to the per-session staging
-// HOME (<stagingHome>/.pi/agent/sessions) via
-// container.SandboxExecStagingHomePath; that formula had been stale since
-// #1286 (pi has honoured the injected env var ever since) and meant archives
-// for sandbox-exec sessions never contained the transcript (issue #2210).
+// A pre-#2210 branch here resolved sandbox-exec to a sessions dir under the
+// per-session staging HOME (a mechanism deleted in Step 5 of #2132); that
+// formula had been stale since #1286 (pi has honoured the injected env var
+// ever since) and meant archives for sandbox-exec sessions never contained
+// the transcript (issue #2210).
 //
 // Before #1985 bwrap pointed at
 // <XDG_STATE_HOME>/prism/run/<sessionDirHash>/pi-agent/sessions/, but that

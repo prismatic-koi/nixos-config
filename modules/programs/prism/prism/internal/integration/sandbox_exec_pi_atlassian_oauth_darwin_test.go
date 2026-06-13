@@ -9,12 +9,12 @@ package integration_test
 // Background:
 //
 //	The Atlassian MCP extension stores OAuth tokens at
-//	homedir()/.pi/agent/atlassian-mcp-oauth.json. The former
-//	stagePIOAuthToken step touch-and-symlinked the file into the per-session
-//	staging HOME; #2245 removed it. The capability now collapses into the
-//	pi-gated RW (subpath ~/.pi/agent) grant (sandbox_exec.go section 6a):
-//	reads and writes of the token file at the REAL host path succeed
-//	in-sandbox, with no staging entry involved.
+//	homedir()/.pi/agent/atlassian-mcp-oauth.json. A former staging step
+//	touch-and-symlinked the file into the per-session staging HOME; #2245
+//	removed it (and Step 5 of #2132 deleted the staging HOME wholesale).
+//	The capability collapses into the pi-gated RW (subpath ~/.pi/agent)
+//	grant (sandbox_exec.go section 6a): reads and writes of the token file
+//	at the REAL host path succeed in-sandbox.
 //
 // These tests verify:
 //
@@ -22,7 +22,7 @@ package integration_test
 //     production SBPL profile for Harness == "pi") writes JSON bytes
 //     directly to the real ~/.pi/agent/atlassian-mcp-oauth.json and reads
 //     them back; the bytes are visible on the host after sandbox-exec
-//     exits. The staging HOME is asserted to contain NO .pi entry.
+//     exits.
 //
 //  2. Negative (whole-block strip, per the #2243 lesson): removing the
 //     entire section-6a allow block makes the same write fail and nothing
@@ -126,17 +126,6 @@ func TestSandboxExecPIAtlassianOAuth_RealPathReadWrite(t *testing.T) {
 
 	m := newPIOAuthPersistenceManager(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// The staging HOME must contain NO .pi entry — the 3d staging step is gone.
-	if _, lstatErr := os.Lstat(filepath.Join(stagingHome, ".pi")); lstatErr == nil {
-		t.Fatalf("staging HOME has a .pi entry — the 3d touch-and-symlink staging step was removed in #2245 and must not be recreated")
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The production profile must carry the section-6a block — the sole
@@ -154,7 +143,7 @@ func TestSandboxExecPIAtlassianOAuth_RealPathReadWrite(t *testing.T) {
 	script := "printf '%s' " + shQuote(tokenJSON) + " > " + shQuote(hostTokenPath) +
 		" && cat " + shQuote(hostTokenPath)
 	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c", script)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("in-sandbox RW round-trip of the oauth token at its real path failed.\n"+
@@ -192,12 +181,6 @@ func TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant(t *testing.T) {
 
 	m := newPIOAuthPersistenceManager(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	block := piAgentSubpathBlock(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
 		return strings.Replace(p, block, "", 1)
@@ -206,7 +189,7 @@ func TestSandboxExecPIAtlassianOAuth_DeniedWithoutPiAgentGrant(t *testing.T) {
 	const tokenJSON = `{"access_token":"prism-2245-3d-denied-sentinel"}`
 	script := "printf '%s' " + shQuote(tokenJSON) + " > " + shQuote(hostTokenPath)
 	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
-		"/usr/bin/env", "HOME="+stagingHome, nixBash, "-c", script)
+		"/usr/bin/env", "HOME="+realUserHome(t), nixBash, "-c", script)
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("oauth token write succeeded WITHOUT the section-6a ~/.pi/agent block.\n"+

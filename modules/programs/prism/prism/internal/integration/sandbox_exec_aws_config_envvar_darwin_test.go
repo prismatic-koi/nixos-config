@@ -19,10 +19,7 @@ package integration_test
 //
 // This file tests:
 //
-//  1. Shape: after PrepareSandboxExecHome, the staging HOME contains no
-//     .aws/config or .aws/credentials symlink (issue #2234 AC).
-//
-//  2. Positive: a real config-resolving aws invocation —
+//  1. Positive: a real config-resolving aws invocation —
 //     `aws configure list --profile <name>` with <name> parsed from the
 //     host config — exits 0 inside sandbox-exec with the env vars pointing
 //     at the host XDG paths. The command exits non-zero when the config
@@ -34,7 +31,7 @@ package integration_test
 //     AC that config-only operation works is exercised by the same
 //     invocation.
 //
-//  3. Negative: stripping the aws-readonly-config require-not exception
+//  2. Negative: stripping the aws-readonly-config require-not exception
 //     from the #2211 secrets.d deny makes the same invocation fail —
 //     proving the allowlist exception is the load-bearing grant for the
 //     env-var route (sandbox-exec testing convention, #1192).
@@ -81,8 +78,12 @@ var awsProfileRe = regexp.MustCompile(`(?m)^\[profile ([^\]]+)\]`)
 
 // awsHostConfigForTest locates the host XDG aws config
 // (~/.config/aws/readonly-config), requires it to be sops-backed (resolving
-// into a secrets.d/<N>/ path — the mechanism under test), and parses a named
-// profile from it. Skips when any precondition is missing.
+// into a secrets.d/<N>/ path — the mechanism under test), parses a named
+// profile from it, AND verifies the host's SSO session is live enough for
+// `aws configure list --profile <name>` to exit 0 (the in-sandbox assertion).
+// Skips when any precondition is missing — including expired SSO, where the
+// failure is environmental and not distinguishable from a sandbox-side
+// regression.
 //
 // Returns (configPath, resolvedTarget, profileName). configPath is the
 // stable XDG symlink path (what AWS_CONFIG_FILE carries in production);
@@ -114,50 +115,51 @@ func awsHostConfigForTest(t *testing.T) (configPath, resolvedTarget, profileName
 		t.Skipf("host aws config has no [profile <name>] section — cannot distinguish a real config read from botocore's empty-config default behaviour")
 	}
 	profileName = string(match[1])
+
+	// SSO precheck: when the profile uses a `sso_session = ...` block,
+	// `aws configure list --profile <name>` triggers an STS token refresh
+	// during botocore credential resolution. An expired host SSO token
+	// makes the test exit 255 with "Token has expired and refresh failed"
+	// — environmental, not a sandbox-side regression. Probe the host
+	// directly (no sandbox involved) and skip when the precondition fails.
+	awsBin, lookErr := exec.LookPath("aws")
+	if lookErr != nil {
+		t.Skipf("aws CLI not in PATH on host: %v", lookErr)
+	}
+	probe := exec.Command(awsBin, "configure", "list", "--profile", profileName)
+	probe.Env = append(os.Environ(), "AWS_EC2_METADATA_DISABLED=true")
+	if probeOut, probeErr := probe.CombinedOutput(); probeErr != nil {
+		lower := strings.ToLower(string(probeOut))
+		switch {
+		case strings.Contains(lower, "token has expired"),
+			strings.Contains(lower, "refresh failed"),
+			strings.Contains(lower, "sso login"),
+			strings.Contains(lower, "sso session"):
+			t.Skipf("host SSO precondition not met for profile %q (expired/unavailable token): %v\nHost-side `aws configure list` output:\n%s\nRun `aws sso login --sso-session <name>` and retry.", profileName, probeErr, probeOut)
+		default:
+			t.Skipf("host-side `aws configure list --profile %s` failed: %v\nOutput:\n%s", profileName, probeErr, probeOut)
+		}
+	}
 	return configPath, resolvedTarget, profileName
 }
 
 // awsConfigureListCmd builds the in-sandbox `aws configure list` invocation
-// with the production env-var shape: HOME at the staging HOME (still present
-// until Step 5 of #2132), AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE at
-// the host XDG paths. AWS_EC2_METADATA_DISABLED keeps the credential chain
-// from probing IMDS (hermeticity — irrelevant to config resolution).
-func awsConfigureListCmd(profilePath, stagingHome, awsBin, nixBash, configPath, profileName string) *exec.Cmd {
+// with the production env-var shape: HOME at the real host home (Step 5 of
+// #2132), AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE at the host XDG
+// paths. AWS_EC2_METADATA_DISABLED keeps the credential chain from probing
+// IMDS (hermeticity — irrelevant to config resolution).
+func awsConfigureListCmd(t *testing.T, profilePath, awsBin, nixBash, configPath, profileName string) *exec.Cmd {
+	t.Helper()
 	home, _ := os.UserHomeDir()
 	credentialsPath := filepath.Join(home, ".config", "aws", "credentials")
 	script := shQuote(awsBin) + " configure list --profile " + shQuote(profileName)
 	return exec.Command(sandboxExecPath, "-f", profilePath,
 		"/usr/bin/env",
-		"HOME="+stagingHome,
+		"HOME="+realUserHome(t),
 		"AWS_CONFIG_FILE="+configPath,
 		"AWS_SHARED_CREDENTIALS_FILE="+credentialsPath,
 		"AWS_EC2_METADATA_DISABLED=true",
 		nixBash, "-c", script)
-}
-
-// TestSandboxExecAWSConfig_StagingSymlinksGone asserts the issue #2234 shape
-// of the staging HOME on the real host: PrepareSandboxExecHome creates no
-// .aws/config or .aws/credentials symlink. (The .aws/sso and .aws/cli RW
-// symlinks are Step 3e scope and may still be present.)
-func TestSandboxExecAWSConfig_StagingSymlinksGone(t *testing.T) {
-	if runtime.GOOS != "darwin" {
-		t.Skip("sandbox-exec is Darwin-only")
-	}
-
-	m := newProfileManager(t)
-
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	for _, rel := range []string{".aws/config", ".aws/credentials"} {
-		staged := filepath.Join(stagingHome, filepath.FromSlash(rel))
-		if _, lstatErr := os.Lstat(staged); lstatErr == nil {
-			t.Errorf("staging HOME has %s entry — removed in #2234 (env-var route), must not be recreated", rel)
-		}
-	}
 }
 
 // TestSandboxExecAWSConfig_EnvVarResolution is the positive integration test
@@ -181,19 +183,6 @@ func TestSandboxExecAWSConfig_EnvVarResolution(t *testing.T) {
 	// stable-chain tests).
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
-	// Shape check inside the real flow: the staging symlinks are gone.
-	for _, rel := range []string{".aws/config", ".aws/credentials"} {
-		if _, lstatErr := os.Lstat(filepath.Join(stagingHome, filepath.FromSlash(rel))); lstatErr == nil {
-			t.Fatalf("staging HOME has %s entry — removed in #2234, must not be recreated", rel)
-		}
-	}
-
 	prepared, _ := preparePositiveProfile(t, m)
 
 	// The profile must carry the aws-readonly-config allowlist exception —
@@ -212,7 +201,7 @@ func TestSandboxExecAWSConfig_EnvVarResolution(t *testing.T) {
 
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
-	cmd := awsConfigureListCmd(testProfilePath, stagingHome, awsBin, nixBash, configPath, profileName)
+	cmd := awsConfigureListCmd(t, testProfilePath, awsBin, nixBash, configPath, profileName)
 	out, runErr := cmd.CombinedOutput()
 	if runErr != nil {
 		t.Fatalf("aws configure list --profile %s failed in-sandbox under the production profile.\n"+
@@ -241,12 +230,6 @@ func TestSandboxExecAWSConfig_EnvVarResolutionDeniedWithoutAllowlistException(t 
 
 	m := newProfileManagerWithBareRoot(t)
 
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(stagingHome) })
-
 	resolvedName := secretsDNameForTest(t, configPath)
 
 	// Remove the require-not exception line for the aws config name,
@@ -257,7 +240,7 @@ func TestSandboxExecAWSConfig_EnvVarResolutionDeniedWithoutAllowlistException(t 
 		return strings.ReplaceAll(p, exceptionLine, "")
 	})
 
-	cmd := awsConfigureListCmd(mutatedPath, stagingHome, awsBin, nixBash, configPath, profileName)
+	cmd := awsConfigureListCmd(t, mutatedPath, awsBin, nixBash, configPath, profileName)
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("aws configure list --profile %s succeeded WITHOUT the %q allowlist exception.\n"+

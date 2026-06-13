@@ -92,24 +92,28 @@ func TestSandboxExecEnv_HarnessPipeTCPPort_Zero_NoHarnessPipeVar(t *testing.T) {
 
 // sandboxExecHomeEnvFixture returns representative inputs for
 // buildSandboxExecHomeEnv: a base env that already carries host-derived
-// HOME / XDG / CFFIXED_USER_HOME entries (all of which must be stripped),
-// plus the staging HOME, session work dir, and real home paths in their
-// production layout (<stagingHome> == <sessionDir>/home).
-func sandboxExecHomeEnvFixture() (env []string, stagingHome, sessionDir, realHome string) {
+// HOME / XDG / CFFIXED_USER_HOME entries (all of which must be stripped
+// and re-set deterministically), plus the session work dir and real home
+// paths in their production layout. legacyStagingHome is the path the
+// pre-Step-5-of-#2132 staging HOME would have occupied — returned so tests
+// can assert nothing points there any more.
+func sandboxExecHomeEnvFixture() (env []string, sessionDir, realHome, legacyStagingHome string) {
 	realHome = "/Users/u"
 	sessionDir = realHome + "/.local/state/prism/sessions/inst-2247"
-	stagingHome = sessionDir + "/home"
+	legacyStagingHome = sessionDir + "/home"
 	env = []string{
 		"PATH=/nix/store/abc/bin",
-		"HOME=" + realHome,
-		"XDG_CACHE_HOME=" + realHome + "/.cache",
-		"XDG_CONFIG_HOME=" + realHome + "/.config",
+		// Simulate a stale staging-HOME value to prove the strip-and-replace
+		// rewrites it to the real home.
+		"HOME=" + legacyStagingHome,
+		"XDG_CACHE_HOME=" + legacyStagingHome + "/.cache",
+		"XDG_CONFIG_HOME=" + legacyStagingHome + "/.config",
 		"XDG_DATA_HOME=" + realHome + "/.local/share",
 		"XDG_STATE_HOME=" + realHome + "/.local/state",
 		"CFFIXED_USER_HOME=" + realHome,
 		"TERM=xterm-256color",
 	}
-	return env, stagingHome, sessionDir, realHome
+	return env, sessionDir, realHome, legacyStagingHome
 }
 
 // TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir is the
@@ -121,12 +125,12 @@ func sandboxExecHomeEnvFixture() (env []string, stagingHome, sessionDir, realHom
 // under <sessionDir>/Library/... (covered by the profile's existing
 // (subpath <sessionDir>) RW allow) with no host-Library grant.
 func TestBuildSandboxExecHomeEnv_CFFixedUserHomePointsAtSessionWorkDir(t *testing.T) {
-	env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+	env, sessionDir, realHome, legacyStagingHome := sandboxExecHomeEnvFixture()
 
-	got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+	got := buildSandboxExecHomeEnv(env, sessionDir, realHome)
 
 	wantCFFixed := "CFFIXED_USER_HOME=" + sessionDir
-	stagingCFFixed := "CFFIXED_USER_HOME=" + stagingHome
+	stagingCFFixed := "CFFIXED_USER_HOME=" + legacyStagingHome
 	hostCFFixed := "CFFIXED_USER_HOME=" + realHome
 	foundCFFixed := false
 	for _, kv := range got {
@@ -178,15 +182,15 @@ func TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {
-			env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+			env, sessionDir, realHome, legacyStagingHome := sandboxExecHomeEnvFixture()
 
 			// Simulate a host-inherited value to prove the strip works.
 			env = append(env, tc.key+"="+realHome+tc.subdir)
 
-			got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+			got := buildSandboxExecHomeEnv(env, sessionDir, realHome)
 
 			want := tc.key + "=" + sessionDir + tc.subdir
-			stagingValue := tc.key + "=" + stagingHome + tc.subdir
+			stagingValue := tc.key + "=" + legacyStagingHome + tc.subdir
 			count := 0
 			found := false
 			for _, kv := range got {
@@ -210,21 +214,22 @@ func TestBuildSandboxExecHomeEnv_PlaywrightDirsPointAtWorkDir(t *testing.T) {
 	}
 }
 
-// TestBuildSandboxExecHomeEnv_HomeAndXDGLayerUnchangedByStep4 pins the
-// rest of the home env layer across the #2247 change: HOME and
-// XDG_CACHE_HOME/XDG_CONFIG_HOME still point into the staging HOME (the
-// Step 5 flip has NOT happened), XDG_DATA_HOME/XDG_STATE_HOME still point
-// at the real host paths (hard constraint from #2205), and each key
-// appears exactly once.
-func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerUnchangedByStep4(t *testing.T) {
-	env, stagingHome, sessionDir, realHome := sandboxExecHomeEnvFixture()
+// TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost is the Step 5 of
+// #2132 (issue #2250) env-layer AC: HOME and every XDG var point at the
+// REAL host paths — the staging HOME is gone. XDG_DATA_HOME/XDG_STATE_HOME
+// staying real-host is additionally the #2205 hard constraint (the nix
+// trusted-settings SBPL grant depends on it). Each key appears exactly
+// once, including when the inherited env carried stale staging-HOME
+// values.
+func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerRealHost(t *testing.T) {
+	env, sessionDir, realHome, legacyStagingHome := sandboxExecHomeEnvFixture()
 
-	got := buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+	got := buildSandboxExecHomeEnv(env, sessionDir, realHome)
 
 	want := map[string]string{
-		"HOME":            stagingHome,
-		"XDG_CACHE_HOME":  stagingHome + "/.cache",
-		"XDG_CONFIG_HOME": stagingHome + "/.config",
+		"HOME":            realHome,
+		"XDG_CACHE_HOME":  realHome + "/.cache",
+		"XDG_CONFIG_HOME": realHome + "/.config",
 		"XDG_DATA_HOME":   realHome + "/.local/share",
 		"XDG_STATE_HOME":  realHome + "/.local/state",
 	}
@@ -258,6 +263,17 @@ func TestBuildSandboxExecHomeEnv_HomeAndXDGLayerUnchangedByStep4(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("passthrough env entry %q missing\nenv: %v", passthrough, got)
+		}
+	}
+
+	// Nothing in the rewritten layer may reference the legacy staging-HOME
+	// path — the mechanism is deleted (issue #2250).
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "TERM=") {
+			continue // fixture passthroughs, not part of the rewritten layer
+		}
+		if strings.Contains(kv, legacyStagingHome) {
+			t.Errorf("env entry %q references the deleted staging-HOME path %q", kv, legacyStagingHome)
 		}
 	}
 }

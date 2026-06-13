@@ -5,12 +5,13 @@
 // in bwrap.go: BuildRunArgs() is a no-op stub, BuildArgs(m *Manager) is the
 // concrete argument builder that has access to the Manager's config and state.
 //
-// This file implements PR 3 of the sandbox-exec design (issue #1012):
-// staging HOME, credentials, caches, and write paths. PR 2 (#1016) landed
-// the minimal read-only profile. Concurrency cap and lifecycle hardening are
-// deferred to PR 4 (#1018). New top-level allow/deny clauses introduced
-// beyond what is listed in the issue body require a comment pointing back at
-// #1012.
+// This file implements the sandbox-exec design (issue #1012) as revised by
+// the staging-HOME elimination design (issue #2132): explicit SBPL grants on
+// real host paths, env-var injection at host XDG paths, and a small
+// per-session work dir (session_work_dir.go). $HOME inside the sandbox is
+// the REAL host home — the per-session staging HOME was deleted in Step 5
+// of #2132. New top-level allow/deny clauses introduced beyond what is
+// listed in the issue bodies require a comment pointing back at the issue.
 package container
 
 import (
@@ -116,9 +117,10 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - RO subpath grants for ~/.cache/prism/clipboard and
 //     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
 //     symlink and its resolved target (Step 3f of #2132, issue #2245)
-//   - Session work dir (covers the nested staging HOME) / worktree / bare
-//     repo / host-API socket dir (RW)
-//   - Symlink target allows (RW for cache/credential dirs, RO for key/config) for every symlink in the staging HOME
+//   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
+//     the work dir (subpath <sessionDir>) is the ONLY per-session writable
+//     grant (issue #2213 / PR #2221; Step 5 of #2132 deleted the staging
+//     HOME and its per-symlink target allows)
 //   - Process and IPC primitives required by dyld, AMFI, and the agent
 //   - (allow network*)
 //
@@ -130,11 +132,8 @@ func generateProfile(m *Manager) string {
 		home = os.Getenv("HOME")
 	}
 
-	// Derive the staging HOME path (used for the symlink-target collection
-	// below) and the per-session work dir (issue #2213; the staging HOME is
-	// nested under it at <sessionDir>/home/). When they cannot be determined
-	// (e.g. no home dir) the derived rules are simply omitted.
-	stagingHome, stagingErr := m.sandboxExecHomePath()
+	// Derive the per-session work dir (issue #2213). When it cannot be
+	// determined (e.g. no home dir) the derived rules are simply omitted.
 	sessionDir, sessionDirErr := m.sessionWorkDirPath()
 
 	var sb strings.Builder
@@ -354,12 +353,11 @@ func generateProfile(m *Manager) string {
 	//
 	// Exception: ~/.aws/sso and ~/.aws/cli must remain accessible so that
 	// AWS SSO auth and tools that read SSO tokens (e.g. kubectl) work inside
-	// the sandbox. Since #2245 (Step 3e of #2132) the staging HOME no longer
-	// symlinks these two subdirs — the carve-out allows below are the SOLE
-	// in-sandbox capability for them, at the real host paths. The
-	// more-specific allow rules below override the broad deny for exactly
-	// these two subdirs (SBPL evaluates more-specific rules as overrides of
-	// broader ones). See issue #1380.
+	// the sandbox. The carve-out allows below are the SOLE in-sandbox
+	// capability for them, at the real host paths (#2245, Step 3e of #2132).
+	// The more-specific allow rules below override the broad deny for
+	// exactly these two subdirs (SBPL evaluates more-specific rules as
+	// overrides of broader ones). See issue #1380.
 	if home != "" {
 		awsPath := filepath.Join(home, ".aws")
 		sb.WriteString("(deny file-read* file-write*\n")
@@ -411,10 +409,9 @@ func generateProfile(m *Manager) string {
 	// The generated <sessionDir>/ssh-config is passed to ssh via -F
 	// (GIT_SSH_COMMAND), and openssh resolves its default UserKnownHostsFile
 	// against the real home (getpwuid → pw_dir, not $HOME) — so ssh inside
-	// the sandbox reads the real ~/.ssh/known_hosts. Previously that read was
-	// only possible via the staging-HOME symlink walk (the per-symlink
-	// literal emitted by collectStagingHomeSymlinkTargets); this explicit
-	// grant decouples it from the staging mechanism ahead of Step 5 of #2132.
+	// the sandbox reads the real ~/.ssh/known_hosts. This explicit grant is
+	// the sole capability for that read (the staging-HOME per-symlink allows
+	// that once duplicated it were deleted in Step 5 of #2132).
 	//
 	// The grant is read-only and single-file. NEVER widen this to
 	// (subpath ~/.ssh): the real ~/.ssh may hold non-sops private keys (e.g.
@@ -451,14 +448,13 @@ func generateProfile(m *Manager) string {
 	}
 
 	// ── 5e. RW cache/auth dir grants at the real host paths (issue #2245) ─
-	// Step 3e of #2132: the RW staging symlinks for ~/.cache/nix, ~/.cache/bun,
-	// ~/.npm, and ~/.mcp-auth are gone. These explicit RW subpath grants on
-	// the real host paths are the replacement capability. The consumers derive
-	// the paths from $HOME / XDG_CACHE_HOME (§2 of the #2132 design — "just
-	// work with real HOME"), which still point into the staging HOME until
-	// Step 5 flips them; the grants are emitted now so the flip is a pure env
-	// change. None of these paths is sops-backed — the #2211 allowlist plays
-	// no part; these grants are the sole capability.
+	// Step 3e of #2132: explicit RW subpath grants on the real host paths
+	// for ~/.cache/nix, ~/.cache/bun, ~/.npm, and ~/.mcp-auth. The consumers
+	// derive the paths from $HOME / XDG_CACHE_HOME (§2 of the #2132 design —
+	// "just work with real HOME"), which point at the real host paths since
+	// Step 5 (issue #2250) — these grants are load-bearing. None of these
+	// paths is sops-backed — the #2211 allowlist plays no part; these grants
+	// are the sole capability.
 	//
 	// Mirrors bwrap's --bind (RW) treatment of the same dirs in mounts.go
 	// StandardSandboxMounts. Emitted even when a dir does not exist on the
@@ -532,13 +528,13 @@ func generateProfile(m *Manager) string {
 	// file-test-existence and file-read-metadata added alongside file-read*
 	// and file-write* for dyld/AMFI compatibility in the v3 profile.
 	//
-	// The first entry is the per-session work dir (issue #2213) — it covers
-	// the generated ssh-config / gitconfig / allowed_signers, the chromium
-	// Library skeleton (issue #2247 — CFFIXED_USER_HOME points chromium's
-	// NSHomeDirectory() at <sessionDir>, so its writes land under
+	// The first entry is the per-session work dir (issue #2213) — the ONLY
+	// per-session writable grant. It covers the generated ssh-config /
+	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, AND the
+	// chromium Library skeleton (issue #2247 — CFFIXED_USER_HOME points
+	// chromium's NSHomeDirectory() at <sessionDir>, so its writes land under
 	// <sessionDir>/Library/... with NO dedicated rule and NO host-Library
-	// grant), AND the staging HOME nested under it at <sessionDir>/home/
-	// (the staging HOME remains in place until Step 5 of #2132 deletes it).
+	// grant).
 	if sessionDirErr == nil {
 		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(sessionDir) + ")\n")
@@ -660,64 +656,11 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
-	// ── Symlink target allows (RW and RO) ────────────────────────────────
-	// For every symlink in the staging HOME, resolve its target via
-	// filepath.EvalSymlinks and emit an allow rule. Locked in #1012 and #1017.
-	//
-	// Rule type selection:
-	//   - Directory targets → (subpath ...) so the sandbox can access files
-	//     within (not just the directory node itself).
-	//   - File targets → (literal ...) to allow the specific file.
-	//   - Writable targets (cache dirs, write-through credential dirs) →
-	//     file-read* file-write* file-test-existence. Mirrors bwrap --bind (RW).
-	//   - RO targets (.ssh, .config/opencode) →
-	//     file-read* only. Mirrors bwrap --ro-bind.
-	//
-	// Targets that fall under the denied ~HOME/.aws subtree are excluded from
-	// this block to avoid the Apple SBPL literal-over-subpath precedence issue
-	// (a more-specific (literal) allow defeats a broader (subpath) deny).
-	if stagingErr == nil {
-		targets, targErr := collectStagingHomeSymlinkTargets(stagingHome)
-		if targErr != nil {
-			log.Printf("container: sandbox-exec: collect symlink targets: %v", targErr)
-		}
-
-		// Split into RW and RO sets.
-		var rwTargets, roTargets []StagingSymlinkTarget
-		for _, t := range targets {
-			if t.Writable {
-				rwTargets = append(rwTargets, t)
-			} else {
-				roTargets = append(roTargets, t)
-			}
-		}
-
-		if len(rwTargets) > 0 {
-			sb.WriteString("(allow file-read* file-write* file-test-existence\n")
-			for _, t := range rwTargets {
-				if t.IsDir {
-					sb.WriteString("  (subpath " + quoteSBPL(t.ResolvedPath) + ")\n")
-				} else {
-					sb.WriteString("  (literal " + quoteSBPL(t.ResolvedPath) + ")\n")
-				}
-			}
-			sb.WriteString(")\n")
-			sb.WriteString("\n")
-		}
-
-		if len(roTargets) > 0 {
-			sb.WriteString("(allow file-read*\n")
-			for _, t := range roTargets {
-				if t.IsDir {
-					sb.WriteString("  (subpath " + quoteSBPL(t.ResolvedPath) + ")\n")
-				} else {
-					sb.WriteString("  (literal " + quoteSBPL(t.ResolvedPath) + ")\n")
-				}
-			}
-			sb.WriteString(")\n")
-			sb.WriteString("\n")
-		}
-	}
+	// Note (Step 5 of #2132, issue #2250): the per-symlink staging-HOME
+	// target allows are gone with the staging HOME itself. The sops-backed
+	// key/config reads ride the broad /private/var/folders allow narrowed by
+	// the #2211 secrets.d allowlist (section 3c); every other capability has
+	// an explicit real-path grant above.
 
 	// ── 8. /dev/null and /dev/dtracehelper write access ──────────────────
 	// Apple-signed binaries (git, ssh) open /dev/null for writing during
@@ -1099,10 +1042,10 @@ func writeProfile(m *Manager) (string, error) {
 //   - --agent <role>: appended when cfg.AgentRole is non-empty.
 //   - --prompt <text>: appended when cfg.InitialPrompt is non-empty.
 //
-// The minimal read-only profile in this PR does not yet wire HOME, working
-// directory, or environment overrides through the profile generator —
-// those land in PR 3 (#1017). The harness still inherits the env passed to
-// syscall.Exec, which agent-run filters via minimalIsolatedExecEnv.
+// HOME and the rest of the sandbox env are not wired through the profile
+// generator — the dispatcher (cmd/agent_run_sandbox_exec_darwin.go) builds
+// the env, starting from the MinimalIsolatedExecEnv allow-list. $HOME is
+// the real host home (Step 5 of #2132).
 func (s *sandboxExecIsolator) BuildArgs(m *Manager) []string {
 	cfg := m.cfg
 

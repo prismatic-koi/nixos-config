@@ -270,9 +270,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			// Other archive errors are non-fatal — cleanup continues.
 			if instanceIDForSessions != "" {
-				// Remove the sandbox-exec staging HOME for this session instance,
-				// then the per-session work dir that contains it (issue #2213).
-				container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+				// Remove the per-session work dir for this session instance
+				// (issue #2213; also covers staging-HOME remnants from
+				// pre-Step-5-of-#2132 sessions nested at <sessionDir>/home/).
 				container.RemoveSessionWorkDir(instanceIDForSessions)
 			}
 			_ = d.PurgeBusMessages(m.session)
@@ -762,11 +762,11 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance,
-			// then the per-session work dir that contains it (issue #2213).
-			// Non-fatal and idempotent — silently skips when the directory
-			// does not exist (e.g. non-sandbox-exec sessions).
-			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			// Remove the per-session work dir for this session instance
+			// (issue #2213; also covers staging-HOME remnants from
+			// pre-Step-5-of-#2132 sessions). Non-fatal and idempotent —
+			// silently skips when the directory does not exist (e.g.
+			// non-sandbox-exec sessions).
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -850,9 +850,9 @@ func closeSession(session string) error {
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance,
-			// then the per-session work dir that contains it (issue #2213).
-			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			// Remove the per-session work dir for this session instance
+			// (issue #2213; also covers staging-HOME remnants from
+			// pre-Step-5-of-#2132 sessions).
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -966,9 +966,9 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		}
 		// Other archive errors are non-fatal — cleanup continues.
 		if instanceIDForSessions != "" {
-			// Remove the sandbox-exec staging HOME for this session instance,
-			// then the per-session work dir that contains it (issue #2213).
-			container.RemoveSandboxExecStagingHome(instanceIDForSessions)
+			// Remove the per-session work dir for this session instance
+			// (issue #2213; also covers staging-HOME remnants from
+			// pre-Step-5-of-#2132 sessions).
 			container.RemoveSessionWorkDir(instanceIDForSessions)
 		}
 		_ = d.PurgeBusMessages(session)
@@ -1291,8 +1291,8 @@ func init() {
 //     path is derived deterministically from the branch). The same host root
 //     applies to sandbox-exec sessions (#2210): pi writes there because the
 //     dispatcher injects PI_CODING_AGENT_DIR into the sandbox env, so this
-//     removal is the only step that deletes the transcript — the staging-HOME
-//     wipe in RemoveSandboxExecStagingHome never touches it.
+//     removal is the only step that deletes the transcript — the per-session
+//     work-dir wipe in RemoveSessionWorkDir never touches it.
 //
 // Order:
 //

@@ -51,21 +51,11 @@ func TestSessionWorkDirPath_Layout(t *testing.T) {
 		t.Errorf("SessionWorkDirPath(%q) = (%q, %v), want (%q, nil)", instanceID, pkgLevel, err, sessionDir)
 	}
 
-	// Invariant: the staging HOME is <sessionDir>/home. Step 5 of #2132
-	// deletes the staging HOME; until then the work dir is its parent so a
-	// single (subpath <sessionDir>) SBPL rule covers both.
-	stagingHome, err := m.sandboxExecHomePath()
-	if err != nil {
-		t.Fatalf("sandboxExecHomePath: %v", err)
-	}
-	if stagingHome != filepath.Join(sessionDir, "home") {
-		t.Errorf("staging HOME %q is not <sessionDir>/home (sessionDir=%q)", stagingHome, sessionDir)
-	}
 }
 
-// TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName mirrors the
-// sandboxExecHomePath fallback: tests that construct a Manager without a
-// full spawn lifecycle get a name-derived work dir rather than an error.
+// TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName: tests that
+// construct a Manager without a full spawn lifecycle get a name-derived
+// work dir rather than an error.
 func TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManager(Config{SessionName: "repo@feat"})
@@ -98,10 +88,9 @@ func TestPrepareSessionWorkDir_WritesConfigsWithStablePaths(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(sessionDir) })
 
-	stagingHome, err := m.sandboxExecHomePath()
-	if err != nil {
-		t.Fatalf("sandboxExecHomePath: %v", err)
-	}
+	// The legacy staging-HOME path (deleted in Step 5 of #2132) — generated
+	// configs must never reference anything under it.
+	legacyStagingHome := filepath.Join(sessionDir, "home")
 
 	// ── ssh-config ────────────────────────────────────────────────────────
 	sshConfigBytes, err := os.ReadFile(SessionWorkDirSshConfigPath(sessionDir))
@@ -152,9 +141,9 @@ func TestPrepareSessionWorkDir_WritesConfigsWithStablePaths(t *testing.T) {
 		"gitconfig":       gitconfig,
 		"allowed_signers": string(signersBytes),
 	} {
-		if strings.Contains(content, stagingHome) {
-			t.Errorf("%s embeds the staging-HOME path %q — must use stable host paths; content:\n%s",
-				name, stagingHome, content)
+		if strings.Contains(content, legacyStagingHome) {
+			t.Errorf("%s embeds the legacy staging-HOME path %q — must use stable host paths; content:\n%s",
+				name, legacyStagingHome, content)
 		}
 		if strings.Contains(content, "secrets.d") {
 			t.Errorf("%s embeds a resolved secrets.d path — breaks on sops rotation (#1410/#1573); content:\n%s",
@@ -333,9 +322,10 @@ func TestPrepareSessionWorkDir_Idempotent(t *testing.T) {
 }
 
 // TestRemoveSessionWorkDir verifies removal of the work dir tree, including
-// the staging HOME nested under it and (on Darwin) the chromium Library
-// skeleton with any per-session chromium state inside it — the edge-case AC
-// for issue #2247: session cleanup keeps chromium prefs/state ephemeral.
+// any legacy staging-HOME remnant nested under it (pre-Step-5-of-#2132
+// sessions) and (on Darwin) the chromium Library skeleton with any
+// per-session chromium state inside it — the edge-case AC for issue #2247:
+// session cleanup keeps chromium prefs/state ephemeral.
 func TestRemoveSessionWorkDir(t *testing.T) {
 	newFakeHome(t)
 
@@ -349,9 +339,12 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PrepareSessionWorkDir: %v", err)
 	}
-	stagingHome, err := m.PrepareSandboxExecHome()
-	if err != nil {
-		t.Fatalf("PrepareSandboxExecHome: %v", err)
+	// Simulate a legacy staging-HOME remnant from a pre-Step-5 session —
+	// nothing creates this dir any more, but cleanup of old sessions must
+	// still sweep it.
+	legacyStagingHome := filepath.Join(sessionDir, "home")
+	if err := os.MkdirAll(filepath.Join(legacyStagingHome, ".ssh"), 0o700); err != nil {
+		t.Fatalf("plant legacy staging remnant: %v", err)
 	}
 
 	// Plant per-session chromium state inside the skeleton (Darwin-only —
@@ -374,8 +367,8 @@ func TestRemoveSessionWorkDir(t *testing.T) {
 	if _, err := os.Stat(sessionDir); err == nil {
 		t.Errorf("session work dir still exists after RemoveSessionWorkDir: %s", sessionDir)
 	}
-	if _, err := os.Stat(stagingHome); err == nil {
-		t.Errorf("nested staging HOME still exists after RemoveSessionWorkDir: %s", stagingHome)
+	if _, err := os.Stat(legacyStagingHome); err == nil {
+		t.Errorf("legacy staging-HOME remnant still exists after RemoveSessionWorkDir: %s", legacyStagingHome)
 	}
 	if chromiumState != "" {
 		if _, err := os.Stat(chromiumState); err == nil {

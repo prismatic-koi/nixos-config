@@ -38,14 +38,17 @@ import (
 // layer of the sandbox-exec env (K=V slice form). Any pre-existing entries
 // for those keys are stripped and replaced with:
 //
-//   - HOME=<stagingHome> — the per-session staging HOME (until Step 5 of
-//     #2132 flips it to the real home).
-//   - XDG_CACHE_HOME / XDG_CONFIG_HOME — staging-HOME-relative, so the
-//     agent's module-load mkdir calls land inside sandbox-allowed paths.
-//   - XDG_DATA_HOME / XDG_STATE_HOME — the REAL host paths so all sessions
-//     share a single agent DB and state store (both of which ARE in the
-//     SBPL profile's RW block). Hard constraint from #2205: the nix
-//     trusted-settings grant depends on XDG_DATA_HOME staying real-host.
+//   - HOME=<realHome> — the REAL host home. The per-session staging HOME
+//     was deleted in Step 5 of #2132 (issue #2250): $HOME inside the
+//     sandbox equals the host $HOME, and every capability the agent needs
+//     is delivered by an explicit SBPL grant on the real host path, an
+//     env var at a host XDG path, or the per-session work dir.
+//   - XDG_CACHE_HOME / XDG_CONFIG_HOME / XDG_DATA_HOME / XDG_STATE_HOME —
+//     the real host paths (<realHome>/.cache, .config, .local/share,
+//     .local/state), set explicitly so the layer is deterministic
+//     regardless of what the host shell exported. Hard constraint from
+//     #2205: the nix trusted-settings grant depends on XDG_DATA_HOME
+//     staying real-host.
 //   - CFFIXED_USER_HOME=<sessionDir> — redirects CoreFoundation's
 //     NSHomeDirectory() to the per-session work dir (issue #2247, Step 4 of
 //     #2132) so chromium (Google Chrome for Testing, invoked via
@@ -65,14 +68,11 @@ import (
 //     — redirects the playwright-cli daemon's session registry and log
 //     directory (issue #2249). On Darwin playwright-core derives this dir
 //     from os.homedir()/Library/Caches (POSIX $HOME — it ignores
-//     XDG_CACHE_HOME on darwin, see cli-client/registry.js baseDaemonDir),
-//     which would land `Library/Caches/ms-playwright/daemon/...` inside
-//     the staging HOME — violating the #2247 invariant that the staging
-//     HOME holds no Library/ entries. The explicit override is also the
-//     #2250 (Step 5 of #2132) robustness story: once HOME flips to the
-//     real home, an unredirected daemon would pollute the real
-//     ~/Library/Caches. Routed to the session work dir alongside the
-//     CF-routed chromium state.
+//     XDG_CACHE_HOME on darwin, see cli-client/registry.js baseDaemonDir).
+//     With HOME at the real home (Step 5 of #2132) an unredirected daemon
+//     would write into the real ~/Library/Caches — this override MUST
+//     survive any env-layer refactor. Routed to the session work dir
+//     alongside the CF-routed chromium state.
 //   - PLAYWRIGHT_SERVER_REGISTRY=<sessionDir>/Library/Caches/ms-playwright/b
 //     — same class, second writer (issue #2249, round-2 host capture):
 //     playwright-core's ServerRegistry (browser-server descriptor
@@ -88,7 +88,7 @@ import (
 //
 // Extracted from runAgentRunSandboxExec so the env construction is unit
 // testable (the dispatch function itself forks a supervised child).
-func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome string) []string {
+func buildSandboxExecHomeEnv(env []string, sessionDir, realHome string) []string {
 	// Strip any existing HOME and XDG vars from the filtered env — we
 	// replace them all below.
 	xdgKeys := map[string]bool{
@@ -117,9 +117,9 @@ func buildSandboxExecHomeEnv(env []string, stagingHome, sessionDir, realHome str
 		filtered = append(filtered, kv)
 	}
 	return append(filtered,
-		"HOME="+stagingHome,
-		"XDG_CACHE_HOME="+filepath.Join(stagingHome, ".cache"),
-		"XDG_CONFIG_HOME="+filepath.Join(stagingHome, ".config"),
+		"HOME="+realHome,
+		"XDG_CACHE_HOME="+filepath.Join(realHome, ".cache"),
+		"XDG_CONFIG_HOME="+filepath.Join(realHome, ".config"),
 		"XDG_DATA_HOME="+filepath.Join(realHome, ".local", "share"),
 		"XDG_STATE_HOME="+filepath.Join(realHome, ".local", "state"),
 		"CFFIXED_USER_HOME="+sessionDir,
@@ -206,8 +206,8 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	if sandboxHarness != nil {
 		sandboxRuntimeEnv = sandboxHarness.RuntimeEnv()
 	}
-	// Resolve instance ID from DB status. Required so the staging HOME is
-	// namespaced by the same instance_id that prism cleanup uses.
+	// Resolve instance ID from DB status. Required so the per-session work
+	// dir is namespaced by the same instance_id that prism cleanup uses.
 	instanceID := ""
 	if status.InstanceID != nil {
 		instanceID = *status.InstanceID
@@ -292,40 +292,29 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// same format as syscall.Exec).
 	//
 	//  1. Start with the filtered minimal allow-list (PATH, HOME, USER, …).
-	//  2. Override HOME with the staging HOME path.
+	//  2. Rewrite the HOME/XDG/CFFIXED_USER_HOME layer (real home + work-dir
+	//     redirects — Step 5 of #2132).
 	//  3. Inject credential env vars (LLM API keys, GITHUB_TOKEN).
 	//  4. Inject harness/profile runtime env vars and prism context vars.
 	env := container.MinimalIsolatedExecEnv(os.Environ())
 
-	// Override HOME → staging HOME so the sandbox sees the staged layout.
-	// The staging HOME was created by PrepareSandboxExecHome() inside
-	// PrepareSandboxExec(). Only override when the staging dir exists on disk.
-	if stagingHome, stagingErr := m.SandboxExecHomePath(); stagingErr == nil && stagingHome != "" {
-		if _, statErr := os.Stat(stagingHome); statErr == nil {
-			// Resolve the per-session work dir (#2213) for CFFIXED_USER_HOME
-			// (issue #2247, Step 4 of #2132). PrepareSandboxExec() created it
-			// (hard-fail), so SessionWorkDir cannot error here in practice —
-			// it shares the failure modes of SandboxExecHomePath, which just
-			// succeeded. The work dir is by construction the staging HOME's
-			// parent, so fall back to that if it somehow does.
-			sessionDir, sessionDirErr := m.SessionWorkDir()
-			if sessionDirErr != nil || sessionDir == "" {
-				sessionDir = filepath.Dir(stagingHome)
-			}
-			// Resolve the real home directory for XDG_DATA_HOME and
-			// XDG_STATE_HOME. These must point to the host paths so all
-			// sessions share a single agent DB and state store.
-			realHome, realHomeErr := os.UserHomeDir()
-			if realHomeErr != nil {
-				// os.UserHomeDir() failed: fall back to the staging HOME for
-				// XDG_DATA_HOME/XDG_STATE_HOME rather than emitting invalid
-				// paths like "/.local/state" that would write into a
-				// root-owned directory. This is extremely unlikely on macOS
-				// (the stagingHome derivation above also calls UserHomeDir and
-				// succeeded, so this path should be unreachable in practice).
-				realHome = stagingHome
-			}
-			env = buildSandboxExecHomeEnv(env, stagingHome, sessionDir, realHome)
+	// Rewrite the HOME/XDG layer. HOME is the REAL host home (the staging
+	// HOME was deleted in Step 5 of #2132); CFFIXED_USER_HOME and the
+	// playwright redirects point at the per-session work dir (#2247, #2249).
+	// PrepareSandboxExec() created the work dir (hard-fail), so
+	// SessionWorkDir cannot error here in practice; skip the rewrite only
+	// when it does AND no fallback can be derived.
+	if sessionDir, sessionDirErr := m.SessionWorkDir(); sessionDirErr == nil && sessionDir != "" {
+		realHome, realHomeErr := os.UserHomeDir()
+		if realHomeErr != nil || realHome == "" {
+			// os.UserHomeDir() failed (extremely unlikely on macOS — the
+			// sessionDir derivation above also calls UserHomeDir and just
+			// succeeded). Fall back to the inherited HOME env var rather
+			// than emitting invalid paths like "/.local/state".
+			realHome = os.Getenv("HOME")
+		}
+		if realHome != "" {
+			env = buildSandboxExecHomeEnv(env, sessionDir, realHome)
 		}
 	}
 
@@ -407,12 +396,11 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// KUBECACHEDIR: redirect kubectl's discovery/http cache into the session
 	// work dir (issue #2235, Step 3b of #2132). kubectl defaults to
 	// $HOME/.kube/cache, which exists on the host and would EPERM under the
-	// deny-default profile now that the staging .kube symlink is gone. The
-	// kube config itself arrives via KUBECONFIG from agent.envVars (injected
-	// by AppendSandboxEnvVarsKV above); only the cache dir is session-derived.
-	// The (subpath <sessionDir>) RW allow in the SBPL profile covers kubectl's
-	// MkdirAll of the cache dir — no extra profile rule is needed — and the
-	// per-session ephemeral semantics match the former staging-HOME behaviour.
+	// deny-default profile. The kube config itself arrives via KUBECONFIG
+	// from agent.envVars (injected by AppendSandboxEnvVarsKV above); only the
+	// cache dir is session-derived. The (subpath <sessionDir>) RW allow in
+	// the SBPL profile covers kubectl's MkdirAll of the cache dir — no extra
+	// profile rule is needed — and the cache stays per-session and ephemeral.
 	if sessionDir, workDirErr := m.SessionWorkDir(); workDirErr == nil && sessionDir != "" {
 		env = append(env, container.SessionWorkDirGitEnv(sessionDir, ctrCfg.SshBin)...)
 		env = append(env, container.SessionWorkDirKubeEnv(sessionDir)...)
