@@ -399,8 +399,9 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// bwrap bind mounts are inode-based, so they survive the rotation cleanly.
 	//
 	// EvalSymlinks is therefore the correct approach here — no fix is needed.
-	// The fix in sandbox_exec_home.go (symlinkIfExists vs symlinkIfResolvable)
-	// does not apply to bwrap for this reason.
+	// The historical sandbox-exec symlink-staging fix (symlinkIfExists vs
+	// symlinkIfResolvable, #1410/#1573) did not apply to bwrap for this reason;
+	// the staging mechanism itself was deleted in Step 5 of #2132.
 	signingKeyResolved, errPriv := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName))
 	signingKeyPubResolved, errPub := filepath.EvalSymlinks(filepath.Join(sshDir, signingKeyName+".pub"))
 	if errPriv == nil && errPub == nil {

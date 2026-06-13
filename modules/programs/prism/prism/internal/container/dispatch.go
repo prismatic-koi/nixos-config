@@ -388,7 +388,8 @@ func (s *sandboxExecIsolator) Cap(ctx context.Context, dbPath string) CapStatus 
 
 // WriteHarnessConfigBlob writes the opencode.json config blob to the
 // deterministic per-session temp path. For sandbox-exec the file is read
-// directly by the agent at the sandbox-mapped HOME path (sandbox_exec_home.go:274).
+// directly by the agent at its real host path (sandbox-exec shares the host
+// filesystem; the agent's $HOME is the real host home since Step 5 of #2132).
 func (s *sandboxExecIsolator) WriteHarnessConfigBlob(sessionName, content string) error {
 	if content == "" {
 		return nil

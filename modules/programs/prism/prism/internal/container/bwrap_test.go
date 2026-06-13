@@ -1702,8 +1702,8 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 // host directory exists. npx (used by mcp-remote and similar npx-fetched
 // tools) caches downloaded packages under ~/.npm/_npx/; without this mount
 // the sandbox cache-misses and re-downloads, which then fails under the
-// sandbox's network policy. Parity with sandbox-exec's staging-HOME entry at
-// sandbox_exec_home.go:309-316. See issue #2127.
+// sandbox's network policy. Parity with sandbox-exec's §5e RW (subpath ~/.npm)
+// grant in generateProfile (sandbox_exec.go). See issue #2127.
 func TestBwrapBuildArgs_NpmCacheBound(t *testing.T) {
 	m, fakeHome, cleanup := bwrapFixture(t, Config{
 		SessionName:   "repo@main",
