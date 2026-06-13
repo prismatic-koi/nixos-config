@@ -143,6 +143,10 @@ in
 
   homebrew = {
     enable = true;
+    taps = [
+      "datadog-labs/pack"
+      "nikitabobko/tap"
+    ];
     onActivation = {
       autoUpdate = true;
       cleanup = "uninstall";
@@ -182,7 +186,7 @@ in
     extraSpecialArgs = {
       inherit inputs;
     };
-    users.${username} = {
+    users.${username} = { config, ... }: {
       programs.chromium = {
         enable = false;
         package = pkgs.hello; # override Linux-only default so Darwin eval doesn't fail
@@ -227,6 +231,13 @@ in
         file = {
           ".config/karabiner/karabiner.json".source = ./files/karabiner.json;
           ".config/aerospace/aerospace.toml".source = ./files/aerospace.toml;
+          # Bridge the activation-script brew bundle's tap-trust DB path
+          # (~/.homebrew/trust.json — the fallback used when XDG_CONFIG_HOME is
+          # stripped by sudo --preserve-env=PATH) to the interactive
+          # `brew trust` write location (~/.config/homebrew/trust.json).
+          # Out-of-store so interactive `brew trust X` can still write to it.
+          # See issue #2268 for the full kōrero.
+          ".homebrew".source = config.lib.file.mkOutOfStoreSymlink "${config.xdg.configHome}/homebrew";
         };
       };
     };
