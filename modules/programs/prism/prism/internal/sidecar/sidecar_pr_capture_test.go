@@ -121,9 +121,9 @@ func TestExtractPRNumberFromGhOutput(t *testing.T) {
 // for a naive `HasPrefix("gh pr create")` test.
 func TestIsGhPRCreateCommand(t *testing.T) {
 	cases := []struct {
-		cmd      string
-		wantHit  bool
-		reason   string
+		cmd     string
+		wantHit bool
+		reason  string
 	}{
 		{cmd: "gh pr create", wantHit: true, reason: "bare invocation"},
 		{cmd: "gh pr create --title 'fix bug'", wantHit: true, reason: "with flags"},

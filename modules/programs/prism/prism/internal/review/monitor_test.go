@@ -327,7 +327,9 @@ func TestMonitorFunc_MissingSession(t *testing.T) {
 	var deliveredText string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Parts []struct{ Text string `json:"text"` } `json:"parts"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err == nil && len(body.Parts) > 0 {
 			deliveredText = body.Parts[0].Text
@@ -932,11 +934,11 @@ func TestBuildMonitorResults_InterruptedThenCleanedUp(t *testing.T) {
 // state that `prism cleanup --yes --session <interrupted-agent>` produces
 // (state="interrupted" + ended_at set) and verifies the full flow:
 //
-//   1. db.GroupCompleted returns true (because ended_at IS NOT NULL counts
-//      as terminal even when state="interrupted").
-//   2. db.GroupResults excludes the ended row from the returned map.
-//   3. buildMonitorResults sees the session as missing and routes it through
-//      the existing 'session not found in group' branch with IsError=true.
+//  1. db.GroupCompleted returns true (because ended_at IS NOT NULL counts
+//     as terminal even when state="interrupted").
+//  2. db.GroupResults excludes the ended row from the returned map.
+//  3. buildMonitorResults sees the session as missing and routes it through
+//     the existing 'session not found in group' branch with IsError=true.
 //
 // Without the (1) and (2) gates, an interrupted-then-cleaned-up agent would
 // hang the review monitor forever — the regression review-context flagged on

@@ -14,8 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	)
+)
 
 // newSidecarWithCleanupStub returns a Sidecar whose host-API /cleanup handler
 // will exec a shell script we control instead of the real prism binary. The
@@ -33,7 +32,7 @@ func newSidecarWithCleanupStub(t *testing.T, sessionName, repo, role, scriptBody
 		SessionName:     sessionName,
 		Repo:            repo,
 		Worktree:        "/tmp/" + sessionName,
-		HarnessURL:     "http://localhost:14000",
+		HarnessURL:      "http://localhost:14000",
 		DB:              d,
 		Clock:           newTestClock(),
 		AgentRole:       role,

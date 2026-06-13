@@ -319,5 +319,3 @@ func runCheckinSessionRaw(session string, limit int, before, after *string, type
 	}
 	return runCheckinSessionLegacy(session, 100)
 }
-
-

@@ -82,8 +82,8 @@ func TestListSessions_JSON_IncludesMutedField(t *testing.T) {
 		t.Fatalf("SetMuted: %v", err)
 	}
 
-	listSessionsCmd.Flags().Set("all", "true")         //nolint:errcheck
-	listSessionsCmd.Flags().Set("json", "true")        //nolint:errcheck
+	listSessionsCmd.Flags().Set("all", "true")  //nolint:errcheck
+	listSessionsCmd.Flags().Set("json", "true") //nolint:errcheck
 	defer func() {
 		listSessionsCmd.Flags().Set("all", "false")  //nolint:errcheck
 		listSessionsCmd.Flags().Set("json", "false") //nolint:errcheck

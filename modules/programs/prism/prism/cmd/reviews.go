@@ -131,14 +131,14 @@ func runReviewsList(cmd *cobra.Command, _ []string) error {
 // Defined explicitly so the JSON contract is decoupled from
 // db.ReviewGroupSummary's field naming.
 type reviewsJSONRow struct {
-	GroupID        string   `json:"group_id"`
-	PR             *int     `json:"pr"`
-	ParentSession  string   `json:"parent_session"`
-	AgentSessions  []string `json:"agent_sessions"`
-	AgentStates    []string `json:"agent_states"`
-	GroupState     string   `json:"group_state"`
-	StartedAt      string   `json:"started_at"` // RFC3339
-	Round          *int     `json:"round"`      // round number derived from agent session names
+	GroupID       string   `json:"group_id"`
+	PR            *int     `json:"pr"`
+	ParentSession string   `json:"parent_session"`
+	AgentSessions []string `json:"agent_sessions"`
+	AgentStates   []string `json:"agent_states"`
+	GroupState    string   `json:"group_state"`
+	StartedAt     string   `json:"started_at"` // RFC3339
+	Round         *int     `json:"round"`      // round number derived from agent session names
 }
 
 func renderReviewsListJSON(groups []db.ReviewGroupSummary) error {

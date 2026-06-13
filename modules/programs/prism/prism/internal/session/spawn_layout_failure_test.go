@@ -37,14 +37,14 @@ func TestSpawnSession_LayoutFailure_CleansUpDB(t *testing.T) {
 
 	const sessionName = "myrepo@branch~layout-fail-cleanup"
 	opts := SpawnOpts{
-		SessionName:   sessionName,
-		Repo:          "myrepo",
-		Worktree:      "/worktrees/myrepo-branch",
-		AgentRole:     "review-code",
-		Prompt:        "review this PR",
-		Layout:        LayoutAgentOnly,
-		IsolationMode: "host",
-		HarnessName:   "pi",
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         "review this PR",
+		Layout:         LayoutAgentOnly,
+		IsolationMode:  "host",
+		HarnessName:    "pi",
 		PIExtensionDir: testPIExtensionDir,
 	}
 

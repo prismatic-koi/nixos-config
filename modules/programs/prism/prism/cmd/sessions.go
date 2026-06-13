@@ -100,9 +100,9 @@ func init() {
 // runSessionStatus is the RunE for `prism sessions session-status`.
 //
 // Resolution order for the target session:
-//   1. Positional argument when given.
-//   2. PRISM_SESSION_NAME environment variable.
-//   3. Empty — emit "" and exit 0 (graceful-degradation contract).
+//  1. Positional argument when given.
+//  2. PRISM_SESSION_NAME environment variable.
+//  3. Empty — emit "" and exit 0 (graceful-degradation contract).
 //
 // A DB-lookup failure (DB closed, session not in DB) also degrades to empty
 // stdout, never to an error. The status bar must never display an error.

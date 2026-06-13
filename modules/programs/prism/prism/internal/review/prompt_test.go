@@ -34,7 +34,6 @@ func setupAgentsDir(t *testing.T) string {
 // TestBuildReviewPrompt_RoleFilePresentAndSpliced verifies that when the role
 // definition file exists and is non-empty, its full content appears in the
 // prompt under the "## Your role-specific instructions" heading.
-//
 func TestBuildReviewPrompt_RoleFilePresentAndSpliced(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
@@ -62,7 +61,6 @@ func TestBuildReviewPrompt_RoleFilePresentAndSpliced(t *testing.T) {
 // TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric verifies that each of
 // the five review agents receives the content of its own definition file,
 // not a shared or empty block.
-//
 func TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric(t *testing.T) {
 	agentsDir := setupAgentsDir(t)
 
@@ -122,7 +120,6 @@ func TestBuildReviewPrompt_MissingRoleFile_NoErrorNoPanic(t *testing.T) {
 // TestBuildReviewPrompt_MissingRoleFile_ContainsNotice verifies that when the
 // role definition file is absent, the prompt includes a clearly-marked notice
 // so the receiving agent and human readers can see what happened.
-//
 func TestBuildReviewPrompt_MissingRoleFile_ContainsNotice(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)

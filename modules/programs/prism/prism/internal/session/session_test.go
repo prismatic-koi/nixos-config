@@ -932,20 +932,20 @@ func TestSanitiseBranchComponent(t *testing.T) {
 		wantAbsent     []string // chars/strings that must NOT appear
 	}{
 		{
-			name:       "dot in branch",
-			input:      "prismatic-bot-traefik-40.x",
+			name:           "dot in branch",
+			input:          "prismatic-bot-traefik-40.x",
 			wantSubstrings: []string{"prismatic-bot-traefik-40_x"},
 			wantAbsent:     []string{"."},
 		},
 		{
-			name:       "slash in branch (regression)",
-			input:      "dependabot/foo/bar",
+			name:           "slash in branch (regression)",
+			input:          "dependabot/foo/bar",
 			wantSubstrings: []string{"dependabot--foo--bar"},
 			wantAbsent:     []string{"/"},
 		},
 		{
-			name:       "combined slash and dot",
-			input:      "dependabot/foo/v2.3.1",
+			name:           "combined slash and dot",
+			input:          "dependabot/foo/v2.3.1",
 			wantSubstrings: []string{"dependabot--foo--v2_3_1"},
 			wantAbsent:     []string{".", "/"},
 		},

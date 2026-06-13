@@ -153,7 +153,7 @@ type Config struct {
 	SessionName string
 	Repo        string
 	Worktree    string
-	HarnessURL string
+	HarnessURL  string
 	DB          *db.DB
 	Clock       Clock
 	// Harness is the agent runtime adapter used for all runtime-specific
@@ -348,12 +348,12 @@ type Sidecar struct {
 	// issues #1713 and #1716 for the race class this closes.
 	notifyWG sync.WaitGroup
 
-	mu              sync.Mutex
-	lastState       agent.AgentState
-	idleTimer       Timer
-	recoveryTimer   Timer
-	manualDenial    bool
-	compacting      bool
+	mu               sync.Mutex
+	lastState        agent.AgentState
+	idleTimer        Timer
+	recoveryTimer    Timer
+	manualDenial     bool
+	compacting       bool
 	harnessSessionID string
 	// writtenMessages dedupes message.updated writes. Bounded LRU
 	// (messageTrackingCap entries) — coordinator sidecars run for days, so
@@ -1832,9 +1832,9 @@ type acceptOutcome int
 
 const (
 	acceptConnected   acceptOutcome = iota // got a connection
-	acceptTimedOut                          // timer fired before connect or ctx cancel
-	acceptCtxCanceled                       // ctx cancelled (and timer had not yet fired)
-	acceptListenerErr                       // listener.Accept returned an error
+	acceptTimedOut                         // timer fired before connect or ctx cancel
+	acceptCtxCanceled                      // ctx cancelled (and timer had not yet fired)
+	acceptListenerErr                      // listener.Accept returned an error
 )
 
 // runStartupSocketPipe binds the per-session Unix socket (Linux) or TCP

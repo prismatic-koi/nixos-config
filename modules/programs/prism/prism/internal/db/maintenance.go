@@ -14,46 +14,46 @@ import (
 //
 //   - agent_events       — rows with created_at < threshold.
 //   - bus_messages       — rows that have been delivered (delivered_at
-//                          IS NOT NULL AND delivered_at < threshold) or
-//                          permanently failed (failed_at IS NOT NULL AND
-//                          failed_at < threshold). Undelivered, unfailed
-//                          messages are never pruned.
+//     IS NOT NULL AND delivered_at < threshold) or
+//     permanently failed (failed_at IS NOT NULL AND
+//     failed_at < threshold). Undelivered, unfailed
+//     messages are never pruned.
 //   - sessions           — rows with ended_at IS NOT NULL AND
-//                          ended_at < threshold. Live sessions (ended_at
-//                          IS NULL) are never pruned.
+//     ended_at < threshold. Live sessions (ended_at
+//     IS NULL) are never pruned.
 //   - spawn_outcome      — pruned indirectly via ON DELETE CASCADE from
-//                          sessions(instance_id). Prune does not issue
-//                          an explicit DELETE against this table.
+//     sessions(instance_id). Prune does not issue
+//     an explicit DELETE against this table.
 //   - spawn_inputs       — pruned indirectly via ON DELETE CASCADE from
-//                          sessions(instance_id). Prune does not issue
-//                          an explicit DELETE against this table.
+//     sessions(instance_id). Prune does not issue
+//     an explicit DELETE against this table.
 //   - agent_status       — rows with ended_at IS NOT NULL AND
-//                          ended_at < threshold AND no live counterpart
-//                          in sessions (i.e. no sessions row sharing the
-//                          same instance_id has ended_at IS NULL). The
-//                          live-counterpart guard avoids deleting the
-//                          status row for a session that was restarted
-//                          under the same instance_id.
+//     ended_at < threshold AND no live counterpart
+//     in sessions (i.e. no sessions row sharing the
+//     same instance_id has ended_at IS NULL). The
+//     live-counterpart guard avoids deleting the
+//     status row for a session that was restarted
+//     under the same instance_id.
 //   - session_groups     — rows whose members are all gone, i.e. no
-//                          surviving sessions or agent_status row still
-//                          references the group_id. This runs last so
-//                          that the preceding DELETEs have already
-//                          removed every referencing row that they can.
+//     surviving sessions or agent_status row still
+//     references the group_id. This runs last so
+//     that the preceding DELETEs have already
+//     removed every referencing row that they can.
 //
 // Tables that Prune deliberately does NOT touch:
 //
 //   - harness_frames     — pruned separately via PruneHarnessFrames so
-//                          callers can pick a different (typically
-//                          shorter) retention window for the raw wire
-//                          archive. The JSONL frames are voluminous on
-//                          a busy session, while agent_events stays at
-//                          the historical 90-day default.
+//     callers can pick a different (typically
+//     shorter) retention window for the raw wire
+//     archive. The JSONL frames are voluminous on
+//     a busy session, while agent_events stays at
+//     the historical 90-day default.
 //   - pending_merges     — operational ledger for the local serial merge
-//                          queue. Rows are short-lived (queued → merged
-//                          or failed within a single PR cycle) and the
-//                          table is not expected to accrete.
+//     queue. Rows are short-lived (queued → merged
+//     or failed within a single PR cycle) and the
+//     table is not expected to accrete.
 //   - schema_version     — a single-row table tracking the live schema
-//                          version. Pruning it would break startup.
+//     version. Pruning it would break startup.
 //
 // Atomicity: all DELETEs run inside one transaction with PRAGMA
 // foreign_keys = ON (set at connection time in Open). The cascade from

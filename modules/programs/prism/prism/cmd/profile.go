@@ -110,8 +110,8 @@ Use --no-live to update the state file only (no live-swap).
 Use --coordinator <session> to bypass auto-discovery.
 Use --scope to override the live-swap target (session=<name>, coordinator,
 global, or all). --no-live cannot be combined with --scope.`,
-	Args:  cobra.ExactArgs(1),
-	RunE:  runProfileUse,
+	Args: cobra.ExactArgs(1),
+	RunE: runProfileUse,
 }
 
 var profileListCmd = &cobra.Command{

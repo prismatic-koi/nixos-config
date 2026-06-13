@@ -168,8 +168,8 @@ func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
 // user runs `prism cleanup --yes --session <interrupted-agent>` to abandon
 // an interrupted review agent, the cleanup path:
 //
-//   1. SIGTERMs the sidecar, which writes state="interrupted".
-//   2. Calls SetEnded(session), which sets ended_at but leaves state alone.
+//  1. SIGTERMs the sidecar, which writes state="interrupted".
+//  2. Calls SetEnded(session), which sets ended_at but leaves state alone.
 //
 // Without the `ended_at` arm here, an interrupted-then-cleaned-up agent's
 // row would have state="interrupted" forever, which is no longer terminal

@@ -179,9 +179,9 @@ func SetActiveProfile(pf *ProfilesFile, name string) error {
 // ResolveActiveProfile returns the effective active profile name applying
 // the resolution order documented at the top of this file:
 //
-//   1. flagValue (when non-empty) — explicit `--profile` flag
-//   2. Runtime state file
-//   3. pf.Default — nix-configured default
+//  1. flagValue (when non-empty) — explicit `--profile` flag
+//  2. Runtime state file
+//  3. pf.Default — nix-configured default
 //
 // `source` describes which step produced the result and is intended for
 // diagnostic logging only ("flag", "state-file", "nix-default", or "none").

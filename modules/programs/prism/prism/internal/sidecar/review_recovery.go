@@ -292,4 +292,3 @@ func (s *Sidecar) SetRecoveryQuerierForTest(q reviewRecoveryQuerier) {
 	defer s.mu.Unlock()
 	s.reviewRecoveryQuerierOverride = q
 }
-

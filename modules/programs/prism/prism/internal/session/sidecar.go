@@ -150,6 +150,7 @@ func SidecarHarnessPipePath(sessionName string) (string, error) {
 	}
 	return filepath.Join(base, "run", SessionDirName(sessionName), "pipe.sock"), nil
 }
+
 // The log captures the stdout and stderr of the bwrap sandbox (and the agent
 // harness running inside it) for the lifetime of the session. It lives alongside
 // hostapi.sock in the per-session run directory so that the directory is already

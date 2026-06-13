@@ -1349,8 +1349,8 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 // known race messages.
 func TestWatcher_SecurityDenies(t *testing.T) {
 	cases := []struct {
-		output  string
-		isRace  bool
+		output string
+		isRace bool
 	}{
 		{"already merged\n", true},
 		{"pull request is not mergeable", true},
@@ -1541,8 +1541,8 @@ func TestPRInfo_IsMerged(t *testing.T) {
 	emptyStr := ""
 
 	cases := []struct {
-		name     string
-		info     prInfo
+		name       string
+		info       prInfo
 		wantMerged bool
 	}{
 		{

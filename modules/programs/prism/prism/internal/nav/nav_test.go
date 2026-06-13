@@ -52,9 +52,9 @@ func TestParseDirection(t *testing.T) {
 
 func TestIsSpineRow(t *testing.T) {
 	cases := []struct {
-		name  string
-		s     dashboard.AgentSession
-		want  bool
+		name string
+		s    dashboard.AgentSession
+		want bool
 	}{
 		// Top-level rows: included.
 		{"plain", dashboard.AgentSession{Name: "scratchpad"}, true},
@@ -84,11 +84,11 @@ func TestIsSpineRow(t *testing.T) {
 func TestVerticalTargets_FiltersNonLive(t *testing.T) {
 	sessions := makeSessions(t,
 		[2]string{"alpha@main", "active"},
-		[2]string{"alpha@feature", "active"},                       // depth-1: included (issue #1800)
-		[2]string{"beta@main", "finished"},                         // finished but live: included (issue #1839)
+		[2]string{"alpha@feature", "active"}, // depth-1: included (issue #1800)
+		[2]string{"beta@main", "finished"},   // finished but live: included (issue #1839)
 		[2]string{"gamma@main", "idle"},
-		[2]string{"gamma@feature~review-1-review-goal", "active"},  // depth-2: excluded
-		[2]string{"delta@main", "active"},                          // not live: excluded
+		[2]string{"gamma@feature~review-1-review-goal", "active"}, // depth-2: excluded
+		[2]string{"delta@main", "active"},                         // not live: excluded
 		[2]string{"scratchpad", "idle"},
 	)
 	live := liveSet("alpha@main", "alpha@feature", "beta@main", "gamma@main", "gamma@feature~review-1-review-goal", "scratchpad")

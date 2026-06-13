@@ -174,7 +174,7 @@ func TestKillSidecarAndWait_StaleZombie_SocketFreedBeforeReturn(t *testing.T) {
 	// duplicateStartError in the new sidecar's checkNoLiveSidecar probe.
 	_, dialAfterErr := net.DialTimeout("unix", sockPath, 500*time.Millisecond)
 	if dialAfterErr == nil {
-		t.Errorf("socket is still accepting after KillSidecarAndWait returned — "+
+		t.Errorf("socket is still accepting after KillSidecarAndWait returned — " +
 			"a new sidecar's duplicate-start guard would fire; the stale-zombie bug is not fixed")
 	}
 	// A nil dialAfterErr is the regression. Any error (ECONNREFUSED, ENOENT,

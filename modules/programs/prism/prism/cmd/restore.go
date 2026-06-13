@@ -345,7 +345,7 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		restoreHarness, _ = harness.New("pi", "", nil, "", "")
 	}
 	opts := session.Opts{
-		Headless: true,
+		Headless:         true,
 		Agent:            session.DefaultAgentForSession(s.SessionName, directory, "", d),
 		SessionName:      s.SessionName,
 		Layout:           session.LayoutFull,

@@ -944,8 +944,8 @@ const REVIEW_CYCLE_THRESHOLD = 3
 // same PR. The template is exported for testing.
 //
 // Format args (in order):
-//   1. cycle count (int)
-//   2. PR label (string, e.g. "PR #42")
+//  1. cycle count (int)
+//  2. PR label (string, e.g. "PR #42")
 const loopLimitFooterTemplate = "\n---\n" +
 	"⚠️ **REVIEW LOOP LIMIT.** You have run %d review cycles for %s without all agents passing. " +
 	"Stop and escalate to the coordinator. Do NOT run another review cycle. " +
@@ -967,13 +967,13 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 // group given by excludeGroupID. A cycle is "completed and verdict-producing"
 // when:
 //
-//   1. Every member of the group is in a terminal state (so the group is no
-//      longer running), AND
-//   2. Every member finished with a parseable `<verdict>PASS</verdict>` /
-//      `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
-//      of real per-agent verdicts (#1995). The per-member check is shared
-//      with the in-flight predicate via memberProducedParseableVerdict so
-//      the two callsites cannot drift.
+//  1. Every member of the group is in a terminal state (so the group is no
+//     longer running), AND
+//  2. Every member finished with a parseable `<verdict>PASS</verdict>` /
+//     `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
+//     of real per-agent verdicts (#1995). The per-member check is shared
+//     with the in-flight predicate via memberProducedParseableVerdict so
+//     the two callsites cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Pure-infrastructure failures (every member never bound its
@@ -982,9 +982,9 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 // are both excluded by condition 2 — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
-//   "Count re-run cycles from the first round that had a full set of agent
-//    results; do not count infrastructure-failure rounds toward your 3-cycle
-//    limit."
+//	"Count re-run cycles from the first round that had a full set of agent
+//	 results; do not count infrastructure-failure rounds toward your 3-cycle
+//	 limit."
 //
 // Pass excludeGroupID="" to count every group; pass the current group's id
 // when computing "cycles before this one" so that a caller can ask

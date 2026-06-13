@@ -29,7 +29,7 @@ import (
 	"testing"
 	"time"
 
-		pih "github.com/prismatic-koi/prism/internal/harness/pi"
+	pih "github.com/prismatic-koi/prism/internal/harness/pi"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 )
 
@@ -216,7 +216,7 @@ func TestSidecarRun_BindFailureReturnsError(t *testing.T) {
 		SessionName:     "test-repo@bind-fail",
 		Repo:            "test-repo",
 		Worktree:        "/tmp/test-worktree",
-		HarnessURL:     "http://127.0.0.1:1", // unreachable, but Run() should exit before SSE setup matters
+		HarnessURL:      "http://127.0.0.1:1", // unreachable, but Run() should exit before SSE setup matters
 		HostAPISockPath: sockPath,
 		DB:              d,
 		Clock:           clk,

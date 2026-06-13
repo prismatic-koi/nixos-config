@@ -78,6 +78,22 @@ jobs:
           DEBIAN_FRONTEND=noninteractive
           sudo apt-get update -q -y
           sudo apt-get install -q -y bubblewrap
+      # Enforce gofmt across the prism Go module before anything else
+      # runs, so a formatting drift surfaces at the top of the CI summary
+      # rather than hiding inside an otherwise-green `go test ./...`.
+      # Scoped to `modules/programs/prism/prism/` via working-directory
+      # so it never lints unrelated Go modules elsewhere in the repo
+      # (e.g. battery-monitor has its own go.mod). See issue #2218.
+      - name: gofmt check
+        if: steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files need gofmt — run \`gofmt -w .\` from modules/programs/prism/prism/ and commit:"
+            echo "$unformatted"
+            exit 1
+          fi
       - name: go build
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism

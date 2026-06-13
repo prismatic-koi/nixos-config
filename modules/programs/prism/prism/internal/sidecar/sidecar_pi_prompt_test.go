@@ -218,9 +218,9 @@ func TestHostAPI_Prompt_ReviewComplete_ClearsReviewingInFlight(t *testing.T) {
 // their intent preserved end-to-end, not overridden with a hardcoded "nextTurn".
 func TestHostAPI_Prompt_DeliverAs_ForwardedToFrame(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      string
-		wantMode  string
+		name     string
+		body     string
+		wantMode string
 	}{
 		{
 			name:     "followUp is forwarded",

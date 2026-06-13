@@ -88,4 +88,3 @@ func activeSessionNamesForError(d *db.DB, cap int) ([]string, error) {
 	truncated[cap] = fmt.Sprintf("...and %d more", len(names)-cap)
 	return truncated, nil
 }
-

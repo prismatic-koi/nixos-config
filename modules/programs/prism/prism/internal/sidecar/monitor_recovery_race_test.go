@@ -260,7 +260,7 @@ func TestMonitorAndRecovery_ExactlyOneDelivery(t *testing.T) {
 	// test. Filter to prompt frames only so the assertion remains stable.
 	var promptFrames [][]byte
 	var allFrames [][]byte
-	drainLoop:
+drainLoop:
 	for {
 		select {
 		case f := <-pipeCh:

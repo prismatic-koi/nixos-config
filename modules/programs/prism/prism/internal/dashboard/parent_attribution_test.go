@@ -565,5 +565,3 @@ func TestSortDisplayed_WithDBBackedParent(t *testing.T) {
 		}
 	}
 }
-
-

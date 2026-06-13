@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
-	)
+)
 
 // TestNotifyCoordinator_EscalatedSuppressed verifies AC #3 and #4: while a
 // session is in the escalated state, the sidecar must NOT call
@@ -55,7 +55,7 @@ func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
 		SessionName: workerSession,
 		Repo:        "test-repo",
 		Worktree:    "/tmp/test-worktree-escalated",
-		HarnessURL: "http://localhost:14002",
+		HarnessURL:  "http://localhost:14002",
 		DB:          d,
 		Clock:       clk,
 		HTTPClient:  srv.Client(),
