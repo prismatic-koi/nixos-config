@@ -3190,6 +3190,36 @@ func knownReviewAgentNames() []string {
 
 // ── P3.LIVE live-model-swap helpers (#1214) ───────────────────────────────────
 
+// stripProviderPrefix normalises a model ID for the set_model wire contract
+// by removing a single leading "<provider>/" segment when the leading segment
+// matches the supplied provider. The wire contract for set_model frames is a
+// bare model ID; profiles.json conventionally stores the prefixed form
+// ("anthropic/claude-sonnet-4") for the spawn-time --model CLI flag, so the
+// live-swap path must normalise before building the frame. Issue #2252.
+//
+// Constraints (from the issue):
+//   - Strip at most ONE leading "<provider>/" segment.
+//   - Strip only when that segment exactly equals the frame's provider.
+//   - Preserve any remaining '/' characters — model IDs may legitimately
+//     contain nested slashes (e.g. openrouter-style IDs). Do NOT split on the
+//     last '/'.
+//
+// Empty provider or empty model is returned unchanged: there is nothing to
+// match against and the downstream validation will reject it.
+//
+// Idempotent: a bare-ID input is returned unchanged, so it is safe to call
+// this helper at multiple layers of the live-swap stack.
+func stripProviderPrefix(provider, model string) string {
+	if provider == "" || model == "" {
+		return model
+	}
+	prefix := provider + "/"
+	if strings.HasPrefix(model, prefix) {
+		return model[len(prefix):]
+	}
+	return model
+}
+
 // liveModelSwapForSession delivers a set_model frame to the named session.
 //
 // When targetSess == s.cfg.SessionName (own session) and the sidecar is
@@ -3197,8 +3227,17 @@ func knownReviewAgentNames() []string {
 // When targetSess is a different session, the call is forwarded to that
 // session's own sidecar host-API socket via an HTTP POST to /set-model.
 //
+// The model argument is normalised via stripProviderPrefix before being
+// placed on the wire — both the own-session SetModel enqueue and the
+// forwarded peer /set-model call see the bare model ID. This is the canonical
+// fix for issue #2252 (the live-swap silent no-op): the bug shape was
+// /apply-profile passing slot.Model ("anthropic/claude-fable-5") verbatim
+// into the frame, which the extension's modelRegistryFind then failed to
+// resolve.
+//
 // Returns a status string: "applied" or "error:disconnected".
 func liveModelSwapForSession(s *Sidecar, targetSess, provider, model, thinking string) string {
+	model = stripProviderPrefix(provider, model)
 	if targetSess == s.cfg.SessionName {
 		if !isPipeConnected(s) {
 			return "error:disconnected"
@@ -3272,11 +3311,19 @@ func resolveRoleForSession(s *Sidecar, targetSess string) (role, skipStatus stri
 
 // forwardSetModel dials the target session's host-API socket and POSTs a
 // /set-model request.
+//
+// The model field is normalised via stripProviderPrefix before the POST so
+// that the wire body always carries the bare model ID, matching the
+// /apply-profile fan-out and same-session enqueue paths. The peer's
+// /set-model handler will also normalise on receipt — the dual-strip is
+// deliberate defence in depth and harmless because stripProviderPrefix is
+// idempotent. Issue #2252.
 func forwardSetModel(targetSess, provider, model, thinking string) error {
 	sockPath, err := hostAPISocketPath(targetSess)
 	if err != nil {
 		return fmt.Errorf("resolve socket: %w", err)
 	}
+	model = stripProviderPrefix(provider, model)
 	body := struct {
 		Session  string `json:"session"`
 		Provider string `json:"provider"`
