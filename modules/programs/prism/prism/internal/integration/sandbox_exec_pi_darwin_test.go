@@ -55,14 +55,41 @@ func newPIProfileManager(t *testing.T, sockPath string) *container.Manager {
 	return container.New(cfg)
 }
 
+// piRunDirUnderHome creates a temp directory under the real user HOME to
+// stand in for the per-session run dir (which in production lives at
+// $XDG_STATE_HOME/prism/run/<sessionDirHash>/ — under HOME, not under
+// /private/var/folders). The test MUST NOT use t.TempDir() here: on Darwin
+// it returns a path under /private/var/folders, which the profile's
+// section-2 broad (subpath "/private/var/folders") read allow covers
+// regardless of any per-session run-dir rule — making the negative test
+// vacuous (the read succeeds even with the run-dir rule mutated out
+// because the broad allow still grants it). Mirroring production by
+// rooting the run dir under HOME ensures the per-session run-dir rule is
+// the SOLE covering grant, so the mutation in the negative test produces
+// a real signal.
+func piRunDirUnderHome(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	runDir, err := os.MkdirTemp(home, ".prism-1213-rundir-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp(home) for run dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(runDir) })
+	return runDir
+}
+
 // TestSandboxExecPI_SystemPromptFileReadable verifies the positive path for
 // PI's system-prompt file: the per-session run directory is accessible inside
 // the sandbox via the existing host-API socket dir rule. This covers issue
 // #1213 AC: "No new SBPL rules are needed (confirm and document)".
 //
-// The test creates a temp file that stands in for the system-prompt file
-// (co-located with the socket dir), then runs sandbox-exec to read it with
-// the Nix-built bash. Asserts exit 0.
+// The test creates a stand-in file under HOME (mirroring the production
+// run-dir location at $XDG_STATE_HOME/prism/run/<sessionDirHash>/, NOT
+// under /private/var/folders — see piRunDirUnderHome for the rationale)
+// and runs sandbox-exec to read it with the Nix-built bash. Asserts exit 0.
 func TestSandboxExecPI_SystemPromptFileReadable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -70,9 +97,7 @@ func TestSandboxExecPI_SystemPromptFileReadable(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	// Create a temp directory to act as the per-session run dir. The PI
-	// system-prompt file and hostapi.sock are co-located here.
-	runDir := t.TempDir()
+	runDir := piRunDirUnderHome(t)
 	sockPath := filepath.Join(runDir, "hostapi.sock")
 	systemPromptPath := filepath.Join(runDir, "system-prompt.md")
 
@@ -115,7 +140,16 @@ func TestSandboxExecPI_SystemPromptFileReadable(t *testing.T) {
 // TestSandboxExecPI_SystemPromptFileDeniedWithoutRunDirRule verifies the
 // negative path: when the per-session run dir rule is removed from the SBPL
 // profile, reading the system-prompt file fails. This proves that the
-// positive test is not a no-op — the run dir rule really is the covering rule.
+// positive test is not a no-op — the run dir rule really is the covering
+// rule.
+//
+// runDir is rooted under HOME (via piRunDirUnderHome) deliberately: a
+// t.TempDir() path lives under /private/var/folders on Darwin, which the
+// profile's section-2 broad read allow covers regardless of the
+// per-session run-dir rule — making this negative test vacuous (the
+// mutation removes a rule but the file remains readable via the broad
+// allow). Anchoring runDir under HOME ensures the per-session run-dir
+// rule is the sole grant.
 func TestSandboxExecPI_SystemPromptFileDeniedWithoutRunDirRule(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -123,7 +157,7 @@ func TestSandboxExecPI_SystemPromptFileDeniedWithoutRunDirRule(t *testing.T) {
 	requireSandboxExec(t)
 	nixBash := requireNixBash(t)
 
-	runDir := t.TempDir()
+	runDir := piRunDirUnderHome(t)
 	sockPath := filepath.Join(runDir, "hostapi.sock")
 	systemPromptPath := filepath.Join(runDir, "system-prompt.md")
 

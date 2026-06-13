@@ -78,8 +78,12 @@ var awsProfileRe = regexp.MustCompile(`(?m)^\[profile ([^\]]+)\]`)
 
 // awsHostConfigForTest locates the host XDG aws config
 // (~/.config/aws/readonly-config), requires it to be sops-backed (resolving
-// into a secrets.d/<N>/ path — the mechanism under test), and parses a named
-// profile from it. Skips when any precondition is missing.
+// into a secrets.d/<N>/ path — the mechanism under test), parses a named
+// profile from it, AND verifies the host's SSO session is live enough for
+// `aws configure list --profile <name>` to exit 0 (the in-sandbox assertion).
+// Skips when any precondition is missing — including expired SSO, where the
+// failure is environmental and not distinguishable from a sandbox-side
+// regression.
 //
 // Returns (configPath, resolvedTarget, profileName). configPath is the
 // stable XDG symlink path (what AWS_CONFIG_FILE carries in production);
@@ -111,6 +115,31 @@ func awsHostConfigForTest(t *testing.T) (configPath, resolvedTarget, profileName
 		t.Skipf("host aws config has no [profile <name>] section — cannot distinguish a real config read from botocore's empty-config default behaviour")
 	}
 	profileName = string(match[1])
+
+	// SSO precheck: when the profile uses a `sso_session = ...` block,
+	// `aws configure list --profile <name>` triggers an STS token refresh
+	// during botocore credential resolution. An expired host SSO token
+	// makes the test exit 255 with "Token has expired and refresh failed"
+	// — environmental, not a sandbox-side regression. Probe the host
+	// directly (no sandbox involved) and skip when the precondition fails.
+	awsBin, lookErr := exec.LookPath("aws")
+	if lookErr != nil {
+		t.Skipf("aws CLI not in PATH on host: %v", lookErr)
+	}
+	probe := exec.Command(awsBin, "configure", "list", "--profile", profileName)
+	probe.Env = append(os.Environ(), "AWS_EC2_METADATA_DISABLED=true")
+	if probeOut, probeErr := probe.CombinedOutput(); probeErr != nil {
+		lower := strings.ToLower(string(probeOut))
+		switch {
+		case strings.Contains(lower, "token has expired"),
+			strings.Contains(lower, "refresh failed"),
+			strings.Contains(lower, "sso login"),
+			strings.Contains(lower, "sso session"):
+			t.Skipf("host SSO precondition not met for profile %q (expired/unavailable token): %v\nHost-side `aws configure list` output:\n%s\nRun `aws sso login --sso-session <name>` and retry.", profileName, probeErr, probeOut)
+		default:
+			t.Skipf("host-side `aws configure list --profile %s` failed: %v\nOutput:\n%s", profileName, probeErr, probeOut)
+		}
+	}
 	return configPath, resolvedTarget, profileName
 }
 
