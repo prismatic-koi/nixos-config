@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
@@ -33,8 +34,34 @@ let cachedCreds: { creds: ClaudeCredentials; cachedAt: number } | null = null
 export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+/**
+ * Resolve the path to pi's auth.json, in precedence order:
+ *
+ *   1. PI_AUTH_JSON      explicit override (tests, manual escape hatch)
+ *   2. PI_CODING_AGENT_DIR/auth.json   set by the prism bwrap + sandbox-exec
+ *                                       dispatchers, and on the host system-
+ *                                       wide. This is the path that surfaces
+ *                                       host-side os.Rename swaps inside a
+ *                                       running sandbox (#2283).
+ *   3. ~/.pi/agent/auth.json           legacy fallback.
+ *
+ * The middle entry is the critical piece for `prism account use`. The bwrap
+ * dispatcher dir-binds the host's ~/.pi/agent at $PI_CODING_AGENT_DIR (a
+ * directory bind), and ALSO file-binds auth.json at its host path for
+ * back-compat. Linux `mount --bind` on a file pins the source inode at
+ * mount time — so a host-side `os.Rename` (which creates a new inode) is
+ * NOT visible at the file-bind path inside an already-running sandbox.
+ * The dir-bind, by contrast, surfaces dentry updates (renames included),
+ * so reading via $PI_CODING_AGENT_DIR/auth.json sees the post-swap blob
+ * immediately. Combined with the mtime check below, this makes the swap
+ * visible to a running pi without a restart.
+ */
 function getAuthJsonPath(): string {
-  return process.env.PI_AUTH_JSON ?? join(homedir(), ".pi", "agent", "auth.json")
+  if (process.env.PI_AUTH_JSON) return process.env.PI_AUTH_JSON
+  if (process.env.PI_CODING_AGENT_DIR) {
+    return join(process.env.PI_CODING_AGENT_DIR, "auth.json")
+  }
+  return join(homedir(), ".pi", "agent", "auth.json")
 }
 
 /**
@@ -270,10 +297,31 @@ export function getCachedCredentials(): ClaudeCredentials | null {
     now - cachedCreds.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
     cachedCreds.creds.expiresAt > now + 60_000
   ) {
-    log("cache_hit", {
-      ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cachedCreds.cachedAt),
-    })
-    return cachedCreds.creds
+    // Bypass the cache if auth.json has been touched since we cached.
+    // This is the `prism account use` hand-off path (#2283): the swap
+    // renames a new auth.json over the old, bumping mtime; the next
+    // outbound request sees mtime > cachedAt and re-reads the file
+    // instead of returning the stale tokens.
+    //
+    // statSync may throw if the file was unlinked between writes; treat
+    // that as a cache miss (fall through, re-read, log normally).
+    let mtimeMs = 0
+    try {
+      mtimeMs = statSync(getAuthJsonPath()).mtimeMs
+    } catch {
+      mtimeMs = 0
+    }
+    if (mtimeMs > cachedCreds.cachedAt) {
+      log("cache_invalidated_mtime", {
+        mtimeMs,
+        cachedAt: cachedCreds.cachedAt,
+      })
+    } else {
+      log("cache_hit", {
+        ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cachedCreds.cachedAt),
+      })
+      return cachedCreds.creds
+    }
   }
 
   log("cache_miss", { reason: cachedCreds ? "stale or expiring" : "empty" })
