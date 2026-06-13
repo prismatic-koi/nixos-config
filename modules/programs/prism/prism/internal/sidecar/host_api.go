@@ -1469,6 +1469,57 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
+		// Request validation runs BEFORE the pre-emptive reviewing-state
+		// write so that malformed-request failures (bad JSON, missing or
+		// non-numeric pr_number, unknown agent name) never leave the
+		// calling session pinned in `reviewing` — see issue #2258. The
+		// pre-#2258 ordering wrote `reviewing` immediately on entry, before
+		// touching the request body, so any subsequent 4xx return short-
+		// circuited without rolling back the DB row or clearing
+		// `reviewingInFlight`, with the worker silently stuck until the
+		// next successful review delivery.
+		//
+		// Decode + validate first; do the pre-emptive write only after the
+		// request is known to be well-formed and routable. This preserves
+		// the #1372 race-window guarantee (the write still precedes
+		// `cmd.Start`, so by the time the worker observes any handler-side
+		// effect the row is already `reviewing`) because the request-
+		// validation budget is microseconds and far below the idle-
+		// debounce window the pre-emptive write was added to outrun.
+		var req struct {
+			PRNumber string   `json:"pr_number"`
+			Agents   []string `json:"agents"`
+			Timeout  string   `json:"timeout"`
+			Rebase   bool     `json:"rebase"`
+		}
+		// /review body cap: default 1 MiB (issue #1848).
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+		if req.PRNumber == "" {
+			writeError(w, http.StatusBadRequest, "pr_number is required")
+			return
+		}
+		// Validate pr_number is numeric to prevent flag injection into the
+		// subprocess (e.g. "--keep" being interpreted as a cobra flag).
+		for _, c := range req.PRNumber {
+			if c < '0' || c > '9' {
+				writeError(w, http.StatusBadRequest, "pr_number must be a numeric string (e.g. \"123\")")
+				return
+			}
+		}
+
+		// Validate each agent name against the known set to prevent flag
+		// injection via the --only argument.
+		for _, name := range req.Agents {
+			if !isKnownReviewAgent(name) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown agent name %q — must be one of: %s",
+					name, strings.Join(knownReviewAgentNames(), ", ")))
+				return
+			}
+		}
+
 		// Pre-emptive: mark the calling session as `reviewing` immediately,
 		// before spawning the `prism review` subprocess. The subprocess's
 		// RunAsync also writes `reviewing` to the DB, but it does so several
@@ -1503,6 +1554,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			reviewingWriteAttempts = 3
 			reviewingWriteBackoff  = 10 * time.Millisecond
 		)
+		// prevStatus, when non-nil, holds the agent_status row read
+		// immediately before the pre-emptive `reviewing` write. It is the
+		// authoritative restore target on any post-write failure path
+		// (subprocess spawn error, subprocess non-zero exit) per issue
+		// #2258. nil means the pre-emptive write was skipped (DB error or
+		// no row) and rollback is a no-op.
+		var prevStatus *db.Status
 		if status, dbErr := s.cfg.DB.CurrentStatus(s.cfg.SessionName); dbErr != nil {
 			s.logger().Printf("sidecar: host-API /review: pre-emptive reviewing write skipped — CurrentStatus error: %v", dbErr)
 		} else if status == nil {
@@ -1524,6 +1582,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				writeError(w, http.StatusInternalServerError, fmt.Sprintf("reviewing state write failed: %v", upsertErr))
 				return
 			}
+			// Capture the pre-write status for rollback on any post-write
+			// failure path (issue #2258).
+			prevStatus = status
 			// Set the in-memory flag atomically now that the DB write succeeded.
 			// handlePipeFrame's turn_start guard reads this flag instead of calling
 			// currentDBState(), eliminating the SQLite read-after-write race (#1372).
@@ -1538,38 +1599,48 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			s.writeReviewingState(true)
 		}
 
-		var req struct {
-			PRNumber string   `json:"pr_number"`
-			Agents   []string `json:"agents"`
-			Timeout  string   `json:"timeout"`
-			Rebase   bool     `json:"rebase"`
-		}
-		// /review body cap: default 1 MiB (issue #1848).
-		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
-			writeError(w, status, "invalid JSON: "+err.Error())
-			return
-		}
-		if req.PRNumber == "" {
-			writeError(w, http.StatusBadRequest, "pr_number is required")
-			return
-		}
-		// Validate pr_number is numeric to prevent flag injection into the
-		// subprocess (e.g. "--keep" being interpreted as a cobra flag).
-		for _, c := range req.PRNumber {
-			if c < '0' || c > '9' {
-				writeError(w, http.StatusBadRequest, "pr_number must be a numeric string (e.g. \"123\")")
+		// rollbackPreemptiveWrite restores the calling session's pre-write
+		// state on any failure path AFTER the pre-emptive reviewing write
+		// landed (issue #2258). It is a no-op when the pre-emptive write was
+		// skipped (prevStatus == nil) and is idempotent — callers may invoke
+		// it once per failure branch without coordination. Specifically:
+		//
+		//   1. Restores agent_status.state to the captured prevStatus.State,
+		//      using the same SQLITE_BUSY-retry budget as the forward write.
+		//   2. Clears s.reviewingInFlight under s.mu.
+		//   3. Pushes reviewing_state{false} to the PI extension so its
+		//      pendingReviewCall guard releases in lock-step (#2050). A
+		//      dropped frame here is non-fatal: the next transition or
+		//      handshake-time emission re-asserts the correct state.
+		//
+		// The rollback path is only safe because RunAsync defers its own
+		// `reviewing` DB write until AFTER all agents have spawned
+		// successfully — so a non-zero `prism review` exit means the child
+		// did not write `reviewing` itself, and our rollback cannot race
+		// with it.
+		rollbackPreemptiveWrite := func() {
+			if prevStatus == nil {
 				return
 			}
-		}
-
-		// Validate each agent name against the known set to prevent flag
-		// injection via the --only argument.
-		for _, name := range req.Agents {
-			if !isKnownReviewAgent(name) {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("unknown agent name %q — must be one of: %s",
-					name, strings.Join(knownReviewAgentNames(), ", ")))
-				return
+			var attempt int
+			rollbackErr := db.WithBusyRetry(reviewingWriteAttempts, reviewingWriteBackoff, func() error {
+				err := s.cfg.DB.UpsertStatus(s.cfg.SessionName, prevStatus.Repo, prevStatus.Worktree, prevStatus.State, nil, nil)
+				if err != nil && db.IsSQLiteBusy(err) {
+					s.logger().Printf("sidecar: host-API /review: rollback write SQLITE_BUSY (attempt %d/%d): %v", attempt+1, reviewingWriteAttempts, err)
+				}
+				attempt++
+				return err
+			})
+			if rollbackErr != nil {
+				s.logger().Printf("sidecar: host-API /review: rollback write failed after %d attempt(s): %v — session may remain pinned in reviewing", reviewingWriteAttempts, rollbackErr)
 			}
+			s.mu.Lock()
+			s.reviewingInFlight = false
+			s.mu.Unlock()
+			s.writeReviewingState(false)
+			// One-shot: subsequent calls within this handler invocation are
+			// no-ops, so we never double-write the restore state.
+			prevStatus = nil
 		}
 
 		args := []string{"review", req.PRNumber}
@@ -1643,11 +1714,19 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// 2 s of emission rather than all arriving at once at the end.
 		stdoutPipe, pipeErr := cmd.StdoutPipe()
 		if pipeErr != nil {
+			// Roll back the pre-emptive `reviewing` write — no subprocess
+			// has been spawned, so the calling session must not remain
+			// pinned in `reviewing` (issue #2258).
+			rollbackPreemptiveWrite()
 			writeError(w, http.StatusInternalServerError, "review: stdout pipe: "+pipeErr.Error())
 			return
 		}
 
 		if startErr := cmd.Start(); startErr != nil {
+			// Roll back the pre-emptive `reviewing` write — the subprocess
+			// failed to start so no agents were spawned and the calling
+			// session must not remain pinned in `reviewing` (issue #2258).
+			rollbackPreemptiveWrite()
 			writeError(w, http.StatusInternalServerError, "review: start: "+startErr.Error())
 			return
 		}
@@ -1711,6 +1790,22 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if canFlush {
 			flusher.Flush()
+		}
+
+		// Roll back the pre-emptive `reviewing` write on any host-side
+		// child refusal (behind-`origin/main` gate, round-already-in-
+		// progress, fetch failure, etc.) — RunAsync only writes
+		// `reviewing` itself after a successful all-agents spawn, so a
+		// non-zero exit means the child did not transition the session to
+		// `reviewing` and our pre-emptive write must be reversed to
+		// prevent the worker from staying pinned (issue #2258).
+		//
+		// On waitErr == nil the agents spawned successfully; the monitor
+		// is now responsible for delivering the review-complete prompt,
+		// which clears reviewingInFlight via the normal /prompt path
+		// (#1843). No rollback in that case.
+		if waitErr != nil {
+			rollbackPreemptiveWrite()
 		}
 	})
 
