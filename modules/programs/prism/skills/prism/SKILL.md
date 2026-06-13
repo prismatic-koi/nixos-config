@@ -815,12 +815,13 @@ prism escalate --to nixos-config@main --prompt "..."
 
 ```
 active ──prism escalate──▶ escalated
-escalated ──any turn_start (from any source)──▶ active
+escalated ──turn_start (after the escalating turn ends)──▶ active
 ```
 
 - `escalated` is a new value alongside `active` / `idle` / `finished` / `reviewing`. It surfaces in `prism sessions list` so a glance shows which workers are paused awaiting guidance.
-- The transition out is triggered by **any** incoming `turn_start`, not specifically `prism prompt`. A human who pokes at the worker via tmux clears the flag too.
-- While in `escalated`, the sidecar suppresses the "has finished" notification. The `session.escalated` bus event is the notification.
+- **Same-turn frames do not clear it** (issue #2255): `prism escalate` runs as a bash tool call mid-turn, and the agent loop emits further `turn_start` frames before the escalating turn ends. The sidecar arms a same-turn guard when the escalate succeeds and suppresses those frames' state writes, so the rest of the escalating turn cannot clobber the `escalated` state. The guard releases when the turn fully ends (finished debounce), when a prompt is delivered to the session, or on a terminal exit.
+- After the escalating turn has ended, the transition out is triggered by **any** incoming `turn_start`, not specifically `prism prompt`. A human who pokes at the worker via tmux clears the flag too.
+- While in `escalated`, the sidecar suppresses the "has finished" notification — including for a `session_shutdown` terminal exit. The `session.escalated` bus event is the notification.
 
 ### Discovery rules
 

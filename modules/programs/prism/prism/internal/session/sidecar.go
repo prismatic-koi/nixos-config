@@ -363,6 +363,45 @@ func unlinkSidecarSockets(sessionName string) {
 	}
 }
 
+// sidecarAliveDialTimeout bounds each liveness dial in SidecarAlive. Kept
+// short (250ms, matching the sidecar's own duplicate-start probe) so callers
+// on interactive paths (prism switch) are not stalled by a wedged socket.
+const sidecarAliveDialTimeout = 250 * time.Millisecond
+
+// SidecarAlive reports whether a live sidecar process is currently accepting
+// connections on one of sessionName's Unix sockets (hostapi.sock for
+// sandboxed sessions, pipe.sock for host-mode socket-pipe sessions).
+//
+// This is the authoritative liveness signal for sessions whose agent_status
+// row has gone quiet: paused-by-design states (escalated awaiting coordinator
+// guidance, reviewing awaiting verdicts, waiting on a permission prompt) stop
+// producing state transitions, so last_seen freezes while the sidecar is
+// perfectly healthy. Classifying such a session as a stale zombie purely on
+// last_seen age — and then SIGTERMing its sidecar — severs every coordination
+// channel for the session (prompt delivery, finish notifications, event
+// recording). See issue #2255 for the incident this guards against.
+//
+// A dead socket (absent path, or a tombstone file whose listener is gone —
+// ECONNREFUSED) returns false, preserving the existing stale-zombie restart
+// behaviour for genuinely dead sidecars.
+func SidecarAlive(sessionName string) bool {
+	paths := make([]string, 0, 2)
+	if sockPath, err := SidecarHostAPIPath(sessionName); err == nil {
+		paths = append(paths, sockPath)
+	}
+	if pipePath, err := SidecarHarnessPipePath(sessionName); err == nil {
+		paths = append(paths, pipePath)
+	}
+	for _, p := range paths {
+		conn, err := net.DialTimeout("unix", p, sidecarAliveDialTimeout)
+		if err == nil {
+			_ = conn.Close()
+			return true
+		}
+	}
+	return false
+}
+
 // waitForSocketGone polls the given Unix socket path with short dials until
 // either a dial returns an error (the listener is gone) or the deadline is
 // reached. Errors are intentionally swallowed — this function is best-effort

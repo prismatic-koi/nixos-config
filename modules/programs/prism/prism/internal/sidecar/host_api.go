@@ -974,7 +974,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					return
 				}
 				// Synchronous success: the prompt frame is enqueued on the
-				// outbound writer. Now it is safe to clear reviewingInFlight
+				// outbound writer. Incoming guidance has reached the session, so
+				// release the escalate same-turn guard (issue #2255) — the
+				// turn_start this prompt provokes must transition
+				// escalated→active per the documented contract.
+				s.mu.Lock()
+				if s.escalatedInFlight {
+					s.escalatedInFlight = false
+					s.logger().Printf("sidecar: host-API /prompt: cleared escalatedInFlight (incoming prompt resumes the escalated session)")
+				}
+				s.mu.Unlock()
+				// Now it is safe to clear reviewingInFlight
 				// for the review-complete case — the suppression guards have
 				// served their purpose, and the immediately-following turn_start
 				// must observe the cleared flag to transition normally to active.
@@ -2499,6 +2509,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				"stderr": stderrBuf.String(),
 			})
 			return
+		}
+		// The host-side child exited 0: the calling session is now in the
+		// `escalated` DB state (fresh transition, dedup replay, or muted
+		// variant — all exit 0 with the state held). Arm the in-memory
+		// same-turn guard BEFORE responding, so the agent-loop iteration that
+		// resumes once this bash call returns cannot clobber the escalated
+		// state with its turn_start active upsert (issue #2255). Only for our
+		// own session: a coordinator proxying an escalation for another
+		// session must not pin itself.
+		if fromSession == s.cfg.SessionName {
+			s.mu.Lock()
+			s.escalatedInFlight = true
+			s.mu.Unlock()
+			s.logger().Printf("sidecar: host-API /escalate: escalatedInFlight set — same-turn state clobber suppressed until turn end or incoming prompt")
 		}
 		writeJSON(w, http.StatusOK, map[string]string{
 			"stdout": stdoutBuf.String(),

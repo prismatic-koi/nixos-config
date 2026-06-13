@@ -528,6 +528,43 @@ type Sidecar struct {
 	// Protected by s.mu.
 	reviewingInFlight bool
 
+	// escalatedInFlight is the in-memory mirror of the `escalated` agent state
+	// for the turn that invoked `prism escalate` (issue #2255). It is the
+	// escalate-path twin of reviewingInFlight and exists for the same #1372 /
+	// #1652 race class: the `escalated` DB state is written by a separate
+	// host-side `prism escalate` process mid-turn, and the very next agent-loop
+	// iteration emits a turn_start frame whose unconditional active upsert
+	// would silently clobber it (escalated→active is a valid transition, so
+	// not even an advisory warning fires). Once clobbered, the finished
+	// debounce sees `active`, writes `finished`, and notifyCoordinator emits
+	// the "has finished" notification the escalate contract requires to be
+	// suppressed.
+	//
+	// Lifecycle:
+	//   - Set by the host-API /escalate handler after the host-side
+	//     `prism escalate` child exits 0 (the child has transitioned the
+	//     session to escalated by then), and only when the escalation is for
+	//     this sidecar's own session (a coordinator proxying for another
+	//     session must not pin itself).
+	//   - While set, handlePipeFrame suppresses non-terminal state upserts
+	//     (turn_start active writes, state_change{active}, state_change{waiting})
+	//     so the remaining frames of the escalating turn cannot clobber the
+	//     escalated state.
+	//   - Cleared when the finished debounce fires (the escalating turn has
+	//     fully ended — from then on, a genuine new turn_start clears the
+	//     escalated DB state per the documented contract), when a prompt is
+	//     delivered to this session via /prompt or flushPendingReplay (incoming
+	//     guidance — the resume path), and on terminal state transitions
+	//     (error/interrupted/deleted/session_shutdown).
+	//
+	// Host-isolation-mode limitation: host-mode sessions run `prism escalate`
+	// directly (no PRISM_HOST_API proxy), so the sidecar never observes the
+	// escalate and this flag stays false. Those sessions retain the
+	// pre-#2255 DB-read-only guards.
+	//
+	// Protected by s.mu.
+	escalatedInFlight bool
+
 	// activityTimer is the per-session inactivity watchdog (#1709). It is
 	// (re-)armed by touchActivity() on every inbound frame from the PI
 	// extension (handlePipeFrame) or the SSE harness (HandleEvent). If it
@@ -2362,6 +2399,10 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.cancelIdleTimer()
 			s.cancelRecoveryTimer()
 			s.lastErrorAt = s.cfg.Clock.Now()
+			// Terminal exit while escalated is permitted by the state machine
+			// (escalated→error); release the escalate guard so it does not
+			// outlive the session's escalated window (issue #2255).
+			s.escalatedInFlight = false
 			s.logger().Printf("sidecar: transition -> error (cause=pi_state_change)")
 			s.upsertState(st, nil, nil)
 			s.writeStateChange(st)
@@ -2370,10 +2411,26 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			// Gap 5: cancel finished debounce so the session does not spuriously
 			// transition to finished while waiting for user input (permission prompt).
 			s.cancelIdleTimer()
+			if s.escalatedInFlight {
+				// Same-turn frame after `prism escalate` — do not clobber the
+				// escalated state (issue #2255).
+				s.logger().Printf("sidecar: state_change{waiting} suppressed (cause=escalated — same-turn frame after prism escalate)")
+				break
+			}
 			s.upsertState(st, nil, nil)
 			s.writeStateChange(st)
 			s.lastState = st
 		default:
+			if s.escalatedInFlight && !agent.IsTerminal(st) {
+				// Same-turn frame after `prism escalate` — do not clobber the
+				// escalated state (issue #2255). Terminal states pass through:
+				// escalated→interrupted/deleted are valid terminal exits.
+				s.logger().Printf("sidecar: state_change{%s} suppressed (cause=escalated — same-turn frame after prism escalate)", st)
+				break
+			}
+			if agent.IsTerminal(st) {
+				s.escalatedInFlight = false
+			}
 			s.upsertState(st, nil, nil)
 			s.writeStateChange(st)
 			s.lastState = st
@@ -2395,7 +2452,20 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// debounce started by a preceding state_change{finished} frame, so the
 		// session does not spuriously transition to StateFinished.
 		s.cancelIdleTimer()
-		if !s.reviewingInFlight {
+		switch {
+		case s.reviewingInFlight:
+			s.logger().Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
+		case s.escalatedInFlight:
+			// Same-turn frame after `prism escalate` (issue #2255): the
+			// agent-loop iteration that follows the escalate bash call emits
+			// turn_start, whose unconditional active upsert would clobber the
+			// escalated state the host-side child just wrote — escalated→active
+			// is a valid transition, so nothing else catches it. Suppress the
+			// state write; the frame is still persisted to agent_events below.
+			// Genuine resumes (incoming `prism prompt`) clear escalatedInFlight
+			// at delivery time, so their turn_start transitions normally.
+			s.logger().Printf("sidecar: turn_start suppressed (cause=escalated — same-turn frame after prism escalate)")
+		default:
 			// Gap 4: when resuming from a terminal state (error or interrupted),
 			// clear ended_at so the session reappears in AllActiveStatus and
 			// prism sessions list. Check lastState (in-memory) first; if it is
@@ -2412,8 +2482,6 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 			s.upsertState(agent.StateActive, nil, nil)
 			s.writeStateChange(agent.StateActive)
 			s.lastState = agent.StateActive
-		} else {
-			s.logger().Printf("sidecar: turn_start suppressed (cause=reviewing — awaiting review-complete prompt)")
 		}
 		// Reset the accumulator for the new turn, then persist the frame.
 		empty := ""
@@ -2575,11 +2643,23 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// StateFinished so the coordinator receives exactly one notification.
 		s.cancelIdleTimer()
 		s.cancelRecoveryTimer()
+		// Capture the pre-write state BEFORE the finished upsert (issue #2255):
+		// notifyCoordinator's escalated guard reads the DB, so writing finished
+		// first would defeat it. A terminal exit while escalated is valid
+		// (escalated→finished), but the "has finished" notification must stay
+		// suppressed — the session.escalated bus event already informed the
+		// coordinator.
+		wasEscalated := s.escalatedInFlight || s.currentDBState() == agent.StateEscalated
+		s.escalatedInFlight = false
 		// Clean shutdown: mark finished and signal the reader loop.
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		s.lastState = agent.StateFinished
-		s.goNotify(s.notifyCoordinator)
+		if wasEscalated {
+			s.logger().Printf("sidecar: session_shutdown: finish notification suppressed (cause=escalated — session.escalated already informed coordinator)")
+		} else {
+			s.goNotify(s.notifyCoordinator)
+		}
 		return true
 
 	default:
@@ -2731,7 +2811,16 @@ func (s *Sidecar) flushPendingReplay() {
 		if d.DeliveryID != "" {
 			flushDedup[d.DeliveryID] = true
 		}
-		// Successful re-enqueue: if this entry was the monitor's
+		// Successful re-enqueue: incoming guidance has reached the session, so
+		// release the escalate same-turn guard (issue #2255) — the next
+		// turn_start must transition escalated→active per the contract.
+		s.mu.Lock()
+		if s.escalatedInFlight {
+			s.escalatedInFlight = false
+			s.logger().Printf("sidecar: flushPendingReplay: cleared escalatedInFlight after replayed prompt enqueue (delivery_id=%s)", d.DeliveryID)
+		}
+		s.mu.Unlock()
+		// If this entry was the monitor's
 		// review-complete delivery, clear reviewingInFlight now — the
 		// synchronous-delivery branch in host_api.go was unable to clear
 		// it because DeliverPrompt failed (PI disconnected at the time),
