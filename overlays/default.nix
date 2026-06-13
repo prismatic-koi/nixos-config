@@ -144,6 +144,32 @@ rec {
           '';
         });
 
+      # kubernetes-helm: disable checkPhase on Darwin to work around a
+      # broken `substitute()` call in nixpkgs' helm 4.2.0 derivation.
+      # Upstream helm 4.2.0 renamed or removed
+      # `cmd/helm/dependency_build_test.go`, but the nixpkgs derivation
+      # still patches its shebang during checkPhase / postPatch, failing
+      # with:
+      #   substitute(): ERROR: file 'cmd/helm/dependency_build_test.go' does not exist
+      # The build itself (and the produced binary) is unaffected; only the
+      # test phase trips on the missing file, and only on Darwin — Linux's
+      # helm 4.2.0 build succeeds against the same nixpkgs input.
+      #
+      # No upstream nixpkgs issue filed yet (out of scope here); see this
+      # repo's issue #2272 for the local failure and CI logs.
+      #
+      # REMOVAL CONDITION: delete this block once nixpkgs' kubernetes-helm
+      # derivation stops referencing the removed test file (either by
+      # dropping the offending `substitute()` call or by helm restoring
+      # the file upstream).
+      kubernetes-helm =
+        if final.stdenv.isDarwin then
+          prev.kubernetes-helm.overrideAttrs (_: {
+            doCheck = false;
+          })
+        else
+          prev.kubernetes-helm;
+
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
       # on staging-25.11 (nixpkgs commit 32e655f). Direnv's source is
