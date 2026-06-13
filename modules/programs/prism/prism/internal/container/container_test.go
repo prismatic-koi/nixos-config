@@ -1047,6 +1047,7 @@ func TestWriteGitconfig_AllModes_EmptyIdentityRefused(t *testing.T) {
 func TestSandboxExecPrepare_EmptyIdentityAborts(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", "")
 	for _, d := range []string{".ssh", ".config/pi", ".cache/nix"} {
 		if err := os.MkdirAll(filepath.Join(fakeHome, d), 0o700); err != nil {
 			t.Fatalf("mkdir %s: %v", d, err)

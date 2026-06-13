@@ -25,6 +25,11 @@ import (
 func TestSessionWorkDirPath_Layout(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	// Clear XDG_STATE_HOME so the path falls through to the HOME-derived
+	// branch this test pins. SessionWorkDirPath honours XDG_STATE_HOME first
+	// (#2263); a developer env that exports it would otherwise shift the
+	// expected path off the fake home and break this assertion.
+	t.Setenv("XDG_STATE_HOME", "")
 
 	const instanceID = "work-dir-layout-test"
 	m := newSandboxExecManagerWithInstance(Config{
@@ -58,6 +63,7 @@ func TestSessionWorkDirPath_Layout(t *testing.T) {
 // work dir rather than an error.
 func TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "")
 	m := newSandboxExecManager(Config{SessionName: "repo@feat"})
 
 	sessionDir, err := m.sessionWorkDirPath()
@@ -66,6 +72,73 @@ func TestSessionWorkDirPath_EmptyInstanceIDFallsBackToName(t *testing.T) {
 	}
 	if !strings.Contains(sessionDir, m.name) {
 		t.Errorf("work dir %q does not contain the session-derived name %q", sessionDir, m.name)
+	}
+}
+
+// TestSessionWorkDirPath_XDGStateHomeHonoured pins the XDG_STATE_HOME branch
+// added for issue #2263: when XDG_STATE_HOME is set, the work dir is rooted
+// at it (not at $HOME/.local/state). This is the load-bearing behaviour for
+// the homeless-shelter nix-build sandbox, where $HOME=/homeless-shelter is
+// read-only and any HOME-derived path fails on os.MkdirAll; the test
+// helpers in internal/integration/ set XDG_STATE_HOME to a t.TempDir() so
+// the work dir lives in a writable location.
+func TestSessionWorkDirPath_XDGStateHomeHonoured(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	// HOME is set to a different tempdir so we can assert the result does
+	// NOT contain it — proving XDG_STATE_HOME takes precedence.
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	const instanceID = "work-dir-xdg-state-test"
+	sessionDir, err := SessionWorkDirPath(instanceID)
+	if err != nil {
+		t.Fatalf("SessionWorkDirPath: %v", err)
+	}
+	want := filepath.Join(stateHome, "prism", "sessions", instanceID)
+	if sessionDir != want {
+		t.Errorf("SessionWorkDirPath = %q, want %q (XDG_STATE_HOME branch not taken)", sessionDir, want)
+	}
+	if strings.Contains(sessionDir, homeDir) {
+		t.Errorf("SessionWorkDirPath = %q contains $HOME %q — XDG_STATE_HOME must take precedence", sessionDir, homeDir)
+	}
+}
+
+// TestSessionWorkDirPath_HomeFallbackWhenXDGStateHomeUnset pins the
+// fallback half of the same branch: when XDG_STATE_HOME is empty/unset, the
+// path falls back to $HOME/.local/state. This is the production code path
+// on a normal `nh switch` Darwin host where the user shell does not export
+// XDG_STATE_HOME (issue #2263).
+func TestSessionWorkDirPath_HomeFallbackWhenXDGStateHomeUnset(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	homeDir := t.TempDir()
+	t.Setenv("HOME", homeDir)
+
+	const instanceID = "work-dir-home-fallback-test"
+	sessionDir, err := SessionWorkDirPath(instanceID)
+	if err != nil {
+		t.Fatalf("SessionWorkDirPath: %v", err)
+	}
+	want := filepath.Join(homeDir, ".local", "state", "prism", "sessions", instanceID)
+	if sessionDir != want {
+		t.Errorf("SessionWorkDirPath = %q, want %q (HOME fallback not taken)", sessionDir, want)
+	}
+}
+
+// TestSessionWorkDirPath_EmptyInstanceIDErrors pins the diagnostic error
+// path: an empty instanceID is checked first (before either env-var
+// branch), so a caller that forgot to populate the InstanceID gets a
+// useful error rather than a path with an empty last segment.
+func TestSessionWorkDirPath_EmptyInstanceIDErrors(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	_, err := SessionWorkDirPath("")
+	if err == nil {
+		t.Fatalf("SessionWorkDirPath(\"\"): expected an error for the empty instanceID, got nil")
+	}
+	if !strings.Contains(err.Error(), "instanceID is empty") {
+		t.Errorf("SessionWorkDirPath error %q must mention 'instanceID is empty'", err.Error())
 	}
 }
 

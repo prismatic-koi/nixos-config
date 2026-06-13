@@ -17,6 +17,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
@@ -793,5 +795,311 @@ func TestEventTmuxSessionStart_NonWorktreeSession_ClearsEnded(t *testing.T) {
 	}
 	if status.EndedAt != nil {
 		t.Errorf("ended_at = %v, want NULL — ClearEnded did not fire", *status.EndedAt)
+	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #2253 — tmux-session-start must mint a fresh instance_id when the
+// previous incarnation's sessions row has ended_at set.
+//
+// Before the fix, the handler reused the agent_status.instance_id
+// unconditionally, so a long-lived coordinator session that was once spawned
+// with `prism spawn --profile X` carried that profile pin forward forever via
+// the spawn_inputs.profile_name column — even after `prism profile use Y`
+// and many respawns. The fix detects the ended-previous-incarnation case and
+// mints a fresh UUID so profile resolution at agent-run time falls through
+// to state-file / nix-default (the user's currently-active profile).
+//
+// Historical spawn_inputs rows belonging to ended incarnations must NOT be
+// mutated or deleted by the respawn path — they are the #2090 audit trail
+// that `prism stats` / archive queries aggregate by profile_name.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance verifies AC #1:
+// when the previous sessions row has ended_at set, tmux-session-start mints
+// a fresh instance_id and writes it into agent_status.
+func TestEventTmuxSessionStart_RespawnAfterEnd_MintsFreshInstance(t *testing.T) {
+	resetRootCmdFlags(t)
+	t.Setenv("PRISM_HOST_API", "")
+	const session = "prism-test@2253-respawn-after-end"
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Pre-seed the bug scenario: a previous incarnation exists in
+	// agent_status + sessions, was cleanly closed (ended_at set), and
+	// recorded a spawn_inputs.profile_name pin.
+	oldIID := uuid.New().String()
+	if err := d.UpsertStatus(session, "prism-test", worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(session, oldIID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  oldIID,
+		SessionName: session,
+		Repo:        "prism-test",
+		Worktree:    worktree,
+		Harness:     "pi",
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	pinned := "anthropic-opus"
+	if err := d.InsertSpawnInputs(db.SpawnInputs{
+		InstanceID:  oldIID,
+		ProfileName: &pinned,
+	}); err != nil {
+		t.Fatalf("InsertSpawnInputs: %v", err)
+	}
+	if err := d.UpdateSessionEnded(oldIID, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	// agent_status.instance_id must now be a freshly-minted UUID,
+	// not the old (ended) one.
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil || status.InstanceID == nil {
+		t.Fatal("expected agent_status row with non-nil instance_id")
+	}
+	newIID := *status.InstanceID
+	if newIID == oldIID {
+		t.Fatalf("instance_id was reused (%q) — fresh mint required when previous incarnation has ended_at set", oldIID)
+	}
+
+	// MostRecentSessionForName must return the new (live) sessions row,
+	// not the old one — so SpawnTimeForSession's lookup chain naturally
+	// falls through to state-file / nix-default profile resolution.
+	mostRecent, err := d2.MostRecentSessionForName(session)
+	if err != nil {
+		t.Fatalf("MostRecentSessionForName: %v", err)
+	}
+	if mostRecent == nil || mostRecent.InstanceID != newIID {
+		t.Fatalf("MostRecentSessionForName: got %+v, want row with instance_id=%q", mostRecent, newIID)
+	}
+	if mostRecent.EndedAt != nil {
+		t.Errorf("new sessions row has ended_at=%v, want NULL", *mostRecent.EndedAt)
+	}
+
+	// The new instance_id must have NO spawn_inputs row — that is what
+	// makes profile resolution fall through to the active profile.
+	newSI, err := d2.SpawnInputsByInstanceID(newIID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID(new): %v", err)
+	}
+	if newSI != nil {
+		t.Errorf("new instance_id %q has spawn_inputs row %+v, want none", newIID, newSI)
+	}
+
+	// AC #4 — the historical spawn_inputs row for the ENDED incarnation
+	// must not be mutated or deleted by the respawn path. `prism stats`
+	// and archive queries depend on it.
+	oldSI, err := d2.SpawnInputsByInstanceID(oldIID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID(old): %v", err)
+	}
+	if oldSI == nil {
+		t.Fatal("old spawn_inputs row was deleted — audit trail must be preserved (#2090)")
+	}
+	if oldSI.ProfileName == nil || *oldSI.ProfileName != pinned {
+		t.Errorf("old spawn_inputs.profile_name = %v, want preserved %q (must not be mutated)", oldSI.ProfileName, pinned)
+	}
+	oldSess, err := d2.SessionByInstanceID(oldIID)
+	if err != nil {
+		t.Fatalf("SessionByInstanceID(old): %v", err)
+	}
+	if oldSess == nil {
+		t.Fatal("old sessions row was deleted — audit trail must be preserved")
+	}
+	if oldSess.EndedAt == nil {
+		t.Error("old sessions row's ended_at was cleared — must not be mutated")
+	}
+}
+
+// TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance verifies AC #2:
+// when the previous sessions row has ended_at unset (within-incarnation
+// agent-pane restart), tmux-session-start reuses the existing instance_id so
+// the spawn_inputs.profile_name pin keeps resolving (the #2092 semantics).
+func TestEventTmuxSessionStart_LiveIncarnation_PreservesInstance(t *testing.T) {
+	resetRootCmdFlags(t)
+	t.Setenv("PRISM_HOST_API", "")
+	const session = "prism-test@2253-live-incarnation"
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	liveIID := uuid.New().String()
+	if err := d.UpsertStatus(session, "prism-test", worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(session, liveIID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  liveIID,
+		SessionName: session,
+		Repo:        "prism-test",
+		Worktree:    worktree,
+		Harness:     "pi",
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	pinned := "anthropic-opus"
+	if err := d.InsertSpawnInputs(db.SpawnInputs{
+		InstanceID:  liveIID,
+		ProfileName: &pinned,
+	}); err != nil {
+		t.Fatalf("InsertSpawnInputs: %v", err)
+	}
+	// Intentionally do NOT call UpdateSessionEnded — the incarnation is live.
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil || status.InstanceID == nil {
+		t.Fatal("expected agent_status row with non-nil instance_id")
+	}
+	if *status.InstanceID != liveIID {
+		t.Fatalf("instance_id = %q, want preserved %q — live incarnation must keep its instance_id", *status.InstanceID, liveIID)
+	}
+
+	// The spawn_inputs pin must still resolve through the unchanged
+	// instance_id — this is what guarantees `prism spawn --profile X`
+	// keeps X across agent-pane restarts (#2092).
+	si, err := d2.SpawnInputsByInstanceID(liveIID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if si == nil || si.ProfileName == nil || *si.ProfileName != pinned {
+		t.Errorf("spawn_inputs.profile_name lookup via reused instance_id failed: si=%+v, want %q", si, pinned)
+	}
+}
+
+// TestEventTmuxSessionStart_LegacyAgentStatusNoSessionsRow verifies AC #5:
+// when agent_status carries an instance_id that has no matching sessions row
+// (pre-#1606 legacy), the respawn path falls through to the existing reuse
+// behaviour — the instance_id is preserved and a sessions row is created
+// for it via INSERT OR IGNORE. Because no spawn_inputs row exists for the
+// reused instance_id, profile resolution still naturally falls through to
+// state-file / nix-default at agent-run time.
+func TestEventTmuxSessionStart_LegacyAgentStatusNoSessionsRow(t *testing.T) {
+	resetRootCmdFlags(t)
+	t.Setenv("PRISM_HOST_API", "")
+	const session = "prism-test@2253-legacy-no-sessions-row"
+	worktree := t.TempDir()
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	legacyIID := uuid.New().String()
+	if err := d.UpsertStatus(session, "prism-test", worktree, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.SetInstanceID(session, legacyIID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	// Intentionally no InsertSession — the legacy / pre-#1606 shape.
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	rootCmd.SetArgs([]string{
+		"event", "tmux-session-start",
+		"--session", session,
+		"--worktree", worktree,
+	})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+
+	status, err := d2.CurrentStatus(session)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil || status.InstanceID == nil {
+		t.Fatal("expected agent_status row with non-nil instance_id")
+	}
+	if *status.InstanceID != legacyIID {
+		t.Fatalf("instance_id = %q, want preserved legacy %q — nil prevSess must preserve reuse behaviour", *status.InstanceID, legacyIID)
+	}
+
+	// A sessions row should now exist for the (reused) legacy instance_id.
+	sess, err := d2.SessionByInstanceID(legacyIID)
+	if err != nil {
+		t.Fatalf("SessionByInstanceID: %v", err)
+	}
+	if sess == nil {
+		t.Error("expected sessions row inserted for legacy instance_id, got nil")
+	}
+
+	// And no spawn_inputs row exists — so SpawnTimeForSession returns ""
+	// and profile resolution falls through to state-file / nix-default,
+	// unchanged from today.
+	si, err := d2.SpawnInputsByInstanceID(legacyIID)
+	if err != nil {
+		t.Fatalf("SpawnInputsByInstanceID: %v", err)
+	}
+	if si != nil {
+		t.Errorf("unexpected spawn_inputs row for legacy session: %+v", si)
 	}
 }
