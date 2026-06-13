@@ -110,6 +110,7 @@
       # container config blobs at lines 29-73) and reference piSettings there.
       piSettings = {
         steeringMode = "one-at-a-time";
+        defaultProjectTrust = "always";
         transport = "sse";
         theme = config.theme.name;
         treeFilterMode = "default";
