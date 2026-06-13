@@ -1516,10 +1516,10 @@ export async function dispatchInboundFrame(
       case "set_model": {
         const provider =
           typeof frame.provider === "string" ? frame.provider : ""
-        const modelId = typeof frame.model === "string" ? frame.model : ""
+        const rawModelId = typeof frame.model === "string" ? frame.model : ""
         const thinking =
           typeof frame.thinking === "string" ? frame.thinking : "off"
-        if (!provider || !modelId) {
+        if (!provider || !rawModelId) {
           emitError(
             "malformed_frame",
             "set_model missing provider or model",
@@ -1527,6 +1527,16 @@ export async function dispatchInboundFrame(
           )
           return
         }
+        // Defence-in-depth normalisation (issue #2252). The wire contract is
+        // a bare model ID, and the sidecar now normalises before sending,
+        // but older sidecar builds may still send a provider-prefixed model
+        // (e.g. "anthropic/claude-fable-5"). Strip at most ONE leading
+        // "<provider>/" segment, and only when it equals the frame's
+        // provider, so nested model IDs (openrouter-style) are preserved.
+        const prefix = provider + "/"
+        const modelId = rawModelId.startsWith(prefix)
+          ? rawModelId.slice(prefix.length)
+          : rawModelId
         const model = api.modelRegistryFind(provider, modelId)
         if (!model) {
           emitError(
