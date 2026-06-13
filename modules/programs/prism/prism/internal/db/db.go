@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 35
+	currentSchemaVersion = 36
 )
 
 // DB wraps a SQLite connection.
@@ -91,7 +91,15 @@ CREATE TABLE IF NOT EXISTS session_groups (
   -- prompt when the detached monitor subprocess dies. Both nullable for
   -- back-compat with the legacy RegisterGroup helper.
   pr_number      TEXT,
-  round          INTEGER
+  round          INTEGER,
+  -- delivered_at is the authoritative end-of-life signal for a review group
+  -- (#2259). It is the epoch-ms timestamp at which prism prompt accepted
+  -- the review-complete delivery for this group, written by review.MonitorFunc
+  -- (happy path) or review.DeliverGroupResults (recovery path). Nullable for
+  -- back-compat with pre-migration rows and for groups whose delivery has
+  -- not yet succeeded; the ORd-in predicate at the read sites means those
+  -- rows are still classified by the existing agent_status roll-up.
+  delivered_at   INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS agent_status (
@@ -657,6 +665,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV34ToV35(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV35ToV36(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -704,6 +715,56 @@ func runMigrations(conn *sql.DB) error {
 // The partial WHERE (harness_port IS NOT NULL AND ended_at IS NULL) excludes
 // both NULL/released ports and ended sessions, so that ended sessions' ports
 // can be reclaimed by new sessions without triggering a constraint error.
+// migrateV35ToV36 adds the `delivered_at` column to session_groups
+// (issue #2259). The column is the authoritative end-of-life signal for a
+// review group: it is the epoch-ms timestamp at which the review-complete
+// prompt was successfully accepted by `prism prompt` (either via the happy-
+// path monitor subprocess `review.MonitorFunc`, or via the recovery-watcher
+// primitive `review.DeliverGroupResults`).
+//
+// Pre-fix, group finalisation was derived entirely from a roll-up over
+// `agent_status.state` + `ended_at`. If any process clobbered an
+// agent_status row back to a non-terminal state after delivery (the
+// per-process sidecar-restart anti-pattern in `cmd/sidecar.go`, or the
+// inactivity-watchdog timing race documented in the issue), the four read
+// sites (`db.GroupCompleted`, `review.ActiveReviewGroupForParent` /
+// `isTerminalForGuard`, and `db.ReviewGroupsList`'s `GroupState` rollup)
+// all flipped back to "in-progress" and the parent worker's next
+// `prism review` got refused with "round N already in progress".
+//
+// With this column OR'd into the predicate at all four read sites, a
+// successfully delivered group is permanently classified as terminal — the
+// signal survives any subsequent agent_status mutation. The column is
+// nullable; pre-fix rows continue to be classified by the existing
+// agent_status-based predicate so no backfill is required.
+//
+// The ALTER TABLE is guarded by a pragma_table_info check so the migration
+// is idempotent on fresh databases where the declarative schema block above
+// already includes the column.
+func migrateV35ToV36(conn *sql.DB, version *int) error {
+	if *version >= 36 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('session_groups') WHERE name = 'delivered_at'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v35\u2192v36: check delivered_at column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE session_groups ADD COLUMN delivered_at INTEGER`,
+		); err != nil {
+			return fmt.Errorf("db: migration v35\u2192v36: add delivered_at: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 36`); err != nil {
+		return fmt.Errorf("db: migration v35\u2192v36: %w", err)
+	}
+	*version = 36
+	return nil
+}
+
 // migrateV34ToV35 adds the `isolation_mode` column to spawn_inputs
 // (issue #2105). The new column carries the resolved effective isolation
 // mode the session ran under, captured at spawn time after profile /

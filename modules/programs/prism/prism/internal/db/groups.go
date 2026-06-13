@@ -145,13 +145,24 @@ func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
 	return &gi, nil
 }
 
-// GroupCompleted reports whether every agent_status row with this group_id has
-// reached a terminal state. A row is considered terminal when EITHER:
+// GroupCompleted reports whether the review group has reached a terminal
+// state. A group is considered terminal when EITHER:
 //
-//   - its `state` is in terminalStates (finished, error, deleted), OR
-//   - its `ended_at` is non-NULL (the session row has been closed by
-//     `prism cleanup`, `prism reset`, or any other lifecycle path that
-//     calls SetEnded / MarkAllEnded).
+//   - its session_groups.delivered_at is non-NULL (#2259) — the
+//     review-complete prompt was successfully accepted by `prism prompt`
+//     for this group, either via the happy-path `review.MonitorFunc` or via
+//     the recovery primitive `review.DeliverGroupResults`. This is the
+//     authoritative end-of-life signal and short-circuits the predicate;
+//     any subsequent mutation of agent_status (including the per-process
+//     sidecar-restart anti-pattern in cmd/sidecar.go that overwrites a
+//     terminal state with `idle`) cannot move the group back to in-progress;
+//     OR
+//   - every agent_status row with this group_id has reached a terminal
+//     state. A row is considered terminal when EITHER its `state` is in
+//     terminalStates (finished, error, deleted), OR its `ended_at` is
+//     non-NULL (the session row has been closed by `prism cleanup`,
+//     `prism reset`, or any other lifecycle path that calls SetEnded /
+//     MarkAllEnded).
 //
 // The `ended_at` arm is what makes the user's escape hatch work. When the
 // user runs `prism cleanup --yes --session <interrupted-agent>` to abandon
@@ -168,12 +179,32 @@ func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
 // that ends a session row without rewriting state — not just `prism cleanup`,
 // but also `prism reset`'s MarkAllEnded.
 //
-// Returns (true, nil) when all members are terminal (including the case where
-// there are no members yet — caller should guard against that if needed).
-// Returns (false, nil) when at least one member is still running.
+// Returns (true, nil) when delivered_at is set, or when all members are
+// terminal (including the case where there are no members yet — caller
+// should guard against that if needed).
+// Returns (false, nil) when at least one member is still running and the
+// group has not yet been delivered.
 // Returns (false, err) on a database error.
 func (d *DB) GroupCompleted(groupID string) (bool, error) {
-	// Build the NOT IN list for terminal states.
+	// Short-circuit: a group whose delivered_at has been written is
+	// terminal regardless of any subsequent agent_status mutation (#2259).
+	var deliveredAt sql.NullInt64
+	if err := d.conn.QueryRow(
+		`SELECT delivered_at FROM session_groups WHERE group_id = ?`, groupID,
+	).Scan(&deliveredAt); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, fmt.Errorf("db: group completed: read delivered_at: %w", err)
+		}
+		// No session_groups row: caller is operating on an ad-hoc group_id
+		// that was never registered (e.g. some legacy tests). Fall through
+		// to the agent_status-based predicate, which is the back-compat
+		// behaviour.
+	} else if deliveredAt.Valid {
+		return true, nil
+	}
+
+	// Fall back to the agent_status-based predicate for groups that have
+	// not yet been delivered.
 	placeholders := make([]string, len(terminalStates))
 	args := make([]any, 0, 1+len(terminalStates))
 	args = append(args, groupID)
@@ -192,10 +223,77 @@ func (d *DB) GroupCompleted(groupID string) (bool, error) {
 	return nonTerminalCount == 0, nil
 }
 
+// SetGroupDeliveredAt records the epoch-ms timestamp at which the review-
+// complete prompt was successfully accepted by `prism prompt` for this
+// group (#2259). This is the authoritative end-of-life signal read by
+// GroupCompleted, ReviewGroupsList, and the in-progress guard in
+// review.ActiveReviewGroupForParent.
+//
+// The UPDATE is conditional on delivered_at IS NULL so the timestamp
+// reflects the FIRST successful delivery, not the most recent one. A
+// double-delivery race between the monitor and the recovery watcher (see
+// monitor_recovery_race_test.go) thus produces a stable, ordering-
+// independent timestamp.
+//
+// Returns nil when the row exists and is updated, when the row exists but
+// already has delivered_at set (idempotent), or when no row exists for
+// groupID. Returns an error only on a database failure. This is a write-
+// path call site — callers (MonitorFunc, DeliverGroupResults) treat its
+// failures as warnings rather than aborting the delivery, since the prompt
+// has already been accepted by `prism prompt` at the call site.
+func (d *DB) SetGroupDeliveredAt(groupID string) error {
+	if groupID == "" {
+		return fmt.Errorf("db: set group delivered_at: empty group_id")
+	}
+	const q = `UPDATE session_groups
+	           SET delivered_at = ?
+	           WHERE group_id = ? AND delivered_at IS NULL`
+	if _, err := d.conn.Exec(q, time.Now().UnixMilli(), groupID); err != nil {
+		return fmt.Errorf("db: set group delivered_at: %w", err)
+	}
+	return nil
+}
+
+// DeliveredGroupIDsForParent returns the set of group_ids belonging to
+// parentSession whose delivered_at is non-NULL (#2259). Used by
+// review.ActiveReviewGroupForParent to short-circuit the in-progress guard
+// for groups that have already had their review-complete prompt delivered.
+func (d *DB) DeliveredGroupIDsForParent(parentSession string) (map[string]struct{}, error) {
+	const q = `SELECT group_id FROM session_groups
+	           WHERE parent_session = ? AND delivered_at IS NOT NULL`
+	rows, err := d.conn.Query(q, parentSession)
+	if err != nil {
+		return nil, fmt.Errorf("db: delivered group ids for parent: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]struct{})
+	for rows.Next() {
+		var gid string
+		if err := rows.Scan(&gid); err != nil {
+			return nil, fmt.Errorf("db: delivered group ids for parent: scan: %w", err)
+		}
+		result[gid] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: delivered group ids for parent: iterate: %w", err)
+	}
+	return result, nil
+}
+
 // GroupResults returns the terminal state and last assistant message for every
 // member of the group, keyed by session_name. It is intended for use after
 // GroupCompleted returns true. Members that are still active are included but
 // their State may be non-terminal.
+//
+// Note: this function is the verdict-aggregation read; it is called once
+// (per delivery) before the group's authoritative end-of-life signal
+// (session_groups.delivered_at, #2259) is written. The delivered_at column
+// is the locking signal for "do not re-aggregate" — callers downstream of
+// the recovery watcher rely on GroupCompleted's delivered_at short-circuit
+// to avoid calling this function a second time once a group has been
+// delivered. Do not consult delivered_at here; do consult it at the
+// monitor-loop and in-progress-guard sites that decide whether to call this
+// function in the first place.
 //
 // Rows whose `ended_at` is non-NULL are intentionally EXCLUDED from the
 // returned map. This is what makes the user's escape hatch flow correctly
@@ -490,7 +588,7 @@ type ReviewGroupSummary struct {
 // ledger. The list is unfiltered — all groups for all parents are returned;
 // the caller filters by parent or repo if desired.
 func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
-	q := `SELECT group_id, parent_session, created_at FROM session_groups
+	q := `SELECT group_id, parent_session, created_at, delivered_at FROM session_groups
 	            ORDER BY created_at DESC`
 	if limit > 0 {
 		q += fmt.Sprintf(" LIMIT %d", limit)
@@ -501,11 +599,19 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 	}
 	defer rows.Close()
 
+	// deliveredByGroup records which group_ids have a non-NULL delivered_at
+	// (#2259). The roll-up below maps these to GroupState="completed"
+	// regardless of member state.
+	deliveredByGroup := make(map[string]bool)
 	var out []ReviewGroupSummary
 	for rows.Next() {
 		var s ReviewGroupSummary
-		if scanErr := rows.Scan(&s.GroupID, &s.ParentSession, &s.CreatedAt); scanErr != nil {
+		var deliveredAt sql.NullInt64
+		if scanErr := rows.Scan(&s.GroupID, &s.ParentSession, &s.CreatedAt, &deliveredAt); scanErr != nil {
 			return nil, fmt.Errorf("db: review groups list: scan: %w", scanErr)
+		}
+		if deliveredAt.Valid {
+			deliveredByGroup[s.GroupID] = true
 		}
 		out = append(out, s)
 	}
@@ -564,6 +670,11 @@ ORDER BY group_id ASC, session_name ASC`
 	}
 	for i := range out {
 		switch {
+		case deliveredByGroup[out[i].GroupID]:
+			// delivered_at is the authoritative end-of-life signal (#2259);
+			// a group whose review-complete prompt was delivered is
+			// classified as completed regardless of member state.
+			out[i].GroupState = "completed"
 		case len(out[i].Members) == 0:
 			out[i].GroupState = "empty"
 		case nonTerminalByGroup[out[i].GroupID] == 0:

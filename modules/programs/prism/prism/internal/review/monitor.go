@@ -258,6 +258,25 @@ func MonitorFunc(opts MonitorOpts) error {
 		return fmt.Errorf("monitor-review: delivery failed and fallback written to %s", fallbackPath)
 	}
 
+	// Write the authoritative end-of-life signal for this review group
+	// (#2259). Once delivered_at is set, GroupCompleted short-circuits to
+	// true and ActiveReviewGroupForParent skips this group, so any
+	// subsequent mutation of agent_status (e.g. the per-process sidecar-
+	// restart anti-pattern in cmd/sidecar.go) cannot flip the parent
+	// worker back into "round N already in progress" refusals.
+	//
+	// Failure is non-fatal: the prompt has already been accepted by
+	// `prism prompt` at this point and the recovery watcher's grace timer
+	// will not re-fire because the worker sidecar's /prompt handler
+	// clears reviewingInFlight. A missing delivered_at write leaves the
+	// system in the pre-fix state (vulnerable to agent_status clobbers)
+	// but does not lose the verdict.
+	if setErr := d.SetGroupDeliveredAt(opts.GroupID); setErr != nil {
+		proglog.Warnf("[prism monitor-review] warning: SetGroupDeliveredAt(%s): %v\n", opts.GroupID, setErr)
+	} else {
+		proglog.Infof("[prism monitor-review] group %s delivered_at recorded\n", opts.GroupID)
+	}
+
 	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
 	return nil
 }
@@ -798,6 +817,18 @@ func StartMonitorProcess(opts MonitorOpts, prismBinary string) error {
 // Only once cleanup (or any other SetEnded path) closes the row does the
 // ended_at arm trip and the guard release.
 func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) {
+	// Skip groups whose review-complete prompt has already been delivered
+	// (#2259): once session_groups.delivered_at is set, the group is
+	// authoritatively complete regardless of any subsequent member-row
+	// mutation. This closes the wedge-at-idle failure class where a per-
+	// process sidecar restart (cmd/sidecar.go) re-seeded an agent_status
+	// row back to a non-terminal state after delivery, leaving the parent
+	// worker permanently refused with "round N already in progress".
+	delivered, err := d.DeliveredGroupIDsForParent(parentSession)
+	if err != nil {
+		return "", fmt.Errorf("active review group: DeliveredGroupIDsForParent: %w", err)
+	}
+
 	members, err := d.GroupMembersForParent(parentSession)
 	if err != nil {
 		return "", fmt.Errorf("active review group: GroupMembersForParent: %w", err)
@@ -807,13 +838,20 @@ func ActiveReviewGroupForParent(d *db.DB, parentSession string) (string, error) 
 	}
 
 	// Group sessions by group_id.
-	// A group is "active" when at least one member is not in a terminal state.
+	// A group is "active" when at least one member is not in a terminal state
+	// AND its session_groups.delivered_at is NULL.
 	groupStates := make(map[string]bool) // group_id → hasActiveMembers
 	for _, m := range members {
 		if m.GroupID == nil {
 			continue
 		}
 		gid := *m.GroupID
+		if _, isDelivered := delivered[gid]; isDelivered {
+			// Already delivered — not active. Do not enter into groupStates
+			// at all so the final scan cannot accidentally classify it as
+			// active on a subsequent member iteration.
+			continue
+		}
 		if !isTerminalForGuard(m) {
 			groupStates[gid] = true
 		} else if _, exists := groupStates[gid]; !exists {

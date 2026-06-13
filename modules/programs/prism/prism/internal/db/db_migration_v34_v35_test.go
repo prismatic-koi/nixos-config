@@ -162,8 +162,8 @@ func TestMigration_V34ToV35_BodyRuns_AddsIsolationMode(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 35 {
-		t.Errorf("schema_version after migration: got %d, want 35", version)
+	if version != 36 {
+		t.Errorf("schema_version after migration: got %d, want 36", version)
 	}
 
 	var n int
@@ -197,8 +197,8 @@ func TestMigration_V34ToV35_BodySkips_PreExistingColumn(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 35 {
-		t.Errorf("schema_version after migration: got %d, want 35", version)
+	if version != 36 {
+		t.Errorf("schema_version after migration: got %d, want 36", version)
 	}
 
 	var n int
@@ -234,8 +234,8 @@ func TestMigration_V34ToV35_Idempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		t.Fatalf("read schema_version after second open: %v", err)
 	}
-	if version != 35 {
-		t.Errorf("schema_version after second open: got %d, want 35", version)
+	if version != 36 {
+		t.Errorf("schema_version after second open: got %d, want 36", version)
 	}
 
 	var n int

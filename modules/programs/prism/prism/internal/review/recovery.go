@@ -180,6 +180,24 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 		return res, fmt.Errorf("review recovery: deliver to %q: %w", info.ParentSession, delErr)
 	}
 
+	// Write the authoritative end-of-life signal for this review group
+	// (#2259). Once delivered_at is set, GroupCompleted short-circuits to
+	// true and ActiveReviewGroupForParent skips this group, so any
+	// subsequent mutation of agent_status (e.g. the per-process sidecar-
+	// restart anti-pattern in cmd/sidecar.go) cannot flip the parent
+	// worker back into "round N already in progress" refusals on the next
+	// `prism review`.
+	//
+	// Failure is non-fatal: the prompt has already been accepted by the
+	// host-API /prompt handler at this point. A missing delivered_at write
+	// leaves the system in the pre-fix state (vulnerable to agent_status
+	// clobbers) but does not lose the verdict.
+	if setErr := d.SetGroupDeliveredAt(groupID); setErr != nil {
+		proglog.Warnf("[prism review recovery] warning: SetGroupDeliveredAt(%s): %v\n", groupID, setErr)
+	} else {
+		proglog.Infof("[prism review recovery] group %s delivered_at recorded\n", groupID)
+	}
+
 	res.Delivered = true
 	return res, nil
 }
