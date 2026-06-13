@@ -54,43 +54,6 @@ func newDuplicateStartSidecar(t *testing.T, hostAPISockPath, pipeSockPath string
 	return New(cfg)
 }
 
-// shortPipeSockPath returns a pipe.sock path safely within the POSIX
-// sockaddr_un.sun_path 104-byte ceiling (Darwin's hard cap; Linux's is
-// 108, but maxSunPath uses 104 as the conservative cross-platform
-// limit).
-//
-// It first tries t.TempDir(). If that path joined with /pipe.sock would
-// exceed maxSunPath — the failure mode that surfaces inside the
-// nix-build sandbox on Darwin, where t.TempDir() embeds the long test
-// name beneath /nix/var/nix/builds/nix-NNNNN-NNNNNNNNNN/ — it falls
-// back to a hand-built short-prefix directory under os.TempDir() (via
-// os.MkdirTemp("", "sp"), which skips the long test-name component
-// that t.TempDir() injects). The fallback registers t.Cleanup so the
-// directory is removed when the test ends and tmpdir leftovers do not
-// accumulate across runs.
-//
-// The fallback is keyed on the rendered path length only, not on
-// runtime.GOOS, so a hypothetical future Darwin host whose t.TempDir()
-// fits within 104 bytes continues to exercise the t.TempDir() path,
-// and conversely any platform whose t.TempDir() grows long enough to
-// trip the limit gets the same defensive treatment.
-func shortPipeSockPath(t *testing.T) string {
-	t.Helper()
-	if p := filepath.Join(t.TempDir(), "pipe.sock"); len(p) <= maxSunPath {
-		return p
-	}
-	dir, err := os.MkdirTemp("", "sp")
-	if err != nil {
-		t.Fatalf("shortPipeSockPath MkdirTemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	p := filepath.Join(dir, "pipe.sock")
-	if len(p) > maxSunPath {
-		t.Fatalf("shortPipeSockPath: fallback path still too long (%d > %d): %s", len(p), maxSunPath, p)
-	}
-	return p
-}
-
 // pingHostAPI dials the host-API socket and issues a trivial GET. Returns the
 // HTTP status code on success. The endpoint may not exist (returns 404); the
 // caller only cares that a response came back, proving the listener is alive.
@@ -270,7 +233,7 @@ func TestSidecarRun_RefusesWhenHostAPISockIsLive(t *testing.T) {
 	// Give B its own DB / worktree (newDuplicateStartSidecar does this via
 	// openTestDB(t) and t.TempDir()) so that "did not write to DB" can be
 	// verified independently of A's DB.
-	pipeSockPathB := shortPipeSockPath(t)
+	pipeSockPathB := shortSockPath(t)
 	scB := newDuplicateStartSidecar(t, hostAPISockPath, pipeSockPathB)
 
 	ctxB, cancelB := context.WithTimeout(context.Background(), 5*time.Second)
