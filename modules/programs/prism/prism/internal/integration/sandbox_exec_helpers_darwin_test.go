@@ -81,11 +81,21 @@ func requireNixBash(t *testing.T) string {
 // that read symlink targets under HOME) should use
 // newProfileManagerWithBareRoot.
 //
+// XDG_STATE_HOME is redirected to a t.TempDir() so the per-session work
+// dir lives under the tempdir rather than the real ~/.local/state. This
+// keeps test state confined to t.TempDir() and — critically — makes the
+// integration suite tractable inside the nix-build homeless-shelter
+// sandbox, where $HOME=/homeless-shelter is read-only and any path
+// derived from it fails on os.MkdirAll (issue #2263). Per AGENTS.md
+// "Test-suite isolation (#1608)", this matches the sidecar tests'
+// XDG_STATE_HOME redirection pattern.
+//
 // Note: container.New() initialises the Manager with a hostIsolator by
 // default, but Manager.PrepareSandboxExec() creates its own
 // sandboxExecIsolator internally, so no isolator override is needed.
 func newProfileManager(t *testing.T) *container.Manager {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	// Sanitise the test name for use as an InstanceID: remove characters that
 	// are invalid in filesystem paths (e.g. "/" from subtest names).
 	instanceID := "integ-sbx-" + strings.ReplaceAll(t.Name(), "/", "-")
@@ -118,8 +128,12 @@ func newProfileManager(t *testing.T) *container.Manager {
 // permit symlink-resolution-and-read of paths like /etc/hosts even when
 // (subpath "/etc") is removed, masking the regression the test is trying
 // to catch.
+//
+// XDG_STATE_HOME is redirected to a t.TempDir() for the same reason as in
+// newProfileManager — see that helper's doc for the rationale.
 func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
@@ -157,8 +171,12 @@ func newProfileManagerWithBareRoot(t *testing.T) *container.Manager {
 // integration tests that need the SBPL profile to include the pi-gated
 // (subpath ~/.pi/agent) RW allow. Identical to newProfileManagerWithBareRoot
 // but sets Harness="pi" on the Config.
+//
+// XDG_STATE_HOME is redirected to a t.TempDir() for the same reason as in
+// newProfileManager — see that helper's doc for the rationale.
 func newProfileManagerWithBareRootAndPi(t *testing.T) *container.Manager {
 	t.Helper()
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		t.Skipf("cannot determine user home: %v", err)
