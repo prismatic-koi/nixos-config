@@ -164,7 +164,10 @@ func TestBuildAgentCmd_HostMode_PromptFile(t *testing.T) {
 		Prompt:         prompt,
 		PromptFilePath: "/var/state/prism/run/myrepo@feat/initial-prompt.txt",
 	}
-	cmd := BuildAgentCmd(opts)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
 
 	// The command must reference the file via $(cat …) — operators (and
 	// the size guard) rely on this contract so the launch command size
@@ -200,7 +203,10 @@ func TestBuildAgentCmd_HostMode_NoPromptFile(t *testing.T) {
 		SessionName:   "myrepo@feat",
 		Prompt:        "small prompt",
 	}
-	cmd := BuildAgentCmd(opts)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
 
 	if strings.Contains(cmd, "$(cat") {
 		t.Errorf("host-mode cmd unexpectedly uses cat-substitution for inline prompt: %q", cmd)
@@ -225,7 +231,10 @@ func TestBuildAgentCmd_HostMode_PromptFile_PathQuoted(t *testing.T) {
 		Prompt:         "x",
 		PromptFilePath: `/tmp/weird's-path/initial-prompt.txt`,
 	}
-	cmd := BuildAgentCmd(opts)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
 
 	// Single quote must be escaped with the standard '\'' sequence.
 	if !strings.Contains(cmd, `'/tmp/weird'\''s-path/initial-prompt.txt'`) {
@@ -244,7 +253,10 @@ func TestBuildAgentCmd_HostMode_PromptFile_IgnoredWhenPromptEmpty(t *testing.T) 
 		SessionName:    "myrepo@feat",
 		PromptFilePath: "/tmp/initial-prompt.txt",
 	}
-	cmd := BuildAgentCmd(opts)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
 	if strings.Contains(cmd, "$(cat") {
 		t.Errorf("expected no cat-substitution when Prompt is empty, got: %q", cmd)
 	}
@@ -358,7 +370,10 @@ func TestSpawnSession_HostMode_AcceptsBoundedLaunchCmd(t *testing.T) {
 			"GIT_EDITOR":      "true",
 		},
 	}
-	cmd := BuildAgentCmd(opts)
+	cmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		t.Fatalf("BuildAgentCmd: %v", err)
+	}
 	if len(cmd) > HostLaunchCmdSafeBound {
 		t.Errorf("realistic host-mode cmd (%d bytes) unexpectedly exceeds safe bound %d — guard would reject normal spawns. cmd=%q",
 			len(cmd), HostLaunchCmdSafeBound, cmd)
