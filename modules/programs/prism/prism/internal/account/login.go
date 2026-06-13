@@ -186,7 +186,7 @@ func Login(ctx context.Context, p Paths, name string, opts LoginOptions) error {
 	}
 
 	if opts.Use {
-		if err := Use(p, name); err != nil {
+		if err := activateLogin(p, name, blob); err != nil {
 			return err
 		}
 		return nil
@@ -194,6 +194,27 @@ func Login(ctx context.Context, p Paths, name string, opts LoginOptions) error {
 
 	fmt.Fprintf(opts.Stdout, "account %s saved. Run 'prism account use %s' to activate.\n", name, name)
 	return nil
+}
+
+func activateLogin(p Paths, name string, blob []byte) error {
+	cur, hasCur, err := Current(p)
+	if err != nil {
+		return fmt.Errorf("account use %s: %w", name, err)
+	}
+	if hasCur && cur == name {
+		merged, err := mergeAnthropicBlob(p.AuthJSON, blob)
+		if err != nil {
+			return fmt.Errorf("account use %s: merge %s: %w", name, p.AuthJSON, err)
+		}
+		if err := atomicWriteFile(p.AuthJSON, merged, fileMode); err != nil {
+			return fmt.Errorf("account use %s: write %s: %w", name, p.AuthJSON, err)
+		}
+		if err := atomicWriteFile(p.Current, []byte(name+"\n"), fileMode); err != nil {
+			return fmt.Errorf("account use %s: write %s: %w", name, p.Current, err)
+		}
+		return nil
+	}
+	return Use(p, name)
 }
 
 func validLoginName(name string) error {
