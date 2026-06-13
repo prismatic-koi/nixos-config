@@ -597,6 +597,79 @@ func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
 	}
 }
 
+// TestBwrapBuildArgs_PrismProfilesJSONROBound pins the
+// ~/.config/prism/profiles.json single-file RO mount (issue #2286). The CLI's
+// `prism profile list` / `prism profile show` and the available_profiles
+// section of `prism agent-context` open this file directly via
+// internal/config/profiles.go::LoadProfiles; without this mount those
+// commands fail from inside any bwrap-isolated session with a misleading
+// "not found — run the system rebuild" error. Read-only at Dst==Src under
+// $HOME/.config/prism/profiles.json (matching profilesFilePath()'s
+// XDG_CONFIG_HOME-else-$HOME/.config resolution inside the sandbox).
+func TestBwrapBuildArgs_PrismProfilesJSONROBound(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	// The fixture does not pre-create ~/.config/prism/profiles.json — plant
+	// it as a regular file so the conditional (OptionalIfMissing) mount fires.
+	profilesJSON := filepath.Join(fakeHome, ".config", "prism", "profiles.json")
+	if err := os.MkdirAll(filepath.Dir(profilesJSON), 0o755); err != nil {
+		t.Fatalf("MkdirAll ~/.config/prism: %v", err)
+	}
+	if err := os.WriteFile(profilesJSON, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("WriteFile profiles.json: %v", err)
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if !hasROBind(args, profilesJSON) {
+		t.Errorf("profiles.json %q not found as --ro-bind SRC SRC in args: %v", profilesJSON, args)
+	}
+	// RO must not silently become RW — reject any --bind (the RW flag) of
+	// the same path.
+	if hasBind(args, profilesJSON) {
+		t.Errorf("profiles.json %q must be RO (--ro-bind), not RW (--bind): %v", profilesJSON, args)
+	}
+}
+
+// TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind covers the fresh-install
+// edge case from issue #2286: when profiles.json does not exist on the host
+// (before the first `nh switch`), no bind triple is emitted —
+// OptionalIfMissing skips the mount, and bwrap (which aborts on missing
+// bind sources) is never asked to bind a non-existent file. LoadProfiles
+// inside the sandbox then sees ENOENT through its normal
+// os.ReadFile/os.IsNotExist branch and emits the existing host-side error
+// message verbatim — the change must not paper over the genuine missing
+// case.
+func TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind(t *testing.T) {
+	m, fakeHome, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+	})
+	defer cleanup()
+
+	profilesJSON := filepath.Join(fakeHome, ".config", "prism", "profiles.json")
+	if _, err := os.Stat(profilesJSON); err == nil {
+		t.Fatalf("fixture unexpectedly created profiles.json — update this test")
+	}
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasROBind(args, profilesJSON) {
+		t.Errorf("missing profiles.json should be omitted but found as --ro-bind in args: %v", args)
+	}
+	if hasBind(args, profilesJSON) {
+		t.Errorf("missing profiles.json should be omitted but found as --bind in args: %v", args)
+	}
+}
+
 func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	// When BareRoot and WorktreeGitDir are set, the bare repo (.bare dir) and
 	// worktree private git state are both bound at their host paths (Dst == Src),

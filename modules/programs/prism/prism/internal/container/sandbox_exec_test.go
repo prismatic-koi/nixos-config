@@ -558,6 +558,78 @@ func TestGenerateProfile_NixTrustedSettingsReadAllow(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_PrismProfilesJSONReadAllow verifies that the profile
+// contains a read-only, single-file (literal) allow for
+// ~/.config/prism/profiles.json (issue #2286). The CLI's `prism profile
+// list` / `prism profile show` and the `available_profiles` section of
+// `prism agent-context` open this file directly via
+// internal/config/profiles.go::LoadProfiles; without the allow the read
+// fails EPERM under deny-default and the user sees a misleading
+// "not found — run the system rebuild" message from inside any sandbox
+// session.
+//
+// The rule must be:
+//   - a (literal ...), not a (subpath ...) — single-file scope only, so
+//     the rest of ~/.config/prism/ (e.g. accounts/, runtime-mutable state
+//     from #2283) stays out of the sandbox by default;
+//   - read-only — no file-write* anywhere near it (nothing in-sandbox
+//     may mutate the host's declarative profile config).
+//
+// This substring assertion is necessary but not sufficient — the paired
+// Darwin integration tests in
+// internal/integration/sandbox_exec_profiles_json_darwin_test.go prove the
+// rule is load-bearing against /usr/bin/sandbox-exec per
+// docs/sandbox-exec-testing.md.
+func TestGenerateProfile_PrismProfilesJSONReadAllow(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	profilesJSON := filepath.Join(fakeHome, ".config", "prism", "profiles.json")
+
+	// The exact rule block as emitted by generateProfile: a read-only allow
+	// with file-test-existence (so LoadProfiles' missing-file branch gets
+	// ENOENT, not EPERM, when the file is absent on a fresh install) on a
+	// single literal path.
+	wantBlock := "(allow file-read* file-test-existence\n" +
+		"  (literal \"" + profilesJSON + "\"))\n"
+	if !strings.Contains(profile, wantBlock) {
+		t.Errorf("profile missing the prism profiles.json read-only allow block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	}
+
+	// The path must appear exactly once — in the read-only block above. A
+	// second occurrence would mean it leaked into another (potentially
+	// writable) clause.
+	if got := strings.Count(profile, profilesJSON); got != 1 {
+		t.Errorf("profiles.json path must appear exactly once in the profile (read-only literal); found %d occurrences.\nfull profile:\n%s", got, profile)
+	}
+
+	// Single-file scope: the path must never be granted as a subpath.
+	if strings.Contains(profile, "(subpath \""+profilesJSON+"\")") {
+		t.Errorf("profiles.json path must be a (literal ...), not a (subpath ...); full profile:\n%s", profile)
+	}
+
+	// RO must not silently become RW: confirm the literal rule does not sit
+	// inside any allow clause that carries file-write*. Defensive scan that
+	// matches the shape of the 3f RW-leak check in
+	// TestGenerateProfile_RORealPathGrants3f.
+	rule := "(literal \"" + profilesJSON + "\")"
+	idx := 0
+	for {
+		rel := strings.Index(profile[idx:], rule)
+		if rel < 0 {
+			break
+		}
+		at := idx + rel
+		clauseStart := strings.LastIndex(profile[:at], "(allow ")
+		if clauseStart >= 0 && strings.Contains(profile[clauseStart:at], "file-write*") {
+			t.Errorf("profiles.json literal appears inside a file-write* allow block — RO must not become RW;\nclause: %q", profile[clauseStart:at])
+		}
+		idx = at + len(rule)
+	}
+}
+
 // ── PrepareSandboxExec ──────────────────────────────────────────────────────
 
 // TestPrepareSandboxExec_WritesProfileAndReturnsArgs verifies that

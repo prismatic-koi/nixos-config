@@ -523,6 +523,37 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 5h. prism profiles.json single-file RO read (issue #2286) ────────
+	// The CLI's `prism profile list`, `prism profile show`, and the
+	// available_profiles section of `prism agent-context` open
+	// ~/.config/prism/profiles.json directly via
+	// internal/config/profiles.go::LoadProfiles. Under deny-default the
+	// read fails EPERM and the user sees a misleading "not found — run the
+	// system rebuild" error from inside any sandbox session, even though
+	// the file exists on the host. The mutation surface (`prism profile
+	// use`) routes through the host API and is unaffected.
+	//
+	// The file holds the user's declarative model-profile configuration;
+	// its contents are not secret — same trust level as the sibling
+	// agents/ markdown that 5f already grants. The allow is read-only and
+	// single-file (literal, not subpath): the rest of ~/.config/prism/
+	// (e.g. ~/.config/prism/accounts/, runtime-mutable state from #2283)
+	// stays out of the sandbox by default. RO must not silently become
+	// RW — nothing in-sandbox may mutate the host's profile config.
+	// file-test-existence is included so LoadProfiles' missing-file branch
+	// sees ENOENT (preserving the existing host error message verbatim)
+	// rather than EPERM when the file is absent on a fresh install
+	// before first `nh switch`.
+	//
+	// Mirrors bwrap's RO single-file mount of the same path in mounts.go
+	// StandardSandboxMounts.
+	if home != "" {
+		profilesJSON := filepath.Join(home, ".config", "prism", "profiles.json")
+		sb.WriteString("(allow file-read* file-test-existence\n")
+		sb.WriteString("  (literal " + quoteSBPL(profilesJSON) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
 	// Session-specific read-write paths. Locked in #1012 and #1017.
 	// file-test-existence and file-read-metadata added alongside file-read*
