@@ -30,11 +30,11 @@ import (
 // reviewWaitJSON is the JSON shape emitted by `prism review --wait --json`.
 // Stable schema — every key is always present.
 type reviewWaitJSON struct {
-	PR      string                 `json:"pr"`
-	GroupID string                 `json:"group_id"`
-	Verdict string                 `json:"verdict"` // "PASS" | "FAIL" | "TIMEOUT" | "NO_VERDICT"
-	Agents  []reviewWaitAgentJSON  `json:"agents"`
-	Status  string                 `json:"status"`  // mirrors Verdict for symmetry with merge --wait
+	PR      string                `json:"pr"`
+	GroupID string                `json:"group_id"`
+	Verdict string                `json:"verdict"` // "PASS" | "FAIL" | "TIMEOUT" | "NO_VERDICT"
+	Agents  []reviewWaitAgentJSON `json:"agents"`
+	Status  string                `json:"status"` // mirrors Verdict for symmetry with merge --wait
 }
 
 type reviewWaitAgentJSON struct {

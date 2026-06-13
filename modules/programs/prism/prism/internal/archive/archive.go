@@ -326,5 +326,3 @@ func writeManifest(p Params, dir string) error {
 	}
 	return nil
 }
-
-

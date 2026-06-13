@@ -49,7 +49,7 @@ func TestSpawnSession_ReadinessTimeout_FiresAndCleansUp(t *testing.T) {
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 300 * time.Millisecond, // short; no signal will arrive,
-		PIExtensionDir: testPIExtensionDir,
+		PIExtensionDir:   testPIExtensionDir,
 	}
 
 	start := time.Now()
@@ -124,12 +124,12 @@ func TestSpawnSession_WritesStartupLog(t *testing.T) {
 
 	const sessionName = "myrepo@branch~startup-log"
 	opts := SpawnOpts{
-		SessionName: sessionName,
-		Repo:        "myrepo",
-		Worktree:    "/worktrees/myrepo-branch",
-		AgentRole:   "review-code",
-		Prompt:      "go",
-		Layout:      LayoutAgentOnly,
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         "go",
+		Layout:         LayoutAgentOnly,
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -188,7 +188,7 @@ func TestSpawnSession_ReadinessTimeout_SetsSessionsRowEnded(t *testing.T) {
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 100 * time.Millisecond, // short; no signal will arrive,
-		PIExtensionDir: testPIExtensionDir,
+		PIExtensionDir:   testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); !IsReadinessTimeout(err) {
@@ -253,7 +253,7 @@ func TestSpawnSession_ReadinessTimeoutWritesFailureToStartupLog(t *testing.T) {
 		Prompt:           "go",
 		Layout:           LayoutAgentOnly,
 		ReadinessTimeout: 250 * time.Millisecond,
-		PIExtensionDir: testPIExtensionDir,
+		PIExtensionDir:   testPIExtensionDir,
 	}
 
 	if err := SpawnSession(d, opts); err == nil {

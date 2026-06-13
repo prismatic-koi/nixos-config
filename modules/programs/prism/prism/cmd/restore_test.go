@@ -453,7 +453,6 @@ func TestRestoreSession_EmptyWorktree(t *testing.T) {
 	}
 }
 
-
 // TestRestoreSession_AllThreeWindows is a table-driven test confirming that
 // all three windows (edit/agent/term) are always created in the right order,
 // regardless of the session name format.

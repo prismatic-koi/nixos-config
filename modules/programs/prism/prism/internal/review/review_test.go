@@ -2057,10 +2057,10 @@ func reviewProfilesFileWithAllSlots() *config.ProfilesFile {
 func reviewProfilesFileMissingOneSlot() *config.ProfilesFile {
 	slot := config.RoleSlot{Provider: "anthropic", Model: "anthropic/claude-sonnet-4-6"}
 	entry := config.ProfileEntry{
-		"coordinator":    slot,
-		"worker":         slot,
-		"review-goal":    slot,
-		"review-code":    slot,
+		"coordinator": slot,
+		"worker":      slot,
+		"review-goal": slot,
+		"review-code": slot,
 		// review-security intentionally absent
 		"review-qa":      slot,
 		"review-context": slot,
@@ -2091,14 +2091,14 @@ func TestRun_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 
 	var progressLines []string
 	opts := review.Opts{
-		PRNumber:         "1224",
-		ParentSession:    "nixos-config@require-slot-test",
-		Worktree:         t.TempDir(),
-		Timeout:          30 * time.Second,
-		DBPath:           dbPath,
-		IsolationMode:    "host",
-		ProfilesFile:     pf,
-		OnProgress:       func(line string) { progressLines = append(progressLines, line) },
+		PRNumber:      "1224",
+		ParentSession: "nixos-config@require-slot-test",
+		Worktree:      t.TempDir(),
+		Timeout:       30 * time.Second,
+		DBPath:        dbPath,
+		IsolationMode: "host",
+		ProfilesFile:  pf,
+		OnProgress:    func(line string) { progressLines = append(progressLines, line) },
 	}
 
 	ctx := context.Background()
@@ -2231,6 +2231,7 @@ func TestRunAsync_RequireSlot_MissingSlot_AbortsAllSpawns(t *testing.T) {
 		t.Errorf("error should mention 'fan-out aborted': %v", errMsg)
 	}
 }
+
 // These tests exercise FetchPRContextWithOpts in isolation by mocking gh and git.
 
 // TestFetchPRContextWithOpts_InlineThresholdDefault verifies that the default

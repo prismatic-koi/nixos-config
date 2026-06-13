@@ -160,7 +160,9 @@ func TestHostAPI_Feedback_XDGStateHomeHonoured(t *testing.T) {
 		t.Fatalf("status = %d, body = %q", rr.Code, rr.Body.String())
 	}
 
-	var resp struct{ Path string `json:"path"` }
+	var resp struct {
+		Path string `json:"path"`
+	}
 	decodeJSONBody(t, rr, &resp)
 
 	expectedPath := filepath.Join(dir, "prism", "feedback.jsonl")

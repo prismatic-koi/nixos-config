@@ -754,9 +754,9 @@ func TestCollapsedRow_ExpandedStillShowsSummary(t *testing.T) {
 // TestRenderReviewSummary_ThreeTierBoundaries exercises the new compact tier
 // added by #1812. The renderer must dispatch among three modes:
 //
-//   budget >= labelsW              → full alphabetical labels
-//   labelsW > budget >= compactW   → letter-only compact form
-//   budget < compactW              → suppressed entirely
+//	budget >= labelsW              → full alphabetical labels
+//	labelsW > budget >= compactW   → letter-only compact form
+//	budget < compactW              → suppressed entirely
 //
 // The boundary transitions in both directions must be clean: a single column
 // removed at each boundary drops cleanly to the next tier (no partial /

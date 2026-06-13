@@ -92,9 +92,9 @@ type Session struct {
 // GroupMemberResult holds the terminal state and last assistant message for a
 // single member of a session group. Used by GroupResults to aggregate outcomes.
 type GroupMemberResult struct {
-	SessionName string
-	RootAgent   string // from root_agent_name; empty when not set
-	State       string // terminal state: finished / interrupted / error / deleted
+	SessionName  string
+	RootAgent    string // from root_agent_name; empty when not set
+	State        string // terminal state: finished / interrupted / error / deleted
 	LastMessage  string // last assistant turn from agent_events; empty when none
 	StartupError string // reason from startup_error event; empty when not a no-start failure
 	StallError   string // reason from stall_error event (inactivity watchdog fired after inbound frames were seen, #2239); empty when the agent did not stall mid-run

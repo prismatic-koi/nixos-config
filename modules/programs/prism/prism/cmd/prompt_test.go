@@ -176,10 +176,7 @@ func TestBuildPromptBody_ModelWithoutSlash(t *testing.T) {
 	}
 }
 
-
-
 // TestDeliverViaHTTP_ConnectionRefused verifies that deliverViaHTTP returns
-
 
 // TestRunPrompt_HTTPDelivery verifies the full runPrompt flow via HTTP delivery.
 func TestRunPrompt_HTTPDelivery(t *testing.T) {

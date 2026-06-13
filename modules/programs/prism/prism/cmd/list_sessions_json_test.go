@@ -23,8 +23,8 @@ func TestListSessions_JSONFlag_DirectPath(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	listSessionsCmd.Flags().Set("all", "true")   //nolint:errcheck
-	listSessionsCmd.Flags().Set("json", "true")  //nolint:errcheck
+	listSessionsCmd.Flags().Set("all", "true")  //nolint:errcheck
+	listSessionsCmd.Flags().Set("json", "true") //nolint:errcheck
 	defer func() {
 		listSessionsCmd.Flags().Set("all", "false")  //nolint:errcheck
 		listSessionsCmd.Flags().Set("json", "false") //nolint:errcheck
@@ -92,7 +92,7 @@ func TestListSessions_JSONFlag_ProxyPath(t *testing.T) {
 
 	t.Setenv("PRISM_HOST_API", srv.apiURL())
 
-	listSessionsCmd.Flags().Set("json", "true")       //nolint:errcheck
+	listSessionsCmd.Flags().Set("json", "true")        //nolint:errcheck
 	defer listSessionsCmd.Flags().Set("json", "false") //nolint:errcheck
 
 	out := captureStdout(t, func() {
@@ -121,7 +121,7 @@ func TestListSessions_HumanReadable_UnchangedByJSON(t *testing.T) {
 		t.Fatalf("UpsertStatus: %v", err)
 	}
 
-	listSessionsCmd.Flags().Set("all", "true")  //nolint:errcheck
+	listSessionsCmd.Flags().Set("all", "true")        //nolint:errcheck
 	defer listSessionsCmd.Flags().Set("all", "false") //nolint:errcheck
 	// --json is false by default.
 

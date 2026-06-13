@@ -483,14 +483,14 @@ func resolveEscalationTarget(database *db.DB, repo, explicitTo string) (*db.Stat
 // EscalationPayload is the JSON payload carried by both the local-log
 // `escalation` event and the bus `session.escalated` event.
 type EscalationPayload struct {
-	Source     string   `json:"source"`              // calling worker session
-	Target     string   `json:"target,omitempty"`    // coordinator session (empty when none)
-	Prompt     string   `json:"prompt"`              // user-supplied message body
+	Source     string   `json:"source"`               // calling worker session
+	Target     string   `json:"target,omitempty"`     // coordinator session (empty when none)
+	Prompt     string   `json:"prompt"`               // user-supplied message body
 	PRNumbers  []string `json:"pr_numbers,omitempty"` // discoverable open PRs
-	Branch     string   `json:"branch,omitempty"`    // worker branch
-	HeadSHA    string   `json:"head_sha,omitempty"`  // short HEAD SHA
-	Verdicts   []string `json:"verdicts,omitempty"`  // last review-cycle verdicts
-	OccurredAt string   `json:"occurred_at"`         // RFC3339
+	Branch     string   `json:"branch,omitempty"`     // worker branch
+	HeadSHA    string   `json:"head_sha,omitempty"`   // short HEAD SHA
+	Verdicts   []string `json:"verdicts,omitempty"`   // last review-cycle verdicts
+	OccurredAt string   `json:"occurred_at"`          // RFC3339
 }
 
 // echoEscalationToSelf writes a self-marker event of type "escalation" into
@@ -599,8 +599,6 @@ func deliverEscalationPrompt(database *db.DB, fromSession string, target *db.Sta
 func deliverEscalationToTarget(target *db.Status, promptText string) error {
 	return promptdelivery.DeliverToSession(target.SessionName, target, promptText, nil, "", "followUp")
 }
-
-
 
 // discoverPRNumbers best-effort returns open PRs whose head matches the
 // worker's branch via `gh pr list`. Returns nil silently on any error so the

@@ -339,4 +339,3 @@ func waitForOutChNonNil(t *testing.T, s *Sidecar, timeout time.Duration) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
-

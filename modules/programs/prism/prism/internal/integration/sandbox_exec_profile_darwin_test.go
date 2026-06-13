@@ -124,9 +124,9 @@ func TestSandboxExecProfile_MissingEtcDenied(t *testing.T) {
 // the system-paths allow rule covers AND that has an observable effect on a
 // Nix-built bash invocation, this table-driven test:
 //
-//   1. Removes only that subpath from the profile.
-//   2. Runs a probe command that depends on that subpath being readable.
-//   3. Asserts the probe fails — proving the test is not a no-op.
+//  1. Removes only that subpath from the profile.
+//  2. Runs a probe command that depends on that subpath being readable.
+//  3. Asserts the probe fails — proving the test is not a no-op.
 //
 // This is the AC #6 of #1192: "the negative test for the system-paths allow
 // set is wired such that removing any single subpath from the file-read
@@ -146,11 +146,11 @@ func TestSandboxExecProfile_MissingEtcDenied(t *testing.T) {
 //
 // Deliberate subpath coverage:
 //   - /nix          — bash itself lives under /nix; without it, dyld cannot
-//                     even load the binary. The sandbox blocks process start.
+//     even load the binary. The sandbox blocks process start.
 //   - /etc          — stat /etc/hosts (the original #1187 regression).
 //   - /private/etc  — stat /private/etc/hosts directly via the canonical
-//                     path. /etc → /private/etc symlink non-transparency
-//                     means both forms must be allowed independently.
+//     path. /etc → /private/etc symlink non-transparency
+//     means both forms must be allowed independently.
 func TestSandboxExecProfile_SystemPathRemovalDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")

@@ -76,7 +76,7 @@ func TestSandboxExecAgentPaneCmd_StartsWithAbsolutePrismPath(t *testing.T) {
 // TestBwrapAgentPaneCmd_BinaryPath_WithSingleQuote_ShellEscaped verifies the
 // edge-case AC: a binary path containing a single quote (improbable in a
 // real Nix store path, but the shell quoting must still be correct) is
-// escaped via the standard '\'' sequence so the rendered command does not
+// escaped via the standard '\” sequence so the rendered command does not
 // break out of its single-quote context.
 //
 // This is defence-in-depth: if a future deployment lands prism under a path

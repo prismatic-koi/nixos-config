@@ -46,7 +46,6 @@ func (d *DB) QueryRow(query string, args ...any) *sql.Row {
 	return d.conn.QueryRow(query, args...)
 }
 
-
 const schema = `
 CREATE TABLE IF NOT EXISTS agent_events (
   id                 TEXT PRIMARY KEY,
@@ -317,7 +316,7 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // instance_id) and adds a nullable instance_id TEXT column to agent_events
 // (FK to sessions.instance_id). It also backfills one sessions row per
 // currently-live agent_status row (ended_at IS NULL AND instance_id IS NOT NULL
-// AND instance_id != '') so in-flight sessions are queryable immediately after
+// AND instance_id != ”) so in-flight sessions are queryable immediately after
 // migration. Rows with empty instance_id are skipped (a warning is printed).
 // This migration is idempotent: CREATE TABLE IF NOT EXISTS and the ALTER TABLE
 // guard (pragma_table_info check) make it safe to run on an already-migrated DB.
@@ -412,6 +411,7 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // v31→v32 adds six missing indexes for hot DB query paths (#1864):
 //   - idx_events_instance, idx_events_created_at on agent_events
 //   - idx_agent_status_{active,group_id,instance_id,repo_active} on agent_status
+//
 // Each CREATE INDEX uses IF NOT EXISTS so the migration is idempotent on a
 // fresh DB (which already has the indexes via the declarative schema block).
 // v34→v35 adds spawn_inputs.isolation_mode (issue #2105). The column carries
@@ -422,7 +422,6 @@ CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(sess
 // where the declarative schema block above already includes the column. No
 // backfill: pre-#2105 rows keep their NULL isolation_mode and the renderer
 // falls back to isolation_flag for them.
-//
 func Open(path string) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("db: create parent dirs: %w", err)
@@ -684,19 +683,19 @@ func runMigrations(conn *sql.DB) error {
 //
 // Background — the three audit findings rolled into this migration:
 //
-//   F1: agent_events.instance_id had no index. WriteSpawnOutcome's
-//       aggregation query (sessions.go) filters WHERE instance_id = ? and
-//       runs 14 CASE expressions over the matching rows once per session
-//       end; SessionTurnTokens has the same WHERE shape. Both were full
-//       table scans growing linearly with retained event volume.
-//   F2: agent_status had only the narrow partial coordinator-per-repo
-//       index, leaving GroupCompleted, ActiveSessionCountForMode,
-//       HarnessSessionIDForInstance, CoordinatorForRepo and every other
-//       active-row filter on full-table scans. agent_status is never
-//       pruned, so this scales with lifetime spawn count.
-//   F3: agent_events.created_at had no standalone index. EventsSince
-//       (prism stats --days) filters by created_at >= ? with no session/
-//       repo leading column, so neither existing index could be used.
+//	F1: agent_events.instance_id had no index. WriteSpawnOutcome's
+//	    aggregation query (sessions.go) filters WHERE instance_id = ? and
+//	    runs 14 CASE expressions over the matching rows once per session
+//	    end; SessionTurnTokens has the same WHERE shape. Both were full
+//	    table scans growing linearly with retained event volume.
+//	F2: agent_status had only the narrow partial coordinator-per-repo
+//	    index, leaving GroupCompleted, ActiveSessionCountForMode,
+//	    HarnessSessionIDForInstance, CoordinatorForRepo and every other
+//	    active-row filter on full-table scans. agent_status is never
+//	    pruned, so this scales with lifetime spawn count.
+//	F3: agent_events.created_at had no standalone index. EventsSince
+//	    (prism stats --days) filters by created_at >= ? with no session/
+//	    repo leading column, so neither existing index could be used.
 //
 // Each CREATE INDEX uses IF NOT EXISTS, making the migration idempotent —
 // fresh databases already have the indexes from the declarative schema
@@ -2168,11 +2167,11 @@ type SpawnInputs struct {
 	InstanceID string
 
 	// Flag values as the user passed them (nil = flag not passed).
-	ProfileName   *string
-	ModelFlag     *string
-	VariantFlag   *string
-	AgentFlag     *string
-	HarnessFlag   *string
+	ProfileName *string
+	ModelFlag   *string
+	VariantFlag *string
+	AgentFlag   *string
+	HarnessFlag *string
 	// IsolationFlag is the raw --isolation flag value as the user passed
 	// it. nil when the flag was omitted (the common case). Preserved as an
 	// audit trail; downstream readers that want the actual mode the

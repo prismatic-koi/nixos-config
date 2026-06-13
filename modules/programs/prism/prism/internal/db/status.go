@@ -1407,7 +1407,7 @@ type AbtestPairRow struct {
 	EndedAtB     *int64
 
 	// Metrics from spawn_outcome (nil when outcome not yet computed)
-	TurnsA        *int   // msg_assistant_count
+	TurnsA        *int // msg_assistant_count
 	TurnsB        *int
 	TokensInputA  *int64
 	TokensInputB  *int64

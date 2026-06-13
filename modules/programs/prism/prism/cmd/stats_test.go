@@ -57,14 +57,14 @@ func writeStatsEvent(t *testing.T, d *db.DB, session, typ, payload string, ts ti
 func writeStatsEventWithSID(t *testing.T, d *db.DB, session, sid, typ, payload string, ts time.Time) {
 	t.Helper()
 	e := db.Event{
-		ID:          uuid.New().String(),
-		SessionName: session,
-		Repo:        "testrepo",
-		Worktree:    "/code/testrepo/main",
+		ID:               uuid.New().String(),
+		SessionName:      session,
+		Repo:             "testrepo",
+		Worktree:         "/code/testrepo/main",
 		HarnessSessionID: &sid,
-		Type:        typ,
-		Payload:     payload,
-		CreatedAt:   ts,
+		Type:             typ,
+		Payload:          payload,
+		CreatedAt:        ts,
 	}
 	if err := d.WriteEvent(e); err != nil {
 		t.Fatalf("WriteEvent: %v", err)
@@ -265,19 +265,19 @@ func TestCollectMetrics_OpenrouterEventCostAccumulated(t *testing.T) {
 	sid := "sid-openrouter-1"
 	events := []db.Event{
 		{
-			ID:          "e1",
-			SessionName: "testrepo@main",
-			Type:        "msg_assistant",
-			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":622000,"outputTokens":14000,"cost":1.96}`,
-			CreatedAt:   time.Now(),
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":622000,"outputTokens":14000,"cost":1.96}`,
+			CreatedAt:        time.Now(),
 			HarnessSessionID: &sid,
 		},
 		{
-			ID:          "e2",
-			SessionName: "testrepo@main",
-			Type:        "msg_assistant",
-			Payload:     `{"messageId":"msg-2","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":1000,"outputTokens":500,"cost":0.04}`,
-			CreatedAt:   time.Now().Add(time.Minute),
+			ID:               "e2",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"msg-2","agent":"coordinator","model":"openrouter/z-ai/glm-4.7","inputTokens":1000,"outputTokens":500,"cost":0.04}`,
+			CreatedAt:        time.Now().Add(time.Minute),
 			HarnessSessionID: &sid,
 		},
 	}
@@ -300,11 +300,11 @@ func TestCollectMetrics_EventCostZeroDisplaysDash(t *testing.T) {
 	sid := "sid-nocost"
 	events := []db.Event{
 		{
-			ID:          "e1",
-			SessionName: "testrepo@main",
-			Type:        "msg_assistant",
-			Payload:     `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/some/model","inputTokens":1000,"outputTokens":500}`,
-			CreatedAt:   time.Now(),
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"msg-1","agent":"coordinator","model":"openrouter/some/model","inputTokens":1000,"outputTokens":500}`,
+			CreatedAt:        time.Now(),
 			HarnessSessionID: &sid,
 		},
 	}

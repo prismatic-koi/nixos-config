@@ -73,8 +73,8 @@ func newSocketPipeSidecar(t *testing.T, sockPath string) *Sidecar {
 		StartupConnectTimeout: 5 * time.Second,
 		// PipeReconnectTimeout is set to a short value so tests that close the
 		// connection without a session_shutdown don't block for 30s.
-		PipeReconnectTimeout:  200 * time.Millisecond,
-		Harness:               pih.New("", "", ""),
+		PipeReconnectTimeout: 200 * time.Millisecond,
+		Harness:              pih.New("", "", ""),
 	}
 	return New(cfg)
 }
@@ -188,8 +188,8 @@ func readJSON(t *testing.T, conn net.Conn) map[string]any {
 // a function that waits for it to finish and returns its error.
 func runSocketPipeSidecar(sc *Sidecar) (wait func() error) {
 	var (
-		mu  sync.Mutex
-		err error
+		mu   sync.Mutex
+		err  error
 		done = make(chan struct{})
 	)
 	go func() {
@@ -2299,7 +2299,9 @@ func TestSocketPipe_SessionShutdownHook_NoWireFrame_New(t *testing.T) {
 	textSet := map[string]bool{}
 	for _, ev := range events {
 		if ev.Type == "msg_assistant" {
-			var p struct{ Text string `json:"text"` }
+			var p struct {
+				Text string `json:"text"`
+			}
 			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
 				textSet[p.Text] = true
 			}
@@ -2352,7 +2354,9 @@ func TestSocketPipe_SessionShutdownHook_NoWireFrame_Resume(t *testing.T) {
 	textSet := map[string]bool{}
 	for _, ev := range events {
 		if ev.Type == "msg_assistant" {
-			var p struct{ Text string `json:"text"` }
+			var p struct {
+				Text string `json:"text"`
+			}
 			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
 				textSet[p.Text] = true
 			}
@@ -2404,7 +2408,9 @@ func TestSocketPipe_SessionShutdownHook_NoWireFrame_Fork(t *testing.T) {
 	textSet := map[string]bool{}
 	for _, ev := range events {
 		if ev.Type == "msg_assistant" {
-			var p struct{ Text string `json:"text"` }
+			var p struct {
+				Text string `json:"text"`
+			}
 			if err := json.Unmarshal([]byte(ev.Payload), &p); err == nil {
 				textSet[p.Text] = true
 			}

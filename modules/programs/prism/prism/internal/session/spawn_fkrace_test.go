@@ -130,15 +130,15 @@ func TestSpawnSession_FullLayout_HonoursPreSetInstanceID(t *testing.T) {
 	preMinted := uuid.New().String()
 	const sessionName = "myrepo@fk-race-preset"
 	opts := SpawnOpts{
-		SessionName:   sessionName,
-		Repo:          "myrepo",
-		Worktree:      "/worktrees/myrepo-preset",
-		AgentRole:     "worker",
-		Prompt:        "go",
-		InstanceID:    preMinted,
-		Layout:        LayoutFull,
-		IsolationMode: "host",
-		HarnessName:   "pi",
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-preset",
+		AgentRole:      "worker",
+		Prompt:         "go",
+		InstanceID:     preMinted,
+		Layout:         LayoutFull,
+		IsolationMode:  "host",
+		HarnessName:    "pi",
 		PIExtensionDir: testPIExtensionDir,
 	}
 
@@ -189,14 +189,14 @@ func TestSpawnSession_FullLayout_ConcurrentSpawnsAllPreSeeded(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			opts := SpawnOpts{
-				SessionName:   names[i],
-				Repo:          "myrepo",
-				Worktree:      "/worktrees/myrepo-conc-" + names[i],
-				AgentRole:     "worker",
-				Prompt:        "go",
-				Layout:        LayoutFull,
-				IsolationMode: "host",
-				HarnessName:   "pi",
+				SessionName:    names[i],
+				Repo:           "myrepo",
+				Worktree:       "/worktrees/myrepo-conc-" + names[i],
+				AgentRole:      "worker",
+				Prompt:         "go",
+				Layout:         LayoutFull,
+				IsolationMode:  "host",
+				HarnessName:    "pi",
 				PIExtensionDir: testPIExtensionDir,
 			}
 			errs[i] = SpawnSession(d, opts)

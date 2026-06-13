@@ -759,7 +759,6 @@ func assertPreConversionState(t *testing.T, dir string, originalEntries []string
 	}
 }
 
-
 // errInjected is the sentinel error returned by the step hook in tests.
 var errInjected = fmt.Errorf("injected test failure")
 

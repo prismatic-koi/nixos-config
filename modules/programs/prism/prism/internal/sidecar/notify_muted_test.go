@@ -4,14 +4,14 @@
 // escalated / review-agent / investigate-agent / coordinator-session
 // suppression guards. These tests verify that:
 //
-//   (a) a muted worker does not emit notifyCoordinator on session.finished;
-//   (b) a muted worker does not emit on session.escalated (the escalate cmd
-//       path is covered by a cmd-package test, but the in-sidecar guard is
-//       proven here by exercising notifyCoordinator while StateEscalated is
-//       set \u2014 the existing escalated-guard takes precedence, which is fine);
-//   (c) unmuting restores notification on the next session.finished;
-//   (d) the existing escalated / review-agent / coordinator-session
-//       suppression guards still fire when the muted flag is unset.
+//	(a) a muted worker does not emit notifyCoordinator on session.finished;
+//	(b) a muted worker does not emit on session.escalated (the escalate cmd
+//	    path is covered by a cmd-package test, but the in-sidecar guard is
+//	    proven here by exercising notifyCoordinator while StateEscalated is
+//	    set \u2014 the existing escalated-guard takes precedence, which is fine);
+//	(c) unmuting restores notification on the next session.finished;
+//	(d) the existing escalated / review-agent / coordinator-session
+//	    suppression guards still fire when the muted flag is unset.
 //
 // Isolation contract: every test uses sidecartest.NewIsolated and the
 // "prism-test@" session-name prefix per AGENTS.md.

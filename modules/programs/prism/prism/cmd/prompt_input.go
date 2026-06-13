@@ -64,10 +64,10 @@ func resolvePrompt(cmd *cobra.Command) (string, error) {
 // to produce an operator-friendly error message that immediately identifies
 // which flag to fix. The shape is:
 //
-//   prism spawn: --prompt-file <path>: file is empty — supply a non-empty prompt
-//   prism spawn: --prompt: empty string — supply a non-empty prompt
-//   prism spawn: --prompt -: empty stdin — supply a non-empty prompt
-//   prism spawn: a prompt is required — supply --prompt, --prompt -, or --prompt-file
+//	prism spawn: --prompt-file <path>: file is empty — supply a non-empty prompt
+//	prism spawn: --prompt: empty string — supply a non-empty prompt
+//	prism spawn: --prompt -: empty stdin — supply a non-empty prompt
+//	prism spawn: a prompt is required — supply --prompt, --prompt -, or --prompt-file
 //
 // The `verb` argument is the subcommand name used in the error prefix
 // ("prism spawn", "prism prompt", …).

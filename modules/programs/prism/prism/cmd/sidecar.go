@@ -330,27 +330,27 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := sidecar.Config{
-		SessionName:       sessionName,
-		Repo:              repo,
-		Worktree:          worktree,
-		HarnessURL:        harnessURL,
-		DB:                d,
-		Clock:             sidecar.RealClock(),
-		AgentRole:         agentRole,
-		AgentModel:        agentModel,
-		ModelsByRole:      modelsByRole,
-		HarnessName:       harnessName,
-		HarnessBinaryPath: harnessBinaryPath,
-		BwrapPath:         bwrapPath,
-		InstanceID:        instanceID,
-		IsolationMode:     isolationMode,
-		Container:         ctrCfg,
+		SessionName:         sessionName,
+		Repo:                repo,
+		Worktree:            worktree,
+		HarnessURL:          harnessURL,
+		DB:                  d,
+		Clock:               sidecar.RealClock(),
+		AgentRole:           agentRole,
+		AgentModel:          agentModel,
+		ModelsByRole:        modelsByRole,
+		HarnessName:         harnessName,
+		HarnessBinaryPath:   harnessBinaryPath,
+		BwrapPath:           bwrapPath,
+		InstanceID:          instanceID,
+		IsolationMode:       isolationMode,
+		Container:           ctrCfg,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
 		HarnessPipeTCPPort:  harnessPipeTCPPort,
 		OnReady:             onReady,
-		InitialPrompt:     initialPrompt,
-		Harness:           h,
+		InitialPrompt:       initialPrompt,
+		Harness:             h,
 	}
 	sc := sidecar.New(cfg)
 
@@ -459,8 +459,6 @@ func runSignalHandler(sigCh <-chan os.Signal, shutdownFn func(), cancelFn func()
 		cancelFn()
 	}()
 }
-
-
 
 // selectHarnessPipeTransport decides whether a named harness needs a harness
 // pipe and, if so, whether the sidecar should bind a TCP port or a Unix

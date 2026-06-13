@@ -116,8 +116,8 @@ func TestListSessions_DefaultScope_RunE_Output(t *testing.T) {
 	//
 	// Instead, exercise the DB method directly (already tested above) and use
 	// --all=false + --json to verify the JSON output path reads the new method.
-	listSessionsCmd.Flags().Set("all", "false")  //nolint:errcheck
-	listSessionsCmd.Flags().Set("json", "true")  //nolint:errcheck
+	listSessionsCmd.Flags().Set("all", "false") //nolint:errcheck
+	listSessionsCmd.Flags().Set("json", "true") //nolint:errcheck
 	defer func() {
 		listSessionsCmd.Flags().Set("all", "false")  //nolint:errcheck
 		listSessionsCmd.Flags().Set("json", "false") //nolint:errcheck
@@ -177,12 +177,12 @@ func TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer(t *testing.T) {
 	}
 
 	// Scenario: query from repoA.
-	insert("repoA@main", "repoA", "coordinator")    // own-repo coordinator
-	insert("repoA@branch", "repoA", "worker")       // own-repo worker
-	insert("repoB@main", "repoB", "coordinator")    // other-repo coordinator (DB-backed)
-	insert("repoB@feature", "repoB", "worker")      // other-repo worker — must be hidden
-	insert("repoC@main", "repoC", "")               // other-repo, NULL root_agent_name, @main → heuristic coordinator
-	insert("repoC@feat", "repoC", "")               // other-repo, NULL root_agent_name, non-main → hidden
+	insert("repoA@main", "repoA", "coordinator") // own-repo coordinator
+	insert("repoA@branch", "repoA", "worker")    // own-repo worker
+	insert("repoB@main", "repoB", "coordinator") // other-repo coordinator (DB-backed)
+	insert("repoB@feature", "repoB", "worker")   // other-repo worker — must be hidden
+	insert("repoC@main", "repoC", "")            // other-repo, NULL root_agent_name, @main → heuristic coordinator
+	insert("repoC@feat", "repoC", "")            // other-repo, NULL root_agent_name, non-main → hidden
 
 	results, err := d.AllActiveStatusForRepoAndOtherCoordinators("repoA")
 	if err != nil {

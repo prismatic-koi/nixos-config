@@ -22,10 +22,10 @@ import (
 // SpawnSession with the same session name and asserts that after all calls
 // complete the DB is in a consistent state:
 //
-//   (a) exactly one agent_status row exists (keyed on opts.SessionName).
-//   (b) agent_status.instance_id is non-nil and matches exactly one sessions
-//       row whose ended_at is NULL (i.e. the row is alive).
-//   (c) no other sessions row for this session name has ended_at NULL.
+//	(a) exactly one agent_status row exists (keyed on opts.SessionName).
+//	(b) agent_status.instance_id is non-nil and matches exactly one sessions
+//	    row whose ended_at is NULL (i.e. the row is alive).
+//	(c) no other sessions row for this session name has ended_at NULL.
 func TestSpawnSession_Concurrent_SameName(t *testing.T) {
 	d, _ := openSpawnTestDB(t)
 	_ = spyTmuxBin(t)
@@ -43,14 +43,14 @@ func TestSpawnSession_Concurrent_SameName(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			opts := SpawnOpts{
-				SessionName:   sessionName,
-				Repo:          "myrepo",
-				Worktree:      "/worktrees/myrepo-conc",
-				AgentRole:     "worker",
-				Prompt:        "go",
-				Layout:        LayoutAgentOnly,
-				IsolationMode: "host",
-				HarnessName:   "pi",
+				SessionName:    sessionName,
+				Repo:           "myrepo",
+				Worktree:       "/worktrees/myrepo-conc",
+				AgentRole:      "worker",
+				Prompt:         "go",
+				Layout:         LayoutAgentOnly,
+				IsolationMode:  "host",
+				HarnessName:    "pi",
 				PIExtensionDir: testPIExtensionDir,
 			}
 			errs[i] = SpawnSession(d, opts)

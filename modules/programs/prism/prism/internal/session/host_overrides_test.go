@@ -65,10 +65,10 @@ func TestBuildDirectAgentCmd_HostModeBothOverrides(t *testing.T) {
 	cmd := buildDirectAgentCmd(opts)
 
 	for _, want := range []string{
-		"pi ",                              // binary
-		"--agent worker",                   // role flag still emitted
+		"pi ",                                 // binary
+		"--agent worker",                      // role flag still emitted
 		"--model 'anthropic/claude-opus-4-8'", // override
-		"--thinking 'high'",                // override
+		"--thinking 'high'",                   // override
 	} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("expected %q in direct cmd; got %q", want, cmd)

@@ -260,7 +260,6 @@ func TestDeliverToSession_PiPath_DeliverAsForwarded(t *testing.T) {
 	}
 }
 
-
 // TestDeliverToSession_StaleTombstoneSocket verifies that when the host-API
 // socket file exists on disk but no process is listening on it (the "stale
 // tombstone" case left by a sidecar that exited abnormally without cleanup),

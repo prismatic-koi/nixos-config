@@ -445,11 +445,11 @@ func emitMergeWaitTerminal(row *db.PendingMerge, jsonMode bool) error {
 func emitMergeWaitTimeout(pr int, lastRow *db.PendingMerge, jsonMode bool, timeout time.Duration) error {
 	if jsonMode {
 		payload := struct {
-			PR             int    `json:"pr"`
-			Status         string `json:"status"`
-			Waited         string `json:"waited"`
-			LastRowStatus  string `json:"last_row_status"`
-			LastCheckedAt  string `json:"last_checked_at"`
+			PR            int    `json:"pr"`
+			Status        string `json:"status"`
+			Waited        string `json:"waited"`
+			LastRowStatus string `json:"last_row_status"`
+			LastCheckedAt string `json:"last_checked_at"`
 		}{PR: pr, Status: "timeout", Waited: timeout.String()}
 		if lastRow != nil {
 			payload.LastRowStatus = lastRow.Status

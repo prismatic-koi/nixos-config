@@ -233,7 +233,6 @@ func deliverViaSidecarHostAPI(sessionName, promptText, deliverAs string) error {
 	return nil
 }
 
-
 // buildPromptBody constructs the request body for prompt_async.
 // When root_agent_name and root_model_id are known, they are included
 // so the session continues using its root agent/model. Falls back to

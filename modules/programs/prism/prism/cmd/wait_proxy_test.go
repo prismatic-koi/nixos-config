@@ -40,10 +40,10 @@ type fakeWaitProbeServer struct {
 	sessionName  string
 	sessionState string
 	// /groups/poll response.
-	groupID         string
-	groupCompleted  bool
-	groupMembers    []db.Status
-	groupResults    map[string]db.GroupMemberResult
+	groupID        string
+	groupCompleted bool
+	groupMembers   []db.Status
+	groupResults   map[string]db.GroupMemberResult
 }
 
 func (s *fakeWaitProbeServer) handler() http.Handler {

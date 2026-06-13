@@ -186,7 +186,7 @@ func TestInjectContainerConfig_NoProfileLeaveEmptyContent(t *testing.T) {
 
 	// Profiles file with no default and no state-file profile set.
 	pf := &config.ProfilesFile{
-		Default: "", // no default
+		Default:  "", // no default
 		Profiles: map[string]config.ProfileEntry{},
 	}
 	root := makeBareRoot(t, "feature-branch")

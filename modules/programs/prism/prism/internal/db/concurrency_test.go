@@ -94,7 +94,7 @@ func TestUpsertStatusWithRootAgent_Concurrent(t *testing.T) {
 			err := d.UpsertStatusWithRootAgent(
 				session, "repo", "/code/repo/main", "active",
 				strPtr("concurrent title"),
-				nil,           // harnessSessionID
+				nil, // harnessSessionID
 				strPtr(agentName),
 				strPtr(modelID),
 			)

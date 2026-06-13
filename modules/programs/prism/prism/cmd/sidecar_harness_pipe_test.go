@@ -114,8 +114,8 @@ func TestSelectHarnessPipeTransport_DarwinPinsToIsolationMode(t *testing.T) {
 		t.Fatalf("Darwin host: expected pi to be a socket-pipe harness, got isSocketPipe=false")
 	}
 	if useTCP {
-		t.Errorf("Darwin host: useTCP = true, want false — gate has regressed to GOOS check (issue #2078). "+
-			"HarnessPipeSockPath must be set / HarnessPipeTCPPort must be 0 in host mode on Darwin so the "+
+		t.Errorf("Darwin host: useTCP = true, want false — gate has regressed to GOOS check (issue #2078). " +
+			"HarnessPipeSockPath must be set / HarnessPipeTCPPort must be 0 in host mode on Darwin so the " +
 			"unix:// URL injected by agentPaneEnvVars matches what the sidecar listens on.")
 	}
 
@@ -126,7 +126,7 @@ func TestSelectHarnessPipeTransport_DarwinPinsToIsolationMode(t *testing.T) {
 		t.Fatalf("Darwin sandbox-exec: expected pi to be a socket-pipe harness, got isSocketPipe=false")
 	}
 	if !useTCP {
-		t.Errorf("Darwin sandbox-exec: useTCP = false, want true — sandbox-exec cannot reach Unix sockets. "+
+		t.Errorf("Darwin sandbox-exec: useTCP = false, want true — sandbox-exec cannot reach Unix sockets. " +
 			"HarnessPipeTCPPort must be != 0 / HarnessPipeSockPath must be \"\" in sandbox-exec mode.")
 	}
 }

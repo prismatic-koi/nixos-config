@@ -338,21 +338,21 @@ func runReview(cmd *cobra.Command, args []string) error {
 
 	// Build run options.
 	opts := review.Opts{
-		PRNumber:       prNumber,
-		ParentSession:  parentSession,
-		WorkerSession:  parentSession, // async delivery goes back to this session
-		Worktree:       worktree,
-		Agents:         agents,
+		PRNumber:        prNumber,
+		ParentSession:   parentSession,
+		WorkerSession:   parentSession, // async delivery goes back to this session
+		Worktree:        worktree,
+		Agents:          agents,
 		Harness:         harnessFlag,
 		HarnessExplicit: cmd.Flags().Changed("harness"),
-		Timeout:        timeoutFlag,
-		PluginHostPath: cfg.SidecarPluginPath,
-		PIExtensionDir: cfg.PIExtensionDir,
-		IsolationMode:  string(isoMode),
-		OnProgress:     progressLine,
-		PRCtx:          &prCtx,
-		RuntimeEnvVars: h.RuntimeEnv(),
-		ModelsByRole:   modelsByRole,
+		Timeout:         timeoutFlag,
+		PluginHostPath:  cfg.SidecarPluginPath,
+		PIExtensionDir:  cfg.PIExtensionDir,
+		IsolationMode:   string(isoMode),
+		OnProgress:      progressLine,
+		PRCtx:           &prCtx,
+		RuntimeEnvVars:  h.RuntimeEnv(),
+		ModelsByRole:    modelsByRole,
 	}
 
 	// Load profiles for any sandboxed mode (bwrap or sandbox-exec) so each

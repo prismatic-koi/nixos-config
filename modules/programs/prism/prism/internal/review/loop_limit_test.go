@@ -213,7 +213,7 @@ func TestCurrentCycleProducedVerdicts_PartialNoVerdictIsNotVerdictProducing(t *t
 		"a~review-1-review-qa":       {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
 		"a~review-1-review-context":  {State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
 		"a~review-1-review-goal":     {State: "finished", LastMessage: `{"text":"AC6 ACHIEVED."}`}, // no <verdict>
-		"a~review-1-review-code":     {State: "finished", LastMessage: ""},                          // empty
+		"a~review-1-review-code":     {State: "finished", LastMessage: ""},                         // empty
 	}
 	if review.CurrentCycleProducedVerdictsForTest(groupData) {
 		t.Error("3 parseable + 2 no-verdict round must NOT count as verdict-producing (the #1993 shape)")

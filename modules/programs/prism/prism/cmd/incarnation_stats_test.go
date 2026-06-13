@@ -412,7 +412,7 @@ func TestParseSinceFlag_ValidDate(t *testing.T) {
 		{"2026-04-01", true},
 		{"2026-04-01T00:00:00Z", true},
 		{"2026-04-01T15:04:05Z", true},
-		{"", true},                          // empty is valid (means no filter)
+		{"", true}, // empty is valid (means no filter)
 		{"not-a-date", false},
 		{"2026/04/01", false},
 	}

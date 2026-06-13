@@ -98,10 +98,10 @@ func openSpawnIntegTestDB(t *testing.T) (*db.DB, string) {
 // It then calls SpawnSession in bwrap mode (the mode that triggered the original
 // failure in #1092 and the reported regression in #1195) and verifies:
 //
-//   (a) The spawn succeeds — HostLaunchCmdSafeBound (16 KiB) is NOT exceeded.
-//   (b) The tmux argv does NOT contain the prompt body inline.
-//       PRISM_INITIAL_PROMPT_FILE is present; PRISM_INITIAL_PROMPT is absent.
-//   (c) The initial-prompt file on disk contains the full prompt content.
+//	(a) The spawn succeeds — HostLaunchCmdSafeBound (16 KiB) is NOT exceeded.
+//	(b) The tmux argv does NOT contain the prompt body inline.
+//	    PRISM_INITIAL_PROMPT_FILE is present; PRISM_INITIAL_PROMPT is absent.
+//	(c) The initial-prompt file on disk contains the full prompt content.
 //
 // This test must NOT call t.Parallel(): it rewrites the global tmux.TmuxBin.
 func TestSpawnReviewAgent_LargePrompt_UsesPromptFile(t *testing.T) {

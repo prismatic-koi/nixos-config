@@ -439,10 +439,10 @@ func (w *Watcher) notify(ctx context.Context, targetSession, targetInstanceID, t
 	if status.Harness != nil {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
 			log.Printf("[mergequeue] notify: routing via host-API socket for pi coordinator=%s", targetSession)
-				// Use "followUp" so the coordinator receives the merge-queue outcome
-				// after its current turn completes, even when it is mid-stream at
-				// delivery time. Queue outcomes are post-turn signals.
-				if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, buildNotifyBody, "", "followUp"); deliverErr != nil {
+			// Use "followUp" so the coordinator receives the merge-queue outcome
+			// after its current turn completes, even when it is mid-stream at
+			// delivery time. Queue outcomes are post-turn signals.
+			if deliverErr := promptdelivery.DeliverToSession(targetSession, status, text, buildNotifyBody, "", "followUp"); deliverErr != nil {
 				log.Printf("[mergequeue] notify: FAILED (pi path) — coordinator=%s reason=%v", targetSession, deliverErr)
 			} else {
 				log.Printf("[mergequeue] notify: delivered to pi coordinator=%s via host-API socket", targetSession)

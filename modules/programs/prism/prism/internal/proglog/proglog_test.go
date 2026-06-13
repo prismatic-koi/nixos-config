@@ -34,9 +34,9 @@ func resetForTest(t *testing.T, w *bytes.Buffer) {
 
 func TestParseLevel(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    Level
-		wantOK  bool
+		in     string
+		want   Level
+		wantOK bool
 	}{
 		{"error", LevelError, true},
 		{"ERROR", LevelError, true},
@@ -98,13 +98,13 @@ func TestEmitFilter(t *testing.T) {
 		envVal string
 		want   emitFlags
 	}{
-		{"", emitFlags{err: true}},                                                       // unset → error
-		{"trace", emitFlags{err: true}},                                                  // unrecognised → error
-		{"error", emitFlags{err: true}},                                                  // explicit error
-		{"warn", emitFlags{err: true, warn: true}},                                       // warn
-		{"WARN", emitFlags{err: true, warn: true}},                                       // case-insensitive
-		{"info", emitFlags{err: true, warn: true, info: true}},                           // info
-		{"debug", emitFlags{err: true, warn: true, info: true, debug: true}},             // debug
+		{"", emitFlags{err: true}},                                           // unset → error
+		{"trace", emitFlags{err: true}},                                      // unrecognised → error
+		{"error", emitFlags{err: true}},                                      // explicit error
+		{"warn", emitFlags{err: true, warn: true}},                           // warn
+		{"WARN", emitFlags{err: true, warn: true}},                           // case-insensitive
+		{"info", emitFlags{err: true, warn: true, info: true}},               // info
+		{"debug", emitFlags{err: true, warn: true, info: true, debug: true}}, // debug
 	}
 	for _, tc := range cases {
 		t.Run(tc.envVal, func(t *testing.T) {

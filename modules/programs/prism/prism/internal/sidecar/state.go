@@ -369,5 +369,3 @@ func (s *Sidecar) writeStartupErrorImpl(startupErr error, asyncNotify bool) {
 		s.notifyParentWorkerOnStartupFailure(startupErr)
 	}
 }
-
-

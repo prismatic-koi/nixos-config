@@ -229,12 +229,12 @@ func Schema(ctx context.Context, conn *sql.DB, tableFilter string) ([]SchemaEntr
 //
 // The function returns:
 //   - (true, nil)   for inputs containing exactly one statement, with or
-//                   without a trailing semicolon. Empty / whitespace-only /
-//                   comments-only inputs return (false, errEmpty).
+//     without a trailing semicolon. Empty / whitespace-only /
+//     comments-only inputs return (false, errEmpty).
 //   - (false, nil)  for inputs containing two or more statements separated
-//                   by semicolons.
+//     by semicolons.
 //   - (false, err)  for inputs that hit a malformed-token state (unterminated
-//                   string, etc.).
+//     string, etc.).
 //
 // Callers should treat (false, _) as "reject — multi-statement or
 // unparseable" and propagate the error for diagnostics.

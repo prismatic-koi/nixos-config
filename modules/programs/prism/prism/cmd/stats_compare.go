@@ -710,10 +710,10 @@ func buildAxisRows(axes []string, runs []compareRun, diffOnly bool) []axisRow {
 // no-data fallback. showDelta is true only for the outcome / aggregation
 // sections in a 2-run comparison.
 type compareTableSection struct {
-	title    string
-	suffix   string // ":" for outcome sections, empty for the Session block
-	rows     []axisRow
-	emptyMsg string
+	title     string
+	suffix    string // ":" for outcome sections, empty for the Session block
+	rows      []axisRow
+	emptyMsg  string
 	showDelta bool
 }
 

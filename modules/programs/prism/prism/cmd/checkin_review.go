@@ -262,5 +262,3 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 
 	return nil
 }
-
-

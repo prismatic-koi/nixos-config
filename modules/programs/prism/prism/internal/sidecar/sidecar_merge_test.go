@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
-	)
+)
 
 // newSidecarCoordinatorWithInstance builds a coordinator sidecar with a
 // non-empty InstanceID so the merge endpoints have an identity to enqueue
@@ -27,7 +27,7 @@ func newSidecarCoordinatorWithInstance(t *testing.T, sessionName, repo, instance
 		SessionName: sessionName,
 		Repo:        repo,
 		Worktree:    "/tmp/" + sessionName,
-		HarnessURL: "http://localhost:14000",
+		HarnessURL:  "http://localhost:14000",
 		DB:          d,
 		Clock:       clk,
 		AgentRole:   "coordinator",
