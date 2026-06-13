@@ -90,11 +90,24 @@ import (
 //     developer hosts, and inside prism worker sandboxes. See
 //     sandbox_env_isolation_test.go for the full rationale.
 //
-//  6. Re-exec stub interception (#2230 class, swept in #2237): production
-//     code reachable from this package re-execs os.Executable() — in tests,
-//     THIS binary — as `<self> sidecar …` / `<self> event …`
-//     (session.SpawnSession paths) and `<self> monitor-review …`
-//     (review.RunAsync → StartMonitorProcess with prismBinary=="").
+//  6. Re-exec stub interception (#2230 class, swept in #2237, extended in
+//     #2280): production code reachable from this package re-execs
+//     os.Executable() — in tests, THIS binary — as `<self> sidecar …` /
+//     `<self> event …` (session.SpawnSession paths) and
+//     `<self> monitor-review …` (review.RunAsync → StartMonitorProcess with
+//     prismBinary=="").  An additional re-exec target reaches this binary
+//     via tmux rather than Go: setupFullLayout (internal/session/session.go)
+//     creates the agent pane with `bwrapIsolator.AgentPaneCmd` /
+//     `sandboxExecIsolator.AgentPaneCmd`, both of which render
+//     `<abs-prism-path> agent-run --session <name>` and hand it to
+//     tmux.NewWindow. In tests `<abs-prism-path>` is the test binary, so
+//     tmux's pane shell invokes `<self> agent-run …` from outside the Go
+//     parent. Without the agent-run arm of the argv check, the subprocess
+//     ran the real cmd/agent_run.go path which calls openAgentRunLog and
+//     creates `$XDG_STATE_HOME/prism/run/<hash>/agent-run.log` after the
+//     test body has returned — racing t.TempDir's RemoveAll and surfacing
+//     as `unlinkat …/prism: directory not empty` (#2280, third instance of
+//     the flake class after #1477 and #1705).
 //     PRISM_TEST_SUBPROCESS=1 short-circuits an explicit stub re-invocation;
 //     the argv check covers paths reached without the env var, exiting
 //     instead of recursively running the suite. The argv check MUST stay
@@ -116,7 +129,7 @@ func TestMain(m *testing.M) {
 		time.Sleep(50 * time.Millisecond)
 		os.Exit(0)
 	}
-	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event" || os.Args[1] == "monitor-review") {
+	if len(os.Args) > 1 && (os.Args[1] == "sidecar" || os.Args[1] == "event" || os.Args[1] == "monitor-review" || os.Args[1] == "agent-run") {
 		// Re-exec argv defence — see purpose 6 in the doc comment above.
 		os.Exit(0)
 	}
