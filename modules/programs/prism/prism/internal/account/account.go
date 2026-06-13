@@ -259,8 +259,9 @@ func Save(p Paths, name string) error {
 //  2. Snapshot the live auth.json's anthropic blob to
 //     accounts/<previous>.json, where <previous> is the contents of
 //     accounts/current at the moment of invocation. Skip the snapshot
-//     when there is no previous account or when the live auth.json has
-//     no anthropic key.
+//     when there is no previous account, when <previous> is already the
+//     target account (self-switch), or when the live auth.json has no
+//     anthropic key.
 //  3. Build the new auth.json contents: existing top-level keys
 //     preserved byte-identical, the anthropic key replaced with the
 //     target blob.
@@ -298,7 +299,7 @@ func Use(p Paths, name string) error {
 	if err != nil {
 		return fmt.Errorf("account use %s: %w", name, err)
 	}
-	if hasPrev {
+	if hasPrev && prev != name {
 		// Defence in depth: validate `prev` as if it were a user-supplied
 		// name. Writing to accounts/current already requires user-level
 		// access to the 0o700 accounts dir, so a malicious value here

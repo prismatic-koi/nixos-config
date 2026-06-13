@@ -439,6 +439,72 @@ func TestLoginUse_ReloginActiveAccountKeepsSavedBlobFresh(t *testing.T) {
 	}
 }
 
+func TestLoginCurrentWithoutUse_PrintedActivationCommandKeepsSavedBlobFresh(t *testing.T) {
+	p := fixture(t)
+	writeAuthJSON(t, p, map[string]any{
+		"anthropic":      sampleAnthropic("old-work"),
+		"github-copilot": map[string]any{"token": "gh"},
+	})
+	if err := Init(p); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	oldWorkBlob, err := json.Marshal(sampleAnthropic("old-work"))
+	if err != nil {
+		t.Fatalf("marshal old work blob: %v", err)
+	}
+	if err := atomicWriteFile(p.AccountPath("work"), oldWorkBlob, fileMode); err != nil {
+		t.Fatalf("write old work account: %v", err)
+	}
+	if err := atomicWriteFile(p.Current, []byte("work\n"), fileMode); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+
+	stdinReader, stdinWriter := io.Pipe()
+	withBrowserLauncher(t, func(raw string) error {
+		go func() {
+			_, _ = fmt.Fprintf(stdinWriter, "manual-code#%s\n", stateFromAuthorizeURL(t, raw))
+			_ = stdinWriter.Close()
+		}()
+		return nil
+	})
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"access_token":"new-work-access","refresh_token":"new-work-refresh","expires_in":600}`)
+	}))
+	defer tokenServer.Close()
+
+	var stdout bytes.Buffer
+	if err := Login(context.Background(), p, "work", LoginOptions{
+		Port:     0,
+		Stdin:    stdinReader,
+		Stdout:   &stdout,
+		TokenURL: tokenServer.URL,
+		Timeout:  2 * time.Second,
+	}); err != nil {
+		t.Fatalf("Login current account without --use: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Run 'prism account use work' to activate") {
+		t.Fatalf("stdout missing activation instruction: %q", stdout.String())
+	}
+
+	if err := Use(p, "work"); err != nil {
+		t.Fatalf("Use printed activation command: %v", err)
+	}
+	live := readAuthJSON(t, p)
+	anthropic, ok := live["anthropic"].(map[string]any)
+	if !ok {
+		t.Fatalf("live auth missing anthropic object: %v", live)
+	}
+	if anthropic["access"] != "new-work-access" || anthropic["refresh"] != "new-work-refresh" {
+		t.Fatalf("live auth not activated from saved blob: %v", anthropic)
+	}
+	saved := accountBlob(t, p, "work")
+	if saved["access"] != "new-work-access" || saved["refresh"] != "new-work-refresh" {
+		t.Fatalf("printed activation command clobbered saved blob: %v", saved)
+	}
+}
+
 func TestLoginPortZero_AuthorizeRedirectUsesBoundPort(t *testing.T) {
 	p := fixture(t)
 	var capturedAuthorizeURL string

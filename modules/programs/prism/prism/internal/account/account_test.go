@@ -374,6 +374,42 @@ func TestUse_SnapshotsPreviousAccountBeforeSwapping(t *testing.T) {
 	}
 }
 
+func TestUse_SelfSwitchActivatesTargetWithoutClobberingIt(t *testing.T) {
+	p := fixture(t)
+	writeAuthJSON(t, p, map[string]any{"anthropic": sampleAnthropic("OLD-LIVE")})
+	if err := Init(p); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	newWorkBlob, _ := json.Marshal(sampleAnthropic("NEW-STORED"))
+	if err := os.WriteFile(p.AccountPath("work"), newWorkBlob, 0o600); err != nil {
+		t.Fatalf("write work: %v", err)
+	}
+	if err := os.WriteFile(p.Current, []byte("work\n"), 0o600); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+
+	if err := Use(p, "work"); err != nil {
+		t.Fatalf("Use self-switch: %v", err)
+	}
+
+	live := readAuthJSON(t, p)
+	anth, _ := live["anthropic"].(map[string]any)
+	if anth["access"] != "access-NEW-STORED" || anth["refresh"] != "refresh-NEW-STORED" {
+		t.Fatalf("self-switch did not activate stored target: %v", anth)
+	}
+	data, err := os.ReadFile(p.AccountPath("work"))
+	if err != nil {
+		t.Fatalf("read work: %v", err)
+	}
+	var saved map[string]any
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatalf("parse work: %v", err)
+	}
+	if saved["access"] != "access-NEW-STORED" || saved["refresh"] != "refresh-NEW-STORED" {
+		t.Fatalf("self-switch clobbered target file with old live blob: %v", saved)
+	}
+}
+
 func TestUse_UnknownName_DoesNotTouchAuthJsonOrCurrent(t *testing.T) {
 	p := fixture(t)
 	writeAuthJSON(t, p, map[string]any{
