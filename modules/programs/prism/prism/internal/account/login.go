@@ -58,11 +58,16 @@ const (
 	// from the bound listener.
 	oauthRedirectURI = "https://platform.claude.com/oauth/code/callback"
 	oauthScopes      = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
-	oauthUserAgent   = "claude-code/2.1.97"
-	callbackPort     = 53692
-	callbackHost     = "127.0.0.1"
-	callbackTimeout  = 5 * time.Minute
-	maxTokenRetries  = 2
+	// NOTE: deliberately NO User-Agent constant. auth.ts's makeTokenHeaders
+	// sends only Content-Type because Anthropic's Cloudflare WAF on
+	// `claude.ai/v1/oauth/token` returns 429 for requests carrying
+	// `User-Agent: claude-code/*`. Tracked as divergence #1 in
+	// modules/programs/prism/pi/extensions/anthropic-oauth/UPSTREAM.md;
+	// removed in issue #888. Do NOT add a UA on the token-exchange path.
+	callbackPort      = 53692
+	callbackHost      = "127.0.0.1"
+	callbackTimeout   = 5 * time.Minute
+	maxTokenRetries   = 2
 	initialRetryDelay = 5 * time.Second
 	tokenExpirySafety = 5 * time.Minute
 	retryAfterCap     = 30 * time.Second
@@ -539,7 +544,14 @@ func exchangeToken(ctx context.Context, opts LoginOptions, code, state, verifier
 			return tokenResponse{}, fmt.Errorf("token exchange: build request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		req.Header.Set("User-Agent", oauthUserAgent)
+		// No User-Agent: see the constants block above (issue #888).
+		// auth.ts::makeTokenHeaders omits it because Cloudflare's WAF on
+		// `claude.ai/v1/oauth/token` returns 429 for `claude-code/*`.
+		// Setting the header to "" (rather than leaving it unset) tells
+		// Go's net/http transport to suppress its default
+		// `Go-http-client/1.1` UA so no UA header is sent on the wire at
+		// all, matching Node's fetch behaviour in auth.ts exactly.
+		req.Header.Set("User-Agent", "")
 
 		resp, err := opts.HTTPClient.Do(req)
 		if err != nil {

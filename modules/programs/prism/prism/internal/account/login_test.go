@@ -104,12 +104,12 @@ func TestParseAuthInput_Invalid(t *testing.T) {
 	cases := []string{
 		"",
 		"   ",
-		"http://localhost:53692/callback?code=onlycode",       // missing state
-		"http://localhost:53692/callback?state=onlystate",     // missing code
-		"justonething",                                        // not URL, not code#state, not query
-		"code=",                                               // empty code
-		"#statebutnocode",                                     // empty code in code#state
-		"codebutnostate#",                                     // empty state in code#state
+		"http://localhost:53692/callback?code=onlycode",   // missing state
+		"http://localhost:53692/callback?state=onlystate", // missing code
+		"justonething",    // not URL, not code#state, not query
+		"code=",           // empty code
+		"#statebutnocode", // empty code in code#state
+		"codebutnostate#", // empty state in code#state
 	}
 	for _, c := range cases {
 		if got, ok := parseAuthInput(c); ok {
@@ -158,10 +158,10 @@ func TestMakeAuthorizeURL_ContainsRequiredParams(t *testing.T) {
 
 func TestRetryDelay_HonoursRetryAfter_AndCaps(t *testing.T) {
 	cases := []struct {
-		name        string
-		retryAfter  string
-		attempt     int
-		wantDelay   time.Duration
+		name       string
+		retryAfter string
+		attempt    int
+		wantDelay  time.Duration
 	}{
 		{"no header → exponential attempt 0", "", 0, initialRetryDelay},
 		{"no header → exponential attempt 1", "", 1, 2 * initialRetryDelay},
@@ -187,8 +187,15 @@ func TestExchangeToken_Success(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/x-www-form-urlencoded" {
 			t.Errorf("Content-Type = %q, want form-urlencoded", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != oauthUserAgent {
-			t.Errorf("User-Agent = %q, want %q", got, oauthUserAgent)
+		// AC: User-Agent must NOT be sent on token-exchange requests
+		// because Anthropic's Cloudflare WAF returns 429 for
+		// `User-Agent: claude-code/*` (issue #888; UPSTREAM.md
+		// divergence #1). The TS canonical assertion is
+		// `headers.has("user-agent") === false` — mirror that. Production
+		// suppresses Go's default `Go-http-client/1.1` by setting the
+		// header to "", which net/http elides on the wire.
+		if got := r.Header.Get("User-Agent"); got != "" {
+			t.Errorf("User-Agent = %q, want absent (Cloudflare WAF blocks claude-code/* — see #888)", got)
 		}
 		_ = r.ParseForm()
 		if r.Form.Get("grant_type") != "authorization_code" {
@@ -392,15 +399,15 @@ func TestExchangeToken_ErrorNeverIncludesCode(t *testing.T) {
 // for full-flow tests. The token endpoint returns a canned successful
 // response by default; per-test handlers may override.
 type loginFixture struct {
-	paths      Paths
-	cfgRoot    string
-	authPath   string
-	tokenSrv   *httptest.Server
-	tokenSeen  atomic.Int32
-	browserCh  chan string
-	stdout     *bytes.Buffer
-	stdin      *strings.Reader
-	headless   bool
+	paths     Paths
+	cfgRoot   string
+	authPath  string
+	tokenSrv  *httptest.Server
+	tokenSeen atomic.Int32
+	browserCh chan string
+	stdout    *bytes.Buffer
+	stdin     *strings.Reader
+	headless  bool
 }
 
 func newLoginFixture(t *testing.T) *loginFixture {
