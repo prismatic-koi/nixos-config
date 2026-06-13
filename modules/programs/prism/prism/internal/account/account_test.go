@@ -404,6 +404,45 @@ func TestUse_UnknownName_DoesNotTouchAuthJsonOrCurrent(t *testing.T) {
 	}
 }
 
+// Defence in depth: a malformed name written into accounts/current
+// (path traversal, embedded separator, etc.) must be rejected before
+// it is used to construct the snapshot path. Reaching this branch
+// presupposes user-level compromise of the 0o700 accounts dir, but
+// failing safe is cheaper than letting the bad name flow through.
+func TestUse_MalformedPreviousNameInCurrent_ErrorsBeforeTouchingAuthJson(t *testing.T) {
+	p := fixture(t)
+	writeAuthJSON(t, p, map[string]any{"anthropic": sampleAnthropic("A")})
+	if err := Init(p); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	// Stuff a path-traversing name into accounts/current.
+	if err := os.WriteFile(p.Current, []byte("../escape\n"), 0o600); err != nil {
+		t.Fatalf("write current: %v", err)
+	}
+	// Create a legitimate target the user is trying to switch to.
+	targetBlob, _ := json.Marshal(sampleAnthropic("B"))
+	if err := os.WriteFile(p.AccountPath("work"), targetBlob, 0o600); err != nil {
+		t.Fatalf("write work: %v", err)
+	}
+	originalAuth, _ := os.ReadFile(p.AuthJSON)
+
+	err := Use(p, "work")
+	if err == nil {
+		t.Fatal("Use with malformed previous name: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "malformed previous account name") {
+		t.Errorf("error %q does not mention the malformed previous name", err)
+	}
+	afterAuth, _ := os.ReadFile(p.AuthJSON)
+	if string(afterAuth) != string(originalAuth) {
+		t.Errorf("auth.json mutated despite malformed previous name")
+	}
+	// And the escape path must not have been created.
+	if _, statErr := os.Stat(filepath.Join(p.Dir, "..", "escape.json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("escape file appeared at %s: %v", filepath.Join(p.Dir, "..", "escape.json"), statErr)
+	}
+}
+
 func TestUse_MalformedTargetFile_ErrorsBeforeTouchingAuthJson(t *testing.T) {
 	p := fixture(t)
 	writeAuthJSON(t, p, map[string]any{"anthropic": sampleAnthropic("A")})

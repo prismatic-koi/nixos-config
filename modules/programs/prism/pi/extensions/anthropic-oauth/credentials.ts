@@ -34,8 +34,34 @@ let cachedCreds: { creds: ClaudeCredentials; cachedAt: number } | null = null
 export const OAUTH_TOKEN_URL = "https://claude.ai/v1/oauth/token"
 export const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 
+/**
+ * Resolve the path to pi's auth.json, in precedence order:
+ *
+ *   1. PI_AUTH_JSON      explicit override (tests, manual escape hatch)
+ *   2. PI_CODING_AGENT_DIR/auth.json   set by the prism bwrap + sandbox-exec
+ *                                       dispatchers, and on the host system-
+ *                                       wide. This is the path that surfaces
+ *                                       host-side os.Rename swaps inside a
+ *                                       running sandbox (#2283).
+ *   3. ~/.pi/agent/auth.json           legacy fallback.
+ *
+ * The middle entry is the critical piece for `prism account use`. The bwrap
+ * dispatcher dir-binds the host's ~/.pi/agent at $PI_CODING_AGENT_DIR (a
+ * directory bind), and ALSO file-binds auth.json at its host path for
+ * back-compat. Linux `mount --bind` on a file pins the source inode at
+ * mount time — so a host-side `os.Rename` (which creates a new inode) is
+ * NOT visible at the file-bind path inside an already-running sandbox.
+ * The dir-bind, by contrast, surfaces dentry updates (renames included),
+ * so reading via $PI_CODING_AGENT_DIR/auth.json sees the post-swap blob
+ * immediately. Combined with the mtime check below, this makes the swap
+ * visible to a running pi without a restart.
+ */
 function getAuthJsonPath(): string {
-  return process.env.PI_AUTH_JSON ?? join(homedir(), ".pi", "agent", "auth.json")
+  if (process.env.PI_AUTH_JSON) return process.env.PI_AUTH_JSON
+  if (process.env.PI_CODING_AGENT_DIR) {
+    return join(process.env.PI_CODING_AGENT_DIR, "auth.json")
+  }
+  return join(homedir(), ".pi", "agent", "auth.json")
 }
 
 /**

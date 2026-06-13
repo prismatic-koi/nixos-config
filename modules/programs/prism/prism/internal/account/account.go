@@ -299,6 +299,14 @@ func Use(p Paths, name string) error {
 		return fmt.Errorf("account use %s: %w", name, err)
 	}
 	if hasPrev {
+		// Defence in depth: validate `prev` as if it were a user-supplied
+		// name. Writing to accounts/current already requires user-level
+		// access to the 0o700 accounts dir, so a malicious value here
+		// presupposes a compromise, but skipping a snapshot is the safer
+		// failure mode than letting a path-traversing name out the door.
+		if err := validName(prev); err != nil {
+			return fmt.Errorf("account use %s: malformed previous account name in %s: %w", name, p.Current, err)
+		}
 		liveBlob, blobErr := readAnthropicBlob(p.AuthJSON)
 		if blobErr == nil {
 			if err := atomicWriteFile(p.AccountPath(prev), liveBlob, fileMode); err != nil {
