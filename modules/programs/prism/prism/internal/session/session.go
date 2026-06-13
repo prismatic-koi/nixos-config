@@ -355,20 +355,27 @@ func effectiveIsolationMode(opts Opts) string {
 // BuildAgentCmd returns the agent launch command string for the given opts.
 //
 // Isolation mode determines the command:
-//   - "bwrap":        "prism agent-run --session <session-name>"
-//   - "sandbox-exec": "prism agent-run --session <session-name>"
+//   - "bwrap":        "<abs-path>/prism agent-run --session <session-name>"
+//   - "sandbox-exec": "<abs-path>/prism agent-run --session <session-name>"
 //   - "host":         direct agent invocation (default)
 //
 // D4 (issue #1133): the per-mode switch collapses into a single
 // Isolator.AgentPaneCmd dispatch. Unknown / unregistered modes fall back to
 // the direct (host-shape) command — matching the pre-refactor "default" arm.
-func BuildAgentCmd(opts Opts) string {
+//
+// Returns a non-nil error when the bwrap / sandbox-exec branch cannot
+// resolve the prism binary's absolute path (os.Executable failure). Host
+// mode and the unknown-mode fallback never fail. Issue #2260: callers must
+// propagate the error rather than fall back to a bare "prism" — silent
+// fallback would re-introduce the PATH-shadow class the fix exists to
+// eliminate.
+func BuildAgentCmd(opts Opts) (string, error) {
 	mode := config.IsolationMode(effectiveIsolationMode(opts))
 	direct := buildDirectAgentCmd(opts)
 	iso, err := container.For(mode, container.ConstructorOpts{Name: opts.SessionName})
 	if err != nil {
 		// Unknown mode: behave like the pre-refactor default arm.
-		return direct
+		return direct, nil
 	}
 	return iso.AgentPaneCmd(container.AgentPaneOpts{
 		SessionName: opts.SessionName,
@@ -862,7 +869,10 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// modes ignore opts.Worktree — their `prism agent-run` dispatch reads
 	// the worktree from the DB row instead.
 	opts.Worktree = directory
-	agentCmd := BuildAgentCmd(opts)
+	agentCmd, err := BuildAgentCmd(opts)
+	if err != nil {
+		return fmt.Errorf("setupFullLayout: build agent command for %q: %w", name, err)
+	}
 
 	// Persist isolation_mode BEFORE opening the agent window. This is the
 	// critical ordering fix: prism agent-run in window 1 reads isolation_mode

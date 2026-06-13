@@ -571,6 +571,11 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	// homeless-shelter failure class" pattern — the gate this test exercises
 	// (issue #2168) exists to catch the inverse of this missing guard.
 	t.Setenv("HOME", t.TempDir())
+	// Clear XDG_STATE_HOME so the HOME-derived fallback in SessionWorkDirPath
+	// is what's exercised here (the test asserts the work-dir path against
+	// HOME). A developer env that exports XDG_STATE_HOME would otherwise
+	// route the work dir off the tempdir HOME (issue #2263).
+	t.Setenv("XDG_STATE_HOME", "")
 	m := newSandboxExecManager(Config{
 		SessionName:   "repo@feat",
 		Worktree:      t.TempDir(),
@@ -657,6 +662,7 @@ func TestSandboxExecPrepare_WorkDirFailurePropagated(t *testing.T) {
 	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "")
 	// Build the manager and derive the work-dir path before injecting the
 	// failure, so we know which path to block.
 	m := newSandboxExecManagerWithInstance(Config{
@@ -717,6 +723,7 @@ func TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs(t *testing.T) {
 	// Redirect HOME for the work-dir path derivation. See
 	// TestPrepareSandboxExec_WritesProfileAndReturnsArgs for the rationale.
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", "")
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@feat",
 		InstanceID:  "work-dir-fail-nil-args-test",
@@ -827,6 +834,10 @@ func newFakeHome(t *testing.T) string {
 
 	// Override HOME for the duration of the test.
 	t.Setenv("HOME", fakeHome)
+	// Clear XDG_STATE_HOME so the session work dir resolves under fakeHome
+	// (the HOME-derived fallback in SessionWorkDirPath — issue #2263). Tests
+	// that exercise the XDG_STATE_HOME branch set it explicitly.
+	t.Setenv("XDG_STATE_HOME", "")
 
 	return fakeHome
 }
@@ -1233,6 +1244,7 @@ func TestGenerateProfile_NixProfileAbsent_LiteralStillEmitted(t *testing.T) {
 func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
+	t.Setenv("XDG_STATE_HOME", "")
 
 	m := newSandboxExecManager(Config{
 		SessionName:   "repo@minimal-home",

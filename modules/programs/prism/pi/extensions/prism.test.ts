@@ -617,6 +617,126 @@ describe("dispatchInboundFrame: set_model", () => {
     assert.equal(calls.errors.length, 1)
     assert.equal(calls.errors[0].code, "malformed_frame")
   })
+
+  // Defence-in-depth normalisation for issue #2252. The sidecar now strips a
+  // leading "<provider>/" before sending, but mixed sidecar/extension builds
+  // may still ship the prefixed form on the wire. The handler must strip a
+  // single leading "<provider>/" matching the frame's provider before the
+  // registry lookup so the swap still applies.
+  it(
+    "strips a leading provider/ prefix matching the frame provider before lookup (issue #2252)",
+    async () => {
+      const { api, calls, emit, registerModel } = makeMockApi()
+      const fakeModel = { id: "claude-fable-5" }
+      // Registry keyed on the BARE model id — the wire contract.
+      registerModel("anthropic", "claude-fable-5", fakeModel)
+      await dispatchInboundFrame(
+        {
+          type: "set_model",
+          provider: "anthropic",
+          model: "anthropic/claude-fable-5", // prefixed form
+          thinking: "high",
+        },
+        api,
+        emit,
+      )
+      assert.equal(calls.errors.length, 0, "prefixed form must not emit an error")
+      assert.equal(calls.setModel.length, 1)
+      assert.equal(calls.setModel[0], fakeModel)
+      assert.deepEqual(calls.setThinkingLevel, ["high"])
+      // The lookup itself must use the bare ID.
+      assert.equal(calls.modelLookups.length, 1)
+      assert.deepEqual(calls.modelLookups[0], {
+        provider: "anthropic",
+        model: "claude-fable-5",
+      })
+    },
+  )
+
+  it(
+    "strips at most ONE leading provider/ segment and only when it equals the frame provider",
+    async () => {
+      const { api, calls, emit, registerModel } = makeMockApi()
+      // Openrouter-style nested ID. provider="openrouter"; the model carries
+      // a leading "openrouter/" segment plus a further "anthropic/" segment
+      // that MUST be preserved (it is not the frame's provider).
+      const fakeModel = { id: "anthropic/claude-3.5-sonnet" }
+      registerModel("openrouter", "anthropic/claude-3.5-sonnet", fakeModel)
+      await dispatchInboundFrame(
+        {
+          type: "set_model",
+          provider: "openrouter",
+          model: "openrouter/anthropic/claude-3.5-sonnet",
+          thinking: "off",
+        },
+        api,
+        emit,
+      )
+      assert.equal(calls.errors.length, 0)
+      assert.equal(calls.setModel.length, 1)
+      assert.equal(calls.setModel[0], fakeModel)
+      assert.equal(calls.modelLookups.length, 1)
+      assert.deepEqual(calls.modelLookups[0], {
+        provider: "openrouter",
+        model: "anthropic/claude-3.5-sonnet",
+      })
+    },
+  )
+
+  it(
+    "does not strip when the leading segment differs from the frame provider",
+    async () => {
+      const { api, calls, emit, registerModel } = makeMockApi()
+      // provider="openai" but the model carries a leading "anthropic/".
+      // It must NOT be stripped — "anthropic" is not the frame's provider.
+      const fakeModel = { id: "anthropic/claude-fable-5" }
+      registerModel("openai", "anthropic/claude-fable-5", fakeModel)
+      await dispatchInboundFrame(
+        {
+          type: "set_model",
+          provider: "openai",
+          model: "anthropic/claude-fable-5",
+          thinking: "off",
+        },
+        api,
+        emit,
+      )
+      assert.equal(calls.errors.length, 0)
+      assert.equal(calls.modelLookups.length, 1)
+      assert.deepEqual(calls.modelLookups[0], {
+        provider: "openai",
+        model: "anthropic/claude-fable-5",
+      })
+    },
+  )
+
+  it(
+    "a genuinely unknown model after stripping still emits model_not_found with the attempted ID",
+    async () => {
+      const { api, calls, emit } = makeMockApi()
+      // Registry is empty for this provider/model combination.
+      await dispatchInboundFrame(
+        {
+          type: "set_model",
+          provider: "anthropic",
+          model: "anthropic/claude-does-not-exist",
+          thinking: "off",
+        },
+        api,
+        emit,
+      )
+      assert.equal(calls.setModel.length, 0)
+      assert.equal(calls.errors.length, 1)
+      assert.equal(calls.errors[0].code, "model_not_found")
+      // The error message must reflect what was actually attempted (the
+      // stripped bare form), not the doubled-prefix shape from the #2252
+      // symptom ("anthropic/anthropic/claude-...").
+      assert.equal(
+        calls.errors[0].message,
+        "model anthropic/claude-does-not-exist not found in registry",
+      )
+    },
+  )
 })
 
 describe("dispatchInboundFrame: register_provider", () => {

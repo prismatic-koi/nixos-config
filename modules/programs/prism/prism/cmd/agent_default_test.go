@@ -125,7 +125,11 @@ func TestBuildAgentCmd_UsesAgent(t *testing.T) {
 		{session.Opts{Agent: "worker", SessionName: ""}, "pi --agent worker"},
 	}
 	for _, tc := range cases {
-		got := session.BuildAgentCmd(tc.opts)
+		got, err := session.BuildAgentCmd(tc.opts)
+		if err != nil {
+			t.Errorf("BuildAgentCmd(%+v): unexpected error: %v", tc.opts, err)
+			continue
+		}
 		if got != tc.want {
 			t.Errorf("BuildAgentCmd(%+v) = %q, want %q", tc.opts, got, tc.want)
 		}

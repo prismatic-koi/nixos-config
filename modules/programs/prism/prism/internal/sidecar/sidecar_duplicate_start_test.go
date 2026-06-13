@@ -233,10 +233,7 @@ func TestSidecarRun_RefusesWhenHostAPISockIsLive(t *testing.T) {
 	// Give B its own DB / worktree (newDuplicateStartSidecar does this via
 	// openTestDB(t) and t.TempDir()) so that "did not write to DB" can be
 	// verified independently of A's DB.
-	pipeSockPathB := filepath.Join(t.TempDir(), "pipe.sock")
-	if len(pipeSockPathB) > maxSunPath {
-		t.Fatalf("B's pipe sock path too long: %s", pipeSockPathB)
-	}
+	pipeSockPathB := shortSockPath(t)
 	scB := newDuplicateStartSidecar(t, hostAPISockPath, pipeSockPathB)
 
 	ctxB, cancelB := context.WithTimeout(context.Background(), 5*time.Second)
