@@ -488,7 +488,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	switch {
 	case mode == "host" && opts.Layout == LayoutFull:
 		previewOpts := buildOptsForLayout(opts, 0, promptFilePath)
-		hostLaunchCmd := BuildAgentCmd(previewOpts)
+		hostLaunchCmd, buildErr := BuildAgentCmd(previewOpts)
+		if buildErr != nil {
+			removeInitialPrompt(opts.SessionName)
+			return fmt.Errorf("spawn session: build host launch command for %q: %w", opts.SessionName, buildErr)
+		}
 		hostLaunchCmdSize = len(hostLaunchCmd)
 		if hostLaunchCmdSize > HostLaunchCmdSafeBound {
 			startup.log("spawn-session: host launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
@@ -535,7 +539,12 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			Model:            opts.Model,
 			Variant:          opts.Variant,
 		}
-		size += len(BuildAgentCmd(previewOpts))
+		agentOnlyCmd, buildErr := BuildAgentCmd(previewOpts)
+		if buildErr != nil {
+			removeInitialPrompt(opts.SessionName)
+			return fmt.Errorf("spawn session: build host/LayoutAgentOnly launch command for %q: %w", opts.SessionName, buildErr)
+		}
+		size += len(agentOnlyCmd)
 		hostLaunchCmdSize = size
 		if size > HostLaunchCmdSafeBound {
 			startup.log("spawn-session: host/LayoutAgentOnly launch command size %d exceeds safe bound %d — rejecting before tmux state is created",
@@ -565,7 +574,11 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			Model:            opts.Model,
 			Variant:          opts.Variant,
 		}
-		previewCmd := BuildAgentCmd(previewOpts)
+		previewCmd, buildErr := BuildAgentCmd(previewOpts)
+		if buildErr != nil {
+			removeInitialPrompt(opts.SessionName)
+			return fmt.Errorf("spawn session: build %s launch command for %q: %w", mode, opts.SessionName, buildErr)
+		}
 		// For the env-var preview, route through the same helper used at
 		// spawn time so the file-path branch (post-#1092) and the legacy
 		// inline branch produce matching size estimates.
@@ -1085,7 +1098,10 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		// AgentEnvVars intentionally omitted: review sessions don't inject
 		// profile env vars in host mode today.
 	}
-	agentCmd := BuildAgentCmd(buildOpts)
+	agentCmd, err := BuildAgentCmd(buildOpts)
+	if err != nil {
+		return fmt.Errorf("spawnAgentOnlyLayout: build agent command for %q: %w", opts.SessionName, err)
+	}
 
 	// Persist isolation_mode to the DB BEFORE creating the agent window.
 	// prism agent-run (the bwrap entry point) reads isolation_mode from

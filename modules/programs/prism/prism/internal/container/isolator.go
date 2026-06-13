@@ -168,10 +168,23 @@ type Isolator interface {
 
 	// AgentPaneCmd returns the shell command string emitted into the tmux
 	// agent pane for this session.
-	//   - bwrap, sandbox-exec:   "prism agent-run --session <session>"
+	//   - bwrap, sandbox-exec:   "<abs-path>/prism agent-run --session <session>"
 	//   - host:                  the DirectCmd supplied by the caller
+	//
+	// The bwrap / sandbox-exec branches resolve the prism binary's absolute
+	// path via os.Executable() and shell-quote it into the rendered command,
+	// so the agent-run pane exec'd from the tmux shell is the same binary
+	// the operator is currently running. A bare "prism" would be PATH-
+	// resolved at exec time and could silently land on an earlier-in-PATH
+	// shadow (e.g. /usr/local/bin/prism), running the wrong code in the
+	// agent-run pane with no signal to the operator (issue #2260).
+	//
+	// Returns a non-nil error when the implementation cannot resolve its
+	// own binary path. Callers must propagate the error rather than fall
+	// back to a bare "prism" — silent fallback re-introduces the PATH-
+	// shadow class this method exists to eliminate.
 	// Cites: internal/session/session.go:265-298 (BuildOpencodeCmd switch).
-	AgentPaneCmd(opts AgentPaneOpts) string
+	AgentPaneCmd(opts AgentPaneOpts) (string, error)
 
 	// SidecarFlags returns the per-mode argv extensions appended to the
 	// `prism sidecar` command line for sessions that use this mode. The
