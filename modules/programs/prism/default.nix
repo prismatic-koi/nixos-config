@@ -26,6 +26,21 @@
             # SBPL (subpath ~/.config/claude) grant (sandbox-exec) / the
             # Dst==Src RW bind (bwrap).
             CLAUDE_CONFIG_DIR = "$HOME/.config/claude";
+            # Suppresses chromium's nested seatbelt sandbox in playwright-cli
+            # (issue #2261, regression introduced by #2257 — final step of the
+            # staging-HOME removal #2132). With HOME now pointing at the real
+            # host home, chromium's inner sandbox profile resolves
+            # ~/Library/Keychains via getpwuid()->pw_dir (not
+            # CFFIXED_USER_HOME) and is denied by the outer SBPL profile,
+            # crashing CrBrowserMain with SIGTRAP on any https URL. Flipping
+            # this to "false" makes playwright pass --no-sandbox to chromium,
+            # leaving the outer prism SBPL profile as the sole security
+            # boundary — which it already is by design. The alternative
+            # (granting RO to ~/Library/Keychains in the SBPL) was rejected on
+            # security grounds: it would leak login keychain, Safari
+            # passwords, and iCloud tokens. Harmless no-op on Linux (chromium
+            # uses a different sandboxing mechanism under bwrap).
+            PLAYWRIGHT_MCP_SANDBOX = "false";
             GIT_EDITOR = "true";
           };
           description = "Environment variables to set for the AI agent (pi)";
