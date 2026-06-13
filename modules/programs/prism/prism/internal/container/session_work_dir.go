@@ -5,7 +5,13 @@ package container
 //
 // The session work dir lives at
 //
-//	~/.local/state/prism/sessions/<instance_id>/
+//	<XDG_STATE_HOME>/prism/sessions/<instance_id>/
+//
+// honouring $XDG_STATE_HOME first (XDG Base Directory Specification), and
+// falling back to $HOME/.local/state when XDG_STATE_HOME is unset.
+// Production sandbox-exec dispatch sets XDG_STATE_HOME=$HOME/.local/state
+// explicitly (see cmd/agent_run_sandbox_exec_darwin.go), so the production
+// path remains ~/.local/state/prism/sessions/<instance_id>/.
 //
 // It contains no symlinks: just the generated regular files that git and
 // ssh need inside a sandbox-exec session:
@@ -53,20 +59,40 @@ import (
 // SessionWorkDirPath returns the per-session work directory path for the
 // given instance ID:
 //
-//	~/.local/state/prism/sessions/<instanceID>/
+//	<XDG_STATE_HOME>/prism/sessions/<instanceID>/
+//
+// honouring $XDG_STATE_HOME first per the XDG Base Directory Specification,
+// and falling back to $HOME/.local/state when XDG_STATE_HOME is unset. This
+// mirrors xdgStateBase() in dispatch.go and the same pattern used by
+// internal/sidecar tests (see AGENTS.md "Test-suite isolation (#1608)").
+//
+// In production on Darwin, agent_run_sandbox_exec_darwin.go's
+// buildSandboxExecHomeEnv explicitly sets XDG_STATE_HOME=$HOME/.local/state
+// before exec'ing into the sandbox, so the production path is unchanged.
+// On a normal `nh switch` Darwin shell that does NOT export XDG_STATE_HOME
+// the fallback also resolves to $HOME/.local/state — same path as before.
+//
+// The XDG_STATE_HOME branch is what makes the homeless-shelter nix-build
+// sandbox tractable: in that environment $HOME=/homeless-shelter (read-only)
+// and any path derived from it fails on os.MkdirAll. Tests that need a
+// writable session work dir set XDG_STATE_HOME to a t.TempDir() so this
+// function returns a writable path regardless of $HOME (issue #2263).
 //
 // Callers that have an instance_id but no Manager (e.g. cmd/cleanup.go)
 // use this directly.
 func SessionWorkDirPath(instanceID string) (string, error) {
+	if instanceID == "" {
+		return "", fmt.Errorf("container: session work dir: instanceID is empty")
+	}
+	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
+		return filepath.Join(stateHome, "prism", "sessions", instanceID), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = os.Getenv("HOME")
 	}
 	if home == "" {
-		return "", fmt.Errorf("container: session work dir: cannot determine user home directory")
-	}
-	if instanceID == "" {
-		return "", fmt.Errorf("container: session work dir: instanceID is empty")
+		return "", fmt.Errorf("container: session work dir: cannot determine user home directory (XDG_STATE_HOME unset and $HOME unresolved)")
 	}
 	return filepath.Join(home, ".local", "state", "prism", "sessions", instanceID), nil
 }
