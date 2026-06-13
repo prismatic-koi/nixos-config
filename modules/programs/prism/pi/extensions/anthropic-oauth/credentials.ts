@@ -14,6 +14,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs"
 import { homedir } from "node:os"
@@ -270,10 +271,31 @@ export function getCachedCredentials(): ClaudeCredentials | null {
     now - cachedCreds.cachedAt < CREDENTIAL_CACHE_TTL_MS &&
     cachedCreds.creds.expiresAt > now + 60_000
   ) {
-    log("cache_hit", {
-      ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cachedCreds.cachedAt),
-    })
-    return cachedCreds.creds
+    // Bypass the cache if auth.json has been touched since we cached.
+    // This is the `prism account use` hand-off path (#2283): the swap
+    // renames a new auth.json over the old, bumping mtime; the next
+    // outbound request sees mtime > cachedAt and re-reads the file
+    // instead of returning the stale tokens.
+    //
+    // statSync may throw if the file was unlinked between writes; treat
+    // that as a cache miss (fall through, re-read, log normally).
+    let mtimeMs = 0
+    try {
+      mtimeMs = statSync(getAuthJsonPath()).mtimeMs
+    } catch {
+      mtimeMs = 0
+    }
+    if (mtimeMs > cachedCreds.cachedAt) {
+      log("cache_invalidated_mtime", {
+        mtimeMs,
+        cachedAt: cachedCreds.cachedAt,
+      })
+    } else {
+      log("cache_hit", {
+        ttlRemaining: CREDENTIAL_CACHE_TTL_MS - (now - cachedCreds.cachedAt),
+      })
+      return cachedCreds.creds
+    }
   }
 
   log("cache_miss", { reason: cachedCreds ? "stale or expiring" : "empty" })

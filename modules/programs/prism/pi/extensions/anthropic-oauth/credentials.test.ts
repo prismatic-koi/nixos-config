@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   rmSync,
+  utimesSync,
   writeFileSync,
   readFileSync,
 } from "node:fs"
@@ -23,6 +24,8 @@ import {
   readCredentials,
   writeCredentials,
   repairCredentials,
+  getCachedCredentials,
+  invalidateCache,
 } from "./credentials.ts"
 
 let tempDir: string
@@ -42,6 +45,12 @@ afterEach(() => {
 function writeAuthJson(data: unknown): void {
   writeFileSync(authJson, JSON.stringify(data, null, 2), "utf-8")
 }
+
+// invalidate the module-level cache before each test so prior `getCached`
+// calls cannot bleed across tests.
+beforeEach(() => {
+  invalidateCache()
+})
 
 // ---------------------------------------------------------------------------
 // readCredentials tests
@@ -170,6 +179,95 @@ describe("readCredentials back-compat", () => {
 // ---------------------------------------------------------------------------
 // repairCredentials tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// getCachedCredentials — mtime-based cache invalidation (#2283)
+// ---------------------------------------------------------------------------
+
+describe("getCachedCredentials mtime invalidation", () => {
+  function writeCreds(suffix: string, expires: number): void {
+    writeFileSync(
+      authJson,
+      JSON.stringify({
+        anthropic: {
+          type: "oauth",
+          access: `access-${suffix}`,
+          refresh: `refresh-${suffix}`,
+          expires,
+        },
+      }),
+      "utf-8",
+    )
+  }
+
+  it("returns the cached blob on a second call when auth.json mtime is unchanged", () => {
+    const expires = Date.now() + 3_600_000
+    writeCreds("A", expires)
+
+    const first = getCachedCredentials()
+    assert.ok(first, "first call should populate the cache")
+    assert.equal(first.accessToken, "access-A")
+
+    // Rewrite the file with different content but force the mtime back
+    // to its original value. The cache must still hit.
+    const originalMtime = new Date(Date.now() - 60_000)
+    utimesSync(authJson, originalMtime, originalMtime)
+    writeCreds("B", expires)
+    utimesSync(authJson, originalMtime, originalMtime)
+
+    const second = getCachedCredentials()
+    assert.ok(second, "second call should hit the cache")
+    // The cache returns the originally-loaded "A" tokens, not the "B"
+    // tokens we just wrote behind its back.
+    assert.equal(
+      second.accessToken,
+      "access-A",
+      "cache should return the originally-loaded creds when mtime is unchanged",
+    )
+  })
+
+  it("bypasses the cache when auth.json mtime has advanced past cachedAt", () => {
+    const expires = Date.now() + 3_600_000
+    writeCreds("A", expires)
+
+    const first = getCachedCredentials()
+    assert.ok(first)
+    assert.equal(first.accessToken, "access-A")
+
+    // Simulate `prism account use other` mid-flight: the rename bumps
+    // mtime to "now". We can't easily wait ≥1ms reliably in a unit test,
+    // so explicitly set the mtime to a value larger than cachedAt.
+    writeCreds("B", expires)
+    const future = new Date(Date.now() + 10_000)
+    utimesSync(authJson, future, future)
+
+    const second = getCachedCredentials()
+    assert.ok(second, "second call should re-read")
+    assert.equal(
+      second.accessToken,
+      "access-B",
+      "cache must invalidate when mtime > cachedAt and re-read the blob",
+    )
+  })
+
+  it("treats a missing auth.json as a cache miss (does not throw)", () => {
+    const expires = Date.now() + 3_600_000
+    writeCreds("A", expires)
+
+    const first = getCachedCredentials()
+    assert.ok(first)
+
+    // Delete the file behind the cache.
+    rmSync(authJson)
+
+    // statSync would throw — we expect the catch to fall through and
+    // hit the cache (mtimeMs = 0, not > cachedAt), so the cache is
+    // returned. This is intentional: the cache is the last good copy.
+    const second = getCachedCredentials()
+    assert.ok(second, "missing file should still return the cached creds")
+    assert.equal(second.accessToken, "access-A")
+  })
+})
 
 describe("repairCredentials", () => {
   it("adds type: 'oauth' to an anthropic entry that is missing it", () => {
