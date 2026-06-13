@@ -353,6 +353,46 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 			ReadOnly:          true,
 			OptionalIfMissing: true,
 		},
+
+		// ── prism profiles.json (RO, conditional, single file) ──────────
+		// Host: ~/.config/prism/profiles.json (deployed via pi.nix from the
+		// rendered nix profile data — declarative, non-secret). The CLI's
+		// `prism profile list`, `prism profile show`, and the
+		// available_profiles section of `prism agent-context` all open this
+		// file directly via internal/config/profiles.go::LoadProfiles. The
+		// mutation surface (`prism profile use`) routes through the host API
+		// instead and does not need an in-sandbox file, but the read surface
+		// does — without this mount the same commands fail from inside the
+		// sandbox with the (misleading) "not found — run the system rebuild"
+		// error (issue #2286).
+		//
+		// Read-only — the file is owned by the host nix module; nothing
+		// in-sandbox may mutate it. Single-file scope (no surrounding
+		// directory widening): we already mount the sibling agents/ subdir;
+		// adding profiles.json on its own keeps the rest of
+		// ~/.config/prism/ (e.g. ~/.config/prism/accounts/, runtime-mutable
+		// state from #2283) out of the sandbox by default.
+		//
+		// OptionalIfMissing covers fresh installs before first `nh switch`,
+		// where the file does not exist yet. In that case LoadProfiles
+		// still returns its existing "profiles: <path> not found — run the
+		// system rebuild to generate it" error (it ReadFile's the same
+		// path), so the host-side missing-file message is preserved
+		// verbatim — see the issue #2286 edge-case AC.
+		//
+		// SandboxPath == HostPath under bwrap (sandboxHomeDir == hostHome),
+		// matching profilesFilePath()'s XDG_CONFIG_HOME-else-$HOME/.config
+		// resolution inside the sandbox.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RO (literal ...) grant on
+		// the real host path in section 5h of sandbox_exec.go.
+		{
+			HostPath:          filepath.Join(hostHome, ".config", "prism", "profiles.json"),
+			SandboxPath:       filepath.Join(sandboxHomeDir, ".config", "prism", "profiles.json"),
+			ReadOnly:          true,
+			OptionalIfMissing: true,
+		},
 	}
 
 	return specs
