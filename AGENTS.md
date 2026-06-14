@@ -64,6 +64,7 @@ Both jobs must pass before merge. They live in `.github/workflows/pr-gate.yml`. 
 
 ```bash
 # From modules/programs/prism/prism/
+gofmt -l .
 go build ./...
 go test ./...
 
@@ -71,7 +72,7 @@ go test ./...
 nix build .#prism
 ```
 
-This catches build/test failures fast. The full homeless-shelter signal is then exercised by CI on the PR.
+This catches build/test failures fast. The full homeless-shelter signal is then exercised by CI on the PR. `gofmt -l .` matches the `gofmt check` step in `pr-gate.yml` (added in #2282) — list mode (`-l`) shows what would change without mutating; once you're ready to fix any reported files, re-run with `-w .`.
 
 **Test-suite isolation (issue #1608).** The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully isolated from host bus / DB / tmux state:
 
