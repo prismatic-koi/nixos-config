@@ -17,6 +17,9 @@ package cmd
 //                                       anthropic blob to accounts/<name>.json
 //                                       at mode 0o600.
 //
+//   prism account login <name>          Run Anthropic OAuth PKCE and save the
+//                                       resulting blob to accounts/<name>.json.
+//
 //   prism account use <name>            Atomically swap the active anthropic
 //                                       blob (see internal/account.Use for
 //                                       the step-by-step contract).
