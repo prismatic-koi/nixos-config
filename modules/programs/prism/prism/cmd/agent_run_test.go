@@ -442,10 +442,18 @@ func containsAt(s, substr string) bool {
 // Manager.PrepareSandboxExec pass validation when the on-disk profile is
 // present.
 func TestValidateSandboxExecArgs_OK(t *testing.T) {
-	// PrepareSandboxExec derives the staging HOME from os.UserHomeDir(); in
-	// the nix build sandbox $HOME is /homeless-shelter (unwritable). Redirect
-	// to a tempdir so the staging-home MkdirAll succeeds. AGENTS.md § "the
-	// homeless-shelter failure class" + issue #2168.
+	// PrepareSandboxExec creates the per-session work dir and writes the
+	// ssh-config / gitconfig / allowed_signers files into it. Since PR #2277,
+	// sessionWorkDirPath honours $XDG_STATE_HOME first and falls back to
+	// $HOME/.local/state — so on a developer machine whose shell exports
+	// XDG_STATE_HOME=$HOME/.local/state, setting HOME alone does not
+	// redirect the work dir off the host's real state tree (issue #2295).
+	// Redirect both: XDG_STATE_HOME so the session work dir lands in a
+	// tempdir, and HOME so home-derived MkdirAlls (e.g. ~/.local/share/pi/
+	// prism-sessions/<name>) succeed inside the homeless-shelter nix-build
+	// sandbox (AGENTS.md § "the homeless-shelter failure class" + issue
+	// #2168).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@feat",
@@ -476,8 +484,10 @@ func TestValidateSandboxExecArgs_OK(t *testing.T) {
 // when the profile-temp file is missing or unreadable, validation returns a
 // clear error containing the path and the underlying stat error.
 func TestValidateSandboxExecArgs_MissingProfile(t *testing.T) {
-	// Redirect HOME for the sandbox-exec staging-home path derivation. See
-	// TestValidateSandboxExecArgs_OK for the rationale.
+	// Redirect $XDG_STATE_HOME and $HOME so PrepareSandboxExec writes into
+	// tempdirs rather than the host's real state tree. See
+	// TestValidateSandboxExecArgs_OK for the rationale (issue #2295).
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	m := container.New(container.Config{
 		SessionName:   "repo@gone",

@@ -355,8 +355,17 @@ func TestGenerateProfile_V3CryptexAndTmpRules(t *testing.T) {
 // worktree, and bare repo as (allow file-read* file-write* (subpath ...))
 // clauses when the Manager has InstanceID, Worktree, and BareRoot set.
 func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
+	// Drive the work-dir base via $XDG_STATE_HOME (issue #2295). Since
+	// PR #2277, sessionWorkDirPath honours XDG_STATE_HOME first and falls
+	// back to $HOME/.local/state only when XDG_STATE_HOME is unset; setting
+	// HOME alone does not control where the work dir lands on a developer
+	// machine whose shell exports XDG_STATE_HOME. We also point HOME at a
+	// tempdir so any home-derived carve-outs in the profile do not leak the
+	// host's real home into test output. Matches the established pattern in
+	// pi_invocation_resume_test.go.
+	fakeStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", fakeStateHome)
+	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@main",
 		Worktree:    "/tmp/fake-worktree",
@@ -380,8 +389,8 @@ func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
 		t.Errorf("profile missing bare repo path /tmp/fake-bare; full profile:\n%s", profile)
 	}
 	// The per-session work dir subpath must be present (namespaced by
-	// InstanceID).
-	sessionDir := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", "test-instance-id")
+	// InstanceID). Resolved from $XDG_STATE_HOME per PR #2277.
+	sessionDir := filepath.Join(fakeStateHome, "prism", "sessions", "test-instance-id")
 	if !strings.Contains(profile, "(subpath "+quoteSBPL(sessionDir)+")") {
 		t.Errorf("profile missing the session work dir subpath %q; full profile:\n%s", sessionDir, profile)
 	}
@@ -392,8 +401,11 @@ func TestGenerateProfile_SessionWorkDirAndWorktreeRules(t *testing.T) {
 // (subpath <sessionDir>/home) grant — the per-session writable scope is
 // exactly the work-dir (subpath <sessionDir>) rule from PR #2221.
 func TestGenerateProfile_NoStagingHomeGrant(t *testing.T) {
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
+	// Drive the work-dir base via $XDG_STATE_HOME (issue #2295). See
+	// TestGenerateProfile_SessionWorkDirAndWorktreeRules for the rationale.
+	fakeStateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", fakeStateHome)
+	t.Setenv("HOME", t.TempDir())
 	m := newSandboxExecManagerWithInstance(Config{
 		SessionName: "repo@main",
 		Worktree:    "/tmp/fake-worktree",
@@ -401,7 +413,7 @@ func TestGenerateProfile_NoStagingHomeGrant(t *testing.T) {
 	})
 	profile := generateProfile(m)
 
-	sessionDir := filepath.Join(fakeHome, ".local", "state", "prism", "sessions", "test-instance-id")
+	sessionDir := filepath.Join(fakeStateHome, "prism", "sessions", "test-instance-id")
 	stagingHome := filepath.Join(sessionDir, "home")
 
 	// The legacy staging-home path must not appear anywhere in the profile —
