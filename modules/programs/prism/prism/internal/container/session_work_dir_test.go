@@ -562,14 +562,26 @@ func TestGenerateProfile_NoHostLibraryRulesForChromium(t *testing.T) {
 
 	profile := generateProfile(m)
 
-	// No rule may reference the host home Library subtree. Substring check
-	// on the unquoted path prefix catches (subpath ...), (literal ...), and
-	// (regex ...) forms alike. The sessionDir rule cannot false-positive
-	// here: <sessionDir>/Library is never emitted as a rule (the skeleton
-	// deliberately has no dedicated rule), and the quoted sessionDir path
-	// itself does not contain "Library".
-	if hostLibrary := filepath.Join(fakeHome, "Library"); strings.Contains(profile, hostLibrary) {
-		t.Errorf("profile references the host home Library %q — #2247 must add no host-Library grants; full profile:\n%s",
+	// No rule may reference the host home Library subtree EXCEPT the
+	// single-file ~/Library/Keychains/login.keychain-db grant restored in
+	// issue #2293 (the keyring-crate / pup Keychain-access path; #5i in
+	// generateProfile). We strip that one allowed reference out of the
+	// profile before scanning so an unrelated regression that adds a
+	// broader host-Library grant still fails this test.
+	//
+	// Substring check on the unquoted path prefix catches
+	// (subpath ...), (literal ...), and (regex ...) forms alike. The
+	// sessionDir rule cannot false-positive here:
+	// <sessionDir>/Library is never emitted as a rule (the chromium
+	// skeleton deliberately has no dedicated rule), and the quoted
+	// sessionDir path itself does not contain "Library".
+	loginKeychain := filepath.Join(fakeHome, "Library", "Keychains", "login.keychain-db")
+	if !strings.Contains(profile, loginKeychain) {
+		t.Errorf("profile missing the (literal %q) Keychain grant restored in #2293; full profile:\n%s", loginKeychain, profile)
+	}
+	profileWithoutKeychain := strings.ReplaceAll(profile, loginKeychain, "<keychain-grant-elided>")
+	if hostLibrary := filepath.Join(fakeHome, "Library"); strings.Contains(profileWithoutKeychain, hostLibrary) {
+		t.Errorf("profile references the host home Library %q (beyond the #2293 login.keychain-db literal) — #2247 must add no other host-Library grants; full profile:\n%s",
 			hostLibrary, profile)
 	}
 

@@ -1,0 +1,476 @@
+//go:build darwin
+
+package integration_test
+
+// sandbox_exec_keychain_darwin_test.go — integration coverage for the
+// ~/Library/Keychains/login.keychain-db file-read literal grant restored in
+// issue #2293 (section §5i of generateProfile). The grant restores the
+// in-sandbox Keychain capability the keyring-crate path needs — Datadog's
+// `pup` CLI is the canonical consumer; any Rust binary built on the
+// keyring crate shares the code path on macOS.
+//
+// History context: the original grant was added in PR #1488 (issue #1487)
+// for opencode-claude-auth's `security dump-keychain` use; PR #2130
+// (issue #2126) correctly removed it when that consumer was retired; PR
+// #2267 then introduced `pup` as a new in-sandbox Keychain consumer eight
+// days later, outside the #2126 verification window — see the issue body
+// for the full timeline.
+//
+// Per docs/sandbox-exec-testing.md (issue #1192), the coverage is a
+// positive/negative pair on the rule, plus profile-shape assertions for
+// the security narrowing the grant relies on:
+//
+//   - TestSandboxExecProfile_LoginKeychainLiteralPresent verifies the
+//     generated profile carries an allow rule on the exact literal path
+//     and that the rule is emitted unconditionally (no os.Stat gate). AC
+//     #1 + the AC #5 edge case (fresh machines without a user keychain
+//     remain unaffected — sandbox-exec silently ignores literal rules for
+//     non-existent paths; the production rule shape pins that behaviour).
+//
+//   - TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath
+//     enforces the load-bearing narrowing: the profile must contain NO
+//     (subpath ...) rule referencing ~/Library/Keychains or any directory
+//     under it. AC #2 — the modern UUID-keyed databases (keychain-2.db,
+//     user.kb) and the TrustedPeersHelper sibling files MUST remain
+//     unreadable from inside the sandbox.
+//
+//   - TestSandboxExecProfile_KeychainLookupAllowed is the functional
+//     positive (AC #3). It compiles a tiny C probe that calls
+//     SecKeychainFindGenericPassword — the same Security-Framework entry
+//     point keyring-rs wraps on macOS, NOT /usr/bin/security (which
+//     depends on $HOME, a different code path the issue body explicitly
+//     calls out). The probe is invoked under the production-shaped
+//     profile and must exit 0 with an OSStatus of either errSecSuccess (0)
+//     or errSecItemNotFound (-25300) — both signal "lookup completed
+//     without a sandbox-EPERM detour".
+//
+//   - TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the
+//     paired negative (AC #4). It uses withMutatedProfile per the testing
+//     convention to re-target the (literal ...) at a non-existent sibling
+//     path, runs the same probe, and asserts the observable result
+//     differs from the positive — proving the grant is load-bearing. The
+//     discriminator is the kernel sandbox-deny event surfaced via
+//     `log show`: the kernel logs an explicit
+//     `Sandbox: <proc>(NNN) deny(1) file-read* …/login.keychain-db`
+//     entry whenever the probe is denied, which the test asserts is
+//     absent under the production profile and present under the mutated
+//     profile.
+//
+// AC #6 (the existing deny set on ~/.aws, /private/etc/ssh,
+// /private/etc/wireguard, sops secrets.d, …) is covered by the existing
+// sandbox_exec_denies_darwin_test.go and sandbox_exec_secrets_deny_darwin_test.go
+// suites running unchanged on this PR.
+
+import (
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+// keychainProbeSourceC is the C source for the in-sandbox Keychain probe.
+//
+// The probe deliberately uses the legacy SecKeychain* API — the same entry
+// point the keyring-rs macOS backend wraps (see keyring-rs / security-framework
+// / SecKeychainFindGenericPassword) — so the exercised path matches what
+// `pup` and other keyring-crate consumers hit at runtime. We do NOT shell out
+// to /usr/bin/security: that CLI uses $HOME to find the keychain search list
+// and is a different code path the issue body explicitly calls out.
+//
+// The deprecation-warning suppression is load-bearing for the build: clang
+// would otherwise turn the deprecation into a warning that adds noise to the
+// integration test output. The deprecations themselves are surfaced by Apple
+// as documentation hints for new code; the legacy API remains the path the
+// keyring crate uses on production macOS today.
+//
+// Exit codes:
+//
+//	0 = SecKeychainFindGenericPassword returned errSecSuccess (0) or
+//	    errSecItemNotFound (-25300) — lookup completed without an
+//	    unexpected error.
+//	1 = SecKeychainFindGenericPassword returned a different OSStatus —
+//	    the probe surfaced an error the positive test wants to see as
+//	    a hard failure.
+//	2 = Usage error (missing service argument).
+//
+// The probe also writes "OSStatus=<n>\n" to stdout so the test can inspect
+// the precise return code for diagnostics, regardless of exit code.
+const keychainProbeSourceC = `// keychain_probe.c — generated by sandbox_exec_keychain_darwin_test.go.
+#define SEC_KEYCHAIN_DEPRECATED_OK 1
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+#include <Security/Security.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#pragma clang diagnostic pop
+
+int main(int argc, char **argv) {
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s <service>\n", argv[0]);
+        return 2;
+    }
+    const char *service = argv[1];
+
+    UInt32 passwordLength = 0;
+    void *passwordData = NULL;
+    SecKeychainItemRef itemRef = NULL;
+
+    OSStatus status = SecKeychainFindGenericPassword(
+        NULL,                                  /* default keychain search list */
+        (UInt32)strlen(service), service,
+        0, NULL,
+        &passwordLength, &passwordData,
+        &itemRef);
+
+    if (passwordData != NULL) SecKeychainItemFreeContent(NULL, passwordData);
+    if (itemRef != NULL) CFRelease(itemRef);
+
+    fprintf(stdout, "OSStatus=%d\n", (int)status);
+    fflush(stdout);
+
+    /* errSecSuccess = 0; errSecItemNotFound = -25300. Either indicates the
+       lookup completed end-to-end without a sandbox-EPERM detour. */
+    if (status == 0 || status == -25300) {
+        return 0;
+    }
+    return 1;
+}
+`
+
+// keychainProbeBuildPath compiles the keychain probe with the host
+// /usr/bin/clang (which carries the Xcode CLT SDK paths needed for
+// <Security/Security.h>) and returns the absolute path of the produced
+// binary. The binary is ad-hoc-signed by clang at link time — see
+// `codesign -dv` on the output (Format=Mach-O, Signature=adhoc) — so it
+// can run under the v3 deny-default sandbox profile (unlike Apple-signed
+// system binaries, which SIGABRT in dyld; see #1190 / requireNixBash).
+//
+// The Nix-built `cc` cannot be used: the gcc-wrapper does not expose the
+// macOS SDK framework headers, so the build fails with
+// "Security/Security.h: No such file or directory". The probe is purely a
+// test fixture — using Apple's clang to build a fixture binary is
+// independent of the requireNixBash rationale (which is about the
+// runtime binary's signature, not the compiler).
+func keychainProbeBuildPath(t *testing.T) string {
+	t.Helper()
+
+	const clangPath = "/usr/bin/clang"
+	if _, err := os.Stat(clangPath); err != nil {
+		t.Skipf("%s not present — Xcode Command Line Tools required to build the Keychain probe: %v", clangPath, err)
+	}
+
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "keychain_probe.c")
+	if err := os.WriteFile(srcPath, []byte(keychainProbeSourceC), 0o644); err != nil {
+		t.Fatalf("write keychain probe source: %v", err)
+	}
+
+	binPath := filepath.Join(dir, "keychain_probe")
+	cmd := exec.Command(clangPath,
+		"-O0", "-g",
+		"-o", binPath,
+		srcPath,
+		"-framework", "Security",
+		"-framework", "CoreFoundation")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("clang build of keychain probe failed (this host may lack a usable Xcode CLT install): %v\nclang output:\n%s", err, out)
+	}
+	if _, statErr := os.Stat(binPath); statErr != nil {
+		t.Fatalf("keychain probe binary missing after clang: %v\nclang output:\n%s", statErr, out)
+	}
+	return binPath
+}
+
+// loginKeychainPath returns the absolute path of the user's legacy login
+// keychain (the file the §5i grant covers).
+func loginKeychainPath(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	return filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+}
+
+// expectedKeychainLiteralBlock returns the exact SBPL allow block
+// generateProfile emits for the §5i Keychain grant, derived from the
+// current user's home. Used both for content assertions and for the
+// withMutatedProfile-based negative test.
+func expectedKeychainLiteralBlock(t *testing.T) string {
+	t.Helper()
+	return "(allow file-read* file-test-existence file-read-metadata\n" +
+		"  (literal " + sbplQuoteForTest(loginKeychainPath(t)) + "))\n"
+}
+
+// TestSandboxExecProfile_LoginKeychainLiteralPresent verifies that the
+// production-shaped profile carries the §5i Keychain literal grant — AC #1.
+//
+// Edge case AC #5: the rule is emitted unconditionally (no os.Stat gate on
+// the host file), so a fresh machine without ~/Library/Keychains/login.keychain-db
+// gets the same syntactically-valid profile. sandbox-exec silently ignores
+// (literal ...) rules for non-existent paths, so the sandbox still launches
+// — the production rule shape pins that behaviour.
+func TestSandboxExecProfile_LoginKeychainLiteralPresent(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+
+	want := expectedKeychainLiteralBlock(t)
+	if !strings.Contains(prepared.content, want) {
+		t.Errorf("generated profile is missing the §5i Keychain literal allow block (issue #2293).\n"+
+			"Expected to find verbatim:\n%s\n"+
+			"Full profile:\n%s",
+			want, prepared.content)
+	}
+}
+
+// TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath enforces the
+// load-bearing security narrowing in AC #2: the profile must contain no
+// (subpath ...) rule referencing ~/Library/Keychains or any directory under
+// it. The Keychain grant MUST be single-file via (literal ...) so that
+// keychain-2.db, user.kb, and other sibling files in the same directory
+// remain unreadable from inside the sandbox.
+//
+// We strip the known-good literal grant out of the profile before scanning,
+// so a future widening to a subpath would still be caught even if the
+// literal is also present.
+func TestSandboxExecProfile_LoginKeychainGrantIsLiteralNotSubpath(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skipf("cannot determine user home: %v", err)
+	}
+	keychainsDir := filepath.Join(home, "Library", "Keychains")
+
+	// Strip the legitimate literal block so we can scan the rest of the
+	// profile without false-positives.
+	scrubbed := strings.ReplaceAll(prepared.content, expectedKeychainLiteralBlock(t), "<keychain-literal-block-elided>\n")
+
+	// Any subpath quoting ~/Library/Keychains in the scrubbed profile is
+	// a security-narrowing regression (AC #2 violation).
+	subpathProbe := "(subpath " + sbplQuoteForTest(keychainsDir)
+	if strings.Contains(scrubbed, subpathProbe) {
+		t.Errorf("profile contains a (subpath ...) grant on ~/Library/Keychains — AC #2 of issue #2293 prohibits this; only the single-file (literal …/login.keychain-db) is permitted.\nFull profile:\n%s", prepared.content)
+	}
+
+	// Tighter check: no path inside ~/Library/Keychains (other than the
+	// elided literal block above) may appear in the scrubbed profile.
+	if strings.Contains(scrubbed, keychainsDir) {
+		t.Errorf("profile references ~/Library/Keychains beyond the single-file login.keychain-db literal — AC #2 of issue #2293 prohibits this.\nScrubbed profile:\n%s", scrubbed)
+	}
+}
+
+// keychainProbeSentinelService is the service name passed to
+// SecKeychainFindGenericPassword by the probe. The expectation is that no
+// user keychain carries an entry for this name, so the lookup completes
+// with errSecItemNotFound (-25300) under a working grant. (If a host
+// somehow has this exact entry the lookup returns errSecSuccess instead —
+// also a passing positive signal.)
+const keychainProbeSentinelService = "prism-2293-keychain-probe-no-such-service"
+
+// runKeychainProbe invokes the probe binary under sandbox-exec with the
+// given profile path and returns the combined stdout/stderr plus the
+// exit code and any run error.
+func runKeychainProbe(t *testing.T, profilePath, probeBin string) (combined string, exitCode int, runErr error) {
+	t.Helper()
+	cmd := exec.Command(sandboxExecPath, "-f", profilePath, probeBin, keychainProbeSentinelService)
+	out, err := cmd.CombinedOutput()
+	exit := 0
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		exit = exitErr.ExitCode()
+	} else if err != nil {
+		exit = -1
+	}
+	return string(out), exit, err
+}
+
+// logShowAvailable reports whether `log show` can be invoked on the host.
+// On a normal Darwin developer machine it works for any user; inside a
+// nested sandbox-exec session it fails with "Cannot run while sandboxed".
+// The nested-sandbox check is already gated by requireSandboxExec so this
+// is primarily for environments without `/usr/bin/log` at all.
+func logShowAvailable(t *testing.T) bool {
+	t.Helper()
+	if _, err := os.Stat("/usr/bin/log"); err != nil {
+		return false
+	}
+	cmd := exec.Command("/usr/bin/log", "show", "--last", "1s", "--style", "compact")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		return true
+	}
+	if strings.Contains(string(out), "Cannot run while sandboxed") {
+		t.Logf("log show unavailable (nested sandbox): %s", strings.TrimSpace(string(out)))
+		return false
+	}
+	t.Logf("log show probe failed: %v\n%s", err, string(out))
+	return false
+}
+
+// queryLogShowForKeychainDeny invokes `log show` from since and returns
+// the matching deny lines (or "" if none) referencing login.keychain-db.
+// The kernel emits a Sandbox subsystem entry on every denial; the
+// predicate filters down to the one we expect to see.
+func queryLogShowForKeychainDeny(t *testing.T, since time.Time) string {
+	t.Helper()
+	cmd := exec.Command("/usr/bin/log", "show",
+		"--predicate", `eventMessage CONTAINS "Sandbox" AND eventMessage CONTAINS "login.keychain-db" AND eventMessage CONTAINS "deny"`,
+		"--start", since.Format("2006-01-02 15:04:05"),
+		"--info",
+		"--style", "compact")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Logf("log show query failed (treating as no signal): %v\n%s", err, string(out))
+		return ""
+	}
+	return string(out)
+}
+
+// TestSandboxExecProfile_KeychainLookupAllowed is the AC #3 positive: a
+// keyring-crate-shaped Keychain probe under the production-shaped SBPL
+// profile completes without a sandbox-EPERM detour. The probe exercises
+// SecKeychainFindGenericPassword — the same Security-Framework function
+// keyring-rs's macOS backend calls into.
+//
+// We skip when the user's login keychain does not exist on the host
+// (e.g. a fresh CI VM with no user account configured), since the
+// positive signal is only meaningful when there is a real keychain for
+// securityd to refuse-or-allow access to.
+func TestSandboxExecProfile_KeychainLookupAllowed(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+
+	keychain := loginKeychainPath(t)
+	if _, err := os.Stat(keychain); err != nil {
+		t.Skipf("login keychain %s not present on host — positive Keychain probe requires a real keychain to discriminate sandbox-EPERM from missing-file: %v", keychain, err)
+	}
+
+	probeBin := keychainProbeBuildPath(t)
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	profilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	since := time.Now().Add(-1 * time.Second)
+	out, exit, runErr := runKeychainProbe(t, profilePath, probeBin)
+
+	if exit != 0 {
+		t.Errorf("Keychain probe exited %d under the production profile.\n"+
+			"AC #3 of issue #2293: SecKeychainFindGenericPassword must complete\n"+
+			"without sandbox-EPERM. The probe surfaces OSStatus inline below — a\n"+
+			"non-zero exit means the OSStatus was neither errSecSuccess (0) nor\n"+
+			"errSecItemNotFound (-25300), i.e. the §5i Keychain literal grant is\n"+
+			"missing or has been narrowed past the point keyring-rs needs.\n"+
+			"Exit: %v\nOutput:\n%s\nProfile: %s",
+			exit, runErr, out, profilePath)
+	}
+
+	// Defence-in-depth: the kernel log should carry no sandbox deny on
+	// login.keychain-db over this window. We only assert this when
+	// `log show` is actually usable on the host; CI VMs and nested
+	// environments are off the hook.
+	if logShowAvailable(t) {
+		// `log show` ingestion has some latency; give the subsystem
+		// a moment to flush so a real denial would show up by the time
+		// we query.
+		time.Sleep(500 * time.Millisecond)
+		denies := queryLogShowForKeychainDeny(t, since)
+		if strings.Contains(denies, "login.keychain-db") {
+			t.Errorf("kernel log carries a sandbox deny on ~/Library/Keychains/login.keychain-db over the probe window — the §5i grant is not effective.\nDeny lines:\n%s\nProbe output:\n%s\nProfile: %s",
+				denies, out, profilePath)
+		}
+	}
+
+	t.Logf("ka pai — Keychain probe under production profile produced %s (exit 0)", strings.TrimSpace(out))
+}
+
+// TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant is the AC #4
+// paired negative: in a profile identical to production EXCEPT with the
+// §5i Keychain literal re-targeted at a non-existent sibling path, the
+// same probe MUST surface a different observable than the positive — the
+// kernel will log a sandbox deny on login.keychain-db (whether or not the
+// OSStatus return code differs from errSecItemNotFound). This proves the
+// grant is load-bearing and the positive test is not a no-op.
+//
+// We use withMutatedProfile per the testing convention: rather than
+// deleting the rule, we re-target the literal at a deliberately
+// non-existent sibling path. This keeps the rest of the SBPL block
+// structure unchanged and keeps the profile syntactically valid.
+func TestSandboxExecProfile_KeychainLookupDeniedWithoutGrant(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+
+	keychain := loginKeychainPath(t)
+	if _, err := os.Stat(keychain); err != nil {
+		t.Skipf("login keychain %s not present on host — negative Keychain probe requires a real keychain to be denied: %v", keychain, err)
+	}
+
+	if !logShowAvailable(t) {
+		// The kernel-log signal is the only reliable discriminator —
+		// without it we cannot prove the grant is load-bearing.
+		t.Skip("log show unavailable on this host — the negative AC requires the kernel-log discriminator to detect a sandbox deny on login.keychain-db, which we cannot read here. Run this test on the same host that runs the §5i CI gate.")
+	}
+
+	probeBin := keychainProbeBuildPath(t)
+
+	m := newProfileManagerWithBareRoot(t)
+
+	// Re-target the §5i literal at a non-existent sibling path. The
+	// withMutatedProfile helper will fail the test if the substitution
+	// does not match, so a format-drift regression in the generator is
+	// caught here before we even reach the sandbox-exec run.
+	denyTarget := keychain + ".prism-2293-disabled"
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		return strings.ReplaceAll(p,
+			sbplQuoteForTest(keychain),
+			sbplQuoteForTest(denyTarget))
+	})
+
+	since := time.Now().Add(-1 * time.Second)
+	out, exit, runErr := runKeychainProbe(t, mutatedPath, probeBin)
+
+	// Sandbox-exec must still accept the mutated profile (re-targeting at
+	// a non-existent sibling path is the documented withMutatedProfile
+	// idiom — sandbox-exec silently ignores literal rules for
+	// non-existent paths, so the profile remains loadable).
+	if strings.Contains(out, "sandbox-exec: profile parser:") {
+		t.Fatalf("mutated profile failed to parse — the negative test setup is wrong.\nExit: %v\nOutput:\n%s\nProfile: %s",
+			runErr, out, mutatedPath)
+	}
+
+	// Give `log show` a moment to ingest the deny.
+	time.Sleep(1 * time.Second)
+	denies := queryLogShowForKeychainDeny(t, since)
+	if !strings.Contains(denies, "login.keychain-db") {
+		t.Errorf("kernel log does NOT carry a sandbox deny on ~/Library/Keychains/login.keychain-db after running the probe under the mutated profile.\n"+
+			"AC #4 of issue #2293 requires the same probe to fail WITHOUT the §5i grant — proving the grant is load-bearing and the positive test is not a no-op.\n"+
+			"If your host has tightened `log show` access (e.g. a downstream MDM policy), re-run this test on a host that surfaces unified-log events to the invoking user.\n"+
+			"Probe exit: %d\nProbe output:\n%s\nMutated profile: %s\nDeny lines (empty = no deny found):\n%q",
+			exit, out, mutatedPath, denies)
+		return
+	}
+
+	t.Logf("ka pai — without the §5i grant the kernel emitted a sandbox deny on login.keychain-db (probe exit %d):\n%s", exit, strings.TrimSpace(denies))
+}
