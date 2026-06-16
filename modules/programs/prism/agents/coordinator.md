@@ -205,6 +205,17 @@ Wait for the finish notification from that spawned session before reporting back
 to the user. The spawned session will run `prism review`, handle any blocking
 issues, and summarise the findings. Your role is to relay the outcome.
 
+> **Do NOT `prism merge` the PR.** A PR authored by someone outside our agent
+> fleet is not ours to land — the author and their maintainer chain decide
+> when it merges. Operational tell: a session spawned via `prism pr <number>`
+> is review-only because the PR existed before the session, so the session
+> did not author it. A session spawned via `prism spawn` that then opened a
+> PR is ours.
+
+"Done" for Case 1 is: read the review outcome, summarise it back to the user,
+optionally clean up the review session, stop. Do not run `gh pr view` looking
+for metadata to sense-check. Do not enqueue `prism merge`.
+
 ### Case 2: Worker has self-reviewed and handed off
 
 > **Anti-pattern: do not act on PR-open alone.** Observing a PR in `gh pr list`,
@@ -240,6 +251,10 @@ When a spawned agent opens a PR and announces completion:
 ---
 
 ## Merge and cleanup
+
+> **Applies to Case 2 only.** Only enqueue a PR that was authored by a worker
+> you spawned. For Case 1 PRs (external authors), stop after relaying the
+> review outcome — do not run `prism merge`.
 
 Once the sense-check passes, enqueue the PR in the merge queue and continue with other work. The queue handles CI waits, rebases, and the merge itself; you act on the bus notification when the merge lands or fails.
 
