@@ -554,6 +554,52 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 5i. ~/Library/Keychains/login.keychain-db RO grant (issue #2293) ──
+	// Keychain-using CLIs that ship as third-party tools (the Datadog `pup`
+	// CLI is the canonical example as of #2267; other Rust binaries built on
+	// the `keyring` crate share the code path) reach the user's legacy login
+	// keychain through the Security Framework — SecKeychainFindGenericPassword /
+	// SecItemCopyMatching, dispatched via Mach IPC to securityd. Per PR #1488:
+	// securityd requires the calling process to have file-read* on
+	// ~/Library/Keychains/login.keychain-db to service Keychain lookups even
+	// when the lookup goes over Mach IPC. Without this grant securityd hides
+	// the user's keychain entries from the sandboxed caller, and the lookup
+	// surfaces to the application as "credential not found" — exactly the
+	// symptom that motivated #2293 (pup OAuth token unreachable in-sandbox).
+	//
+	// Shape mirrors the original #1488 grant: single-file (literal ...), NOT
+	// (subpath ~/Library/Keychains). The narrowing is load-bearing: the modern
+	// UUID-keyed databases (keychain-2.db, user.kb) and the TrustedPeersHelper
+	// sibling files in the same directory MUST remain unreadable from inside
+	// the sandbox. Read-only — nothing in-sandbox writes to the user keychain.
+	//
+	// History: PR #1488 added the original grant for opencode-claude-auth's
+	// in-sandbox `security dump-keychain` use. PR #2130 (#2126) removed it
+	// when that consumer was retired and the verification at the time showed
+	// no remaining in-tree readers. PR #2267 then introduced `pup` as a new
+	// in-sandbox Keychain consumer — eight days later, outside the #2126
+	// verification window. This grant restores the capability under that new
+	// consumer-justification (third-party Keychain-using CLIs).
+	//
+	// We deliberately do NOT also re-add the per-session staging-HOME symlink
+	// that #1488 paired with this grant. That symlink was specifically for
+	// /usr/bin/security dump-keychain, which uses $HOME to find the keychain
+	// search list. pup and other keyring-crate consumers go through the
+	// Security Framework directly via securityd, which keys the search list
+	// off the calling UID — $HOME is never consulted. The staging-HOME
+	// elimination from #2132 (Step 5) must not be reverted.
+	//
+	// Rule is emitted unconditionally (no os.Stat guard): sandbox-exec
+	// silently ignores (literal ...) rules for non-existent paths (same
+	// pattern as the 5d/5e/5f/5g/5h/6a real-host-path allows), so fresh
+	// machines without a user keychain yet remain unaffected.
+	if home != "" {
+		loginKeychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
+		sb.WriteString("(allow file-read* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (literal " + quoteSBPL(loginKeychain) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
 	// Session-specific read-write paths. Locked in #1012 and #1017.
 	// file-test-existence and file-read-metadata added alongside file-read*
