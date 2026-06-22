@@ -54,7 +54,7 @@ jobs:
     # the gate (the cheap stub) still runs on non-Go PRs. On non-Go
     # PRs the job reports success after a single echo step.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect Go-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
@@ -144,7 +144,7 @@ jobs:
     name: nix-build-prism-checked
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect prism-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
@@ -191,7 +191,7 @@ jobs:
     name: go-tests-battery-monitor
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect battery-monitor-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
@@ -229,7 +229,7 @@ jobs:
     name: nix-build-battery-monitor-checked
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Detect battery-monitor-relevant changes
         id: changes
         uses: dorny/paths-filter@v4
