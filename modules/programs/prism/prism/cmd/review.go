@@ -16,7 +16,7 @@ package cmd
 //	--harness <name>    Runtime harness (default: "pi")
 //	--timeout <dur>     Per-agent timeout (default: 10m)
 //	--only <csv>        Run only the named agents (e.g. review-goal,review-code)
-//	--rebase            Inline-rebase onto origin/main (fetch + rebase + force-push) before review
+//	--rebase            Inline-rebase onto the PR's base ref (fetch + rebase + force-push) before review
 
 import (
 	"fmt"
@@ -62,7 +62,7 @@ func init() {
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
 	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
-	reviewCmd.Flags().Bool("rebase", false, "Fetch origin/main, rebase HEAD onto it, and force-push before running the review")
+	reviewCmd.Flags().Bool("rebase", false, "Fetch the PR's base ref (default origin/main), rebase HEAD onto it, and force-push before running the review")
 	reviewCmd.Flags().Bool("wait", false, "Block until the review group reaches a terminal state (all-PASS, any-FAIL, or no-start)")
 	reviewCmd.Flags().Duration("wait-timeout", defaultReviewWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
 	reviewCmd.Flags().Bool("json", false, "Emit the terminal verdict as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
@@ -207,19 +207,29 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return prStateErr
 	}
 
-	// Pre-flight rebase gate (#1518). Runs BEFORE any review-agent sessions
-	// are spawned and BEFORE any DB rows are written for this round, so a
-	// gate failure (refusal, fetch failure, conflict abort, missing upstream)
-	// cannot increment the review-cycle counter — that counter is derived
-	// from per-agent session rows by review.NextRoundNumber, and no such
-	// rows exist on the gate-failure path.
+	// Pre-flight rebase gate (#1518, #2304). Runs BEFORE any review-agent
+	// sessions are spawned and BEFORE any DB rows are written for this round,
+	// so a gate failure (refusal, fetch failure, conflict abort, missing
+	// upstream) cannot increment the review-cycle counter — that counter is
+	// derived from per-agent session rows by review.NextRoundNumber, and no
+	// such rows exist on the gate-failure path.
 	//
-	// Strict ancestor check: `git merge-base --is-ancestor origin/main HEAD`.
+	// Strict ancestor check: `git merge-base --is-ancestor <remote>/<base> HEAD`.
+	// The PR's actual base ref is discovered via `gh pr view --json baseRefName`
+	// (issue #2304) so PRs targeting non-main bases (long-lived integration
+	// branches, release branches, environment branches) are checked against
+	// the correct upstream. On any lookup failure (gh missing, unauthenticated,
+	// network error, no PR for branch, empty baseRefName) we fall back
+	// silently to "main" — preserving today's behaviour for invocations not
+	// tied to a discoverable PR.
+	//
 	// On --rebase, the gate also performs fetch + rebase + force-push inline;
 	// on rebase conflict it aborts the rebase and restores HEAD before
 	// returning a non-zero error. Never leaves the worktree mid-rebase.
+	baseBranch := review.ResolvePRBaseRef(prNumber) // "" on any failure → Preflight defaults to "main"
 	if gateErr := review.Preflight(review.PreflightOpts{
 		Worktree:   worktree,
+		Branch:     baseBranch,
 		Rebase:     rebaseFlag,
 		OnProgress: progressLineEager,
 	}); gateErr != nil {
