@@ -386,6 +386,305 @@ func TestPreflight_WorktreeRequired(t *testing.T) {
 	}
 }
 
+// ── base-ref resolver tests (#2304) ───────────────────────────────────────────
+
+// fakeBaseRefRunner is a scripted baseRefRunner for unit-testing
+// resolvePRBaseRefWithRunner. It captures the PR numbers it was called with
+// so tests can assert the resolver did (or didn't) actually invoke gh.
+type fakeBaseRefRunner struct {
+	stdout string
+	err    error
+	calls  []string
+}
+
+func (f *fakeBaseRefRunner) run(prNumber string) (string, error) {
+	f.calls = append(f.calls, prNumber)
+	return f.stdout, f.err
+}
+
+// TestResolvePRBaseRef_Success verifies that the resolver returns the
+// baseRefName from a successful gh response. This is the happy path that
+// drives a PR-aware base-branch in the rebase gate (#2304 AC "base-ref
+// resolution from PR metadata").
+func TestResolvePRBaseRef_Success(t *testing.T) {
+	fr := &fakeBaseRefRunner{
+		stdout: `{"baseRefName":"eks-pipeline"}` + "\n",
+	}
+	got := resolvePRBaseRefWithRunner("1234", fr)
+	if got != "eks-pipeline" {
+		t.Errorf("ResolvePRBaseRef: got %q, want %q", got, "eks-pipeline")
+	}
+	if len(fr.calls) != 1 || fr.calls[0] != "1234" {
+		t.Errorf("ResolvePRBaseRef: expected one gh call with PR %q; got %v", "1234", fr.calls)
+	}
+}
+
+// TestResolvePRBaseRef_SuccessMainBase verifies the main-targeting case
+// returns "main". Ensures the resolver does not collapse "main" to "" — the
+// preflight default mechanism handles the "" → "main" fallback separately.
+func TestResolvePRBaseRef_SuccessMainBase(t *testing.T) {
+	fr := &fakeBaseRefRunner{stdout: `{"baseRefName":"main"}`}
+	got := resolvePRBaseRefWithRunner("42", fr)
+	if got != "main" {
+		t.Errorf("ResolvePRBaseRef: got %q, want %q", got, "main")
+	}
+}
+
+// TestResolvePRBaseRef_GHFailureFallsBack verifies the silent-fallback
+// contract: a gh failure (network error, unauthenticated, PR not found, gh
+// missing) collapses to "" so the caller defaults to "main". This is the
+// [edge-case] AC: preflight falls back silently to origin/main without a
+// scary warning.
+func TestResolvePRBaseRef_GHFailureFallsBack(t *testing.T) {
+	fr := &fakeBaseRefRunner{err: errors.New("gh: Could not resolve to a PullRequest with the number of 9999")}
+	got := resolvePRBaseRefWithRunner("9999", fr)
+	if got != "" {
+		t.Errorf("ResolvePRBaseRef: expected \"\" on gh failure; got %q", got)
+	}
+}
+
+// TestResolvePRBaseRef_EmptyBaseFallsBack verifies that gh succeeding with
+// an empty baseRefName is treated the same as a lookup failure — required by
+// the [edge-case] AC "empty baseRefName falls back to origin/main".
+func TestResolvePRBaseRef_EmptyBaseFallsBack(t *testing.T) {
+	fr := &fakeBaseRefRunner{stdout: `{"baseRefName":""}`}
+	got := resolvePRBaseRefWithRunner("7", fr)
+	if got != "" {
+		t.Errorf("ResolvePRBaseRef: expected \"\" on empty baseRefName; got %q", got)
+	}
+}
+
+// TestResolvePRBaseRef_MalformedJSONFallsBack verifies that an unparseable gh
+// response is treated as a lookup failure. Defends against a future gh output
+// schema change silently producing the wrong base ref.
+func TestResolvePRBaseRef_MalformedJSONFallsBack(t *testing.T) {
+	fr := &fakeBaseRefRunner{stdout: `not json`}
+	got := resolvePRBaseRefWithRunner("7", fr)
+	if got != "" {
+		t.Errorf("ResolvePRBaseRef: expected \"\" on malformed JSON; got %q", got)
+	}
+}
+
+// TestResolvePRBaseRef_EmptyPRNumberSkipsGH verifies that an empty PR number
+// does not invoke gh at all. Defence in depth — guards against `prism review`
+// invocations that somehow forwarded an empty positional arg.
+func TestResolvePRBaseRef_EmptyPRNumberSkipsGH(t *testing.T) {
+	fr := &fakeBaseRefRunner{stdout: `{"baseRefName":"main"}`}
+	got := resolvePRBaseRefWithRunner("", fr)
+	if got != "" {
+		t.Errorf("ResolvePRBaseRef: expected \"\" for empty PR; got %q", got)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("ResolvePRBaseRef: expected no gh call for empty PR; got %v", fr.calls)
+	}
+}
+
+// ── Preflight tests against a non-main base branch (#2304) ────────────────────
+
+// TestPreflight_NonMainBaseRefusalNamesResolvedRef verifies that when the
+// caller supplies a non-main Branch, the refusal message names the resolved
+// ref in the "N commits behind …" line, the "<base> has advanced" line, and
+// in the suggested `git fetch` / `git rebase` commands. The hardcoded
+// origin/main from #1518 must NOT appear (#2304 AC: refusal message
+// references the resolved ref).
+func TestPreflight_NonMainBaseRefusalNamesResolvedRef(t *testing.T) {
+	fg := newFakeGit().
+		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin eks-pipeline", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/eks-pipeline", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
+		on("merge-base --is-ancestor origin/eks-pipeline HEAD", scriptedResponse{exitCode: 1}).
+		on("rev-list --count HEAD..origin/eks-pipeline", scriptedResponse{stdout: "3\n", exitCode: 0})
+
+	err := Preflight(PreflightOpts{
+		Worktree:  "/fake/worktree",
+		Branch:    "eks-pipeline",
+		gitRunner: fg,
+	})
+	if err == nil {
+		t.Fatal("Preflight: expected refusal for behind-base branch, got nil")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("Preflight: error is not *PreflightError: %T %v", err, err)
+	}
+	if !pe.Refused {
+		t.Errorf("Preflight: expected Refused=true; got %+v", pe)
+	}
+	if pe.CommitsBehind != 3 {
+		t.Errorf("Preflight: expected CommitsBehind=3; got %d", pe.CommitsBehind)
+	}
+	for _, want := range []string{
+		"3 commits",
+		"behind origin/eks-pipeline",
+		"eks-pipeline has advanced",
+		"git fetch origin eks-pipeline",
+		"git rebase origin/eks-pipeline",
+	} {
+		if !strings.Contains(pe.Msg, want) {
+			t.Errorf("Preflight: non-main refusal message missing %q; got:\n%s", want, pe.Msg)
+		}
+	}
+	// Defence in depth: the message must NOT reference origin/main when the
+	// resolved base is something else. A leaked "origin/main" or stray "main"
+	// reference is the #2304 footgun.
+	for _, mustNot := range []string{
+		"origin/main",
+		"behind main",
+		"git rebase origin/main",
+	} {
+		if strings.Contains(pe.Msg, mustNot) {
+			t.Errorf("Preflight: non-main refusal message must not contain %q; got:\n%s", mustNot, pe.Msg)
+		}
+	}
+	// Sanity: the ancestor check must have run against the resolved ref, not
+	// against the hardcoded origin/main.
+	if !fg.called("merge-base --is-ancestor origin/eks-pipeline HEAD") {
+		t.Errorf("Preflight: expected merge-base against origin/eks-pipeline; calls=%v", fg.calls)
+	}
+	if fg.called("merge-base --is-ancestor origin/main HEAD") {
+		t.Errorf("Preflight: merge-base against origin/main must NOT run when Branch=eks-pipeline; calls=%v", fg.calls)
+	}
+}
+
+// TestPreflight_NonMainBaseRebaseTargetsResolvedRef verifies that --rebase
+// against a PR with a non-main base rebases onto the resolved ref (not
+// origin/main) and force-pushes the result. This is the #2304 footgun: a
+// rebase onto the wrong base silently pulls in unrelated commits and inflates
+// the PR's apparent diff.
+func TestPreflight_NonMainBaseRebaseTargetsResolvedRef(t *testing.T) {
+	fg := newFakeGit().
+		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin eks-pipeline", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/eks-pipeline", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
+		on("rebase origin/eks-pipeline", scriptedResponse{exitCode: 0}).
+		on("push --force-with-lease", scriptedResponse{exitCode: 0}).
+		on("merge-base --is-ancestor origin/eks-pipeline HEAD", scriptedResponse{exitCode: 0})
+
+	err := Preflight(PreflightOpts{
+		Worktree:  "/fake/worktree",
+		Branch:    "eks-pipeline",
+		Rebase:    true,
+		gitRunner: fg,
+	})
+	if err != nil {
+		t.Fatalf("Preflight (--rebase, non-main base): unexpected error: %v", err)
+	}
+	for _, want := range []string{
+		"fetch origin eks-pipeline",
+		"rebase origin/eks-pipeline",
+		"push --force-with-lease",
+		"merge-base --is-ancestor origin/eks-pipeline HEAD",
+	} {
+		if !fg.called(want) {
+			t.Errorf("Preflight (--rebase, non-main): expected %q to be called; calls=%v", want, fg.calls)
+		}
+	}
+	// Defence in depth: a rebase against origin/main must NEVER fire when
+	// the PR's base is something else — this is the silent-footgun class
+	// the issue calls out.
+	for _, mustNot := range []string{
+		"fetch origin main",
+		"rebase origin/main",
+		"merge-base --is-ancestor origin/main HEAD",
+	} {
+		if fg.called(mustNot) {
+			t.Errorf("Preflight (--rebase, non-main): origin/main op %q must NOT run when Branch=eks-pipeline; calls=%v", mustNot, fg.calls)
+		}
+	}
+}
+
+// TestPreflight_NonMainBaseMissingUpstreamSurfacesResolvedRef verifies that
+// when the resolved base ref does not exist after fetch (e.g. base branch
+// deleted upstream), the missing-upstream error names the resolved ref —
+// preflight does NOT silently retry against main (#2304 AC "resolved base
+// ref missing" edge case).
+func TestPreflight_NonMainBaseMissingUpstreamSurfacesResolvedRef(t *testing.T) {
+	fg := newFakeGit().
+		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin eks-pipeline", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/eks-pipeline", scriptedResponse{
+			stderr:   "fatal: Needed a single revision",
+			exitCode: 128,
+		})
+
+	err := Preflight(PreflightOpts{
+		Worktree:  "/fake/worktree",
+		Branch:    "eks-pipeline",
+		gitRunner: fg,
+	})
+	if err == nil {
+		t.Fatal("Preflight: expected missing-upstream error for non-main base, got nil")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("Preflight: error is not *PreflightError: %T %v", err, err)
+	}
+	if pe.Refused {
+		t.Errorf("Preflight: missing-upstream (non-main) must not be Refused=true; got %+v", pe)
+	}
+	for _, want := range []string{
+		"no origin/eks-pipeline ref configured",
+	} {
+		if !strings.Contains(pe.Msg, want) {
+			t.Errorf("Preflight: missing-upstream (non-main) message missing %q; got:\n%s", want, pe.Msg)
+		}
+	}
+	// Defence in depth: must not silently retry against main.
+	if fg.called("fetch origin main") || fg.called("rev-parse --verify origin/main") {
+		t.Errorf("Preflight: missing-upstream (non-main) must NOT retry against main; calls=%v", fg.calls)
+	}
+}
+
+// TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores verifies the
+// rebase-conflict abort/restore guarantee holds for non-main bases — the
+// worktree is never left mid-rebase, mirroring the same-restoration
+// guarantee the original gate provides against main (#2304 AC "on --rebase
+// conflict against a non-main base, the rebase is aborted, HEAD restored").
+func TestPreflight_NonMainBaseRebaseConflictAbortsAndRestores(t *testing.T) {
+	fg := newFakeGit().
+		on("rev-parse HEAD", scriptedResponse{stdout: "deadbeef\n", exitCode: 0}).
+		on("fetch origin eks-pipeline", scriptedResponse{exitCode: 0}).
+		on("rev-parse --verify origin/eks-pipeline", scriptedResponse{stdout: "abc123\n", exitCode: 0}).
+		on("rebase origin/eks-pipeline", scriptedResponse{
+			stderr:   "CONFLICT (content): Merge conflict in foo.txt",
+			exitCode: 1,
+		}).
+		on("rebase --abort", scriptedResponse{exitCode: 0}).
+		on("reset --hard deadbeef", scriptedResponse{exitCode: 0})
+
+	err := Preflight(PreflightOpts{
+		Worktree:  "/fake/worktree",
+		Branch:    "eks-pipeline",
+		Rebase:    true,
+		gitRunner: fg,
+	})
+	if err == nil {
+		t.Fatal("Preflight (--rebase conflict, non-main): expected error, got nil")
+	}
+	var pe *PreflightError
+	if !errors.As(err, &pe) {
+		t.Fatalf("Preflight: error is not *PreflightError: %T %v", err, err)
+	}
+	if pe.Refused {
+		t.Errorf("Preflight (--rebase conflict, non-main): must not be Refused=true; got %+v", pe)
+	}
+	if !fg.called("rebase --abort") {
+		t.Errorf("Preflight (--rebase conflict, non-main): expected `rebase --abort`; calls=%v", fg.calls)
+	}
+	if !fg.called("reset --hard deadbeef") {
+		t.Errorf("Preflight (--rebase conflict, non-main): expected `reset --hard deadbeef`; calls=%v", fg.calls)
+	}
+	// Recovery commands must name the resolved base, not origin/main.
+	for _, want := range []string{
+		"git fetch origin eks-pipeline",
+		"git rebase origin/eks-pipeline",
+	} {
+		if !strings.Contains(pe.Msg, want) {
+			t.Errorf("Preflight (--rebase conflict, non-main): recovery message missing %q; got:\n%s", want, pe.Msg)
+		}
+	}
+}
+
 // ── integration test against a real local git repo ────────────────────────────
 
 // TestPreflight_RealGit_AncestorPasses creates a real local git repo with two
