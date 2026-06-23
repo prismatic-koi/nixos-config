@@ -131,7 +131,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 - Two sessions on the same branch are rejected by the git worktree machinery: only one worktree may be checked out for a branch at a time.
 - The per-session run directory under `$XDG_STATE_HOME/prism/run/<sessionDirHash>/` (12-hex SHA-256 prefix of the session name) is unique per session; the host-API socket, the harness pipe socket, and the `agent-run.log` are not shared between sessions.
 - The merge queue is serial: only one PR is in flight at a time per coordinator, regardless of how many `prism merge` invocations have been made.
-- `prism review` is gated behind a one-shot `git fetch origin main` + strict `git merge-base --is-ancestor origin/main HEAD` check before any review agents are spawned; on refusal no agents spawn and the cycle counter does not increment. `prism review --rebase` performs fetch + rebase + force-push inline and on conflict aborts the rebase and exits non-zero, never leaving the worktree mid-rebase.
+- `prism review` is gated behind a one-shot `git fetch origin <base>` + strict `git merge-base --is-ancestor origin/<base> HEAD` check before any review agents are spawned, where `<base>` is the PR's `baseRefName` resolved via `gh pr view <pr> --json baseRefName` (falls back silently to `main` on any lookup failure — gh missing, network error, unauthenticated, no PR for the branch, or empty `baseRefName` — #2304). On refusal no agents spawn and the cycle counter does not increment. `prism review --rebase` performs fetch + rebase + force-push against the resolved base ref inline and on conflict aborts the rebase and exits non-zero, never leaving the worktree mid-rebase.
 
 ## Transports / isolation modes
 

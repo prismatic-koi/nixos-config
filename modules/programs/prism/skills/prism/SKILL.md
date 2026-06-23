@@ -228,17 +228,20 @@ on all-PASS, non-zero on any FAIL / no-start / timeout. See the `--wait`
 section above for the full contract (exit codes, Ctrl-C semantic, idempotent
 observation).
 
-### Pre-flight rebase gate (`prism review` refuses when behind `origin/main`)
+### Pre-flight rebase gate (`prism review` refuses when behind the PR's base branch)
 
 Before spawning any review agents, `prism review` runs a **one-shot pre-flight
-check**:
+check** against the PR's actual base ref (resolved via
+`gh pr view <pr> --json baseRefName`; falls back silently to `origin/main`
+when the lookup fails or no PR is discoverable — #2304):
 
-1. `git fetch origin main` (one network round-trip).
-2. Strict ancestor check: `git merge-base --is-ancestor origin/main HEAD`.
-3. If `origin/main` is an ancestor of `HEAD`: proceed unchanged.
+1. `git fetch origin <base>` (one network round-trip).
+2. Strict ancestor check: `git merge-base --is-ancestor origin/<base> HEAD`.
+3. If `origin/<base>` is an ancestor of `HEAD`: proceed unchanged.
 4. If not: refuse, exit non-zero, **no agents spawn**, and **no cycle counter
    increment**. The error message names the number of commits behind and the
-   recommended fix:
+   recommended fix. For a PR targeting `main` the rendered message looks
+   like:
 
    ```
    prism review: branch is N commits behind origin/main
@@ -250,26 +253,37 @@ check**:
    Or rerun with --rebase to do this inline.
    ```
 
+   For a PR targeting (say) `eks-pipeline`, the `main` references are
+   substituted with the resolved base ref:
+
+   ```
+   prism review: branch is N commits behind origin/eks-pipeline
+
+       git fetch origin eks-pipeline
+       git rebase origin/eks-pipeline
+       git push --force-with-lease
+   ```
+
 The `--rebase` flag is the inline opt-in fix:
 
 ```bash
 prism review <pr> --rebase
 ```
 
-It performs the fetch + rebase + force-push inline and then proceeds to the
-review against the rebased HEAD. If the rebase produces conflicts, the rebase
-is aborted, the worktree is restored to the original `HEAD`, and the command
-exits non-zero — never leaves the worktree mid-rebase. Resolve conflicts
-manually and re-run.
+It performs the fetch + rebase + force-push inline against the resolved base
+ref (not hardcoded `origin/main`) and then proceeds to the review against the
+rebased HEAD. If the rebase produces conflicts, the rebase is aborted, the
+worktree is restored to the original `HEAD`, and the command exits non-zero —
+never leaves the worktree mid-rebase. Resolve conflicts manually and re-run.
 
 **Why this gate exists.** Reviewers regularly produce noisy findings of the
-form "you should also update X" when X landed on `main` after the branch was
-cut. A simple rebase makes the diff smaller and the finding disappear, but
-discovering this from a FAIL verdict burns a full 5-agent cycle. The gate
-catches drift in one fetch, before any agent spawns.
+form "you should also update X" when X landed on the base branch after the
+feature branch was cut. A simple rebase makes the diff smaller and the
+finding disappear, but discovering this from a FAIL verdict burns a full
+5-agent cycle. The gate catches drift in one fetch, before any agent spawns.
 
-**Cycle-counter contract.** Gate failures (behind-main refusal, fetch failure,
-missing `origin/main`, rebase conflict abort) **do not increment** the
+**Cycle-counter contract.** Gate failures (behind-base refusal, fetch failure,
+missing `origin/<base>`, rebase conflict abort) **do not increment** the
 review-cycle counter. They are the same category as "round already in
 progress" / pure-infrastructure failures / ran-but-no-parseable-verdict
 rounds (#1995): no full set of parseable verdicts was produced, so the
@@ -279,8 +293,8 @@ available before the LOOP-LIMIT footer fires.
 
 Rounds that **do not count** toward the 3-cycle limit:
 
-- **Pre-flight gate refusals** — behind-main, fetch failure, missing
-  `origin/main`, rebase conflict abort. No agents spawned.
+- **Pre-flight gate refusals** — behind-base, fetch failure, missing
+  `origin/<base>`, rebase conflict abort. No agents spawned.
 - **Round-already-in-progress refusals** — a prior review is still
   active for the same parent. No agents spawned.
 - **Pure-infrastructure failures** — every agent failed to start
