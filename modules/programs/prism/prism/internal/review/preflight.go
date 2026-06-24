@@ -3,15 +3,22 @@ package review
 // preflight.go — pre-flight rebase gate for `prism review`.
 //
 // Issue #1518: Reviews regularly produce noisy findings of the form "you should
-// also update X" when X landed on main after the branch was cut. A pre-flight
-// ancestor check on origin/main catches this in one fetch, before any agent
-// spawns, and either refuses the review or (with --rebase) fixes it inline.
+// also update X" when X landed on the base branch after the feature branch was
+// cut. A pre-flight ancestor check on the PR's base ref catches this in one
+// fetch, before any agent spawns, and either refuses the review or (with
+// --rebase) fixes it inline.
 //
-// The gate is a snapshot at review-spawn time. It is not continuous — main can
-// advance during a review run; we do not chase that. This is consistent with
-// how CI works.
+// Issue #2304: The base branch is configurable via PreflightOpts.Branch and is
+// resolved at the call site from `gh pr view --json baseRefName` so PRs
+// targeting non-main bases are checked against the correct upstream. The
+// default remains "main" when no branch is supplied — preserving today's
+// behaviour for invocations not tied to a discoverable PR.
 //
-// Strict ancestor check via `git merge-base --is-ancestor origin/main HEAD`.
+// The gate is a snapshot at review-spawn time. It is not continuous — the base
+// can advance during a review run; we do not chase that. This is consistent
+// with how CI works.
+//
+// Strict ancestor check via `git merge-base --is-ancestor <remote>/<base> HEAD`.
 // No "files-touched-in-common" / loose variant — that breaks on renames,
 // deletes, and cross-cutting helper introductions and gives different verdicts
 // in equivalent situations.
@@ -82,30 +89,30 @@ func (realGit) run(worktree string, args ...string) (string, string, int, error)
 // PreflightError is returned by Preflight when the gate refuses the review.
 // It carries a Refused flag so callers can distinguish gate refusals from
 // infrastructure errors (fetch failure, missing upstream) — both must exit
-// non-zero, but only refusal carries the "behind main" rebase guidance.
+// non-zero, but only refusal carries the "behind <base>" rebase guidance.
 type PreflightError struct {
 	// Msg is the user-facing error message, ready to display.
 	Msg string
-	// Refused is true when the gate refused because origin/main is not an
-	// ancestor of HEAD. False for infrastructure errors (fetch failure,
-	// missing upstream, conflict abort).
+	// Refused is true when the gate refused because the resolved base ref is
+	// not an ancestor of HEAD. False for infrastructure errors (fetch
+	// failure, missing upstream, conflict abort).
 	Refused bool
 	// CommitsBehind is the number of commits HEAD is behind the remote
-	// branch (origin/main..HEAD vs HEAD..origin/main). Populated only when
-	// Refused is true. Zero otherwise.
+	// branch (HEAD..<remote>/<base>). Populated only when Refused is true.
+	// Zero otherwise.
 	CommitsBehind int
 }
 
 func (e *PreflightError) Error() string { return e.Msg }
 
-// Preflight runs the rebase gate. It returns nil when origin/main is an
-// ancestor of HEAD (the review may proceed). On any failure (fetch failure,
-// missing upstream, behind-main refusal, rebase conflict) it returns a
-// *PreflightError with a ready-to-display message; the caller should print it
-// to stderr and exit non-zero. Preflight does not spawn any review agents and
-// does not touch the prism DB, so a Preflight failure cannot affect the
-// review-cycle counter (the counter is derived from per-agent session rows
-// written by RunAsync).
+// Preflight runs the rebase gate. It returns nil when the resolved base ref
+// (<remote>/<branch>, defaulting to origin/main) is an ancestor of HEAD (the
+// review may proceed). On any failure (fetch failure, missing upstream,
+// behind-base refusal, rebase conflict) it returns a *PreflightError with a
+// ready-to-display message; the caller should print it to stderr and exit
+// non-zero. Preflight does not spawn any review agents and does not touch the
+// prism DB, so a Preflight failure cannot affect the review-cycle counter
+// (the counter is derived from per-agent session rows written by RunAsync).
 func Preflight(opts PreflightOpts) error {
 	if opts.Worktree == "" {
 		return &PreflightError{Msg: "prism review: preflight: worktree path is required"}
@@ -156,23 +163,26 @@ func Preflight(opts PreflightOpts) error {
 
 	remoteRef := remote + "/" + branch
 
-	// Step 3: verify the remote ref now exists (catches the "no origin/main
+	// Step 3: verify the remote ref now exists (catches the "no <remote>/<base>
 	// configured" case where fetch is silently a no-op because the remote
-	// itself does not advertise main, or the local checkout has no origin).
+	// itself does not advertise the requested branch, or the local checkout
+	// has no such remote). This must NOT silently retry against "main" — if
+	// the resolved base is missing upstream, the operator needs to know.
 	if _, stderr, code, _ := runner.run(opts.Worktree, "rev-parse", "--verify", remoteRef); code != 0 {
 		return &PreflightError{Msg: fmt.Sprintf(`prism review: no %s ref configured.
 
 After 'git fetch %s %s' the ref %s is still not present. The branch has no
-upstream main configured (this is unusual but possible in local-only setups).
+upstream %s configured (this is unusual but possible in local-only setups
+or when the base branch has been deleted upstream).
 
 Configure the remote:
 
     git remote add %s <url>
     git fetch %s %s
 
-Or, if origin already exists, ensure it advertises a 'main' branch.
+Or, if %s already exists, ensure it advertises a '%s' branch.
 
-git stderr: %s`, remoteRef, remote, branch, remoteRef, remote, remote, branch, strings.TrimSpace(stderr))}
+git stderr: %s`, remoteRef, remote, branch, remoteRef, branch, remote, remote, branch, remote, branch, strings.TrimSpace(stderr))}
 	}
 
 	// Step 4 (optional): inline rebase. We do this BEFORE the ancestor check so
@@ -243,14 +253,17 @@ git stderr (truncated):
 		// Up to date — proceed.
 		return nil
 	case 1:
-		// Not an ancestor — refuse with a clear message.
+		// Not an ancestor — refuse with a clear message. The refusal names the
+		// resolved base ref in the "N commits behind …" line and in the
+		// suggested `git fetch` / `git rebase` commands so a worker on a PR
+		// targeting a non-main base sees the right ref to act on (#2304).
 		behind := countCommitsBehind(runner, opts.Worktree, remoteRef)
 		return &PreflightError{
 			Refused:       true,
 			CommitsBehind: behind,
 			Msg: fmt.Sprintf(`prism review: branch is %s behind %s
 
-main has advanced since this branch was cut. Reviewers will see drift
+%s has advanced since this branch was cut. Reviewers will see drift
 that is not part of your change. Rebase first:
 
     git fetch %s %s
@@ -259,7 +272,7 @@ that is not part of your change. Rebase first:
 
 Or rerun with --rebase to do this inline (only safe if your local branch
 has no uncommitted or local-only state worth preserving).`,
-				pluralCommits(behind), remoteRef, remote, branch, remoteRef),
+				pluralCommits(behind), remoteRef, branch, remote, branch, remoteRef),
 		}
 	default:
 		// Unknown ref or other git failure.
