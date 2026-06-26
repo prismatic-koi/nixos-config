@@ -91,7 +91,7 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 	// Capture the wall-clock right before invoking succeedAndNotify so the
 	// assertion below has a tight upper bound on the persisted value.
 	wantAtLeast := time.Now().UnixMilli()
-	w.succeedAndNotify(context.Background(), head)
+	w.succeedAndNotify(context.Background(), head, mergeOutcomePrismDriven, nil)
 	wantAtMost := time.Now().UnixMilli()
 
 	// The worker's spawn_outcome row must now carry a pr_merged_at value.
@@ -150,7 +150,7 @@ func TestSucceedAndNotify_NoWorkerRow_SkipsPRMergedAt(t *testing.T) {
 	}
 
 	w := New(d, coordIID, coordSession, http.DefaultClient)
-	w.succeedAndNotify(context.Background(), head)
+	w.succeedAndNotify(context.Background(), head, mergeOutcomePrismDriven, nil)
 
 	// pending_merges must still have transitioned to merged.
 	pm, err := d.PendingMergeByPR(pr)

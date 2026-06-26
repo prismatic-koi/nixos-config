@@ -490,7 +490,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		return
 	}
 	if prInfoVal.State == "MERGED" || prInfoVal.isMerged() {
-		fw.watcher.succeedAndNotify(ctx, head)
+		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeExternal, prInfoVal)
 		return
 	}
 
@@ -498,7 +498,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 	case "CLEAN":
 		out, mergeErr := fw.mergeFn(ctx, head.PR)
 		if mergeErr == nil {
-			fw.watcher.succeedAndNotify(ctx, head)
+			fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
 			return
 		}
 		// First: reconcile by checking the PR's actual state.
@@ -507,7 +507,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 			reconciledState = fw.checkMergedStateFn(ctx, head.PR)
 		}
 		if reconciledState == "MERGED" {
-			fw.watcher.succeedAndNotify(ctx, head)
+			fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
 			return
 		}
 		// Second: keyword-based branch-moved-race check.
@@ -548,7 +548,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		if requiredChecksAllPassed(prInfoVal.StatusCheckRollup, required) {
 			out, mergeErr := fw.mergeFn(ctx, head.PR)
 			if mergeErr == nil {
-				fw.watcher.succeedAndNotify(ctx, head)
+				fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
 				return
 			}
 			// First: reconcile state.
@@ -557,7 +557,7 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 				reconciledState = fw.checkMergedStateFn(ctx, head.PR)
 			}
 			if reconciledState == "MERGED" {
-				fw.watcher.succeedAndNotify(ctx, head)
+				fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
 				return
 			}
 			// Second: keyword check.
@@ -1516,6 +1516,7 @@ func TestPRInfoJSONFields_NoMergedField(t *testing.T) {
 	}
 	hasMergedAt := false
 	hasReviewDecision := false
+	hasMergedBy := false
 	for _, f := range fields {
 		if f == "mergedAt" {
 			hasMergedAt = true
@@ -1523,12 +1524,18 @@ func TestPRInfoJSONFields_NoMergedField(t *testing.T) {
 		if f == "reviewDecision" {
 			hasReviewDecision = true
 		}
+		if f == "mergedBy" {
+			hasMergedBy = true
+		}
 	}
 	if !hasMergedAt {
 		t.Errorf("prInfoJSONFields must include 'mergedAt' to detect merged state. Got: %q", prInfoJSONFields)
 	}
 	if !hasReviewDecision {
 		t.Errorf("prInfoJSONFields must include 'reviewDecision' to detect review-required blocks (#1357). Got: %q", prInfoJSONFields)
+	}
+	if !hasMergedBy {
+		t.Errorf("prInfoJSONFields must include 'mergedBy' to name the merger in the external-merge notification (#2298). Got: %q", prInfoJSONFields)
 	}
 }
 
@@ -2336,6 +2343,369 @@ func TestWatcher_GenuineFailure_NoRegression(t *testing.T) {
 	}
 	if row.Status != "failed" {
 		t.Errorf("status: got %q, want failed (genuine error must not reconcile as merged)", row.Status)
+	}
+}
+
+// ── succeedAndNotify variant rendering tests (issue #2298) ──────────────────
+
+// extractNotifyText pulls the parts[0].text string out of the most recent
+// JSON body the capturing server received. Test-only helper.
+func extractNotifyText(t *testing.T, body []byte) string {
+	t.Helper()
+	var parsed map[string]any
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		t.Fatalf("extractNotifyText: unmarshal: %v", err)
+	}
+	parts, _ := parsed["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("extractNotifyText: notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	return text
+}
+
+// TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin verifies
+// AC1 (#2298): when the pre-poll early-return fires (prInfo.State == "MERGED"
+// or prInfo.isMerged()), the notification text identifies the PR as merged
+// externally, names the merger by GitHub login, includes the merge
+// timestamp, and does NOT instruct the coordinator to run `prism cleanup`.
+func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-ext-merge"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-ext-merge")
+
+	if _, err := d.EnqueueMerge(2200, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergedAt := "2026-06-16T22:32:47Z"
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:    "MERGED",
+				MergedAt: &mergedAt,
+				MergedBy: &userRef{Login: "b-h-mck"},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			t.Fatal("external merge path must not invoke gh pr merge")
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+
+	if !strings.Contains(text, "PR #2200") {
+		t.Errorf("notification text %q does not mention 'PR #2200'", text)
+	}
+	if !strings.Contains(text, "merged externally") {
+		t.Errorf("notification text %q does not contain 'merged externally' — external-merge case must be distinguished from prism-driven", text)
+	}
+	if !strings.Contains(text, "@b-h-mck") {
+		t.Errorf("notification text %q does not name merger @b-h-mck", text)
+	}
+	if !strings.Contains(text, mergedAt) {
+		t.Errorf("notification text %q does not include merge timestamp %q", text, mergedAt)
+	}
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must NOT instruct `prism cleanup` for external merges — prism did not perform the merge", text)
+	}
+
+	// Row must still terminate as merged (DB state unchanged from current behaviour).
+	row, err := d.PendingMergeByPR(2200)
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status: got %q, want merged (DB transition unchanged for external case)", row.Status)
+	}
+}
+
+// TestWatcher_ExternalMerge_MergedByNullDegradesGracefully verifies AC4
+// (#2298): when gh returns mergedBy=null (or an empty login), the
+// external-merge notification still emits successfully — the merger field
+// degrades gracefully rather than blocking the notification.
+func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-ext-merge-null"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-ext-merge-null")
+
+	if _, err := d.EnqueueMerge(2201, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergedAt := "2026-06-17T09:00:00Z"
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			// MergedBy is nil — gh returned "mergedBy": null.
+			return &prInfo{
+				State:    "MERGED",
+				MergedAt: &mergedAt,
+				MergedBy: nil,
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator — mergedBy=nil must not block notification")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+
+	if !strings.Contains(text, "PR #2201") {
+		t.Errorf("notification text %q does not mention 'PR #2201'", text)
+	}
+	if !strings.Contains(text, "merged externally") {
+		t.Errorf("notification text %q does not contain 'merged externally'", text)
+	}
+	if strings.Contains(text, "@") {
+		t.Errorf("notification text %q contains '@' — with mergedBy=nil the merger should be omitted, not emitted as an empty handle", text)
+	}
+	if !strings.Contains(text, mergedAt) {
+		t.Errorf("notification text %q does not include merge timestamp %q (graceful degrade must still surface mergedAt when present)", text, mergedAt)
+	}
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must NOT instruct `prism cleanup` for external merges", text)
+	}
+}
+
+// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive verifies AC2
+// (#2298): when tryMerge succeeds via `gh pr merge --squash` and no worker
+// archive_path is recorded, the notification text matches the existing
+// `PR #N merged. Run \`git pull\` ...` form byte-for-byte. Non-regression
+// for the canonical case.
+func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-prism-merge-noarch"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-prism-merge-noarch")
+
+	if _, err := d.EnqueueMerge(2210, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+
+	fw.processHead(context.Background())
+
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+
+	want := "PR #2210 merged. Run `git pull` in @main and `prism cleanup` the worker session."
+	if text != want {
+		t.Errorf("prism-driven notification (no archive) text mismatch —\n got:  %q\n want: %q", text, want)
+	}
+}
+
+// TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive verifies AC2
+// (#2298): when tryMerge succeeds and a worker archive_path is recorded, the
+// notification text matches the existing
+// `PR #N merged. Archive: <path>. Run \`git pull\` ...` form byte-for-byte.
+func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) {
+	d := openTestDB(t)
+	coordInstanceID := "inst-coord-arch"
+	coordSession := "myrepo@main"
+	coordRepo := "owner/myrepo"
+
+	// Seed an agent_status row for notification routing.
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, coordSession, coordInstanceID, port, "sid-coord-arch")
+
+	// Seed both a coordinator sessions row (so lookupWorkerArchivePath can
+	// resolve the coordinator's repo via instance_id) and a worker session
+	// whose archive_path will be surfaced in the notification.
+	coordSess := db.Session{
+		InstanceID:  coordInstanceID,
+		SessionName: coordSession,
+		Repo:        coordRepo,
+		Worktree:    "/tmp/coord-wt-arch",
+		Harness:     "pi",
+	}
+	if err := d.InsertSession(coordSess); err != nil {
+		t.Fatalf("insert coordinator session: %v", err)
+	}
+	seedWorkerSession(t, d, "worker-inst-arch-2211", "myrepo@2211", coordRepo,
+		"/archives/myrepo-2211.tar.gz")
+
+	if _, err := d.EnqueueMerge(2211, coordSession, coordInstanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, coordInstanceID, coordSession, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
+		func(_ context.Context, pr int) error { return nil },
+	)
+	// Pin the watcher's repo so lookupWorkerArchivePath has a non-empty scope.
+	fw.watcher.repo = coordRepo
+
+	fw.processHead(context.Background())
+
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+
+	want := "PR #2211 merged. Archive: /archives/myrepo-2211.tar.gz. Run `git pull` in @main and `prism cleanup` the worker session."
+	if text != want {
+		t.Errorf("prism-driven notification (with archive) text mismatch —\n got:  %q\n want: %q", text, want)
+	}
+}
+
+// TestWatcher_Reconciled_NotifyTextIncludesReconciledNote verifies AC3
+// (#2298): when tryMerge errors but checkPRMergedState returns MERGED, the
+// notification text indicates the merge was reconciled from an errored
+// mutation AND still instructs `git pull` + `prism cleanup` (this IS a
+// prism-driven merge, just with a recovery breadcrumb). The text is distinct
+// from both the canonical and the external cases.
+func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-reconciled-text"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-reconciled-text")
+
+	if _, err := d.EnqueueMerge(2220, session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "CLEAN"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			return []byte("GraphQL: Merge already in progress (mergePullRequest)"),
+				fmt.Errorf("exit status 1")
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.checkMergedStateFn = func(_ context.Context, pr int) string { return "MERGED" }
+
+	fw.processHead(context.Background())
+
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+
+	if !strings.Contains(text, "PR #2220") {
+		t.Errorf("notification text %q does not mention 'PR #2220'", text)
+	}
+	if !strings.Contains(text, "Reconciled") {
+		t.Errorf("notification text %q does not contain reconciliation breadcrumb — reconciled case must be distinct from canonical case", text)
+	}
+	if !strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q does not instruct `prism cleanup` — reconciled case is still a prism-driven merge", text)
+	}
+	if strings.Contains(text, "merged externally") {
+		t.Errorf("notification text %q contains 'merged externally' — reconciled case must NOT be mistaken for external merge", text)
+	}
+}
+
+// TestRenderExternalMergeNotifyText_NilPrInfo verifies the table of
+// degraded-info renderings: with prInfo == nil the text emits with no
+// merger detail and still avoids the `prism cleanup` instruction. Pure
+// rendering test (no DB, no notify) so we can pin the exact strings.
+func TestRenderExternalMergeNotifyText_NilPrInfo(t *testing.T) {
+	got := renderExternalMergeNotifyText(42, nil)
+	want := "PR #42 was already merged externally. No action taken by prism. Run `git pull` if needed."
+	if got != want {
+		t.Errorf("renderExternalMergeNotifyText(42, nil) =\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// TestRenderExternalMergeNotifyText_LoginAndTimestamp pins the happy-path
+// rendering used by AC1.
+func TestRenderExternalMergeNotifyText_LoginAndTimestamp(t *testing.T) {
+	ts := "2026-06-16T22:32:47Z"
+	info := &prInfo{
+		MergedAt: &ts,
+		MergedBy: &userRef{Login: "b-h-mck"},
+	}
+	got := renderExternalMergeNotifyText(15, info)
+	want := "PR #15 was already merged externally (merged by @b-h-mck at 2026-06-16T22:32:47Z). No action taken by prism. Run `git pull` if needed."
+	if got != want {
+		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// TestRenderExternalMergeNotifyText_LoginOnly verifies the case where gh
+// returned mergedBy but mergedAt is unset (defensive — should not normally
+// happen on a MERGED PR but we still want to render gracefully).
+func TestRenderExternalMergeNotifyText_LoginOnly(t *testing.T) {
+	info := &prInfo{
+		MergedAt: nil,
+		MergedBy: &userRef{Login: "someone"},
+	}
+	got := renderExternalMergeNotifyText(99, info)
+	want := "PR #99 was already merged externally (merged by @someone). No action taken by prism. Run `git pull` if needed."
+	if got != want {
+		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// TestRenderExternalMergeNotifyText_TimestampOnly verifies the case where gh
+// returned mergedAt but mergedBy=null — still emits a useful breadcrumb.
+func TestRenderExternalMergeNotifyText_TimestampOnly(t *testing.T) {
+	ts := "2026-06-17T09:00:00Z"
+	info := &prInfo{
+		MergedAt: &ts,
+		MergedBy: nil,
+	}
+	got := renderExternalMergeNotifyText(123, info)
+	want := "PR #123 was already merged externally (merged at 2026-06-17T09:00:00Z). No action taken by prism. Run `git pull` if needed."
+	if got != want {
+		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
+	}
+}
+
+// TestRenderExternalMergeNotifyText_EmptyLogin verifies that a mergedBy
+// object with an empty login string (rare but possible — e.g. a deleted
+// account) is treated identically to mergedBy=nil: no "@" is emitted.
+func TestRenderExternalMergeNotifyText_EmptyLogin(t *testing.T) {
+	ts := "2026-06-17T09:00:00Z"
+	info := &prInfo{
+		MergedAt: &ts,
+		MergedBy: &userRef{Login: ""},
+	}
+	got := renderExternalMergeNotifyText(456, info)
+	want := "PR #456 was already merged externally (merged at 2026-06-17T09:00:00Z). No action taken by prism. Run `git pull` if needed."
+	if got != want {
+		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
 	}
 }
 

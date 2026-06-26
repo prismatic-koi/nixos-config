@@ -212,9 +212,13 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
-	// PR already merged (shouldn't happen, but handle it gracefully).
+	// PR observed as already MERGED on a fresh poll. The merge was performed
+	// by an external actor (human via GitHub UI, another tool, or a tab racing
+	// the watcher) — prism did NOT execute the merge mutation. Notify the
+	// coordinator with an honest-signal message that distinguishes this from
+	// a prism-driven merge (#2298).
 	if prInfo.State == "MERGED" || prInfo.isMerged() {
-		w.succeedAndNotify(ctx, head)
+		w.succeedAndNotify(ctx, head, mergeOutcomeExternal, prInfo)
 		return
 	}
 
@@ -296,16 +300,19 @@ func (w *Watcher) tryMerge(ctx context.Context, head *db.PendingMerge) {
 	out, err := w.runGH(ctx, "pr", "merge", fmt.Sprintf("%d", head.PR), "--squash")
 	if err == nil {
 		log.Printf("[mergequeue] PR #%d merged successfully", head.PR)
-		w.succeedAndNotify(ctx, head)
+		w.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
 		return
 	}
 
 	// First: reconcile by checking the PR's actual state. Some "errors" are
 	// races where the PR did merge — trusting the observed state is more
-	// reliable than pattern-matching error strings.
+	// reliable than pattern-matching error strings. This is still a
+	// prism-driven merge (we issued the mutation; it errored but the merge
+	// took effect), so the notification distinguishes the reconciliation
+	// breadcrumb from the external-merge case (#2298).
 	if state := w.checkPRMergedState(ctx, head.PR); state == "MERGED" {
 		log.Printf("[mergequeue] PR #%d merge mutation errored but PR is MERGED — reconciling as success", head.PR)
-		w.succeedAndNotify(ctx, head)
+		w.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
 		return
 	}
 
@@ -345,8 +352,42 @@ func (w *Watcher) checkPRMergedState(ctx context.Context, pr int) string {
 	return v.State
 }
 
+// mergeOutcome identifies which of the three success paths called
+// succeedAndNotify. The DB transition is identical for all three (the
+// pending_merges row terminates as 'merged'); the values only steer the
+// notification text rendered for the coordinator. Introduced in #2298 so the
+// coordinator can distinguish an externally-merged PR (the watcher saw a
+// fait-accompli MERGED state on a fresh poll) from a prism-driven merge.
+type mergeOutcome int
+
+const (
+	// mergeOutcomePrismDriven — gh pr merge --squash returned err == nil and
+	// the merge commit was created by prism's own mutation. Canonical case;
+	// existing notification text is preserved byte-for-byte.
+	mergeOutcomePrismDriven mergeOutcome = iota
+
+	// mergeOutcomeExternal — fresh poll observed state=MERGED before prism
+	// attempted any mutation. The merge was performed by a human via the
+	// GitHub UI, by another tool, or by a tab racing the watcher. The
+	// coordinator notification names the merger and does NOT instruct
+	// `prism cleanup`, because prism did not perform the merge.
+	mergeOutcomeExternal
+
+	// mergeOutcomeReconciled — gh pr merge --squash returned a non-nil error
+	// but checkPRMergedState revealed the PR is MERGED. This is the in-flight
+	// race recovery from #1645 — the mutation took effect despite the error.
+	// Still a prism-driven merge (we issued the mutation) so the coordinator
+	// is told to `git pull` + `prism cleanup`, with a reconciliation
+	// breadcrumb appended.
+	mergeOutcomeReconciled
+)
+
 // succeedAndNotify transitions head to merged and notifies the coordinator.
-func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge) {
+// outcome selects which of the three notification variants is rendered (see
+// mergeOutcome). prInfoForExternal supplies mergedBy/mergedAt when
+// outcome == mergeOutcomeExternal; ignored otherwise. Pass nil when the
+// caller does not have a prInfo (prism-driven and reconciled paths).
+func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, outcome mergeOutcome, prInfoForExternal *prInfo) {
 	// Capture mergedAt at the same instant TerminateMerge persists it, so the
 	// spawn_outcome.pr_merged_at write reflects the canonical wall-clock the
 	// merge-queue row carries. Using time.Now() here (and inside TerminateMerge)
@@ -380,22 +421,80 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge) {
 		log.Printf("[mergequeue] PR #%d: no worker spawn_outcome row carries pr_number=%d — skipping pr_merged_at persistence", head.PR, head.PR)
 	}
 
-	// Look up the worker session's archive_path from the sessions table.
-	archivePath := w.lookupWorkerArchivePath(head)
-	var notifyText string
-	if archivePath != "" {
-		notifyText = fmt.Sprintf(
-			"PR #%d merged. Archive: %s. Run `git pull` in @main and `prism cleanup` the worker session.",
-			head.PR, archivePath,
+	notifyText := w.renderSuccessNotifyText(head, outcome, prInfoForExternal)
+	log.Printf("[mergequeue] %s", notifyText)
+	w.notify(ctx, head.SessionName, head.InstanceID, notifyText)
+}
+
+// renderSuccessNotifyText composes the coordinator notification text for one
+// of the three success outcomes (#2298). The prism-driven and reconciled
+// variants include the worker session's archive_path when one is recorded;
+// the external variant omits the archive path because prism did not perform
+// the merge and the coordinator should not run `prism cleanup`.
+func (w *Watcher) renderSuccessNotifyText(head *db.PendingMerge, outcome mergeOutcome, prInfoForExternal *prInfo) string {
+	switch outcome {
+	case mergeOutcomeExternal:
+		return renderExternalMergeNotifyText(head.PR, prInfoForExternal)
+	case mergeOutcomeReconciled:
+		archivePath := w.lookupWorkerArchivePath(head)
+		if archivePath != "" {
+			return fmt.Sprintf(
+				"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Archive: %s. Run `git pull` in @main and `prism cleanup` the worker session.",
+				head.PR, archivePath,
+			)
+		}
+		return fmt.Sprintf(
+			"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Run `git pull` in @main and `prism cleanup` the worker session.",
+			head.PR,
 		)
-	} else {
-		notifyText = fmt.Sprintf(
+	default: // mergeOutcomePrismDriven
+		archivePath := w.lookupWorkerArchivePath(head)
+		if archivePath != "" {
+			return fmt.Sprintf(
+				"PR #%d merged. Archive: %s. Run `git pull` in @main and `prism cleanup` the worker session.",
+				head.PR, archivePath,
+			)
+		}
+		return fmt.Sprintf(
 			"PR #%d merged. Run `git pull` in @main and `prism cleanup` the worker session.",
 			head.PR,
 		)
 	}
-	log.Printf("[mergequeue] %s", notifyText)
-	w.notify(ctx, head.SessionName, head.InstanceID, notifyText)
+}
+
+// renderExternalMergeNotifyText composes the external-merge notification text
+// (#2298). The merger field is emitted as "merged by @<login>" when login is
+// available, falling back to a login-less form when gh returned mergedBy=null
+// or an empty login. The merge timestamp is included when present in prInfo.
+// The text deliberately omits `prism cleanup` because prism did not perform
+// the merge.
+func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
+	var login, mergedAt string
+	if prInfo != nil {
+		if prInfo.MergedBy != nil {
+			login = strings.TrimSpace(prInfo.MergedBy.Login)
+		}
+		if prInfo.MergedAt != nil {
+			mergedAt = strings.TrimSpace(*prInfo.MergedAt)
+		}
+	}
+
+	var detail string
+	switch {
+	case login != "" && mergedAt != "":
+		detail = fmt.Sprintf(" (merged by @%s at %s)", login, mergedAt)
+	case login != "":
+		detail = fmt.Sprintf(" (merged by @%s)", login)
+	case mergedAt != "":
+		detail = fmt.Sprintf(" (merged at %s)", mergedAt)
+	default:
+		detail = ""
+	}
+
+	return fmt.Sprintf(
+		"PR #%d was already merged externally%s. No action taken by prism. Run `git pull` if needed.",
+		pr, detail,
+	)
 }
 
 // failAndNotify transitions head to failed and notifies the coordinator.
@@ -589,12 +688,25 @@ func buildNotifyBody(text string, status *db.Status) map[string]any {
 // the field list never regresses to use the (invalid) "merged" field again —
 // `gh pr view` rejects unknown JSON fields with a non-zero exit, so an invalid
 // field name silently breaks the entire merge-queue watcher (see #1014 fallout).
-const prInfoJSONFields = "state,mergedAt,mergeStateStatus,statusCheckRollup,reviewDecision"
+//
+// `mergedBy` was added in #2298 so the external-merge notification can name the
+// human (or bot) who clicked Squash-and-merge before the watcher's mutation.
+const prInfoJSONFields = "state,mergedAt,mergedBy,mergeStateStatus,statusCheckRollup,reviewDecision"
+
+// userRef is the shape `gh pr view --json mergedBy` returns: an object with a
+// `login` field. Null in JSON unmarshals to a nil *userRef.
+type userRef struct {
+	Login string `json:"login"`
+}
 
 // prInfo holds the fields we care about from `gh pr view --json`.
 type prInfo struct {
-	State             string       `json:"state"`
-	MergedAt          *string      `json:"mergedAt"`
+	State    string  `json:"state"`
+	MergedAt *string `json:"mergedAt"`
+	// MergedBy identifies the GitHub user who clicked Squash-and-merge. nil
+	// when the PR is unmerged or when gh returned mergedBy=null. Consumed by
+	// the external-merge notification path (#2298).
+	MergedBy          *userRef     `json:"mergedBy"`
 	MergeStateStatus  string       `json:"mergeStateStatus"`
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
 	// ReviewDecision is the PR's review decision from GitHub: "REVIEW_REQUIRED",
