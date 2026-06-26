@@ -28,49 +28,6 @@ rec {
       claude-code = masterPkgs.claude-code;
       discord = masterPkgs.discord;
 
-      # openrazer userspace + kernel module: pinned to v3.12.3 to unblock
-      # builds on kernel 7.0+, which changed the `hid_report_raw_event`
-      # signature (5 args -> 6 args). openrazer 3.12.2 (still in our
-      # nixpkgs input via the nixos-unstable channel) calls it with 5
-      # args, so `razerkbd_driver.c` fails to compile against the latest
-      # kernel. v3.12.3 carries the fix.
-      #
-      # Upstream fix: https://github.com/openrazer/openrazer/pull/2809
-      # nixpkgs bump:  https://github.com/NixOS/nixpkgs/pull/523308
-      #                (merged as nixpkgs commit 99643def)
-      #
-      # The userspace packages (pylib + daemon) are pulled wholesale from
-      # `masterPkgs`. The kernel module is per-kernel and lives under
-      # `linuxPackages_latest` (both `tui` and `navi` use
-      # `pkgs.linuxPackages_latest`), so it gets `overrideAttrs`'d to swap
-      # in the v3.12.3 source.
-      #
-      # REMOVAL CONDITION: delete this block once our nixos-unstable
-      # channel pointer advances past nixpkgs commit 99643def
-      # (`python3Packages.openrazer: 3.12.2 -> 3.12.3`).
-      python3Packages = prev.python3Packages // {
-        openrazer = masterPkgs.python3Packages.openrazer;
-        openrazer-daemon = masterPkgs.python3Packages.openrazer-daemon;
-      };
-      # Use `.extend` (not attribute merging) on the kernel package set so
-      # that NixOS's `boot.kernelPackages.apply = kp: kp.extend (...)` hook
-      # preserves our override. A plain `prev.linuxPackages_latest // {...}`
-      # loses the override because NixOS re-extends from the underlying
-      # fixed-point.
-      linuxPackages_latest = prev.linuxPackages_latest.extend (
-        _kfinal: kprev: {
-          openrazer = kprev.openrazer.overrideAttrs (_old: {
-            version = "3.12.3-${kprev.kernel.version}";
-            src = prev.fetchFromGitHub {
-              owner = "openrazer";
-              repo = "openrazer";
-              tag = "v3.12.3";
-              hash = "sha256-X1NPqbugBdxD5Nt9wIwQADV4CuydGLpgKhlNazVdrIY=";
-            };
-          });
-        }
-      );
-
       # bitwarden-cli: pinned to nixpkgs-stable as the most-vetted source.
       # NOTE: pinning alone is no longer sufficient to prevent the `bw unlock
       # --raw` bogus-session regression (bitwarden/clients#20703, issue #1894).
@@ -107,69 +64,6 @@ rec {
       bitwarden-desktop = prev.bitwarden-desktop.override {
         electron_39 = final.electron_39-bin;
       };
-      pi-coding-agent =
-        let
-          newSrc = prev.fetchFromGitHub {
-            owner = "earendil-works";
-            repo = "pi";
-            tag = "v0.79.1";
-            hash = "sha256-MvH8e21GVfzRQ9vsxFNC1GHJfB9GZpqY1Z2t8GCUaiQ=";
-          };
-        in
-        prev.pi-coding-agent.overrideAttrs (old: {
-          version = "0.79.1";
-          src = newSrc;
-          npmDeps = prev.fetchNpmDeps {
-            inherit (old) npmWorkspace;
-            src = newSrc;
-            hash = "sha256-ZWdfDDs+Hv+GWTmsNmpWNlUDBOMALw7H4lwo7CJHVCM=";
-          };
-          # Upstream nixpkgs' postInstall hard-codes the old
-          # @mariozechner/* workspace names; in v0.75.0 the monorepo
-          # renamed to @earendil-works/*. Re-derive postInstall with the
-          # new names.
-          postInstall = ''
-            local nm="$out/lib/node_modules/pi-monorepo/node_modules"
-
-            for ws in @earendil-works/pi-ai:packages/ai \
-                      @earendil-works/pi-agent-core:packages/agent \
-                      @earendil-works/pi-tui:packages/tui; do
-              IFS=: read -r pkg src <<< "$ws"
-              rm "$nm/$pkg"
-              cp -r "$src" "$nm/$pkg"
-            done
-
-            find "$nm" -type l -lname '*/packages/*' -delete
-            find "$nm/.bin" -xtype l -delete
-          '';
-        });
-
-      # kubernetes-helm: disable checkPhase on Darwin to work around a
-      # broken `substitute()` call in nixpkgs' helm 4.2.0 derivation.
-      # Upstream helm 4.2.0 renamed or removed
-      # `cmd/helm/dependency_build_test.go`, but the nixpkgs derivation
-      # still patches its shebang during checkPhase / postPatch, failing
-      # with:
-      #   substitute(): ERROR: file 'cmd/helm/dependency_build_test.go' does not exist
-      # The build itself (and the produced binary) is unaffected; only the
-      # test phase trips on the missing file, and only on Darwin — Linux's
-      # helm 4.2.0 build succeeds against the same nixpkgs input.
-      #
-      # No upstream nixpkgs issue filed yet (out of scope here); see this
-      # repo's issue #2272 for the local failure and CI logs.
-      #
-      # REMOVAL CONDITION: delete this block once nixpkgs' kubernetes-helm
-      # derivation stops referencing the removed test file (either by
-      # dropping the offending `substitute()` call or by helm restoring
-      # the file upstream).
-      kubernetes-helm =
-        if final.stdenv.isDarwin then
-          prev.kubernetes-helm.overrideAttrs (_: {
-            doCheck = false;
-          })
-        else
-          prev.kubernetes-helm;
-
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
       # on staging-25.11 (nixpkgs commit 32e655f). Direnv's source is
