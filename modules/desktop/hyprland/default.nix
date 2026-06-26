@@ -428,31 +428,75 @@ in
                   # close event. Same observable behaviour, no daemon,
                   # no socat, no per-event subprocess fork.
                   #
-                  # Event name and workspace introspection verified
-                  # against the type stubs shipped with hyprland 0.55.1:
-                  #   - `HL.EventName` includes "window.close" (the lua
-                  #     binding of the legacy `closewindow` IPC event)
-                  #     in `share/hypr/stubs/hl.meta.lua`.
-                  #   - `hl.get_active_workspace()` returns an
-                  #     `HL.Workspace` with `id : integer` and
-                  #     `is_empty : boolean` fields. Per the type stubs,
-                  #     `is_empty` is true iff the workspace has no
-                  #     tracked windows — equivalent to the original
-                  #     script's `windows == 0` check via the IPC JSON.
-                  #   - The workspace-switch dispatcher is
-                  #     `hl.dsp.focus({ workspace = "previous" })`, the
-                  #     same form used by every numbered-workspace
-                  #     keybind above (see comment near `SUPER + 1`).
-                  #     `"previous"` matches the existing script's
-                  #     post-#1954 dispatch and is monitor-/numbering-
-                  #     independent (last-focused workspace, not `m-1`).
+                  # Timing supersedes the first cut of this handler (PR
+                  # #1968) which queried `hl.get_active_workspace().is_empty`
+                  # synchronously and silently never fired. Tracing the
+                  # hyprland 0.55.4 source:
+                  #   - `window.close` is emitted at
+                  #     src/desktop/view/Window.cpp:2323 inside
+                  #     `CWindow::unmapWindow()`.
+                  #   - The closing window is detached from its
+                  #     workspace's layout space only LATER in the same
+                  #     function, at Window.cpp:2392 via
+                  #     `g_layoutManager->removeTarget(m_target)` →
+                  #     `LayoutManager.cpp:24-26` → `ITarget::assignToSpace(nullptr)`
+                  #     at `Target.cpp:25-26`, which calls
+                  #     `m_space->remove(...)`.
+                  #   - `is_empty` is `getWindows() == 0`
+                  #     (`LuaWorkspace.cpp:131-132`), and `getWindows()`
+                  #     iterates `m_space->targets()`
+                  #     (`Workspace.cpp:438-461`).
+                  # So at the synchronous lua callback the closing
+                  # window is still in `m_space->targets()`, `is_empty`
+                  # is false, and the old guard never matched. The old
+                  # socat daemon worked accidentally — it shelled out to
+                  # `hyprctl activeworkspace -j` with subprocess
+                  # latency, and the IPC `closewindow` was queried
+                  # post-removal anyway.
+                  #
+                  # Fix: receive the closing window via the callback
+                  # argument (the lua event dispatch pushes the window
+                  # as arg 1, see `LuaEventHandler.cpp:92`), read its
+                  # `.workspace` (per `HL.Window` stub line 745 in
+                  # `share/hypr/stubs/hl.meta.lua`), and check
+                  # `ws.windows == 1` — the closing window IS the one
+                  # remaining target, so a count of exactly 1 means
+                  # this close empties the workspace. The `ws.active`
+                  # gate preserves the original semantic that we only
+                  # auto-switch when the closing window's workspace is
+                  # the active one (the legacy `hyprctl activeworkspace`
+                  # query was implicit-active by construction).
+                  #
+                  # All four lua symbols used below are present in the
+                  # type stubs shipped with hyprland 0.55.4
+                  # (`share/hypr/stubs/hl.meta.lua`):
+                  #   - `HL.EventName` includes "window.close" (line 19).
+                  #   - `HL.Window.workspace : HL.Workspace|nil` (line 745).
+                  #   - `HL.Workspace.active : boolean` (line 758).
+                  #   - `HL.Workspace.id : integer` (line 765).
+                  #   - `HL.Workspace.windows : integer` (line 775).
+                  # The workspace-switch dispatcher is
+                  # `hl.dsp.focus({ workspace = "previous" })`, the
+                  # same form used by every numbered-workspace keybind
+                  # below. `"previous"` is monitor-/numbering-
+                  # independent (last-focused workspace).
+                  #
+                  # Nil-guards on `win` and `win.workspace` keep the
+                  # callback total in any teardown corner where the
+                  # closing window's workspace pointer is already
+                  # cleared — the handler no-ops rather than raising a
+                  # lua error.
                   {
                     _args = [
                       "window.close"
                       (mkLuaInline ''
-                        function()
-                          local ws = hl.get_active_workspace()
-                          if ws ~= nil and ws.id ~= 1 and ws.is_empty then
+                        function(win)
+                          if win == nil then return end
+                          local ws = win.workspace
+                          if ws == nil then return end
+                          if not ws.active then return end
+                          if ws.id == 1 then return end
+                          if ws.windows == 1 then
                             hl.dispatch(hl.dsp.focus({ workspace = "previous" }))
                           end
                         end
