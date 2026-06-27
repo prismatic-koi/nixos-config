@@ -16,9 +16,7 @@
 package cmd
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,8 +101,8 @@ func agentPaneStartCmd(t *testing.T, s *cmdTestServer, sessionName string) strin
 }
 
 // callRestoreSession is a test helper that wraps restoreSession with sensible
-// defaults (threshold=0, no stagger) so that existing tests don't need to be
-// updated every time the internal signature changes.
+// defaults (no stagger) so that existing tests don't need to be updated every
+// time the internal signature changes.
 //
 // Also ensures `loadRestoreConfig` returns a config with a non-empty
 // PIExtensionDir if no test has already overridden it — the host-mode pi
@@ -123,7 +121,7 @@ func callRestoreSession(d *db.DB, s db.Status) error {
 		defer func() { loadRestoreConfig = prev }()
 	}
 	pending := false
-	_, err := restoreSession(d, s, 0, &pending, 0)
+	_, err := restoreSession(d, s, &pending, 0)
 	return err
 }
 
@@ -890,277 +888,6 @@ func TestRestoreSession_ContainerMode_ProfilesError(t *testing.T) {
 	}
 }
 
-// ─── circuit breaker tests ────────────────────────────────────────────────────
-
-// writeRestoreStateChange is a test helper that inserts a state_change event
-// for the given session with the given state value into the DB.
-func writeRestoreStateChange(t *testing.T, d *db.DB, sessionName, state string) {
-	t.Helper()
-	if err := d.WriteEvent(db.Event{
-		ID:          uuid.New().String(),
-		SessionName: sessionName,
-		Repo:        "testrepo",
-		Worktree:    "/tmp/wt",
-		Type:        "state_change",
-		Payload:     `{"state":"` + state + `"}`,
-		CreatedAt:   time.Now(),
-	}); err != nil {
-		t.Fatalf("WriteEvent state_change(%s): %v", state, err)
-	}
-}
-
-// TestCircuitBreaker_NFailures_SessionSkipped verifies that restoreProjectSession
-// returns restoreOutcomeCircuitOpen when the session has N consecutive sidecar
-// failures. The agent_status row must NOT be marked ended (SetEnded not called).
-func TestCircuitBreaker_NFailures_SessionSkipped(t *testing.T) {
-	const threshold = 3
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@circuit-broken"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// Write exactly N interrupted state_change events.
-	for i := 0; i < threshold; i++ {
-		writeRestoreStateChange(t, d, sessionName, "interrupted")
-	}
-
-	pending := false
-	outcome, err := restoreSession(d, status, threshold, &pending, 0)
-	if err != nil {
-		t.Fatalf("restoreSession returned unexpected error: %v", err)
-	}
-	if outcome != restoreOutcomeCircuitOpen {
-		t.Errorf("outcome = %v, want restoreOutcomeCircuitOpen", outcome)
-	}
-
-	// The agent_status row must still be active (NOT ended).
-	if isEnded(t, d, sessionName) {
-		t.Error("session was marked ended by circuit breaker — it must NOT be (session should remain visible in dashboard)")
-	}
-}
-
-// TestCircuitBreaker_NMinusOneFailures_SessionRestored verifies that N-1
-// consecutive sidecar failures do NOT trip the circuit breaker — the session
-// should attempt restoration normally. Without a tmux server the create will
-// fail, but we want to confirm it does NOT return restoreOutcomeCircuitOpen.
-func TestCircuitBreaker_NMinusOneFailures_SessionRestored(t *testing.T) {
-	const threshold = 3
-	// Redirect TmuxBin to a spy that exits 1 for has-session (session absent)
-	// and 0 for all other commands. This prevents real session creation while
-	// allowing the circuit-breaker code path to run normally.
-	withSpyTmux(t)
-	// Isolate session.openDB() calls (from setupFullLayout) from the live DB.
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	// PRISM_CMD_TEST_STUB=1 makes the test binary exit immediately when
-	// re-invoked as a sidecar subprocess, preventing it from calling tmux
-	// commands against the live server.
-	t.Setenv("PRISM_CMD_TEST_STUB", "1")
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@almost-broken"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// Write threshold-1 interrupted state_change events.
-	for i := 0; i < threshold-1; i++ {
-		writeRestoreStateChange(t, d, sessionName, "interrupted")
-	}
-
-	pending := false
-	outcome, _ := restoreSession(d, status, threshold, &pending, 0)
-	// N-1 failures should NOT trip the circuit breaker.
-	if outcome == restoreOutcomeCircuitOpen {
-		t.Error("circuit breaker tripped with N-1 failures — should only trip at exactly N")
-	}
-}
-
-// TestCircuitBreaker_SuccessBetweenFailures_Restored verifies that a single
-// successful sidecar run ("finished") between failures resets the count, so
-// a session with pattern [fail, fail, fail, succeed, fail] should NOT trip
-// the circuit breaker (only 1 consecutive failure since the last success).
-func TestCircuitBreaker_SuccessBetweenFailures_Restored(t *testing.T) {
-	const threshold = 3
-	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
-	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
-	withSpyTmux(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_CMD_TEST_STUB", "1")
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@recovered"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// N failures, then a success, then 1 more failure.
-	for i := 0; i < threshold; i++ {
-		writeRestoreStateChange(t, d, sessionName, "interrupted")
-	}
-	writeRestoreStateChange(t, d, sessionName, "finished")
-	writeRestoreStateChange(t, d, sessionName, "interrupted")
-
-	pending := false
-	outcome, _ := restoreSession(d, status, threshold, &pending, 0)
-	// Only 1 consecutive failure since the last success — should NOT trip.
-	if outcome == restoreOutcomeCircuitOpen {
-		t.Error("circuit breaker tripped despite success resetting the count")
-	}
-}
-
-// TestCircuitBreaker_NoHistory_Restored verifies that a session with no
-// recorded sidecar history is always restored (zero failures).
-func TestCircuitBreaker_NoHistory_Restored(t *testing.T) {
-	const threshold = 3
-	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
-	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
-	withSpyTmux(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_CMD_TEST_STUB", "1")
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@brand-new"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// No state_change events at all.
-	pending := false
-	outcome, _ := restoreSession(d, status, threshold, &pending, 0)
-	// Zero failures — must not trip circuit breaker.
-	if outcome == restoreOutcomeCircuitOpen {
-		t.Error("circuit breaker tripped with no history — brand-new sessions must always be restored")
-	}
-}
-
-// TestCircuitBreaker_QueryError_FallsThrough verifies that a DB query error in
-// ConsecutiveSidecarFailures is non-fatal: restore falls back to the current
-// behaviour (attempts the restore) and logs the error. The session must NOT be
-// marked ended and the restore must not return a circuit-open outcome.
-func TestCircuitBreaker_QueryError_FallsThrough(t *testing.T) {
-	const threshold = 3
-	// Redirect TmuxBin to a spy that exits 1 for has-session and 0 for all
-	// other commands. Isolate session.openDB() from the live DB via XDG_STATE_HOME.
-	withSpyTmux(t)
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("PRISM_CMD_TEST_STUB", "1")
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@query-error"
-	status := seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// Write N failures so that if the query succeeded it would trip.
-	for i := 0; i < threshold; i++ {
-		writeRestoreStateChange(t, d, sessionName, "interrupted")
-	}
-
-	// Close the DB so the ConsecutiveSidecarFailures query returns an error.
-	if err := d.Close(); err != nil {
-		t.Fatalf("close DB: %v", err)
-	}
-	// The test DB is now closed. restoreProjectSession should log the error
-	// and attempt the restore (which will also fail due to closed DB, but
-	// that's a different error path — the important thing is no circuit-open).
-	pending := false
-	outcome, _ := restoreSession(d, status, threshold, &pending, 0)
-	if outcome == restoreOutcomeCircuitOpen {
-		t.Error("circuit breaker returned circuit-open despite query error — should fall through to normal restore")
-	}
-}
-
-// TestCircuitBreaker_DryRun_ShowsWouldSkip verifies that --dry-run mode prints
-// "would skip (circuit breaker):" for sessions that would be skipped, and does
-// NOT print "would restore:" for them.
-func TestCircuitBreaker_DryRun_ShowsWouldSkip(t *testing.T) {
-	const threshold = 3
-	d := openRestoreTestDB(t)
-
-	worktreeDir := t.TempDir()
-	sessionName := "repo@dry-run-circuit"
-	_ = seedStatus(t, d, sessionName, worktreeDir, nil)
-
-	// Write N failures so the circuit breaker would trip.
-	for i := 0; i < threshold; i++ {
-		writeRestoreStateChange(t, d, sessionName, "interrupted")
-	}
-
-	// Capture stdout.
-	origStdout := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
-
-	// Override the DB open function so Restore() uses our test DB.
-	// We also need to override loadRestoreConfig to set the threshold.
-	withRestoreConfig(t, config.Config{
-		SidecarCircuitBreakerThreshold: threshold,
-		// Negative delay so stagger is disabled (not needed for dry-run test).
-		RestoreStaggerDelayMs: -1,
-	})
-
-	// Temporarily override openDB to return our test DB.
-	// Since Restore() calls openDB() internally, we need to use a different
-	// approach: call the internal dry-run path directly by reimplementing
-	// the circuit-breaker dry-run logic. Since we can't easily inject the DB
-	// into Restore(), we call restoreProjectSession indirectly via testing
-	// the output of the dry-run branch with a captured threshold.
-	//
-	// The simplest approach: just call the circuit-breaker check directly and
-	// verify the output format matches the AC specification.
-	cfg := loadRestoreConfig()
-	th := cfg.CircuitBreakerThreshold()
-	failures, cbErr := d.ConsecutiveSidecarFailures(sessionName, th)
-	if cbErr != nil {
-		t.Fatalf("ConsecutiveSidecarFailures: %v", cbErr)
-	}
-	if failures >= th {
-		fmt.Printf("would skip (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` or `prism cleanup` to unblock\n",
-			sessionName, failures, sessionName)
-	}
-
-	// Restore stdout and read output.
-	w.Close()
-	os.Stdout = origStdout
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("read captured output: %v", err)
-	}
-	output := buf.String()
-
-	if !strings.Contains(output, "would skip (circuit breaker):") {
-		t.Errorf("dry-run output does not contain 'would skip (circuit breaker):'; got:\n%s", output)
-	}
-	if !strings.Contains(output, sessionName) {
-		t.Errorf("dry-run output does not name the session %q; got:\n%s", sessionName, output)
-	}
-	if !strings.Contains(output, "prism restart") {
-		t.Errorf("dry-run output does not mention 'prism restart'; got:\n%s", output)
-	}
-	if strings.Contains(output, "would restore:") {
-		t.Errorf("dry-run output contains 'would restore:' for a circuit-broken session; got:\n%s", output)
-	}
-}
-
-// TestCircuitBreaker_Threshold0_Disabled verifies that a threshold of 0 (which
-// means "use the default") does not disable the circuit breaker entirely.
-// This is a configuration sanity check.
-func TestCircuitBreaker_Threshold0_UsesDefault(t *testing.T) {
-	cfg := config.Config{} // zero value — SidecarCircuitBreakerThreshold == 0
-	th := cfg.CircuitBreakerThreshold()
-	if th != config.DefaultSidecarCircuitBreakerThreshold {
-		t.Errorf("CircuitBreakerThreshold() with zero value = %d, want default %d",
-			th, config.DefaultSidecarCircuitBreakerThreshold)
-	}
-}
-
-// TestCircuitBreaker_ThresholdNegative_Disables verifies that a negative
-// threshold disables the circuit breaker (returns 0 from CircuitBreakerThreshold).
-func TestCircuitBreaker_ThresholdNegative_Disables(t *testing.T) {
-	cfg := config.Config{SidecarCircuitBreakerThreshold: -1}
-	th := cfg.CircuitBreakerThreshold()
-	if th != 0 {
-		t.Errorf("CircuitBreakerThreshold() with -1 = %d, want 0 (disabled)", th)
-	}
-}
-
 // TestStaggerDelay_DefaultApplied verifies that the default stagger delay
 // (RestoreStaggerDelayMs == 0) returns the compiled-in default of 500ms.
 func TestStaggerDelay_DefaultApplied(t *testing.T) {
@@ -1193,45 +920,103 @@ func TestStaggerDelay_CustomValue(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_CircuitBreakerSkipsNotEnded_IdempotentRestore verifies
-// that calling restoreSession twice for a circuit-broken session does not
-// double-count failures: the second call sees the same failure count and also
-// returns circuit-open. SetEnded must never be called.
-func TestRestoreSession_CircuitBreakerSkipsNotEnded_IdempotentRestore(t *testing.T) {
-	const threshold = 3
+// ─── restore-attempts-on-prior-failure tests (issue #2315) ───────────────
+//
+// The circuit breaker was removed in #2315. These tests pin the new
+// behaviour: restoreSession must attempt session.Create for every session
+// that does not already have a live tmux session and whose worktree directory
+// exists, regardless of how many consecutive non-finished terminal
+// state_change events its history carries.
+
+// writeRestoreStateChange is a test helper that inserts a state_change event
+// for the given session with the given state value into the DB. Used by the
+// #2315 restore-attempts-on-prior-failure tests below.
+func writeRestoreStateChange(t *testing.T, d *db.DB, sessionName, state string) {
+	t.Helper()
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: sessionName,
+		Repo:        "testrepo",
+		Worktree:    "/tmp/wt",
+		Type:        "state_change",
+		Payload:     `{"state":"` + state + `"}`,
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteEvent state_change(%s): %v", state, err)
+	}
+}
+
+// TestRestoreSession_PriorErrorEvents_StillAttempted verifies that a session
+// whose history contains 3+ consecutive `state_change: error` events is still
+// attempted by restoreSession (no longer skipped). Pre-#2315, the circuit
+// breaker would have skipped this session with
+// "skipped (circuit breaker): ...".
+func TestRestoreSession_PriorErrorEvents_StillAttempted(t *testing.T) {
+	skipRestoreOnGHA(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
 	d := openRestoreTestDB(t)
 
 	worktreeDir := t.TempDir()
-	sessionName := "repo@idempotent-circuit"
+	sessionName := "repo@error-history"
 	status := seedStatus(t, d, sessionName, worktreeDir, nil)
 
-	for i := 0; i < threshold; i++ {
+	// Write 5 consecutive `state_change: error` events (more than the legacy
+	// breaker threshold of 3). Pre-#2315 this would have been skipped.
+	for i := 0; i < 5; i++ {
+		writeRestoreStateChange(t, d, sessionName, "error")
+	}
+
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
+	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
+
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created despite prior error history — circuit-breaker removal regressed", sessionName)
+	}
+
+	// The agent_status row must remain active (NOT marked ended). The
+	// circuit-breaker code path deliberately left rows active so the user
+	// could intervene; the new always-attempt path must preserve that.
+	if isEnded(t, d, sessionName) {
+		t.Error("session was marked ended despite a successful restore attempt")
+	}
+}
+
+// TestRestoreSession_PriorInterruptedEvents_StillAttempted verifies that a
+// session whose history contains 3+ consecutive `state_change: interrupted`
+// events (e.g. from repeated SIGTERM-on-reboot) is still attempted by
+// restoreSession. This is the exact failure mode #2315 was filed to address:
+// the breaker's query treated `interrupted` (clean SIGTERM at shutdown)
+// identically to `error`, so three reboots in a row would lock the session
+// out of restore.
+func TestRestoreSession_PriorInterruptedEvents_StillAttempted(t *testing.T) {
+	skipRestoreOnGHA(t)
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	s := newCmdTestServer(t)
+	withCmdServer(t, s)
+
+	d := openRestoreTestDB(t)
+
+	worktreeDir := t.TempDir()
+	sessionName := "repo@interrupted-history"
+	status := seedStatus(t, d, sessionName, worktreeDir, nil)
+
+	// Simulate three reboots' worth of SIGTERM-triggered shutdowns.
+	for i := 0; i < 3; i++ {
 		writeRestoreStateChange(t, d, sessionName, "interrupted")
 	}
 
-	// First call: should trip circuit.
-	pending := false
-	outcome1, err1 := restoreSession(d, status, threshold, &pending, 0)
-	if err1 != nil {
-		t.Fatalf("first restoreSession: %v", err1)
+	if err := callRestoreSession(d, status); err != nil {
+		t.Fatalf("restoreSession: %v", err)
 	}
-	if outcome1 != restoreOutcomeCircuitOpen {
-		t.Errorf("first call: outcome = %v, want restoreOutcomeCircuitOpen", outcome1)
-	}
-	if isEnded(t, d, sessionName) {
-		t.Error("first call: session was marked ended — must not be")
-	}
+	t.Cleanup(func() { session.KillSidecar(sessionName) })
 
-	// Second call: same state, should still trip (not double-count).
-	outcome2, err2 := restoreSession(d, status, threshold, &pending, 0)
-	if err2 != nil {
-		t.Fatalf("second restoreSession: %v", err2)
-	}
-	if outcome2 != restoreOutcomeCircuitOpen {
-		t.Errorf("second call: outcome = %v, want restoreOutcomeCircuitOpen", outcome2)
-	}
-	if isEnded(t, d, sessionName) {
-		t.Error("second call: session was marked ended — must not be")
+	if !s.hasSession(sessionName) {
+		t.Fatalf("session %q was not created despite prior interrupted history — SIGTERM-on-reboot lockout regressed", sessionName)
 	}
 }
 

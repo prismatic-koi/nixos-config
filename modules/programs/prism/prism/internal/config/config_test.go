@@ -259,6 +259,33 @@ func TestAgentMaxOpenFilesAbsentKeepsDefaults(t *testing.T) {
 	}
 }
 
+// TestSidecarCircuitBreakerThresholdSilentlyIgnored verifies the AC
+// [edge-case] from #2315: an existing config.json on a user's machine that
+// still carries a `sidecar_circuit_breaker_threshold` field (from a previous
+// prism version) continues to load without error after the field was removed
+// from parsedConfig. Go's JSON decoder silently drops keys that are not
+// present in the destination struct, so the file loads successfully and the
+// remaining keys are honoured normally.
+func TestSidecarCircuitBreakerThresholdSilentlyIgnored(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+
+	// Legacy field carried alongside a real field so we can assert the rest
+	// of the load is unaffected.
+	raw := `{"sidecar_circuit_breaker_threshold": 5, "color_primary": "#abcdef"}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PRISM_CONFIG_FILE", cfgPath)
+	cfg := config.LoadFresh()
+
+	// The legacy field is dropped by the decoder; load must still succeed and
+	// honour the rest of the file.
+	if cfg.ColorPrimary != "#abcdef" {
+		t.Errorf("ColorPrimary: got %q, want %q (legacy field must not break the load)", cfg.ColorPrimary, "#abcdef")
+	}
+}
+
 func TestIsolationModeFromNewField(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

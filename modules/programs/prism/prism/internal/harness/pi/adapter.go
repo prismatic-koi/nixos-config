@@ -291,8 +291,9 @@ type piToolResultFrame struct {
 }
 
 // piStateChangeFrame represents PI's state_change event. The state values
-// mirror agent.AgentState so that the ConsecutiveSidecarFailures SQL pushdown
-// on $.state continues to work for PI sessions (B5 consumer-surface table).
+// mirror agent.AgentState so that downstream consumers querying
+// agent_events.payload->>'$.state' (the B5 consumer-surface table) see a
+// consistent vocabulary across harnesses.
 type piStateChangeFrame struct {
 	Type  string `json:"type"`
 	State string `json:"state"`
