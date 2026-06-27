@@ -71,7 +71,6 @@ let
     # uses its own libresolv/libldns and resolves hostnames without any of that.
     ssh_bin = "${pkgs.openssh}/bin/ssh";
     restore_stagger_delay_ms = config.nx.programs.prism.restoreStaggerDelayMs;
-    sidecar_circuit_breaker_threshold = config.nx.programs.prism.sidecarCircuitBreakerThreshold;
     bwrap_concurrency_cap = config.nx.programs.prism.bwrapConcurrencyCap;
     sandbox_exec_concurrency_cap = config.nx.programs.prism.sandboxExecConcurrencyCap;
     # agent_max_open_files_soft/hard: per-process RLIMIT_NOFILE caps applied
@@ -120,17 +119,6 @@ in
         `prism restore`, to flatten the sidecar startup burst on machines with
         many sessions. 0 means use the compiled-in default (500ms). Set to a
         negative value to disable the stagger entirely.
-      '';
-    };
-
-    nx.programs.prism.sidecarCircuitBreakerThreshold = lib.mkOption {
-      type = lib.types.int;
-      default = 0;
-      description = ''
-        Number of consecutive non-successful sidecar exits that causes
-        `prism restore` to skip re-spawning a session. 0 means use the
-        compiled-in default (3). Set to a negative value to disable the
-        circuit breaker entirely.
       '';
     };
 

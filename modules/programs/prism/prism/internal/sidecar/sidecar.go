@@ -1675,7 +1675,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 			}
 			if eventType == "state_change" {
 				// State-change events must also drive the in-memory state
-				// machine and the circuit-breaker, not just the DB row.
+				// machine, not just the DB row.
 				var sc struct {
 					State string `json:"state"`
 				}

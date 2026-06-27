@@ -107,10 +107,6 @@ type Config struct {
 	// curve. Zero means use the compiled-in default (500ms). Set to a negative
 	// value to disable the stagger entirely.
 	RestoreStaggerDelayMs int `json:"restore_stagger_delay_ms"`
-	// SidecarCircuitBreakerThreshold is the number of consecutive non-zero
-	// sidecar exits that causes `prism restore` to skip re-spawning that
-	// session. Zero means use the compiled-in default (3).
-	SidecarCircuitBreakerThreshold int `json:"sidecar_circuit_breaker_threshold"`
 
 	// BwrapConcurrencyCap is the maximum number of active bwrap sessions
 	// (agent_status rows with ended_at IS NULL AND isolation_mode = 'bwrap')
@@ -171,36 +167,35 @@ type Config struct {
 // parsedConfig mirrors Config but uses pointer slices so that a JSON null or
 // absent key is distinguishable from an explicit empty array [].
 type parsedConfig struct {
-	ColorPrimary                   string             `json:"color_primary"`
-	ColorSecondary                 string             `json:"color_secondary"`
-	ColorPurple                    string             `json:"color_purple"`
-	ColorYellow                    string             `json:"color_yellow"`
-	ColorGreen                     string             `json:"color_green"`
-	ColorBlue                      string             `json:"color_blue"`
-	ColorRed                       string             `json:"color_red"`
-	ColorForeground                string             `json:"color_foreground"`
-	ColorBg0                       string             `json:"color_bg0"`
-	KittyBin                       string             `json:"kitty_bin"`
-	DefaultIsolationMode           string             `json:"default_isolation_mode"`
-	SidecarPluginPath              string             `json:"sidecar_plugin_path"`
-	GitUserName                    string             `json:"git_user_name"`
-	GitUserEmail                   string             `json:"git_user_email"`
-	SshAccessKeyName               string             `json:"ssh_access_key_name"`
-	SshSigningKeyName              string             `json:"ssh_signing_key_name"`
-	SshBin                         string             `json:"ssh_bin"`
-	GitHubTokenPath                string             `json:"github_token_path"`
-	PIExtensionDir                 string             `json:"pi_extension_dir"`
-	RestoreStaggerDelayMs          *int               `json:"restore_stagger_delay_ms"`
-	SidecarCircuitBreakerThreshold *int               `json:"sidecar_circuit_breaker_threshold"`
-	BwrapConcurrencyCap            *int               `json:"bwrap_concurrency_cap"`
-	SandboxExecConcurrencyCap      *int               `json:"sandbox_exec_concurrency_cap"`
-	AgentMaxOpenFilesSoft          *int               `json:"agent_max_open_files_soft"`
-	AgentMaxOpenFilesHard          *int               `json:"agent_max_open_files_hard"`
-	WorktreeExclude                *[]string          `json:"worktree_exclude"`
-	ProjectLocations               *[]string          `json:"project_locations"`
-	ProjectSpecific                *[]string          `json:"project_specific"`
-	ProjectIsolationOverrides      *map[string]string `json:"project_isolation_overrides"`
-	FeedbackEndpoint               string             `json:"feedback_endpoint"`
+	ColorPrimary              string             `json:"color_primary"`
+	ColorSecondary            string             `json:"color_secondary"`
+	ColorPurple               string             `json:"color_purple"`
+	ColorYellow               string             `json:"color_yellow"`
+	ColorGreen                string             `json:"color_green"`
+	ColorBlue                 string             `json:"color_blue"`
+	ColorRed                  string             `json:"color_red"`
+	ColorForeground           string             `json:"color_foreground"`
+	ColorBg0                  string             `json:"color_bg0"`
+	KittyBin                  string             `json:"kitty_bin"`
+	DefaultIsolationMode      string             `json:"default_isolation_mode"`
+	SidecarPluginPath         string             `json:"sidecar_plugin_path"`
+	GitUserName               string             `json:"git_user_name"`
+	GitUserEmail              string             `json:"git_user_email"`
+	SshAccessKeyName          string             `json:"ssh_access_key_name"`
+	SshSigningKeyName         string             `json:"ssh_signing_key_name"`
+	SshBin                    string             `json:"ssh_bin"`
+	GitHubTokenPath           string             `json:"github_token_path"`
+	PIExtensionDir            string             `json:"pi_extension_dir"`
+	RestoreStaggerDelayMs     *int               `json:"restore_stagger_delay_ms"`
+	BwrapConcurrencyCap       *int               `json:"bwrap_concurrency_cap"`
+	SandboxExecConcurrencyCap *int               `json:"sandbox_exec_concurrency_cap"`
+	AgentMaxOpenFilesSoft     *int               `json:"agent_max_open_files_soft"`
+	AgentMaxOpenFilesHard     *int               `json:"agent_max_open_files_hard"`
+	WorktreeExclude           *[]string          `json:"worktree_exclude"`
+	ProjectLocations          *[]string          `json:"project_locations"`
+	ProjectSpecific           *[]string          `json:"project_specific"`
+	ProjectIsolationOverrides *map[string]string `json:"project_isolation_overrides"`
+	FeedbackEndpoint          string             `json:"feedback_endpoint"`
 }
 
 // DefaultBwrapConcurrencyCap is the compiled-in default maximum number of
@@ -375,9 +370,6 @@ func load() Config {
 	if parsed.RestoreStaggerDelayMs != nil {
 		cfg.RestoreStaggerDelayMs = *parsed.RestoreStaggerDelayMs
 	}
-	if parsed.SidecarCircuitBreakerThreshold != nil {
-		cfg.SidecarCircuitBreakerThreshold = *parsed.SidecarCircuitBreakerThreshold
-	}
 	if parsed.BwrapConcurrencyCap != nil {
 		cfg.BwrapConcurrencyCap = *parsed.BwrapConcurrencyCap
 	}
@@ -416,10 +408,6 @@ func load() Config {
 // overridden in config.json. 500ms is enough to flatten the podman burst.
 const DefaultRestoreStaggerDelay = 500 // milliseconds
 
-// DefaultSidecarCircuitBreakerThreshold is the default consecutive-failure
-// count at which prism restore stops re-spawning a broken sidecar.
-const DefaultSidecarCircuitBreakerThreshold = 3
-
 // RestoreStaggerDelay returns the configured stagger delay as a time.Duration,
 // applying the compiled-in default (500ms) when RestoreStaggerDelayMs == 0.
 // A negative RestoreStaggerDelayMs disables the stagger (returns 0).
@@ -432,21 +420,6 @@ func (c Config) RestoreStaggerDelay() time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
-}
-
-// CircuitBreakerThreshold returns the configured circuit-breaker threshold,
-// applying the compiled-in default (3) when SidecarCircuitBreakerThreshold == 0.
-// Returns 0 if SidecarCircuitBreakerThreshold is negative (effectively disables
-// the circuit breaker — all sessions are restored regardless of failure history).
-func (c Config) CircuitBreakerThreshold() int {
-	n := c.SidecarCircuitBreakerThreshold
-	if n == 0 {
-		return DefaultSidecarCircuitBreakerThreshold
-	}
-	if n < 0 {
-		return 0
-	}
-	return n
 }
 
 // IsolationOverrideForPath looks up path in ProjectIsolationOverrides and

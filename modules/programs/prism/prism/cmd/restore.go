@@ -11,15 +11,6 @@ package cmd
 // sessions. The delay only applies to sessions that are actually being created;
 // it is skipped for already-running sessions and for sessions being marked
 // ended due to missing worktrees. It is also fully skipped in dry-run mode.
-//
-// Circuit breaker: before restoring a session, restore checks its recent
-// sidecar exit history. If the last N sidecar lifecycles all ended
-// non-successfully (state != "finished") with no intervening success, restore
-// skips re-spawning that session and prints a clear message pointing the user
-// at `prism restart` or `prism cleanup`. The session's agent_status row is
-// NOT marked ended — it stays active in the dashboard so the user can
-// intervene. N defaults to 3 and is tunable via
-// cfg.SidecarCircuitBreakerThreshold.
 
 import (
 	"fmt"
@@ -52,12 +43,6 @@ const (
 	// restoreOutcomeCreated means the session was successfully created.
 	// A stagger delay should be applied after this call (if enabled).
 	restoreOutcomeCreated
-
-	// restoreOutcomeCircuitOpen means the circuit breaker tripped: the session
-	// has too many consecutive sidecar failures. No session was created and the
-	// agent_status row is left active. A stagger delay is NOT applied (we did
-	// no real work).
-	restoreOutcomeCircuitOpen
 )
 
 // loadRestoreConfig returns the active prism configuration for restore.
@@ -119,16 +104,15 @@ func Restore(dryRun bool) error {
 		return fmt.Errorf("prism restore: query sessions: %w", err)
 	}
 
-	// Load config once to read the stagger delay and circuit-breaker threshold.
+	// Load config once to read the stagger delay.
 	// loadRestoreConfig is a package-level var so tests can override it.
 	cfg := loadRestoreConfig()
 	staggerDelay := cfg.RestoreStaggerDelay()
-	threshold := cfg.CircuitBreakerThreshold()
 
 	// pendingStagger is set to true after each successful session.Create. It is
 	// consumed (a sleep is applied) immediately before the NEXT actual create,
-	// not before skipped sessions or circuit-breaker-tripped sessions. This
-	// ensures the delay only fires between real sidecar starts.
+	// not before skipped sessions. This ensures the delay only fires between
+	// real sidecar starts.
 	//
 	// Using a pointer so that restoreProjectSession can consume it without an
 	// extra return value: the function sleeps before session.Create if
@@ -137,33 +121,19 @@ func Restore(dryRun bool) error {
 
 	// Aggregate counts for the final summary line (issue #1527 AC).
 	// restored:  outcome == restoreOutcomeCreated
-	// skipped:   outcome == restoreOutcomeSkipped or restoreOutcomeCircuitOpen
+	// skipped:   outcome == restoreOutcomeSkipped
 	// failed:    restErr != nil (per-session error from restoreSession)
 	var restored, skipped, failed int
 
 	for _, s := range statuses {
 		if dryRun {
 			// In dry-run mode, show what would happen but never sleep or write.
-			// Check the circuit breaker state so the user sees accurate output.
-			if threshold > 0 {
-				failures, cbErr := d.ConsecutiveSidecarFailures(s.SessionName, threshold)
-				if cbErr != nil {
-					fmt.Fprintf(os.Stderr, "restore dry-run %q: circuit breaker query: %v — treating as 0 failures\n", s.SessionName, cbErr)
-					failures = 0
-				}
-				if failures >= threshold {
-					fmt.Printf("would skip (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` or `prism cleanup` to unblock\n",
-						s.SessionName, failures, s.SessionName)
-					skipped++
-					continue
-				}
-			}
 			fmt.Printf("would restore: %s (worktree=%s)\n", s.SessionName, s.Worktree)
 			restored++
 			continue
 		}
 
-		outcome, restErr := restoreSession(d, s, threshold, &pendingStagger, staggerDelay)
+		outcome, restErr := restoreSession(d, s, &pendingStagger, staggerDelay)
 		if restErr != nil {
 			fmt.Fprintf(os.Stderr, "restore %q: %v\n", s.SessionName, restErr)
 			failed++
@@ -171,14 +141,14 @@ func Restore(dryRun bool) error {
 			switch outcome {
 			case restoreOutcomeCreated:
 				restored++
-			case restoreOutcomeSkipped, restoreOutcomeCircuitOpen:
+			case restoreOutcomeSkipped:
 				skipped++
 			}
 		}
 
 		// A created session sets pendingStagger so that the NEXT actual create
-		// is preceded by a sleep. Skipped sessions and circuit-open sessions do
-		// not consume or reset pendingStagger.
+		// is preceded by a sleep. Skipped sessions do not consume or reset
+		// pendingStagger.
 		if outcome == restoreOutcomeCreated {
 			pendingStagger = true
 		}
@@ -207,9 +177,6 @@ func Restore(dryRun bool) error {
 // skipped silently. Sessions with missing/inaccessible worktrees are marked as
 // ended in the DB rather than left as zombies.
 //
-// threshold is the circuit-breaker consecutive-failure threshold. A value of 0
-// disables the circuit breaker for this call (all sessions are restored).
-//
 // pendingStagger points to a bool that is set by the caller after each
 // successful create. If *pendingStagger is true when session.Create is about
 // to be called, restoreProjectSession sleeps for staggerDelay and resets it
@@ -220,7 +187,7 @@ func Restore(dryRun bool) error {
 // re-derived from the worktree path. This ensures both bare and non-bare
 // sessions (e.g. obsidian) are restored correctly even if the session name
 // would not match what sessionNameFor() would compute from the worktree.
-func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
+func restoreSession(d *db.DB, s db.Status, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
 	if tmux.HasSession(s.SessionName) {
 		return restoreOutcomeSkipped, nil
 	}
@@ -238,7 +205,7 @@ func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, 
 		return restoreOutcomeSkipped, nil
 	}
 
-	return restoreProjectSession(d, s, threshold, pendingStagger, staggerDelay)
+	return restoreProjectSession(d, s, pendingStagger, staggerDelay)
 }
 
 // restoreProjectSession recreates a project session using the shared
@@ -248,9 +215,6 @@ func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, 
 // the filesystem — this ensures non-bare sessions (e.g. obsidian) and sessions
 // whose name diverges from the worktree path are restored correctly.
 //
-// threshold is the circuit-breaker consecutive-failure threshold. A value of 0
-// disables the circuit breaker for this call.
-//
 // pendingStagger and staggerDelay implement the inter-create stagger. If
 // *pendingStagger is true when session.Create is about to be called, this
 // function sleeps for staggerDelay and resets *pendingStagger to false first.
@@ -259,7 +223,7 @@ func restoreSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, 
 // (SkipStatusSeed=true) rather than forking a subprocess, because
 // os.Executable() does not reliably resolve the real prism binary in all
 // contexts (e.g. test binaries).
-func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
+func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerDelay time.Duration) (restoreOutcome, error) {
 	// If the worktree directory doesn't exist or is inaccessible, mark the
 	// session as ended in the DB so it doesn't appear as a zombie in the
 	// dashboard.
@@ -272,25 +236,6 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 		fmt.Fprintf(os.Stderr, "restore %q: worktree %q not accessible (%v) — marking ended\n",
 			s.SessionName, directory, err)
 		return restoreOutcomeSkipped, d.SetEnded(s.SessionName)
-	}
-
-	// Circuit breaker: skip sessions whose sidecar has failed too many times
-	// in a row without a successful run in between. The agent_status row is
-	// intentionally left active (no SetEnded call) so the session remains
-	// visible in `prism sessions list` and the dashboard, and the user can
-	// intervene via `prism restart` or `prism cleanup`.
-	if threshold > 0 {
-		failures, cbErr := d.ConsecutiveSidecarFailures(s.SessionName, threshold)
-		if cbErr != nil {
-			// Non-fatal: a broken history table must not block recovery.
-			// Log and fall through to attempt the restore normally.
-			fmt.Fprintf(os.Stderr, "restore %q: circuit breaker query failed: %v — proceeding with restore\n",
-				s.SessionName, cbErr)
-		} else if failures >= threshold {
-			fmt.Printf("skipped (circuit breaker): %s — %d consecutive sidecar failure(s); run `prism restart %s` to try again, or `prism cleanup` to remove it\n",
-				s.SessionName, failures, s.SessionName)
-			return restoreOutcomeCircuitOpen, nil
-		}
 	}
 
 	// Build opts for the full three-window layout. SkipStatusSeed prevents
@@ -522,8 +467,8 @@ func restoreProjectSession(d *db.DB, s db.Status, threshold int, pendingStagger 
 	// after each successful create; we consume it here (reset to false) so
 	// that the delay fires exactly once per create pair.
 	// This is the point in the code path where we are committed to calling
-	// session.Create, so all cheap checks (worktree, HasSession, circuit
-	// breaker) have already been handled above without consuming the stagger.
+	// session.Create, so all cheap checks (worktree, HasSession) have already
+	// been handled above without consuming the stagger.
 	if pendingStagger != nil && *pendingStagger && staggerDelay > 0 {
 		time.Sleep(staggerDelay)
 		*pendingStagger = false
