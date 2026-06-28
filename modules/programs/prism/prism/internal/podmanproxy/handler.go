@@ -48,6 +48,9 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case endpointPolicyExec:
 		p.handlePolicyExec(w, r)
 
+	case endpointPolicyVolumeCreate:
+		p.handlePolicyVolumeCreate(w, r)
+
 	case endpointDeny:
 		fallthrough
 	default:
@@ -120,6 +123,29 @@ func (p *Proxy) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dec := p.inspectUpdate(body)
+	if !dec.allow {
+		p.emitAudit(r, auditDeny, dec.reason)
+		writeJSONError(w, dec.status, dec.message)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	p.emitAudit(r, auditAllow, dec.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handlePolicyVolumeCreate is the body-inspecting branch for POST
+// /volumes/create. Same shape as handlePolicyUpdate: read body,
+// inspect for the local-driver bind-volume escape, restore body and
+// forward on allow.
+func (p *Proxy) handlePolicyVolumeCreate(w http.ResponseWriter, r *http.Request) {
+	body, readDec := p.readBoundedBody(w, r)
+	if !readDec.allow {
+		p.emitAudit(r, auditDeny, readDec.reason)
+		writeJSONError(w, readDec.status, readDec.message)
+		return
+	}
+	dec := p.inspectVolumeCreate(body)
 	if !dec.allow {
 		p.emitAudit(r, auditDeny, dec.reason)
 		writeJSONError(w, dec.status, dec.message)

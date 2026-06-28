@@ -49,6 +49,15 @@ const (
 	// bypass where an agent creates a non-privileged container and
 	// then exec's into it with Privileged: true.
 	endpointPolicyExec
+
+	// endpointPolicyVolumeCreate means "read body, parse as JSON,
+	// reject local-driver bind-volumes". Used for POST volumes/create.
+	// Closes the bypass where an agent creates a named volume that is
+	// functionally a host bind (Driver=local + DriverOpts={type=none,
+	// device=/host/path, o=bind}) and then references it from a
+	// subsequent containers/create body via the named-volume path that
+	// bindSource() does NOT host-check.
+	endpointPolicyVolumeCreate
 )
 
 // normalisePath strips a leading docker/podman API version segment and
@@ -264,9 +273,11 @@ func classifyPOST(normPath string) endpointKind {
 	}
 
 	// Network and volume create / connect / disconnect.
-	switch normPath {
-	case "networks/create", "volumes/create":
+	if normPath == "networks/create" {
 		return endpointAllow
+	}
+	if normPath == "volumes/create" {
+		return endpointPolicyVolumeCreate
 	}
 	switch {
 	case matchPath(normPath, "networks/+/connect"),

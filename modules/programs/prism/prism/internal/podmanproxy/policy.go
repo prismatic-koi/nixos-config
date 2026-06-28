@@ -57,27 +57,48 @@ func denyDecision(status int, reason, message string) policyDecision {
 // field (review-security PR #2326 round 2: 0 was previously a
 // drive-through bypass of the configured cap).
 type hostConfig struct {
-	Binds       []string          `json:"Binds"`
-	Mounts      []hostConfigMount `json:"Mounts"`
-	Privileged  bool              `json:"Privileged"`
-	CapAdd      []string          `json:"CapAdd"`
-	NetworkMode string            `json:"NetworkMode"`
-	PidMode     string            `json:"PidMode"`
-	IpcMode     string            `json:"IpcMode"`
-	UTSMode     string            `json:"UTSMode"`
-	UsernsMode  string            `json:"UsernsMode"`
-	Devices     []json.RawMessage `json:"Devices"`
-	SecurityOpt []string          `json:"SecurityOpt"`
-	Memory      *int64            `json:"Memory"`
-	CpuQuota    *int64            `json:"CpuQuota"`
-	NanoCpus    *int64            `json:"NanoCpus"`
+	Binds             []string          `json:"Binds"`
+	Mounts            []hostConfigMount `json:"Mounts"`
+	Privileged        bool              `json:"Privileged"`
+	CapAdd            []string          `json:"CapAdd"`
+	NetworkMode       string            `json:"NetworkMode"`
+	PidMode           string            `json:"PidMode"`
+	IpcMode           string            `json:"IpcMode"`
+	UTSMode           string            `json:"UTSMode"`
+	UsernsMode        string            `json:"UsernsMode"`
+	CgroupnsMode      string            `json:"CgroupnsMode"`
+	Devices           []json.RawMessage `json:"Devices"`
+	DeviceCgroupRules []string          `json:"DeviceCgroupRules"`
+	DeviceRequests    []json.RawMessage `json:"DeviceRequests"`
+	VolumesFrom       []string          `json:"VolumesFrom"`
+	MaskedPaths       *[]string         `json:"MaskedPaths"`
+	ReadonlyPaths     *[]string         `json:"ReadonlyPaths"`
+	SecurityOpt       []string          `json:"SecurityOpt"`
+	Sysctls           map[string]string `json:"Sysctls"`
+	Memory            *int64            `json:"Memory"`
+	CpuQuota          *int64            `json:"CpuQuota"`
+	NanoCpus          *int64            `json:"NanoCpus"`
 }
 
-// hostConfigMount mirrors a docker HostConfig.Mounts entry. Only the
-// fields needed for the bind-source check are extracted.
+// hostConfigMount mirrors a docker HostConfig.Mounts entry. The
+// VolumeOptions sub-struct is parsed so we can deny the local-driver
+// bind-volume escape (#2326 round 4 review-security CRITICAL #1):
+// Type=volume with VolumeOptions.DriverConfig.Name="local" plus
+// DriverConfig.Options.device=/host/path is functionally a bind mount
+// dressed up as a volume.
 type hostConfigMount struct {
-	Type   string `json:"Type"`
-	Source string `json:"Source"`
+	Type          string                   `json:"Type"`
+	Source        string                   `json:"Source"`
+	VolumeOptions *hostConfigVolumeOptions `json:"VolumeOptions"`
+}
+
+type hostConfigVolumeOptions struct {
+	DriverConfig *hostConfigDriverConfig `json:"DriverConfig"`
+}
+
+type hostConfigDriverConfig struct {
+	Name    string            `json:"Name"`
+	Options map[string]string `json:"Options"`
 }
 
 // containerCreateBody is the top-level shape of POST containers/create.
@@ -151,17 +172,34 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 
 	// Host bind sources (newer Mounts slice).
 	for _, m := range hc.Mounts {
-		if !strings.EqualFold(m.Type, "bind") {
-			// "volume", "tmpfs", "npipe", "image" do not read host
-			// files. (npipe is Windows-only; we let the upstream
-			// reject it on Linux/Darwin.)
+		if strings.EqualFold(m.Type, "bind") {
+			if !p.isAllowedBindSource(m.Source) {
+				return denyDecision(http.StatusForbidden,
+					"mount_bind:"+truncateForReason(m.Source),
+					fmt.Sprintf("mount source %q is not in the allowlist", m.Source))
+			}
 			continue
 		}
-		if !p.isAllowedBindSource(m.Source) {
-			return denyDecision(http.StatusForbidden,
-				"mount_bind:"+truncateForReason(m.Source),
-				fmt.Sprintf("mount source %q is not in the allowlist", m.Source))
+		if strings.EqualFold(m.Type, "volume") {
+			// Type=volume with an inline DriverConfig is the
+			// local-driver bind-volume escape: VolumeOptions.
+			// DriverConfig.{Name,Options} can specify a host path
+			// to bind-mount via the volume mechanism, bypassing the
+			// Type=bind allowlist check above. The conservative fix
+			// per the cycle-5 coordinator directive is to deny any
+			// VolumeOptions.DriverConfig at all — the legitimate
+			// "named volume managed by podman" case has no
+			// DriverConfig (uses the default driver settings).
+			if m.VolumeOptions != nil && m.VolumeOptions.DriverConfig != nil {
+				return denyDecision(http.StatusForbidden,
+					"mount_volume_driver_config",
+					"Mounts entry of Type=volume with VolumeOptions.DriverConfig is not permitted (local-driver bind-volume escape; use a Type=bind Mount with an allowlisted Source instead)")
+			}
+			continue
 		}
+		// "tmpfs" (in-memory, container-internal), "npipe"
+		// (Windows), "image" (image-volume): no host-file access
+		// path, forward unmodified.
 	}
 
 	// Privileged is a single bit. Any "true" is a hard reject.
@@ -181,40 +219,87 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		}
 	}
 
-	// Host namespaces — any *Mode = "host" is a hard reject.
-	if mode := strings.ToLower(hc.NetworkMode); mode == "host" {
-		return denyDecision(http.StatusForbidden,
-			"network_mode_host",
-			"HostConfig.NetworkMode=host is not permitted")
+	// Host namespaces — any *Mode = "host" is a hard reject. The
+	// CgroupnsMode entry is the cycle-4 round-4 review-security
+	// finding (sibling of the other five that I had already blocked).
+	nsModes := []struct {
+		name, value, reason, msg string
+	}{
+		{"NetworkMode", hc.NetworkMode, "network_mode_host", "HostConfig.NetworkMode=host is not permitted"},
+		{"PidMode", hc.PidMode, "pid_mode_host", "HostConfig.PidMode=host is not permitted"},
+		{"IpcMode", hc.IpcMode, "ipc_mode_host", "HostConfig.IpcMode=host is not permitted"},
+		{"UTSMode", hc.UTSMode, "uts_mode_host", "HostConfig.UTSMode=host is not permitted"},
+		{"UsernsMode", hc.UsernsMode, "userns_mode_host", "HostConfig.UsernsMode=host is not permitted"},
+		{"CgroupnsMode", hc.CgroupnsMode, "cgroupns_mode_host", "HostConfig.CgroupnsMode=host is not permitted"},
 	}
-	if mode := strings.ToLower(hc.PidMode); mode == "host" {
-		return denyDecision(http.StatusForbidden,
-			"pid_mode_host",
-			"HostConfig.PidMode=host is not permitted")
-	}
-	if mode := strings.ToLower(hc.IpcMode); mode == "host" {
-		return denyDecision(http.StatusForbidden,
-			"ipc_mode_host",
-			"HostConfig.IpcMode=host is not permitted")
-	}
-	if mode := strings.ToLower(hc.UTSMode); mode == "host" {
-		return denyDecision(http.StatusForbidden,
-			"uts_mode_host",
-			"HostConfig.UTSMode=host is not permitted")
-	}
-	if mode := strings.ToLower(hc.UsernsMode); mode == "host" {
-		return denyDecision(http.StatusForbidden,
-			"userns_mode_host",
-			"HostConfig.UsernsMode=host is not permitted")
+	for _, m := range nsModes {
+		if strings.ToLower(m.value) == "host" {
+			return denyDecision(http.StatusForbidden, m.reason, m.msg)
+		}
 	}
 
 	// Device passthrough — any non-empty Devices is a hard reject.
-	// A future enhancement could allowlist e.g. /dev/null; for now
-	// we are strictly default-deny.
 	if len(hc.Devices) > 0 {
 		return denyDecision(http.StatusForbidden,
 			"devices_nonempty",
 			"HostConfig.Devices is not permitted")
+	}
+
+	// DeviceCgroupRules: parallel cgroup-rule mechanism to Devices.
+	// `"a *:* rwm"` grants unrestricted device-cgroup access; combined
+	// with CAP_MKNOD (in the default capset; my CapAdd policy only
+	// blocks ADDs, not what defaults grant) the agent can mknod and
+	// read the host's raw disks. Cycle-4 finding #2 (CRITICAL).
+	if len(hc.DeviceCgroupRules) > 0 {
+		return denyDecision(http.StatusForbidden,
+			"device_cgroup_rules_nonempty",
+			"HostConfig.DeviceCgroupRules is not permitted (mirrors the Devices denial; the rule mechanism is equivalent")
+	}
+
+	// DeviceRequests: GPU / nvidia-container-runtime style device
+	// passthrough. Cycle-4 finding #5.
+	if len(hc.DeviceRequests) > 0 {
+		return denyDecision(http.StatusForbidden,
+			"device_requests_nonempty",
+			"HostConfig.DeviceRequests is not permitted")
+	}
+
+	// VolumesFrom: inherit mounts from another container. The other
+	// container's mount set is impossible to audit transitively; the
+	// agent could inherit any host bind that any other container the
+	// user has on the host carries. Cycle-4 finding #5.
+	if len(hc.VolumesFrom) > 0 {
+		return denyDecision(http.StatusForbidden,
+			"volumes_from_nonempty",
+			"HostConfig.VolumesFrom is not permitted (mounts cannot be audited transitively)")
+	}
+
+	// MaskedPaths / ReadonlyPaths: setting these (even as empty
+	// arrays) overrides runc's safe defaults, re-exposing /proc/keys,
+	// /proc/sysrq-trigger, /sys/firmware, etc. inside the container.
+	// No legitimate workflow overrides these for security. Cycle-4
+	// finding #3. (Pointer types distinguish field-absent from
+	// field-present-with-empty-array.)
+	if hc.MaskedPaths != nil {
+		return denyDecision(http.StatusForbidden,
+			"masked_paths_present",
+			"HostConfig.MaskedPaths is not permitted (overrides runc's safe default; legitimate workflows should rely on the default)")
+	}
+	if hc.ReadonlyPaths != nil {
+		return denyDecision(http.StatusForbidden,
+			"readonly_paths_present",
+			"HostConfig.ReadonlyPaths is not permitted (overrides runc's safe default)")
+	}
+
+	// Sysctls: kernel parameters set in the container. Some sysctls
+	// are namespaced (safe), some are not. Defence-in-depth (cycle-5
+	// opportunistic sweep): deny any Sysctls entirely; legitimate
+	// workflows can request specific entries through the allowlist
+	// admission process.
+	if len(hc.Sysctls) > 0 {
+		return denyDecision(http.StatusForbidden,
+			"sysctls_nonempty",
+			"HostConfig.Sysctls is not permitted (defence-in-depth; some sysctls are not namespaced)")
 	}
 
 	// SecurityOpt entries are default-deny: any entry not present in
@@ -334,6 +419,46 @@ func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 			"containers/update body is not valid JSON")
 	}
 	return p.checkResourceCaps(&hc, capContextUpdate)
+}
+
+// volumeCreateBody is the partial shape of POST volumes/create. We
+// inspect Driver and DriverOpts to close the cycle-4 round-4
+// review-security CRITICAL #1: the `local` driver with DriverOpts
+// {type=none, device=/host/path, o=bind} creates a named volume that
+// is functionally a host bind, then a follow-up containers/create
+// references the volume by name and bindSource() skips the
+// host-bind check (no leading slash).
+type volumeCreateBody struct {
+	Name       string            `json:"Name"`
+	Driver     string            `json:"Driver"`
+	DriverOpts map[string]string `json:"DriverOpts"`
+}
+
+// inspectVolumeCreate parses body as a volumes/create request and
+// rejects any DriverOpts on the local driver (the only mechanism we
+// have seen this used as a bind-mount-in-disguise). Coordinator
+// directive cycle 5: "lean deny entirely — local-driver bind-volumes
+// are an obscure workflow and not worth admitting."
+func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
+	if len(bytes.TrimSpace(body)) == 0 {
+		// Empty body — podman will produce an anonymous volume with
+		// default driver. Safe; forward.
+		return allowDecision("policy:volumes/create:empty")
+	}
+	var req volumeCreateBody
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&req); err != nil {
+		return denyDecision(http.StatusBadRequest,
+			"malformed_body:"+truncateForReason(err.Error()),
+			"volumes/create body is not valid JSON")
+	}
+	driver := strings.ToLower(req.Driver)
+	if driver == "local" && len(req.DriverOpts) > 0 {
+		return denyDecision(http.StatusForbidden,
+			"volume_local_driver_opts",
+			"volumes/create with Driver=local and DriverOpts is not permitted (local-driver bind-volume escape; use a containers/create Bind/Mount with an allowlisted Source instead)")
+	}
+	return allowDecision("policy:volumes/create:ok")
 }
 
 // inspectExec parses body as a containers/{id}/exec request and

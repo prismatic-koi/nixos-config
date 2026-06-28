@@ -447,6 +447,7 @@ func TestClassifyRequest_AllowsCoreEndpoints(t *testing.T) {
 		{http.MethodPost, "containers/abc/attach", endpointAllowStreaming},
 		{http.MethodPost, "containers/abc/exec", endpointPolicyExec},
 		{http.MethodPost, "containers/abc/update", endpointPolicyUpdate},
+		{http.MethodPost, "volumes/create", endpointPolicyVolumeCreate},
 		{http.MethodPost, "exec/abc/start", endpointAllowStreaming},
 		{http.MethodGet, "containers/abc/logs", endpointAllowStreaming},
 		{http.MethodPut, "containers/abc/archive", endpointPolicyArchive},

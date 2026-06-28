@@ -1598,6 +1598,273 @@ func TestSecurity_BindSymlinkedAllowlistEntry_Matched(t *testing.T) {
 // AC: A negative-control test that mutates Config.AllowedBindSources
 // to include "/" causes a host-bind request to PASS — proving the
 // positive tests are not no-ops because of unrelated policy code paths.
+// ──────────────────────── cycle 5 ───────────────────────────────
+//
+// Coordinator-authorised cycle 5. Closes the 5 round-4 review-
+// security findings (commit 1) and inverts the HostConfig parser to
+// default-deny unknown fields (commit 2). Tests here pair with each
+// closure; the schema-inversion tests live below in the
+// "unknown-field rejection" section.
+
+// Cycle-4 finding #1 (CRITICAL): local-volume bind-mount bypass via
+// volumes/create. The agent calls POST volumes/create with Driver=
+// local and DriverOpts that bind a host path through the local
+// driver's option language; then references the volume by name from
+// a containers/create body. bindSource() returns "" for named-volume
+// references (no leading slash) so the host-bind allowlist is
+// skipped. Closure: deny volumes/create with Driver=local + non-empty
+// DriverOpts.
+func TestSecurity_VolumeCreate_LocalDriverBindMount_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/volumes/create",
+		map[string]any{
+			"Name":   "evil",
+			"Driver": "local",
+			"DriverOpts": map[string]string{
+				"type":   "none",
+				"device": "/etc/hosts",
+				"o":      "bind",
+			},
+		})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("volumes/create local-driver+DriverOpts should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Default-driver volumes/create (no DriverOpts) is the legitimate
+// case and must still pass — proves the volumes/create policy is not
+// a blanket deny.
+func TestSecurity_VolumeCreate_DefaultDriver_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/volumes/create",
+		map[string]any{
+			"Name":   "normal-volume",
+			"Driver": "local",
+		})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("volumes/create default driver no opts should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+func TestSecurity_VolumeCreate_MalformedJSON_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/volumes/create",
+		bytes.NewReader([]byte(`{garbage`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed volumes/create body should be 400; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Cycle-4 finding #1 (second path): the same exploit via inline
+// Mounts of Type=volume with VolumeOptions.DriverConfig in the
+// containers/create body. Closure: deny any Type=volume Mount with
+// VolumeOptions.DriverConfig set.
+func TestSecurity_MountVolumeWithDriverConfig_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "volume",
+				"Source": "anon",
+				"Target": "/x",
+				"VolumeOptions": map[string]any{
+					"DriverConfig": map[string]any{
+						"Name": "local",
+						"Options": map[string]string{
+							"type":   "none",
+							"device": "/etc/hosts",
+							"o":      "bind",
+						},
+					},
+				},
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Mounts Type=volume with VolumeOptions.DriverConfig should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// A plain Type=volume Mount with no VolumeOptions is the legitimate
+// case (anonymous or named volume managed by podman's default driver
+// settings). Forward unmodified.
+func TestSecurity_MountVolumeWithoutDriverConfig_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "volume",
+				"Source": "namedvol",
+				"Target": "/x",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Mounts Type=volume without DriverConfig should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+// Cycle-4 finding #2 (CRITICAL): DeviceCgroupRules unfiltered.
+func TestSecurity_DeviceCgroupRulesNonEmpty_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"DeviceCgroupRules": []string{"a *:* rwm"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("DeviceCgroupRules non-empty should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Cycle-4 finding #5 (MAJOR): DeviceRequests unfiltered.
+func TestSecurity_DeviceRequestsNonEmpty_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"DeviceRequests": []map[string]any{
+			{
+				"Driver":       "nvidia",
+				"Count":        -1,
+				"Capabilities": [][]string{{"gpu"}},
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("DeviceRequests non-empty should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Cycle-4 finding #5 (MAJOR): VolumesFrom unfiltered.
+func TestSecurity_VolumesFromNonEmpty_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"VolumesFrom": []string{"other-container:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("VolumesFrom non-empty should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Cycle-4 finding #3 (MAJOR): MaskedPaths present.
+func TestSecurity_MaskedPathsPresent_Denied(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"empty-array-overrides-default", []string{}},
+		{"explicit-allowlist-with-keys", []string{"/safe1", "/safe2"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			sock := h.sock
+			resp := postCreate(t, sock, map[string]any{
+				"MaskedPaths": tc.value,
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("MaskedPaths present (%s) should be denied; got %d", tc.name, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+func TestSecurity_ReadonlyPathsPresent_Denied(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"empty-array-overrides-default", []string{}},
+		{"explicit-allowlist-with-keys", []string{"/safe1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			sock := h.sock
+			resp := postCreate(t, sock, map[string]any{
+				"ReadonlyPaths": tc.value,
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("ReadonlyPaths present (%s) should be denied; got %d", tc.name, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+// Cycle-4 finding #4 (MAJOR): CgroupnsMode: "host" — sibling of the
+// other five host-namespace modes I already blocked.
+func TestSecurity_CgroupnsModeHost_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"CgroupnsMode": "host",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CgroupnsMode=host should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Cycle-5 opportunistic sweep: Sysctls. Some sysctls are not
+// namespaced (writable from a container affects the host). Default-
+// deny entirely; legitimate workflows can request specific entries
+// through the field-admission process.
+func TestSecurity_SysctlsNonEmpty_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Sysctls": map[string]string{
+			"net.ipv4.ip_forward": "1",
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Sysctls non-empty should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
 func TestSecurity_NegativeControl_RootAllowlistPasses(t *testing.T) {
 	fu := newFakeUpstream(t)
 	dir := shortSocketDir(t)
