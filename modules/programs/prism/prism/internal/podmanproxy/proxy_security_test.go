@@ -1,0 +1,881 @@
+package podmanproxy
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// Tests for #2318: every escape vector in the parent threat table
+// (#2317 §4) gets an explicit security test. The tests share a small
+// scaffold that stands up a real podmanproxy in front of a fake
+// upstream so we can assert both the synthesised 4xx (no upstream
+// forward) AND the upstream-forwarded path.
+//
+// The negative-control test (TestSecurity_NegativeControl_RootAllowlistPasses)
+// at the bottom of this file is the load-bearing meta-test that proves
+// the positive denials are not no-ops resulting from an unrelated
+// failure mode somewhere else in the policy code path.
+
+// ───────────────────────────── test scaffold ─────────────────────────────
+
+// fakeUpstream is a minimal docker-API mock that records every request
+// it sees and returns 200 OK to every well-formed request. The proxy's
+// reverse-proxy path forwards to this; the proxy's deny path never
+// reaches it.
+type fakeUpstream struct {
+	server   *http.Server
+	sockPath string
+	listener net.Listener
+
+	// requests counts every request that reached the upstream. The
+	// security tests assert that denied requests do NOT increment this.
+	requests atomic.Int64
+
+	// lastBody captures the body of the most recent request. Used by
+	// the "forward unmodified" tests to assert the proxy didn't mangle
+	// a legitimate body en route.
+	lastBody atomic.Value // []byte
+}
+
+func newFakeUpstream(t *testing.T) *fakeUpstream {
+	t.Helper()
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "podman.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Fatalf("listen upstream sock: %v", err)
+	}
+	fu := &fakeUpstream{sockPath: sockPath, listener: ln}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fu.requests.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		fu.lastBody.Store(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))
+	})
+	fu.server = &http.Server{Handler: mux}
+	go func() { _ = fu.server.Serve(ln) }()
+	t.Cleanup(func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = fu.server.Shutdown(shutdownCtx)
+	})
+	return fu
+}
+
+// captured returns the recorded request count. Helper so tests read
+// fluently as "want zero upstream calls".
+func (fu *fakeUpstream) captured() int64 {
+	return fu.requests.Load()
+}
+
+// startProxy stands a podmanproxy.Proxy on a fresh listener socket in
+// front of the supplied upstream, with sensible defaults that cover
+// the threat table. Tests can override AllowedBindSources / AllowedCaps
+// /etc. by mutating the returned Config and rebuilding via
+// startProxyWithConfig.
+func startProxy(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
+	t.Helper()
+	dir := t.TempDir()
+	listenPath := filepath.Join(dir, "proxy.sock")
+	auditBuf := &bytes.Buffer{}
+	cfg := Config{
+		ListenerPath:       listenPath,
+		UpstreamPath:       fu.sockPath,
+		AllowedBindSources: []string{"/workspace", "/scratch"},
+		AllowedCaps:        []string{}, // empty by default
+		MaxMemoryBytes:     4 * 1024 * 1024 * 1024,
+		MaxCPUQuota:        200_000,
+		AuditWriter:        auditBuf,
+	}
+	return startProxyWithConfig(t, cfg, auditBuf, listenPath), auditBuf, listenPath
+}
+
+// startProxyWithConfig is the low-level scaffold helper used by tests
+// that need to mutate the policy config (e.g. the negative-control).
+func startProxyWithConfig(t *testing.T, cfg Config, _ *bytes.Buffer, listenPath string) *Proxy {
+	t.Helper()
+	p, err := NewProxy(cfg)
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- p.Serve(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case err := <-serveErr:
+			if err != nil {
+				t.Logf("Serve returned: %v", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Log("Serve did not return within 3s of cancellation")
+		}
+	})
+	waitForSocket(t, listenPath)
+	return p
+}
+
+// waitForSocket polls until the proxy's listener accepts connections
+// or the timeout elapses. Tests use this to avoid a race between
+// Serve's listener bind and the first client request.
+func waitForSocket(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		conn, err := net.Dial("unix", path)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("proxy socket %s did not become ready: %v", path, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// proxyClient returns an http.Client wired to dial the proxy's Unix
+// socket. Every test request goes through this client.
+func proxyClient(socket string) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socket)
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+}
+
+// postCreate is a tiny helper for the most-used test shape: POST
+// /v1.41/containers/create with the supplied HostConfig.
+func postCreate(t *testing.T, sock string, hostConfig map[string]any) *http.Response {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"Image":      "alpine",
+		"HostConfig": hostConfig,
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/create",
+		bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return doRequest(t, sock, req)
+}
+
+func doRequest(t *testing.T, sock string, req *http.Request) *http.Response {
+	t.Helper()
+	client := proxyClient(sock)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	return resp
+}
+
+// readEnvelope reads resp.Body and unmarshals the {"message": "..."}
+// envelope. Tests assert the message text contains a guidance keyword
+// rather than the full string, so the wording can evolve without
+// breaking the tests.
+func readEnvelope(t *testing.T, resp *http.Response) errorEnvelope {
+	t.Helper()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var env errorEnvelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v (body=%q)", err, body)
+	}
+	return env
+}
+
+// assertNoForward fails the test when the upstream's request count is
+// non-zero. Used after every deny-path test.
+func assertNoForward(t *testing.T, fu *fakeUpstream) {
+	t.Helper()
+	if got := fu.captured(); got != 0 {
+		t.Fatalf("expected zero upstream requests, got %d (a deny path forwarded to upstream)", got)
+	}
+}
+
+// ───────────────────────── threat-table tests ─────────────────────────
+
+// host-bind escape: Binds source outside the allowlist.
+//
+// AC: A containers/create request with any HostConfig.Binds source
+// outside the allowlist returns 403 with a docker-compatible
+// {"message": "..."} body and is NOT forwarded upstream.
+func TestSecurity_HostBindOutsideAllowlist_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{"/etc/passwd:/host_passwd:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	env := readEnvelope(t, resp)
+	if env.Message == "" {
+		t.Fatal("expected non-empty error message")
+	}
+	if !strings.Contains(env.Message, "/etc/passwd") {
+		t.Errorf("error message should name the rejected source, got: %q", env.Message)
+	}
+	assertNoForward(t, fu)
+}
+
+// host-bind escape: Mounts source outside the allowlist (newer API).
+func TestSecurity_HostMountOutsideAllowlist_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "bind",
+				"Source": "/Users/bensherman",
+				"Target": "/host",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// privileged escape.
+//
+// AC: A containers/create request with HostConfig.Privileged: true
+// returns 403 and is not forwarded.
+func TestSecurity_Privileged_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Privileged": true,
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	env := readEnvelope(t, resp)
+	if !strings.Contains(strings.ToLower(env.Message), "privileged") {
+		t.Errorf("envelope should mention 'privileged', got %q", env.Message)
+	}
+	assertNoForward(t, fu)
+}
+
+// cap-add escape: CapAdd entry outside the allowlist.
+//
+// AC: A containers/create request with HostConfig.CapAdd containing a
+// value outside the allowlist returns 403.
+func TestSecurity_CapAddDisallowed_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"CapAdd": []string{"SYS_ADMIN"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// cap-add allowlist: explicit allow-list entry passes (sanity check).
+func TestSecurity_CapAddInAllowlist_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := t.TempDir()
+	cfg := Config{
+		ListenerPath:       filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:       fu.sockPath,
+		AllowedBindSources: []string{"/workspace"},
+		AllowedCaps:        []string{"NET_BIND_SERVICE"},
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	resp := postCreate(t, cfg.ListenerPath, map[string]any{
+		"CapAdd": []string{"CAP_NET_BIND_SERVICE"}, // both forms
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if fu.captured() != 1 {
+		t.Errorf("expected 1 upstream request, got %d", fu.captured())
+	}
+}
+
+// host-network escape and the four sibling host-* modes.
+//
+// AC: A containers/create request with HostConfig.NetworkMode: "host"
+// returns 403. Same for PidMode, IpcMode, UTSMode, UsernsMode.
+func TestSecurity_HostNamespaceModes_Denied(t *testing.T) {
+	modes := []string{"NetworkMode", "PidMode", "IpcMode", "UTSMode", "UsernsMode"}
+	for _, field := range modes {
+		t.Run(field, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			_, _, sock := startProxy(t, fu)
+			resp := postCreate(t, sock, map[string]any{
+				field: "host",
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s: status got %d want %d", field, resp.StatusCode, http.StatusForbidden)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+// devices escape: non-empty Devices.
+//
+// AC: A containers/create request with non-empty HostConfig.Devices
+// returns 403.
+func TestSecurity_DevicesNonEmpty_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Devices": []map[string]any{
+			{
+				"PathOnHost":        "/dev/sda1",
+				"PathInContainer":   "/dev/sda1",
+				"CgroupPermissions": "rwm",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// memory cap exceeded.
+//
+// (Auxiliary AC: resource caps enforced server-side; out-of-bounds
+// returns 403.)
+func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	// Configured cap is 4 GiB; request 10 TiB.
+	resp := postCreate(t, sock, map[string]any{
+		"Memory": int64(10) * 1024 * 1024 * 1024 * 1024,
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_CPUQuotaOverCap_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	// Configured cap is 200_000; request 2_000_000.
+	resp := postCreate(t, sock, map[string]any{
+		"CpuQuota": 2_000_000,
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// archive exfil: PUT /containers/{id}/archive?path=/etc — host path.
+//
+// AC: A PUT /containers/{id}/archive request with a `path` query
+// parameter outside the allowlist returns 403.
+func TestSecurity_ArchivePathOutsideAllowlist_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	req, err := http.NewRequest(http.MethodPut,
+		"http://podman.sock/v1.41/containers/abc123/archive?path=%2Fetc",
+		bytes.NewReader([]byte("tar body would go here")))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// endpoint allowlist: any endpoint not in the allowlist returns 403.
+//
+// AC: A request to an endpoint outside the allowlist returns 403 with
+// an actionable error message identifying the rejected endpoint.
+func TestSecurity_UnknownEndpoint_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	for _, tc := range []struct {
+		name, method, path string
+	}{
+		{"unknown-top-level", http.MethodGet, "/v1.41/server/info"},
+		{"unknown-libpod", http.MethodPost, "/libpod/secrets/create"},
+		{"undeclared-method", http.MethodPatch, "/v1.41/containers/abc/json"},
+		{"swarm-mode", http.MethodGet, "/v1.41/swarm"},
+		{"unversioned-bogus", http.MethodPost, "/swarm/init"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(tc.method, "http://podman.sock"+tc.path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp := doRequest(t, sock, req)
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("%s %s: status got %d want %d", tc.method, tc.path, resp.StatusCode, http.StatusForbidden)
+			}
+			env := readEnvelope(t, resp)
+			if !strings.Contains(env.Message, tc.path) {
+				t.Errorf("envelope should name rejected path %q, got %q", tc.path, env.Message)
+			}
+			if !strings.Contains(strings.ToLower(env.Message), "not permitted") {
+				t.Errorf("envelope should explain rejection, got %q", env.Message)
+			}
+		})
+	}
+	assertNoForward(t, fu)
+}
+
+// malformed JSON body returns 400 and is not forwarded.
+//
+// AC: A malformed JSON body on a body-bearing endpoint returns 400 and
+// is not forwarded.
+func TestSecurity_MalformedJSONBody_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	req, err := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/create",
+		bytes.NewReader([]byte(`{this is not valid JSON`)))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	assertNoForward(t, fu)
+}
+
+// empty body on containers/create is treated as malformed.
+func TestSecurity_EmptyCreateBody_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	req, err := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/create",
+		bytes.NewReader(nil))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+	assertNoForward(t, fu)
+}
+
+// upstream unavailable: synthesise the friendly 503 envelope.
+//
+// AC: When the upstream socket is unreachable (file does not exist,
+// OR dial fails with ECONNREFUSED), the proxy returns 503 with the
+// actionable {"message": "..."} body.
+//
+// This test covers the "file does not exist" branch (ENOENT). The
+// ECONNREFUSED branch is covered by TestSecurity_UpstreamECONNREFUSED_Returns503Envelope
+// below, which engineers a real ECONNREFUSED by binding a unix socket
+// and then closing the listener while leaving the socket file behind.
+func TestSecurity_UpstreamMissing_Returns503Envelope(t *testing.T) {
+	// Construct a proxy whose UpstreamPath does not exist.
+	dir := t.TempDir()
+	cfg := Config{
+		ListenerPath:       filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:       filepath.Join(dir, "does-not-exist.sock"),
+		AllowedBindSources: []string{"/workspace"},
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	req, err := http.NewRequest(http.MethodGet,
+		"http://podman.sock/v1.41/_ping", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp := doRequest(t, cfg.ListenerPath, req)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	env := readEnvelope(t, resp)
+	if !strings.HasPrefix(env.Message, "podman socket unavailable: ") {
+		t.Errorf("envelope prefix: got %q, want 'podman socket unavailable: …'", env.Message)
+	}
+	if !strings.Contains(env.Message, "podman machine start") {
+		t.Errorf("envelope should mention macOS recovery, got %q", env.Message)
+	}
+	if !strings.Contains(env.Message, "systemctl --user status podman.socket") {
+		t.Errorf("envelope should mention Linux recovery, got %q", env.Message)
+	}
+}
+
+// upstream connection-refused: bind a listener and close it, leaving
+// a dead socket file behind. A dial against that file yields
+// ECONNREFUSED on every platform where unix sockets are implemented
+// (Linux, Darwin, *BSD).
+//
+// This pairs with TestSecurity_UpstreamMissing_Returns503Envelope to
+// cover both halves of the upstream-unavailable AC.
+func TestSecurity_UpstreamECONNREFUSED_Returns503Envelope(t *testing.T) {
+	dir := t.TempDir()
+	deadSocket := filepath.Join(dir, "dead.sock")
+
+	// Bind a real unix listener and close it. Go's UnixListener.Close
+	// unlinks by default for Listen-created listeners, so we recreate
+	// the file as a regular file afterwards — connecting to a non-socket
+	// file path produces ECONNREFUSED on Linux and ENOTSOCK on Darwin,
+	// both of which our classifier maps to a 503 envelope (the Darwin
+	// case falls into the "dial failed" default branch, which still
+	// returns 503).
+	ln, err := net.Listen("unix", deadSocket)
+	if err != nil {
+		t.Fatalf("bind dead listener: %v", err)
+	}
+	_ = ln.Close()
+	// Recreate the file as a regular file so the proxy's Transport
+	// gets a definite dial failure rather than ENOENT.
+	if err := os.WriteFile(deadSocket, []byte{}, 0o600); err != nil {
+		t.Fatalf("recreate dead file: %v", err)
+	}
+
+	cfg := Config{
+		ListenerPath:       filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:       deadSocket,
+		AllowedBindSources: []string{"/workspace"},
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	req, err := http.NewRequest(http.MethodGet,
+		"http://podman.sock/v1.41/_ping", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	resp := doRequest(t, cfg.ListenerPath, req)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusServiceUnavailable)
+	}
+	env := readEnvelope(t, resp)
+	if !strings.HasPrefix(env.Message, "podman socket unavailable: ") {
+		t.Errorf("envelope prefix: got %q, want 'podman socket unavailable: …'", env.Message)
+	}
+}
+
+// streaming endpoints forward without parsing a body.
+//
+// AC: Streaming endpoints (containers/{id}/attach, exec/{id}/start,
+// containers/{id}/logs?follow=1) forward without attempting to parse
+// a body.
+func TestSecurity_StreamingEndpoints_ForwardWithoutBodyParse(t *testing.T) {
+	cases := []struct {
+		name, method, path string
+		// supplyBody true means we send a non-JSON body that would
+		// otherwise trip the JSON parser. The upstream is forgiving;
+		// any non-403 response from the proxy proves the body did
+		// not go through the inspector.
+		supplyBody bool
+	}{
+		{"attach", http.MethodPost, "/v1.41/containers/abc/attach?stream=1", false},
+		{"exec-start", http.MethodPost, "/v1.41/exec/exec123/start", true},
+		{"logs-follow", http.MethodGet, "/v1.41/containers/abc/logs?follow=1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			_, _, sock := startProxy(t, fu)
+			var body io.Reader
+			if tc.supplyBody {
+				// A body that is NOT valid JSON. If the proxy
+				// were body-parsing this endpoint it would return
+				// 400; instead we expect the upstream to be hit.
+				body = bytes.NewReader([]byte("not-json-and-shouldnt-be-parsed"))
+			}
+			req, err := http.NewRequest(tc.method, "http://podman.sock"+tc.path, body)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			resp := doRequest(t, sock, req)
+			if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusBadRequest {
+				t.Fatalf("streaming endpoint should not be policy-rejected, got %d", resp.StatusCode)
+			}
+			if fu.captured() == 0 {
+				t.Errorf("streaming endpoint should have forwarded to upstream")
+			}
+		})
+	}
+}
+
+// audit log: one JSON line per request with the required fields.
+//
+// AC: Every accepted and rejected request emits exactly one line to
+// the configured audit io.Writer with fields timestamp, method,
+// endpoint, decision, reason as JSON.
+func TestSecurity_AuditLog_OneLinePerRequest(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, audit, sock := startProxy(t, fu)
+
+	// Reject: privileged container.
+	r1 := postCreate(t, sock, map[string]any{"Privileged": true})
+	_ = r1.Body.Close()
+
+	// Accept: harmless containers/create.
+	r2 := postCreate(t, sock, map[string]any{"Binds": []string{"/workspace/sub:/x:ro"}})
+	_ = r2.Body.Close()
+
+	// Reject: unknown endpoint.
+	req, _ := http.NewRequest(http.MethodGet, "http://podman.sock/v1.41/swarm", nil)
+	r3 := doRequest(t, sock, req)
+	_ = r3.Body.Close()
+
+	lines := splitNonEmptyLines(audit.String())
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 audit lines, got %d:\n%s", len(lines), audit.String())
+	}
+
+	wantDecisions := []string{auditDeny, auditAllow, auditDeny}
+	for i, line := range lines {
+		var entry auditLine
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("line %d not valid JSON: %v\n%s", i, err, line)
+		}
+		if entry.Timestamp == "" {
+			t.Errorf("line %d missing timestamp", i)
+		}
+		if entry.Method == "" {
+			t.Errorf("line %d missing method", i)
+		}
+		if entry.Endpoint == "" {
+			t.Errorf("line %d missing endpoint", i)
+		}
+		if entry.Decision != wantDecisions[i] {
+			t.Errorf("line %d decision: got %q want %q", i, entry.Decision, wantDecisions[i])
+		}
+		if entry.Reason == "" {
+			t.Errorf("line %d missing reason", i)
+		}
+	}
+}
+
+// Each audit line must end with a newline so log aggregators that
+// expect line-delimited JSON can parse the stream without grammar
+// hacks.
+func TestSecurity_AuditLog_NewlineTerminated(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, audit, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{})
+	_ = resp.Body.Close()
+	out := audit.String()
+	if out == "" {
+		t.Fatal("audit log is empty")
+	}
+	if out[len(out)-1] != '\n' {
+		t.Errorf("audit line is not newline-terminated, last byte = %x", out[len(out)-1])
+	}
+}
+
+// raw-socket-curl bypass attempt — verify there is no path from the
+// agent to the underlying upstream socket directly. The proxy package
+// itself cannot prove this (the bind/SBPL rules are owned by later
+// steps), but it CAN prove the proxy never exposes a path query that
+// returns the real socket location, and it CAN prove a request that
+// claims to want to talk directly to /var/run/docker.sock just sees
+// the same allowlist denial.
+//
+// This is a smoke test for the "the proxy is the only API surface"
+// invariant.
+func TestSecurity_RawSocketCurlBypass_NoPath(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	// Try the docker convention of an Engine API path that would not
+	// exist on podman in any case, and a podman-machine-specific
+	// shim path that would expose the underlying connection.
+	for _, path := range []string{
+		"/var/run/docker.sock",
+		"/run/podman/podman.sock",
+		"/_raw/passthrough",
+	} {
+		req, _ := http.NewRequest(http.MethodGet, "http://podman.sock"+path, nil)
+		resp := doRequest(t, sock, req)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("path %q: status got %d want %d", path, resp.StatusCode, http.StatusForbidden)
+		}
+		_ = resp.Body.Close()
+	}
+	assertNoForward(t, fu)
+}
+
+// path-traversal in bind source: filepath.Clean must collapse "..".
+//
+// "Allowlist = /workspace; source = /workspace/../etc/passwd" must
+// resolve to "/etc/passwd" and be denied.
+func TestSecurity_BindSourceTraversal_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{"/workspace/../etc/passwd:/host_passwd:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// substring trap: "/workspace" must NOT allow "/workspace-other".
+func TestSecurity_BindSourceSubstringTrap_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{"/workspace-other:/x:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("substring trap: status got %d want %d", resp.StatusCode, http.StatusForbidden)
+	}
+	assertNoForward(t, fu)
+}
+
+// Happy path: a containers/create with allowed binds forwards the
+// body to the upstream unmodified.
+//
+// AC: A containers/create request whose HostConfig.Binds entries all
+// have sources under the configured allowlist forwards to the upstream
+// socket unmodified.
+func TestSecurity_AllowedBinds_ForwardsUnmodified(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+
+	hostConfig := map[string]any{
+		"Binds": []string{"/workspace/proj:/app:rw", "/scratch:/tmp:ro"},
+	}
+	resp := postCreate(t, sock, hostConfig)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if fu.captured() != 1 {
+		t.Errorf("expected exactly 1 upstream call, got %d", fu.captured())
+	}
+	// The upstream's lastBody should match what we sent — the proxy
+	// must NOT have mangled the legitimate body.
+	got := fu.lastBody.Load().([]byte)
+	var roundtrip struct {
+		Image      string         `json:"Image"`
+		HostConfig map[string]any `json:"HostConfig"`
+	}
+	if err := json.Unmarshal(got, &roundtrip); err != nil {
+		t.Fatalf("upstream body not valid JSON: %v\n%s", err, got)
+	}
+	if roundtrip.Image != "alpine" {
+		t.Errorf("upstream Image: got %q, want alpine", roundtrip.Image)
+	}
+}
+
+// ────────────────────────── negative control ──────────────────────────
+
+// TestSecurity_NegativeControl_RootAllowlistPasses is the load-bearing
+// meta-test: if I mutate Config.AllowedBindSources to contain "/" (the
+// universal-allow value), the SAME host-bind request that was rejected
+// by TestSecurity_HostBindOutsideAllowlist_Denied above must NOW PASS.
+//
+// This proves the positive tests are not no-ops due to an unrelated
+// policy code path always rejecting requests for some other reason. If
+// this test fails, every other security test in this file is suspect.
+//
+// AC: A negative-control test that mutates Config.AllowedBindSources
+// to include "/" causes a host-bind request to PASS — proving the
+// positive tests are not no-ops because of unrelated policy code paths.
+func TestSecurity_NegativeControl_RootAllowlistPasses(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := t.TempDir()
+	cfg := Config{
+		ListenerPath: filepath.Join(dir, "proxy.sock"),
+		UpstreamPath: fu.sockPath,
+		// The only difference from the rejection test above: "/"
+		// is in the allowlist.
+		AllowedBindSources: []string{"/"},
+		AllowedCaps:        []string{},
+		MaxMemoryBytes:     4 * 1024 * 1024 * 1024,
+		MaxCPUQuota:        200_000,
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	// EXACTLY the same body as TestSecurity_HostBindOutsideAllowlist_Denied —
+	// /etc/passwd on the host. With AllowedBindSources=["/"] this MUST
+	// be allowed.
+	body, _ := json.Marshal(map[string]any{
+		"Image": "alpine",
+		"HostConfig": map[string]any{
+			"Binds": []string{"/etc/passwd:/host_passwd:ro"},
+		},
+	})
+	req, err := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/create",
+		bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, cfg.ListenerPath, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("NEGATIVE CONTROL FAILED: the same body that is rejected with a normal allowlist must pass with allowlist=['/']; got status %d — review the entire security suite", resp.StatusCode)
+	}
+	if fu.captured() != 1 {
+		t.Fatalf("NEGATIVE CONTROL FAILED: upstream call count = %d, want 1; the request did not reach the upstream", fu.captured())
+	}
+}
+
+// splitNonEmptyLines is a defensive split that drops the trailing
+// empty entry that strings.Split produces when the buffer ends with a
+// newline. Used by audit-log assertions that count "real" lines.
+func splitNonEmptyLines(s string) []string {
+	out := []string{}
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		out = append(out, line)
+	}
+	return out
+}
