@@ -51,6 +51,9 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case endpointPolicyVolumeCreate:
 		p.handlePolicyVolumeCreate(w, r)
 
+	case endpointPolicyNetworkCreate:
+		p.handlePolicyNetworkCreate(w, r)
+
 	case endpointDeny:
 		fallthrough
 	default:
@@ -123,6 +126,28 @@ func (p *Proxy) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dec := p.inspectUpdate(body)
+	if !dec.allow {
+		p.emitAudit(r, auditDeny, dec.reason)
+		writeJSONError(w, dec.status, dec.message)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	p.emitAudit(r, auditAllow, dec.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handlePolicyNetworkCreate is the body-inspecting branch for POST
+// /networks/create. Same shape as the other policy handlers; the
+// inspection itself just runs the schema-inversion pass.
+func (p *Proxy) handlePolicyNetworkCreate(w http.ResponseWriter, r *http.Request) {
+	body, readDec := p.readBoundedBody(w, r)
+	if !readDec.allow {
+		p.emitAudit(r, auditDeny, readDec.reason)
+		writeJSONError(w, readDec.status, readDec.message)
+		return
+	}
+	dec := p.inspectNetworkCreate(body)
 	if !dec.allow {
 		p.emitAudit(r, auditDeny, dec.reason)
 		writeJSONError(w, dec.status, dec.message)

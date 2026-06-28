@@ -19,23 +19,52 @@
 // device passthrough, podman cp exfiltration, and raw-socket fallback
 // (the only socket exposed to the agent IS the filter).
 //
-// # Default-deny
+// # Default-deny — endpoint, body, and field layers
 //
 // Every request is denied unless it matches an explicit allow rule.
-// Three classes of allow are enforced:
+// Four classes of allow are enforced (the field-level layer was
+// added in cycle 5 of #2326 after cycles 2/3/4 each surfaced a
+// HostConfig field that the previous permissive parser silently
+// forwarded):
 //
-//   - Endpoint-level: any path/method pair that does not appear in the
-//     allowlist returns 403 with a friendly JSON envelope that names the
-//     rejected endpoint.
-//   - Body-level: containers/create requests are parsed and their
-//     HostConfig.* fields are checked. Any Binds source outside the
-//     configured prefix allowlist, any Mounts of type "bind" outside the
-//     allowlist, any Privileged: true, any host {Network,Pid,Ipc,UTS,Userns}
-//     mode, any non-empty Devices, any CapAdd entry outside the cap
-//     allowlist, or any resource cap above the configured upper bound
-//     returns 403.
-//   - Query-level: PUT containers/{id}/archive requires its `path` query
-//     parameter to fall under the same prefix allowlist as bind sources.
+//   - Endpoint-level: any path/method pair that does not appear in
+//     the allowlist returns 403 with a friendly JSON envelope that
+//     names the rejected endpoint.
+//   - Body-level: containers/create / containers/{id}/update /
+//     containers/{id}/exec / volumes/create / networks/create
+//     bodies are parsed and policy-checked.
+//   - Field-level: every parsed body runs with
+//     json.Decoder.DisallowUnknownFields(). The typed struct for
+//     each body shape (hostConfig, containerCreateBody,
+//     containerExecBody, volumeCreateBody, networkCreateBody) is
+//     the security spec — every admitted field is annotated as
+//     INSPECTED (policy-checked), DENIED (rejected when non-empty),
+//     or FORWARDED (admitted as opaque json.RawMessage and passed
+//     to the upstream unmodified). A future docker-API field that
+//     introduces an escape vector is rejected by default until it
+//     is explicitly admitted.
+//   - Query-level: PUT containers/{id}/archive requires its `path`
+//     query parameter to fall under the same prefix allowlist as
+//     bind sources.
+//
+// # Field admission process for Step 3+
+//
+// When a workflow in Step 3 or later surfaces a HostConfig (or
+// top-level / exec / update / volume / network) field that the
+// current allowlist does not admit, the request fails with a 403
+// containing "unknown field <Name>" in the message. The process for
+// admitting a new field:
+//
+//  1. File an issue describing the workflow and the field.
+//  2. Audit the field against the parent issue's threat table
+//     (#2317 §4). Classify as INSPECTED / DENIED / FORWARDED.
+//  3. Open a PR that adds the field to the appropriate struct in
+//     policy.go with a rationale comment matching the existing
+//     style. INSPECTED additions need a policy check + a non-vacuous
+//     test pair (positive + revert-and-watch-fail).
+//  4. The struct definition is the canonical spec; reviewers should
+//     audit by reading the struct, not by guessing what the proxy
+//     admits.
 //
 // Streaming endpoints — /containers/{id}/attach, /exec/{id}/start, and
 // the follow=1 variant of /containers/{id}/logs — are forwarded without

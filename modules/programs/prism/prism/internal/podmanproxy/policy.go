@@ -56,28 +56,97 @@ func denyDecision(status int, reason, message string) policyDecision {
 // "unbounded", so the policy must treat 0 differently from a missing
 // field (review-security PR #2326 round 2: 0 was previously a
 // drive-through bypass of the configured cap).
+// Cycle 5: this struct is the AUDIT SPEC for HostConfig. After this
+// commit the parser runs with json.Decoder.DisallowUnknownFields(),
+// so any HostConfig field not declared here is rejected as
+// unknown-field. Adding a new field requires the same audit as
+// existing ones: classify it as INSPECTED (typed; checkHostConfig
+// runs a policy check) / DENIED (typed; non-empty rejects) /
+// FORWARDED (json.RawMessage; admitted as safe, forwarded
+// unmodified). The single most important reviewer task on a future
+// change to this file is checking the rationale comment on each
+// admission.
 type hostConfig struct {
-	Binds             []string          `json:"Binds"`
-	Mounts            []hostConfigMount `json:"Mounts"`
-	Privileged        bool              `json:"Privileged"`
-	CapAdd            []string          `json:"CapAdd"`
-	NetworkMode       string            `json:"NetworkMode"`
-	PidMode           string            `json:"PidMode"`
-	IpcMode           string            `json:"IpcMode"`
-	UTSMode           string            `json:"UTSMode"`
-	UsernsMode        string            `json:"UsernsMode"`
-	CgroupnsMode      string            `json:"CgroupnsMode"`
-	Devices           []json.RawMessage `json:"Devices"`
-	DeviceCgroupRules []string          `json:"DeviceCgroupRules"`
-	DeviceRequests    []json.RawMessage `json:"DeviceRequests"`
-	VolumesFrom       []string          `json:"VolumesFrom"`
-	MaskedPaths       *[]string         `json:"MaskedPaths"`
-	ReadonlyPaths     *[]string         `json:"ReadonlyPaths"`
-	SecurityOpt       []string          `json:"SecurityOpt"`
-	Sysctls           map[string]string `json:"Sysctls"`
-	Memory            *int64            `json:"Memory"`
-	CpuQuota          *int64            `json:"CpuQuota"`
-	NanoCpus          *int64            `json:"NanoCpus"`
+	// INSPECTED — policy check in checkHostConfig.
+	Binds        []string          `json:"Binds"`        // bind allowlist + symlink resolution
+	Mounts       []hostConfigMount `json:"Mounts"`       // bind allowlist + volume-driver escape
+	Privileged   bool              `json:"Privileged"`   // deny when true
+	CapAdd       []string          `json:"CapAdd"`       // allowlist (AllowedCaps)
+	NetworkMode  string            `json:"NetworkMode"`  // deny "host"
+	PidMode      string            `json:"PidMode"`      // deny "host"
+	IpcMode      string            `json:"IpcMode"`      // deny "host"
+	UTSMode      string            `json:"UTSMode"`      // deny "host"
+	UsernsMode   string            `json:"UsernsMode"`   // deny "host"
+	CgroupnsMode string            `json:"CgroupnsMode"` // deny "host"
+	SecurityOpt  []string          `json:"SecurityOpt"`  // allowlist (AllowedSecurityOpts)
+	Memory       *int64            `json:"Memory"`       // cap; strict when MaxMemoryBytes>0
+	CpuQuota     *int64            `json:"CpuQuota"`     // cap; strict when MaxCPUQuota>0
+	NanoCpus     *int64            `json:"NanoCpus"`     // cap; strict when MaxNanoCpus>0
+
+	// DENIED — typed; non-empty / non-default value rejects.
+	Devices           []json.RawMessage `json:"Devices"`           // deny non-empty
+	DeviceCgroupRules []string          `json:"DeviceCgroupRules"` // deny non-empty
+	DeviceRequests    []json.RawMessage `json:"DeviceRequests"`    // deny non-empty
+	VolumesFrom       []string          `json:"VolumesFrom"`       // deny non-empty
+	MaskedPaths       *[]string         `json:"MaskedPaths"`       // deny when present
+	ReadonlyPaths     *[]string         `json:"ReadonlyPaths"`     // deny when present
+	Sysctls           map[string]string `json:"Sysctls"`           // deny non-empty
+
+	// FORWARDED — admitted as safe; bytes forwarded unmodified.
+	// Each entry below MUST have a rationale comment confirming it
+	// has no escape vector against the parent issue's threat table.
+	CapDrop              json.RawMessage `json:"CapDrop"`              // dropping caps is always safer
+	AutoRemove           json.RawMessage `json:"AutoRemove"`           // container lifecycle
+	RestartPolicy        json.RawMessage `json:"RestartPolicy"`        // container lifecycle
+	LogConfig            json.RawMessage `json:"LogConfig"`            // log driver settings
+	Tmpfs                json.RawMessage `json:"Tmpfs"`                // in-memory, container-internal
+	PortBindings         json.RawMessage `json:"PortBindings"`         // network port map
+	PublishAllPorts      json.RawMessage `json:"PublishAllPorts"`      // network port flag
+	ReadonlyRootfs       json.RawMessage `json:"ReadonlyRootfs"`       // safer-default; not escape
+	ExtraHosts           json.RawMessage `json:"ExtraHosts"`           // /etc/hosts entries
+	GroupAdd             json.RawMessage `json:"GroupAdd"`             // additional gids inside ct
+	Dns                  json.RawMessage `json:"Dns"`                  // DNS servers
+	DnsOptions           json.RawMessage `json:"DnsOptions"`           // DNS resolver options
+	DnsSearch            json.RawMessage `json:"DnsSearch"`            // DNS search domains
+	Links                json.RawMessage `json:"Links"`                // deprecated container-to-container
+	Cgroup               json.RawMessage `json:"Cgroup"`               // cgroup name (not host control)
+	CgroupParent         json.RawMessage `json:"CgroupParent"`         // parent cgroup placement
+	BlkioWeight          json.RawMessage `json:"BlkioWeight"`          // I/O QoS
+	BlkioWeightDevice    json.RawMessage `json:"BlkioWeightDevice"`    // I/O QoS per-device
+	BlkioDeviceReadBps   json.RawMessage `json:"BlkioDeviceReadBps"`   // I/O QoS
+	BlkioDeviceWriteBps  json.RawMessage `json:"BlkioDeviceWriteBps"`  // I/O QoS
+	BlkioDeviceReadIOps  json.RawMessage `json:"BlkioDeviceReadIOps"`  // I/O QoS
+	BlkioDeviceWriteIOps json.RawMessage `json:"BlkioDeviceWriteIOps"` // I/O QoS
+	CpuShares            json.RawMessage `json:"CpuShares"`            // CPU QoS (relative weighting)
+	CpuPeriod            json.RawMessage `json:"CpuPeriod"`            // CFS period (paired with CpuQuota)
+	CpuRealtimePeriod    json.RawMessage `json:"CpuRealtimePeriod"`    // RT QoS
+	CpuRealtimeRuntime   json.RawMessage `json:"CpuRealtimeRuntime"`   // RT QoS
+	CpusetCpus           json.RawMessage `json:"CpusetCpus"`           // CPU pinning
+	CpusetMems           json.RawMessage `json:"CpusetMems"`           // NUMA pinning
+	CpuPercent           json.RawMessage `json:"CpuPercent"`           // windows CPU %
+	CpuCount             json.RawMessage `json:"CpuCount"`             // windows CPU count
+	IOMaximumIOps        json.RawMessage `json:"IOMaximumIOps"`        // windows I/O cap
+	IOMaximumBandwidth   json.RawMessage `json:"IOMaximumBandwidth"`   // windows I/O cap
+	MemoryReservation    json.RawMessage `json:"MemoryReservation"`    // soft memory limit
+	MemorySwap           json.RawMessage `json:"MemorySwap"`           // swap size cap
+	MemorySwappiness     json.RawMessage `json:"MemorySwappiness"`     // swap tendency
+	KernelMemory         json.RawMessage `json:"KernelMemory"`         // deprecated kernel mem
+	KernelMemoryTCP      json.RawMessage `json:"KernelMemoryTCP"`      // kernel TCP buffer cap
+	OomKillDisable       json.RawMessage `json:"OomKillDisable"`       // OOM behaviour
+	OomScoreAdj          json.RawMessage `json:"OomScoreAdj"`          // OOM score bias
+	PidsLimit            json.RawMessage `json:"PidsLimit"`            // ct process count cap
+	Ulimits              json.RawMessage `json:"Ulimits"`              // per-ct rlimits
+	StorageOpt           json.RawMessage `json:"StorageOpt"`           // storage driver opts
+	ContainerIDFile      json.RawMessage `json:"ContainerIDFile"`      // path to write ct id
+	Init                 json.RawMessage `json:"Init"`                 // pid 1 init wrapper
+	VolumeDriver         json.RawMessage `json:"VolumeDriver"`         // default volume driver name
+	ConsoleSize          json.RawMessage `json:"ConsoleSize"`          // tty size
+	Annotations          json.RawMessage `json:"Annotations"`          // OCI annotations
+	DiskQuota            json.RawMessage `json:"DiskQuota"`            // disk quota
+	Isolation            json.RawMessage `json:"Isolation"`            // windows isolation
+	NetworkID            json.RawMessage `json:"NetworkID"`            // podman network id
+	ShmSize              json.RawMessage `json:"ShmSize"`              // /dev/shm size
+	Runtime              json.RawMessage `json:"Runtime"`              // runtime name (runc/crun)
 }
 
 // hostConfigMount mirrors a docker HostConfig.Mounts entry. The
@@ -87,13 +156,26 @@ type hostConfig struct {
 // DriverConfig.Options.device=/host/path is functionally a bind mount
 // dressed up as a volume.
 type hostConfigMount struct {
-	Type          string                   `json:"Type"`
-	Source        string                   `json:"Source"`
-	VolumeOptions *hostConfigVolumeOptions `json:"VolumeOptions"`
+	Type          string                   `json:"Type"`          // INSPECTED (bind vs volume)
+	Source        string                   `json:"Source"`        // INSPECTED (host bind path)
+	VolumeOptions *hostConfigVolumeOptions `json:"VolumeOptions"` // INSPECTED (deny .DriverConfig)
+
+	// FORWARDED — mount fields admitted as safe.
+	Target         json.RawMessage `json:"Target"`         // in-container path
+	ReadOnly       json.RawMessage `json:"ReadOnly"`       // safer-default
+	Consistency    json.RawMessage `json:"Consistency"`    // macOS perf flag
+	BindOptions    json.RawMessage `json:"BindOptions"`    // propagation flags
+	TmpfsOptions   json.RawMessage `json:"TmpfsOptions"`   // size/mode for tmpfs Type
+	ClusterOptions json.RawMessage `json:"ClusterOptions"` // swarm cluster volumes
 }
 
 type hostConfigVolumeOptions struct {
-	DriverConfig *hostConfigDriverConfig `json:"DriverConfig"`
+	DriverConfig *hostConfigDriverConfig `json:"DriverConfig"` // INSPECTED — presence denies
+
+	// FORWARDED.
+	NoCopy  json.RawMessage `json:"NoCopy"`
+	Labels  json.RawMessage `json:"Labels"`
+	Subpath json.RawMessage `json:"Subpath"`
 }
 
 type hostConfigDriverConfig struct {
@@ -102,53 +184,132 @@ type hostConfigDriverConfig struct {
 }
 
 // containerCreateBody is the top-level shape of POST containers/create.
-// We extract only HostConfig — the other fields (Image, Cmd, Env, Labels,
-// WorkingDir, NetworkingConfig, etc.) carry no policy concerns and are
-// forwarded unmodified.
+// Same allow-list discipline as hostConfig: every field admitted here
+// is either INSPECTED, DENIED, or FORWARDED with a rationale.
+//
+// Top-level fields are largely container-internal (Image, Cmd, Env,
+// WorkingDir, Labels, etc.) and have no documented escape vector.
+// HostConfig and NetworkingConfig are nested structures — only
+// HostConfig has a parser; NetworkingConfig is admitted as opaque
+// for now and revisited if it surfaces escapes.
 type containerCreateBody struct {
-	HostConfig *hostConfig `json:"HostConfig"`
+	// INSPECTED.
+	HostConfig *json.RawMessage `json:"HostConfig"` // parsed strictly in a second pass
+
+	// FORWARDED — container-internal config; no host-impact.
+	Hostname         json.RawMessage `json:"Hostname"`
+	Domainname       json.RawMessage `json:"Domainname"`
+	User             json.RawMessage `json:"User"`
+	AttachStdin      json.RawMessage `json:"AttachStdin"`
+	AttachStdout     json.RawMessage `json:"AttachStdout"`
+	AttachStderr     json.RawMessage `json:"AttachStderr"`
+	ExposedPorts     json.RawMessage `json:"ExposedPorts"`
+	Tty              json.RawMessage `json:"Tty"`
+	OpenStdin        json.RawMessage `json:"OpenStdin"`
+	StdinOnce        json.RawMessage `json:"StdinOnce"`
+	Env              json.RawMessage `json:"Env"`
+	Cmd              json.RawMessage `json:"Cmd"`
+	Healthcheck      json.RawMessage `json:"Healthcheck"`
+	ArgsEscaped      json.RawMessage `json:"ArgsEscaped"` // windows
+	Image            json.RawMessage `json:"Image"`
+	Volumes          json.RawMessage `json:"Volumes"` // anonymous-volume placeholders
+	WorkingDir       json.RawMessage `json:"WorkingDir"`
+	Entrypoint       json.RawMessage `json:"Entrypoint"`
+	NetworkDisabled  json.RawMessage `json:"NetworkDisabled"`
+	MacAddress       json.RawMessage `json:"MacAddress"`
+	OnBuild          json.RawMessage `json:"OnBuild"`
+	Labels           json.RawMessage `json:"Labels"`
+	StopSignal       json.RawMessage `json:"StopSignal"`
+	StopTimeout      json.RawMessage `json:"StopTimeout"`
+	Shell            json.RawMessage `json:"Shell"`
+	NetworkingConfig json.RawMessage `json:"NetworkingConfig"`
+	// podman libpod additions
+	Name json.RawMessage `json:"Name"` // libpod allows Name in body (in addition to ?name=)
 }
 
-// containerExecBody is the partial shape of POST containers/{id}/exec.
-// The only field we inspect is Privileged: docker exec grants the
-// supplied capability set to the exec process independent of the
-// parent container's HostConfig.Privileged, so an agent that creates
-// a non-privileged container can otherwise exec into it with
-// Privileged: true and bypass the create-time deny. Cmd, Env, User,
-// WorkingDir, etc. are forwarded unmodified — they affect what runs
-// inside the (already-isolated) container, not the host.
+// containerExecBody is the explicit allowlist for POST
+// containers/{id}/exec. Privileged is INSPECTED (cycle-2 bypass
+// fix); everything else is admitted as opaque — the exec body
+// describes what to run INSIDE the (already-isolated) container.
 type containerExecBody struct {
+	// INSPECTED.
 	Privileged bool `json:"Privileged"`
+
+	// FORWARDED.
+	AttachStdin  json.RawMessage `json:"AttachStdin"`
+	AttachStdout json.RawMessage `json:"AttachStdout"`
+	AttachStderr json.RawMessage `json:"AttachStderr"`
+	DetachKeys   json.RawMessage `json:"DetachKeys"`
+	Tty          json.RawMessage `json:"Tty"`
+	Env          json.RawMessage `json:"Env"`
+	Cmd          json.RawMessage `json:"Cmd"`
+	User         json.RawMessage `json:"User"`
+	WorkingDir   json.RawMessage `json:"WorkingDir"`
+	ConsoleSize  json.RawMessage `json:"ConsoleSize"`
 }
 
-// inspectCreate parses body as a containers/create request and applies
-// the HostConfig policy. body must be the entire request body; on
-// success the caller restores r.Body before forwarding.
+// inspectCreate parses body as a containers/create request and
+// applies the HostConfig policy. Two-stage parse: first the
+// top-level body with DisallowUnknownFields (rejects unknown
+// top-level fields), then — if HostConfig is present — the
+// HostConfig with DisallowUnknownFields too.
+//
+// The two-stage parse exists because the JSON for HostConfig is
+// nested. A flat single-pass parser would accept ANY shape inside
+// HostConfig if the top-level admits HostConfig as RawMessage. The
+// second pass is where the per-field allowlist actually fires.
 func (p *Proxy) inspectCreate(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
-		// An empty body is malformed for containers/create — even a
-		// minimal request needs at least {"Image":"..."}. Per the
-		// "malformed JSON returns 400" AC, deny.
 		return denyDecision(http.StatusBadRequest,
 			"malformed_body:empty",
 			"containers/create request body is empty")
 	}
 
 	var req containerCreateBody
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&req); err != nil {
-		return denyDecision(http.StatusBadRequest,
-			"malformed_body:"+truncateForReason(err.Error()),
-			"containers/create body is not valid JSON")
+	if dec := decodeStrict(body, &req); !dec.allow {
+		dec.reason = "create_top:" + dec.reason
+		dec.message = "containers/create top-level body: " + dec.message
+		return dec
 	}
 
-	if req.HostConfig == nil {
+	if req.HostConfig == nil || len(*req.HostConfig) == 0 {
 		// No HostConfig is harmless — a container without any host
 		// configuration cannot bind-mount or request privileges.
 		return allowDecision("policy:containers/create:no_host_config")
 	}
 
-	return p.checkHostConfig(req.HostConfig)
+	var hc hostConfig
+	if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
+		dec.reason = "create_hostconfig:" + dec.reason
+		dec.message = "containers/create HostConfig: " + dec.message
+		return dec
+	}
+
+	return p.checkHostConfig(&hc)
+}
+
+// decodeStrict runs json.Decoder.DisallowUnknownFields against body
+// and returns a uniform policyDecision distinguishing
+// unknown-field (the schema-inversion deny we WANT to surface
+// loudly) from malformed-JSON (the original cycle-2 "400 on bad
+// body" path). The reason and message strings are general-purpose;
+// callers prefix them with an endpoint-specific tag so the audit
+// log makes the source endpoint clear.
+func decodeStrict(body []byte, dst any) policyDecision {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "unknown field") {
+			return denyDecision(http.StatusForbidden,
+				"unknown_field:"+truncateForReason(msg),
+				"body contains a field not in the proxy's allowlist ("+truncateForReason(msg)+")")
+		}
+		return denyDecision(http.StatusBadRequest,
+			"malformed_body:"+truncateForReason(msg),
+			"body is not valid JSON")
+	}
+	return allowDecision("decode_ok")
 }
 
 // checkHostConfig walks the parsed HostConfig and returns the first
@@ -402,55 +563,82 @@ func (p *Proxy) checkOneResourceCap(
 // the cap check runs in update-context mode (absent fields allowed,
 // present fields must be within bounds).
 //
-// This closes the bypass where an agent creates a container with
-// Memory=4G (within cap) and then POSTs an update with Memory=0 to
-// remove the cap (#2326 round 2 review-security).
+// Cycle 5: also runs with DisallowUnknownFields, so the same
+// hostConfig allowlist constrains which UpdateConfig fields the
+// agent may set. A previously-unknown HostConfig field cannot be
+// smuggled through an update.
 func (p *Proxy) inspectUpdate(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
-		// An empty update body is a no-op upstream — forward it. The
-		// upstream will return 200 with no state change.
+		// An empty update body is a no-op upstream — forward it.
 		return allowDecision("policy:containers/update:empty")
 	}
 	var hc hostConfig
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&hc); err != nil {
-		return denyDecision(http.StatusBadRequest,
-			"malformed_body:"+truncateForReason(err.Error()),
-			"containers/update body is not valid JSON")
+	if dec := decodeStrict(body, &hc); !dec.allow {
+		dec.reason = "update:" + dec.reason
+		dec.message = "containers/update: " + dec.message
+		return dec
 	}
 	return p.checkResourceCaps(&hc, capContextUpdate)
 }
 
-// volumeCreateBody is the partial shape of POST volumes/create. We
-// inspect Driver and DriverOpts to close the cycle-4 round-4
-// review-security CRITICAL #1: the `local` driver with DriverOpts
-// {type=none, device=/host/path, o=bind} creates a named volume that
-// is functionally a host bind, then a follow-up containers/create
-// references the volume by name and bindSource() skips the
-// host-bind check (no leading slash).
+// volumeCreateBody is the explicit allowlist for POST volumes/create.
+// Driver + DriverOpts are INSPECTED (cycle-4 finding #1 fix); Name
+// and Labels are FORWARDED. ClusterVolumeSpec is admitted opaque for
+// swarm-mode requests we are not policy-relevant for.
 type volumeCreateBody struct {
-	Name       string            `json:"Name"`
-	Driver     string            `json:"Driver"`
-	DriverOpts map[string]string `json:"DriverOpts"`
+	Name       string            `json:"Name"`       // INSPECTED (audit log only; no policy)
+	Driver     string            `json:"Driver"`     // INSPECTED — deny local + opts
+	DriverOpts map[string]string `json:"DriverOpts"` // INSPECTED with Driver
+
+	// FORWARDED.
+	Labels            json.RawMessage `json:"Labels"`
+	ClusterVolumeSpec json.RawMessage `json:"ClusterVolumeSpec"`
+}
+
+// networkCreateBody is the explicit allowlist for POST
+// networks/create. None of the fields are currently INSPECTED — the
+// network-mode escape lives on HostConfig.NetworkMode of a container
+// (already checked), not on the network definition itself. The
+// inversion exists purely so a future docker-API addition cannot
+// silently introduce an escape via networks/create.
+type networkCreateBody struct {
+	Name           json.RawMessage `json:"Name"`
+	CheckDuplicate json.RawMessage `json:"CheckDuplicate"`
+	Driver         json.RawMessage `json:"Driver"`
+	Scope          json.RawMessage `json:"Scope"`
+	EnableIPv6     json.RawMessage `json:"EnableIPv6"`
+	IPAM           json.RawMessage `json:"IPAM"`
+	Internal       json.RawMessage `json:"Internal"`
+	Attachable     json.RawMessage `json:"Attachable"`
+	Ingress        json.RawMessage `json:"Ingress"`
+	ConfigFrom     json.RawMessage `json:"ConfigFrom"`
+	ConfigOnly     json.RawMessage `json:"ConfigOnly"`
+	Options        json.RawMessage `json:"Options"`
+	Labels         json.RawMessage `json:"Labels"`
+	// podman libpod additions
+	ID                json.RawMessage `json:"id"`
+	Created           json.RawMessage `json:"created"`
+	NetworkInterface  json.RawMessage `json:"network_interface"`
+	Subnets           json.RawMessage `json:"subnets"`
+	IPv6Enabled       json.RawMessage `json:"ipv6_enabled"`
+	DNSEnabled        json.RawMessage `json:"dns_enabled"`
+	Routes            json.RawMessage `json:"routes"`
+	NetworkDNSServers json.RawMessage `json:"network_dns_servers"`
 }
 
 // inspectVolumeCreate parses body as a volumes/create request and
-// rejects any DriverOpts on the local driver (the only mechanism we
-// have seen this used as a bind-mount-in-disguise). Coordinator
-// directive cycle 5: "lean deny entirely — local-driver bind-volumes
-// are an obscure workflow and not worth admitting."
+// rejects any DriverOpts on the local driver. Cycle 5: also runs
+// with DisallowUnknownFields so unknown volumes/create fields
+// reject.
 func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
-		// Empty body — podman will produce an anonymous volume with
-		// default driver. Safe; forward.
 		return allowDecision("policy:volumes/create:empty")
 	}
 	var req volumeCreateBody
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&req); err != nil {
-		return denyDecision(http.StatusBadRequest,
-			"malformed_body:"+truncateForReason(err.Error()),
-			"volumes/create body is not valid JSON")
+	if dec := decodeStrict(body, &req); !dec.allow {
+		dec.reason = "volumes_create:" + dec.reason
+		dec.message = "volumes/create: " + dec.message
+		return dec
 	}
 	driver := strings.ToLower(req.Driver)
 	if driver == "local" && len(req.DriverOpts) > 0 {
@@ -461,6 +649,25 @@ func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
 	return allowDecision("policy:volumes/create:ok")
 }
 
+// inspectNetworkCreate parses body as a networks/create request and
+// rejects unknown fields. No fields are currently INSPECTED — the
+// network-mode escape lives on HostConfig.NetworkMode of a
+// container, not on the network definition. The schema-inversion
+// exists purely to lock networks/create down so a future docker-API
+// field cannot silently introduce an escape via this endpoint.
+func (p *Proxy) inspectNetworkCreate(body []byte) policyDecision {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return allowDecision("policy:networks/create:empty")
+	}
+	var req networkCreateBody
+	if dec := decodeStrict(body, &req); !dec.allow {
+		dec.reason = "networks_create:" + dec.reason
+		dec.message = "networks/create: " + dec.message
+		return dec
+	}
+	return allowDecision("policy:networks/create:ok")
+}
+
 // inspectExec parses body as a containers/{id}/exec request and
 // rejects Privileged: true. The exec body has its own Privileged
 // field that grants additional capabilities to the exec process
@@ -468,16 +675,13 @@ func (p *Proxy) inspectVolumeCreate(body []byte) policyDecision {
 // create-time deny does not cover it.
 func (p *Proxy) inspectExec(body []byte) policyDecision {
 	if len(bytes.TrimSpace(body)) == 0 {
-		// An exec body of {} is valid (defaults). An empty body is
-		// arguable but harmless — forward and let the upstream decide.
 		return allowDecision("policy:containers/exec:empty")
 	}
 	var req containerExecBody
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&req); err != nil {
-		return denyDecision(http.StatusBadRequest,
-			"malformed_body:"+truncateForReason(err.Error()),
-			"containers/exec body is not valid JSON")
+	if dec := decodeStrict(body, &req); !dec.allow {
+		dec.reason = "exec:" + dec.reason
+		dec.message = "containers/exec: " + dec.message
+		return dec
 	}
 	if req.Privileged {
 		return denyDecision(http.StatusForbidden,

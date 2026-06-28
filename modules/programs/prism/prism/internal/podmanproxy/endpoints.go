@@ -58,6 +58,15 @@ const (
 	// subsequent containers/create body via the named-volume path that
 	// bindSource() does NOT host-check.
 	endpointPolicyVolumeCreate
+
+	// endpointPolicyNetworkCreate runs the schema-inversion pass on
+	// POST networks/create. No fields are currently INSPECTED — the
+	// network-mode escape lives on HostConfig.NetworkMode of a
+	// container, not on the network definition. The kind exists so a
+	// future docker-API addition cannot silently introduce an escape
+	// via this endpoint without explicit admission in
+	// networkCreateBody.
+	endpointPolicyNetworkCreate
 )
 
 // normalisePath strips a leading docker/podman API version segment and
@@ -274,7 +283,7 @@ func classifyPOST(normPath string) endpointKind {
 
 	// Network and volume create / connect / disconnect.
 	if normPath == "networks/create" {
-		return endpointAllow
+		return endpointPolicyNetworkCreate
 	}
 	if normPath == "volumes/create" {
 		return endpointPolicyVolumeCreate

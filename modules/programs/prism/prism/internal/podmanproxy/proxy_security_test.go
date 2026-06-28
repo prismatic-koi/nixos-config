@@ -1865,6 +1865,157 @@ func TestSecurity_SysctlsNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
+// ──────── schema-inversion: unknown-field rejection per endpoint ────────
+//
+// Cycle-5 commit 2: every body-bearing endpoint now parses with
+// DisallowUnknownFields. Any HostConfig (or top-level / exec /
+// update / volume / network) field that is not in the explicit
+// allowlist struct is rejected as an unknown-field error. This
+// closes the "future docker-API field silently bypasses the proxy"
+// class of escape (cycles 2/3/4 all surfaced one or more instances).
+
+func TestSecurity_SchemaInversion_UnknownHostConfigField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	// A made-up HostConfig field. If the proxy ever silently
+	// admitted unknown fields, this would be forwarded — the test
+	// proves the schema inversion fires.
+	resp := postCreate(t, sock, map[string]any{
+		"BogusFutureSandboxEscape": "value",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown HostConfig field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+	env := readEnvelope(t, resp)
+	if !strings.Contains(env.Message, "unknown") &&
+		!strings.Contains(env.Message, "BogusFutureSandboxEscape") {
+		t.Errorf("envelope should name the unknown field, got %q", env.Message)
+	}
+}
+
+func TestSecurity_SchemaInversion_UnknownTopLevelField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	// Same idea, but at the top level of containers/create.
+	body, _ := json.Marshal(map[string]any{
+		"Image":                    "alpine",
+		"BogusTopLevelEscapeField": "x",
+	})
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/create",
+		bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown top-level field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_SchemaInversion_UnknownMountField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	// Unknown field inside a HostConfig.Mounts entry. Tests the
+	// second nested allowlist (hostConfigMount).
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":                  "bind",
+				"Source":                h.allowedDir,
+				"Target":                "/x",
+				"BogusNestedMountField": true,
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown Mount field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_SchemaInversion_UnknownUpdateField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/update",
+		map[string]any{"BogusUpdateField": 1})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown update field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_SchemaInversion_UnknownExecField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/exec",
+		map[string]any{"BogusExecField": true})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown exec field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_SchemaInversion_UnknownVolumeCreateField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/volumes/create",
+		map[string]any{"Name": "v", "BogusVolField": 1})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown volumes/create field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_SchemaInversion_UnknownNetworkCreateField_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/networks/create",
+		map[string]any{"Name": "n", "BogusNetField": 1})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("unknown networks/create field should be rejected; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Positive control: networks/create with only admitted fields is
+// forwarded. Proves the schema inversion is not a blanket deny.
+func TestSecurity_NetworkCreate_AdmittedFields_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/networks/create",
+		map[string]any{"Name": "netname", "Driver": "bridge"})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("networks/create with admitted fields should be allowed; got %d", resp.StatusCode)
+	}
+}
+
 func TestSecurity_NegativeControl_RootAllowlistPasses(t *testing.T) {
 	fu := newFakeUpstream(t)
 	dir := shortSocketDir(t)
