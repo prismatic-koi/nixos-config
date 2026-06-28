@@ -43,6 +43,35 @@
 // fields all live on containers/create, so the endpoint allowlist alone
 // is sufficient.
 //
+// # Bind-source symlink resolution and residual TOCTOU
+//
+// The bind-source allowlist check resolves symlinks (via
+// filepath.EvalSymlinks) on both the requested source and the
+// allowlist entries before the prefix comparison. This closes the
+// purely-lexical bypass where an agent with write access to a path
+// inside an allowed prefix could plant a symlink to /etc/passwd (or
+// any other forbidden host path) and have the kernel follow it when
+// runc mounts the bind.
+//
+// A residual TOCTOU window remains: the symlink resolution runs at
+// policy time, mount(2) runs in podman/runc some milliseconds later.
+// The agent can race the gap by swapping a safe symlink for a
+// dangerous one between the two moments. For v1 this residual is
+// acceptable because (a) the agent is otherwise sandboxed, (b) the
+// bind target inside the container is fixed at create time so a
+// changed symlink cannot retarget the agent's reach, and (c) the
+// sandbox layer (bwrap / sandbox-exec) sits in front of the proxy.
+// Closing the window properly requires either kernel-level fs
+// freezing or filesystem snapshots, both out of scope for a Step-1
+// library PR.
+//
+// Step 3 (sidecar wiring) and later should evaluate mounting the
+// per-session scratch directory with `nosymfollow` (Linux) or the
+// equivalent SBPL restriction (Darwin) where the platform permits.
+// That moves the TOCTOU mitigation from this proxy into the
+// surrounding sandbox profile, which is the correct architectural
+// home for it.
+//
 // # JSON error envelope
 //
 // Every synthesised error response (denial or upstream-unavailable) uses

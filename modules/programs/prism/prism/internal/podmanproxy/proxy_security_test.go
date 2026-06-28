@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,6 +115,25 @@ func (fu *fakeUpstream) captured() int64 {
 	return fu.requests.Load()
 }
 
+// proxyHarness is the per-test return value of startProxy /
+// startProxyWithCaps. It packages the listener socket path, the
+// audit buffer, and the REAL allowed directories the test should
+// bind to in positive-path tests.
+//
+// allowedDir and scratchDir are real, existing directories in the
+// configured AllowedBindSources list. After the cycle-4 symlink-
+// resolution change, isAllowedBindSource calls filepath.EvalSymlinks,
+// which errors on paths that do not exist — so a test that wants to
+// exercise the positive path of the bind allowlist must use a path
+// that actually exists on disk. Tests can also create subdirectories
+// inside allowedDir / scratchDir for finer-grained scenarios.
+type proxyHarness struct {
+	sock       string
+	audit      *bytes.Buffer
+	allowedDir string
+	scratchDir string
+}
+
 // startProxy stands a podmanproxy.Proxy on a fresh listener socket in
 // front of the supplied upstream, with sensible defaults that cover
 // the threat-table tests. Resource caps are intentionally LEFT
@@ -123,43 +143,78 @@ func (fu *fakeUpstream) captured() int64 {
 // include placeholder Memory/CpuQuota values. Tests that specifically
 // exercise the resource caps configure them in their own Config via
 // startProxyWithConfig.
-func startProxy(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
+func startProxy(t *testing.T, fu *fakeUpstream) *proxyHarness {
 	t.Helper()
 	// shortSocketDir, not t.TempDir() — see newFakeUpstream for rationale.
 	dir := shortSocketDir(t)
 	listenPath := filepath.Join(dir, "proxy.sock")
 	auditBuf := &bytes.Buffer{}
+
+	allowedDir := mkRealDir(t, "allow")
+	scratchDir := mkRealDir(t, "scratch")
+
 	cfg := Config{
 		ListenerPath:       listenPath,
 		UpstreamPath:       fu.sockPath,
-		AllowedBindSources: []string{"/workspace", "/scratch"},
+		AllowedBindSources: []string{allowedDir, scratchDir},
 		AllowedCaps:        []string{}, // empty by default
 		AuditWriter:        auditBuf,
 		// No MaxMemoryBytes / MaxCPUQuota / MaxNanoCpus — see comment above.
 		// No AllowedSecurityOpts — default-deny on SecurityOpt is exercised
 		// by the SecurityOpt-specific tests.
 	}
-	return startProxyWithConfig(t, cfg, auditBuf, listenPath), auditBuf, listenPath
+	startProxyWithConfig(t, cfg, auditBuf, listenPath)
+	return &proxyHarness{
+		sock:       listenPath,
+		audit:      auditBuf,
+		allowedDir: allowedDir,
+		scratchDir: scratchDir,
+	}
 }
 
 // startProxyWithCaps mirrors startProxy but enables the resource
 // caps. Tests that exercise the cap policy (over-cap, zero, negative,
 // absent) use this so the cap is actually active.
-func startProxyWithCaps(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
+func startProxyWithCaps(t *testing.T, fu *fakeUpstream) *proxyHarness {
 	t.Helper()
 	dir := shortSocketDir(t)
 	listenPath := filepath.Join(dir, "proxy.sock")
 	auditBuf := &bytes.Buffer{}
+
+	allowedDir := mkRealDir(t, "allow")
+	scratchDir := mkRealDir(t, "scratch")
+
 	cfg := Config{
 		ListenerPath:       listenPath,
 		UpstreamPath:       fu.sockPath,
-		AllowedBindSources: []string{"/workspace", "/scratch"},
+		AllowedBindSources: []string{allowedDir, scratchDir},
 		MaxMemoryBytes:     4 * 1024 * 1024 * 1024,
 		MaxCPUQuota:        200_000,
 		MaxNanoCpus:        2_000_000_000, // 2 cores
 		AuditWriter:        auditBuf,
 	}
-	return startProxyWithConfig(t, cfg, auditBuf, listenPath), auditBuf, listenPath
+	startProxyWithConfig(t, cfg, auditBuf, listenPath)
+	return &proxyHarness{
+		sock:       listenPath,
+		audit:      auditBuf,
+		allowedDir: allowedDir,
+		scratchDir: scratchDir,
+	}
+}
+
+// mkRealDir creates a real, existing tempdir under /tmp with the
+// given prefix. Cleanup is registered with t.Cleanup. Used as
+// allowlist entries (the cycle-4 symlink-resolution check requires
+// allowlist entries to actually exist) and as bind sources in
+// positive-path tests.
+func mkRealDir(t *testing.T, prefix string) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", prefix)
+	if err != nil {
+		t.Fatalf("mkdir real dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 // validCapsBody returns a hostConfig fragment that satisfies all the
@@ -319,7 +374,8 @@ func assertNoForward(t *testing.T, fu *fakeUpstream) {
 // {"message": "..."} body and is NOT forwarded upstream.
 func TestSecurity_HostBindOutsideAllowlist_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	resp := postCreate(t, sock, map[string]any{
 		"Binds": []string{"/etc/passwd:/host_passwd:ro"},
@@ -340,7 +396,8 @@ func TestSecurity_HostBindOutsideAllowlist_Denied(t *testing.T) {
 // host-bind escape: Mounts source outside the allowlist (newer API).
 func TestSecurity_HostMountOutsideAllowlist_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	resp := postCreate(t, sock, map[string]any{
 		"Mounts": []map[string]any{
@@ -363,7 +420,8 @@ func TestSecurity_HostMountOutsideAllowlist_Denied(t *testing.T) {
 // returns 403 and is not forwarded.
 func TestSecurity_Privileged_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	resp := postCreate(t, sock, map[string]any{
 		"Privileged": true,
@@ -384,7 +442,8 @@ func TestSecurity_Privileged_Denied(t *testing.T) {
 // value outside the allowlist returns 403.
 func TestSecurity_CapAddDisallowed_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	resp := postCreate(t, sock, map[string]any{
 		"CapAdd": []string{"SYS_ADMIN"},
@@ -399,10 +458,11 @@ func TestSecurity_CapAddDisallowed_Denied(t *testing.T) {
 func TestSecurity_CapAddInAllowlist_Allowed(t *testing.T) {
 	fu := newFakeUpstream(t)
 	dir := shortSocketDir(t)
+	allowedDir := mkRealDir(t, "allow")
 	cfg := Config{
 		ListenerPath:       filepath.Join(dir, "proxy.sock"),
 		UpstreamPath:       fu.sockPath,
-		AllowedBindSources: []string{"/workspace"},
+		AllowedBindSources: []string{allowedDir},
 		AllowedCaps:        []string{"NET_BIND_SERVICE"},
 		AuditWriter:        &bytes.Buffer{},
 	}
@@ -428,7 +488,8 @@ func TestSecurity_HostNamespaceModes_Denied(t *testing.T) {
 	for _, field := range modes {
 		t.Run(field, func(t *testing.T) {
 			fu := newFakeUpstream(t)
-			_, _, sock := startProxy(t, fu)
+			h := startProxy(t, fu)
+			sock := h.sock
 			resp := postCreate(t, sock, map[string]any{
 				field: "host",
 			})
@@ -446,7 +507,8 @@ func TestSecurity_HostNamespaceModes_Denied(t *testing.T) {
 // returns 403.
 func TestSecurity_DevicesNonEmpty_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	resp := postCreate(t, sock, map[string]any{
 		"Devices": []map[string]any{
@@ -474,7 +536,8 @@ func TestSecurity_DevicesNonEmpty_Denied(t *testing.T) {
 
 func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 
 	// Configured cap is 4 GiB; request 10 TiB. CpuQuota / NanoCpus
 	// supplied so the request only trips the memory check.
@@ -489,7 +552,8 @@ func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
 
 func TestSecurity_CPUQuotaOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 
 	body := validCapsBody()
 	body["CpuQuota"] = int64(2_000_000)
@@ -505,7 +569,8 @@ func TestSecurity_CPUQuotaOverCap_Denied(t *testing.T) {
 // stating "I want unlimited memory".
 func TestSecurity_MemoryZero_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	body["Memory"] = int64(0)
 	resp := postCreate(t, sock, body)
@@ -517,7 +582,8 @@ func TestSecurity_MemoryZero_DeniedWhenCapActive(t *testing.T) {
 
 func TestSecurity_MemoryNegative_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	body["Memory"] = int64(-1)
 	resp := postCreate(t, sock, body)
@@ -533,7 +599,8 @@ func TestSecurity_MemoryNegative_DeniedWhenCapActive(t *testing.T) {
 // policy denies this too so the cap is actually enforceable.
 func TestSecurity_MemoryAbsent_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	delete(body, "Memory")
 	resp := postCreate(t, sock, body)
@@ -548,11 +615,13 @@ func TestSecurity_MemoryAbsent_DeniedWhenCapActive(t *testing.T) {
 // the default-no-cap mode preserves docker's default behaviour.
 func TestSecurity_MemoryAbsent_AllowedWhenNoCap(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 	// No Memory field, no other resource fields. With no cap active,
-	// this should pass.
+	// this should pass. Use the harness's real allowedDir so the
+	// bind source resolves via EvalSymlinks.
 	resp := postCreate(t, sock, map[string]any{
-		"Binds": []string{"/workspace/proj:/app:ro"},
+		"Binds": []string{h.allowedDir + ":/app:ro"},
 	})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("absent Memory with no cap should be allowed; got %d", resp.StatusCode)
@@ -562,7 +631,8 @@ func TestSecurity_MemoryAbsent_AllowedWhenNoCap(t *testing.T) {
 // CpuQuotaZero / CpuQuotaAbsent: identical class to Memory.
 func TestSecurity_CpuQuotaZero_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	body["CpuQuota"] = int64(0)
 	resp := postCreate(t, sock, body)
@@ -574,7 +644,8 @@ func TestSecurity_CpuQuotaZero_DeniedWhenCapActive(t *testing.T) {
 
 func TestSecurity_CpuQuotaAbsent_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	delete(body, "CpuQuota")
 	resp := postCreate(t, sock, body)
@@ -589,7 +660,8 @@ func TestSecurity_CpuQuotaAbsent_DeniedWhenCapActive(t *testing.T) {
 // burst above the cap could simply state the request as NanoCpus.
 func TestSecurity_NanoCpusOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	body["NanoCpus"] = int64(8_000_000_000) // 8 cores; cap is 2 cores
 	resp := postCreate(t, sock, body)
@@ -601,7 +673,8 @@ func TestSecurity_NanoCpusOverCap_Denied(t *testing.T) {
 
 func TestSecurity_NanoCpusZero_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	body["NanoCpus"] = int64(0)
 	resp := postCreate(t, sock, body)
@@ -613,7 +686,8 @@ func TestSecurity_NanoCpusZero_DeniedWhenCapActive(t *testing.T) {
 
 func TestSecurity_NanoCpusAbsent_DeniedWhenCapActive(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	body := validCapsBody()
 	delete(body, "NanoCpus")
 	resp := postCreate(t, sock, body)
@@ -628,7 +702,8 @@ func TestSecurity_NanoCpusAbsent_DeniedWhenCapActive(t *testing.T) {
 // blanket deny.
 func TestSecurity_ResourceCapsWithinBounds_Allowed(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	resp := postCreate(t, sock, validCapsBody())
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("valid resource caps should be allowed; got %d", resp.StatusCode)
@@ -648,7 +723,8 @@ func TestSecurity_ResourceCapsWithinBounds_Allowed(t *testing.T) {
 
 func TestSecurity_UpdateEndpoint_MemoryZero_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	req := mustNewRequest(t, http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/update",
 		map[string]any{"Memory": int64(0)})
@@ -661,7 +737,8 @@ func TestSecurity_UpdateEndpoint_MemoryZero_Denied(t *testing.T) {
 
 func TestSecurity_UpdateEndpoint_MemoryOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	req := mustNewRequest(t, http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/update",
 		map[string]any{"Memory": int64(10) * 1024 * 1024 * 1024 * 1024})
@@ -674,7 +751,8 @@ func TestSecurity_UpdateEndpoint_MemoryOverCap_Denied(t *testing.T) {
 
 func TestSecurity_UpdateEndpoint_PartialBodyAllowed(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	// Only setting CpuShares (not in our cap list). Absent Memory and
 	// CpuQuota are allowed in update context.
 	req := mustNewRequest(t, http.MethodPost,
@@ -688,7 +766,8 @@ func TestSecurity_UpdateEndpoint_PartialBodyAllowed(t *testing.T) {
 
 func TestSecurity_UpdateEndpoint_MalformedJSON_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxyWithCaps(t, fu)
+	h := startProxyWithCaps(t, fu)
+	sock := h.sock
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/update",
 		bytes.NewReader([]byte(`{garbage`)))
@@ -709,7 +788,8 @@ func TestSecurity_UpdateEndpoint_MalformedJSON_Denied(t *testing.T) {
 
 func TestSecurity_ExecPrivileged_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 	req := mustNewRequest(t, http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/exec",
 		map[string]any{
@@ -725,7 +805,8 @@ func TestSecurity_ExecPrivileged_Denied(t *testing.T) {
 
 func TestSecurity_ExecWithoutPrivileged_Allowed(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 	req := mustNewRequest(t, http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/exec",
 		map[string]any{
@@ -743,7 +824,8 @@ func TestSecurity_ExecWithoutPrivileged_Allowed(t *testing.T) {
 
 func TestSecurity_ExecMalformedJSON_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 	req, _ := http.NewRequest(http.MethodPost,
 		"http://podman.sock/v1.41/containers/abc/exec",
 		bytes.NewReader([]byte(`{garbage`)))
@@ -778,7 +860,8 @@ func TestSecurity_SecurityOpt_DefaultDenyAll(t *testing.T) {
 	for _, opt := range cases {
 		t.Run(opt, func(t *testing.T) {
 			fu := newFakeUpstream(t)
-			_, _, sock := startProxy(t, fu)
+			h := startProxy(t, fu)
+			sock := h.sock
 			resp := postCreate(t, sock, map[string]any{
 				"SecurityOpt": []string{opt},
 			})
@@ -795,10 +878,11 @@ func TestSecurity_SecurityOpt_DefaultDenyAll(t *testing.T) {
 func TestSecurity_SecurityOpt_InAllowlist_Allowed(t *testing.T) {
 	fu := newFakeUpstream(t)
 	dir := shortSocketDir(t)
+	allowedDir := mkRealDir(t, "allow")
 	cfg := Config{
 		ListenerPath:        filepath.Join(dir, "proxy.sock"),
 		UpstreamPath:        fu.sockPath,
-		AllowedBindSources:  []string{"/workspace"},
+		AllowedBindSources:  []string{allowedDir},
 		AllowedSecurityOpts: []string{"no-new-privileges:true"},
 		AuditWriter:         &bytes.Buffer{},
 	}
@@ -817,10 +901,11 @@ func TestSecurity_SecurityOpt_InAllowlist_Allowed(t *testing.T) {
 func TestSecurity_SecurityOpt_PartialAllowlist_ExactMatch(t *testing.T) {
 	fu := newFakeUpstream(t)
 	dir := shortSocketDir(t)
+	allowedDir := mkRealDir(t, "allow")
 	cfg := Config{
 		ListenerPath:        filepath.Join(dir, "proxy.sock"),
 		UpstreamPath:        fu.sockPath,
-		AllowedBindSources:  []string{"/workspace"},
+		AllowedBindSources:  []string{allowedDir},
 		AllowedSecurityOpts: []string{"no-new-privileges:true"},
 		AuditWriter:         &bytes.Buffer{},
 	}
@@ -840,7 +925,8 @@ func TestSecurity_SecurityOpt_PartialAllowlist_ExactMatch(t *testing.T) {
 // parameter outside the allowlist returns 403.
 func TestSecurity_ArchivePathOutsideAllowlist_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	req, err := http.NewRequest(http.MethodPut,
 		"http://podman.sock/v1.41/containers/abc123/archive?path=%2Fetc",
@@ -861,7 +947,8 @@ func TestSecurity_ArchivePathOutsideAllowlist_Denied(t *testing.T) {
 // an actionable error message identifying the rejected endpoint.
 func TestSecurity_UnknownEndpoint_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	for _, tc := range []struct {
 		name, method, path string
@@ -899,7 +986,8 @@ func TestSecurity_UnknownEndpoint_Denied(t *testing.T) {
 // is not forwarded.
 func TestSecurity_MalformedJSONBody_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	req, err := http.NewRequest(http.MethodPost,
 		"http://podman.sock/v1.41/containers/create",
@@ -918,7 +1006,8 @@ func TestSecurity_MalformedJSONBody_Denied(t *testing.T) {
 // empty body on containers/create is treated as malformed.
 func TestSecurity_EmptyCreateBody_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	req, err := http.NewRequest(http.MethodPost,
 		"http://podman.sock/v1.41/containers/create",
@@ -1049,7 +1138,8 @@ func TestSecurity_StreamingEndpoints_ForwardWithoutBodyParse(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fu := newFakeUpstream(t)
-			_, _, sock := startProxy(t, fu)
+			h := startProxy(t, fu)
+			sock := h.sock
 			var body io.Reader
 			if tc.supplyBody {
 				// A body that is NOT valid JSON. If the proxy
@@ -1079,14 +1169,16 @@ func TestSecurity_StreamingEndpoints_ForwardWithoutBodyParse(t *testing.T) {
 // endpoint, decision, reason as JSON.
 func TestSecurity_AuditLog_OneLinePerRequest(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, audit, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
+	audit := h.audit
 
 	// Reject: privileged container.
 	r1 := postCreate(t, sock, map[string]any{"Privileged": true})
 	_ = r1.Body.Close()
 
-	// Accept: harmless containers/create.
-	r2 := postCreate(t, sock, map[string]any{"Binds": []string{"/workspace/sub:/x:ro"}})
+	// Accept: harmless containers/create with a real allowed path.
+	r2 := postCreate(t, sock, map[string]any{"Binds": []string{h.allowedDir + ":/x:ro"}})
 	_ = r2.Body.Close()
 
 	// Reject: unknown endpoint.
@@ -1128,7 +1220,9 @@ func TestSecurity_AuditLog_OneLinePerRequest(t *testing.T) {
 // hacks.
 func TestSecurity_AuditLog_NewlineTerminated(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, audit, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
+	audit := h.audit
 
 	resp := postCreate(t, sock, map[string]any{})
 	_ = resp.Body.Close()
@@ -1153,7 +1247,8 @@ func TestSecurity_AuditLog_NewlineTerminated(t *testing.T) {
 // invariant.
 func TestSecurity_RawSocketCurlBypass_NoPath(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
 	// Try the docker convention of an Engine API path that would not
 	// exist on podman in any case, and a podman-machine-specific
@@ -1173,16 +1268,25 @@ func TestSecurity_RawSocketCurlBypass_NoPath(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// path-traversal in bind source: filepath.Clean must collapse "..".
+// path-traversal in bind source: filepath.Clean (and now
+// filepath.EvalSymlinks) must collapse ".." to a canonical path,
+// after which the prefix check against the allowlist runs.
 //
-// "Allowlist = /workspace; source = /workspace/../etc/passwd" must
-// resolve to "/etc/passwd" and be denied.
+// Concrete scenario: allowlist = h.allowedDir; source = h.allowedDir
+// + "/../../etc/passwd". After lexical Clean the source becomes
+// "/etc/passwd"; after EvalSymlinks it stays "/etc/passwd" (exists
+// on every Unix host). The prefix check against h.allowedDir fails.
+// DENY.
 func TestSecurity_BindSourceTraversal_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
+	// Build a traversal source that, after Clean, escapes the allowed
+	// prefix and lands on a real host file outside the allowlist.
+	traversal := h.allowedDir + "/../../../../etc/hosts"
 	resp := postCreate(t, sock, map[string]any{
-		"Binds": []string{"/workspace/../etc/passwd:/host_passwd:ro"},
+		"Binds": []string{traversal + ":/x:ro"},
 	})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
@@ -1190,13 +1294,34 @@ func TestSecurity_BindSourceTraversal_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// substring trap: "/workspace" must NOT allow "/workspace-other".
+// substring trap: an allowlist entry must NOT match a sibling path
+// whose name shares the prefix but adds extra characters before the
+// next separator. "/foo" must NOT allow "/foo-other".
+//
+// We create two real sibling directories under a common parent so
+// EvalSymlinks resolves both, isolating the prefix-check logic.
 func TestSecurity_BindSourceSubstringTrap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	parent := mkRealDir(t, "trap")
+	allowed := filepath.Join(parent, "allow")
+	sibling := filepath.Join(parent, "allow-other")
+	if err := os.Mkdir(allowed, 0o755); err != nil {
+		t.Fatalf("mkdir allowed: %v", err)
+	}
+	if err := os.Mkdir(sibling, 0o755); err != nil {
+		t.Fatalf("mkdir sibling: %v", err)
+	}
+	dir := shortSocketDir(t)
+	cfg := Config{
+		ListenerPath:       filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:       fu.sockPath,
+		AllowedBindSources: []string{allowed},
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
 
-	resp := postCreate(t, sock, map[string]any{
-		"Binds": []string{"/workspace-other:/x:ro"},
+	resp := postCreate(t, cfg.ListenerPath, map[string]any{
+		"Binds": []string{sibling + ":/x:ro"},
 	})
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("substring trap: status got %d want %d", resp.StatusCode, http.StatusForbidden)
@@ -1212,10 +1337,17 @@ func TestSecurity_BindSourceSubstringTrap_Denied(t *testing.T) {
 // socket unmodified.
 func TestSecurity_AllowedBinds_ForwardsUnmodified(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	h := startProxy(t, fu)
+	sock := h.sock
 
+	// Create a real subdirectory inside allowedDir so the bind source
+	// is both inside the allowlist AND resolvable by EvalSymlinks.
+	projDir := filepath.Join(h.allowedDir, "proj")
+	if err := os.Mkdir(projDir, 0o755); err != nil {
+		t.Fatalf("mkdir proj: %v", err)
+	}
 	hostConfig := map[string]any{
-		"Binds": []string{"/workspace/proj:/app:rw", "/scratch:/tmp:ro"},
+		"Binds": []string{projDir + ":/app:rw", h.scratchDir + ":/tmp:ro"},
 	}
 	resp := postCreate(t, sock, hostConfig)
 	if resp.StatusCode != http.StatusOK {
@@ -1240,6 +1372,219 @@ func TestSecurity_AllowedBinds_ForwardsUnmodified(t *testing.T) {
 }
 
 // ────────────────────────── negative control ──────────────────────────
+
+// ─────────── cycle-4: symlink bypass of bind-source allowlist ────────────
+//
+// Reviewer's exact exploit (PR #2326 round 3, CRITICAL): the agent
+// has write access to a path INSIDE an allowed prefix, so it plants
+// a symlink at <allowed>/key → <forbidden host file>. The proxy's
+// lexical prefix check sees /<allowed>/key starting with /<allowed>/
+// → ALLOW. The proxy forwards to podman, runc's mount(2) follows
+// the symlink at the kernel level, and the container ends up with
+// the forbidden host file bind-mounted in.
+//
+// Fix: filepath.EvalSymlinks on the source before the prefix check.
+// This test pins the fix down to the reviewer's verbatim scenario.
+
+func TestSecurity_BindSymlinkToForbiddenPath_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	// Plant a symlink inside the allowed prefix pointing at /etc/hosts
+	// (the canonical "forbidden host file" stand-in that exists on
+	// every Unix host).
+	symlinkPath := filepath.Join(h.allowedDir, "key")
+	if err := os.Symlink("/etc/hosts", symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{symlinkPath + ":/k:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("symlink-to-forbidden bind should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Same exploit shape via HostConfig.Mounts of Type=bind — the
+// reviewer specifically noted this second call site at policy.go:160.
+func TestSecurity_MountSymlinkToForbiddenPath_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	symlinkPath := filepath.Join(h.allowedDir, "keymount")
+	if err := os.Symlink("/etc/hosts", symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "bind",
+				"Source": symlinkPath,
+				"Target": "/k",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("symlink-to-forbidden mount should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Same exploit shape via the PUT /containers/{id}/archive path
+// query — the reviewer's third call site at policy.go:378.
+func TestSecurity_ArchiveSymlinkToForbiddenPath_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	symlinkPath := filepath.Join(h.allowedDir, "keyarchive")
+	if err := os.Symlink("/etc/hosts", symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodPut,
+		"http://podman.sock/v1.41/containers/abc/archive?path="+url.QueryEscape(symlinkPath),
+		bytes.NewReader([]byte("tar")))
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("symlink-to-forbidden archive path should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Symlink that points to a location ALSO inside the allowed prefix
+// must still resolve and pass. Proves the symlink-resolution code
+// is not a blanket "any symlink → deny".
+func TestSecurity_BindSymlinkToAllowedPath_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	targetDir := filepath.Join(h.allowedDir, "target")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatalf("mkdir target: %v", err)
+	}
+	symlinkPath := filepath.Join(h.allowedDir, "link")
+	if err := os.Symlink(targetDir, symlinkPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{symlinkPath + ":/x:ro"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("symlink to within-allowlist target should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+// Non-existent source: EvalSymlinks errors → DENY. The coordinator's
+// directive explicitly said "lean reject" for non-existent paths.
+func TestSecurity_BindNonExistentSource_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	// Path under the allowed prefix but the file does not exist —
+	// without EvalSymlinks the lexical check would ALLOW this; with
+	// EvalSymlinks it errors and we DENY.
+	nonexistent := filepath.Join(h.allowedDir, "does-not-exist")
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{nonexistent + ":/x:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("non-existent source should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Broken symlink chain (link → missing target): EvalSymlinks errors
+// on the missing target, so DENY even though the symlink itself
+// exists at an allowed path. Defence-in-depth against an agent that
+// plants a broken symlink as a stepping stone.
+func TestSecurity_BindBrokenSymlink_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	linkPath := filepath.Join(h.allowedDir, "broken")
+	if err := os.Symlink(filepath.Join(h.allowedDir, "missing-target"), linkPath); err != nil {
+		t.Fatalf("create broken symlink: %v", err)
+	}
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{linkPath + ":/x:ro"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("broken symlink source should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Relative path source via HostConfig.Mounts.Source. The Docker API
+// spec requires absolute source paths for Type=bind mounts; the
+// proxy rejects relative sources defensively.
+func TestSecurity_MountRelativeSource_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "bind",
+				"Source": "relative/path",
+				"Target": "/x",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("relative Mounts source should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// macOS-on-symlinked-TMPDIR sanity: when /tmp is a symlink to
+// /private/tmp (macOS default), an allowlist entry under /tmp must
+// still match a source under /private/tmp (and vice versa). The
+// canonicalisePath helper resolves the allowlist entry so the
+// prefix comparison is done in canonical form. This is most
+// relevant on Darwin, but the helper exercises the same
+// canonicalisation path on Linux too.
+func TestSecurity_BindSymlinkedAllowlistEntry_Matched(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := shortSocketDir(t)
+
+	real := mkRealDir(t, "real")
+	sub := filepath.Join(real, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatalf("mkdir sub: %v", err)
+	}
+	// Symlink alias to that directory — used as the allowlist entry.
+	aliasParent := mkRealDir(t, "alias")
+	alias := filepath.Join(aliasParent, "link")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatalf("create alias symlink: %v", err)
+	}
+
+	cfg := Config{
+		ListenerPath:       filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:       fu.sockPath,
+		AllowedBindSources: []string{alias},
+		AuditWriter:        &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	// Bind the CANONICAL path. Without canonical-form allowlist
+	// resolution this would not match (alias != real lexically);
+	// with canonical resolution both sides resolve to the same
+	// target and the bind is allowed.
+	resp := postCreate(t, cfg.ListenerPath, map[string]any{
+		"Binds": []string{sub + ":/x:ro"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("canonical source under symlinked allowlist entry should be allowed; got %d", resp.StatusCode)
+	}
+}
 
 // TestSecurity_NegativeControl_RootAllowlistPasses is the load-bearing
 // meta-test: if I mutate Config.AllowedBindSources to contain "/" (the

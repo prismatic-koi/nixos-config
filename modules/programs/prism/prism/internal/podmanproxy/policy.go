@@ -409,37 +409,118 @@ func bindSource(bind string) string {
 
 // isAllowedBindSource reports whether src is permitted as a host bind
 // source given the configured prefix allowlist. A path is allowed iff,
-// after filepath.Clean, it equals an entry exactly or starts with
-// entry + "/". The substring trap — "/srv" allowing "/srv-other" — is
-// closed by requiring the separator.
+// after BOTH lexical cleanup (filepath.Clean, which collapses ".."
+// and double slashes) AND symlink resolution (filepath.EvalSymlinks,
+// which follows every symlink in the chain to its canonical target),
+// the resolved source equals an allowlist entry exactly or starts
+// with entry + "/". The substring trap — "/srv" allowing
+// "/srv-other" — is closed by requiring the separator.
 //
 // The special entry "/" allows every absolute path; it exists so the
 // security test suite can run a negative-control case proving the
 // positive tests are not no-ops.
+//
+// # Symlink resolution
+//
+// Pre-cycle-4 (#2326 round 3), the check was purely lexical: an
+// agent with write access to its worktree could create a symlink at
+// (allowed-prefix)/key → /etc/passwd, bind it, and the kernel's
+// mount(2) would follow the symlink and expose the host file. The
+// fix is to resolve symlinks on BOTH the source and the allowlist
+// entries so the prefix comparison is between canonical paths.
+//
+// EvalSymlinks errors on paths that do not exist, on broken symlink
+// chains, and on EACCES. In every case the source is not a usable
+// bind target and the proxy denies. This is intentionally stricter
+// than docker, which forwards an unresolved source to runc and lets
+// runc error — the proxy prefers to give the agent an actionable 4xx
+// over surfacing a runc internal error, and a non-existent source on
+// a bind request is suspect anyway.
+//
+// # Residual TOCTOU
+//
+// EvalSymlinks runs at policy time, mount(2) runs in podman/runc
+// later. Between those two moments the agent COULD swap a resolved-
+// safe path for a symlink pointing somewhere dangerous. The window
+// is small and the bind point inside the container is fixed at
+// create time, but the residual risk is real. Acceptable for v1 on
+// the basis that:
+//
+//   - Closing the TOCTOU window requires either kernel-level fs
+//     freezing primitives (not portable) or filesystem snapshots
+//     (heavyweight, out of scope for a Step-1 library PR).
+//   - The agent process is otherwise sandboxed; arming the race in
+//     the first place still requires write access to a path inside
+//     an allowed prefix, which the worktree-only bind allowlist
+//     already restricts.
+//   - Defence-in-depth at the sandbox layer (bwrap / sandbox-exec)
+//     remains in front — the proxy is one link in a chain, not the
+//     sole boundary.
+//
+// Step 3 and onwards should consider whether the per-session
+// scratch dir (which is the agent's only realistic vector for
+// creating a malicious symlink) should be mounted with `nosymfollow`
+// or similar where the kernel/platform supports it. Out of scope
+// for this PR but worth a comment in #2317 when Step 3 lands.
 func (p *Proxy) isAllowedBindSource(src string) bool {
 	if src == "" {
 		return false
 	}
 	if !strings.HasPrefix(src, "/") {
+		// Relative paths are never allowed — they cannot be validated
+		// against an absolute-path allowlist, and docker's Binds spec
+		// requires absolute sources anyway. Defence-in-depth: reject
+		// rather than relying on docker to reject downstream.
 		return false
 	}
-	clean := filepath.Clean(src)
+	canonicalSrc, ok := canonicalisePath(src)
+	if !ok {
+		return false
+	}
 	for _, raw := range p.cfg.AllowedBindSources {
 		if raw == "" {
 			continue
 		}
+		// Resolve the allowlist entry too — if the host's TMPDIR (or
+		// any other path in the allowlist) goes through a symlink
+		// like /tmp→/private/tmp on macOS, the source's canonical
+		// form will only prefix-match the allowlist's canonical form.
+		// Fall back to lexical when the entry does not currently
+		// exist so a yet-to-be-created scratch dir does not silently
+		// deny-all.
 		allowed := filepath.Clean(raw)
+		if resolved, ok := canonicalisePath(raw); ok {
+			allowed = resolved
+		}
 		if allowed == "/" {
 			return true
 		}
-		if clean == allowed {
+		if canonicalSrc == allowed {
 			return true
 		}
-		if strings.HasPrefix(clean, allowed+"/") {
+		if strings.HasPrefix(canonicalSrc, allowed+"/") {
 			return true
 		}
 	}
 	return false
+}
+
+// canonicalisePath returns the canonical (lexically cleaned + symlink-
+// resolved) form of p, or ("", false) if p is not a usable path on
+// the current host — does not exist, is a broken symlink chain, or
+// is otherwise unreachable. Defensive about every error mode of
+// filepath.EvalSymlinks because the call sites depend on a strict
+// canonical form for the prefix-match security check.
+func canonicalisePath(p string) (string, bool) {
+	if p == "" {
+		return "", false
+	}
+	cleaned := filepath.Clean(p)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		return "", false
+	}
+	return resolved, true
 }
 
 // firstDisallowedCap returns the first CapAdd entry that is not in the

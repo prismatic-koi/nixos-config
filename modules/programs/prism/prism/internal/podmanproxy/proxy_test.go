@@ -280,41 +280,68 @@ func TestIsVersionSegment(t *testing.T) {
 
 // ─────────────────────── isAllowedBindSource ───────────────────────────
 
+// As of cycle 4, these tests use REAL paths because isAllowedBindSource
+// now calls filepath.EvalSymlinks (which errors on paths that do not
+// exist). The scaffold creates a /tmp/<rand>/ tree with sibling
+// directories so each behavioural case maps to a real on-disk layout.
 func TestIsAllowedBindSource(t *testing.T) {
+	base, err := os.MkdirTemp("/tmp", "iabs")
+	if err != nil {
+		t.Fatalf("mkdir base: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	mkdir := func(p string) string {
+		t.Helper()
+		full := filepath.Join(base, p)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", full, err)
+		}
+		return full
+	}
+	workspace := mkdir("workspace")
+	sub := mkdir("workspace/sub")
+	deeper := mkdir("workspace/sub/deeper")
+	scratch := mkdir("scratch")
+	wsOther := mkdir("workspace-other")
+	ws2 := mkdir("workspace2")
+	elseFile := filepath.Join(mkdir("elsewhere"), "file")
+	if err := os.WriteFile(elseFile, []byte{}, 0o600); err != nil {
+		t.Fatalf("touch %s: %v", elseFile, err)
+	}
+
 	p := &Proxy{cfg: Config{
-		AllowedBindSources: []string{"/workspace", "/scratch", "/var/lib/data/"},
+		AllowedBindSources: []string{workspace, scratch},
 	}}
 
 	cases := []struct {
+		name string
 		src  string
 		want bool
 	}{
-		// Direct match.
-		{"/workspace", true},
-		// Child path.
-		{"/workspace/sub", true},
-		{"/workspace/sub/deeper", true},
-		// Trailing-slash on allowlist entry must work.
-		{"/var/lib/data", true},
-		{"/var/lib/data/file", true},
-		// Substring trap: must NOT pass.
-		{"/workspace-other", false},
-		{"/workspace2", false},
-		// Disallowed paths.
-		{"/etc/passwd", false},
-		{"/Users/bensherman", false},
-		{"/", false},
-		{"", false},
-		// Relative path — never allowed.
-		{"relative/path", false},
-		// Traversal — filepath.Clean collapses ".."
-		{"/workspace/../etc", false},
-		// Edge: source IS an ancestor of allow entry — not allowed
-		// (allowing /workspace ≠ allowing /).
-		{"/work", false},
+		{"direct-match-workspace", workspace, true},
+		{"child-of-workspace", sub, true},
+		{"grandchild-of-workspace", deeper, true},
+		{"direct-match-scratch", scratch, true},
+		{"substring-trap-other", wsOther, false},
+		{"substring-trap-2", ws2, false},
+		{"file-outside-allowlist", elseFile, false},
+		{"existing-host-path", "/etc/hosts", false},
+		{"slash", "/", false},
+		{"empty", "", false},
+		{"relative-path", "relative/path", false},
+		// Traversal escaping the allowlist: after lexical Clean the
+		// source lands one level above base, which is not under the
+		// workspace allowlist entry.
+		{"traversal-out", workspace + "/../..", false},
+		// Traversal that lands back inside the allowlist is allowed
+		// (Clean collapses sub/.. to workspace itself).
+		{"traversal-back-in", workspace + "/sub/..", true},
+		// Non-existent paths fail EvalSymlinks and are denied.
+		{"nonexistent", "/this/does/not/exist/anywhere/12345", false},
 	}
 	for _, tc := range cases {
-		t.Run(tc.src, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			got := p.isAllowedBindSource(tc.src)
 			if got != tc.want {
 				t.Errorf("isAllowedBindSource(%q) = %v, want %v", tc.src, got, tc.want)
@@ -325,7 +352,10 @@ func TestIsAllowedBindSource(t *testing.T) {
 
 func TestIsAllowedBindSource_RootEntry(t *testing.T) {
 	p := &Proxy{cfg: Config{AllowedBindSources: []string{"/"}}}
-	cases := []string{"/etc/passwd", "/Users/bensherman", "/var/log/syslog", "/"}
+	// Paths used here MUST exist on every Unix host the test suite
+	// runs on (Linux Nix sandbox + Darwin dev). /etc/hosts, /tmp, /
+	// are the safe trio.
+	cases := []string{"/etc/hosts", "/tmp", "/"}
 	for _, src := range cases {
 		if !p.isAllowedBindSource(src) {
 			t.Errorf("with root allowlist, %q should be allowed", src)
@@ -334,6 +364,12 @@ func TestIsAllowedBindSource_RootEntry(t *testing.T) {
 	// Empty source still not allowed (defensive).
 	if p.isAllowedBindSource("") {
 		t.Error("empty source should never be allowed, even with root allowlist")
+	}
+	// Non-existent paths fail EvalSymlinks and are denied even when
+	// the allowlist is the universal "/". This is intentional: a
+	// non-existent bind source is suspect.
+	if p.isAllowedBindSource("/this/does/not/exist/anywhere/67890") {
+		t.Error("non-existent path must be denied even with root allowlist (EvalSymlinks contract)")
 	}
 }
 
