@@ -48,6 +48,12 @@ type Status struct {
 	// (a muted session that hits finished stays muted, and the missed
 	// notification is dropped, not queued).
 	Muted bool `json:"muted"`
+	// ContainersEnabled is the runtime gate for the per-session filtering
+	// podman API socket proxy (#2317 §3f / #2319). When true, the sidecar
+	// starts the proxy and the agent's CONTAINER_HOST / DOCKER_HOST env
+	// vars point at the filtered socket. Defaults to false; flipped by
+	// Step 3 (sidecar wiring) and Step 6 (`prism spawn --containers`).
+	ContainersEnabled bool `json:"containers_enabled"`
 }
 
 // BusMessage represents a row in the bus_messages table.

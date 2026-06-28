@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 36
+	currentSchemaVersion = 37
 )
 
 // DB wraps a SQLite connection.
@@ -119,7 +119,13 @@ CREATE TABLE IF NOT EXISTS agent_status (
   harness_session_id TEXT,
   harness_port      INTEGER,
   group_id          TEXT REFERENCES session_groups(group_id) ON DELETE SET NULL,
-  muted             INTEGER NOT NULL DEFAULT 0
+  muted             INTEGER NOT NULL DEFAULT 0,
+  -- containers_enabled is the runtime gate read by the sidecar to decide
+  -- whether to start the per-session filtering podman API socket proxy
+  -- (#2317 / #2319). 0 = proxy not started (default); 1 = proxy is
+  -- started and the agent CONTAINER_HOST / DOCKER_HOST env vars point at
+  -- the filtered socket. Flipped by prism spawn --containers (Step 6).
+  containers_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS bus_messages (
@@ -218,6 +224,15 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
     pr_number              INTEGER,
     branch_flag            TEXT,
     ignore_concurrency_cap INTEGER NOT NULL DEFAULT 0,
+
+    -- containers_flag mirrors the --containers CLI flag (audit symmetry
+    -- with host_mode_flag / isolation_flag, #2317 / #2319). 0 = flag
+    -- omitted (default); 1 = prism spawn --containers was passed.
+    -- Written by InsertSpawnInputs and rendered by prism stats compare
+    -- in the Spawn Inputs block. Distinct from
+    -- agent_status.containers_enabled, which is the live runtime gate;
+    -- containers_flag is immutable per-spawn audit trail.
+    containers_flag        INTEGER NOT NULL DEFAULT 0,
 
     -- Resolved effective isolation mode the session actually ran under
     -- (bwrap/sandbox-exec/host), captured at spawn time post profile/
@@ -556,7 +571,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v33.
+// migrations in order from v1 to v37.
 func runMigrations(conn *sql.DB) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -667,6 +682,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV35ToV36(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV36ToV37(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -740,6 +758,65 @@ func runMigrations(conn *sql.DB) error {
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
 // is idempotent on fresh databases where the declarative schema block above
 // already includes the column.
+// migrateV36ToV37 adds two new columns in a single migration
+// (#2317 §3f / #2319):
+//
+//   - agent_status.containers_enabled INTEGER NOT NULL DEFAULT 0 — the
+//     runtime gate read by the sidecar to decide whether to start the
+//     per-session filtering podman API socket proxy. Default 0 means no
+//     proxy; the column is flipped to 1 by Step 3 (sidecar wiring) and
+//     Step 6 (`prism spawn --containers`).
+//   - spawn_inputs.containers_flag INTEGER NOT NULL DEFAULT 0 — audit
+//     symmetry with host_mode_flag / isolation_flag. Captures whether
+//     the user passed `--containers` at spawn time, independent of the
+//     runtime gate. Read by `prism stats compare` in the Spawn Inputs
+//     block.
+//
+// Both columns are added in one migration because they share a single
+// rationale (the containers feature train of #2317) and the migration
+// runner is sequential anyway — splitting would only inflate the
+// schema-version counter without any operational benefit.
+//
+// Each ALTER TABLE is guarded by a pragma_table_info check so the
+// migration is idempotent on fresh databases where the declarative
+// schema block above already includes both columns. Existing rows take
+// the column DEFAULT of 0 (both columns are NOT NULL).
+func migrateV36ToV37(conn *sql.DB, version *int) error {
+	if *version >= 37 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = 'containers_enabled'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v36\u2192v37: check containers_enabled column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE agent_status ADD COLUMN containers_enabled INTEGER NOT NULL DEFAULT 0`,
+		); err != nil {
+			return fmt.Errorf("db: migration v36\u2192v37: add containers_enabled: %w", err)
+		}
+	}
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('spawn_inputs') WHERE name = 'containers_flag'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v36\u2192v37: check containers_flag column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(
+			`ALTER TABLE spawn_inputs ADD COLUMN containers_flag INTEGER NOT NULL DEFAULT 0`,
+		); err != nil {
+			return fmt.Errorf("db: migration v36\u2192v37: add containers_flag: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 37`); err != nil {
+		return fmt.Errorf("db: migration v36\u2192v37: %w", err)
+	}
+	*version = 37
+	return nil
+}
+
 func migrateV35ToV36(conn *sql.DB, version *int) error {
 	if *version >= 36 {
 		return nil
@@ -2190,6 +2267,12 @@ type SpawnInputs struct {
 
 	IgnoreConcurrencyCap bool
 
+	// ContainersFlag mirrors --containers (#2317 §3f / #2319). Audit-only
+	// symmetry with HostModeFlag / IsolationFlag; the live runtime gate is
+	// agent_status.containers_enabled (Status.ContainersEnabled). Defaults
+	// to false when the caller does not set it.
+	ContainersFlag bool
+
 	// C.2 hook: per-role model-variant overrides (JSON).
 	ModelVariantOverrides *string
 
@@ -2228,7 +2311,7 @@ func (d *DB) InsertSpawnInputs(si SpawnInputs) error {
 INSERT OR IGNORE INTO spawn_inputs (
     instance_id,
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
-    isolation_flag, host_mode_flag,
+    isolation_flag, host_mode_flag, containers_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
     isolation_mode,
     model_variant_overrides,
@@ -2238,7 +2321,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 ) VALUES (
     ?,
     ?, ?, ?, ?, ?,
-    ?, ?,
+    ?, ?, ?,
     ?, ?, ?,
     ?,
     ?,
@@ -2248,7 +2331,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 )`,
 		si.InstanceID,
 		si.ProfileName, si.ModelFlag, si.VariantFlag, si.AgentFlag, si.HarnessFlag,
-		si.IsolationFlag, boolToInt(si.HostModeFlag),
+		si.IsolationFlag, boolToInt(si.HostModeFlag), boolToInt(si.ContainersFlag),
 		si.PRNumber, si.BranchFlag, boolToInt(si.IgnoreConcurrencyCap),
 		si.IsolationMode,
 		si.ModelVariantOverrides,
@@ -2269,7 +2352,7 @@ func (d *DB) SpawnInputsByInstanceID(instanceID string) (*SpawnInputs, error) {
 SELECT
     instance_id,
     profile_name, model_flag, variant_flag, agent_flag, harness_flag,
-    isolation_flag, host_mode_flag,
+    isolation_flag, host_mode_flag, containers_flag,
     pr_number, branch_flag, ignore_concurrency_cap,
     isolation_mode,
     model_variant_overrides,
@@ -2285,11 +2368,11 @@ WHERE instance_id = ?`
 	var prNumber sql.NullInt64
 	var branchFlag, modelVariantOverrides, skillsManifestHash, promptTemplateHash, agentPromptHash sql.NullString
 	var promptText, promptSource, abtestPairID, extras sql.NullString
-	var hostModeFlag, ignoreConcurrencyCap int
+	var hostModeFlag, containersFlag, ignoreConcurrencyCap int
 	err := row.Scan(
 		&si.InstanceID,
 		&profileName, &modelFlag, &variantFlag, &agentFlag, &harnessFlag,
-		&isolationFlag, &hostModeFlag,
+		&isolationFlag, &hostModeFlag, &containersFlag,
 		&prNumber, &branchFlag, &ignoreConcurrencyCap,
 		&isolationMode,
 		&modelVariantOverrides,
@@ -2325,6 +2408,7 @@ WHERE instance_id = ?`
 		si.IsolationMode = &isolationMode.String
 	}
 	si.HostModeFlag = hostModeFlag != 0
+	si.ContainersFlag = containersFlag != 0
 	if prNumber.Valid {
 		n := int(prNumber.Int64)
 		si.PRNumber = &n
