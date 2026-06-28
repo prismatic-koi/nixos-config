@@ -86,7 +86,9 @@ func TestNewProxy_DefaultsAreApplied(t *testing.T) {
 // ───────────────────────────── Serve lifecycle ─────────────────────────
 
 func TestServe_BlocksUntilContextCancelled(t *testing.T) {
-	dir := t.TempDir()
+	// shortSocketDir, not t.TempDir() — see proxy_security_test.go
+	// for rationale (sockaddr_un.sun_path overflow under Nix sandbox).
+	dir := shortSocketDir(t)
 	listenPath := filepath.Join(dir, "proxy.sock")
 	upstreamPath := filepath.Join(dir, "upstream.sock") // does not need to exist
 	p, err := NewProxy(Config{
@@ -140,7 +142,7 @@ func TestServe_BlocksUntilContextCancelled(t *testing.T) {
 
 func TestServe_BindFailureReturnsError(t *testing.T) {
 	// Use a path that cannot exist (parent dir is a regular file).
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	regularFile := filepath.Join(dir, "not-a-dir")
 	if err := os.WriteFile(regularFile, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write regular file: %v", err)
@@ -163,7 +165,7 @@ func TestServe_BindFailureReturnsError(t *testing.T) {
 }
 
 func TestServe_RemovesStaleSocketBeforeBind(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	listenPath := filepath.Join(dir, "proxy.sock")
 	// Pre-create a stale socket file.
 	if err := os.WriteFile(listenPath, []byte("stale"), 0o600); err != nil {

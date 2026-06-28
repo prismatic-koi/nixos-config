@@ -28,6 +28,35 @@ import (
 
 // ───────────────────────────── test scaffold ─────────────────────────────
 
+// shortSocketDir creates a temp directory with a short path suitable
+// for a Unix socket bind. The Linux sockaddr_un.sun_path field is
+// limited to 108 bytes; Darwin caps at 104. t.TempDir() embeds the
+// test name and parallel-subtest counter, which can push the path
+// past the limit when TMPDIR is the Nix sandbox
+// (/dev/shm/prism-go-test.<token>/...) and the subtest name is long
+// — review-context found this exact overflow on CI's
+// nix-build-prism-checked job: a 117-byte path failed bind with
+// EINVAL on TestSecurity_StreamingEndpoints_ForwardWithoutBodyParse/*.
+//
+// Pattern matches cmd/merge_proxy_test.go's startFakeHostAPIServer —
+// MkdirTemp("/tmp", "p") deterministically yields a short path
+// regardless of how long TMPDIR happens to be on the host. /tmp is
+// writable in the Nix build sandbox (verified by the existing tests
+// in cmd/ that use this pattern under the homeless-shelter gate).
+//
+// Use this helper for any test that creates a socket file. The
+// directory is registered for cleanup via t.Cleanup so it does not
+// outlive the test.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "p")
+	if err != nil {
+		t.Fatalf("mkdir socket tempdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
 // fakeUpstream is a minimal docker-API mock that records every request
 // it sees and returns 200 OK to every well-formed request. The proxy's
 // reverse-proxy path forwards to this; the proxy's deny path never
@@ -49,7 +78,11 @@ type fakeUpstream struct {
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
 	t.Helper()
-	dir := t.TempDir()
+	// shortSocketDir, not t.TempDir() — Unix socket path length is
+	// kernel-bounded (108 bytes on Linux, 104 on Darwin) and
+	// t.TempDir() embeds the full test/subtest name which can blow
+	// the limit under the Nix sandbox.
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "podman.sock")
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -88,7 +121,8 @@ func (fu *fakeUpstream) captured() int64 {
 // startProxyWithConfig.
 func startProxy(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
 	t.Helper()
-	dir := t.TempDir()
+	// shortSocketDir, not t.TempDir() — see newFakeUpstream for rationale.
+	dir := shortSocketDir(t)
 	listenPath := filepath.Join(dir, "proxy.sock")
 	auditBuf := &bytes.Buffer{}
 	cfg := Config{
@@ -309,7 +343,7 @@ func TestSecurity_CapAddDisallowed_Denied(t *testing.T) {
 // cap-add allowlist: explicit allow-list entry passes (sanity check).
 func TestSecurity_CapAddInAllowlist_Allowed(t *testing.T) {
 	fu := newFakeUpstream(t)
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	cfg := Config{
 		ListenerPath:       filepath.Join(dir, "proxy.sock"),
 		UpstreamPath:       fu.sockPath,
@@ -518,7 +552,7 @@ func TestSecurity_EmptyCreateBody_Denied(t *testing.T) {
 // and then closing the listener while leaving the socket file behind.
 func TestSecurity_UpstreamMissing_Returns503Envelope(t *testing.T) {
 	// Construct a proxy whose UpstreamPath does not exist.
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	cfg := Config{
 		ListenerPath:       filepath.Join(dir, "proxy.sock"),
 		UpstreamPath:       filepath.Join(dir, "does-not-exist.sock"),
@@ -556,7 +590,7 @@ func TestSecurity_UpstreamMissing_Returns503Envelope(t *testing.T) {
 // This pairs with TestSecurity_UpstreamMissing_Returns503Envelope to
 // cover both halves of the upstream-unavailable AC.
 func TestSecurity_UpstreamECONNREFUSED_Returns503Envelope(t *testing.T) {
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	deadSocket := filepath.Join(dir, "dead.sock")
 
 	// Bind a real unix listener and close it. Go's UnixListener.Close
@@ -827,7 +861,7 @@ func TestSecurity_AllowedBinds_ForwardsUnmodified(t *testing.T) {
 // positive tests are not no-ops because of unrelated policy code paths.
 func TestSecurity_NegativeControl_RootAllowlistPasses(t *testing.T) {
 	fu := newFakeUpstream(t)
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	cfg := Config{
 		ListenerPath: filepath.Join(dir, "proxy.sock"),
 		UpstreamPath: fu.sockPath,
