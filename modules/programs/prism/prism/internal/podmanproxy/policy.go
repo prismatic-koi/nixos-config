@@ -44,14 +44,18 @@ func denyDecision(status int, reason, message string) policyDecision {
 }
 
 // hostConfig is the subset of HostConfig the proxy parses out of
-// containers/create. Every field listed in #2317 §4 (the threat table)
-// must appear here; fields not present in this struct are silently
-// ignored by the parser (json.Decoder skips unknown keys by default).
+// containers/create (and the partial-HostConfig shape that
+// containers/{id}/update also accepts). Every field listed in #2317 §4
+// (the threat table) must appear here. Fields not present in this
+// struct are silently ignored by the parser (json.Decoder skips
+// unknown keys by default) and forwarded unmodified.
 //
 // Pointer types are used where the difference between "field absent"
-// and "field explicitly set to zero/false" matters — Memory and
-// CpuQuota in particular, where an explicit 0 means "unbounded" in
-// docker's semantics and should NOT be capped.
+// and "field explicitly set to zero" matters — Memory, CpuQuota, and
+// NanoCpus in particular. In docker semantics an explicit 0 means
+// "unbounded", so the policy must treat 0 differently from a missing
+// field (review-security PR #2326 round 2: 0 was previously a
+// drive-through bypass of the configured cap).
 type hostConfig struct {
 	Binds       []string          `json:"Binds"`
 	Mounts      []hostConfigMount `json:"Mounts"`
@@ -63,8 +67,10 @@ type hostConfig struct {
 	UTSMode     string            `json:"UTSMode"`
 	UsernsMode  string            `json:"UsernsMode"`
 	Devices     []json.RawMessage `json:"Devices"`
+	SecurityOpt []string          `json:"SecurityOpt"`
 	Memory      *int64            `json:"Memory"`
 	CpuQuota    *int64            `json:"CpuQuota"`
+	NanoCpus    *int64            `json:"NanoCpus"`
 }
 
 // hostConfigMount mirrors a docker HostConfig.Mounts entry. Only the
@@ -80,6 +86,18 @@ type hostConfigMount struct {
 // forwarded unmodified.
 type containerCreateBody struct {
 	HostConfig *hostConfig `json:"HostConfig"`
+}
+
+// containerExecBody is the partial shape of POST containers/{id}/exec.
+// The only field we inspect is Privileged: docker exec grants the
+// supplied capability set to the exec process independent of the
+// parent container's HostConfig.Privileged, so an agent that creates
+// a non-privileged container can otherwise exec into it with
+// Privileged: true and bypass the create-time deny. Cmd, Env, User,
+// WorkingDir, etc. are forwarded unmodified — they affect what runs
+// inside the (already-isolated) container, not the host.
+type containerExecBody struct {
+	Privileged bool `json:"Privileged"`
 }
 
 // inspectCreate parses body as a containers/create request and applies
@@ -199,22 +217,149 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 			"HostConfig.Devices is not permitted")
 	}
 
-	// Resource caps. Memory=0 in docker means "unlimited" — but our
-	// policy treats it as "no value set" and lets it through. The
-	// upper bound only fires when the agent explicitly requested a
-	// value above the cap.
-	if p.cfg.MaxMemoryBytes > 0 && hc.Memory != nil && *hc.Memory > p.cfg.MaxMemoryBytes {
+	// SecurityOpt entries are default-deny: any entry not present in
+	// AllowedSecurityOpts is rejected. This closes the
+	// seccomp=unconfined / apparmor=unconfined / no-new-privileges=false /
+	// label=disable class of escapes; allowlist entries one by one when
+	// a workflow genuinely needs them.
+	if bad, ok := p.firstDisallowedSecurityOpt(hc.SecurityOpt); !ok {
 		return denyDecision(http.StatusForbidden,
-			"memory_over_cap",
-			fmt.Sprintf("HostConfig.Memory=%d exceeds cap %d", *hc.Memory, p.cfg.MaxMemoryBytes))
+			"security_opt:"+truncateForReason(bad),
+			fmt.Sprintf("HostConfig.SecurityOpt entry %q is not in the allowlist", bad))
 	}
-	if p.cfg.MaxCPUQuota > 0 && hc.CpuQuota != nil && *hc.CpuQuota > p.cfg.MaxCPUQuota {
-		return denyDecision(http.StatusForbidden,
-			"cpu_quota_over_cap",
-			fmt.Sprintf("HostConfig.CpuQuota=%d exceeds cap %d", *hc.CpuQuota, p.cfg.MaxCPUQuota))
+
+	// Resource caps. Strict mode: when a cap is configured the
+	// corresponding field MUST be set to a positive value within the
+	// cap. Absent / zero / negative all deny so that docker's "0 means
+	// unlimited" semantic cannot be used to bypass the cap.
+	if dec := p.checkResourceCaps(hc, capContextCreate); !dec.allow {
+		return dec
 	}
 
 	return allowDecision("policy:containers/create:ok")
+}
+
+// capContext distinguishes the two body shapes that resource-cap
+// checks apply to. The semantics differ in one place: on create, an
+// absent field is a deny (the agent must declare an explicit value
+// within the cap); on update, an absent field is allowed (the field
+// is simply not being updated).
+type capContext int
+
+const (
+	capContextCreate capContext = iota
+	capContextUpdate
+)
+
+// checkResourceCaps validates Memory, CpuQuota, and NanoCpus against
+// the configured caps. Called from both the containers/create body
+// inspector and the containers/{id}/update body inspector; the ctx
+// flag toggles the absent-field policy between the two.
+func (p *Proxy) checkResourceCaps(hc *hostConfig, ctx capContext) policyDecision {
+	if dec := p.checkOneResourceCap(
+		"Memory", hc.Memory, p.cfg.MaxMemoryBytes, ctx,
+		"memory_required", "memory_nonpositive", "memory_over_cap",
+	); !dec.allow {
+		return dec
+	}
+	if dec := p.checkOneResourceCap(
+		"CpuQuota", hc.CpuQuota, p.cfg.MaxCPUQuota, ctx,
+		"cpu_quota_required", "cpu_quota_nonpositive", "cpu_quota_over_cap",
+	); !dec.allow {
+		return dec
+	}
+	if dec := p.checkOneResourceCap(
+		"NanoCpus", hc.NanoCpus, p.cfg.MaxNanoCpus, ctx,
+		"nano_cpus_required", "nano_cpus_nonpositive", "nano_cpus_over_cap",
+	); !dec.allow {
+		return dec
+	}
+	return allowDecision("policy:resource_caps:ok")
+}
+
+// checkOneResourceCap is the per-field cap checker. The three reason
+// strings are passed in so the audit log distinguishes which cap
+// fired and why — "memory_required" vs "memory_nonpositive" vs
+// "memory_over_cap".
+func (p *Proxy) checkOneResourceCap(
+	fieldName string, value *int64, cap int64, ctx capContext,
+	reasonRequired, reasonNonpositive, reasonOverCap string,
+) policyDecision {
+	if cap <= 0 {
+		// Cap not configured — no enforcement.
+		return allowDecision("policy:resource_cap_disabled")
+	}
+	if value == nil {
+		if ctx == capContextCreate {
+			return denyDecision(http.StatusForbidden,
+				reasonRequired,
+				fmt.Sprintf("HostConfig.%s is required when a cap is configured (set a positive value <= %d)", fieldName, cap))
+		}
+		// Update: absent field means "not changing this". Allow.
+		return allowDecision("policy:resource_cap_absent_in_update")
+	}
+	if *value <= 0 {
+		return denyDecision(http.StatusForbidden,
+			reasonNonpositive,
+			fmt.Sprintf("HostConfig.%s=%d is invalid (must be > 0; 0 means unlimited and would bypass the cap)", fieldName, *value))
+	}
+	if *value > cap {
+		return denyDecision(http.StatusForbidden,
+			reasonOverCap,
+			fmt.Sprintf("HostConfig.%s=%d exceeds cap %d", fieldName, *value, cap))
+	}
+	return allowDecision("policy:resource_cap_ok")
+}
+
+// inspectUpdate parses body as a containers/{id}/update request and
+// applies the resource-cap policy. Update bodies are a partial
+// HostConfig shape — only the fields being changed are present — so
+// the cap check runs in update-context mode (absent fields allowed,
+// present fields must be within bounds).
+//
+// This closes the bypass where an agent creates a container with
+// Memory=4G (within cap) and then POSTs an update with Memory=0 to
+// remove the cap (#2326 round 2 review-security).
+func (p *Proxy) inspectUpdate(body []byte) policyDecision {
+	if len(bytes.TrimSpace(body)) == 0 {
+		// An empty update body is a no-op upstream — forward it. The
+		// upstream will return 200 with no state change.
+		return allowDecision("policy:containers/update:empty")
+	}
+	var hc hostConfig
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&hc); err != nil {
+		return denyDecision(http.StatusBadRequest,
+			"malformed_body:"+truncateForReason(err.Error()),
+			"containers/update body is not valid JSON")
+	}
+	return p.checkResourceCaps(&hc, capContextUpdate)
+}
+
+// inspectExec parses body as a containers/{id}/exec request and
+// rejects Privileged: true. The exec body has its own Privileged
+// field that grants additional capabilities to the exec process
+// independent of the parent container's HostConfig.Privileged — the
+// create-time deny does not cover it.
+func (p *Proxy) inspectExec(body []byte) policyDecision {
+	if len(bytes.TrimSpace(body)) == 0 {
+		// An exec body of {} is valid (defaults). An empty body is
+		// arguable but harmless — forward and let the upstream decide.
+		return allowDecision("policy:containers/exec:empty")
+	}
+	var req containerExecBody
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&req); err != nil {
+		return denyDecision(http.StatusBadRequest,
+			"malformed_body:"+truncateForReason(err.Error()),
+			"containers/exec body is not valid JSON")
+	}
+	if req.Privileged {
+		return denyDecision(http.StatusForbidden,
+			"exec_privileged",
+			"containers/exec body has Privileged=true, which is not permitted (would bypass the create-time HostConfig.Privileged deny)")
+	}
+	return allowDecision("policy:containers/exec:ok")
 }
 
 // inspectArchive applies the path-prefix policy to PUT
@@ -308,6 +453,30 @@ func (p *Proxy) firstDisallowedCap(caps []string) (string, bool) {
 		}
 	}
 	return "", true
+}
+
+// firstDisallowedSecurityOpt returns the first SecurityOpt entry that
+// is not in AllowedSecurityOpts. Comparison is exact (case-sensitive,
+// no normalisation) because SecurityOpt values are docker-defined
+// strings whose exact form matters — "no-new-privileges:true" and
+// "no-new-privileges=true" are both valid but distinct, and an
+// allowlist entry should match exactly what the caller permits.
+func (p *Proxy) firstDisallowedSecurityOpt(opts []string) (string, bool) {
+	for _, o := range opts {
+		if !p.securityOptIsAllowed(o) {
+			return o, false
+		}
+	}
+	return "", true
+}
+
+func (p *Proxy) securityOptIsAllowed(opt string) bool {
+	for _, allowed := range p.cfg.AllowedSecurityOpts {
+		if opt == allowed {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Proxy) capIsAllowed(c string) bool {

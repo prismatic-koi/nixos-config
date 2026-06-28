@@ -36,6 +36,19 @@ const (
 	// against the bind-source allowlist before forwarding". Used for
 	// PUT containers/{id}/archive (the podman cp write endpoint).
 	endpointPolicyArchive
+
+	// endpointPolicyUpdate means "read body, parse as JSON, apply the
+	// resource-cap policy in update-context mode (absent fields
+	// allowed)". Used for POST containers/{id}/update. Closes the
+	// bypass where an agent creates a container with valid caps and
+	// then updates them to 0 (= unlimited) after the fact.
+	endpointPolicyUpdate
+
+	// endpointPolicyExec means "read body, parse as JSON, reject
+	// Privileged=true". Used for POST containers/{id}/exec. Closes the
+	// bypass where an agent creates a non-privileged container and
+	// then exec's into it with Privileged: true.
+	endpointPolicyExec
 )
 
 // normalisePath strips a leading docker/podman API version segment and
@@ -222,11 +235,14 @@ func classifyPOST(normPath string) endpointKind {
 		return endpointAllowStreaming
 	}
 
-	// Exec create / resize. The exec body carries Cmd, Env, etc., but
-	// no HostConfig — so no body inspection is required.
-	switch {
-	case matchPath(normPath, "containers/+/exec"),
-		matchPath(normPath, "exec/+/resize"):
+	// Exec create has its own Privileged field that grants extra
+	// capabilities to the exec process — body inspection is required
+	// (review-security PR #2326 round 2). Exec resize is a small
+	// tty-resize op with no security-relevant body.
+	if matchPath(normPath, "containers/+/exec") {
+		return endpointPolicyExec
+	}
+	if matchPath(normPath, "exec/+/resize") {
 		return endpointAllow
 	}
 
@@ -258,12 +274,12 @@ func classifyPOST(normPath string) endpointKind {
 		return endpointAllow
 	}
 
-	// Container update is permitted — its body cannot introduce binds
-	// (those are fixed at create time) and resource fields are bounded
-	// by the host kernel. If a future docker API change adds a binds-
-	// equivalent field to /update, that classification flips.
+	// Container update accepts Memory, CpuQuota, NanoCpus, etc. — an
+	// agent that creates with valid caps could otherwise POST update
+	// with Memory=0 to remove the cap (review-security PR #2326 round 2).
+	// Body inspection is required.
 	if matchPath(normPath, "containers/+/update") {
-		return endpointAllow
+		return endpointPolicyUpdate
 	}
 
 	return endpointDeny

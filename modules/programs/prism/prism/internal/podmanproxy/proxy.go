@@ -48,13 +48,42 @@ type Config struct {
 	// proxy normalises both ends of the comparison.
 	AllowedCaps []string
 
-	// MaxMemoryBytes is the inclusive upper bound for HostConfig.Memory.
-	// Zero disables the cap (any memory value passes).
+	// MaxMemoryBytes is the inclusive upper bound for HostConfig.Memory
+	// (and for the Memory field of a containers/{id}/update body). When
+	// non-zero the cap is enforced strictly: a containers/create body
+	// MUST specify a positive Memory <= cap, and any container update
+	// that sets Memory must keep it in the same range. Zero disables
+	// the cap entirely.
+	//
+	// The strict interpretation closes the docker-semantic bypass where
+	// Memory=0 means "unlimited" — if we only checked the > cap branch,
+	// the agent could exhaust host RAM by sending Memory: 0.
 	MaxMemoryBytes int64
 
 	// MaxCPUQuota is the inclusive upper bound for HostConfig.CpuQuota
-	// (CFS quota in microseconds). Zero disables the cap.
+	// (CFS quota in microseconds). Same strict semantics as
+	// MaxMemoryBytes: when non-zero, create requests must specify a
+	// positive CpuQuota within the cap and update requests must keep
+	// any CpuQuota change inside the cap. Zero disables the cap.
 	MaxCPUQuota int64
+
+	// MaxNanoCpus is the inclusive upper bound for HostConfig.NanoCpus
+	// (cores * 1e9). NanoCpus is the docker --cpus expression and is a
+	// fully orthogonal way to set a CPU cap from CpuQuota — capping
+	// CpuQuota alone leaves a bypass where the agent expresses the cap
+	// as NanoCpus instead. Same strict semantics as MaxCPUQuota. Zero
+	// disables the cap.
+	MaxNanoCpus int64
+
+	// AllowedSecurityOpts is the set of HostConfig.SecurityOpt entries
+	// that may appear on a containers/create body. Comparison is
+	// case-sensitive and matches the full entry string (e.g.
+	// "no-new-privileges=true" or "seccomp=/etc/foo.json"). Empty by
+	// default — any SecurityOpt entry is rejected unless explicitly
+	// allowlisted. The empty-default closes the seccomp=unconfined /
+	// apparmor=unconfined / no-new-privileges=false / label=disable
+	// class of escapes documented in #2317 §4.
+	AllowedSecurityOpts []string
 
 	// AuditWriter receives exactly one JSON line per accepted or
 	// rejected request. Nil silently drops audit events.

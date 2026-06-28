@@ -116,8 +116,12 @@ func (fu *fakeUpstream) captured() int64 {
 
 // startProxy stands a podmanproxy.Proxy on a fresh listener socket in
 // front of the supplied upstream, with sensible defaults that cover
-// the threat table. Tests can override AllowedBindSources / AllowedCaps
-// /etc. by mutating the returned Config and rebuilding via
+// the threat-table tests. Resource caps are intentionally LEFT
+// DISABLED here: when a cap is configured the strict mode requires
+// every create body to set the corresponding field, which would force
+// every unrelated test (bind escapes, privileged, etc.) to also
+// include placeholder Memory/CpuQuota values. Tests that specifically
+// exercise the resource caps configure them in their own Config via
 // startProxyWithConfig.
 func startProxy(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
 	t.Helper()
@@ -130,11 +134,44 @@ func startProxy(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) 
 		UpstreamPath:       fu.sockPath,
 		AllowedBindSources: []string{"/workspace", "/scratch"},
 		AllowedCaps:        []string{}, // empty by default
+		AuditWriter:        auditBuf,
+		// No MaxMemoryBytes / MaxCPUQuota / MaxNanoCpus — see comment above.
+		// No AllowedSecurityOpts — default-deny on SecurityOpt is exercised
+		// by the SecurityOpt-specific tests.
+	}
+	return startProxyWithConfig(t, cfg, auditBuf, listenPath), auditBuf, listenPath
+}
+
+// startProxyWithCaps mirrors startProxy but enables the resource
+// caps. Tests that exercise the cap policy (over-cap, zero, negative,
+// absent) use this so the cap is actually active.
+func startProxyWithCaps(t *testing.T, fu *fakeUpstream) (*Proxy, *bytes.Buffer, string) {
+	t.Helper()
+	dir := shortSocketDir(t)
+	listenPath := filepath.Join(dir, "proxy.sock")
+	auditBuf := &bytes.Buffer{}
+	cfg := Config{
+		ListenerPath:       listenPath,
+		UpstreamPath:       fu.sockPath,
+		AllowedBindSources: []string{"/workspace", "/scratch"},
 		MaxMemoryBytes:     4 * 1024 * 1024 * 1024,
 		MaxCPUQuota:        200_000,
+		MaxNanoCpus:        2_000_000_000, // 2 cores
 		AuditWriter:        auditBuf,
 	}
 	return startProxyWithConfig(t, cfg, auditBuf, listenPath), auditBuf, listenPath
+}
+
+// validCapsBody returns a hostConfig fragment that satisfies all the
+// active resource caps configured by startProxyWithCaps. Tests that
+// want to exercise a single cap (e.g. memory-over-cap) start with
+// this baseline and override the one field under test.
+func validCapsBody() map[string]any {
+	return map[string]any{
+		"Memory":   int64(1 * 1024 * 1024 * 1024), // 1 GiB
+		"CpuQuota": int64(50_000),                 // 0.5 cores
+		"NanoCpus": int64(500_000_000),            // 0.5 cores
+	}
 }
 
 // startProxyWithConfig is the low-level scaffold helper used by tests
@@ -216,6 +253,24 @@ func postCreate(t *testing.T, sock string, hostConfig map[string]any) *http.Resp
 	}
 	req.Header.Set("Content-Type", "application/json")
 	return doRequest(t, sock, req)
+}
+
+// mustNewRequest is the equivalent of postCreate for non-create
+// endpoints: it marshals body as JSON and constructs the request.
+// Used by the update / exec / SecurityOpt-allowlist tests where the
+// URL is something other than /containers/create.
+func mustNewRequest(t *testing.T, method, url string, body any) *http.Request {
+	t.Helper()
+	buf, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req, err := http.NewRequest(method, url, bytes.NewReader(buf))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req
 }
 
 func doRequest(t *testing.T, sock string, req *http.Request) *http.Response {
@@ -408,18 +463,24 @@ func TestSecurity_DevicesNonEmpty_Denied(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
-// memory cap exceeded.
+// ───────────────── resource caps (strict mode) ─────────────────────
 //
-// (Auxiliary AC: resource caps enforced server-side; out-of-bounds
-// returns 403.)
+// AC (auxiliary): resource caps enforced server-side; out-of-bounds
+// returns 403. The strict interpretation (review-security PR #2326
+// round 2) is that the cap must actually be enforceable — docker's
+// Memory=0 "unlimited" semantic and an absent Memory field both have
+// to be denied when the cap is configured, otherwise the cap can be
+// trivially bypassed.
+
 func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	_, _, sock := startProxyWithCaps(t, fu)
 
-	// Configured cap is 4 GiB; request 10 TiB.
-	resp := postCreate(t, sock, map[string]any{
-		"Memory": int64(10) * 1024 * 1024 * 1024 * 1024,
-	})
+	// Configured cap is 4 GiB; request 10 TiB. CpuQuota / NanoCpus
+	// supplied so the request only trips the memory check.
+	body := validCapsBody()
+	body["Memory"] = int64(10) * 1024 * 1024 * 1024 * 1024
+	resp := postCreate(t, sock, body)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
@@ -428,16 +489,349 @@ func TestSecurity_MemoryOverCap_Denied(t *testing.T) {
 
 func TestSecurity_CPUQuotaOverCap_Denied(t *testing.T) {
 	fu := newFakeUpstream(t)
-	_, _, sock := startProxy(t, fu)
+	_, _, sock := startProxyWithCaps(t, fu)
 
-	// Configured cap is 200_000; request 2_000_000.
-	resp := postCreate(t, sock, map[string]any{
-		"CpuQuota": 2_000_000,
-	})
+	body := validCapsBody()
+	body["CpuQuota"] = int64(2_000_000)
+	resp := postCreate(t, sock, body)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: got %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
 	assertNoForward(t, fu)
+}
+
+// MemoryZero: docker treats Memory=0 as "unlimited". When a cap is
+// configured, 0 must be denied so the cap cannot be bypassed by
+// stating "I want unlimited memory".
+func TestSecurity_MemoryZero_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	body["Memory"] = int64(0)
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Memory=0 should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_MemoryNegative_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	body["Memory"] = int64(-1)
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Memory<0 should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// MemoryAbsent_DeniedWhenCapActive: an agent that simply omits the
+// Memory field also gets the host default (unlimited) on docker /
+// podman, which is the same bypass class as Memory=0. The strict
+// policy denies this too so the cap is actually enforceable.
+func TestSecurity_MemoryAbsent_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	delete(body, "Memory")
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("absent Memory should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// MemoryAbsent_AllowedWhenNoCap: when MaxMemoryBytes==0 (cap disabled)
+// an absent Memory field must NOT be denied — the cap is opt-in and
+// the default-no-cap mode preserves docker's default behaviour.
+func TestSecurity_MemoryAbsent_AllowedWhenNoCap(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+	// No Memory field, no other resource fields. With no cap active,
+	// this should pass.
+	resp := postCreate(t, sock, map[string]any{
+		"Binds": []string{"/workspace/proj:/app:ro"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("absent Memory with no cap should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+// CpuQuotaZero / CpuQuotaAbsent: identical class to Memory.
+func TestSecurity_CpuQuotaZero_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	body["CpuQuota"] = int64(0)
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("CpuQuota=0 should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_CpuQuotaAbsent_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	delete(body, "CpuQuota")
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("absent CpuQuota should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// NanoCpus is a fully orthogonal way to express CPU caps from
+// CpuQuota. If only CpuQuota was capped, an agent that wanted to
+// burst above the cap could simply state the request as NanoCpus.
+func TestSecurity_NanoCpusOverCap_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	body["NanoCpus"] = int64(8_000_000_000) // 8 cores; cap is 2 cores
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("NanoCpus over cap should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_NanoCpusZero_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	body["NanoCpus"] = int64(0)
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("NanoCpus=0 should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_NanoCpusAbsent_DeniedWhenCapActive(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	body := validCapsBody()
+	delete(body, "NanoCpus")
+	resp := postCreate(t, sock, body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("absent NanoCpus should be denied when cap is active; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Sanity: when every cap is set to a value within bounds, the
+// request is forwarded. Proves the strict cap suite is not just a
+// blanket deny.
+func TestSecurity_ResourceCapsWithinBounds_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	resp := postCreate(t, sock, validCapsBody())
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("valid resource caps should be allowed; got %d", resp.StatusCode)
+	}
+	if fu.captured() != 1 {
+		t.Errorf("expected 1 upstream call, got %d", fu.captured())
+	}
+}
+
+// ─────────── containers/update: cap fields cannot be reset ───────────
+//
+// AC class: an agent that creates with valid caps could otherwise
+// POST update with Memory=0 to remove the cap. Update body must run
+// the same per-field nonpositive / over-cap denials, but with the
+// absent-field policy relaxed (an update body is partial — missing
+// fields just are not being changed).
+
+func TestSecurity_UpdateEndpoint_MemoryZero_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/update",
+		map[string]any{"Memory": int64(0)})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("update Memory=0 should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_UpdateEndpoint_MemoryOverCap_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/update",
+		map[string]any{"Memory": int64(10) * 1024 * 1024 * 1024 * 1024})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("update Memory over cap should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_UpdateEndpoint_PartialBodyAllowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	// Only setting CpuShares (not in our cap list). Absent Memory and
+	// CpuQuota are allowed in update context.
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/update",
+		map[string]any{"CpuShares": 512})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("update with only non-capped fields should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+func TestSecurity_UpdateEndpoint_MalformedJSON_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxyWithCaps(t, fu)
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/update",
+		bytes.NewReader([]byte(`{garbage`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed update body should be 400; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// ─────────── containers/exec: Privileged cannot be re-introduced ──────
+//
+// AC class: an agent that creates a non-privileged container could
+// otherwise exec into it with Privileged=true — docker exec grants
+// extra capabilities independent of the parent container's
+// HostConfig.Privileged.
+
+func TestSecurity_ExecPrivileged_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/exec",
+		map[string]any{
+			"Cmd":        []string{"id"},
+			"Privileged": true,
+		})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("exec with Privileged=true should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+func TestSecurity_ExecWithoutPrivileged_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+	req := mustNewRequest(t, http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/exec",
+		map[string]any{
+			"Cmd":        []string{"id"},
+			"Privileged": false,
+		})
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("exec without Privileged should be allowed; got %d", resp.StatusCode)
+	}
+	if fu.captured() != 1 {
+		t.Errorf("expected 1 upstream call, got %d", fu.captured())
+	}
+}
+
+func TestSecurity_ExecMalformedJSON_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	_, _, sock := startProxy(t, fu)
+	req, _ := http.NewRequest(http.MethodPost,
+		"http://podman.sock/v1.41/containers/abc/exec",
+		bytes.NewReader([]byte(`{garbage`)))
+	req.Header.Set("Content-Type", "application/json")
+	resp := doRequest(t, sock, req)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("malformed exec body should be 400; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// ─────────── SecurityOpt default-deny ─────────────────────────────────
+//
+// AC class: SecurityOpt entries like "seccomp=unconfined",
+// "apparmor=unconfined", "no-new-privileges=false", and
+// "label=disable" disable the container's security primitives. The
+// strict default-deny policy rejects every SecurityOpt entry not in
+// the configured allowlist (which is empty by default).
+
+func TestSecurity_SecurityOpt_DefaultDenyAll(t *testing.T) {
+	cases := []string{
+		"seccomp=unconfined",
+		"apparmor=unconfined",
+		"no-new-privileges=false",
+		"no-new-privileges:false",
+		"label=disable",
+		"label:disable",
+		"systempaths=unconfined",
+		// A custom seccomp profile path is also denied under default-deny.
+		"seccomp=/etc/custom.json",
+	}
+	for _, opt := range cases {
+		t.Run(opt, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			_, _, sock := startProxy(t, fu)
+			resp := postCreate(t, sock, map[string]any{
+				"SecurityOpt": []string{opt},
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("SecurityOpt %q should be denied by default; got %d", opt, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+// When an entry IS in AllowedSecurityOpts, it passes (sanity check
+// that the deny is allowlist-driven, not a blanket reject).
+func TestSecurity_SecurityOpt_InAllowlist_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := shortSocketDir(t)
+	cfg := Config{
+		ListenerPath:        filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:        fu.sockPath,
+		AllowedBindSources:  []string{"/workspace"},
+		AllowedSecurityOpts: []string{"no-new-privileges:true"},
+		AuditWriter:         &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	resp := postCreate(t, cfg.ListenerPath, map[string]any{
+		"SecurityOpt": []string{"no-new-privileges:true"},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("SecurityOpt in allowlist should be allowed; got %d", resp.StatusCode)
+	}
+}
+
+// Allowlist match is exact; the deny still fires for a sibling entry
+// not in the allowlist.
+func TestSecurity_SecurityOpt_PartialAllowlist_ExactMatch(t *testing.T) {
+	fu := newFakeUpstream(t)
+	dir := shortSocketDir(t)
+	cfg := Config{
+		ListenerPath:        filepath.Join(dir, "proxy.sock"),
+		UpstreamPath:        fu.sockPath,
+		AllowedBindSources:  []string{"/workspace"},
+		AllowedSecurityOpts: []string{"no-new-privileges:true"},
+		AuditWriter:         &bytes.Buffer{},
+	}
+	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
+
+	resp := postCreate(t, cfg.ListenerPath, map[string]any{
+		"SecurityOpt": []string{"no-new-privileges:true", "seccomp=unconfined"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("sibling unconfined entry should be denied; got %d", resp.StatusCode)
+	}
 }
 
 // archive exfil: PUT /containers/{id}/archive?path=/etc — host path.
@@ -869,9 +1263,11 @@ func TestSecurity_NegativeControl_RootAllowlistPasses(t *testing.T) {
 		// is in the allowlist.
 		AllowedBindSources: []string{"/"},
 		AllowedCaps:        []string{},
-		MaxMemoryBytes:     4 * 1024 * 1024 * 1024,
-		MaxCPUQuota:        200_000,
-		AuditWriter:        &bytes.Buffer{},
+		// Resource caps intentionally LEFT DISABLED so the negative
+		// control isolates the bind-source policy: if caps were
+		// active, the body would also need to satisfy them and a
+		// failure could mislead about which policy fired.
+		AuditWriter: &bytes.Buffer{},
 	}
 	startProxyWithConfig(t, cfg, nil, cfg.ListenerPath)
 

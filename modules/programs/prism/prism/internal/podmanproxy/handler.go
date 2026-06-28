@@ -42,6 +42,12 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case endpointPolicyArchive:
 		p.handlePolicyArchive(w, r)
 
+	case endpointPolicyUpdate:
+		p.handlePolicyUpdate(w, r)
+
+	case endpointPolicyExec:
+		p.handlePolicyExec(w, r)
+
 	case endpointDeny:
 		fallthrough
 	default:
@@ -97,6 +103,52 @@ func (p *Proxy) handlePolicyArchive(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, dec.status, dec.message)
 		return
 	}
+	p.emitAudit(r, auditAllow, dec.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handlePolicyUpdate is the body-inspecting branch for POST
+// /containers/{id}/update. Mirrors handlePolicyCreate in shape: read
+// body bounded by MaxBodyBytes, parse JSON, apply resource-cap
+// policy in update-context mode, then either reject or restore the
+// body and forward.
+func (p *Proxy) handlePolicyUpdate(w http.ResponseWriter, r *http.Request) {
+	body, readDec := p.readBoundedBody(w, r)
+	if !readDec.allow {
+		p.emitAudit(r, auditDeny, readDec.reason)
+		writeJSONError(w, readDec.status, readDec.message)
+		return
+	}
+	dec := p.inspectUpdate(body)
+	if !dec.allow {
+		p.emitAudit(r, auditDeny, dec.reason)
+		writeJSONError(w, dec.status, dec.message)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
+	p.emitAudit(r, auditAllow, dec.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handlePolicyExec is the body-inspecting branch for POST
+// /containers/{id}/exec. Same shape as handlePolicyUpdate, but the
+// policy is the exec-Privileged check rather than resource caps.
+func (p *Proxy) handlePolicyExec(w http.ResponseWriter, r *http.Request) {
+	body, readDec := p.readBoundedBody(w, r)
+	if !readDec.allow {
+		p.emitAudit(r, auditDeny, readDec.reason)
+		writeJSONError(w, readDec.status, readDec.message)
+		return
+	}
+	dec := p.inspectExec(body)
+	if !dec.allow {
+		p.emitAudit(r, auditDeny, dec.reason)
+		writeJSONError(w, dec.status, dec.message)
+		return
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	r.ContentLength = int64(len(body))
 	p.emitAudit(r, auditAllow, dec.reason)
 	p.upstream.ServeHTTP(w, r)
 }
