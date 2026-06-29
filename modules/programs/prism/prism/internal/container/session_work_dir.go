@@ -135,6 +135,24 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "allowed_signers")
 }
 
+// SessionWorkDirContainerScratchPath returns the per-session container
+// scratch directory inside the given session work dir (#2317 / #2321):
+//
+//	<sessionDir>/container-scratch
+//
+// This is the writable mount-source the bwrap profile binds Dst==Src into
+// the sandbox when ContainersEnabled is true, so an agent can
+// `podman run -v <sessionDir>/container-scratch:/x ...` without granting
+// the wider worktree to the spawned container. The directory is owned by
+// the per-session work dir lifecycle — RemoveSessionWorkDir wipes it on
+// cleanup along with the rest of the work dir tree (#2317 §3c).
+//
+// Sandbox-exec (Step 5 / #2322) consumes the same helper so both isolation
+// modes share a single per-session container scratch story.
+func SessionWorkDirContainerScratchPath(sessionDir string) string {
+	return filepath.Join(sessionDir, "container-scratch")
+}
+
 // SessionWorkDirKubeCacheDirPath returns the kubectl cache directory inside
 // the given session work dir (issue #2235, Step 3b of #2132):
 //

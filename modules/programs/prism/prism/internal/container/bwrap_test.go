@@ -2891,3 +2891,274 @@ func TestBwrapBuildArgs_PISharedMount_OmittedForNonPI(t *testing.T) {
 		}
 	}
 }
+
+// ── ContainersEnabled (#2317 / #2321) ───────────────────────────────
+//
+// These tests cover Step 4 of #2317. They assert the bwrap surface for the
+// per-session filtering podman API socket proxy:
+//
+//   - When ContainersEnabled is true, the rendered argv contains the
+//     CONTAINER_HOST / DOCKER_HOST setenv pairs pointing at the FILTERED
+//     socket and the container-scratch bind, and PrepareBwrap creates the
+//     scratch directory on disk.
+//   - When ContainersEnabled is false (the default), none of those three
+//     substrings appear — the existing argv is unchanged.
+//   - The real upstream podman socket path ($XDG_RUNTIME_DIR/podman/podman.sock
+//     or any value the sidecar resolves) NEVER appears in the rendered argv,
+//     regardless of ContainersEnabled. This is the greppable security AC
+//     from #2321: if anyone ever adds `--bind $XDG_RUNTIME_DIR/podman ...`
+//     to bwrap.go BuildArgs, this test fails.
+//   - PrepareBwrap returns an error when ContainersEnabled=true but the
+//     run-directory the proxy socket lives in does not exist (defence
+//     against rendering an argv that would fail at bwrap exec time).
+
+// containersBwrapFixture extends bwrapFixture for ContainersEnabled tests:
+// it sets XDG_STATE_HOME to a writable temp dir so PrepareSessionWorkDir
+// resolves a tractable per-session work path, materialises the per-session
+// run directory (where HostAPISockPath and the proxy socket live), and
+// returns the resolved sessionDir + scratch path so each test can assert
+// against them directly.
+//
+// The fixture sets a known InstanceID so SessionWorkDirPath is deterministic
+// rather than falling back to the container name (m.name) when InstanceID
+// is empty (sessionWorkDirPath fallback).
+func containersBwrapFixture(t *testing.T, opts containersFixtureOpts) (m *Manager, sessionDir, scratchDir, sockDir, proxySockPath string, cleanup func()) {
+	t.Helper()
+
+	stateHome := filepath.Join(t.TempDir(), "state")
+	if err := os.MkdirAll(stateHome, 0o755); err != nil {
+		t.Fatalf("containersBwrapFixture: MkdirAll stateHome: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	runRoot := filepath.Join(t.TempDir(), "run")
+	sockDir = filepath.Join(runRoot, "abc123def456")
+	if err := os.MkdirAll(sockDir, 0o700); err != nil {
+		t.Fatalf("containersBwrapFixture: MkdirAll sockDir: %v", err)
+	}
+	sockPath := filepath.Join(sockDir, "hostapi.sock")
+	proxySockPath = filepath.Join(sockDir, "podman.sock")
+
+	instanceID := opts.instanceID
+	if instanceID == "" {
+		instanceID = "containers-test-instance-id"
+	}
+
+	cfg := Config{
+		SessionName:         "repo@feat",
+		InstanceID:          instanceID,
+		Worktree:            t.TempDir(),
+		AllocatedPort:       14010,
+		HostAPISockPath:     sockPath,
+		ContainersEnabled:   opts.containersEnabled,
+		PodmanProxySockPath: proxySockPath,
+		// Required by PrepareSessionWorkDir's writeGitconfigArtefacts hard
+		// check on missing identity (#1960). Tests that route through
+		// PrepareBwrap need these set.
+		GitUserName:  "Test User",
+		GitUserEmail: "test@example.com",
+	}
+	if opts.overridePodmanProxySockPath != "" {
+		cfg.PodmanProxySockPath = opts.overridePodmanProxySockPath
+		proxySockPath = opts.overridePodmanProxySockPath
+	}
+
+	var fakeHome string
+	m, fakeHome, cleanup = bwrapFixture(t, cfg)
+	_ = fakeHome
+
+	sessionDir = filepath.Join(stateHome, "prism", "sessions", instanceID)
+	scratchDir = SessionWorkDirContainerScratchPath(sessionDir)
+	return m, sessionDir, scratchDir, sockDir, proxySockPath, cleanup
+}
+
+type containersFixtureOpts struct {
+	containersEnabled bool
+	instanceID        string
+	// overridePodmanProxySockPath, when set, replaces the default
+	// <sockDir>/podman.sock path. Used by the missing-runDir negative
+	// test to point at a non-existent directory.
+	overridePodmanProxySockPath string
+}
+
+// TestBwrapBuildArgs_ContainersEnabled_EmitsAllThreeSubstrings asserts the
+// three positive ACs from #2321 in one test: with ContainersEnabled=true the
+// rendered argv contains --setenv CONTAINER_HOST unix://<proxy>,
+// --setenv DOCKER_HOST unix://<proxy>, and
+// --bind <sessionDir>/container-scratch <sessionDir>/container-scratch.
+func TestBwrapBuildArgs_ContainersEnabled_EmitsAllThreeSubstrings(t *testing.T) {
+	m, _, scratchDir, _, proxySockPath, cleanup := containersBwrapFixture(t, containersFixtureOpts{
+		containersEnabled: true,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+	if m.piBwrapErr != nil {
+		t.Fatalf("BuildArgs surfaced piBwrapErr unexpectedly: %v", m.piBwrapErr)
+	}
+
+	wantContainerHost := "unix://" + proxySockPath
+	if !hasSetenv(args, "CONTAINER_HOST", wantContainerHost) {
+		t.Errorf("missing --setenv CONTAINER_HOST %q in args:\n  %v", wantContainerHost, args)
+	}
+	if !hasSetenv(args, "DOCKER_HOST", wantContainerHost) {
+		t.Errorf("missing --setenv DOCKER_HOST %q in args:\n  %v", wantContainerHost, args)
+	}
+	if !hasBind(args, scratchDir) {
+		t.Errorf("missing --bind %s %s (container-scratch) in args:\n  %v", scratchDir, scratchDir, args)
+	}
+}
+
+// TestBwrapBuildArgs_ContainersDisabled_NoContainerSurface asserts that with
+// ContainersEnabled=false (the default) NONE of CONTAINER_HOST, DOCKER_HOST,
+// or the container-scratch bind appear. This is the "no behavioural change
+// when the flag is unset" AC from #2321.
+func TestBwrapBuildArgs_ContainersDisabled_NoContainerSurface(t *testing.T) {
+	m, _, scratchDir, _, _, cleanup := containersBwrapFixture(t, containersFixtureOpts{
+		containersEnabled: false,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	for i := 0; i+2 < len(args); i++ {
+		if args[i] != "--setenv" {
+			continue
+		}
+		if args[i+1] == "CONTAINER_HOST" {
+			t.Errorf("unexpected --setenv CONTAINER_HOST when ContainersEnabled=false: %q", args[i+2])
+		}
+		if args[i+1] == "DOCKER_HOST" {
+			t.Errorf("unexpected --setenv DOCKER_HOST when ContainersEnabled=false: %q", args[i+2])
+		}
+	}
+	if hasBind(args, scratchDir) {
+		t.Errorf("unexpected --bind %s when ContainersEnabled=false: %v", scratchDir, args)
+	}
+}
+
+// TestPrepareBwrap_ContainersEnabled_CreatesScratchDirOnDisk asserts the
+// disk-state AC: after PrepareBwrap returns successfully with
+// ContainersEnabled=true, <sessionDir>/container-scratch exists on disk so
+// bwrap does not abort on a missing bind source at exec time.
+func TestPrepareBwrap_ContainersEnabled_CreatesScratchDirOnDisk(t *testing.T) {
+	m, _, scratchDir, _, _, cleanup := containersBwrapFixture(t, containersFixtureOpts{
+		containersEnabled: true,
+	})
+	defer cleanup()
+
+	// Pre-condition: scratch dir must NOT exist yet — PrepareBwrap is the
+	// thing that creates it.
+	if _, err := os.Stat(scratchDir); err == nil {
+		t.Fatalf("pre-condition violated: %s already exists before PrepareBwrap", scratchDir)
+	}
+
+	args, err := m.PrepareBwrap()
+	if err != nil {
+		t.Fatalf("PrepareBwrap: %v", err)
+	}
+	if len(args) == 0 {
+		t.Fatalf("PrepareBwrap returned empty arg list")
+	}
+
+	info, err := os.Stat(scratchDir)
+	if err != nil {
+		t.Fatalf("container-scratch dir not created after PrepareBwrap: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("%q is not a directory: mode=%v", scratchDir, info.Mode())
+	}
+}
+
+// TestPrepareBwrap_ContainersEnabled_MissingRunDirIsError asserts the
+// edge-case AC: when ContainersEnabled=true but the per-session run
+// directory (the parent of PodmanProxySockPath) does not exist on disk at
+// PrepareBwrap time, the function returns a clear error rather than
+// rendering an argv that would fail at bwrap exec time.
+func TestPrepareBwrap_ContainersEnabled_MissingRunDirIsError(t *testing.T) {
+	// Point PodmanProxySockPath at a path whose parent does not exist.
+	// We pre-create HostAPISockPath's parent in containersBwrapFixture
+	// (that's how prepareVolumeDirs is satisfied), but the containers
+	// edge-case AC validates the proxy's runDir separately — if the two
+	// diverged in the path scheme, PrepareBwrap must catch it.
+	nonExistent := filepath.Join(t.TempDir(), "does-not-exist", "podman.sock")
+	m, _, _, _, _, cleanup := containersBwrapFixture(t, containersFixtureOpts{
+		containersEnabled:           true,
+		overridePodmanProxySockPath: nonExistent,
+	})
+	defer cleanup()
+
+	_, err := m.PrepareBwrap()
+	if err == nil {
+		t.Fatalf("expected PrepareBwrap to error when proxy run dir is missing, got nil")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("expected error to mention the missing run dir, got: %v", err)
+	}
+}
+
+// TestBwrapBuildArgs_NoUpstreamPodmanSocketLeak is the greppable security
+// AC from #2321: the REAL upstream podman socket path
+// ($XDG_RUNTIME_DIR/podman/podman.sock or whatever the sidecar resolves)
+// must NOT appear anywhere in the rendered bwrap argv for ANY value of
+// ContainersEnabled. If someone ever adds `--bind $XDG_RUNTIME_DIR/podman ...`
+// to bwrap.go BuildArgs by accident, this test fails.
+//
+// The proxy's whole point is that the agent only sees the filtered socket.
+// If the upstream socket path leaked into the rendered argv (even by
+// accident), the agent could `connect()` directly and bypass every
+// default-deny policy in internal/podmanproxy. The proxy IS the agent's
+// only container API surface.
+//
+// We use a recognisable sentinel value for XDG_RUNTIME_DIR so the assertion
+// is unambiguous: no chance of accidental substring overlap with the
+// resolved filtered-socket path (which sits under the t.TempDir() tree).
+func TestBwrapBuildArgs_NoUpstreamPodmanSocketLeak(t *testing.T) {
+	const xdgRuntimeSentinel = "/sentinel-xdg-runtime-podman-leak-canary"
+	t.Setenv("XDG_RUNTIME_DIR", xdgRuntimeSentinel)
+
+	for _, enabled := range []bool{false, true} {
+		name := "ContainersDisabled"
+		if enabled {
+			name = "ContainersEnabled"
+		}
+		t.Run(name, func(t *testing.T) {
+			m, _, _, _, _, cleanup := containersBwrapFixture(t, containersFixtureOpts{
+				containersEnabled: enabled,
+			})
+			defer cleanup()
+
+			b := &bwrapIsolator{name: m.name}
+			args := b.BuildArgs(m)
+
+			// The sentinel XDG_RUNTIME_DIR value must never appear anywhere
+			// in the rendered argv. If bwrap.go ever reads
+			// os.Getenv("XDG_RUNTIME_DIR") (now or in the future) and
+			// composes a path from it, this assertion fires.
+			for i, a := range args {
+				if strings.Contains(a, xdgRuntimeSentinel) {
+					t.Errorf("upstream socket sentinel %q leaked into bwrap argv at index %d: %q",
+						xdgRuntimeSentinel, i, a)
+				}
+			}
+
+			// The canonical NixOS upstream path shape is
+			// `$XDG_RUNTIME_DIR/podman/podman.sock` — i.e. a path ending in
+			// `/podman/podman.sock`. The FILTERED socket the proxy listens
+			// on is at `<runDir>/podman.sock` (no `podman/` segment), so
+			// the two-segment substring is a stable canary for the upstream
+			// path regardless of how XDG_RUNTIME_DIR is configured on the
+			// host. The filtered socket WILL be in args when enabled=true,
+			// but it won't contain `/podman/podman.sock` — only
+			// `/podman.sock`.
+			for i, a := range args {
+				if strings.Contains(a, "/podman/podman.sock") {
+					t.Errorf("upstream podman socket path pattern \"/podman/podman.sock\" leaked at index %d: %q",
+						i, a)
+				}
+			}
+		})
+	}
+}

@@ -184,6 +184,36 @@ type Config struct {
 	// be used here). On Linux this is zero.
 	HarnessPipeTCPPort int
 
+	// ContainersEnabled is the per-session runtime gate for the filtering
+	// podman API socket proxy (#2317 / #2321). When true, BuildArgs (bwrap)
+	// emits:
+	//
+	//   --setenv CONTAINER_HOST unix://<PodmanProxySockPath>
+	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>
+	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
+	//
+	// and the bwrap isolator's Prepare hook calls PrepareSessionWorkDir +
+	// mkdirs the container-scratch subdirectory so the bind source exists on
+	// disk before bwrap is execed. Defaults to false; sourced from
+	// agent_status.containers_enabled (the live DB gate read by
+	// cmd/agent_run.go on the bwrap path).
+	//
+	// Critically, the upstream podman socket path is NEVER passed into the
+	// sandbox — only the filtered PodmanProxySockPath the sidecar's proxy
+	// goroutine listens on. The proxy is the agent's only container API
+	// surface. See #2317 §4 for the threat model.
+	ContainersEnabled bool
+
+	// PodmanProxySockPath is the absolute host path of the per-session
+	// filtering podman API socket created by the sidecar's podman-proxy
+	// goroutine (#2317 §3b / #2320). The socket sits in the same per-session
+	// run directory as HostAPISockPath, so the directory bind that already
+	// exposes the host-API socket also exposes this socket — no additional
+	// bind-mount is required. Typically populated via
+	// session.SidecarPodmanProxyPath. Consumed only when ContainersEnabled
+	// is true; ignored otherwise.
+	PodmanProxySockPath string
+
 	// InstanceID is the UUID instance identifier for the prism session that owns
 	// this container. When non-empty it is written as a
 	// "prism.instance-id=<uuid>" label on the container so that EnsureRemoved
