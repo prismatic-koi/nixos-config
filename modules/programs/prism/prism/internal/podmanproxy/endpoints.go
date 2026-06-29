@@ -102,6 +102,16 @@ const (
 	// via this endpoint without explicit admission in
 	// networkCreateBody.
 	endpointPolicyNetworkCreate
+
+	// endpointPolicyRename means "inspect the `?name=` query parameter
+	// against ContainerNamePrefix before forwarding". Used for POST
+	// /containers/{id}/rename. Closes the cycle-7 post-creation
+	// escape from the auto-prefix policy: without this kind, an agent
+	// could create a correctly-prefixed container and then immediately
+	// rename it out of the prefix, leaving an orphan that the cleanup
+	// sweep cannot find. (Spotted by review-security on PR #2332
+	// round 1.)
+	endpointPolicyRename
 )
 
 // normalisePath strips a leading docker/podman API version segment and
@@ -275,9 +285,16 @@ func classifyPOST(normPath string) endpointKind {
 		matchPath(normPath, "containers/+/pause"),
 		matchPath(normPath, "containers/+/unpause"),
 		matchPath(normPath, "containers/+/wait"),
-		matchPath(normPath, "containers/+/rename"),
 		matchPath(normPath, "containers/+/resize"):
 		return endpointAllow
+	}
+
+	// Rename is its own classification because its `?name=` query
+	// must be validated against ContainerNamePrefix — the agent must
+	// not be able to escape the cycle-7 auto-prefix policy by
+	// post-create rename. See endpointPolicyRename.
+	if matchPath(normPath, "containers/+/rename") {
+		return endpointPolicyRename
 	}
 
 	// Streaming endpoints: no body parsing — see endpointAllowStreaming

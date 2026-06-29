@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -267,6 +268,27 @@ type containerExecBody struct {
 	ConsoleSize  json.RawMessage `json:"ConsoleSize"`
 }
 
+// createInspectionResult bundles the outputs of inspectCreate. When
+// allow is true the handler forwards using rewrittenBody (or the
+// original body if rewrittenBody is nil) and the URL query in
+// rewrittenQuery (or the original URL query if rewrittenQuery is
+// ""). When allow is false both rewritten fields are zero and the
+// handler must NOT forward.
+//
+// The two rewrite fields are coupled: the cycle-7 Name auto-injection
+// branch sets BOTH so the upstream sees a consistent name no matter
+// which podman endpoint variant (libpod / docker-compat /
+// future) the request was destined for. See applyContainerNamePolicy
+// for the rationale.
+type createInspectionResult struct {
+	decision       policyDecision
+	rewrittenBody  []byte
+	rewrittenQuery string // empty if the original URL query should be reused
+	injectedName   string // observability only; non-empty when injection fired
+	appliedToBody  bool   // true iff rewrittenBody embeds an injected Name
+	appliedToQuery bool   // true iff rewrittenQuery embeds an injected ?name=
+}
+
 // inspectCreate parses body as a containers/create request and
 // applies the HostConfig policy. Two-stage parse: first the
 // top-level body with DisallowUnknownFields (rejects unknown
@@ -280,27 +302,22 @@ type containerExecBody struct {
 //
 // After all policy checks pass, the container-name auto-prefix
 // policy runs when Config.ContainerNamePrefix is non-empty (step 7
-// of #2317). The function returns the (possibly rewritten) body
-// bytes the caller MUST forward upstream:
-//
-//   - rewritten == nil means "forward the original body unchanged".
-//   - rewritten != nil means "forward rewritten instead of body"
-//     (the proxy injected an auto-generated Name).
-//
-// On any deny decision rewritten is nil and the caller must NOT
-// forward.
-func (p *Proxy) inspectCreate(body []byte) (policyDecision, []byte) {
+// of #2317). The function returns either a deny decision OR an allow
+// decision paired with the bytes / query the handler MUST forward
+// upstream (see createInspectionResult for the meaning of the
+// rewritten fields).
+func (p *Proxy) inspectCreate(body []byte, query url.Values) createInspectionResult {
 	if len(bytes.TrimSpace(body)) == 0 {
-		return denyDecision(http.StatusBadRequest,
+		return createInspectionResult{decision: denyDecision(http.StatusBadRequest,
 			"malformed_body:empty",
-			"containers/create request body is empty"), nil
+			"containers/create request body is empty")}
 	}
 
 	var req containerCreateBody
 	if dec := decodeStrict(body, &req); !dec.allow {
 		dec.reason = "create_top:" + dec.reason
 		dec.message = "containers/create top-level body: " + dec.message
-		return dec, nil
+		return createInspectionResult{decision: dec}
 	}
 
 	if req.HostConfig != nil && len(*req.HostConfig) > 0 {
@@ -308,10 +325,10 @@ func (p *Proxy) inspectCreate(body []byte) (policyDecision, []byte) {
 		if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
 			dec.reason = "create_hostconfig:" + dec.reason
 			dec.message = "containers/create HostConfig: " + dec.message
-			return dec, nil
+			return createInspectionResult{decision: dec}
 		}
 		if dec := p.checkHostConfig(&hc); !dec.allow {
-			return dec, nil
+			return createInspectionResult{decision: dec}
 		}
 	}
 
@@ -320,7 +337,7 @@ func (p *Proxy) inspectCreate(body []byte) (policyDecision, []byte) {
 	// privileged-flag violation surfaces in the audit log before the
 	// name-prefix mismatch — the worst violation wins, matching the
 	// existing field-ordering convention in checkHostConfig.
-	return p.applyContainerNamePolicy(body, &req)
+	return p.applyContainerNamePolicy(body, &req, query)
 }
 
 // applyContainerNamePolicy implements the cycle-7 value-level Name
@@ -331,48 +348,156 @@ func (p *Proxy) inspectCreate(body []byte) (policyDecision, []byte) {
 // checks for LogConfig.Type, NetworkMode, etc. — this is the same
 // shape on Name).
 //
+// # Both `?name=` query and body Name
+//
+// Both the libpod (`/libpod/containers/create`) and docker-compat
+// (`/containers/create`) endpoints accept the container name via two
+// orthogonal channels: the `?name=` URL query parameter and the body
+// `Name` field. Behaviour is well documented for the libpod surface
+// (body wins when both are present) but varies subtly across podman
+// versions for the docker-compat surface and across docker-API
+// versions for clients that target it. The conservative posture is
+// to apply the SAME prefix policy to BOTH channels:
+//
+//   - Either channel being set with a value that does not start with
+//     ContainerNamePrefix is a 403 deny (audit reasons
+//     `name_prefix_mismatch_query` and `name_prefix_mismatch_body` so
+//     the failing channel is identifiable).
+//   - Both being set with values that start with the prefix is
+//     allowed: cleanup will find the resulting container regardless
+//     of which name podman ends up using.
+//   - Both being absent / empty triggers the inject branch. The
+//     auto-generated `prefix + 8 hex chars` is written into BOTH the
+//     body (`Name`) and the URL query (`name=`) so the upstream sees
+//     a consistent prefixed name no matter which channel its
+//     handler reads.
+//
+// The belt-and-braces injection is what closes the docker-compat
+// gap surfaced by review-security / review-context on round 1 of
+// PR #2332: an agent posting `POST /containers/create?name=evil`
+// with no body Name cannot end up with an unprefixed container; an
+// agent posting `POST /containers/create` with no Name in either
+// channel cannot end up with a random podman-generated name like
+// `interesting_curie` either.
+//
 // Behaviour is gated on Config.ContainerNamePrefix:
 //
-//   - empty prefix → no-op; the original body forwards unchanged.
-//     Preserves back-compat for out-of-tree callers that construct
-//     the proxy without session scoping.
-//   - non-empty prefix, req.Name nil or empty → inject a name of the
-//     form prefix + 8 hex chars from crypto/rand into the body, and
-//     return the rewritten bytes.
-//   - non-empty prefix, req.Name set without the configured prefix
-//     → deny with reason "name_prefix_mismatch".
-//   - non-empty prefix, req.Name correctly prefixed → allow; original
-//     body forwards unchanged.
-func (p *Proxy) applyContainerNamePolicy(body []byte, req *containerCreateBody) (policyDecision, []byte) {
+//   - empty prefix → no-op; the original body / query forward
+//     unchanged. Preserves back-compat for out-of-tree callers.
+//   - non-empty prefix, both channels nil/empty → inject into BOTH.
+//   - non-empty prefix, either channel set without the prefix → deny.
+//   - non-empty prefix, at least one channel set with the prefix →
+//     allow; original body / query forward unchanged.
+func (p *Proxy) applyContainerNamePolicy(body []byte, req *containerCreateBody, query url.Values) createInspectionResult {
 	prefix := p.cfg.ContainerNamePrefix
 	if prefix == "" {
-		return allowDecision("policy:containers/create:ok"), nil
+		return createInspectionResult{decision: allowDecision("policy:containers/create:ok")}
 	}
 
-	if req.Name == nil || *req.Name == "" {
-		suffix, err := randomHexSuffix(8)
-		if err != nil {
-			return denyDecision(http.StatusInternalServerError,
-				"name_inject_random_failed",
-				"could not generate random container name suffix"), nil
-		}
-		injected := prefix + suffix
-		rewritten, err := injectNameIntoBody(body, injected)
-		if err != nil {
-			return denyDecision(http.StatusInternalServerError,
-				"name_inject_marshal_failed",
-				"could not inject auto-prefixed container name into request body"), nil
-		}
-		return allowDecision("policy:containers/create:name_injected"), rewritten
+	queryName := query.Get("name")
+	bodyHasName := req.Name != nil && *req.Name != ""
+
+	// Validation pass: a non-empty value in EITHER channel must start
+	// with the configured prefix. Order: query first, body second, so
+	// if both are mismatching the audit reason names the query side
+	// (the channel docker-CLI uses by default).
+	if queryName != "" && !strings.HasPrefix(queryName, prefix) {
+		return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+			"name_prefix_mismatch_query",
+			fmt.Sprintf("containers/create ?name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit ?name= and the body Name to receive an auto-prefixed one, or supply a name that begins with the required prefix)", queryName, prefix))}
+	}
+	if bodyHasName && !strings.HasPrefix(*req.Name, prefix) {
+		return createInspectionResult{decision: denyDecision(http.StatusForbidden,
+			"name_prefix_mismatch_body",
+			fmt.Sprintf("containers/create body Name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit Name to receive an auto-prefixed one, or supply a Name that begins with the required prefix)", *req.Name, prefix))}
 	}
 
-	if !strings.HasPrefix(*req.Name, prefix) {
+	// Both channels carry a correctly-prefixed value (or one is
+	// empty). No injection needed; forward as-is.
+	if queryName != "" || bodyHasName {
+		return createInspectionResult{decision: allowDecision("policy:containers/create:ok")}
+	}
+
+	// Inject branch: neither channel carries a Name. Generate one
+	// and write it into BOTH so the upstream sees a consistent
+	// prefixed name regardless of which channel its handler reads.
+	suffix, err := randomHexSuffix(8)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"name_inject_random_failed",
+			"could not generate random container name suffix")}
+	}
+	injected := prefix + suffix
+	rewrittenBody, err := injectNameIntoBody(body, injected)
+	if err != nil {
+		return createInspectionResult{decision: denyDecision(http.StatusInternalServerError,
+			"name_inject_marshal_failed",
+			"could not inject auto-prefixed container name into request body")}
+	}
+	rewrittenQuery := injectNameIntoQuery(query, injected)
+	return createInspectionResult{
+		decision:       allowDecision("policy:containers/create:name_injected"),
+		rewrittenBody:  rewrittenBody,
+		rewrittenQuery: rewrittenQuery,
+		injectedName:   injected,
+		appliedToBody:  true,
+		appliedToQuery: true,
+	}
+}
+
+// inspectRename implements the cycle-7 value-level Name check on
+// POST /containers/{id}/rename. The endpoint takes the new name via
+// the `?name=` URL query (the body is empty per docker spec); rename
+// is the only post-creation surface that can change the container's
+// name out of the auto-prefix shape, so it is the second pillar of
+// the cleanup-correctness guarantee alongside the create-time check.
+//
+// Behaviour is gated on Config.ContainerNamePrefix:
+//
+//   - empty prefix → no-op; rename forwards unchanged.
+//   - non-empty prefix, `?name=` missing or empty → 400 deny
+//     (`rename_missing_name`) because the upstream would also reject
+//     and the proxy prefers an actionable 4xx over a runc-internal
+//     error.
+//   - non-empty prefix, `?name=` does not start with the prefix →
+//     403 deny (`rename_prefix_mismatch`).
+//   - non-empty prefix, `?name=` starts with the prefix → allow.
+func (p *Proxy) inspectRename(query url.Values) policyDecision {
+	prefix := p.cfg.ContainerNamePrefix
+	if prefix == "" {
+		return allowDecision("policy:containers/rename:ok")
+	}
+	name := query.Get("name")
+	if name == "" {
+		return denyDecision(http.StatusBadRequest,
+			"rename_missing_name",
+			"containers/rename requires a non-empty `name` query parameter")
+	}
+	if !strings.HasPrefix(name, prefix) {
 		return denyDecision(http.StatusForbidden,
-			"name_prefix_mismatch",
-			fmt.Sprintf("containers/create Name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit Name to receive an auto-prefixed one, or supply a Name that begins with the required prefix)", *req.Name, prefix)), nil
+			"rename_prefix_mismatch",
+			fmt.Sprintf("containers/rename target name %q does not start with the required prefix %q (the proxy is session-scoped; renaming a container out of the per-session prefix would leave it past session teardown)", name, prefix))
 	}
+	return allowDecision("policy:containers/rename:ok")
+}
 
-	return allowDecision("policy:containers/create:ok"), nil
+// injectNameIntoQuery returns the URL-encoded query string with the
+// `name` parameter set to name. Any pre-existing `name` value (which
+// will have been the empty string — a non-empty value would have
+// already been validated and approved) is replaced.
+//
+// The function does not mutate the input url.Values so the caller
+// can keep its own reference unchanged.
+func injectNameIntoQuery(query url.Values, name string) string {
+	clone := make(url.Values, len(query)+1)
+	for k, v := range query {
+		if k == "name" {
+			continue
+		}
+		clone[k] = append([]string(nil), v...)
+	}
+	clone.Set("name", name)
+	return clone.Encode()
 }
 
 // randomHexSuffix returns n hex characters drawn from crypto/rand.

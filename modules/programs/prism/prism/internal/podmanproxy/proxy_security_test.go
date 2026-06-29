@@ -76,6 +76,11 @@ type fakeUpstream struct {
 	// the "forward unmodified" tests to assert the proxy didn't mangle
 	// a legitimate body en route.
 	lastBody atomic.Value // []byte
+
+	// lastRawQuery captures the URL.RawQuery of the most recent
+	// request. Used by the cycle-7 round-2 tests that assert the
+	// `?name=` channel was rewritten alongside the body Name.
+	lastRawQuery atomic.Value // string
 }
 
 func newFakeUpstream(t *testing.T) *fakeUpstream {
@@ -96,6 +101,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 		fu.requests.Add(1)
 		body, _ := io.ReadAll(r.Body)
 		fu.lastBody.Store(body)
+		fu.lastRawQuery.Store(r.URL.RawQuery)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"Id":"deadbeef"}`))

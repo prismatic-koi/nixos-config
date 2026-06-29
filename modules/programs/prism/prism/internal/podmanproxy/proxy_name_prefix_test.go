@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -268,9 +269,12 @@ func TestNamePrefix_NonMatchingName_Denied(t *testing.T) {
 
 	// Audit log must record the structured reason. The audit
 	// envelope is one JSON line per request — we read the last line
-	// and check its `reason` field.
-	if got := lastAuditReason(t, h.audit); got != "name_prefix_mismatch" {
-		t.Errorf("audit reason: got %q, want \"name_prefix_mismatch\"", got)
+	// and check its `reason` field. The cycle-7 v2 implementation
+	// distinguishes body-side from query-side mismatches in the
+	// audit so an operator can tell which channel the agent used;
+	// the body-side reason is `name_prefix_mismatch_body`.
+	if got := lastAuditReason(t, h.audit); got != "name_prefix_mismatch_body" {
+		t.Errorf("audit reason: got %q, want \"name_prefix_mismatch_body\"", got)
 	}
 }
 
@@ -327,6 +331,345 @@ func TestNamePrefix_NonMatchingName_Denied_RevertGuard(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status: got %d, want 403 (the prefix check did not fire)", resp.StatusCode)
 	}
+}
+
+// ── round-2 fixes: ?name= query parameter on /containers/create ──────────
+//
+// review-security and review-context both flagged that
+// applyContainerNamePolicy on round 1 inspected only the body Name,
+// not the URL query. Docker-compat clients (and `docker run --name`
+// against DOCKER_HOST=podman.sock, which Step 4 of #2317 wires into
+// the bwrap sandbox) set the name via `?name=` with NO body Name. The
+// fix inspects both channels, and on the inject branch writes the
+// auto-generated name into BOTH the body Name AND the URL query so
+// the upstream sees a consistent name regardless of which it reads.
+
+// postCreateRawWithQuery is the same as postCreateRaw but lets the
+// test set arbitrary URL-query parameters on the request — used by
+// the round-2 query-name tests. body=nil sends `{}` so the upstream
+// (when reached) gets a valid empty JSON object.
+func postCreateRawWithQuery(t *testing.T, sock string, query url.Values, body any) *http.Response {
+	t.Helper()
+	var reqBody []byte
+	if body == nil {
+		reqBody = []byte("{}")
+	} else {
+		var err error
+		reqBody, err = json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+	}
+	urlStr := "http://podman.sock/v1.41/containers/create"
+	if len(query) > 0 {
+		urlStr += "?" + query.Encode()
+	}
+	req, err := http.NewRequest(http.MethodPost, urlStr, bytes.NewReader(reqBody))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return doRequest(t, sock, req)
+}
+
+// readUpstreamRequest captures the most-recent request the fake
+// upstream observed and returns its rendered URL.RawQuery plus the
+// captured body bytes. Used by the inject-into-both tests to assert
+// the upstream sees the auto-generated name on both channels.
+func readUpstreamRequest(t *testing.T, fu *fakeUpstream) (rawQuery string, body []byte) {
+	t.Helper()
+	body, _ = fu.lastBody.Load().([]byte)
+	rawQuery, _ = fu.lastRawQuery.Load().(string)
+	return rawQuery, body
+}
+
+// TestNamePrefix_QueryName_NonMatching_Denied verifies the round-2
+// security fix: a request with `?name=<not-prefixed>` is rejected
+// with 403 + audit reason `name_prefix_mismatch_query`. The body has
+// no Name field — only the query carries a (mismatching) value, so
+// without the round-2 fix this case would silently fall through into
+// the inject branch and end up with a docker-compat container named
+// after the query value instead of the injected body Name.
+func TestNamePrefix_QueryName_NonMatching_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@query-deny-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	query := url.Values{"name": []string{"evil-orphan"}}
+	resp := postCreateRawWithQuery(t, h.sock, query, map[string]any{"Image": "alpine"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403", resp.StatusCode)
+	}
+	env := readEnvelope(t, resp)
+	if !strings.Contains(env.Message, "evil-orphan") {
+		t.Errorf("error message should name the rejected query value, got %q", env.Message)
+	}
+	assertNoForward(t, fu)
+	if got := lastAuditReason(t, h.audit); got != "name_prefix_mismatch_query" {
+		t.Errorf("audit reason: got %q, want \"name_prefix_mismatch_query\"", got)
+	}
+}
+
+// TestNamePrefix_QueryName_Matching_Allowed verifies the positive
+// control: a request with `?name=<correctly-prefixed>` is allowed
+// and forwarded without rewriting either channel.
+func TestNamePrefix_QueryName_Matching_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@query-allow-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	want := prefix + "explicit-suffix"
+	query := url.Values{"name": []string{want}}
+	resp := postCreateRawWithQuery(t, h.sock, query, map[string]any{"Image": "alpine"})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	gotQuery, _ := readUpstreamRequest(t, fu)
+	gotName := url.Values{}
+	if parsed, err := url.ParseQuery(gotQuery); err == nil {
+		gotName = parsed
+	}
+	if gotName.Get("name") != want {
+		t.Errorf("upstream ?name=: got %q, want %q (must forward unchanged on the matching path)",
+			gotName.Get("name"), want)
+	}
+}
+
+// TestNamePrefix_QueryName_Inject_RewritesBothChannels verifies the
+// load-bearing belt-and-braces injection: when neither the body Name
+// nor the `?name=` query carry a value, the proxy injects the
+// auto-generated `prefix + 8 hex chars` into BOTH the body AND the
+// URL query. The upstream test stub captures both channels and the
+// assertion is that they carry the SAME injected value.
+//
+// This is the cycle-7 round-2 fix for the docker-compat path:
+// without the query-side injection, docker-compat would either pick
+// the empty query (and generate a random name like
+// "interesting_curie") or honour the query over the body and end up
+// with the agent's empty name. Either way the cleanup sweep filter
+// would miss the orphan container.
+func TestNamePrefix_QueryName_Inject_RewritesBothChannels(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@inject-both-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postCreateRawWithQuery(t, h.sock, nil, map[string]any{"Image": "alpine"})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	gotQuery, gotBody := readUpstreamRequest(t, fu)
+
+	// Body Name must be set to a prefixed 8-hex name.
+	var obj map[string]any
+	if err := json.Unmarshal(gotBody, &obj); err != nil {
+		t.Fatalf("unmarshal upstream body: %v", err)
+	}
+	bodyName, _ := obj["Name"].(string)
+	if !strings.HasPrefix(bodyName, prefix) {
+		t.Errorf("upstream body Name %q does not start with prefix %q", bodyName, prefix)
+	}
+
+	// Query ?name= must be set to the SAME value as the body Name.
+	parsed, err := url.ParseQuery(gotQuery)
+	if err != nil {
+		t.Fatalf("parse upstream query %q: %v", gotQuery, err)
+	}
+	queryName := parsed.Get("name")
+	if queryName == "" {
+		t.Errorf("upstream ?name= was empty after inject (round-2 fix not wired); query=%q", gotQuery)
+	}
+	if queryName != bodyName {
+		t.Errorf("upstream body Name %q != upstream ?name=%q (inject must write the SAME value to both channels)",
+			bodyName, queryName)
+	}
+}
+
+// TestNamePrefix_QueryName_Inject_OverwritesEmptyQueryName covers the
+// edge case where the agent sends `?name=` with no value (a literal
+// empty string). The proxy must treat this the same as "absent" and
+// inject; the upstream must not see the original empty `?name=`.
+func TestNamePrefix_QueryName_Inject_OverwritesEmptyQueryName(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@empty-query-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	query := url.Values{"name": []string{""}}
+	resp := postCreateRawWithQuery(t, h.sock, query, map[string]any{"Image": "alpine"})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	gotQuery, _ := readUpstreamRequest(t, fu)
+	parsed, _ := url.ParseQuery(gotQuery)
+	name := parsed.Get("name")
+	if !strings.HasPrefix(name, prefix) {
+		t.Errorf("empty ?name= must be overwritten by inject; got %q", name)
+	}
+}
+
+// TestNamePrefix_QueryName_BodyName_Both_Allowed verifies that when
+// both the body Name and the ?name= query are set with correctly-
+// prefixed values, the request is allowed (we do not enforce strict
+// equality across channels because the cleanup security guarantee
+// holds either way: any name on the resulting container is
+// prefix-anchored and the sweep regex finds it).
+func TestNamePrefix_QueryName_BodyName_Both_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@both-set-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	query := url.Values{"name": []string{prefix + "queryname"}}
+	resp := postCreateRawWithQuery(t, h.sock, query, map[string]any{
+		"Image": "alpine",
+		"Name":  prefix + "bodyname",
+	})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	// The upstream sees BOTH values as-supplied; no rewrite.
+	gotQuery, gotBody := readUpstreamRequest(t, fu)
+	parsed, _ := url.ParseQuery(gotQuery)
+	if got := parsed.Get("name"); got != prefix+"queryname" {
+		t.Errorf("upstream ?name=: got %q, want %q", got, prefix+"queryname")
+	}
+	var obj map[string]any
+	_ = json.Unmarshal(gotBody, &obj)
+	if got, _ := obj["Name"].(string); got != prefix+"bodyname" {
+		t.Errorf("upstream body Name: got %q, want %q", got, prefix+"bodyname")
+	}
+}
+
+// TestNamePrefix_QueryName_NonMatching_Denied_RevertGuard is the
+// revert-and-watch-fail discipline check for the round-2 query-name
+// inspection. Replaces randomHexSuffix with a panic stub so if the
+// production code stops inspecting `?name=` and falls into the
+// inject branch on a non-matching query value, the panic surfaces.
+func TestNamePrefix_QueryName_NonMatching_Denied_RevertGuard(t *testing.T) {
+	origGen := randomHexSuffix
+	randomHexSuffix = func(_ int) (string, error) {
+		panic("randomHexSuffix called when explicit non-matching ?name= was supplied; the query prefix check has been removed")
+	}
+	t.Cleanup(func() { randomHexSuffix = origGen })
+
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@query-revert-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	query := url.Values{"name": []string{"not-our-prefix-container"}}
+	resp := postCreateRawWithQuery(t, h.sock, query, map[string]any{"Image": "alpine"})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403 (the query prefix check did not fire)", resp.StatusCode)
+	}
+}
+
+// ── round-2 fixes: POST /containers/{id}/rename inspected ────────────────
+//
+// review-security flagged that POST /containers/{id}/rename was
+// classified as endpointAllow with no inspection — a one-call escape
+// from the auto-prefix policy. The fix reclassifies it as
+// endpointPolicyRename and validates the `?name=` query against the
+// configured ContainerNamePrefix.
+
+// postRename is a tiny helper for the rename endpoint. The endpoint
+// has no body per docker spec, so the request body is empty.
+func postRename(t *testing.T, sock, containerID string, query url.Values) *http.Response {
+	t.Helper()
+	urlStr := "http://podman.sock/v1.41/containers/" + containerID + "/rename"
+	if len(query) > 0 {
+		urlStr += "?" + query.Encode()
+	}
+	req, err := http.NewRequest(http.MethodPost, urlStr, nil)
+	if err != nil {
+		t.Fatalf("new rename request: %v", err)
+	}
+	return doRequest(t, sock, req)
+}
+
+// TestRename_NonMatchingName_Denied verifies that a rename request
+// whose `?name=` does not start with the configured prefix is
+// rejected with 403 + audit reason `rename_prefix_mismatch`. Without
+// this fix an agent could create a correctly-prefixed container and
+// then immediately rename it out of the prefix, leaving an orphan.
+func TestRename_NonMatchingName_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@rename-deny-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postRename(t, h.sock, "abc123", url.Values{"name": []string{"evil-name"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403", resp.StatusCode)
+	}
+	env := readEnvelope(t, resp)
+	if !strings.Contains(env.Message, "evil-name") {
+		t.Errorf("error message should name the rejected value, got %q", env.Message)
+	}
+	assertNoForward(t, fu)
+	if got := lastAuditReason(t, h.audit); got != "rename_prefix_mismatch" {
+		t.Errorf("audit reason: got %q, want \"rename_prefix_mismatch\"", got)
+	}
+}
+
+// TestRename_MatchingName_Allowed verifies the positive control: a
+// rename to a value that does start with the prefix is forwarded.
+// Proves the deny above is not a no-op resulting from an unrelated
+// 4xx path firing first.
+func TestRename_MatchingName_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@rename-allow-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	want := prefix + "newname"
+	resp := postRename(t, h.sock, "abc123", url.Values{"name": []string{want}})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	if fu.captured() != 1 {
+		t.Errorf("upstream request count: got %d, want 1", fu.captured())
+	}
+}
+
+// TestRename_MissingName_Denied verifies that a rename with no
+// `?name=` query parameter is rejected with 400 (not 403 — the
+// upstream would also reject; the proxy synthesises a 4xx with a
+// useful message instead).
+func TestRename_MissingName_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@rename-missing-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postRename(t, h.sock, "abc123", nil)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status: got %d, want 400", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+	if got := lastAuditReason(t, h.audit); got != "rename_missing_name" {
+		t.Errorf("audit reason: got %q, want \"rename_missing_name\"", got)
+	}
+}
+
+// TestRename_EmptyPrefix_NoOp verifies the back-compat branch: when
+// ContainerNamePrefix is empty (out-of-tree caller), rename forwards
+// unchanged regardless of the `?name=` value. This matches the
+// containers/create back-compat path.
+func TestRename_EmptyPrefix_NoOp(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxyWithPrefix(t, fu, "")
+	resp := postRename(t, h.sock, "abc123", url.Values{"name": []string{"anything-goes"}})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q) — empty prefix should be a no-op", resp.StatusCode, b)
+	}
+}
+
+// TestRename_NonMatching_Denied_RevertGuard is the revert-and-watch-
+// fail discipline check for the rename inspector. The test
+// re-classifies the endpoint by name and asserts the deny path:
+// if the rename inspector is removed the test will fail because the
+// upstream stub records a forward (assertNoForward catches it).
+func TestRename_NonMatching_Denied_RevertGuard(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@rename-revert-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postRename(t, h.sock, "abc123", url.Values{"name": []string{"not-our-prefix-rename"}})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403 — the rename inspector did not fire", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
 }
 
 // ── audit log helpers ────────────────────────────────────────────────────
