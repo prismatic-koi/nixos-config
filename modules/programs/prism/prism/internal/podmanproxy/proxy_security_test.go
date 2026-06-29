@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1863,6 +1864,101 @@ func TestSecurity_SysctlsNonEmpty_Denied(t *testing.T) {
 		t.Fatalf("Sysctls non-empty should be denied; got %d", resp.StatusCode)
 	}
 	assertNoForward(t, fu)
+}
+
+// ──────────────────────── cycle 6 ───────────────────────────────
+//
+// Coordinator-authorised cycle 6. Closes review-security's CRITICAL
+// Mount.Type=glob bypass + extends the cycle-5 schema-inversion
+// discipline from FIELD names to enumerable VALUES inside admitted
+// fields. Tests below pair with commit 1 (Mount.Type allowlist);
+// the NetworkMode-family + LogConfig.Type tests live with commit 2.
+
+// review-security's exact PoC: Type="glob" with Source set to a
+// host path that filepath.Glob will resolve to the literal path.
+// Deny.
+func TestSecurity_MountTypeGlob_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "glob",
+				"Source": "/etc/hosts",
+				"Target": "/key",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("Mount Type=glob should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// Mount Types outside the {bind, volume, tmpfs} allowlist must all
+// deny. Includes case variants (case-SENSITIVE matching), whitespace-
+// padded values, and unicode-lookalike tricks.
+func TestSecurity_MountType_AllowlistEnforced(t *testing.T) {
+	cases := []string{
+		"glob",       // the CRITICAL PoC
+		"image",      // image-as-volume; not audited
+		"npipe",      // windows named pipe
+		"artifact",   // podman artifact mount
+		"ramfs",      // ramfs
+		"devpts",     // pty fs
+		"",           // empty Type
+		"BIND",       // case variant
+		"Bind",       // case variant
+		"VOLUME",     // case variant
+		" bind",      // leading whitespace
+		"bind ",      // trailing whitespace
+		"bind\t",     // tab
+		"bind\n",     // newline
+		"bind\u200b", // zero-width space
+	}
+	for _, tp := range cases {
+		tp := tp
+		t.Run(strconv.Quote(tp), func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			sock := h.sock
+			resp := postCreate(t, sock, map[string]any{
+				"Mounts": []map[string]any{
+					{
+						"Type":   tp,
+						"Source": h.allowedDir,
+						"Target": "/x",
+					},
+				},
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("Mount Type=%q should be denied; got %d", tp, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+// Positive control: Mount.Type=tmpfs is admitted (no host-file
+// access path). Proves the allowlist is real and not a blanket deny.
+func TestSecurity_MountTypeTmpfs_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	sock := h.sock
+
+	resp := postCreate(t, sock, map[string]any{
+		"Mounts": []map[string]any{
+			{
+				"Type":   "tmpfs",
+				"Target": "/in-memory",
+			},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Mount Type=tmpfs should be allowed; got %d", resp.StatusCode)
+	}
 }
 
 // ──────── schema-inversion: unknown-field rejection per endpoint ────────

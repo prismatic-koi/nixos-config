@@ -331,36 +331,53 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		}
 	}
 
-	// Host bind sources (newer Mounts slice).
+	// Host bind sources (newer Mounts slice). Cycle 6 closes the
+	// Type=glob bypass found by review-security: this loop now uses
+	// an explicit allowlist of Type values (case-SENSITIVE), not a
+	// deny-list. Anything outside the allowlist denies, including
+	// case variants ("BIND"), whitespace-padded values (" bind "),
+	// and the podman-specific Type="glob" that calls filepath.Glob
+	// on the host and creates a bind mount for every match.
+	//
+	// The allowlist is intentionally small. New Mount types added
+	// to docker/podman in the future are denied by default until
+	// they have been audited against the threat table and added
+	// here with a rationale comment.
 	for _, m := range hc.Mounts {
-		if strings.EqualFold(m.Type, "bind") {
+		switch m.Type {
+		case "bind":
+			// INSPECTED: Source must pass the bind-source allowlist
+			// + EvalSymlinks check.
 			if !p.isAllowedBindSource(m.Source) {
 				return denyDecision(http.StatusForbidden,
 					"mount_bind:"+truncateForReason(m.Source),
 					fmt.Sprintf("mount source %q is not in the allowlist", m.Source))
 			}
-			continue
-		}
-		if strings.EqualFold(m.Type, "volume") {
-			// Type=volume with an inline DriverConfig is the
-			// local-driver bind-volume escape: VolumeOptions.
-			// DriverConfig.{Name,Options} can specify a host path
-			// to bind-mount via the volume mechanism, bypassing the
-			// Type=bind allowlist check above. The conservative fix
-			// per the cycle-5 coordinator directive is to deny any
-			// VolumeOptions.DriverConfig at all — the legitimate
-			// "named volume managed by podman" case has no
-			// DriverConfig (uses the default driver settings).
+		case "volume":
+			// INSPECTED: presence of VolumeOptions.DriverConfig
+			// indicates the local-driver bind-volume escape; deny.
+			// Plain Type=volume with no DriverConfig is a podman-
+			// managed named volume — safe.
 			if m.VolumeOptions != nil && m.VolumeOptions.DriverConfig != nil {
 				return denyDecision(http.StatusForbidden,
 					"mount_volume_driver_config",
 					"Mounts entry of Type=volume with VolumeOptions.DriverConfig is not permitted (local-driver bind-volume escape; use a Type=bind Mount with an allowlisted Source instead)")
 			}
-			continue
+		case "tmpfs":
+			// In-memory, container-internal. No host-file access
+			// path. Safe; forward.
+		default:
+			// Cycle-6 review-security CRITICAL: Type="glob" calls
+			// filepath.Glob(Source) on the host and creates a bind
+			// mount for every matched path — bypassing the bind
+			// allowlist entirely. "image" / "npipe" / "" / case
+			// variants like "BIND" / whitespace-padded values — all
+			// fall here and deny. Allowing a new Type requires an
+			// audit and an explicit case branch above.
+			return denyDecision(http.StatusForbidden,
+				"mount_type_not_allowed:"+truncateForReason(m.Type),
+				fmt.Sprintf("Mounts entry Type=%q is not in the allowlist {bind, volume, tmpfs} (case-sensitive)", m.Type))
 		}
-		// "tmpfs" (in-memory, container-internal), "npipe"
-		// (Windows), "image" (image-volume): no host-file access
-		// path, forward unmodified.
 	}
 
 	// Privileged is a single bit. Any "true" is a hard reject.
