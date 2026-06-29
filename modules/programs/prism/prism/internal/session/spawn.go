@@ -300,6 +300,13 @@ type SpawnOpts struct {
 	// HostModeFlag mirrors --host-mode. Mirrors spawn_inputs.host_mode_flag.
 	HostModeFlag bool
 
+	// ContainersFlag mirrors --containers (#2317 / #2323). Audit-only:
+	// SpawnSession writes it to spawn_inputs.containers_flag and also flips
+	// agent_status.containers_enabled to 1 when true so the sidecar starts
+	// the per-session filtering podman socket proxy. Defaults to false (the
+	// flag was omitted; the runtime gate stays at the schema default of 0).
+	ContainersFlag bool
+
 	// PRNumber is the parsed --pr flag value. Zero means no --pr was passed.
 	// Mirrors spawn_inputs.pr_number.
 	PRNumber int
@@ -677,6 +684,21 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		if err := d.SetGroupID(opts.SessionName, opts.GroupID); err != nil {
 			return fmt.Errorf("spawn session: set group_id: %w", err)
 		}
+	}
+
+	// Step 2b: Flip agent_status.containers_enabled when --containers was
+	// passed (#2317 / #2323). This is the runtime gate the sidecar reads at
+	// startup to decide whether to start the per-session filtering podman
+	// API socket proxy. Only call when the flag is set — the column defaults
+	// to 0 in the schema so an unset spawn never enables the proxy.
+	//
+	// The corresponding immutable audit value lives in
+	// spawn_inputs.containers_flag and is written by InsertSpawnInputs below.
+	if opts.ContainersFlag {
+		if err := d.SetContainersEnabled(opts.SessionName, true); err != nil {
+			return fmt.Errorf("spawn session: set containers_enabled: %w", err)
+		}
+		startup.log("spawn-session: agent_status.containers_enabled=1 (--containers)")
 	}
 
 	// Issue #1507 (FK race): mint instance_id host-side and pre-insert the
@@ -1188,6 +1210,7 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 		si.IsolationMode = &s
 	}
 	si.HostModeFlag = opts.HostModeFlag
+	si.ContainersFlag = opts.ContainersFlag
 	if opts.PRNumber != 0 {
 		n := opts.PRNumber
 		si.PRNumber = &n

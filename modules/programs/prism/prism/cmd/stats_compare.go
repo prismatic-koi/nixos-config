@@ -979,6 +979,7 @@ var inputsAxes = []string{
 	"agent_role",
 	"branch",
 	"abtest_pair_id",
+	"containers_flag",
 }
 
 // inputsValue returns the display string for a single spawn_inputs axis on
@@ -1026,6 +1027,16 @@ func inputsValue(axis string, run compareRun) string {
 	case "abtest_pair_id":
 		if in != nil && in.AbtestPairID != nil && *in.AbtestPairID != "" {
 			return *in.AbtestPairID
+		}
+	case "containers_flag":
+		// Always renders for rows that have an inputs row, with "true" / "false"
+		// so the absence ("—") cleanly distinguishes pre-#2087 rows from rows
+		// that recorded containers_flag=0. (#2317 / #2323)
+		if in != nil {
+			if in.ContainersFlag {
+				return "true"
+			}
+			return "false"
 		}
 	}
 	return "—"

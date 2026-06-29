@@ -817,6 +817,31 @@ func (d *DB) SetIsolationMode(sessionName, mode string) error {
 	return nil
 }
 
+// SetContainersEnabled writes agent_status.containers_enabled for sessionName
+// (#2317 / #2323). enabled=true is the runtime gate the sidecar reads to
+// decide whether to start the per-session filtering podman API socket proxy;
+// the spawn-time CLI flag --containers flips this on. enabled=false leaves the
+// row at the default (proxy not started).
+//
+// No-op when sessionName has no agent_status row (the UPDATE affects zero rows
+// and returns nil). Mirrors SetIsolationMode / SetGroupID — write the boolean
+// as an INTEGER 0/1 so the column shape matches the schema (INTEGER NOT NULL
+// DEFAULT 0).
+func (d *DB) SetContainersEnabled(sessionName string, enabled bool) error {
+	var v int
+	if enabled {
+		v = 1
+	}
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET containers_enabled = ? WHERE session_name = ?",
+		v, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: set containers_enabled: %w", err)
+	}
+	return nil
+}
+
 // portAvailable checks whether a TCP port is available on localhost by
 // attempting a brief listen. Returns true if the port is free.
 func portAvailable(port int) bool {

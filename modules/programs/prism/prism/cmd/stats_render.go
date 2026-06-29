@@ -31,6 +31,15 @@ func runStatsDetail(arg string, forceInstance bool, jsonMode bool) error {
 
 	if jsonMode {
 		out := map[string]any{"session": sess}
+		// Surface the spawn_inputs audit columns alongside the sessions
+		// row so callers scripting against `prism stats <id> --json` can
+		// read containers_flag (#2317 / #2323) without a second query.
+		// Missing rows (pre-#2087 sessions) omit the key entirely —
+		// downstream consumers must use "in" rather than truthy checks
+		// to distinguish "unknown" from "false".
+		if si, siErr := d.SpawnInputsByInstanceID(sess.InstanceID); siErr == nil && si != nil {
+			out["spawn_inputs"] = spawnInputsJSON(si)
+		}
 		data, merr := json.Marshal(out)
 		if merr != nil {
 			return fmt.Errorf("stats --json: marshal session: %w", merr)
@@ -41,6 +50,44 @@ func runStatsDetail(arg string, forceInstance bool, jsonMode bool) error {
 
 	renderIncarnationDetail(d, sess)
 	return nil
+}
+
+// spawnInputsJSON projects db.SpawnInputs onto the audit-only subset surfaced
+// by `prism stats <instance-id> --json` (#2317 / #2323). Conversation-bearing
+// columns (prompt_text, prompt_source, model_variant_overrides, extras) are
+// intentionally omitted — the same boundary that CompareInputs enforces for
+// the host-API /stats endpoint applies here.
+func spawnInputsJSON(si *db.SpawnInputs) map[string]any {
+	m := map[string]any{
+		"containers_flag":        si.ContainersFlag,
+		"host_mode_flag":         si.HostModeFlag,
+		"ignore_concurrency_cap": si.IgnoreConcurrencyCap,
+	}
+	if si.ProfileName != nil {
+		m["profile_name"] = *si.ProfileName
+	}
+	if si.HarnessFlag != nil {
+		m["harness_flag"] = *si.HarnessFlag
+	}
+	if si.IsolationFlag != nil {
+		m["isolation_flag"] = *si.IsolationFlag
+	}
+	if si.IsolationMode != nil {
+		m["isolation_mode"] = *si.IsolationMode
+	}
+	if si.AgentFlag != nil {
+		m["agent_flag"] = *si.AgentFlag
+	}
+	if si.BranchFlag != nil {
+		m["branch_flag"] = *si.BranchFlag
+	}
+	if si.PRNumber != nil {
+		m["pr_number"] = *si.PRNumber
+	}
+	if si.AbtestPairID != nil {
+		m["abtest_pair_id"] = *si.AbtestPairID
+	}
+	return m
 }
 
 // renderIncarnationDetailFromSession renders the session detail for the proxy
@@ -151,6 +198,40 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), styleDim.Render("(not yet archived)"))
 	}
 	fmt.Println()
+
+	// Spawn Inputs block — surfaces the audit columns written at spawn time
+	// (#2087 / #2317 / #2323). When no spawn_inputs row exists (pre-#2087
+	// sessions, or rows created outside the SpawnSession chokepoint) the
+	// whole block is omitted rather than rendering a sea of "—" labels.
+	// Mirrors the field set surfaced by `prism stats compare`'s Spawn Inputs
+	// block; new audit columns added in future PRs land here too.
+	if si, siErr := d.SpawnInputsByInstanceID(sess.InstanceID); siErr == nil && si != nil {
+		fmt.Println(styleHeader.Render("Spawn Inputs"))
+		if si.ProfileName != nil && *si.ProfileName != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("profile_name:"), *si.ProfileName)
+		}
+		if si.HarnessFlag != nil && *si.HarnessFlag != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("harness_flag:"), *si.HarnessFlag)
+		}
+		if si.IsolationMode != nil && *si.IsolationMode != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("isolation_mode:"), *si.IsolationMode)
+		}
+		if si.IsolationFlag != nil && *si.IsolationFlag != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("isolation_flag:"), *si.IsolationFlag)
+		}
+		fmt.Printf("  %s %t\n", styleLabel.Render("host_mode_flag:"), si.HostModeFlag)
+		fmt.Printf("  %s %t\n", styleLabel.Render("containers_flag:"), si.ContainersFlag)
+		if si.AgentFlag != nil && *si.AgentFlag != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("agent_flag:"), *si.AgentFlag)
+		}
+		if si.BranchFlag != nil && *si.BranchFlag != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("branch_flag:"), *si.BranchFlag)
+		}
+		if si.AbtestPairID != nil && *si.AbtestPairID != "" {
+			fmt.Printf("  %s %s\n", styleLabel.Render("abtest_pair_id:"), *si.AbtestPairID)
+		}
+		fmt.Println()
+	}
 
 	// Token/cost totals from agent_events.
 	fmt.Println(styleHeader.Render("Token Usage"))
