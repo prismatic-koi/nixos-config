@@ -566,6 +566,50 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
+	// ── Containers-enabled surface (#2317 / #2321) ───────────────────
+	// Wires the per-session FILTERED podman socket and the writable
+	// container-scratch dir into the sandbox. Three argv emissions are
+	// gated on cfg.ContainersEnabled:
+	//
+	//   --setenv CONTAINER_HOST unix://<PodmanProxySockPath>
+	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>   (docker-CLI compat)
+	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
+	//
+	// Critical security invariant (#2321 greppable AC): the REAL upstream
+	// podman socket path ($XDG_RUNTIME_DIR/podman/podman.sock or whatever
+	// the sidecar resolved) must NEVER appear in the rendered argv — only
+	// the filtered PodmanProxySockPath the sidecar's proxy goroutine
+	// listens on. The proxy is the agent's only container API surface; a
+	// stray --bind of the upstream socket would let the agent `connect()`
+	// directly and bypass every default-deny policy in
+	// internal/podmanproxy. Do not add any code path here that reads or
+	// references $XDG_RUNTIME_DIR or any host-side podman socket path.
+	//
+	// No new bind-mount is needed for the proxy socket itself: it lives in
+	// the per-session run directory that the PRISM_HOST_API block above
+	// already binds (HostAPISockPath's parent dir), so the proxy socket
+	// file appears inside the sandbox the moment the sidecar's listener
+	// creates it.
+	if cfg.ContainersEnabled && cfg.PodmanProxySockPath != "" {
+		containerHost := "unix://" + cfg.PodmanProxySockPath
+		args = append(args, "--setenv", "CONTAINER_HOST", containerHost)
+		args = append(args, "--setenv", "DOCKER_HOST", containerHost)
+
+		// The bind source is <sessionDir>/container-scratch where
+		// <sessionDir> = SessionWorkDirPath(InstanceID) (or the manager's
+		// fallback when InstanceID is empty). bwrapIsolator.Prepare has
+		// already validated the sessionDir resolves and mkdir'd the scratch
+		// subdir; if resolution fails here we record the error on the
+		// Manager so Prepare can surface it (BuildArgs has no error
+		// return). Mirrors the appendPIBwrapMounts error-stashing pattern.
+		if sessionDir, err := m.sessionWorkDirPath(); err == nil {
+			scratch := SessionWorkDirContainerScratchPath(sessionDir)
+			args = append(args, "--bind", scratch, scratch)
+		} else {
+			m.piBwrapErr = fmt.Errorf("resolve session work dir for container-scratch: %w", err)
+		}
+	}
+
 	// ── PI-specific bind mounts (harness=pi only) ────────────────────────
 	// Note: the host's ~/.pi/agent/sessions/ directory is now overlaid onto
 	// $PI_CODING_AGENT_DIR/sessions/ inside the sandbox by

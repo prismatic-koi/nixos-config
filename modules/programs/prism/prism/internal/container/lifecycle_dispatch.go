@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -149,6 +150,46 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	// so the caller sees the real cause rather than a confusing bwrap exec failure.
 	if err := m.prepareVolumeDirs(false); err != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", err)
+	}
+
+	// ── Containers-enabled prep (#2317 / #2321) ──────────────────────
+	// When the session's agent_status.containers_enabled gate is set, the
+	// bwrap profile binds <sessionDir>/container-scratch read-write so the
+	// agent can use it as a `podman run -v ...` source. The directory must
+	// exist before bwrap is execed — bwrap aborts with a confusing error if a
+	// bind source is missing. Per #2321 we converge on the same
+	// per-session-work-dir story sandbox-exec uses (option (a)) rather than
+	// inlining a one-off mkdir here, so the lifecycle (PrepareSessionWorkDir
+	// + RemoveSessionWorkDir) is shared between the two isolation modes.
+	//
+	// Validation order:
+	//   1. PodmanProxySockPath must be set (config error if absent).
+	//   2. <runDir> = filepath.Dir(PodmanProxySockPath) must already exist on
+	//      disk — prepareVolumeDirs above creates the per-session run dir from
+	//      HostAPISockPath, and PodmanProxySockPath shares the same parent
+	//      directory in the sidecar's path scheme
+	//      (session.SidecarPodmanProxyPath). A missing runDir at this point
+	//      indicates the two paths disagree and the rendered argv would fail
+	//      at bwrap exec time — surface it now as a clear Prepare error.
+	//   3. PrepareSessionWorkDir + mkdir of the container-scratch subdir.
+	if m.cfg.ContainersEnabled {
+		if m.cfg.PodmanProxySockPath == "" {
+			return nil, fmt.Errorf("container: bwrap: containers_enabled=true but PodmanProxySockPath is empty")
+		}
+		runDir := filepath.Dir(m.cfg.PodmanProxySockPath)
+		if info, err := os.Stat(runDir); err != nil {
+			return nil, fmt.Errorf("container: bwrap: containers_enabled=true but podman proxy run dir %q does not exist: %w", runDir, err)
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("container: bwrap: containers_enabled=true but podman proxy run dir %q is not a directory", runDir)
+		}
+		sessionDir, err := m.PrepareSessionWorkDir()
+		if err != nil {
+			return nil, fmt.Errorf("container: bwrap: prepare session work dir for containers_enabled: %w", err)
+		}
+		scratch := SessionWorkDirContainerScratchPath(sessionDir)
+		if err := os.MkdirAll(scratch, 0o700); err != nil {
+			return nil, fmt.Errorf("container: bwrap: create container-scratch dir %q: %w", scratch, err)
+		}
 	}
 
 	// Build the bwrap args. For PI sessions, BuildArgs stores any

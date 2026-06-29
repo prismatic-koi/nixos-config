@@ -305,6 +305,26 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	if status.HarnessSessionID != nil {
 		harnessSessionID = *status.HarnessSessionID
 	}
+
+	// Resolve InstanceID from DB status. Required so the per-session work dir
+	// is namespaced by the same instance_id that prism cleanup uses (#2317 /
+	// #2321: bwrap with containers_enabled needs the work dir for the
+	// container-scratch bind mount). Sandbox-exec already populates this on
+	// the same path (cmd/agent_run_sandbox_exec_darwin.go).
+	instanceID := ""
+	if status.InstanceID != nil {
+		instanceID = *status.InstanceID
+	}
+
+	// Resolve the filtered podman API socket path so bwrap can emit
+	// CONTAINER_HOST / DOCKER_HOST when containers_enabled is set. Resolution
+	// failure is non-fatal at this layer — PrepareBwrap re-validates the
+	// containers_enabled invariants and produces the surfaced error.
+	podmanProxySockPath := ""
+	if p, podmanErr := session.SidecarPodmanProxyPath(sessionName); podmanErr == nil {
+		podmanProxySockPath = p
+	}
+
 	ctrCfg := container.Config{
 		SessionName:         sessionName,
 		Worktree:            worktree,
@@ -319,6 +339,9 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		GitHubTokenPath:     cfg.GitHubTokenPath,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
+		InstanceID:          instanceID,
+		ContainersEnabled:   status.ContainersEnabled,
+		PodmanProxySockPath: podmanProxySockPath,
 		RuntimeEnv:          runtimeEnv,
 		AgentEnvVars:        agentEnvVars,
 		Harness:             harnessName,
