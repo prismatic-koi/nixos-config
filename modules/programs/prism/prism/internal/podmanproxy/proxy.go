@@ -75,6 +75,23 @@ type Config struct {
 	// disables the cap.
 	MaxNanoCpus int64
 
+	// ContainerNamePrefix, when non-empty, activates the
+	// container-name auto-prefix policy on POST /containers/create:
+	//
+	//   - A request body with no Name (or Name="") gets a Name of
+	//     ContainerNamePrefix + <8 hex chars from crypto/rand> injected
+	//     into the forwarded body.
+	//   - A request body with an explicit Name MUST start with
+	//     ContainerNamePrefix; otherwise the request is rejected with 403
+	//     and audit reason "name_prefix_mismatch".
+	//
+	// Production wires this from the sidecar to "prism-<sessionName>-"
+	// so the cleanup sweep can locate every container belonging to the
+	// session. Out-of-tree callers may leave it empty — the prefix logic
+	// is then a no-op, preserving the cycle-5 schema-inversion behaviour
+	// for any consumer that does not need session-scoped naming.
+	ContainerNamePrefix string
+
 	// AllowedSecurityOpts is the set of HostConfig.SecurityOpt entries
 	// that may appear on a containers/create body. Comparison is
 	// case-sensitive and matches the full entry string (e.g.

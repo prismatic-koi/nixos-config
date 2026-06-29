@@ -405,6 +405,67 @@ func TestPodmanProxy_UpstreamDiscovery_Darwin_MissingPodmanReturnsPlaceholder(t 
 	}
 }
 
+// TestPodmanProxy_ContainerNamePrefix_WiredFromSession verifies the
+// #2324 Step-7 wiring: when the sidecar starts the proxy, the
+// proxy's Config.ContainerNamePrefix is set to
+// "prism-<sessionName>-" so the cleanup sweep can locate every
+// container belonging to this session. We probe the live behaviour
+// by POSTing a containers/create request with an explicit Name that
+// does NOT start with the session prefix — the proxy must reject
+// with 403 and audit reason name_prefix_mismatch.
+//
+// The test uses a real (test) upstream socket so the proxy's policy
+// path runs end-to-end rather than short-circuiting on dial failure.
+// We do not need the upstream to respond meaningfully; we just need
+// the policy to fire BEFORE the upstream is dialled.
+func TestPodmanProxy_ContainerNamePrefix_WiredFromSession(t *testing.T) {
+	session := "prism-test@" + t.Name()
+	bus := sidecartest.NewIsolated(t, session)
+
+	// A non-existent upstream is fine: the policy rejection fires
+	// before any dial attempt, so the friendly 503 path does not run.
+	upstream := filepath.Join(bus.XDGStateHome, "unused-upstream.sock")
+
+	sc, listenerPath := newPodmanProxyTestSidecar(t, bus, session, upstream)
+	setContainersEnabled(t, bus, session, true)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	done := runSidecarBackground(t, sc, ctx)
+	if !waitForPath(listenerPath, 3*time.Second) {
+		t.Fatalf("podman.sock listener did not appear at %s", listenerPath)
+	}
+
+	client := proxyClientFor(listenerPath)
+	body := strings.NewReader(`{"Image":"alpine","Name":"not-our-prefix"}`)
+	resp, err := client.Post("http://podman.sock/v1.41/containers/create",
+		"application/json", body)
+	if err != nil {
+		t.Fatalf("POST containers/create: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		got, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 403 (body=%q) — the sidecar did not wire ContainerNamePrefix",
+			resp.StatusCode, got)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	var env struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(respBody, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v (raw=%q)", err, respBody)
+	}
+	wantPrefix := "prism-" + session + "-"
+	if !strings.Contains(env.Message, wantPrefix) {
+		t.Errorf("envelope message does not name the wired prefix %q; got %q",
+			wantPrefix, env.Message)
+	}
+
+	cancel()
+	<-done
+}
+
 // TestPodmanProxy_UpstreamPathNotInSidecarLog verifies the security AC:
 // even when the proxy is started and audited, the rendered sidecar log
 // must NOT contain the real upstream socket path verbatim. The audit log

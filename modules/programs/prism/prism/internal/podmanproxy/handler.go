@@ -54,6 +54,9 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case endpointPolicyNetworkCreate:
 		p.handlePolicyNetworkCreate(w, r)
 
+	case endpointPolicyRename:
+		p.handlePolicyRename(w, r)
+
 	case endpointDeny:
 		fallthrough
 	default:
@@ -82,19 +85,45 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dec := p.inspectCreate(body)
+	res := p.inspectCreate(body, r.URL.Query())
+	if !res.decision.allow {
+		p.emitAudit(r, auditDeny, res.decision.reason)
+		writeJSONError(w, res.decision.status, res.decision.message)
+		return
+	}
+
+	// inspectCreate may have rewritten the body and/or the URL query
+	// when the cycle-7 Name-prefix policy injected an auto-prefixed
+	// Name. The injection branch writes the same name into BOTH
+	// channels so the upstream sees a consistent name no matter
+	// which channel (libpod body Name vs docker-compat ?name=) its
+	// handler reads. When either rewritten field is empty the
+	// original is forwarded unchanged.
+	forwardBody := body
+	if res.rewrittenBody != nil {
+		forwardBody = res.rewrittenBody
+	}
+	if res.rewrittenQuery != "" {
+		r.URL.RawQuery = res.rewrittenQuery
+	}
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
+
+	p.emitAudit(r, auditAllow, res.decision.reason)
+	p.upstream.ServeHTTP(w, r)
+}
+
+// handlePolicyRename is the query-inspecting branch for POST
+// /containers/{id}/rename. The body is empty for this endpoint, so
+// the policy check operates purely on the URL query and forwards
+// the request unmodified on allow.
+func (p *Proxy) handlePolicyRename(w http.ResponseWriter, r *http.Request) {
+	dec := p.inspectRename(r.URL.Query())
 	if !dec.allow {
 		p.emitAudit(r, auditDeny, dec.reason)
 		writeJSONError(w, dec.status, dec.message)
 		return
 	}
-
-	// Restore the body for the reverse proxy. Use a fresh Reader so
-	// the proxy can re-read from offset 0; the ContentLength is set
-	// explicitly because http.MaxBytesReader leaves it as it was.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-
 	p.emitAudit(r, auditAllow, dec.reason)
 	p.upstream.ServeHTTP(w, r)
 }
