@@ -17,6 +17,12 @@ in
       description = username;
       extraGroups = [
         "wheel"
+        # Read+write access to the rootless podman socket
+        # (/run/user/<uid>/podman/podman.sock, mode 0660 root:podman) so
+        # `prism spawn --containers` workers can talk to the host podman
+        # via the per-session filtering proxy. See #2317 and
+        # modules/programs/prism/prism/docs/podman-proxy.md.
+        "podman"
         (lib.mkIf config.networking.networkmanager.enable "networkmanager")
         (lib.mkIf config.hardware.openrazer.enable "openrazer")
       ];
