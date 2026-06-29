@@ -44,12 +44,12 @@ record the rationale.
 | # | Threat | Mitigation | Canonical reference |
 |---|---|---|---|
 | T1 | Agent reads any host file via `-v /host/path:/x` | `HostConfig.Binds` policy rejects sources outside the per-session allowlist (worktree + bare repo + scratch dir). Symlinks resolved via `filepath.EvalSymlinks` before the prefix check. | `policy.go::checkHostConfig` (Binds branch), `isAllowedBindSource`, `canonicalisePath` |
-| T2 | Same exfil via `HostConfig.Mounts` with `Type=bind` | Same allowlist check applied to every `Mounts[]` entry with `Type=bind`. `Type` is itself value-allowlisted to `{bind, volume, tmpfs}`. | `policy.go::hostConfigMount`, `mountTypeAllowlist`, `checkHostConfig` (Mounts branch) |
+| T2 | Same exfil via `HostConfig.Mounts` with `Type=bind` | Same allowlist check applied to every `Mounts[]` entry with `Type=bind`. `Type` is itself value-allowlisted to `{bind, volume, tmpfs}` via an inline `switch` in `checkHostConfig` (no named variable — the `case` branches in `policy.go` are the spec); anything outside the allowlist (including the podman-specific `glob`) hits the `default:` branch and denies. | `policy.go::hostConfigMount`, `policy.go::checkHostConfig` (Mounts branch / `switch m.Type`) |
 | T3 | Same exfil via `Mounts` with `Type=volume` and `VolumeOptions.DriverConfig.Name="local"` (a "named-volume" that is functionally a bind to a host path via `device=…`) | `Mounts[].VolumeOptions.DriverConfig` is DENIED when present. Same shape closed at the volumes/create endpoint: `Driver=local` with non-empty `DriverOpts` rejected. | `policy.go::hostConfigVolumeOptions`, `inspectVolumeCreate` |
 | T4 | Exfil via `POST /containers/{id}/archive` (`podman cp` write) | Archive endpoint's `path` query parameter is checked against the same bind-source allowlist with the same symlink-canonicalisation. | `endpoints.go::endpointPolicyArchive`, `policy.go::inspectArchive` |
 | T5 | Container escape via `HostConfig.Privileged: true` | Boolean check; any `true` rejects. | `policy.go::checkHostConfig` (Privileged branch) |
 | T6 | Capability escape via `HostConfig.CapAdd: [SYS_ADMIN]` etc. | `CapAdd` allowlisted against `Config.AllowedCaps`; default empty = deny-all. | `policy.go::checkHostConfig` (CapAdd branch), `Config.AllowedCaps` |
-| T7 | Namespace escape via `NetworkMode=host` (or `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`/`CgroupnsMode`=host) | All six `*Mode` fields use a literal value allowlist. `NetworkMode` allows `{"", bridge, none, default, slirp4netns, pasta}` plus a user-defined-name regex (`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`). The other five allow `{"", "private"}` only. | `policy.go::checkNetworkMode`, `checkSimpleNamespaceMode`, the constants `networkModeAllowlist`, `simpleNamespaceModeAllowlist` |
+| T7 | Namespace escape via `NetworkMode=host` (or `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`/`CgroupnsMode`=host) | All six `*Mode` fields use a literal value allowlist. `NetworkMode` allows `{"", bridge, none, default, slirp4netns, pasta}` plus a user-defined-name regex. The other five allow `{"", "private"}` only. | `policy.go::checkNetworkMode`, `policy.go::checkSimpleNamespaceMode`, the package-level variables `networkModeFixedLiterals`, `networkNameRegex`, `simpleNamespaceLiterals` |
 | T8 | Cgroup-rule escape via `HostConfig.DeviceCgroupRules` | DENIED when non-empty. This is a parallel cgroup-rule mechanism to `Devices`; with `CAP_MKNOD` in the default capset, the agent could mknod host disks. | `policy.go::checkHostConfig` (DeviceCgroupRules branch) |
 | T9 | Device passthrough via `HostConfig.Devices` or `DeviceRequests` (GPU / nvidia-container-runtime) | Both DENIED when non-empty. | `policy.go::checkHostConfig` (Devices, DeviceRequests branches) |
 | T10 | `MaskedPaths` / `ReadonlyPaths` override re-exposing `/proc/keys`, `/proc/sysrq-trigger`, etc. | Both DENIED when present (pointer-to-slice distinguishes "absent" from "explicitly empty"). | `policy.go::checkHostConfig` (MaskedPaths, ReadonlyPaths branches) |
@@ -60,7 +60,7 @@ record the rationale.
 | T15 | Post-create cap relax via `POST /containers/{id}/update` resetting Memory to 0 | The `update` endpoint runs through the same cap-strict-mode check as `create`. | `endpoints.go::endpointPolicyUpdate`, `policy.go::inspectUpdate` |
 | T16 | Privilege escalation via `POST /containers/{id}/exec` body's own `Privileged: true` | `exec` body is parsed with `containerExecBody` and `Privileged: true` is rejected. | `policy.go::inspectExec`, `containerExecBody.Privileged` |
 | T17 | Log-driver shipping container logs off the host via `LogConfig.Type=syslog`/`splunk`/`fluentd`/`gelf`/`awslogs` | `LogConfig.Type` is value-allowlisted to local-only drivers `{json-file, none, journald, k8s-file, passthrough, passthrough-tty}`. | `policy.go::checkLogConfigType`, `logConfigTypeAllowlist` |
-| T18 | `Mount.Type=glob` — podman-specific value that calls `filepath.Glob(Source)` on the host | `Mount.Type` value allowlist is case-sensitive `{bind, volume, tmpfs}`; everything else (`glob`, `image`, `npipe`, `artifact`, `ramfs`, `devpts`, empty string, case variants, whitespace, unicode zero-width space) rejects. | `policy.go::mountTypeAllowlist`, `checkHostConfig` (Mounts branch) |
+| T18 | `Mount.Type=glob` — podman-specific value that calls `filepath.Glob(Source)` on the host | `Mount.Type` value allowlist is case-sensitive `{bind, volume, tmpfs}` (inline `switch` in `checkHostConfig`); everything else (`glob`, `image`, `npipe`, `artifact`, `ramfs`, `devpts`, empty string, case variants, whitespace, unicode zero-width space) hits the `default:` branch and rejects. | `policy.go::checkHostConfig` (Mounts branch — `switch m.Type` / `case "bind"`, `case "volume"`, `case "tmpfs"`, `default:`) |
 | T19 | Raw-socket bypass: agent runs `curl --unix-socket /run/user/$UID/podman/podman.sock ...` to talk to the real socket directly | No path exists — the real socket is bound NEITHER into the bwrap mount tree NOR into the sandbox-exec SBPL allow list. The only socket reachable from inside the sandbox is the filtered one. | bwrap profile in `internal/container/bwrap.go`; SBPL in `internal/container/sandbox_exec.go`; absence asserted by negative-mutation tests |
 | T20 | CLI-wrapper bypass: agent runs a custom HTTP client bypassing `podman`/`docker` CLI | Same answer as T19. The wrapper IS the only reachable surface. |
 | T21 | Build context smuggle via `POST /build` of arbitrary-content tar | No new escape: `build` is bounded by what the sandbox already exposes. Build endpoint is `endpointAllow` (query-only and opaque body). No size cap in v1; revisit if abuse appears. | `endpoints.go` (build endpoint) |
@@ -87,7 +87,7 @@ it.
 |---|---|---|---|
 | 1 | **Endpoint** | Positive allowlist via `classifyRequest` in `internal/podmanproxy/endpoints.go`; the last branch of every method helper is `endpointDeny`. Any unknown path/method pair returns 403 with a friendly JSON envelope that names the rejected endpoint. | PR #2326 cycle 1 |
 | 2 | **Field-name** | `json.Decoder.DisallowUnknownFields()` + typed struct per body-bearing endpoint. The structs (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`) are the canonical security spec. Every admitted field is annotated `INSPECTED` (policy-checked), `DENIED` (rejected when non-empty/non-default), or `FORWARDED` (admitted as opaque `json.RawMessage`, bytes pass to the upstream unmodified). A future docker-API field that introduces an escape vector is rejected by default until it is explicitly admitted. | PR #2326 cycle 5 |
-| 3 | **Field-value** | Per-field literal allowlists (+ `NetworkMode` user-defined-name regex) for enumerable values: `Mount.Type`, the six `*Mode` fields, `LogConfig.Type`. Anything outside the allowlist denies. Closes the class where the field is admitted but a dangerous value of that field forwards (cycle-6 CRITICAL: `Mount.Type=glob` was originally forwarded because the parser was deny-list — it only rejected if `Type != "bind" && Type != "volume"`). | PR #2326 cycle 6 |
+| 3 | **Field-value** | Per-field literal allowlists (+ `NetworkMode` user-defined-name regex `networkNameRegex`) for enumerable values: `Mount.Type` (inline `switch` in `checkHostConfig` Mounts loop), the six `*Mode` fields (`networkModeFixedLiterals` for `NetworkMode`; `simpleNamespaceLiterals` for `PidMode`/`IpcMode`/`UTSMode`/`UsernsMode`/`CgroupnsMode`), `LogConfig.Type` (`logConfigTypeAllowlist`). Anything outside the allowlist denies. Closes the class where the field is admitted but a dangerous value of that field forwards (cycle-6 CRITICAL: `Mount.Type=glob` was originally forwarded because the parser was deny-list — it only rejected if `Type != "bind" && Type != "volume"`). | PR #2326 cycle 6 |
 | 4 | **Body-content** | `checkHostConfig` walks the parsed HostConfig and rejects dangerous values: `Privileged: true`, host-namespace modes, non-empty `Devices` / `DeviceCgroupRules` / `DeviceRequests` / `VolumesFrom`, present `MaskedPaths` / `ReadonlyPaths`, non-empty `Sysctls`, `Mounts[].VolumeOptions.DriverConfig` non-nil, `CapAdd` outside allowlist, `SecurityOpt` outside allowlist, resource caps in strict mode. | PR #2326 cycles 1 + 2 + 4 |
 | 5 | **Path-resolution** | `filepath.EvalSymlinks` + lexical `filepath.Clean` on both bind sources AND allowlist entries before the prefix comparison. Relative paths, broken symlink chains, and non-existent sources all deny. Closes the cycle-3 CRITICAL where the agent planted a symlink inside an allowed prefix pointing at `/etc/passwd` and the lexical prefix-match passed. See §5 for the residual TOCTOU. | PR #2326 cycle 3 |
 | 6 | **Query** | `PUT /containers/{id}/archive` `path` query parameter is checked against `AllowedBindSources` with the same canonicalised-prefix logic as `Binds`. The other endpoint with a security-relevant query (`POST /containers/create?name=<…>`) is covered by the cycle-7 container-name auto-prefix policy in `applyContainerNamePolicy`. | PR #2326 cycle 1 (archive) + PR #2332 (Name query) |
@@ -141,9 +141,22 @@ this example) that takes an integer share-weight.
    a positive + revert-and-watch-fail test pair as proof the new check is
    not a no-op (see §6).
 5. **Field requiring a value allowlist?** If the field is enumerable (a
-   handful of well-known values), add the literal allowlist alongside
-   `mountTypeAllowlist` / `networkModeAllowlist` / `logConfigTypeAllowlist`
-   and wire the check from `checkHostConfig`.
+   handful of well-known values), follow one of the two patterns
+   already in `policy.go`:
+
+   - **Package-level `map[string]struct{}` allowlist** — used by
+     `networkModeFixedLiterals`, `simpleNamespaceLiterals`, and
+     `logConfigTypeAllowlist`. Best when the field is enumerable AND
+     checked by a dedicated `check<Field>` helper (e.g.
+     `checkNetworkMode`, `checkLogConfigType`).
+   - **Inline `switch` with explicit `case` branches and a `default:`
+     deny** — used by `Mount.Type` inside `checkHostConfig`'s Mounts
+     loop. Best when the per-value action varies (`case "bind"` runs
+     the bind-source policy, `case "volume"` runs the DriverConfig
+     check, `case "tmpfs"` is a no-op forward, `default:` denies).
+
+   Either pattern is acceptable; pick whichever matches the shape of
+   the policy decision the field needs.
 
 The single most important reviewer task on a change to `policy.go` is
 **reading the struct and confirming the rationale comments**, not guessing
@@ -183,9 +196,12 @@ miss.
 ## 6. Verification — the test suite as the spec
 
 The body of evidence for "this policy is enforced" is the test suite at
-`internal/podmanproxy/proxy_security_test.go` (100 top-level test
-functions, 276 RUN entries with subtests, all green under `-race`). The
-key meta-test is:
+`internal/podmanproxy/proxy_security_test.go` — 83 top-level test
+functions at this writing, many with multiple subtests, all green under
+`-race`. (The companion files `proxy_test.go` and
+`proxy_name_prefix_test.go` add a further ~40 top-level tests covering
+the constructor, lifecycle, and cycle-7 Name-prefix policy.) The key
+meta-test is:
 
 ```go
 // TestSecurity_NegativeControl_RootAllowlistPasses mutates Config.AllowedBindSources
@@ -228,7 +244,7 @@ Every request the proxy sees writes exactly one JSON line to:
 Each line has the shape:
 
 ```json
-{"timestamp":"2026-06-30T11:58:42.123456Z","method":"POST","endpoint":"/v5/libpod/containers/create","decision":"deny","reason":"create_hostconfig:bind_source_outside_allowlist:/etc"}
+{"timestamp":"2026-06-30T11:58:42.123456Z","method":"POST","endpoint":"/v5/libpod/containers/create","decision":"deny","reason":"host_bind:/etc"}
 ```
 
 | Field | Meaning |
@@ -237,19 +253,28 @@ Each line has the shape:
 | `method` | HTTP method. |
 | `endpoint` | Full request path (with the docker/podman API version prefix, e.g. `/v1.41/...` or `/v5/libpod/...`). |
 | `decision` | `allow` (forwarded upstream) or `deny` (synthesised response from the proxy). |
-| `reason` | Structured token naming the policy check that fired. The prefix names the endpoint family (`create_hostconfig:` / `create_top:` / `update:` / `exec:` / `volume_create:` / `archive:` / `endpoint:`), the suffix names the specific check (`bind_source_outside_allowlist:<path>` / `privileged_true` / `network_mode_host` / `unknown_field:<json error>` / `cap_add_outside_allowlist:<cap>` / etc.). |
+| `reason` | Structured token naming the policy check that fired. Two shapes: (a) bare body-policy tokens — e.g. `host_bind:<path>`, `privileged`, `cap_add:<cap>`, `mount_bind:<source>`, `mount_volume_driver_config`, `mount_type_not_allowed:<type>`, `networkmode_host` / `networkmode_colon` / `networkmode_slash` / `networkmode_whitespace`, the same suffix family on `pidmode_*` / `ipcmode_*` / `utsmode_*` / `usernsmode_*` / `cgroupnsmode_*` — emitted by `policy.go::checkHostConfig` and friends; (b) endpoint-prefixed schema errors — `create_top:`, `create_hostconfig:`, `update:`, `exec:`, `volume_create:`, `network_create:`, `archive:`, `endpoint:` — followed by an `unknown_field:<json error>` / `malformed_body:<reason>` suffix when the strict JSON decode rejects the body. Grep the audit log for these exact tokens; do not paraphrase. |
 
 ### Common rejection classes
 
-| Symptom | `reason` shape | Fix |
+Reason strings below are the **exact tokens** the proxy writes to the
+audit log — grep them verbatim. Each entry cites the `policy.go`
+callsite that formats the token so you can verify the format from the
+source if your version of the proxy drifts.
+
+| Symptom | `reason` token | Fix |
 |---|---|---|
-| Worker tries to `-v /etc:/host alpine ...` | `create_hostconfig:bind_source_outside_allowlist:/etc` | Expected. The proxy is correctly rejecting a host-path bind. T1 in the threat table. |
-| Worker tries `--privileged` | `create_hostconfig:privileged_true` | Expected. T5. |
-| Worker tries `--network=host` | `create_hostconfig:network_mode_host` (or `_whitespace`/`_colon`/`_slash` for the cycle-6 categorisation) | Expected. T7. |
-| Worker tries `--cap-add SYS_ADMIN` (with the default empty `AllowedCaps`) | `create_hostconfig:cap_add_outside_allowlist:SYS_ADMIN` | Expected. T6. If the workload genuinely needs a cap, that's a `Config.AllowedCaps` discussion — file an issue. |
-| Worker tries a brand-new docker-API field this struct doesn't admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` | Field-admission process (§4). |
+| Worker tries `-v /etc:/host alpine ...` | `host_bind:/etc` (`policy.go::checkHostConfig` Binds branch) | Expected. T1. |
+| Worker tries a `Mounts[]` entry with `Type=bind` and a forbidden Source | `mount_bind:<source>` (`checkHostConfig` Mounts loop, `case "bind"`) | Expected. T2. |
+| Worker tries a `Mounts[]` entry with `Type=volume` and `VolumeOptions.DriverConfig` set | `mount_volume_driver_config` (`checkHostConfig` Mounts loop, `case "volume"`) | Expected. T3 (local-driver bind-volume escape). |
+| Worker tries a `Mounts[]` entry with a `Type` outside `{bind, volume, tmpfs}` (`glob`, `image`, `npipe`, case variants …) | `mount_type_not_allowed:<type>` (`checkHostConfig` Mounts loop, `default:`) | Expected. T18. |
+| Worker tries `--privileged` | `privileged` (`checkHostConfig` Privileged branch) | Expected. T5. |
+| Worker tries `--cap-add SYS_ADMIN` (with the default empty `AllowedCaps`) | `cap_add:SYS_ADMIN` (`checkHostConfig` CapAdd branch) | Expected. T6. If the workload genuinely needs a cap, that's a `Config.AllowedCaps` discussion — file an issue. |
+| Worker tries `--network=host` | `networkmode_host` (`denyIfUnsafeModeValue` via `checkNetworkMode`; the same helper emits `networkmode_colon` / `networkmode_slash` / `networkmode_whitespace` for the other categorised value-level rejections, and `network_mode_invalid:<value>` when no class matches and the user-defined-name regex fails) | Expected. T7. |
+| Worker tries `--pid=host` / `--ipc=host` / `--uts=host` / `--userns=host` / `--cgroupns=host` | `pidmode_host` / `ipcmode_host` / `utsmode_host` / `usernsmode_host` / `cgroupnsmode_host` (same `denyIfUnsafeModeValue` formatter on the five sibling fields; same `_colon` / `_slash` / `_whitespace` suffix family applies, plus `<field>_invalid:<value>` as the catch-all) | Expected. T7. |
+| Worker tries a brand-new docker-/podman-API field this struct doesn't admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` (or the matching `create_top:` / `update:` / `exec:` / `volume_create:` / `network_create:` prefix per endpoint) | Field-admission process (§4). |
 | Worker gets `503` with `"podman socket unavailable: ..."` envelope | Audit log shows `decision=allow` then nothing — the proxy accepted policy-wise but the upstream isn't there | Bring the upstream up: Darwin `podman machine start`; NixOS `systemctl --user status podman.socket`. |
-| Worker gets `400` with `"malformed_body:empty"` or similar | `create_top:malformed_body:empty` | Client is sending an empty / non-JSON `POST /containers/create` body. Bug in the client, not the proxy. |
+| Worker gets `400` with `"malformed_body:empty"` or similar | `create_top:malformed_body:empty` (or the matching endpoint prefix) | Client is sending an empty / non-JSON `POST /containers/create` body. Bug in the client, not the proxy. |
 
 ### When to escalate
 
