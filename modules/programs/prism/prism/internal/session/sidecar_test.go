@@ -642,6 +642,93 @@ func TestSidecarHarnessPipePath_CoLocatesWithHostAPI(t *testing.T) {
 	}
 }
 
+// ── SidecarPodmanProxyPath tests (#2317 / #2320) ────────────────────────
+
+func TestSidecarPodmanProxyPath_DefaultXDG(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	const sess = "myrepo@feature"
+	got, err := SidecarPodmanProxyPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarPodmanProxyPath: %v", err)
+	}
+
+	want := filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sess), "podman.sock")
+	if got != want {
+		t.Errorf("SidecarPodmanProxyPath = %q, want %q", got, want)
+	}
+}
+
+func TestSidecarPodmanProxyPath_CustomXDG(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sess = "myrepo@main"
+	got, err := SidecarPodmanProxyPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarPodmanProxyPath: %v", err)
+	}
+
+	want := filepath.Join(tmp, "prism", "run", SessionDirName(sess), "podman.sock")
+	if got != want {
+		t.Errorf("SidecarPodmanProxyPath = %q, want %q", got, want)
+	}
+}
+
+// realisticPodmanProxyPath builds the proxy socket path a production system
+// with the given $HOME would produce, without depending on test-time
+// XDG_STATE_HOME.
+func realisticPodmanProxyPath(home, sessionName string) string {
+	return filepath.Join(home, ".local", "state", "prism", "run", SessionDirName(sessionName), "podman.sock")
+}
+
+// TestSidecarPodmanProxyPath_LengthInvariant_WorstCaseSession asserts that
+// the proxy socket path fits the cross-platform sun_path budget (104 bytes).
+// Same shape as the host-API / pipe equivalents — a third socket in the same
+// per-session run directory adds a small constant overhead over the basename
+// difference ("podman.sock" vs "hostapi.sock"), so the invariant holds on the
+// same worst-case input.
+func TestSidecarPodmanProxyPath_LengthInvariant_WorstCaseSession(t *testing.T) {
+	const home = "/home/prismatic-koi"
+	worstCase := "nixos-config@" + strings.Repeat("x", 80) + "~review-99-review-context"
+
+	got := realisticPodmanProxyPath(home, worstCase)
+	if len(got) > sunPathBudget {
+		t.Errorf("worst-case podman proxy socket path is %d bytes (limit %d): %q",
+			len(got), sunPathBudget, got)
+	}
+}
+
+// TestSidecarPodmanProxyPath_CoLocatesWithHostAPI asserts that the proxy
+// socket lives in the same directory as the host-API and harness-pipe
+// sockets, so the existing bind-mount (bwrap) and SBPL subpath (sandbox-exec)
+// already cover this socket too — no additional bind or allow rule required.
+// This is the central design assumption of #2317 sec.3b ("piggyback on the
+// existing run dir").
+func TestSidecarPodmanProxyPath_CoLocatesWithHostAPI(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", tmp)
+
+	const sess = "nixos-config@main"
+	hostAPIPath, err := SidecarHostAPIPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarHostAPIPath: %v", err)
+	}
+	proxyPath, err := SidecarPodmanProxyPath(sess)
+	if err != nil {
+		t.Fatalf("SidecarPodmanProxyPath: %v", err)
+	}
+
+	if filepath.Dir(hostAPIPath) != filepath.Dir(proxyPath) {
+		t.Errorf("host-API dir %q != podman proxy dir %q — bind-mount assumption violated",
+			filepath.Dir(hostAPIPath), filepath.Dir(proxyPath))
+	}
+}
+
 // ── KillSidecarAndWait tests ────────────────────────────────────────────────────────────────────
 
 // startLongRunningStub re-invokes the current test binary with

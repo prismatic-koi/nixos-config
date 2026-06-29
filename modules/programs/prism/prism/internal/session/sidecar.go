@@ -127,6 +127,27 @@ func SidecarHostAPIPath(sessionName string) (string, error) {
 	return filepath.Join(base, "run", SessionDirName(sessionName), "hostapi.sock"), nil
 }
 
+// SidecarPodmanProxyPath returns the Unix socket path for the session's
+// filtering podman API socket proxy listener (#2317 §3b / #2320).
+//
+// The socket lives in the same per-session directory as the host-API socket
+// (hostapi.sock) and the harness-pipe socket (pipe.sock), so the existing
+// bind-mount entry in bwrap and the SBPL subpath rule in sandbox-exec both
+// cover this socket too — no additional mount or allow rule is required.
+//
+// The directory name is the same SessionDirName-derived 12-hex prefix used
+// by SidecarHostAPIPath, keeping the socket path well under sun_path limits
+// on both Linux (108 bytes) and Darwin (104 bytes) — see #1050.
+//
+// Socket path: $XDG_STATE_HOME/prism/run/<12-hex-of-sha256(session)>/podman.sock
+func SidecarPodmanProxyPath(sessionName string) (string, error) {
+	base, err := sidecarStateDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(base, "run", SessionDirName(sessionName), "podman.sock"), nil
+}
+
 // SidecarHarnessPipePath returns the Unix socket path for the session's
 // PI harness pipe socket. This socket is the sidecar-side end of the
 // bidirectional JSONL protocol defined in P2.WIRE (#1208).
