@@ -229,8 +229,10 @@ Tests for sidecar wiring live at
 
 Tests for the bwrap profile additions live at
 `internal/container/bwrap_test.go` (Step 4); tests for the sandbox-exec
-profile additions live at `cmd/agent_run_sandbox_exec_darwin_test.go` and
-the integration test under `internal/integration/` per the
+profile additions live at
+`internal/container/sandbox_exec_podman_proxy_test.go` and
+`internal/container/sandbox_exec_podman_proxy_prepare_test.go`, plus the
+integration test under `internal/integration/` per the
 [sandbox-exec testing convention](sandbox-exec-testing.md) (Step 5).
 
 ## 7. Troubleshooting — reading the audit log
