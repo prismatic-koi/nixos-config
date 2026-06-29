@@ -189,6 +189,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		hostAPISockPath = sockPath
 	}
 
+	// Resolve the per-session filtering podman proxy socket path the sidecar
+	// binds when agent_status.containers_enabled=1 (issue #2317 / #2322).
+	// We always derive the path so a session whose flag flips on between
+	// spawn and agent-run still gets a sane Config, but the SBPL grant and
+	// env injection below are gated on the DB row's ContainersEnabled field.
+	// Resolution failure is non-fatal — the sandbox still starts; the grant
+	// just won't be emitted (mirrors the existing hostAPISockPath posture).
+	podmanProxySockPath := ""
+	if proxyPath, proxyErr := session.SidecarPodmanProxyPath(sessionName); proxyErr == nil {
+		podmanProxySockPath = proxyPath
+	}
+
 	var agentEnvVars map[string]string
 	if pf, pfErr := config.LoadProfiles(); pfErr == nil && pf != nil {
 		agentEnvVars = pf.AgentEnvVars
@@ -221,24 +233,26 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		sandboxHarnessSessionID = *status.HarnessSessionID
 	}
 	ctrCfg := container.Config{
-		SessionName:       sessionName,
-		Worktree:          worktree,
-		BareRoot:          bareRoot,
-		WorktreeGitDir:    worktreeGitDir,
-		AllocatedPort:     port,
-		AgentRole:         agentRole,
-		GitUserName:       cfg.GitUserName,
-		GitUserEmail:      cfg.GitUserEmail,
-		SshAccessKeyName:  cfg.SshAccessKeyName,
-		SshSigningKeyName: cfg.SshSigningKeyName,
-		SshBin:            cfg.SshBin,
-		GitHubTokenPath:   cfg.GitHubTokenPath,
-		HostAPISockPath:   hostAPISockPath,
-		InstanceID:        instanceID,
-		RuntimeEnv:        sandboxRuntimeEnv,
-		AgentEnvVars:      agentEnvVars,
-		Harness:           sandboxHarnessName,
-		HarnessSessionID:  sandboxHarnessSessionID,
+		SessionName:         sessionName,
+		Worktree:            worktree,
+		BareRoot:            bareRoot,
+		WorktreeGitDir:      worktreeGitDir,
+		AllocatedPort:       port,
+		AgentRole:           agentRole,
+		GitUserName:         cfg.GitUserName,
+		GitUserEmail:        cfg.GitUserEmail,
+		SshAccessKeyName:    cfg.SshAccessKeyName,
+		SshSigningKeyName:   cfg.SshSigningKeyName,
+		SshBin:              cfg.SshBin,
+		GitHubTokenPath:     cfg.GitHubTokenPath,
+		HostAPISockPath:     hostAPISockPath,
+		InstanceID:          instanceID,
+		RuntimeEnv:          sandboxRuntimeEnv,
+		AgentEnvVars:        agentEnvVars,
+		Harness:             sandboxHarnessName,
+		HarnessSessionID:    sandboxHarnessSessionID,
+		ContainersEnabled:   status.ContainersEnabled,
+		PodmanProxySockPath: podmanProxySockPath,
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it
@@ -334,6 +348,26 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	env = append(env, "PRISM_SESSION_NAME="+ctrCfg.SessionName)
 	if ctrCfg.HostAPISockPath != "" {
 		env = append(env, "PRISM_HOST_API=unix://"+ctrCfg.HostAPISockPath)
+	}
+	// CONTAINER_HOST / DOCKER_HOST: when the session was spawned with
+	// containers_enabled=1, point both env vars at the per-session FILTERED
+	// podman socket the sidecar binds (issue #2317 §3c / #2322). Mirrors the
+	// PRISM_HOST_API injection pattern above. CONTAINER_HOST is the podman
+	// CLI's primary env var; DOCKER_HOST is the docker CLI's equivalent and
+	// is also honoured by many docker-compatible client libraries (testcontainers,
+	// docker-go, the JS dockerode library, …) — setting both lets the agent
+	// reach the proxy without per-tool configuration. The SBPL profile's
+	// literal RW grant on PodmanProxySockPath is what actually permits the
+	// connect(2); these env vars are just discovery hints — if the SBPL
+	// grant were missing the connect would fail with EPERM regardless.
+	//
+	// Defence in depth: we never emit either env var when ContainersEnabled
+	// is false, even if PodmanProxySockPath happens to be populated (e.g. a
+	// session whose flag was flipped off mid-run — not currently possible,
+	// but harmless to guard).
+	if ctrCfg.ContainersEnabled && ctrCfg.PodmanProxySockPath != "" {
+		env = append(env, "CONTAINER_HOST=unix://"+ctrCfg.PodmanProxySockPath)
+		env = append(env, "DOCKER_HOST=unix://"+ctrCfg.PodmanProxySockPath)
 	}
 	// For socket-pipe harnesses (PI) on Darwin, the sidecar allocates a TCP
 	// port at startup and stores it in harness_port. Expose it here so the

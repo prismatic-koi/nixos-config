@@ -185,18 +185,27 @@ type Config struct {
 	HarnessPipeTCPPort int
 
 	// ContainersEnabled is the per-session runtime gate for the filtering
-	// podman API socket proxy (#2317 / #2321). When true, BuildArgs (bwrap)
-	// emits:
+	// podman API socket proxy (#2317 / #2321 / #2322). When true, the
+	// per-isolator BuildArgs / SBPL generator emits:
 	//
+	// bwrap (Step 4 / #2321):
 	//   --setenv CONTAINER_HOST unix://<PodmanProxySockPath>
 	//   --setenv DOCKER_HOST    unix://<PodmanProxySockPath>
 	//   --bind   <sessionDir>/container-scratch <sessionDir>/container-scratch
 	//
-	// and the bwrap isolator's Prepare hook calls PrepareSessionWorkDir +
-	// mkdirs the container-scratch subdirectory so the bind source exists on
-	// disk before bwrap is execed. Defaults to false; sourced from
-	// agent_status.containers_enabled (the live DB gate read by
-	// cmd/agent_run.go on the bwrap path).
+	// sandbox-exec (Step 5 / #2322):
+	//   (allow file-read* file-write* (literal "<PodmanProxySockPath>"))
+	//   CONTAINER_HOST=unix://<PodmanProxySockPath>   (env injection)
+	//   DOCKER_HOST=unix://<PodmanProxySockPath>      (env injection)
+	//   <sessionDir>/container-scratch rides on the existing
+	//   (subpath <sessionDir>) RW grant in the SBPL profile.
+	//
+	// Both isolators' Prepare hook (lifecycle_dispatch.go) call
+	// PrepareSessionWorkDir + mkdirs the container-scratch subdirectory so
+	// the source path exists on disk before the sandbox is execed. Defaults
+	// to false; sourced from agent_status.containers_enabled (the live DB
+	// gate read by cmd/agent_run.go on the bwrap path and
+	// cmd/agent_run_sandbox_exec_darwin.go on the sandbox-exec path).
 	//
 	// Critically, the upstream podman socket path is NEVER passed into the
 	// sandbox — only the filtered PodmanProxySockPath the sidecar's proxy
@@ -207,9 +216,12 @@ type Config struct {
 	// PodmanProxySockPath is the absolute host path of the per-session
 	// filtering podman API socket created by the sidecar's podman-proxy
 	// goroutine (#2317 §3b / #2320). The socket sits in the same per-session
-	// run directory as HostAPISockPath, so the directory bind that already
-	// exposes the host-API socket also exposes this socket — no additional
-	// bind-mount is required. Typically populated via
+	// run directory as HostAPISockPath, so on bwrap the directory bind that
+	// already exposes the host-API socket also exposes this socket — no
+	// additional bind-mount is required. On sandbox-exec the SBPL
+	// generator emits a literal RW allow on this exact path; the (literal
+	// …), not (subpath …), keeps any future content of the run dir isolated
+	// from the sandboxed process. Typically populated via
 	// session.SidecarPodmanProxyPath. Consumed only when ContainersEnabled
 	// is true; ignored otherwise.
 	PodmanProxySockPath string

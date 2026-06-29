@@ -733,6 +733,46 @@ func generateProfile(m *Manager) string {
 		}
 	}
 
+	// ── 6c. Podman proxy socket literal RW (issue #2317 §3c / #2322) ────
+	// When ContainersEnabled is set on the session (agent_status.containers_enabled
+	// = 1) the sidecar binds a per-session filtering podman API socket at
+	// PodmanProxySockPath (resolved by the caller via
+	// session.SidecarPodmanProxyPath). This grant lets the sandboxed process
+	// connect(2) and read/write the socket file so docker/podman clients
+	// reaching CONTAINER_HOST / DOCKER_HOST succeed. The session run dir
+	// itself is NOT a sibling of the section-6 work-dir grant — the run dir
+	// lives under <XDG_STATE_HOME>/prism/run/<SessionDirName>/ while the
+	// work dir lives under <XDG_STATE_HOME>/prism/sessions/<instanceID>/ —
+	// so the literal here is the SOLE in-sandbox capability for the socket
+	// path.
+	//
+	// The grant is a (literal ...), NOT (subpath ...): the per-session run
+	// dir also holds the host-API and harness-pipe sockets (covered by
+	// section 6's HostAPISockPath sockDir grant); the literal narrowing
+	// keeps any future content of the run dir isolated from the sandboxed
+	// process. Tightening here is load-bearing for the proxy's whole-point
+	// security property.
+	//
+	// The UPSTREAM podman socket path — the value returned by
+	// `podman machine inspect` on Darwin or $XDG_RUNTIME_DIR/podman/podman.sock
+	// on Linux — must NEVER appear here. The proxy is load-bearing only if
+	// the agent has no path to bypass it. The greppable security AC from
+	// #2322 asserts the upstream path's absence; see
+	// TestGenerateProfile_PodmanProxy_UpstreamPathNeverAppears.
+	//
+	// Defence in depth: we never emit an allow when PodmanProxySockPath is
+	// empty even if ContainersEnabled is true — an empty literal
+	// (allow … (literal "")) is malformed and would either be silently
+	// ignored or, worse, be interpreted as "every path" by a future SBPL
+	// engine change. Requiring both fields makes the call-site contract
+	// explicit (the per-isolator Prepare hook in lifecycle_dispatch.go
+	// hard-fails the empty case before reaching the generator).
+	if m.cfg.ContainersEnabled && m.cfg.PodmanProxySockPath != "" {
+		sb.WriteString("(allow file-read* file-write*\n")
+		sb.WriteString("  (literal " + quoteSBPL(m.cfg.PodmanProxySockPath) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// Note (Step 5 of #2132, issue #2250): the per-symlink staging-HOME
 	// target allows are gone with the staging HOME itself. The sops-backed
 	// key/config reads ride the broad /private/var/folders allow narrowed by
