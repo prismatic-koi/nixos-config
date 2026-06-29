@@ -135,20 +135,32 @@ func SessionWorkDirAllowedSignersPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "allowed_signers")
 }
 
-// SessionWorkDirContainerScratchPath returns the per-session container
-// scratch directory inside the given session work dir (#2317 / #2321):
+// SessionWorkDirContainerScratchPath returns the per-session container-scratch
+// directory inside the given session work dir (issue #2317 §3b / #2322).
 //
 //	<sessionDir>/container-scratch
 //
-// This is the writable mount-source the bwrap profile binds Dst==Src into
-// the sandbox when ContainersEnabled is true, so an agent can
-// `podman run -v <sessionDir>/container-scratch:/x ...` without granting
-// the wider worktree to the spawned container. The directory is owned by
-// the per-session work dir lifecycle — RemoveSessionWorkDir wipes it on
-// cleanup along with the rest of the work dir tree (#2317 §3c).
+// This is the only sandbox path a worker may bind-mount RW into a podman
+// container alongside the worktree and bare repo (the proxy's host-side
+// path allowlist is the security-side enforcement — see
+// internal/sidecar/podman_proxy.go::allowedPodmanBindSources).
 //
-// Sandbox-exec (Step 5 / #2322) consumes the same helper so both isolation
-// modes share a single per-session container scratch story.
+// Sandbox shape:
+//   - bwrap (Step 4 / #2321) binds the path Dst==Src into the sandbox so
+//     a worker can `podman run -v <sessionDir>/container-scratch:/x ...`
+//     without granting the wider worktree to the spawned container.
+//   - sandbox-exec (Step 5 / #2322) rides on the section-6
+//     (subpath <sessionDir>) RW grant in the SBPL profile — no new SBPL
+//     clause is needed for the scratch dir itself.
+//
+// The directory is created by the per-isolator Prepare hook when
+// containers_enabled=1 (bwrapIsolator.Prepare / sandboxExecIsolator.Prepare
+// in lifecycle_dispatch.go), so the `podman run -v
+// <sessionDir>/container-scratch:/x ...` mount has its source on disk
+// before the proxy validates the create request.
+//
+// Lifecycle: removed automatically by RemoveSessionWorkDir on session end,
+// alongside the rest of the session work dir.
 func SessionWorkDirContainerScratchPath(sessionDir string) string {
 	return filepath.Join(sessionDir, "container-scratch")
 }

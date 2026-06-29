@@ -273,6 +273,48 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
 	}
 
+	// ── Containers-enabled prep (#2317 / #2322) ─────────────────
+	// Symmetric to the bwrap-side block in bwrapIsolator.Prepare (#2321).
+	// When the session's agent_status.containers_enabled gate is set, the
+	// SBPL profile emits a literal RW allow on PodmanProxySockPath and the
+	// agent reaches the per-session filtering podman proxy via
+	// CONTAINER_HOST / DOCKER_HOST. The proxy's allowed-bind-sources list
+	// expects <sessionDir>/container-scratch to exist on disk before any
+	// containers/create request is validated.
+	//
+	// Validation order (matches bwrap's #2321 block):
+	//   1. PodmanProxySockPath must be set (config error if absent).
+	//   2. <runDir> = filepath.Dir(PodmanProxySockPath) must exist on disk
+	//      — the sidecar mkdir's it when it binds hostapi.sock, so a missing
+	//      runDir at this point indicates sidecar startup failed or the
+	//      sandbox-exec and sidecar path schemes disagree. Rendering an SBPL
+	//      allow on a literal that doesn't exist is a security smell:
+	//      sandbox-exec silently ignores the rule today, but a
+	//      future-created file at that path would inherit the grant. The
+	//      proxy is load-bearing only if the agent has no path to bypass
+	//      it. Fail loudly instead.
+	//   3. mkdir of the container-scratch subdir (the session work dir was
+	//      already created by PrepareSessionWorkDir above).
+	if m.cfg.ContainersEnabled {
+		if m.cfg.PodmanProxySockPath == "" {
+			return nil, fmt.Errorf("container: sandbox-exec: containers_enabled=true but PodmanProxySockPath is empty")
+		}
+		runDir := filepath.Dir(m.cfg.PodmanProxySockPath)
+		if info, err := os.Stat(runDir); err != nil {
+			return nil, fmt.Errorf("container: sandbox-exec: containers_enabled=true but podman proxy run dir %q does not exist: %w", runDir, err)
+		} else if !info.IsDir() {
+			return nil, fmt.Errorf("container: sandbox-exec: containers_enabled=true but podman proxy run dir %q is not a directory", runDir)
+		}
+		sessionDir, err := m.sessionWorkDirPath()
+		if err != nil {
+			return nil, fmt.Errorf("container: sandbox-exec: resolve session work dir for containers_enabled: %w", err)
+		}
+		scratch := SessionWorkDirContainerScratchPath(sessionDir)
+		if err := os.MkdirAll(scratch, 0o700); err != nil {
+			return nil, fmt.Errorf("container: sandbox-exec: create container-scratch dir %q: %w", scratch, err)
+		}
+	}
+
 	if _, err := writeProfile(m); err != nil {
 		return nil, err
 	}
