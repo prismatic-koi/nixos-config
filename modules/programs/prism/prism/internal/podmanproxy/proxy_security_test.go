@@ -1941,6 +1941,195 @@ func TestSecurity_MountType_AllowlistEnforced(t *testing.T) {
 	}
 }
 
+// ──────── cycle 6 commit 2: NetworkMode-family value allowlist ───────
+//
+// Closes the class "admitted enum-field value with a deny-list".
+// NetworkMode + 5 siblings (PidMode, IpcMode, UTSMode, UsernsMode,
+// CgroupnsMode) previously denied only literal "host"; now allow
+// only an explicit set of literals (plus a user-defined-name regex
+// for NetworkMode).
+
+func TestSecurity_NetworkMode_AllowedLiterals(t *testing.T) {
+	cases := []string{"", "bridge", "none", "default", "slirp4netns", "pasta"}
+	for _, mode := range cases {
+		mode := mode
+		t.Run(strconv.Quote(mode), func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			resp := postCreate(t, h.sock, map[string]any{
+				"NetworkMode": mode,
+			})
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("NetworkMode=%q should be allowed; got %d", mode, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestSecurity_NetworkMode_UserDefinedName_Allowed(t *testing.T) {
+	cases := []string{"my-net", "user_net1", "a.b.c", "X", "net.with.dots"}
+	for _, name := range cases {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			resp := postCreate(t, h.sock, map[string]any{
+				"NetworkMode": name,
+			})
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("NetworkMode=%q (user-defined name) should be allowed; got %d", name, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestSecurity_NetworkMode_DangerousValues_Denied(t *testing.T) {
+	cases := []string{
+		"host",              // literal host
+		"HOST",              // case (denyIfUnsafeModeValue lowercases)
+		"container:abc123",  // container reference
+		"ns:/proc/1/ns/net", // namespace path
+		"/proc/1/ns/net",    // path injection
+		"my net",            // whitespace
+		"-leading-dash",     // regex requires leading alphanumeric
+		".leading-dot",      // regex requires leading alphanumeric
+		"name with space",   // whitespace
+		"name\twith\ttab",   // tab
+		"a:b",               // generic colon
+		"network/path",      // slash
+	}
+	for _, mode := range cases {
+		mode := mode
+		t.Run(strconv.Quote(mode), func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			resp := postCreate(t, h.sock, map[string]any{
+				"NetworkMode": mode,
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("NetworkMode=%q should be denied; got %d", mode, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+// Simple namespace modes (PidMode/IpcMode/UTSMode/UsernsMode/
+// CgroupnsMode) admit only {"", "private"} and deny everything else,
+// including "container:<id>".
+func TestSecurity_SimpleNamespaceModes_AllowedLiterals(t *testing.T) {
+	fields := []string{"PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"}
+	literals := []string{"", "private"}
+	for _, field := range fields {
+		for _, lit := range literals {
+			field, lit := field, lit
+			t.Run(field+"="+strconv.Quote(lit), func(t *testing.T) {
+				fu := newFakeUpstream(t)
+				h := startProxy(t, fu)
+				resp := postCreate(t, h.sock, map[string]any{
+					field: lit,
+				})
+				if resp.StatusCode != http.StatusOK {
+					t.Fatalf("%s=%q should be allowed; got %d", field, lit, resp.StatusCode)
+				}
+			})
+		}
+	}
+}
+
+func TestSecurity_SimpleNamespaceModes_DangerousValues_Denied(t *testing.T) {
+	fields := []string{"PidMode", "IpcMode", "UTSMode", "UsernsMode", "CgroupnsMode"}
+	dangerous := []string{
+		"host",              // already covered by cycle 4 but now via allowlist
+		"container:abc",     // container reference
+		"ns:/proc/1/ns/pid", // namespace path
+		"shareable",         // outside the {"", "private"} allowlist
+		"private ",          // whitespace
+		"my-network",        // user-defined names NOT allowed for non-NetworkMode modes
+	}
+	for _, field := range fields {
+		for _, value := range dangerous {
+			field, value := field, value
+			t.Run(field+"="+strconv.Quote(value), func(t *testing.T) {
+				fu := newFakeUpstream(t)
+				h := startProxy(t, fu)
+				resp := postCreate(t, h.sock, map[string]any{
+					field: value,
+				})
+				if resp.StatusCode != http.StatusForbidden {
+					t.Fatalf("%s=%q should be denied; got %d", field, value, resp.StatusCode)
+				}
+				assertNoForward(t, fu)
+			})
+		}
+	}
+}
+
+// ─────────────── LogConfig.Type allowlist (cycle 6) ─────────────────────
+func TestSecurity_LogConfigType_LocalDrivers_Allowed(t *testing.T) {
+	cases := []string{"", "json-file", "none", "journald", "k8s-file", "passthrough", "passthrough-tty"}
+	for _, typ := range cases {
+		typ := typ
+		t.Run(strconv.Quote(typ), func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			resp := postCreate(t, h.sock, map[string]any{
+				"LogConfig": map[string]any{"Type": typ},
+			})
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("LogConfig.Type=%q should be allowed; got %d", typ, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestSecurity_LogConfigType_NetworkDrivers_Denied(t *testing.T) {
+	cases := []string{"syslog", "splunk", "fluentd", "gelf", "awslogs", "etwlogs", "logentries"}
+	for _, typ := range cases {
+		typ := typ
+		t.Run(strconv.Quote(typ), func(t *testing.T) {
+			fu := newFakeUpstream(t)
+			h := startProxy(t, fu)
+			resp := postCreate(t, h.sock, map[string]any{
+				"LogConfig": map[string]any{"Type": typ},
+			})
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("LogConfig.Type=%q (network driver) should be denied; got %d", typ, resp.StatusCode)
+			}
+			assertNoForward(t, fu)
+		})
+	}
+}
+
+func TestSecurity_LogConfigType_UnknownDriver_Denied(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	resp := postCreate(t, h.sock, map[string]any{
+		"LogConfig": map[string]any{"Type": "bogus-future-driver"},
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("LogConfig.Type=bogus-future-driver should be denied; got %d", resp.StatusCode)
+	}
+	assertNoForward(t, fu)
+}
+
+// LogConfig.Config (driver-specific options like max-size) is
+// FORWARDED; verify the typed parse admits a Config payload
+// alongside a known-safe Type.
+func TestSecurity_LogConfigWithLocalDriverAndOptions_Allowed(t *testing.T) {
+	fu := newFakeUpstream(t)
+	h := startProxy(t, fu)
+	resp := postCreate(t, h.sock, map[string]any{
+		"LogConfig": map[string]any{
+			"Type":   "json-file",
+			"Config": map[string]string{"max-size": "10m"},
+		},
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("LogConfig with json-file + Config should be allowed; got %d", resp.StatusCode)
+	}
+}
+
 // Positive control: Mount.Type=tmpfs is admitted (no host-file
 // access path). Proves the allowlist is real and not a blanket deny.
 func TestSecurity_MountTypeTmpfs_Allowed(t *testing.T) {

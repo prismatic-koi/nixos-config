@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -95,58 +96,58 @@ type hostConfig struct {
 	// FORWARDED — admitted as safe; bytes forwarded unmodified.
 	// Each entry below MUST have a rationale comment confirming it
 	// has no escape vector against the parent issue's threat table.
-	CapDrop              json.RawMessage `json:"CapDrop"`              // dropping caps is always safer
-	AutoRemove           json.RawMessage `json:"AutoRemove"`           // container lifecycle
-	RestartPolicy        json.RawMessage `json:"RestartPolicy"`        // container lifecycle
-	LogConfig            json.RawMessage `json:"LogConfig"`            // log driver settings
-	Tmpfs                json.RawMessage `json:"Tmpfs"`                // in-memory, container-internal
-	PortBindings         json.RawMessage `json:"PortBindings"`         // network port map
-	PublishAllPorts      json.RawMessage `json:"PublishAllPorts"`      // network port flag
-	ReadonlyRootfs       json.RawMessage `json:"ReadonlyRootfs"`       // safer-default; not escape
-	ExtraHosts           json.RawMessage `json:"ExtraHosts"`           // /etc/hosts entries
-	GroupAdd             json.RawMessage `json:"GroupAdd"`             // additional gids inside ct
-	Dns                  json.RawMessage `json:"Dns"`                  // DNS servers
-	DnsOptions           json.RawMessage `json:"DnsOptions"`           // DNS resolver options
-	DnsSearch            json.RawMessage `json:"DnsSearch"`            // DNS search domains
-	Links                json.RawMessage `json:"Links"`                // deprecated container-to-container
-	Cgroup               json.RawMessage `json:"Cgroup"`               // cgroup name (not host control)
-	CgroupParent         json.RawMessage `json:"CgroupParent"`         // parent cgroup placement
-	BlkioWeight          json.RawMessage `json:"BlkioWeight"`          // I/O QoS
-	BlkioWeightDevice    json.RawMessage `json:"BlkioWeightDevice"`    // I/O QoS per-device
-	BlkioDeviceReadBps   json.RawMessage `json:"BlkioDeviceReadBps"`   // I/O QoS
-	BlkioDeviceWriteBps  json.RawMessage `json:"BlkioDeviceWriteBps"`  // I/O QoS
-	BlkioDeviceReadIOps  json.RawMessage `json:"BlkioDeviceReadIOps"`  // I/O QoS
-	BlkioDeviceWriteIOps json.RawMessage `json:"BlkioDeviceWriteIOps"` // I/O QoS
-	CpuShares            json.RawMessage `json:"CpuShares"`            // CPU QoS (relative weighting)
-	CpuPeriod            json.RawMessage `json:"CpuPeriod"`            // CFS period (paired with CpuQuota)
-	CpuRealtimePeriod    json.RawMessage `json:"CpuRealtimePeriod"`    // RT QoS
-	CpuRealtimeRuntime   json.RawMessage `json:"CpuRealtimeRuntime"`   // RT QoS
-	CpusetCpus           json.RawMessage `json:"CpusetCpus"`           // CPU pinning
-	CpusetMems           json.RawMessage `json:"CpusetMems"`           // NUMA pinning
-	CpuPercent           json.RawMessage `json:"CpuPercent"`           // windows CPU %
-	CpuCount             json.RawMessage `json:"CpuCount"`             // windows CPU count
-	IOMaximumIOps        json.RawMessage `json:"IOMaximumIOps"`        // windows I/O cap
-	IOMaximumBandwidth   json.RawMessage `json:"IOMaximumBandwidth"`   // windows I/O cap
-	MemoryReservation    json.RawMessage `json:"MemoryReservation"`    // soft memory limit
-	MemorySwap           json.RawMessage `json:"MemorySwap"`           // swap size cap
-	MemorySwappiness     json.RawMessage `json:"MemorySwappiness"`     // swap tendency
-	KernelMemory         json.RawMessage `json:"KernelMemory"`         // deprecated kernel mem
-	KernelMemoryTCP      json.RawMessage `json:"KernelMemoryTCP"`      // kernel TCP buffer cap
-	OomKillDisable       json.RawMessage `json:"OomKillDisable"`       // OOM behaviour
-	OomScoreAdj          json.RawMessage `json:"OomScoreAdj"`          // OOM score bias
-	PidsLimit            json.RawMessage `json:"PidsLimit"`            // ct process count cap
-	Ulimits              json.RawMessage `json:"Ulimits"`              // per-ct rlimits
-	StorageOpt           json.RawMessage `json:"StorageOpt"`           // storage driver opts
-	ContainerIDFile      json.RawMessage `json:"ContainerIDFile"`      // path to write ct id
-	Init                 json.RawMessage `json:"Init"`                 // pid 1 init wrapper
-	VolumeDriver         json.RawMessage `json:"VolumeDriver"`         // default volume driver name
-	ConsoleSize          json.RawMessage `json:"ConsoleSize"`          // tty size
-	Annotations          json.RawMessage `json:"Annotations"`          // OCI annotations
-	DiskQuota            json.RawMessage `json:"DiskQuota"`            // disk quota
-	Isolation            json.RawMessage `json:"Isolation"`            // windows isolation
-	NetworkID            json.RawMessage `json:"NetworkID"`            // podman network id
-	ShmSize              json.RawMessage `json:"ShmSize"`              // /dev/shm size
-	Runtime              json.RawMessage `json:"Runtime"`              // runtime name (runc/crun)
+	CapDrop              json.RawMessage      `json:"CapDrop"`              // dropping caps is always safer
+	AutoRemove           json.RawMessage      `json:"AutoRemove"`           // container lifecycle
+	RestartPolicy        json.RawMessage      `json:"RestartPolicy"`        // container lifecycle
+	LogConfig            *hostConfigLogConfig `json:"LogConfig"`            // INSPECTED — Type allowlist (cycle 6)
+	Tmpfs                json.RawMessage      `json:"Tmpfs"`                // in-memory, container-internal
+	PortBindings         json.RawMessage      `json:"PortBindings"`         // network port map
+	PublishAllPorts      json.RawMessage      `json:"PublishAllPorts"`      // network port flag
+	ReadonlyRootfs       json.RawMessage      `json:"ReadonlyRootfs"`       // safer-default; not escape
+	ExtraHosts           json.RawMessage      `json:"ExtraHosts"`           // /etc/hosts entries
+	GroupAdd             json.RawMessage      `json:"GroupAdd"`             // additional gids inside ct
+	Dns                  json.RawMessage      `json:"Dns"`                  // DNS servers
+	DnsOptions           json.RawMessage      `json:"DnsOptions"`           // DNS resolver options
+	DnsSearch            json.RawMessage      `json:"DnsSearch"`            // DNS search domains
+	Links                json.RawMessage      `json:"Links"`                // deprecated container-to-container
+	Cgroup               json.RawMessage      `json:"Cgroup"`               // cgroup name (not host control)
+	CgroupParent         json.RawMessage      `json:"CgroupParent"`         // parent cgroup placement
+	BlkioWeight          json.RawMessage      `json:"BlkioWeight"`          // I/O QoS
+	BlkioWeightDevice    json.RawMessage      `json:"BlkioWeightDevice"`    // I/O QoS per-device
+	BlkioDeviceReadBps   json.RawMessage      `json:"BlkioDeviceReadBps"`   // I/O QoS
+	BlkioDeviceWriteBps  json.RawMessage      `json:"BlkioDeviceWriteBps"`  // I/O QoS
+	BlkioDeviceReadIOps  json.RawMessage      `json:"BlkioDeviceReadIOps"`  // I/O QoS
+	BlkioDeviceWriteIOps json.RawMessage      `json:"BlkioDeviceWriteIOps"` // I/O QoS
+	CpuShares            json.RawMessage      `json:"CpuShares"`            // CPU QoS (relative weighting)
+	CpuPeriod            json.RawMessage      `json:"CpuPeriod"`            // CFS period (paired with CpuQuota)
+	CpuRealtimePeriod    json.RawMessage      `json:"CpuRealtimePeriod"`    // RT QoS
+	CpuRealtimeRuntime   json.RawMessage      `json:"CpuRealtimeRuntime"`   // RT QoS
+	CpusetCpus           json.RawMessage      `json:"CpusetCpus"`           // CPU pinning
+	CpusetMems           json.RawMessage      `json:"CpusetMems"`           // NUMA pinning
+	CpuPercent           json.RawMessage      `json:"CpuPercent"`           // windows CPU %
+	CpuCount             json.RawMessage      `json:"CpuCount"`             // windows CPU count
+	IOMaximumIOps        json.RawMessage      `json:"IOMaximumIOps"`        // windows I/O cap
+	IOMaximumBandwidth   json.RawMessage      `json:"IOMaximumBandwidth"`   // windows I/O cap
+	MemoryReservation    json.RawMessage      `json:"MemoryReservation"`    // soft memory limit
+	MemorySwap           json.RawMessage      `json:"MemorySwap"`           // swap size cap
+	MemorySwappiness     json.RawMessage      `json:"MemorySwappiness"`     // swap tendency
+	KernelMemory         json.RawMessage      `json:"KernelMemory"`         // deprecated kernel mem
+	KernelMemoryTCP      json.RawMessage      `json:"KernelMemoryTCP"`      // kernel TCP buffer cap
+	OomKillDisable       json.RawMessage      `json:"OomKillDisable"`       // OOM behaviour
+	OomScoreAdj          json.RawMessage      `json:"OomScoreAdj"`          // OOM score bias
+	PidsLimit            json.RawMessage      `json:"PidsLimit"`            // ct process count cap
+	Ulimits              json.RawMessage      `json:"Ulimits"`              // per-ct rlimits
+	StorageOpt           json.RawMessage      `json:"StorageOpt"`           // storage driver opts
+	ContainerIDFile      json.RawMessage      `json:"ContainerIDFile"`      // path to write ct id
+	Init                 json.RawMessage      `json:"Init"`                 // pid 1 init wrapper
+	VolumeDriver         json.RawMessage      `json:"VolumeDriver"`         // default volume driver name
+	ConsoleSize          json.RawMessage      `json:"ConsoleSize"`          // tty size
+	Annotations          json.RawMessage      `json:"Annotations"`          // OCI annotations
+	DiskQuota            json.RawMessage      `json:"DiskQuota"`            // disk quota
+	Isolation            json.RawMessage      `json:"Isolation"`            // windows isolation
+	NetworkID            json.RawMessage      `json:"NetworkID"`            // podman network id
+	ShmSize              json.RawMessage      `json:"ShmSize"`              // /dev/shm size
+	Runtime              json.RawMessage      `json:"Runtime"`              // runtime name (runc/crun)
 }
 
 // hostConfigMount mirrors a docker HostConfig.Mounts entry. The
@@ -181,6 +182,15 @@ type hostConfigVolumeOptions struct {
 type hostConfigDriverConfig struct {
 	Name    string            `json:"Name"`
 	Options map[string]string `json:"Options"`
+}
+
+// hostConfigLogConfig is the cycle-6 typed parse of
+// HostConfig.LogConfig. Type is INSPECTED against the
+// logConfigTypeAllowlist; Config is FORWARDED as opaque map (driver-
+// specific options like max-size for json-file).
+type hostConfigLogConfig struct {
+	Type   string            `json:"Type"`
+	Config map[string]string `json:"Config"`
 }
 
 // containerCreateBody is the top-level shape of POST containers/create.
@@ -397,22 +407,37 @@ func (p *Proxy) checkHostConfig(hc *hostConfig) policyDecision {
 		}
 	}
 
-	// Host namespaces — any *Mode = "host" is a hard reject. The
-	// CgroupnsMode entry is the cycle-4 round-4 review-security
-	// finding (sibling of the other five that I had already blocked).
-	nsModes := []struct {
-		name, value, reason, msg string
-	}{
-		{"NetworkMode", hc.NetworkMode, "network_mode_host", "HostConfig.NetworkMode=host is not permitted"},
-		{"PidMode", hc.PidMode, "pid_mode_host", "HostConfig.PidMode=host is not permitted"},
-		{"IpcMode", hc.IpcMode, "ipc_mode_host", "HostConfig.IpcMode=host is not permitted"},
-		{"UTSMode", hc.UTSMode, "uts_mode_host", "HostConfig.UTSMode=host is not permitted"},
-		{"UsernsMode", hc.UsernsMode, "userns_mode_host", "HostConfig.UsernsMode=host is not permitted"},
-		{"CgroupnsMode", hc.CgroupnsMode, "cgroupns_mode_host", "HostConfig.CgroupnsMode=host is not permitted"},
+	// Host-namespace mode fields. Cycle 6: switched from deny-list
+	// (only "host" rejected) to allowlist (only known-safe literals
+	// + for NetworkMode a user-defined-name regex). Closes the
+	// container:<id> / ns:<path> / path-injection class of value-
+	// level bypasses that the deny-list pattern left open.
+	if dec := checkNetworkMode(hc.NetworkMode); !dec.allow {
+		return dec
 	}
-	for _, m := range nsModes {
-		if strings.ToLower(m.value) == "host" {
-			return denyDecision(http.StatusForbidden, m.reason, m.msg)
+	if dec := checkSimpleNamespaceMode("PidMode", hc.PidMode); !dec.allow {
+		return dec
+	}
+	if dec := checkSimpleNamespaceMode("IpcMode", hc.IpcMode); !dec.allow {
+		return dec
+	}
+	if dec := checkSimpleNamespaceMode("UTSMode", hc.UTSMode); !dec.allow {
+		return dec
+	}
+	if dec := checkSimpleNamespaceMode("UsernsMode", hc.UsernsMode); !dec.allow {
+		return dec
+	}
+	if dec := checkSimpleNamespaceMode("CgroupnsMode", hc.CgroupnsMode); !dec.allow {
+		return dec
+	}
+
+	// LogConfig.Type allowlist (cycle 6). Local-only drivers admit;
+	// network-shipping drivers (syslog/splunk/fluentd/gelf/awslogs/
+	// etwlogs/logentries) deny because they accept a network address
+	// the agent could point at host services we have not audited.
+	if hc.LogConfig != nil {
+		if dec := checkLogConfigType(hc.LogConfig.Type); !dec.allow {
+			return dec
 		}
 	}
 
@@ -915,6 +940,124 @@ func (p *Proxy) capIsAllowed(c string) bool {
 		}
 	}
 	return false
+}
+
+// networkModeFixedLiterals is the small allowlist of literal
+// NetworkMode values the proxy admits. Anything not in this set must
+// either match networkNameRegex (for user-defined networks) or deny.
+// "host" is INTENTIONALLY ABSENT — the previous denylist's only
+// rejection; preserved by the absence in this allowlist.
+var networkModeFixedLiterals = map[string]struct{}{
+	"":            {}, // default
+	"bridge":      {}, // docker / podman default bridge
+	"none":        {}, // no network
+	"default":     {}, // explicit default
+	"slirp4netns": {}, // podman rootless default
+	"pasta":       {}, // podman v5+ rootless default
+}
+
+// networkNameRegex matches a docker / podman user-defined network
+// name. The character class is intentionally narrow: alphanumerics,
+// dot, dash, underscore. No ":" (rules out container:<id>, ns:...).
+// No "/" (rules out path-like values). No whitespace. Length cap of
+// 63 mirrors docker's documented limit.
+var networkNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}$`)
+
+// simpleNamespaceLiterals is the allowlist for PidMode / IpcMode /
+// UTSMode / UsernsMode / CgroupnsMode. These five do NOT accept
+// user-defined names the way NetworkMode does — only fixed literals.
+// "host" is intentionally absent.
+var simpleNamespaceLiterals = map[string]struct{}{
+	"":        {}, // default
+	"private": {}, // private namespace (the safe default in spirit)
+}
+
+// checkNetworkMode applies the NetworkMode value-level allowlist.
+func checkNetworkMode(value string) policyDecision {
+	if _, ok := networkModeFixedLiterals[value]; ok {
+		return allowDecision("policy:network_mode_literal_ok")
+	}
+	// The fixed denials below produce per-class audit reasons so
+	// the log distinguishes container-ref from path-injection from
+	// the literal "host" case.
+	if dec := denyIfUnsafeModeValue("NetworkMode", value); !dec.allow {
+		return dec
+	}
+	if networkNameRegex.MatchString(value) {
+		return allowDecision("policy:network_mode_user_name_ok")
+	}
+	return denyDecision(http.StatusForbidden,
+		"network_mode_invalid:"+truncateForReason(value),
+		fmt.Sprintf("HostConfig.NetworkMode=%q does not match any allowed literal or the user-defined-name pattern", value))
+}
+
+// checkSimpleNamespaceMode applies the allowlist for the five non-
+// NetworkMode namespace modes (Pid, Ipc, UTS, Userns, Cgroupns).
+func checkSimpleNamespaceMode(fieldName, value string) policyDecision {
+	if _, ok := simpleNamespaceLiterals[value]; ok {
+		return allowDecision("policy:" + fieldName + "_literal_ok")
+	}
+	if dec := denyIfUnsafeModeValue(fieldName, value); !dec.allow {
+		return dec
+	}
+	return denyDecision(http.StatusForbidden,
+		strings.ToLower(fieldName)+"_invalid:"+truncateForReason(value),
+		fmt.Sprintf("HostConfig.%s=%q does not match any allowed literal {\"\", \"private\"}", fieldName, value))
+}
+
+// denyIfUnsafeModeValue checks the universal dangerous-pattern set
+// shared by every namespace-mode field. Returns an allow decision
+// when nothing matches; the caller continues with allowlist matching.
+func denyIfUnsafeModeValue(fieldName, value string) policyDecision {
+	lower := strings.ToLower(value)
+	if lower == "host" {
+		return denyDecision(http.StatusForbidden,
+			strings.ToLower(fieldName)+"_host",
+			fmt.Sprintf("HostConfig.%s=host is not permitted", fieldName))
+	}
+	if strings.ContainsAny(value, " \t\n\r") {
+		return denyDecision(http.StatusForbidden,
+			strings.ToLower(fieldName)+"_whitespace",
+			fmt.Sprintf("HostConfig.%s=%q contains whitespace and is not permitted", fieldName, value))
+	}
+	if strings.Contains(value, ":") {
+		return denyDecision(http.StatusForbidden,
+			strings.ToLower(fieldName)+"_colon",
+			fmt.Sprintf("HostConfig.%s=%q contains ':' (container:<id> / ns:<path> form) and is not permitted", fieldName, value))
+	}
+	if strings.Contains(value, "/") {
+		return denyDecision(http.StatusForbidden,
+			strings.ToLower(fieldName)+"_slash",
+			fmt.Sprintf("HostConfig.%s=%q contains '/' (path-like form) and is not permitted", fieldName, value))
+	}
+	return allowDecision("")
+}
+
+// logConfigTypeAllowlist is the cycle-6 enum admission set for
+// HostConfig.LogConfig.Type. The drivers listed here all write
+// container logs to LOCAL destinations (file / stdio / local
+// journald / Kubernetes node-local CRI files). Drivers that ship
+// logs to network destinations (syslog, splunk, fluentd, gelf,
+// awslogs, etwlogs, logentries) are NOT in this set and therefore
+// deny — the agent has no legitimate need to direct container logs
+// at off-host services we have not audited.
+var logConfigTypeAllowlist = map[string]struct{}{
+	"":                {}, // default driver
+	"json-file":       {}, // local file
+	"none":            {}, // discard
+	"journald":        {}, // local systemd journal
+	"k8s-file":        {}, // CRI node-local
+	"passthrough":     {}, // podman passthrough
+	"passthrough-tty": {},
+}
+
+func checkLogConfigType(value string) policyDecision {
+	if _, ok := logConfigTypeAllowlist[value]; ok {
+		return allowDecision("policy:log_config_type_ok")
+	}
+	return denyDecision(http.StatusForbidden,
+		"log_config_type:"+truncateForReason(value),
+		fmt.Sprintf("HostConfig.LogConfig.Type=%q is not in the allowlist (network-shipping log drivers like syslog/splunk/fluentd/gelf/awslogs/etwlogs/logentries are denied; use json-file / journald / k8s-file / passthrough / none)", value))
 }
 
 // truncateForReason bounds a free-form string before splicing it into

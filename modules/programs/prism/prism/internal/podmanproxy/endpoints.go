@@ -25,6 +25,41 @@ const (
 	// path that body-inspecting endpoints take. It exists as a separate
 	// constant for clarity: the AC explicitly calls out attach / exec /
 	// follow=logs as endpoints that must not parse a body.
+	//
+	// # Streaming-endpoint body audit (cycle 6)
+	//
+	// The endpoints in this class are forwarded WITHOUT body
+	// inspection. The cycle-6 audit confirmed each one is safe to
+	// admit without parsing:
+	//
+	// - POST /containers/{id}/attach
+	//     The body is empty (the endpoint upgrades the connection
+	//     to a hijacked bidirectional stream for stdin/stdout/stderr).
+	//     No JSON to inspect, no policy fields. Forward.
+	//
+	// - POST /exec/{id}/start
+	//     The body, when present, is a small JSON object with two
+	//     audited fields: Detach (bool; backgrounds the exec) and
+	//     Tty (bool; allocates a tty). Neither is an escape —
+	//     Tty=true is terminal allocation, Detach=true backgrounds.
+	//     A POST with NO body or an empty object {} is equally
+	//     valid. Per coordinator directive (cycle 6) any future
+	//     additional field surfaced on this body should be audited
+	//     and either admitted with a rationale (move to
+	//     endpointPolicyExec-style strict-parse) or denied via the
+	//     same allowlist discipline as the other body-bearing
+	//     endpoints. The current Detach/Tty pair has no JSON inversion
+	//     because docker/podman accept many other shapes at this
+	//     surface across versions and the bytes are tiny; the
+	//     conservative read is "the dangerous fields all live on
+	//     containers/create / containers/{id}/exec (which IS
+	//     inverted)".
+	//
+	// - GET /containers/{id}/logs
+	//     Body is empty. Query parameters: follow (bool), stdout
+	//     (bool), stderr (bool), since (int), until (int),
+	//     timestamps (bool), tail (int). All safe enums/integers;
+	//     no host-path or command-injection surface. Forward.
 	endpointAllowStreaming
 
 	// endpointPolicyCreate means "read body, parse as JSON, apply the

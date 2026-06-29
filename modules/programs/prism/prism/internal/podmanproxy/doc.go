@@ -43,6 +43,16 @@
 //     to the upstream unmodified). A future docker-API field that
 //     introduces an escape vector is rejected by default until it
 //     is explicitly admitted.
+//   - Value-level: for admitted enumerable fields (Mount.Type,
+//     NetworkMode, PidMode/IpcMode/UTSMode/UsernsMode/CgroupnsMode,
+//     LogConfig.Type), the value MUST match an explicit literal
+//     allowlist; NetworkMode additionally accepts a user-defined
+//     name regex. Anything outside the allowlist denies. This
+//     closes the cycle-6 "deny-list pattern at the value layer"
+//     class, sibling of the cycle-5 field-layer inversion. Value
+//     allowlists live in policy.go alongside the inspector
+//     functions (e.g. checkNetworkMode, checkLogConfigType) and
+//     are the canonical security spec for enumerable values.
 //   - Query-level: PUT containers/{id}/archive requires its `path`
 //     query parameter to fall under the same prefix allowlist as
 //     bind sources.
