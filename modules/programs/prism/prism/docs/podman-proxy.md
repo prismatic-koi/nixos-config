@@ -324,15 +324,19 @@ to a session.
 ## 9. Configuration knobs
 
 The proxy's `Config` struct in `internal/podmanproxy/proxy.go` carries
-the per-session knobs that the sidecar wires. The Step 3 wiring
-(`internal/sidecar/podman_proxy.go::buildProxyConfig`) sets:
+the per-session knobs that the sidecar wires. The Step 3 wiring lives
+in `internal/sidecar/podman_proxy.go::runPodmanProxyIfEnabled`, which
+constructs a `podmanproxy.Config` literal inline (no separate builder
+function — the `runPodmanProxyIfEnabled` body itself is the
+spec) and sets:
 
 - `AllowedBindSources` — the per-session worktree path, the bare repo
   path, and the per-session scratch directory.
 - `ContainerNamePrefix` — `"prism-" + sessionName + "-"`, which
   activates the cycle-7 auto-prefix policy and lets the cleanup sweep
-  (`cmd/cleanup.go::sweepOrphanContainersForSession`) find every
-  container belonging to the session.
+  (`cmd/cleanup_sweep.go::sweepOrphanContainersForSession`, called
+  from `cmd/cleanup.go`) find every container belonging to the
+  session.
 - `AllowedCaps` — empty by default; deny-all.
 - `AllowedSecurityOpts` — empty by default; deny-all.
 - `MaxMemoryBytes` / `MaxCPUQuota` / `MaxNanoCpus` — unset by default
@@ -369,7 +373,7 @@ that.
 - Step 6 PR: [#2330](https://github.com/prismatic-koi/nixos-config/pull/2330) — `--containers` spawn flag.
 - Step 7 PR: [#2332](https://github.com/prismatic-koi/nixos-config/pull/2332) — orphan-container cleanup sweep + auto-prefix on `Name`.
 - Canonical structs: [`internal/podmanproxy/policy.go`](../internal/podmanproxy/policy.go) (`hostConfig`, `containerCreateBody`, `containerExecBody`, `volumeCreateBody`, `networkCreateBody`).
-- Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) (cross-references this document for the threat table; the package doc is the in-tree summary).
-- Sidecar wiring: [`internal/sidecar/podman_proxy.go`](../internal/sidecar/podman_proxy.go).
-- Cleanup sweep: [`cmd/cleanup.go`](../cmd/cleanup.go) (`sweepOrphanContainersForSession`).
+- Package doc: [`internal/podmanproxy/doc.go`](../internal/podmanproxy/doc.go) — the in-tree summary of the threat model; references `#2317 §4` directly. The shipped threat table in this document (§2) explicitly supersedes `#2317 §4` after cycles 2–6. Consider `doc.go` the inline summary and this document the canonical reference.
+- Sidecar wiring: [`internal/sidecar/podman_proxy.go`](../internal/sidecar/podman_proxy.go) — `runPodmanProxyIfEnabled`.
+- Cleanup sweep: [`cmd/cleanup_sweep.go`](../cmd/cleanup_sweep.go) — `sweepOrphanContainersForSession` (called from `cmd/cleanup.go`).
 - Sandbox-exec testing convention: [`docs/sandbox-exec-testing.md`](sandbox-exec-testing.md).

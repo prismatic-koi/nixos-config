@@ -409,9 +409,11 @@ intentionally NOT shipped in this train.
 #### Debugging rejections
 
 Every request the proxy sees writes exactly one JSON line to
-`<sessionDir>/podman-proxy.log` — typically resolvable from a session
-name via `prism checkin <session>` then crossing-reference
-`agent_status.work_dir`. The structured `reason` field names the
+`<XDG_STATE_HOME>/prism/sessions/<instance_id>/podman-proxy.log` —
+resolve the `<instance_id>` for a session by reading the
+`agent_status.instance_id` column from `prism.db` (e.g. `sqlite3
+~/.local/state/prism/prism.db "SELECT instance_id FROM agent_status
+WHERE name = '<session>'"`). The structured `reason` field names the
 specific policy check that fired; see
 [`docs/podman-proxy.md` §7](modules/programs/prism/prism/docs/podman-proxy.md#7-troubleshooting--reading-the-audit-log)
 for the common rejection classes and how to read them.
