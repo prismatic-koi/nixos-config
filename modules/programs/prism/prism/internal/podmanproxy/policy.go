@@ -482,16 +482,20 @@ func (p *Proxy) inspectRename(query url.Values) policyDecision {
 }
 
 // injectNameIntoQuery returns the URL-encoded query string with the
-// `name` parameter set to name. Any pre-existing `name` value (which
-// will have been the empty string — a non-empty value would have
-// already been validated and approved) is replaced.
+// `name` parameter set to name. Any pre-existing case-variant of
+// `name` ("Name", "NAME", …) is dropped before the canonical
+// lowercase key is added. HTTP query parameters are case-sensitive
+// per RFC 3986 and Go's net/url + podman's `r.URL.Query().Get("name")`
+// both handle them that way, so a `?Name=evil` should be ignored by
+// podman regardless — but stripping case-variants is defence-in-
+// depth, mirroring injectNameIntoBody's discipline. (Round-2 fix.)
 //
 // The function does not mutate the input url.Values so the caller
 // can keep its own reference unchanged.
 func injectNameIntoQuery(query url.Values, name string) string {
 	clone := make(url.Values, len(query)+1)
 	for k, v := range query {
-		if k == "name" {
+		if strings.EqualFold(k, "name") {
 			continue
 		}
 		clone[k] = append([]string(nil), v...)
@@ -526,6 +530,33 @@ var randomHexSuffix = func(n int) (string, error) {
 // semantic, not byte-comparison-semantic. The proxy emits the
 // rewritten body via httputil.ReverseProxy in the same Content-Length
 // path as the unchanged body.
+//
+// # Case-variant Name keys (round-2 fix)
+//
+// All case-variants of the top-level "Name" key ("name", "NAME",
+// "nAme", …) are STRIPPED from the map before the canonical "Name"
+// is added. This closes a third-channel bypass discovered by
+// review-security on PR #2332 round 2: Go's encoding/json struct
+// decoder applies case-INsensitive last-wins matching, and
+// json.Marshal sorts map keys alphabetically with uppercase before
+// lowercase. Without the strip:
+//
+//  1. Agent sends body `{"Image":"alpine","name":""}`.
+//  2. applyContainerNamePolicy's struct decode sees Name="" (case-
+//     insensitive match from "name"), so bodyHasName=false and the
+//     inject branch fires.
+//  3. injectNameIntoBody (pre-fix) adds the canonical "Name":"<…>"
+//     but leaves the original "name":"" in the map.
+//  4. json.Marshal sorts to `{"Image":"…","Name":"<…>","name":""}`.
+//  5. Upstream's struct decoder processes keys in JSON order;
+//     "Name" sets the field, then "name" overwrites it with ""
+//     via case-insensitive last-wins. Podman generates a random
+//     `adjective_noun` name. Cleanup sweep misses it.
+//
+// Stripping every case-variant key before adding the canonical one
+// closes the bypass: the re-marshalled body has exactly one
+// "Name"-equivalent key and the upstream sees the injected value
+// unambiguously.
 func injectNameIntoBody(body []byte, name string) ([]byte, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(body, &obj); err != nil {
@@ -533,6 +564,13 @@ func injectNameIntoBody(body []byte, name string) ([]byte, error) {
 	}
 	if obj == nil {
 		obj = map[string]json.RawMessage{}
+	}
+	// Strip every case-variant of "Name" so the canonical key added
+	// below is the only Name-equivalent key the upstream sees.
+	for k := range obj {
+		if strings.EqualFold(k, "Name") {
+			delete(obj, k)
+		}
 	}
 	encodedName, err := json.Marshal(name)
 	if err != nil {

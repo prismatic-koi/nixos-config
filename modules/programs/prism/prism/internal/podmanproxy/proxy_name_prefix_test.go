@@ -672,6 +672,196 @@ func TestRename_NonMatching_Denied_RevertGuard(t *testing.T) {
 	assertNoForward(t, fu)
 }
 
+// ── round-3 fix: case-variant body "name" bypass (review-security) ────────
+//
+// review-security on PR #2332 round 2 found a third-channel bypass
+// in injectNameIntoBody: the function added a canonical "Name" key
+// but did not strip case-variants like lowercase "name". Go's
+// encoding/json struct decoder matches keys case-INsensitively with
+// last-wins, and json.Marshal sorts map keys alphabetically with
+// uppercase before lowercase — so a lowercase "name":"" survived in
+// the re-marshalled body and overwrote the canonical Name on the
+// upstream side, leaving the container with a random podman-
+// generated name that the cleanup sweep regex cannot match.
+//
+// The fix strips every case-variant of "Name" from the map before
+// adding the canonical key.
+
+// readUpstreamBodyMap parses the most-recent upstream-side body as
+// a generic map and returns it. Used by the case-variant tests to
+// assert which keys actually reached the upstream after the proxy
+// rewrote.
+func readUpstreamBodyMap(t *testing.T, fu *fakeUpstream) map[string]any {
+	t.Helper()
+	raw, _ := fu.lastBody.Load().([]byte)
+	if len(raw) == 0 {
+		t.Fatalf("upstream received no body")
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		t.Fatalf("unmarshal upstream body: %v (raw=%q)", err, raw)
+	}
+	return obj
+}
+
+// readUpstreamName_StructDecode parses the upstream body using the
+// SAME case-insensitive last-wins discipline podman's struct
+// decoders use, returning the value the upstream would see for the
+// container Name. This is the load-bearing assertion for the round-3
+// fix: it must equal the injected prefix, NOT the empty case-variant
+// value the agent supplied.
+func readUpstreamName_StructDecode(t *testing.T, fu *fakeUpstream) string {
+	t.Helper()
+	raw, _ := fu.lastBody.Load().([]byte)
+	if len(raw) == 0 {
+		t.Fatalf("upstream received no body")
+	}
+	var decoded struct {
+		Name string `json:"Name"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("struct-decode upstream body: %v (raw=%q)", err, raw)
+	}
+	return decoded.Name
+}
+
+// TestNamePrefix_LowercaseName_Inject_NoLeftoverCaseVariant verifies
+// the round-3 fix: a body with lowercase `"name":""` triggers the
+// inject branch (the struct decoder normalises case-insensitively
+// and sees empty). After rewrite, the upstream body must:
+//
+//	(a) contain the canonical "Name" key with the injected prefix
+//	(b) NOT contain any case-variant of Name (no leftover "name")
+//	(c) struct-decode to the injected prefix, NOT to empty
+func TestNamePrefix_LowercaseName_Inject_NoLeftoverCaseVariant(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@lower-name-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postCreateRaw(t, h.sock, map[string]any{
+		"Image": "alpine",
+		"name":  "",
+	})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	upstreamBody := readUpstreamBodyMap(t, fu)
+
+	// (a) canonical Name key present and prefixed.
+	canonical, _ := upstreamBody["Name"].(string)
+	if !strings.HasPrefix(canonical, prefix) {
+		t.Errorf("upstream Name %q does not start with prefix %q", canonical, prefix)
+	}
+
+	// (b) NO case-variant of Name in the rewritten map.
+	for k := range upstreamBody {
+		if k == "Name" {
+			continue
+		}
+		if strings.EqualFold(k, "Name") {
+			t.Errorf("upstream body has leftover case-variant key %q (round-3 fix did not strip it); full body=%v", k, upstreamBody)
+		}
+	}
+
+	// (c) struct-decode (mirroring podman's case-insensitive last-
+	//     wins) lands on the injected prefix, NOT on empty. This is
+	//     the load-bearing assertion for the bypass closure.
+	decoded := readUpstreamName_StructDecode(t, fu)
+	if !strings.HasPrefix(decoded, prefix) {
+		t.Errorf("struct-decoded upstream Name = %q (want prefix %q); the case-variant bypass is still open", decoded, prefix)
+	}
+}
+
+// TestNamePrefix_UppercaseName_Inject_NoLeftoverCaseVariant is the
+// symmetric test for uppercase `"NAME":""` — also a case-variant of
+// Name that Go's struct decoder normalises case-insensitively.
+func TestNamePrefix_UppercaseName_Inject_NoLeftoverCaseVariant(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@upper-name-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postCreateRaw(t, h.sock, map[string]any{
+		"Image": "alpine",
+		"NAME":  "",
+	})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	upstreamBody := readUpstreamBodyMap(t, fu)
+	for k := range upstreamBody {
+		if k == "Name" {
+			continue
+		}
+		if strings.EqualFold(k, "Name") {
+			t.Errorf("upstream body has leftover case-variant key %q; full body=%v", k, upstreamBody)
+		}
+	}
+	if decoded := readUpstreamName_StructDecode(t, fu); !strings.HasPrefix(decoded, prefix) {
+		t.Errorf("struct-decoded upstream Name = %q (want prefix %q)", decoded, prefix)
+	}
+}
+
+// TestNamePrefix_MixedCaseName_Inject_NoLeftoverCaseVariant covers
+// the mixed-case shape `"nAme":""` — same bypass class.
+func TestNamePrefix_MixedCaseName_Inject_NoLeftoverCaseVariant(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@mixed-name-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postCreateRaw(t, h.sock, map[string]any{
+		"Image": "alpine",
+		"nAme":  "",
+	})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	if decoded := readUpstreamName_StructDecode(t, fu); !strings.HasPrefix(decoded, prefix) {
+		t.Errorf("struct-decoded upstream Name = %q (want prefix %q)", decoded, prefix)
+	}
+}
+
+// TestNamePrefix_CaseVariantBodyName_StructDecodeRevertGuard is the
+// revert-and-watch-fail discipline check for the round-3 fix.
+// Validates that struct-decoding the upstream-side body lands on
+// the injected prefix and NOT on the empty case-variant value — if
+// the case-variant strip in injectNameIntoBody is removed, the
+// upstream-side struct decode falls back to the empty case-variant
+// (last-wins) and this assertion fails.
+//
+// We use the struct-decode path explicitly (rather than the
+// map-decode path used by the upstream-body-key check above)
+// because the case-variant strip's load-bearing guarantee is what
+// the struct decoder sees, not what the JSON object contains.
+func TestNamePrefix_CaseVariantBodyName_StructDecodeRevertGuard(t *testing.T) {
+	fu := newFakeUpstream(t)
+	prefix := "prism-prism-test@revert3-"
+	h := startProxyWithPrefix(t, fu, prefix)
+	resp := postCreateRaw(t, h.sock, map[string]any{
+		"Image": "alpine",
+		"name":  "", // lowercase case-variant
+	})
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 200 (body=%q)", resp.StatusCode, b)
+	}
+	decoded := readUpstreamName_StructDecode(t, fu)
+	if decoded == "" {
+		t.Fatalf("REGRESSION: upstream struct-decode resolved Name to empty (the case-variant bypass is reopened); raw upstream body=%s",
+			string(mustLastBody(t, fu)))
+	}
+	if !strings.HasPrefix(decoded, prefix) {
+		t.Errorf("struct-decoded upstream Name = %q (want prefix %q)", decoded, prefix)
+	}
+}
+
+// mustLastBody fetches the upstream stub's lastBody for diagnostic
+// inclusion in failure messages.
+func mustLastBody(t *testing.T, fu *fakeUpstream) []byte {
+	t.Helper()
+	raw, _ := fu.lastBody.Load().([]byte)
+	return raw
+}
+
 // ── audit log helpers ────────────────────────────────────────────────────
 
 // lastAuditReason returns the `reason` field of the most recent audit
