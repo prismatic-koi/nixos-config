@@ -2,6 +2,8 @@ package podmanproxy
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -234,7 +236,14 @@ type containerCreateBody struct {
 	Shell            json.RawMessage `json:"Shell"`
 	NetworkingConfig json.RawMessage `json:"NetworkingConfig"`
 	// podman libpod additions
-	Name json.RawMessage `json:"Name"` // libpod allows Name in body (in addition to ?name=)
+	//
+	// Name is INSPECTED when Config.ContainerNamePrefix is non-empty:
+	// missing / empty triggers auto-prefix injection; an explicit value
+	// must start with the configured prefix or the request is rejected.
+	// The pointer type distinguishes "absent" (nil) from "explicitly
+	// empty" (*"") so the injection branch can fire on both without
+	// having to inspect the raw bytes a second time.
+	Name *string `json:"Name"` // libpod allows Name in body (in addition to ?name=)
 }
 
 // containerExecBody is the explicit allowlist for POST
@@ -268,34 +277,148 @@ type containerExecBody struct {
 // nested. A flat single-pass parser would accept ANY shape inside
 // HostConfig if the top-level admits HostConfig as RawMessage. The
 // second pass is where the per-field allowlist actually fires.
-func (p *Proxy) inspectCreate(body []byte) policyDecision {
+//
+// After all policy checks pass, the container-name auto-prefix
+// policy runs when Config.ContainerNamePrefix is non-empty (step 7
+// of #2317). The function returns the (possibly rewritten) body
+// bytes the caller MUST forward upstream:
+//
+//   - rewritten == nil means "forward the original body unchanged".
+//   - rewritten != nil means "forward rewritten instead of body"
+//     (the proxy injected an auto-generated Name).
+//
+// On any deny decision rewritten is nil and the caller must NOT
+// forward.
+func (p *Proxy) inspectCreate(body []byte) (policyDecision, []byte) {
 	if len(bytes.TrimSpace(body)) == 0 {
 		return denyDecision(http.StatusBadRequest,
 			"malformed_body:empty",
-			"containers/create request body is empty")
+			"containers/create request body is empty"), nil
 	}
 
 	var req containerCreateBody
 	if dec := decodeStrict(body, &req); !dec.allow {
 		dec.reason = "create_top:" + dec.reason
 		dec.message = "containers/create top-level body: " + dec.message
-		return dec
+		return dec, nil
 	}
 
-	if req.HostConfig == nil || len(*req.HostConfig) == 0 {
-		// No HostConfig is harmless — a container without any host
-		// configuration cannot bind-mount or request privileges.
-		return allowDecision("policy:containers/create:no_host_config")
+	if req.HostConfig != nil && len(*req.HostConfig) > 0 {
+		var hc hostConfig
+		if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
+			dec.reason = "create_hostconfig:" + dec.reason
+			dec.message = "containers/create HostConfig: " + dec.message
+			return dec, nil
+		}
+		if dec := p.checkHostConfig(&hc); !dec.allow {
+			return dec, nil
+		}
 	}
 
-	var hc hostConfig
-	if dec := decodeStrict(*req.HostConfig, &hc); !dec.allow {
-		dec.reason = "create_hostconfig:" + dec.reason
-		dec.message = "containers/create HostConfig: " + dec.message
-		return dec
+	// HostConfig (when present) is policy-clean. Apply the
+	// container-name auto-prefix policy last so a bind-source or
+	// privileged-flag violation surfaces in the audit log before the
+	// name-prefix mismatch — the worst violation wins, matching the
+	// existing field-ordering convention in checkHostConfig.
+	return p.applyContainerNamePolicy(body, &req)
+}
+
+// applyContainerNamePolicy implements the cycle-7 value-level Name
+// check on POST /containers/create. The Name field has been admitted
+// at the schema level since cycle-5 (containerCreateBody.Name); this
+// function adds a field-value layer on top in the same six-layer
+// model the rest of the policy code uses (cycle 6 added field-value
+// checks for LogConfig.Type, NetworkMode, etc. — this is the same
+// shape on Name).
+//
+// Behaviour is gated on Config.ContainerNamePrefix:
+//
+//   - empty prefix → no-op; the original body forwards unchanged.
+//     Preserves back-compat for out-of-tree callers that construct
+//     the proxy without session scoping.
+//   - non-empty prefix, req.Name nil or empty → inject a name of the
+//     form prefix + 8 hex chars from crypto/rand into the body, and
+//     return the rewritten bytes.
+//   - non-empty prefix, req.Name set without the configured prefix
+//     → deny with reason "name_prefix_mismatch".
+//   - non-empty prefix, req.Name correctly prefixed → allow; original
+//     body forwards unchanged.
+func (p *Proxy) applyContainerNamePolicy(body []byte, req *containerCreateBody) (policyDecision, []byte) {
+	prefix := p.cfg.ContainerNamePrefix
+	if prefix == "" {
+		return allowDecision("policy:containers/create:ok"), nil
 	}
 
-	return p.checkHostConfig(&hc)
+	if req.Name == nil || *req.Name == "" {
+		suffix, err := randomHexSuffix(8)
+		if err != nil {
+			return denyDecision(http.StatusInternalServerError,
+				"name_inject_random_failed",
+				"could not generate random container name suffix"), nil
+		}
+		injected := prefix + suffix
+		rewritten, err := injectNameIntoBody(body, injected)
+		if err != nil {
+			return denyDecision(http.StatusInternalServerError,
+				"name_inject_marshal_failed",
+				"could not inject auto-prefixed container name into request body"), nil
+		}
+		return allowDecision("policy:containers/create:name_injected"), rewritten
+	}
+
+	if !strings.HasPrefix(*req.Name, prefix) {
+		return denyDecision(http.StatusForbidden,
+			"name_prefix_mismatch",
+			fmt.Sprintf("containers/create Name=%q does not start with the required prefix %q (the proxy is session-scoped; either omit Name to receive an auto-prefixed one, or supply a Name that begins with the required prefix)", *req.Name, prefix)), nil
+	}
+
+	return allowDecision("policy:containers/create:ok"), nil
+}
+
+// randomHexSuffix returns n hex characters drawn from crypto/rand.
+// n must be even; this is enforced by the only call site (8).
+//
+// Defined at package scope so the proxy tests can swap it for a
+// deterministic generator without reaching into the proxy struct.
+var randomHexSuffix = func(n int) (string, error) {
+	if n <= 0 || n%2 != 0 {
+		return "", fmt.Errorf("randomHexSuffix: n must be a positive even number, got %d", n)
+	}
+	b := make([]byte, n/2)
+	if _, err := cryptorand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+// injectNameIntoBody returns body with a top-level "Name" key set to
+// name. All other top-level fields are preserved verbatim because
+// the unmarshal target is map[string]json.RawMessage — each value's
+// original bytes round-trip through json.Marshal unchanged.
+//
+// Field order is NOT preserved (encoding/json sorts map keys), which
+// is fine because the upstream docker/podman API is JSON-object-
+// semantic, not byte-comparison-semantic. The proxy emits the
+// rewritten body via httputil.ReverseProxy in the same Content-Length
+// path as the unchanged body.
+func injectNameIntoBody(body []byte, name string) ([]byte, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, fmt.Errorf("unmarshal top-level: %w", err)
+	}
+	if obj == nil {
+		obj = map[string]json.RawMessage{}
+	}
+	encodedName, err := json.Marshal(name)
+	if err != nil {
+		return nil, fmt.Errorf("marshal Name: %w", err)
+	}
+	obj["Name"] = encodedName
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("marshal top-level: %w", err)
+	}
+	return out, nil
 }
 
 // decodeStrict runs json.Decoder.DisallowUnknownFields against body

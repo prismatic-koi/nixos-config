@@ -127,6 +127,13 @@ func (s *Sidecar) runPodmanProxyIfEnabled(ctx context.Context) {
 		ListenerPath:       listenerPath,
 		UpstreamPath:       upstream,
 		AllowedBindSources: allowed,
+		// Step 7 of #2317 / #2324 — wire the per-session container
+		// name prefix. The proxy auto-injects this prefix into
+		// containers/create requests with no Name field, and rejects
+		// any explicit Name that does not start with it. Cleanup
+		// (`cmd/cleanup.go`) sweeps any orphan container matching the
+		// same prefix at session teardown.
+		ContainerNamePrefix: "prism-" + s.cfg.SessionName + "-",
 		// Step 3 ships with the default-deny policy from Step 1. No
 		// AllowedCaps, no AllowedSecurityOpts, no MaxMemoryBytes etc.
 		// Step 6 / Step 7 may revisit cap defaults once real workloads

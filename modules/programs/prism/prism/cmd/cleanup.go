@@ -242,6 +242,11 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			if isolationModeFromDB(d, m.session) != "host" {
 				removeContainerIfExists(m.session)
 			}
+			// Orphan-container sweep (#2324 Step 7). The interactive TUI
+			// path does not surface a JSON envelope — the count goes into
+			// the warning log only. Passing result=nil keeps the helper
+			// safe even though there is nothing to record.
+			applyOrphanContainerSweep(m.session, nil)
 			if releaseErr := d.ReleasePort(m.session); releaseErr != nil {
 				proglog.Errorf("[prism] doCleanup: release port: %v\n", releaseErr)
 			}
@@ -530,6 +535,14 @@ type cleanupResult struct {
 	EndedAtStamped          any     `json:"ended_at_stamped"`
 	HarnessPortReleased     any     `json:"harness_port_released"`
 	HarnessSessionIDCleared any     `json:"harness_session_id_cleared"`
+	// ContainersSwept reports the number of orphan containers
+	// (matching prism-<session>-<8 hex> on the host) removed by the
+	// containers_enabled=1 sweep. nil omits the field entirely from
+	// the JSON envelope per the #2324 contract: when containers_enabled=0,
+	// the cleanup path issues NO podman commands AND emits no
+	// containers_swept key. *int (not int + omitempty) is used so a
+	// run that produces zero matches still emits "containers_swept": 0.
+	ContainersSwept *int `json:"containers_swept,omitempty"`
 }
 
 // applyDBLifecycleClears performs the agent_status lifecycle updates for
@@ -726,6 +739,15 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
+		// Orphan-container sweep (#2324 Step 7). Gated on the
+		// session's agent_status.containers_enabled column inside
+		// sweepOrphanContainersForSession; when the flag is 0 this
+		// is a fast DB read and no podman commands are issued. Runs
+		// after removeContainerIfExists so the session's own
+		// runtime container has already been torn down — the sweep
+		// only deals with DERIVATIVE containers the agent created
+		// via the proxy.
+		applyOrphanContainerSweep(session, &result)
 		// Capture instance_id and isolation_mode before SetEnded clears the
 		// row's lifecycle fields. Done before applyDBLifecycleClears so the
 		// CurrentStatus reads inside instanceIDFromStatus still observe the
@@ -781,6 +803,10 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		proglog.Errorf("[prism] headlessCleanup: open db: %v\n", err)
 		review.KillReviewSessionsForParent(session)
 		removeContainerIfExists(session)
+		// No sweep here: containers_enabled is unreadable without the
+		// DB. Skipping the sweep matches the AC "containers_enabled=0
+		// → no podman commands" in spirit: when we cannot prove the
+		// flag was on, default to off.
 	}
 	if archiveCollisionWarning != "" {
 		proglog.Warnf("[prism] warning: archive: %s — continuing cleanup\n", archiveCollisionWarning)
@@ -791,6 +817,25 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		fmt.Fprintln(stdout, "done")
 	}
 	return nil
+}
+
+// applyOrphanContainerSweep runs the #2324 orphan-container sweep for
+// session and, when the sweep actually ran (containers_enabled=1),
+// records the count on result.ContainersSwept so it surfaces in the
+// --json envelope. When containers_enabled=0 the field stays nil and
+// the JSON encoder omits it entirely (json:"containers_swept,omitempty").
+//
+// Errors inside the sweep are non-fatal and logged at warning level by
+// the sweep itself; the helper has no error path of its own.
+func applyOrphanContainerSweep(session string, result *cleanupResult) {
+	count, ran := sweepOrphanContainersForSession(session)
+	if !ran {
+		return
+	}
+	if result != nil {
+		c := count
+		result.ContainersSwept = &c
+	}
 }
 
 // closeSession redirects attached clients to scratchpad, kills the tmux
@@ -821,6 +866,10 @@ func closeSession(session string) error {
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
+		// Orphan-container sweep (#2324 Step 7). closeSession is the
+		// interactive @main / non-worktree path and does not surface a
+		// JSON envelope; the helper records the count into the log only.
+		applyOrphanContainerSweep(session, nil)
 		if releaseErr := d.ReleasePort(session); releaseErr != nil {
 			proglog.Errorf("[prism] closeSession: release port: %v\n", releaseErr)
 		}
@@ -939,6 +988,12 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 		if isolationModeFromDB(d, session) != "host" {
 			removeContainerIfExists(session)
 		}
+		// Orphan-container sweep (#2324 Step 7). See headlessCleanupWithJSONTo
+		// for the placement rationale — the gate is in
+		// sweepOrphanContainersForSession, so calling it on a non-container
+		// session (containers_enabled=0) is a fast DB read with no podman
+		// commands issued.
+		applyOrphanContainerSweep(session, &result)
 		instanceIDForSessions := instanceIDFromStatus(d, session)
 		isolationMode := isolationModeFromDB(d, session)
 		// Apply the lifecycle clears — release harness_port and stamp

@@ -82,18 +82,26 @@ func (p *Proxy) handlePolicyCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dec := p.inspectCreate(body)
+	dec, rewritten := p.inspectCreate(body)
 	if !dec.allow {
 		p.emitAudit(r, auditDeny, dec.reason)
 		writeJSONError(w, dec.status, dec.message)
 		return
 	}
 
-	// Restore the body for the reverse proxy. Use a fresh Reader so
-	// the proxy can re-read from offset 0; the ContentLength is set
-	// explicitly because http.MaxBytesReader leaves it as it was.
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
+	// inspectCreate returns a non-nil rewritten body when the cycle-7
+	// Name-prefix policy injected an auto-prefixed Name into the
+	// request. When rewritten is nil the original body is forwarded
+	// unchanged. Either way: restore the body for the reverse proxy
+	// using a fresh Reader (the proxy re-reads from offset 0) and set
+	// ContentLength explicitly because http.MaxBytesReader does NOT
+	// update it for us.
+	forwardBody := body
+	if rewritten != nil {
+		forwardBody = rewritten
+	}
+	r.Body = io.NopCloser(bytes.NewReader(forwardBody))
+	r.ContentLength = int64(len(forwardBody))
 
 	p.emitAudit(r, auditAllow, dec.reason)
 	p.upstream.ServeHTTP(w, r)
