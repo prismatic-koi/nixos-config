@@ -312,9 +312,17 @@ func TestHeadlessCleanup_ArchiveFailureLeavesTranscript(t *testing.T) {
 }
 
 // TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive covers the no-transcript
-// edge case (issue #2219 AC): a session whose pi transcript never existed must
-// clean up without error, producing a manifest-only archive (no session.jsonl)
-// with the sever reduced to a DB-clear no-op.
+// edge case (issue #2219 AC, semantics updated for issue #2336): a session
+// whose pi transcript never existed must clean up without error, producing a
+// manifest-only archive (no session.jsonl). Post-#2336 the sever step is
+// SKIPPED in this case — harness_session_id is retained and no file under
+// the pi sessions dir is deleted — so a follow-up cleanup can archive-then-
+// sever if the transcript reappears.
+//
+// Pre-#2336 the sever ran anyway, which meant a manifest-only archive
+// silently deleted the (missing) transcript pointer from the DB and, if the
+// transcript later reappeared, the pointer to it. Skipping the sever here
+// closes that data-loss path.
 func TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-empty", "")
 	// Remove the transcript the fixture seeded — this test wants the
@@ -337,7 +345,7 @@ func TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive(t *testing.T) {
 		t.Fatalf("SessionByInstanceID: %v", err)
 	}
 	if sess == nil || sess.ArchivePath == nil || *sess.ArchivePath == "" {
-		t.Fatal("archive_path not recorded — manifest-only archive must still be written")
+		t.Fatal("archive_path not recorded — manifest-only archive must still be written (backward-compat: downstream tooling reads sessions.archive_path)")
 	}
 	if _, err := os.Stat(filepath.Join(*sess.ArchivePath, "manifest.json")); err != nil {
 		t.Errorf("manifest.json missing from archive dir: %v", err)
@@ -352,7 +360,11 @@ func TestHeadlessCleanup_NoTranscript_ManifestOnlyArchive(t *testing.T) {
 	if st == nil {
 		t.Fatal("agent_status row missing after cleanup")
 	}
-	if st.HarnessSessionID != nil {
-		t.Errorf("HarnessSessionID = %q after cleanup; want nil (sever still runs after a successful archive)", *st.HarnessSessionID)
+	// Post-#2336: sever is gated on the adapter reporting copied == true.
+	// Here the adapter saw os.IsNotExist(srcPath) and returned (false, nil),
+	// so severPiResumeLinkage does not run — harness_session_id is retained.
+	if st.HarnessSessionID == nil || *st.HarnessSessionID != archiveOrderSID {
+		t.Errorf("HarnessSessionID = %v after cleanup; want retained (%q) — sever must be skipped when the archive is manifest-only (issue #2336)",
+			st.HarnessSessionID, archiveOrderSID)
 	}
 }

@@ -64,7 +64,18 @@ type ArchiveAdapter interface {
 	// when Archive is called. On success, archiveDir contains the
 	// harness-specific session artifacts in their final on-disk layout —
 	// no further normalisation step is run.
-	Archive(ctx context.Context, srcPath, archiveDir string, p SourceParams) error
+	//
+	// Return value (issue #2336): copied reports whether Archive actually
+	// wrote a transcript file into archiveDir. copied == false with err ==
+	// nil is the "nothing to copy" case (e.g. srcPath does not exist because
+	// the harness never produced output, or srcPath is a directory because
+	// SourcePath had insufficient information to locate a file). copied ==
+	// true means archiveDir now contains the harness transcript in its
+	// final on-disk layout. The cleanup pipeline uses this bool to gate
+	// downstream steps that must only run when the transcript was
+	// preserved — most importantly severPiResumeLinkage, which deletes the
+	// same source file that Archive just copied.
+	Archive(ctx context.Context, srcPath, archiveDir string) (copied bool, err error)
 
 	// Version returns the harness binary version string (e.g. "1.1.30"), or
 	// "" when the binary is not on PATH or returns an error. Called once per
