@@ -403,6 +403,23 @@ in
         # is the reliable alternative: it runs after graphical-session.target,
         # at which point tmux will be started (or already running), and
         # prism restore recreates any sessions not yet present.
+        #
+        # ExecStart is wrapped in `systemd-run --user --scope --collect` so
+        # the tmux server (auto-started by restore's tmux calls) and the
+        # sidecar processes spawned by `session.StartSidecarWithOpts` land
+        # in a transient scope unit rather than in this service's cgroup.
+        # Without the wrapper, this Type=oneshot unit's default
+        # KillMode=control-group SIGTERMs every process restore just
+        # created the moment the main process exits — see issue #2340
+        # for the full diagnosis. The scope's lifetime is bound to its
+        # member processes (not to this service), so the restored tmux
+        # server and sidecars survive service deactivation and any later
+        # stop/restart (e.g. an HM reload during `nh switch`). The scope
+        # name is auto-generated (run-uN.scope) so repeated logins never
+        # collide; --collect unloads the transient unit once its last
+        # process exits, so the no-sessions-to-restore case leaves no
+        # stray units accumulating across logins. --quiet suppresses the
+        # "Running as unit: …" info line in the journal.
         systemd.user.services.prism-restore = {
           Unit = {
             Description = "Restore prism tmux sessions after login";
@@ -414,7 +431,7 @@ in
             Type = "oneshot";
             # Give the desktop session a moment to settle before poking tmux.
             ExecStartPre = "${pkgs.coreutils}/bin/sleep 2";
-            ExecStart = "${prismPkg}/bin/prism restore";
+            ExecStart = "${pkgs.systemd}/bin/systemd-run --user --scope --collect --quiet ${prismPkg}/bin/prism restore";
           };
           Install = {
             WantedBy = [ "graphical-session.target" ];
