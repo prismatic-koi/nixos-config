@@ -135,6 +135,88 @@ func TestScan_SkipFileDirectiveSuppressesAllFindings(t *testing.T) {
 	}
 }
 
+// TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip is the regression
+// for the review-context finding on PR #2344: a doclint-skip-file directive
+// that appears INSIDE a fenced code block is a prose example, not an active
+// directive, and must NOT opt the file out. Before the fix, this test's
+// stale `mountTypeAllowlist` reference would have been silently masked.
+func TestScan_SkipFileDirectiveInsideFencedBlockDoesNotSkip(t *testing.T) {
+	root := synthPrismRoot(t)
+	docPath := filepath.Join(root, "docs", "example.md")
+	body := "Stale reference `mountTypeAllowlist`.\n\n" +
+		"Directive syntax example (must NOT activate):\n\n" +
+		"```markdown\n" +
+		"<!-- doclint-skip-file: example reason -->\n" +
+		"```\n"
+	if err := os.WriteFile(docPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected fenced-block skip-file example to NOT opt the file out (want 1 finding for `mountTypeAllowlist`), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Token != "mountTypeAllowlist" {
+		t.Errorf("expected finding on `mountTypeAllowlist`, got %+v", findings[0])
+	}
+}
+
+// TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress is the sibling
+// regression for the same class of leak on the per-token annotation. A
+// `<!-- doclint-ignore: token -->` directive that appears inside a fenced
+// code block is a prose example of the directive syntax and must NOT
+// contribute tokens to the ignore set.
+func TestScan_IgnoreDirectiveInsideFencedBlockDoesNotSuppress(t *testing.T) {
+	root := synthPrismRoot(t)
+	docPath := filepath.Join(root, "docs", "example.md")
+	body := "Stale reference `mountTypeAllowlist`.\n\n" +
+		"```markdown\n" +
+		"<!-- doclint-ignore: mountTypeAllowlist -->\n" +
+		"```\n"
+	if err := os.WriteFile(docPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected fenced-block ignore example to NOT suppress (want 1 finding), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Token != "mountTypeAllowlist" {
+		t.Errorf("expected finding on `mountTypeAllowlist`, got %+v", findings[0])
+	}
+}
+
+// TestScan_InlineBacktickedDirectiveIsProseNotActive is the sibling of the
+// fenced-block tests for the second half of the same review finding: a
+// directive that appears INLINE inside a backticked prose phrase (e.g. a
+// section heading like “ ### Per-file: `<!-- doclint-skip-file: reason -->` “)
+// is a prose example, not an active directive, because the directive text
+// is not at the start of a logical line.
+func TestScan_InlineBacktickedDirectiveIsProseNotActive(t *testing.T) {
+	root := synthPrismRoot(t)
+	docPath := filepath.Join(root, "docs", "example.md")
+	body := "Stale reference `mountTypeAllowlist`.\n\n" +
+		"### Per-file: `<!-- doclint-skip-file: example -->`\n\n" +
+		"### Per-token: `<!-- doclint-ignore: mountTypeAllowlist -->`\n"
+	if err := os.WriteFile(docPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected inline-backticked prose directives to be inert (want 1 finding), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Token != "mountTypeAllowlist" {
+		t.Errorf("expected finding on `mountTypeAllowlist`, got %+v", findings[0])
+	}
+}
+
 func TestScan_SkipsAbsentRepoRootAGENTS(t *testing.T) {
 	// Passing repoRoot=\"\" simulates the nix sandbox build where the
 	// repo-root AGENTS.md is not present. The lint must not fail and

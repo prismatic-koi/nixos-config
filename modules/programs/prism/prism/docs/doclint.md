@@ -1,11 +1,31 @@
 # Doc-lint convention
 
-<!-- doclint-ignore: mountTypeAllowlist -->
+<!-- doclint-ignore: mountTypeAllowlist, bind_source_outside_allowlist:<path>, agent_status.work_dir -->
+<!-- doclint-ignore: CgroupBudget -->
+<!-- doclint-ignore: refs/stash, AllPackages.nix, allPackages.nix -->
+<!-- doclint-ignore: AGENTS.md -->
 <!--
-  `mountTypeAllowlist` below is the example STALE identifier from PR #2333
-  cycle 1. It is intentionally unresolvable — the whole point of the example
-  is to show what the lint catches — and is annotated here so the lint
-  itself passes.
+  Every token in the doclint-ignore lists above is intentionally
+  unresolvable and appears in this doc as a historical example of the
+  class of drift the lint catches:
+
+  - `mountTypeAllowlist`, `bind_source_outside_allowlist:<path>`, and
+    `agent_status.work_dir` are three of the nine stale identifiers
+    caught across the three review cycles of PR #2333. They are cited
+    verbatim in the "Why this lint exists" section as concrete drift
+    examples, so they MUST remain unresolvable — rewriting them to real
+    identifiers would strip the section's point.
+  - `CgroupBudget` is referenced as the annotation example in the
+    "Annotation — opting out of a specific finding" section; it is a
+    hypothetical field in the podman-proxy field-admission walkthrough.
+  - `refs/stash`, `AllPackages.nix`, `allPackages.nix` are the same
+    counter-example set carried over from the AGENTS.md doclint-ignore
+    block, mentioned here as canonical worked examples of when to reach
+    for the annotation.
+  - `AGENTS.md` is a cross-boundary reference to the repo-root file. In
+    a full checkout the basename resolves; in the nix sandbox where
+    only the prism subtree is copied in, it does not exist. Same
+    situation as the equivalent annotation in podman-proxy.md.
 -->
 
 This document specifies the doc-lint that verifies backticked identifier-shaped
@@ -166,7 +186,7 @@ or `os.Getwd()`, so nothing about the environment matters other than
 If a new identifier shape recurs in prose and the current classifier
 skips it, extend `internal/doclint/classify.go` with a new
 `tokenClass`, add the resolver in `internal/doclint/resolve.go`, and
-add a unit test in `classify_test.go` / `resolve_test.go`. Keep the
+add a unit test in `classify_test.go` / `scan_test.go`. Keep the
 rule conservative — err on the side of skipping ambiguous tokens.
 
 ## Out of scope

@@ -25,7 +25,14 @@ var codeFenceRe = regexp.MustCompile(`^\s*(` + "```" + `|~~~)`)
 //
 // Whitespace inside the list is ignored. Multiple directives per file are
 // allowed and their lists union.
-var ignoreDirectiveRe = regexp.MustCompile(`(?s)<!--\s*doclint-ignore:\s*(.*?)\s*-->`)
+//
+// The regex is anchored to line start (`(?m)^\s*<!--`) so that a directive
+// appearing INLINE inside a backticked prose example — e.g. a heading
+// like “ `<!-- doclint-ignore: token1, token2 -->` “ — is not
+// accidentally honoured. That anchor plus the stripFencedBlocks pass in
+// extractIgnoreSet closes both the fenced-block leak and the inline-
+// backticked leak caught by review-context on PR #2344.
+var ignoreDirectiveRe = regexp.MustCompile(`(?ms)^\s*<!--\s*doclint-ignore:\s*(.*?)\s*-->`)
 
 // skipFileDirectiveRe matches a whole-file opt-out annotation:
 //
@@ -33,7 +40,10 @@ var ignoreDirectiveRe = regexp.MustCompile(`(?s)<!--\s*doclint-ignore:\s*(.*?)\s
 //
 // The reason text after the colon is required (so the exemption is
 // self-documenting) but its content is not otherwise inspected.
-var skipFileDirectiveRe = regexp.MustCompile(`(?s)<!--\s*doclint-skip-file:\s*[^\n]+?\s*-->`)
+//
+// Same line-start anchoring and fenced-block guard as ignoreDirectiveRe
+// apply, for the same reason.
+var skipFileDirectiveRe = regexp.MustCompile(`(?m)^\s*<!--\s*doclint-skip-file:\s*[^\n]+?\s*-->`)
 
 // backtickRe matches a single-backtick span on one line (double backticks are
 // used to quote content that itself contains a backtick — we match those with
@@ -46,9 +56,17 @@ var doubleBacktickRe = regexp.MustCompile("``([^\n]+?)``")
 
 // extractIgnoreSet parses all doclint-ignore directives from the document
 // content and returns the union of listed tokens.
+//
+// Directives inside fenced code blocks are prose examples — they are
+// stripped before regex matching so that a doc that documents the
+// directive syntax does not accidentally contribute tokens to its own
+// ignore set. This is the sibling of the whole-file skip guard in
+// hasSkipFileDirective; both bugs shipped together in the initial cut
+// of #2334 and were caught by review-context on PR #2344.
 func extractIgnoreSet(content []byte) map[string]bool {
+	prose := stripFencedBlocks(content)
 	out := map[string]bool{}
-	for _, m := range ignoreDirectiveRe.FindAllSubmatch(content, -1) {
+	for _, m := range ignoreDirectiveRe.FindAllSubmatch(prose, -1) {
 		list := string(m[1])
 		for _, tok := range strings.Split(list, ",") {
 			tok = strings.TrimSpace(tok)
@@ -63,8 +81,39 @@ func extractIgnoreSet(content []byte) map[string]bool {
 
 // hasSkipFileDirective reports whether the document opts out of doclint
 // entirely via a `<!-- doclint-skip-file: reason -->` annotation.
+//
+// As with extractIgnoreSet, fenced code blocks are stripped first — a
+// documentation example of the directive syntax must not silently opt
+// the doc that documents it out of the lint.
 func hasSkipFileDirective(content []byte) bool {
-	return skipFileDirectiveRe.Match(content)
+	return skipFileDirectiveRe.Match(stripFencedBlocks(content))
+}
+
+// stripFencedBlocks returns content with every ```-fenced or ~~~-fenced
+// code block removed (each fenced line is replaced with a blank line so
+// line numbers of the surviving prose are preserved for any future
+// callers that care). Directive-detection regexes run against this
+// stripped view.
+func stripFencedBlocks(content []byte) []byte {
+	var out []byte
+	sc := bufio.NewScanner(bytes.NewReader(content))
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	inFence := false
+	for sc.Scan() {
+		line := sc.Bytes()
+		if codeFenceRe.Match(line) {
+			inFence = !inFence
+			out = append(out, '\n')
+			continue
+		}
+		if inFence {
+			out = append(out, '\n')
+			continue
+		}
+		out = append(out, line...)
+		out = append(out, '\n')
+	}
+	return out
 }
 
 // extractTokens returns all backticked tokens outside fenced code blocks.
