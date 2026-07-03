@@ -1,5 +1,7 @@
 # Pi `--rpc` mode audit and interface contract
 
+<!-- doclint-skip-file: this document describes the external pi coding-agent RPC interface (source at /nix/store/...-pi-coding-agent-<version>/), not the prism Go source under this repo. Backticked identifiers here are TypeScript names in the pi package and cannot be resolved by the local doclint. -->
+
 **Status:** D-1 deliverable (issue #1626). Prescriptive ground truth for D-3 and
 downstream daemon issues. All claims are grounded in the binary, source code, or
 the existing wire-protocol doc; every citation is reproducible.

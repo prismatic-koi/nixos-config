@@ -1,5 +1,21 @@
 # Diagnosis — review-agent "no verdict" / "no output produced" terminations (issue #1993)
 
+<!-- doclint-ignore: resolveTurnEndSignal, AGENTS.md -->
+<!-- doclint-ignore: modules/programs/prism/pi/extensions/prism.ts, modules/programs/prism/skills/prism/SKILL.md -->
+<!--
+  Cross-boundary references outside the prism Go subtree:
+
+  - `resolveTurnEndSignal` lives in
+    `modules/programs/prism/pi/extensions/prism.ts` (and its `.test.ts`
+    sibling). In a full checkout the repo-root walk indexes it; in the
+    nix sandbox where only the prism Go subtree is present it is not
+    reachable.
+  - The two paths above resolve against the same repo but only in a
+    full checkout — same class of cross-boundary reference as the
+    `AGENTS.md` and `modules/programs/prism/pi/extensions/prism.ts`
+    annotations in podman-proxy.md and doclint.md.
+-->
+
 ## Symptom
 
 During PR #1992's review, two of the five review agents — `review-goal` and

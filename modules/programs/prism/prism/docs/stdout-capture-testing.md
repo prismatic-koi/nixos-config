@@ -1,5 +1,8 @@
 # stdout-capture testing convention
 
+<!-- doclint-ignore: encoding/json -->
+<!-- `encoding/json` is a Go standard-library package, not a path inside this repo. -->
+
 This document codifies the testing pattern for any helper that redirects
 `os.Stdout` (or `os.Stderr`) through an `os.Pipe` in order to capture what a
 command under test writes. It exists because the previous

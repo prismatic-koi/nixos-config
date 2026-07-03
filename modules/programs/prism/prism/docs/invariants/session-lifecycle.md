@@ -1,5 +1,15 @@
 # Session lifecycle invariants
 
+<!-- doclint-ignore: manifest.json, raw/session.jsonl, dist/core/session-manager.js -->
+<!--
+  `manifest.json` and `raw/session.jsonl` are runtime-created artifacts
+  inside archive directories under `~/.local/share/prism/archive/...`;
+  they are described in the archive layout section but never exist in
+  the source tree. `dist/core/session-manager.js` is a file in the
+  external pi coding-agent package (cited for the ENV_AGENT_DIR
+  honouring lookup), not this repo.
+-->
+
 This document is a falsifiability surface for the user to mark against intent.
 Each statement describes a user-observable behaviour of prism session lifecycle
 as it currently exists. It is **not** a tutorial, design rationale, or rollout
@@ -55,7 +65,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 - `prism cleanup --yes --session <name>` for a non-worktree session (no `@` in the name) kills the tmux session and marks the DB row ended; no git operations run.
 - `prism cleanup --yes` always force-deletes the feature branch and does not check `git branch --merged` against `main`, because squash-merges produce a different SHA on `main` than the branch tip.
 - `prism cleanup` invoked inside a sandbox (where `PRISM_HOST_API` is set) proxies the cleanup request to the host sidecar; per-resource progress lines are forwarded verbatim.
-- `prism cleanup` releases the session's allocated `harness_port` (sets `agent_status.harness_port = NULL`), clears `agent_status.harness_session_id` (cascading to `<session>~review-%` children via SQL LIKE), sets `agent_status.ended_at`, sets `sessions.ended_at` and `sessions.end_state = "finished"`, writes a `spawn_outcomes` row, purges queued bus messages for the session, and removes the per-session host-API socket, the `agent-run.log`, and their per-session run directory under `$XDG_STATE_HOME/prism/run/<sessionDirHash>/`.
+- `prism cleanup` releases the session's allocated `harness_port` (sets `agent_status.harness_port = NULL`), clears `agent_status.harness_session_id` (cascading to `<session>~review-%` children via SQL LIKE), sets `agent_status.ended_at`, sets `sessions.ended_at` and `sessions.end_state = "finished"`, writes a `spawn_outcome` row, purges queued bus messages for the session, and removes the per-session host-API socket, the `agent-run.log`, and their per-session run directory under `$XDG_STATE_HOME/prism/run/<sessionDirHash>/`.
 - The `harness_port` release and `ended_at` stamp run regardless of whether the worktree path was found and regardless of whether the tmux session was still alive at cleanup time; they also run for sessions without a worktree (review subsessions named `<parent>~review-<N>-<agent>`). The `harness_session_id` clear is sequenced separately: it runs **after** the archive step (the resume-linkage sever deletes the same transcript JSONL the archive copies) and is skipped entirely in TWO classes — (a) when the archive step returns an error (#2219), and (b) when the archive step ran but the harness adapter reported no transcript was actually copied (the manifest-only cases: adapter's `Archive` saw `IsNotExist(srcPath)`, or `SourcePath` returned a sentinel path for skip paths 1–6 in `runSessionArchive`, #2336). In both classes the on-disk transcript and the resume pointer are left intact so a later cleanup re-run can still archive-then-sever.
 - Re-running `prism cleanup --yes --session <name>` on an already-ended session is idempotent: the `harness_port` and `ended_at` updates are no-op successes, the `ended_at` timestamp is not re-stamped (the `WHERE ended_at IS NULL` guard suppresses the UPDATE), and the command exits 0. When the first run already wrote the archive, the re-run's archive step returns `ErrAlreadyExists` and the `harness_session_id` clear is therefore reported as skipped (`"skipped: archive failed: …"`) rather than `true` — the pointer was already cleared and the transcript already archived-and-removed by the first run, so nothing is lost or re-deleted (#2219).
 - `prism cleanup` does **not** stamp `ended_at`, release a port, or clear a `harness_session_id` for an `agent_status` row that does not exist — there is no implicit row creation. An unknown session name is rejected up-front with an enumerated error by `cleanupCmd.RunE`'s pre-flight DB validation.

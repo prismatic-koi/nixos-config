@@ -1,5 +1,19 @@
 # Agents Project Guidance: nixos-config
 
+<!-- doclint-ignore: refs/stash, AllPackages.nix, allPackages.nix, delete_branch_on_merge -->
+<!--
+  The identifiers above are intentionally unresolvable against the local
+  source tree:
+
+  - `refs/stash` is a git-internal reference path (in .git/refs/), not a
+    file the repo tracks.
+  - `AllPackages.nix` and `allPackages.nix` are deliberate counter-
+    examples in the file-naming rule below — they are what the tree
+    should NOT contain.
+  - `delete_branch_on_merge` is a GitHub repo-level setting name managed
+    via the API, not a symbol in any file in this repo.
+-->
+
 This document provides guidance for AI agents on how to interact with this NixOS configuration repository.
 
 ## Application Configuration Lives in This Repo
