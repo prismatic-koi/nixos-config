@@ -1,5 +1,31 @@
 # Podman proxy — security spec
 
+<!-- doclint-ignore: CgroupBudget -->
+<!-- doclint-ignore: networkmode_host, networkmode_colon, networkmode_slash, networkmode_whitespace -->
+<!-- doclint-ignore: pidmode_host, ipcmode_host, utsmode_host, usernsmode_host, cgroupnsmode_host -->
+<!-- doclint-ignore: AGENTS.md -->
+<!--
+  The identifiers in the doclint-ignore lists above are intentionally
+  unresolvable against the static source:
+
+  - `CgroupBudget` is a hypothetical field used in the field-admission
+    walkthrough in §4. It does not exist in the current struct and is
+    not expected to; changing it to a real field would break the point
+    of the walkthrough.
+
+  - `<field>_host` / `<field>_colon` / `<field>_slash` /
+    `<field>_whitespace` are audit reason tokens constructed at runtime
+    by `denyIfUnsafeModeValue` as `strings.ToLower(fieldName) + "_host"`
+    (etc.). The literal `"_host"`/`"_colon"`/`"_slash"`/`"_whitespace"`
+    suffixes appear in policy.go but the composed tokens do not — grep
+    for the components, not the whole token.
+
+  - `AGENTS.md` is a cross-boundary reference to the repo-root file. In
+    a full checkout the basename resolves; in the nix sandbox where only
+    the prism subtree is copied in, it does not exist. The reference is
+    correct; only the sandbox visibility differs.
+-->
+
 This document is the formal security specification for the per-session
 filtering podman API socket proxy that ships with prism. It is the reference
 that future docker-/podman-API admission work must be audited against, and
@@ -255,7 +281,7 @@ Each line has the shape:
 | `method` | HTTP method. |
 | `endpoint` | Full request path (with the docker/podman API version prefix, e.g. `/v1.41/...` or `/v5/libpod/...`). |
 | `decision` | `allow` (forwarded upstream) or `deny` (synthesised response from the proxy). |
-| `reason` | Structured token naming the policy check that fired. Two shapes: (a) bare body-policy tokens — e.g. `host_bind:<path>`, `privileged`, `cap_add:<cap>`, `mount_bind:<source>`, `mount_volume_driver_config`, `mount_type_not_allowed:<type>`, `networkmode_host` / `networkmode_colon` / `networkmode_slash` / `networkmode_whitespace`, the same suffix family on `pidmode_*` / `ipcmode_*` / `utsmode_*` / `usernsmode_*` / `cgroupnsmode_*` — emitted by `policy.go::checkHostConfig` and friends; (b) endpoint-prefixed schema errors — `create_top:`, `create_hostconfig:`, `update:`, `exec:`, `volume_create:`, `network_create:`, `archive:`, `endpoint:` — followed by an `unknown_field:<json error>` / `malformed_body:<reason>` suffix when the strict JSON decode rejects the body. Grep the audit log for these exact tokens; do not paraphrase. |
+| `reason` | Structured token naming the policy check that fired. Two shapes: (a) bare body-policy tokens — e.g. `host_bind:<path>`, `privileged`, `cap_add:<cap>`, `mount_bind:<source>`, `mount_volume_driver_config`, `mount_type_not_allowed:<type>`, `networkmode_host` / `networkmode_colon` / `networkmode_slash` / `networkmode_whitespace`, the same suffix family on `pidmode_*` / `ipcmode_*` / `utsmode_*` / `usernsmode_*` / `cgroupnsmode_*` — emitted by `policy.go::checkHostConfig` and friends; (b) endpoint-prefixed schema errors — `create_top:`, `create_hostconfig:`, `update:`, `exec:`, `volumes_create:`, `networks_create:`, `archive_path:`, `archive_missing_path`, `endpoint_not_allowed:` — followed by an `unknown_field:<json error>` / `malformed_body:<reason>` suffix when the strict JSON decode rejects the body. Grep the audit log for these exact tokens; do not paraphrase. |
 
 ### Common rejection classes
 
@@ -274,7 +300,7 @@ source if your version of the proxy drifts.
 | Worker tries `--cap-add SYS_ADMIN` (with the default empty `AllowedCaps`) | `cap_add:SYS_ADMIN` (`checkHostConfig` CapAdd branch) | Expected. T6. If the workload genuinely needs a cap, that's a `Config.AllowedCaps` discussion — file an issue. |
 | Worker tries `--network=host` | `networkmode_host` (`denyIfUnsafeModeValue` via `checkNetworkMode`; the same helper emits `networkmode_colon` / `networkmode_slash` / `networkmode_whitespace` for the other categorised value-level rejections, and `network_mode_invalid:<value>` when no class matches and the user-defined-name regex fails) | Expected. T7. |
 | Worker tries `--pid=host` / `--ipc=host` / `--uts=host` / `--userns=host` / `--cgroupns=host` | `pidmode_host` / `ipcmode_host` / `utsmode_host` / `usernsmode_host` / `cgroupnsmode_host` (same `denyIfUnsafeModeValue` formatter on the five sibling fields; same `_colon` / `_slash` / `_whitespace` suffix family applies, plus `<field>_invalid:<value>` as the catch-all) | Expected. T7. |
-| Worker tries a brand-new docker-/podman-API field this struct doesn't admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` (or the matching `create_top:` / `update:` / `exec:` / `volume_create:` / `network_create:` prefix per endpoint) | Field-admission process (§4). |
+| Worker tries a brand-new docker-/podman-API field this struct doesn't admit | `create_hostconfig:unknown_field:json: unknown field "NewField"` (or the matching `create_top:` / `update:` / `exec:` / `volumes_create:` / `networks_create:` prefix per endpoint) | Field-admission process (§4). |
 | Worker gets `503` with `"podman socket unavailable: ..."` envelope | Audit log shows `decision=allow` then nothing — the proxy accepted policy-wise but the upstream isn't there | Bring the upstream up: Darwin `podman machine start`; NixOS `systemctl --user status podman.socket`. |
 | Worker gets `400` with `"malformed_body:empty"` or similar | `create_top:malformed_body:empty` (or the matching endpoint prefix) | Client is sending an empty / non-JSON `POST /containers/create` body. Bug in the client, not the proxy. |
 

@@ -1,5 +1,7 @@
 # PI harness wire protocol — design specification
 
+<!-- doclint-skip-file: this document specifies the wire protocol between the prism sidecar and the external pi coding-agent. Most backticked identifiers here (`RpcCommand`, `modelId`, TypeScript field names, snake_case RPC message types) live in the external pi package and cannot be resolved by the local doclint. -->
+
 **Status:** P2.WIRE design (issue #1208). Prescriptive: the implementations in
 P2.SIDECAR (#1209) and P2.EXTENSION (#1210) treat this document as the
 authoritative spec, not a starting point for negotiation. Frame schemas,
