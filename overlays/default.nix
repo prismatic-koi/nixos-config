@@ -79,6 +79,32 @@ rec {
         else
           prev.direnv;
 
+      # qutebrowser: widen the built-in AMD+Wayland GBM workaround guard in
+      # `misc/backendproblem.py::_fix_wayland_amd_gbm` from exact QtWebEngine
+      # 6.11.0 to all 6.11.x. Upstream self-deactivated the workaround on
+      # 6.11.1 assuming Qt fixed the underlying AMD GBM bug, but on our
+      # amdgpu+Hyprland machine (navi) the bug persists on 6.11.1: page
+      # elements render transparent/broken until `QTWEBENGINE_FORCE_USE_GBM=0`
+      # is set. Manually replicating that env var restores rendering, so we
+      # patch the version guard to `strip_patch() != VersionNumber(6, 11)` so
+      # every 6.11.x re-enters the known-good 6.11.0 code path.
+      #
+      # Upstream references:
+      #   https://github.com/qutebrowser/qutebrowser/issues/8841
+      #   https://github.com/NixOS/nixpkgs/issues/531703
+      #
+      # REMOVAL CONDITION: delete this override (and its patch file) once
+      # either
+      #   (a) upstream qutebrowser widens the guard itself (e.g. matching
+      #       all 6.11.x, or dropping the version check entirely), or
+      #   (b) Qt lands a real fix for the AMD+Wayland GBM path and the
+      #       workaround is no longer needed on our hardware — in which
+      #       case the whole `_fix_wayland_amd_gbm` codepath becomes
+      #       obsolete upstream and this patch with it.
+      qutebrowser = addPatches prev.qutebrowser [
+        ./qutebrowser-widen-amd-gbm-workaround.patch
+      ];
+
       # packages not yet in nixpkgs; use local definitions
       # playwright-cli is cross-platform: on Linux it uses pkgs.chromium
       # (the user's daily-driver browser, closure already paid for); on
