@@ -1,0 +1,30 @@
+Widen the AMD+Wayland GBM workaround guard from exact-6.11.0 to all 6.11.x.
+
+Upstream qutebrowser's _fix_wayland_amd_gbm() only fires the workaround
+(setting QTWEBENGINE_FORCE_USE_GBM=0) on exactly QtWebEngine 6.11.0, on the
+assumption that Qt 6.11.1 fixes the underlying AMD GBM path. On our
+amdgpu+Hyprland machine (navi) the bug persists on 6.11.1, causing
+transparent/broken page rendering. Manually launching with
+QTWEBENGINE_FORCE_USE_GBM=0 restores rendering.
+
+This patch replaces the exact-match comparison with strip_patch() so the
+workaround applies to every 6.11.x version. strip_patch() is already defined
+on qutebrowser's VersionNumber (qutebrowser/utils/utils.py) and returns a
+VersionNumber with only the major.minor segments.
+
+See:
+  https://github.com/qutebrowser/qutebrowser/issues/8841
+  https://github.com/NixOS/nixpkgs/issues/531703
+
+diff --git a/qutebrowser/misc/backendproblem.py b/qutebrowser/misc/backendproblem.py
+--- a/qutebrowser/misc/backendproblem.py
++++ b/qutebrowser/misc/backendproblem.py
+@@ -459,7 +459,7 @@ class _BackendProblemChecker:
+             return
+ 
+         versions = version.qtwebengine_versions(avoid_init=True)
+-        if versions.webengine != utils.VersionNumber(6, 11):
++        if versions.webengine.strip_patch() != utils.VersionNumber(6, 11):
+             # Older versions are not affected; assuming fixed with Qt 6.11.1
+             return
+ 
