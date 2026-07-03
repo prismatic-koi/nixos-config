@@ -219,8 +219,8 @@ func hostPISessionsRoot() (string, error) {
 // srcPath is expected to be a single file (the session JSONL), as returned by
 // SourcePath. If the path does not exist or is a directory (the latter occurs
 // when HarnessSessionID was empty and SourcePath returned the sessions root),
-// Archive returns nil and archiveDir is left empty — preserving the no-op
-// contract for sessions where PI never started.
+// Archive returns (false, nil) and archiveDir is left empty — preserving the
+// no-op contract for sessions where PI never started.
 //
 // archiveDir is the per-session archive directory itself (e.g.
 // .../<repo>/<startedAtISO>_<instanceID>/) — Archive writes
@@ -230,25 +230,32 @@ func hostPISessionsRoot() (string, error) {
 // into a single step when opencode was removed from the codebase, because pi
 // is the only remaining harness and pi's on-disk JSONL is already pi-mono v3
 // shaped — no normalisation pass remains.
-func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, archiveDir string, _ harnessarchive.SourceParams) error {
+//
+// Return value (issue #2336): (true, nil) when session.jsonl was written into
+// archiveDir from a real srcPath; (false, nil) when srcPath does not exist or
+// is a directory (the two "nothing to copy" cases). Callers rely on this bool
+// to gate the sever step — severPiResumeLinkage deletes the same file this
+// method reads, so severing on a not-copied outcome would destroy the
+// transcript without preserving a copy.
+func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, archiveDir string) (copied bool, err error) {
 	fi, err := os.Stat(srcPath)
 	if os.IsNotExist(err) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("pi archive: stat %q: %w", srcPath, err)
+		return false, fmt.Errorf("pi archive: stat %q: %w", srcPath, err)
 	}
 	if fi.IsDir() {
 		// SourcePath returned a directory (e.g. sessions root when
 		// HarnessSessionID is empty). Nothing to copy — no-op.
-		return nil
+		return false, nil
 	}
 
 	dst := filepath.Join(archiveDir, "session.jsonl")
 	if err := copyFile(srcPath, dst); err != nil {
-		return fmt.Errorf("pi archive: copy %q → %q: %w", srcPath, dst, err)
+		return false, fmt.Errorf("pi archive: copy %q → %q: %w", srcPath, dst, err)
 	}
-	return nil
+	return true, nil
 }
 
 // Version returns the version string reported by the pi binary (e.g. "1.2.3"),

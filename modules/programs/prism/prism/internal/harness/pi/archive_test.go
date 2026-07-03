@@ -211,10 +211,14 @@ func TestArchiveAdapter_SourcePath_HostMode_PICodingAgentDir_NonExistent(t *test
 	}
 
 	// Archive on the sentinel must be a no-op (the os.IsNotExist path),
-	// not an error.
+	// not an error, and must report copied == false.
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), got, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive on PI_CODING_AGENT_DIR=nonexistent sentinel: %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true on a non-existent sentinel path; want false (issue #2336)")
 	}
 	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
@@ -302,11 +306,17 @@ func TestArchiveAdapter_SourcePath_NoCWDDir(t *testing.T) {
 		t.Errorf("SourcePath (no dir): got %q, expected prefix %q", got, expectedPrefix)
 	}
 
-	// Archive should treat the sentinel path as a no-op.
+	// Archive should treat the sentinel path as a no-op (skip path 6: no
+	// matching file for HarnessSessionID) and report copied == false so the
+	// caller does not sever the pi resume linkage.
 	archiveDir := t.TempDir()
 	archiveAdapter := pi.NewArchiveAdapter()
-	if err := archiveAdapter.Archive(context.Background(), got, archiveDir, p); err != nil {
+	copied, err := archiveAdapter.Archive(context.Background(), got, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive with sentinel path: expected nil error, got %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true on a sentinel path with no matching JSONL; want false (issue #2336 skip path 6)")
 	}
 	// archiveDir must remain empty.
 	entries, _ := os.ReadDir(archiveDir)
@@ -322,8 +332,12 @@ func TestArchiveAdapter_Archive_Directory_NoOp(t *testing.T) {
 	srcDir := t.TempDir() // a real, existing directory
 	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
-	if err := a.Archive(context.Background(), srcDir, archiveDir, harnessarchive.SourceParams{}); err != nil {
+	copied, err := a.Archive(context.Background(), srcDir, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive with directory srcPath: expected nil error, got %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true when srcPath is a directory; want false (issue #2336)")
 	}
 	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
@@ -345,8 +359,12 @@ func TestArchiveAdapter_Archive_CopiesFileAsSessionJSONL(t *testing.T) {
 
 	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
-	if err := a.Archive(context.Background(), sessionFile, archiveDir, harnessarchive.SourceParams{}); err != nil {
+	copied, err := a.Archive(context.Background(), sessionFile, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive: %v", err)
+	}
+	if !copied {
+		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 
 	// Must produce archiveDir/session.jsonl with the correct content.
@@ -373,9 +391,12 @@ func TestArchiveAdapter_Archive_MissingSrcPath_NoError(t *testing.T) {
 	archiveDir := t.TempDir()
 	a := pi.NewArchiveAdapter()
 
-	err := a.Archive(context.Background(), "/nonexistent/pi/sessions/--tmp-test-foo--/session_xyz.jsonl", archiveDir, harnessarchive.SourceParams{})
+	copied, err := a.Archive(context.Background(), "/nonexistent/pi/sessions/--tmp-test-foo--/session_xyz.jsonl", archiveDir)
 	if err != nil {
 		t.Fatalf("Archive with missing src: expected nil error, got %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true on a non-existent src path; want false (issue #2336)")
 	}
 }
 
@@ -484,8 +505,12 @@ func TestArchiveAdapter_EndToEnd_SandboxExec(t *testing.T) {
 	}
 
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), srcPath, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive: %v", err)
+	}
+	if !copied {
+		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 
 	// The archive must contain the transcript — the pre-#2210 symptom was a
@@ -657,8 +682,12 @@ func TestArchiveAdapter_EndToEnd_HostMode(t *testing.T) {
 	}
 
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), srcPath, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive: %v", err)
+	}
+	if !copied {
+		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 
 	// Post-fix layout: session.jsonl is written directly into archiveDir.
@@ -722,17 +751,21 @@ func TestArchiveAdapter_EndToEnd_HostMode_PICodingAgentDir(t *testing.T) {
 	}
 
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), srcPath, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), srcPath, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive: %v", err)
+	}
+	if !copied {
+		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 
 	finalJSONL := filepath.Join(archiveDir, "session.jsonl")
-	got, err := os.ReadFile(finalJSONL)
+	gotFile, err := os.ReadFile(finalJSONL)
 	if err != nil {
 		t.Fatalf("read archive session.jsonl: %v", err)
 	}
-	if string(got) != sessionContent {
-		t.Errorf("archive session.jsonl: got %q, want %q", got, sessionContent)
+	if string(gotFile) != sessionContent {
+		t.Errorf("archive session.jsonl: got %q, want %q", gotFile, sessionContent)
 	}
 }
 
@@ -849,8 +882,12 @@ func TestArchiveAdapter_Archive_Bwrap_EndToEnd(t *testing.T) {
 	}
 
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), got, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive: %v", err)
+	}
+	if !copied {
+		t.Error("Archive reported copied == false after a real file copy; want true (issue #2336)")
 	}
 	dst := filepath.Join(archiveDir, "session.jsonl")
 	gotContent, err := os.ReadFile(dst)
@@ -886,10 +923,15 @@ func TestArchiveAdapter_SourcePath_Bwrap_EmptySessionName(t *testing.T) {
 		t.Fatalf("SourcePath (bwrap empty SessionName): %v", err)
 	}
 
-	// Archive on that sentinel must be a no-op (no matching transcript exists).
+	// Archive on that sentinel must be a no-op (no matching transcript exists)
+	// and must report copied == false.
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), got, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive on bwrap-empty-SessionName sentinel: %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true on a sentinel bwrap path with no transcript; want false (issue #2336)")
 	}
 	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {
@@ -942,10 +984,15 @@ func TestArchiveAdapter_SourcePath_Bwrap_NoMatchingFile(t *testing.T) {
 	if !strings.HasPrefix(got, sessDir+string(filepath.Separator)) {
 		t.Errorf("SourcePath sentinel must be inside %q; got %q", sessDir, got)
 	}
-	// Archive on the sentinel is a no-op (the file does not exist).
+	// Archive on the sentinel is a no-op (the file does not exist) and must
+	// report copied == false.
 	archiveDir := t.TempDir()
-	if err := a.Archive(context.Background(), got, archiveDir, p); err != nil {
+	copied, err := a.Archive(context.Background(), got, archiveDir)
+	if err != nil {
 		t.Fatalf("Archive on bwrap-no-match sentinel: %v", err)
+	}
+	if copied {
+		t.Error("Archive reported copied == true on a sentinel bwrap path with no matching JSONL; want false (issue #2336)")
 	}
 	entries, _ := os.ReadDir(archiveDir)
 	if len(entries) != 0 {

@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
@@ -63,26 +64,18 @@ func writeFakePiResumeJSONL(t *testing.T, home, worktree, harnessSessionID strin
 // row carrying a harness_session_id, the column must be NULL — otherwise the
 // next spawn on the same branch name would read the stale id back and pi
 // would resume the dead conversation.
+//
+// Post-#2336 the sever is gated on the archive step actually copying a
+// transcript, so this test seeds a full archivable pi session via
+// seedRowWithLifecycleFields.
 func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
-	clearPICodingAgentDir(t)
-	t.Setenv("HOME", t.TempDir())
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
-	d, err := db.Open(dbFile)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
 	const session = "myrepo@feature"
 	const sid = "019e72d2-446a-712f-baea-7abc9e7ce7df"
-	if err := d.UpsertStatus(session, "myrepo", "", "running", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus: %v", err)
-	}
-	if err := d.UpdateHarnessSessionID(session, sid); err != nil {
-		t.Fatalf("UpdateHarnessSessionID: %v", err)
-	}
-	d.Close()
+	_ = seedRowWithLifecycleFields(t, dbFile, session, "", sid)
 
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
@@ -117,31 +110,27 @@ func TestHeadlessCleanup_ClearsHarnessSessionID(t *testing.T) {
 // FS-side half of issue #2035. After headlessCleanup runs against a session
 // whose pi transcript is on disk, the *_<id>.jsonl file under the worktree's
 // encoded-cwd directory must be removed.
+//
+// Post-#2336 the sever runs only after the archive step reports
+// copied == true, so the seed is a full archivable pi session via
+// seedRowWithLifecycleFields (which plants the transcript inside a
+// test-owned HOME so the sever path can locate and remove it).
 func TestHeadlessCleanup_RemovesPiResumeJSONL(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
-	clearPICodingAgentDir(t)
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	const session = "myrepo@feature"
-	const worktree = "/home/user/code/myrepo/feature"
-	const sid = "019e72d2-446a-712f-baea-7abc9e7ce7df"
-
-	transcript := writeFakePiResumeJSONL(t, home, worktree, sid)
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
-	d, err := db.Open(dbFile)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	if err := d.UpsertStatus(session, "myrepo", worktree, "running", nil, nil); err != nil {
-		t.Fatalf("UpsertStatus: %v", err)
-	}
-	if err := d.UpdateHarnessSessionID(session, sid); err != nil {
-		t.Fatalf("UpdateHarnessSessionID: %v", err)
-	}
-	d.Close()
+	const session = "myrepo@feature"
+	const sid = "019e72d2-446a-712f-baea-7abc9e7ce7df"
+	_ = seedRowWithLifecycleFields(t, dbFile, session, "", sid)
+
+	// Locate the transcript file the seed helper planted so we can assert
+	// its post-cleanup absence. The helper plants under
+	// <HOME>/.pi/agent/sessions/<encodePiCWD(worktree)>/*_<sid>.jsonl.
+	home := os.Getenv("HOME")
+	worktree := filepath.Join(home, "worktree", strings.ReplaceAll(session, "/", "-"))
+	sessDir := filepath.Join(home, ".pi", "agent", "sessions", piEncodeCWD(worktree))
+	transcript := filepath.Join(sessDir, "2026-01-02T03-04-05-000Z_"+sid+".jsonl")
 
 	SetTestDBPath(dbFile)
 	t.Cleanup(func() { SetTestDBPath("") })
@@ -163,28 +152,31 @@ func TestHeadlessCleanup_RemovesPiResumeJSONL(t *testing.T) {
 // child rows (session_name LIKE "<parent>~review-%") must also have their
 // harness_session_id nulled. This mirrors SetEnded's behaviour so that the
 // resume linkage is severed for review children too.
+//
+// Post-#2336 the sever runs only when the archive step actually copied the
+// parent's transcript, so seedRowWithLifecycleFields is used for the parent.
+// The review children (which do not require their own archive gate to be
+// unlocked — severPiResumeLinkage's LIKE cascade nulls them from the same
+// UPDATE that clears the parent) get minimal seeds.
 func TestHeadlessCleanup_ClearsHarnessSessionIDForReviewChildren(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
-	clearPICodingAgentDir(t)
-	t.Setenv("HOME", t.TempDir())
 
 	const parent = "myrepo@feature"
 	child1 := parent + "~review-1-architect"
 	child2 := parent + "~review-2-skeptic"
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	_ = seedRowWithLifecycleFields(t, dbFile, parent, "", "019e0000-0000-0000-0000-000000000001")
+
 	d, err := db.Open(dbFile)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	for _, name := range []string{parent, child1, child2} {
+	for _, name := range []string{child1, child2} {
 		if err := d.UpsertStatus(name, "myrepo", "", "running", nil, nil); err != nil {
 			t.Fatalf("UpsertStatus %q: %v", name, err)
 		}
-	}
-	if err := d.UpdateHarnessSessionID(parent, "019e0000-0000-0000-0000-000000000001"); err != nil {
-		t.Fatalf("UpdateHarnessSessionID parent: %v", err)
 	}
 	if err := d.UpdateHarnessSessionID(child1, "019e0000-0000-0000-0000-000000000002"); err != nil {
 		t.Fatalf("UpdateHarnessSessionID child1: %v", err)
@@ -223,16 +215,24 @@ func TestHeadlessCleanup_ClearsHarnessSessionIDForReviewChildren(t *testing.T) {
 
 // TestHeadlessCleanup_PiResumeAbsentSucceeds verifies the edge case where
 // cleanup is invoked on a session whose pi resume JSONL never existed
-// (fresh session, no transcript yet). Cleanup must still succeed and clear
-// the DB column.
+// (fresh session, no transcript yet). Cleanup must still succeed.
+//
+// Post-#2336 semantics: when the transcript is missing, sever is SKIPPED —
+// harness_session_id is retained so a subsequent cleanup can archive-then-
+// sever if the transcript reappears (and the pi sessions dir is not
+// modified). Pre-#2336 this test asserted the DB column was cleared, which
+// was exactly the manifest-only silent-loss codepath the issue documents.
 func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	withNoopTmux(t)
 	clearPICodingAgentDir(t)
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 
 	const session = "myrepo@brand-new"
-	const worktree = "/home/user/code/myrepo/brand-new"
+	worktree := filepath.Join(home, "code", "myrepo", "brand-new")
 	const sid = "019e0000-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -242,6 +242,23 @@ func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	}
 	if err := d.UpsertStatus(session, "myrepo", worktree, "running", nil, nil); err != nil {
 		t.Fatalf("UpsertStatus: %v", err)
+	}
+	instanceID := "22222222-3333-4444-5555-666666666666"
+	if err := d.SetInstanceID(session, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	if err := d.SetIsolationMode(session, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: session,
+		Repo:        "myrepo",
+		Worktree:    worktree,
+		Harness:     "pi",
+		StartedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
 	}
 	if err := d.UpdateHarnessSessionID(session, sid); err != nil {
 		t.Fatalf("UpdateHarnessSessionID: %v", err)
@@ -264,8 +281,17 @@ func TestHeadlessCleanup_PiResumeAbsentSucceeds(t *testing.T) {
 	if st == nil {
 		t.Fatal("row missing")
 	}
-	if st.HarnessSessionID != nil {
-		t.Errorf("HarnessSessionID = %q after cleanup; want nil", *st.HarnessSessionID)
+	// Post-#2336: transcript missing → sever skipped → harness_session_id
+	// retained so a follow-up cleanup can archive-then-sever if the file
+	// reappears.
+	if st.HarnessSessionID == nil || *st.HarnessSessionID != sid {
+		t.Errorf("HarnessSessionID = %v after cleanup; want retained (%q) — sever must be skipped when transcript missing (issue #2336)",
+			st.HarnessSessionID, sid)
+	}
+	// Sanity: ended_at was still stamped — cleanup succeeded from the
+	// user's perspective; only the pi-resume linkage stayed intact.
+	if st.EndedAt == nil {
+		t.Errorf("EndedAt = nil after cleanup; want stamped (cleanup must still complete)")
 	}
 }
 

@@ -1154,20 +1154,35 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 // On success it calls UpdateSessionArchivePath to record the archive directory
 // path in the DB.
 //
-// Return value: the error from archive.Run, or nil on success. The caller is
-// responsible for deciding whether the error should be fatal:
+// Return values (issue #2336): (copied, err). err is the archive.Run error
+// (nil on success). copied reports whether the harness adapter actually
+// wrote a transcript file into the archive directory — (false, nil) is the
+// "nothing to copy" outcome (manifest-only archive), (true, nil) means the
+// transcript survived the archive step. The caller (archiveThenSeverPiResume)
+// uses copied to gate the sever step: severing when copied == false would
+// delete the same source file the archive step failed to preserve.
+//
+// The caller is responsible for deciding whether an error should be fatal:
 //   - archive.ErrAlreadyExists should be propagated — the AC requires cleanup
 //     to exit non-zero when the archive directory already exists on a re-run.
 //   - Other errors are treated as non-fatal (logged + cleanup continues).
 //
-// Sessions with an unknown harness (no adapter registered) return a clear error
-// and are skipped (AC: edge-case — unknown harness); returns nil.
-// Sessions with unknown or unsupported isolation modes log a clear warning and
-// are skipped (AC: edge-case — unknown isolation mode); returns nil.
-func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) error {
+// Skip paths that return (false, nil) — archive was not attempted and no
+// transcript was preserved:
+//  1. instanceID == ""
+//  2. statusIsolationMode is not one of host/bwrap/sandbox-exec
+//  3. SessionByInstanceID errors or returns nil
+//  4. no ArchiveAdapter registered for sess.Harness
+//  5. archiveAdapter.SourcePath returns an error
+//
+// The 6th path (SourcePath returns a sentinel non-existent path with nil
+// error, or a directory) is signalled by the adapter's Archive method
+// returning (false, nil): the manifest-only archive is still written and
+// archive_path is still populated in the DB, but the sever must be skipped.
+func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode string) (copied bool, err error) {
 	if instanceID == "" {
 		// No instance_id — nothing to archive.
-		return nil
+		return false, nil
 	}
 
 	// Validate isolation mode before doing any work.
@@ -1177,19 +1192,19 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	default:
 		proglog.Warnf("[prism] archive: skipping session %q — unsupported isolation mode %q\n",
 			sessionName, statusIsolationMode)
-		return nil
+		return false, nil
 	}
 
 	// Fetch the full sessions row (has ended_at/end_state set by caller).
-	sess, err := d.SessionByInstanceID(instanceID)
-	if err != nil {
-		proglog.Warnf("[prism] archive: get session %q: %v — skipping archive\n", instanceID, err)
-		return nil
+	sess, sessErr := d.SessionByInstanceID(instanceID)
+	if sessErr != nil {
+		proglog.Warnf("[prism] archive: get session %q: %v — skipping archive\n", instanceID, sessErr)
+		return false, nil
 	}
 	if sess == nil {
 		// No sessions row — pre-migration or session that never inserted.
 		proglog.Warnf("[prism] archive: no sessions row for instance_id %q — skipping archive\n", instanceID)
-		return nil
+		return false, nil
 	}
 
 	// Resolve the archive adapter for the session's harness. A missing or
@@ -1197,11 +1212,15 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	archiveAdapter, adapterErr := harness.ArchiveAdapterFor(sess.Harness)
 	if adapterErr != nil {
 		proglog.Warnf("[prism] archive: skipping session %q — %v\n", sessionName, adapterErr)
-		return nil
+		return false, nil
 	}
 
-	// Resolve source path (harness-specific storage root) via the adapter.
-	ctx := context.Background()
+	// Build srcParams. Fully resolve HarnessSessionID BEFORE calling
+	// SourcePath (issue #2336): the old code did the sessions-NULL fallback
+	// after SourcePath had already been invoked with the empty value, so the
+	// pi adapter's file-scan fell through to the sessions-root branch and
+	// Archive no-op'd on the directory. Doing the fallback here ensures
+	// SourcePath sees the resolved value the first time.
 	srcParams := harnessarchive.SourceParams{
 		SessionName:   sessionName,
 		InstanceID:    instanceID,
@@ -1210,45 +1229,6 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	}
 	if sess.HarnessSessionID != nil {
 		srcParams.HarnessSessionID = *sess.HarnessSessionID
-	}
-	srcPath, srcErr := archiveAdapter.SourcePath(srcParams)
-	if srcErr != nil {
-		proglog.Warnf("[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
-		return nil
-	}
-
-	// Resolve harness version via the adapter (replaces archive.HarnessVersion()).
-	harnessVersion, _ := archiveAdapter.Version(ctx)
-
-	// Build archive params from DB fields.
-	params := archive.Params{
-		InstanceID:     sess.InstanceID,
-		SessionName:    sess.SessionName,
-		Harness:        sess.Harness,
-		Repo:           sess.Repo,
-		Worktree:       sess.Worktree,
-		StartedAt:      sess.StartedAt,
-		EndedAt:        time.Now(), // EndedAt was just set in DB; use now as fallback
-		IsolationMode:  statusIsolationMode,
-		PrismVersion:   archive.PrismGitSHA(),
-		HarnessVersion: harnessVersion,
-		// Copier delegates the harness-specific file-copy to the adapter's Archive
-		// method, allowing any registered harness to provide its own copy logic.
-		// archiveDir is the per-session archive directory itself; the adapter
-		// writes its final-layout artifacts (e.g. session.jsonl for pi) directly
-		// there — there is no longer a `raw/` subdirectory indirection.
-		Copier: func(copyCtx context.Context, archiveDir string) error {
-			return archiveAdapter.Archive(copyCtx, srcPath, archiveDir, srcParams)
-		},
-	}
-	if sess.AgentRole != nil {
-		params.AgentRole = *sess.AgentRole
-	}
-	if sess.RootAgentName != nil {
-		params.RootAgentName = *sess.RootAgentName
-	}
-	if sess.HarnessSessionID != nil {
-		params.HarnessSessionID = *sess.HarnessSessionID
 	} else {
 		// sessions.harness_session_id is NULL — this can happen for sessions
 		// started before UpdateHarnessSessionID was fixed to write to both
@@ -1257,10 +1237,57 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 		if sid, fallbackErr := d.HarnessSessionIDForInstance(instanceID); fallbackErr != nil {
 			proglog.Warnf("[prism] archive: harness_session_id fallback for %q: %v\n", instanceID, fallbackErr)
 		} else if sid != "" {
-			params.HarnessSessionID = sid
-			// Also update srcParams so the Copier closure uses the resolved ID.
 			srcParams.HarnessSessionID = sid
 		}
+	}
+
+	// Resolve source path (harness-specific storage root) via the adapter.
+	ctx := context.Background()
+	srcPath, srcErr := archiveAdapter.SourcePath(srcParams)
+	if srcErr != nil {
+		proglog.Warnf("[prism] archive: SourcePath for session %q: %v — skipping archive\n", sessionName, srcErr)
+		return false, nil
+	}
+
+	// Resolve harness version via the adapter (replaces archive.HarnessVersion()).
+	harnessVersion, _ := archiveAdapter.Version(ctx)
+
+	// Build archive params from DB fields.
+	params := archive.Params{
+		InstanceID:       sess.InstanceID,
+		SessionName:      sess.SessionName,
+		Harness:          sess.Harness,
+		HarnessSessionID: srcParams.HarnessSessionID,
+		Repo:             sess.Repo,
+		Worktree:         sess.Worktree,
+		StartedAt:        sess.StartedAt,
+		EndedAt:          time.Now(), // EndedAt was just set in DB; use now as fallback
+		IsolationMode:    statusIsolationMode,
+		PrismVersion:     archive.PrismGitSHA(),
+		HarnessVersion:   harnessVersion,
+		// Copier delegates the harness-specific file-copy to the adapter's Archive
+		// method, allowing any registered harness to provide its own copy logic.
+		// archiveDir is the per-session archive directory itself; the adapter
+		// writes its final-layout artifacts (e.g. session.jsonl for pi) directly
+		// there — there is no longer a `raw/` subdirectory indirection.
+		//
+		// The Copier captures the outer `copied` variable so runSessionArchive
+		// can propagate the adapter's copied/not-copied signal back up to
+		// archiveThenSeverPiResume without changing archive.Run's signature
+		// (issue #2336).
+		Copier: func(copyCtx context.Context, archiveDir string) error {
+			c, cErr := archiveAdapter.Archive(copyCtx, srcPath, archiveDir)
+			if c {
+				copied = true
+			}
+			return cErr
+		},
+	}
+	if sess.AgentRole != nil {
+		params.AgentRole = *sess.AgentRole
+	}
+	if sess.RootAgentName != nil {
+		params.RootAgentName = *sess.RootAgentName
 	}
 	if sess.GroupID != nil {
 		params.GroupID = *sess.GroupID
@@ -1302,7 +1329,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	archivePath, archiveErr := archive.Run(params)
 	if archiveErr != nil {
 		proglog.Warnf("[prism] archive: copy failed for session %q: %v\n", sessionName, archiveErr)
-		return archiveErr
+		return false, archiveErr
 	}
 
 	if updErr := d.UpdateSessionArchivePath(instanceID, archivePath); updErr != nil {
@@ -1313,7 +1340,7 @@ func runSessionArchive(d *db.DB, sessionName, instanceID, statusIsolationMode st
 	// byte-copied raw/session.jsonl to session.jsonl. With pi as the only
 	// remaining harness, Archive writes the final layout in one step — no
 	// post-process Export is needed.
-	return nil
+	return copied, nil
 }
 
 func init() {
@@ -1397,7 +1424,8 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 }
 
 // archiveThenSeverPiResume runs the session archive for sessionName and then
-// — only when the archive step did not fail — severs the pi resume linkage.
+// — only when the archive step ACTUALLY PRESERVED THE TRANSCRIPT — severs
+// the pi resume linkage.
 //
 // Ordering is load-bearing (issue #2219): runSessionArchive copies the pi
 // transcript JSONL (<piSessionsRoot>/<encodePiCWD(worktree)>/*_<id>.jsonl)
@@ -1407,6 +1435,15 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 // cleanup paths (doCleanup, headlessCleanupWithJSON, closeSession,
 // headlessCloseSessionWithJSON) route through this helper so the ordering
 // cannot silently diverge per-path again.
+//
+// Gate refinement (issue #2336): the previous gate was "archiveErr == nil",
+// which permitted a manifest-only archive (no session.jsonl) to trigger a
+// sever that then deleted the transcript from the live pi sessions dir
+// without preserving a copy. The new gate is (archiveErr == nil AND the
+// adapter reported copied == true). runSessionArchive plumbs the copied
+// bool up from the ArchiveAdapter.Archive return value, so both the six
+// pre-copy skip paths and the manifest-only in-copier case route through
+// the same not-copied guard.
 //
 // Archive-failure semantic: when runSessionArchive returns an error
 // (including archive.ErrAlreadyExists), the sever is skipped ENTIRELY — the
@@ -1419,26 +1456,47 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 // until a cleanup succeeds — recoverable by the operator, unlike a deleted
 // transcript.
 //
+// Transcript-missing semantic: when runSessionArchive returns (false, nil)
+// — archive attempted but no transcript was actually copied — the sever is
+// skipped too, with an explicit "skipped: transcript missing" outcome on
+// the JSON envelope. Same reasoning: the DB pointer stays populated so a
+// re-run can archive-then-sever, and the pi sessions dir is untouched.
+//
 // Returns the archive error (nil on success or when there was nothing to
 // archive — runSessionArchive treats an empty instanceID and other
 // missing-precondition cases as skips) and the sever outcome in the
 // cleanupResult convention: true when the sever completed, or a string
 // describing why it did not (sever error, or skipped due to archive
-// failure). Headless callers assign the outcome to
-// result.HarnessSessionIDCleared; the interactive paths discard it and rely
-// on the proglog warnings emitted here and inside severPiResumeLinkage.
+// failure, or skipped due to transcript-missing). Headless callers assign
+// the outcome to result.HarnessSessionIDCleared; the interactive paths
+// discard it and rely on the proglog warnings emitted here and inside
+// severPiResumeLinkage.
 func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode string) (archiveErr error, severOutcome any) {
-	archiveErr = runSessionArchive(d, sessionName, instanceID, isolationMode)
+	copied, archiveErr := runSessionArchive(d, sessionName, instanceID, isolationMode)
 	if archiveErr != nil {
 		proglog.Warnf("[prism] warning: pi resume sever skipped for %s — archive failed, leaving transcript in place: %v\n",
 			sessionName, archiveErr)
 		return archiveErr, fmt.Sprintf("skipped: archive failed: %v", archiveErr)
+	}
+	if !copied && !severGateForceAlwaysSever {
+		proglog.Warnf("[prism] warning: pi resume sever skipped for %s — transcript not copied (archive step preserved nothing), leaving pi state intact\n",
+			sessionName)
+		return nil, "skipped: transcript missing"
 	}
 	if severErr := severPiResumeLinkage(d, sessionName); severErr != nil {
 		return nil, severErr.Error()
 	}
 	return nil, true
 }
+
+// severGateForceAlwaysSever is a test-only knob used by the revert-and-watch-
+// fail tests in cleanup_sever_gate_test.go to prove the copied-gate in
+// archiveThenSeverPiResume is not a no-op. Production code never mutates it.
+// The variable is package-scoped rather than a `testing.T` argument because
+// the gate is checked inside archiveThenSeverPiResume, which sits several
+// call frames deep and is not reachable from tests without either a knob or
+// substantial refactoring. See issue #2336 test discipline for the pattern.
+var severGateForceAlwaysSever bool
 
 // instanceIDFromStatus returns the instance_id from the agent_status row for
 // sessionName, or an empty string when the row is missing, instance_id is

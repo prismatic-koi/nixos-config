@@ -25,8 +25,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/prismatic-koi/prism/internal/db"
 )
@@ -62,11 +65,42 @@ func captureStdoutDuringFn(t *testing.T, fn func()) string {
 	return string(<-done)
 }
 
-// seedRowWithLifecycleFields creates an agent_status row with harness_port and
-// harness_session_id populated, mirroring the live-session state before
-// cleanup. Returns the seeded port for later assertions.
+// seedRowWithLifecycleFields creates a fully-archivable pi session so that
+// runSessionArchive can copy the on-disk transcript and severPiResumeLinkage
+// clears the harness_session_id column (issue #2336 gate). Concretely, this
+// helper:
+//
+//   - lazily plants a test-owned $HOME + XDG_DATA_HOME/XDG_STATE_HOME (so
+//     hostPISessionsRoot resolves under a temp dir, not the developer's real
+//     home), clearing PI_CODING_AGENT_DIR so the env-var branch does not
+//     shadow the fallback—idempotent across multiple calls within one test;
+//   - writes an agent_status row with harness_port + harness_session_id +
+//     instance_id + isolation_mode="host";
+//   - writes a matching sessions row (harness="pi") so
+//     runSessionArchive.SessionByInstanceID succeeds; and
+//   - plants a fake pi transcript at the host-mode sessions root so
+//     piArchiveAdapter.Archive returns (copied=true), unlocking the sever.
+//
+// Prior to #2336 the helper produced only an agent_status row — the archive
+// pipeline hit skip path 1 ("instance_id empty") on every run, and
+// archiveThenSeverPiResume proceeded to the sever anyway because the gate
+// was `archiveErr == nil`. Under the new gate (sever only when the adapter
+// reports copied == true), those minimal seeds no longer clear
+// harness_session_id — which was exactly the class of bug #2336 fixes. The
+// helper now seeds a healthy session end-to-end so the tests still validate
+// the DB-clear invariant they were written for.
+//
+// Returns the seeded port for later assertions.
 func seedRowWithLifecycleFields(t *testing.T, dbFile, session, worktree, harnessSessionID string) int {
 	t.Helper()
+	home := ensurePiCleanupTestHome(t)
+	if worktree == "" {
+		worktree = filepath.Join(home, "worktree", strings.ReplaceAll(session, "/", "-"))
+	}
+	// Plant a transcript file so runSessionArchive.Copier actually copies
+	// something (adapter reports copied=true), enabling the sever step.
+	writeFakePiResumeJSONL(t, home, worktree, harnessSessionID)
+
 	d, err := db.Open(dbFile)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -79,10 +113,47 @@ func seedRowWithLifecycleFields(t *testing.T, dbFile, session, worktree, harness
 	if err != nil {
 		t.Fatalf("AllocatePort: %v", err)
 	}
+	instanceID := uuid.NewString()
+	if err := d.SetInstanceID(session, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	if err := d.SetIsolationMode(session, "host"); err != nil {
+		t.Fatalf("SetIsolationMode: %v", err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: session,
+		Repo:        "prism-test",
+		Worktree:    worktree,
+		Harness:     "pi",
+		StartedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
 	if err := d.UpdateHarnessSessionID(session, harnessSessionID); err != nil {
 		t.Fatalf("UpdateHarnessSessionID: %v", err)
 	}
 	return port
+}
+
+// ensurePiCleanupTestHome plants a test-owned $HOME + XDG_* on first call
+// within a test, and returns the same HOME on subsequent calls so multiple
+// invocations of seedRowWithLifecycleFields land their transcripts under a
+// single stable root. Detection heuristic: the current HOME is already
+// pointed inside os.TempDir() (Go's t.TempDir returns paths there), in which
+// case reuse it. Otherwise plant a fresh one.
+func ensurePiCleanupTestHome(t *testing.T) string {
+	t.Helper()
+	home := os.Getenv("HOME")
+	if home != "" && strings.HasPrefix(home, os.TempDir()) {
+		return home
+	}
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+	t.Setenv("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	return home
 }
 
 // assertLifecycleColumnsCleared asserts that the row for session has ended_at
@@ -277,7 +348,10 @@ func TestHeadlessCleanup_Idempotent(t *testing.T) {
 		t.Fatalf("unmarshal envelope: %v\nraw: %q", err, out)
 	}
 
-	for _, field := range []string{"ended_at_stamped", "harness_port_released", "harness_session_id_cleared"} {
+	// ended_at_stamped and harness_port_released are idempotent no-ops on the
+	// second run — both fields report `true` because the underlying db
+	// operations are safe to re-run.
+	for _, field := range []string{"ended_at_stamped", "harness_port_released"} {
 		v, ok := env[field]
 		if !ok {
 			t.Errorf("envelope missing field %q on idempotent re-run; got: %v", field, env)
@@ -286,6 +360,17 @@ func TestHeadlessCleanup_Idempotent(t *testing.T) {
 		if got, isBool := v.(bool); !isBool || !got {
 			t.Errorf("idempotent re-run: field %q got %v (%T), want true", field, v, v)
 		}
+	}
+
+	// harness_session_id_cleared surfaces the archive collision on the
+	// idempotent re-run: the first run wrote <archive_root>/<repo>/<...>_/
+	// on disk, so archive.Run returns ErrAlreadyExists on the second attempt.
+	// The sever is skipped, but the DB column stays NULL from the first
+	// run (sanity check below) so the user's state is still correct.
+	if v, ok := env["harness_session_id_cleared"]; !ok {
+		t.Errorf("envelope missing field %q on idempotent re-run; got: %v", "harness_session_id_cleared", env)
+	} else if s, isStr := v.(string); !isStr || !strings.Contains(s, "archive") {
+		t.Errorf("idempotent re-run: harness_session_id_cleared = %v (%T), want a string reporting the archive collision", v, v)
 	}
 
 	// Sanity: the row is still in the cleaned-up state after two runs.
