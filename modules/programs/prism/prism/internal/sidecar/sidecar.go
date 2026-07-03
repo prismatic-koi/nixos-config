@@ -1888,17 +1888,23 @@ var abortFrameBytes = []byte(`{"type":"abort"}` + "\n")
 
 // acceptOutcome enumerates the reasons an Accept attempt in
 // runStartupSocketPipe returned without a live connection. It is required
-// (instead of a plain bool) so that the caller can distinguish a startup
-// timeout from a concurrent ctx cancellation — the timeout path must record
-// state=error in the DB even if ctx happens to be cancelled in the same
-// scheduling tick (#1760).
+// (instead of a plain bool) so that the caller can distinguish:
+//
+//   - a startup timeout from a concurrent ctx cancellation — the timeout
+//     path must record state=error in the DB even if ctx happens to be
+//     cancelled in the same scheduling tick (#1760); and
+//   - a genuine accept timeout from a listener-level error — before #2341
+//     both paths shared one branch, so a listener close (Accept returns
+//     "use of closed network connection", the typical SIGTERM path) was
+//     mislabelled as a timeout in both the log line and the state_change
+//     note.
 type acceptOutcome int
 
 const (
 	acceptConnected   acceptOutcome = iota // got a connection
 	acceptTimedOut                         // timer fired before connect or ctx cancel
 	acceptCtxCanceled                      // ctx cancelled (and timer had not yet fired)
-	acceptListenerErr                      // listener.Accept returned an error
+	acceptListenerErr                      // listener.Accept returned an error (carried in the returned err)
 )
 
 // runStartupSocketPipe binds the per-session Unix socket (Linux) or TCP
@@ -2016,7 +2022,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		conn net.Conn
 		err  error
 	}
-	acceptWithTimeout := func(timeout time.Duration) (net.Conn, acceptOutcome) {
+	acceptWithTimeout := func(timeout time.Duration) (net.Conn, acceptOutcome, error) {
 		ch := make(chan acceptResult, 1)
 		go func() {
 			c, e := ln.Accept()
@@ -2027,7 +2033,7 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			return nil, acceptTimedOut
+			return nil, acceptTimedOut, nil
 		case <-ctx.Done():
 			// Prefer the timeout outcome whenever the wall-clock deadline has
 			// already passed, regardless of which channel happened to be ready
@@ -2037,14 +2043,17 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 			// well before the timer goroutine actually delivers to timer.C,
 			// so a strict "is timer.C ready?" check is not reliable.
 			if !time.Now().Before(deadline) {
-				return nil, acceptTimedOut
+				return nil, acceptTimedOut, nil
 			}
-			return nil, acceptCtxCanceled
+			return nil, acceptCtxCanceled, nil
 		case ar := <-ch:
 			if ar.err != nil {
-				return nil, acceptListenerErr
+				// Carry the underlying Accept() error so the caller can log
+				// it and route the failure through a distinct diagnostic
+				// path from a genuine accept timeout (#2341).
+				return nil, acceptListenerErr, ar.err
 			}
-			return ar.conn, acceptConnected
+			return ar.conn, acceptConnected, nil
 		}
 	}
 
@@ -2144,17 +2153,17 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 
 	for {
 		// --- Wait for the extension to connect ----------------------------
-		conn, outcome := acceptWithTimeout(acceptTimeout)
+		conn, outcome, acceptErr := acceptWithTimeout(acceptTimeout)
 		if outcome != acceptConnected {
 			switch outcome {
-			case acceptTimedOut, acceptListenerErr:
-				// Timeout waiting for (re)connection (or listener error, which
-				// the writer goroutine also treats as a hard failure). We must
-				// record the error state in the DB BEFORE consulting ctx —
-				// under contended scheduling the timer fire and an external
-				// ctx cancel can land in the same window, and skipping the
-				// write because ctx happens to be cancelled produces the
-				// flake described in #1760 (state stays "idle" forever).
+			case acceptTimedOut:
+				// Genuine accept timeout — no (re)connection arrived within
+				// acceptTimeout. We must record the error state in the DB
+				// BEFORE consulting ctx — under contended scheduling the
+				// timer fire and an external ctx cancel can land in the same
+				// window, and skipping the write because ctx happens to be
+				// cancelled produces the flake described in #1760 (state
+				// stays "idle" forever).
 				s.mu.Lock()
 				s.flushPipeAccum()
 				s.upsertState(agent.StateError, nil, nil)
@@ -2164,6 +2173,38 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 				s.mu.Unlock()
 				err := fmt.Errorf("sidecar: runStartupSocketPipe: timed out waiting for extension to (re)connect (timeout=%s)", acceptTimeout)
 				s.logger().Printf("%v", err)
+				close(outCh)
+				<-writerDone
+				return err
+			case acceptListenerErr:
+				// Listener Accept() returned an error — typically "use of
+				// closed network connection" after Shutdown() closed the
+				// listener on the SIGTERM path, but any other socket-level
+				// fault lands here too.
+				//
+				// This is a DIFFERENT diagnostic class from a genuine accept
+				// timeout: before #2341 both paths shared the "reconnect
+				// timeout" log line and state_change note, so a sub-second
+				// listener close was mislabelled as a 5-minute timeout
+				// misconfiguration in the log. The underlying Accept() error
+				// (acceptErr) is logged verbatim so the true cause is on the
+				// record, and the state_change note is distinct so DB
+				// forensics can tell the two classes apart.
+				//
+				// The #1760 invariant applies to this branch as well: the
+				// state=error write must land BEFORE consulting ctx, since
+				// the SIGTERM path closes the listener via Shutdown() AND
+				// cancels ctx concurrently — skipping the write when ctx is
+				// already cancelled would leave the session stuck in "idle".
+				s.mu.Lock()
+				s.flushPipeAccum()
+				s.upsertState(agent.StateError, nil, nil)
+				s.writeEvent("state_change", map[string]string{"state": string(agent.StateError), "note": "pipe listener error"}, nil)
+				s.lastState = agent.StateError
+				s.harnessPipeOutCh = nil
+				s.mu.Unlock()
+				s.logger().Printf("sidecar: runStartupSocketPipe: pipe listener error: %v", acceptErr)
+				err := fmt.Errorf("sidecar: runStartupSocketPipe: pipe listener error: %w", acceptErr)
 				close(outCh)
 				<-writerDone
 				return err
