@@ -311,6 +311,32 @@ func TestScan_FileWithMember_BareBasename(t *testing.T) {
 	}
 }
 
+// TestScan_RecursesIntoDocsSubdirectories asserts that discoverDocs walks
+// docs/ recursively, so files like `docs/invariants/session-lifecycle.md`
+// and `docs/diagnoses/*.md` are scanned. Regression against the initial
+// single-level `os.ReadDir` implementation surfaced by review-context on
+// PR #2344.
+func TestScan_RecursesIntoDocsSubdirectories(t *testing.T) {
+	root := synthPrismRoot(t)
+	subDoc := filepath.Join(root, "docs", "invariants", "nested.md")
+	if err := os.MkdirAll(filepath.Dir(subDoc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(subDoc, []byte("A reference to `mountTypeAllowlist` in a nested doc.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("expected nested doc to be scanned (want 1 finding for `mountTypeAllowlist`), got %d: %+v", len(findings), findings)
+	}
+	if findings[0].Token != "mountTypeAllowlist" || !strings.HasSuffix(findings[0].File, "nested.md") {
+		t.Errorf("expected finding on nested.md's `mountTypeAllowlist`, got %+v", findings[0])
+	}
+}
+
 func TestScan_FindingIncludesResolutionRule(t *testing.T) {
 	// AC #2: every finding must name the file, line, offending token,
 	// AND the resolution rule that was attempted.

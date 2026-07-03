@@ -134,20 +134,26 @@ func LocateRoots() (prismSourceRoot, repoRoot string, err error) {
 func discoverDocs(prismSourceRoot, repoRoot string) ([]string, error) {
 	var out []string
 
-	// modules/programs/prism/prism/docs/*.md
+	// modules/programs/prism/prism/docs/**/*.md — recursive walk so that
+	// subdirectory docs (docs/invariants/, docs/diagnoses/) are also
+	// scanned. Those files are as drift-prone as the top-level docs (they
+	// cite Go identifiers, SQL columns, and internal/... file paths).
 	docDir := filepath.Join(prismSourceRoot, "docs")
-	entries, err := os.ReadDir(docDir)
-	if err != nil && !os.IsNotExist(err) {
-		return nil, err
-	}
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	walkErr := filepath.WalkDir(docDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		if !strings.HasSuffix(e.Name(), ".md") {
-			continue
+		if d.IsDir() {
+			return nil
 		}
-		out = append(out, filepath.Join(docDir, e.Name()))
+		if !strings.HasSuffix(d.Name(), ".md") {
+			return nil
+		}
+		out = append(out, path)
+		return nil
+	})
+	if walkErr != nil && !os.IsNotExist(walkErr) {
+		return nil, walkErr
 	}
 
 	// Repo-root AGENTS.md (only if repoRoot is known and readable).

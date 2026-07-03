@@ -175,7 +175,15 @@ func buildSourceIndexWithRepoRoot(prismRoot, repoRoot string) (*sourceIndex, err
 		if base := filepath.Base(path); base != "" {
 			idx.basenames[base] = append(idx.basenames[base], path)
 		}
-		if !indexableExtensions[ext] {
+		// In the repo-root walk (unlike the prismRoot walk) markdown files
+		// also contribute identifiers: agent prompt files under
+		// modules/programs/prism/agents/ are the source of truth for review
+		// verdict names (`PASS_WITH_DISAGREEMENT` etc.) and other tokens
+		// that prism docs legitimately cross-reference. Prism's own docs/
+		// tree is walked as prismRoot, which SkipDir-guards this path, so
+		// we don't accidentally use a doc's prose as evidence that a token
+		// resolves.
+		if ext != ".md" && !indexableExtensions[ext] {
 			return nil
 		}
 		b, err := os.ReadFile(path)
