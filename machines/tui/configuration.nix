@@ -66,10 +66,19 @@
   # Bootloader.
   boot.loader = {
     systemd-boot.enable = true;
-    # Cap generations kept on the ESP; unbounded, they will eventually
-    # fill the partition and wedge the next switch at the initrd copy
-    # (same failure mode as navi, see machines/navi/configuration.nix).
-    systemd-boot.configurationLimit = 10;
+    # Same conservative cap as navi. tui declares 1G in disko.nix but
+    # disko does not retroactively resize an installed partition — navi
+    # is the proof case: disko.nix declares 1G, /dev/nvme0n1p2 on the
+    # host is still 500M. Until tui's actual ESP is measured (df -h
+    # /boot on the host) we assume it may also still be 500M. On
+    # unstable each kernel+initrd set costs ~92M (14M bzImage + 78M
+    # initrd, measured on navi); 4 sets ~368M plus one incoming ~78M
+    # copy during a switch fits any ESP >= 500M. systemd-boot has the
+    # same copy-before-prune failure mode as grub's install-grub.pl, so
+    # once the ESP fills, every subsequent switch fails at the copy and
+    # the prune never runs. Do not bump this back up without first
+    # measuring the actual ESP and re-deriving the maths.
+    systemd-boot.configurationLimit = 4;
     efi.canTouchEfiVariables = true;
   };
 
