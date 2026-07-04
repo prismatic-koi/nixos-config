@@ -2,6 +2,8 @@ package container
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -101,9 +103,138 @@ func githubAccountFromURL(remoteURL string) string {
 	return ""
 }
 
+// GitHubAccountFromBareRoot is the exported wrapper around
+// githubAccountFromBareRoot. Used by cmd/sidecar.go to resolve the sidecar's
+// own GitHub account for env-sanitisation at startup (issue #2348).
+func GitHubAccountFromBareRoot(bareRoot string) string {
+	return githubAccountFromBareRoot(bareRoot)
+}
+
+// GitHubTokenKey returns the <ACCOUNT>_<ROLE> key used to look up the token
+// file path in Config.GitHubTokenPaths (and the matching PRISM_GITHUB_TOKEN_*
+// env var). Returns "" when the account or role is unresolvable.
+//
+// account should be the GitHub account name (as returned by githubAccountFromURL
+// / githubAccountFromBareRoot). role is the agent role string ("worker" or
+// "coordinator" — case-insensitive; any other value yields "").
+func GitHubTokenKey(account, role string) string {
+	if account == "" {
+		return ""
+	}
+	accountKey := strings.ToUpper(strings.ReplaceAll(account, "-", "_"))
+	roleKey := strings.ToUpper(role)
+	if roleKey != "WORKER" && roleKey != "COORDINATOR" {
+		return ""
+	}
+	return accountKey + "_" + roleKey
+}
+
+// IsShellExpansionLiteral reports whether s appears to be an unexpanded shell
+// command-substitution literal (starts with "$(", after trimming ASCII
+// whitespace). This is the defence-in-depth guard against the #2348 root cause:
+// if the tmux server is started from a non-shell context, PRISM_GITHUB_TOKEN_*
+// env vars rendered as "$(cat /run/secrets/…)" propagate through the process
+// tree verbatim rather than being expanded. Any such value must NEVER be
+// injected as GITHUB_TOKEN — gh would send it to GitHub, get a 401, and
+// silently break every operation.
+//
+// Trimming whitespace catches leading spaces / newlines from misformatted
+// config, but does NOT unwrap surrounding quotes: a value like `"$(cat …)"`
+// is treated as valid (opaque token) — a shell would strip the quotes before
+// exec, so if quotes are still present the substitution definitely was NOT
+// expanded and gh would fail on the quotes anyway. That is a caller bug, not
+// something this helper needs to catch.
+func IsShellExpansionLiteral(s string) bool {
+	return strings.HasPrefix(strings.TrimSpace(s), "$(")
+}
+
+// readGitHubTokenFile reads the file at path, trims surrounding whitespace,
+// and returns the token contents. Returns an error naming path (never
+// containing the file's byte contents) when the file is absent, unreadable,
+// or empty after trimming.
+//
+// The whitespace trim mirrors gh's own tolerance for a trailing newline in a
+// token file. Path is included in every error so operators can trace which
+// sops secret is broken without having to guess.
+func readGitHubTokenFile(path string) (string, error) {
+	if path == "" {
+		return "", errors.New("empty path")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok == "" {
+		return "", fmt.Errorf("read %s: file is empty (after whitespace trim)", path)
+	}
+	return tok, nil
+}
+
+// ResolveGitHubToken returns the GitHub token for the (account, role)
+// implied by cfg.BareRoot and cfg.AgentRole, using the resolution order:
+//
+//  1. cfg.GitHubTokenPaths[<ACCOUNT>_<ROLE>] — read the file.  If the KEY IS
+//     PRESENT but the file is missing / unreadable / empty, this returns a
+//     non-nil error naming the path.  This is the primary path.
+//  2. env var PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> — legacy path for hosts that
+//     have not yet migrated to the file-paths config.  Rejects values that
+//     look like unexpanded shell substitutions (see IsShellExpansionLiteral).
+//  3. env var GITHUB_TOKEN — final fallback, same $(-literal guard.
+//  4. cfg.GitHubTokenPath (single-token file) — the #2029 Darwin sops-decrypt
+//     rescue path.
+//
+// Returns ("", nil) when NO source is available (no key in map, no env var
+// set, no legacy path) — the caller decides whether that is a hard failure.
+// Returns ("", err) ONLY when step 1 fired but the file was unreadable —
+// this is the "configured but broken" case the AC calls out as a hard fail.
+func ResolveGitHubToken(cfg Config) (string, error) {
+	account := githubAccountFromBareRoot(cfg.BareRoot)
+	key := GitHubTokenKey(account, cfg.AgentRole)
+
+	// 1. File path from GitHubTokenPaths (primary).  A KEY that is present
+	//    with a non-empty value is a hard commitment to that path — a
+	//    missing / unreadable file is an operator-visible failure, not a
+	//    silent fall-through.  See ResolveGitHubToken doc.
+	if key != "" && cfg.GitHubTokenPaths != nil {
+		if path := cfg.GitHubTokenPaths[key]; path != "" {
+			tok, err := readGitHubTokenFile(path)
+			if err != nil {
+				return "", fmt.Errorf("resolve GitHub token for %s: %w", key, err)
+			}
+			return tok, nil
+		}
+	}
+
+	// 2. Legacy per-role env var, guarded against $(-literals.
+	if key != "" {
+		if tok := os.Getenv("PRISM_GITHUB_TOKEN_" + key); tok != "" && !IsShellExpansionLiteral(tok) {
+			return tok, nil
+		}
+	}
+
+	// 3. Inherited GITHUB_TOKEN, same guard.
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" && !IsShellExpansionLiteral(tok) {
+		return tok, nil
+	}
+
+	// 4. Legacy single-token file (#2029 Darwin sops-decrypt rescue).
+	if cfg.GitHubTokenPath != "" {
+		if tok, err := readGitHubTokenFile(cfg.GitHubTokenPath); err == nil {
+			return tok, nil
+		}
+		// A missing file here is NOT a hard error — this is the last-resort
+		// rescue path, not a committed primary source.  The lack of a token
+		// simply falls through to the "nothing available" result below.
+	}
+
+	return "", nil
+}
+
 // CredentialEnvVars is the exported version of credentialEnvVars. Used by
-// cmd/agent_run.go to inject credential env vars into the sandbox-exec env.
-func (m *Manager) CredentialEnvVars() []string {
+// cmd/agent_run_sandbox_exec_darwin.go to inject credential env vars into the
+// sandbox-exec env.
+func (m *Manager) CredentialEnvVars() ([]string, error) {
 	return m.credentialEnvVars()
 }
 
@@ -111,22 +242,28 @@ func (m *Manager) CredentialEnvVars() []string {
 // the container based on the agent role and current host environment.
 // Only vars that are set on the host are forwarded — unset vars are skipped.
 //
-// GitHub token selection (4-PAT architecture):
+// GitHub token selection (issue #2348, 4-PAT architecture):
 // The correct token is chosen based on the GitHub account (derived from the
-// repo's origin remote URL) and the agent role:
+// repo's origin remote URL) and the agent role. The four supported keys are:
 //
-//	PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR   — prismatic-koi + coordinator
-//	PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER        — prismatic-koi + worker
-//	PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_COORDINATOR — thankyou-payroll + coordinator
-//	PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
+//	PRISMATIC_KOI_COORDINATOR    — prismatic-koi + coordinator
+//	PRISMATIC_KOI_WORKER         — prismatic-koi + worker
+//	THANKYOU_PAYROLL_COORDINATOR — thankyou-payroll + coordinator
+//	THANKYOU_PAYROLL_WORKER      — thankyou-payroll + worker
 //
-// Falls back to host GITHUB_TOKEN if the specific token is not set
-// (supports host-mode, --host-mode spawns, and migration period). When that
-// is also empty, falls back to reading the sops secret file at
-// m.cfg.GitHubTokenPath directly (rescues the Darwin sops decrypt race that
-// freezes an empty GITHUB_TOKEN into the tmux server env, #2029). Precedence:
-// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> > inherited GITHUB_TOKEN > file fallback.
-func (m *Manager) credentialEnvVars() []string {
+// Resolution order (see ResolveGitHubToken):
+//
+//  1. cfg.GitHubTokenPaths[<KEY>] — read the sops-decrypted file at spawn
+//     time.  PRIMARY.  A configured-but-unreadable file is a hard error.
+//  2. env var PRISM_GITHUB_TOKEN_<KEY> — legacy path, $(-literal guarded.
+//  3. env var GITHUB_TOKEN — final fallback, $(-literal guarded.
+//  4. cfg.GitHubTokenPath (single-token file) — #2029 Darwin rescue.
+//
+// The $(-literal guard is defence in depth against the #2348 root cause: the
+// tmux server started from a non-shell context propagates `$(cat …)` env-var
+// values verbatim (never expanded), so if we see one we treat it as unset
+// rather than sending a literal `$(cat …)` string to gh.
+func (m *Manager) credentialEnvVars() ([]string, error) {
 	var vars []string
 
 	// External-tool credentials — forwarded for all agent roles.
@@ -144,56 +281,21 @@ func (m *Manager) credentialEnvVars() []string {
 		"OPENROUTER_API_KEY",
 	}
 	for _, k := range forwardKeys {
-		if v := os.Getenv(k); v != "" {
+		if v := os.Getenv(k); v != "" && !IsShellExpansionLiteral(v) {
 			vars = append(vars, k+"="+v)
 		}
 	}
 
-	// GitHub token — 4-PAT architecture: account × role → specific token.
-	// Derive the account from the repo's git remote URL.
-	account := githubAccountFromBareRoot(m.cfg.BareRoot)
-	role := m.cfg.AgentRole
-
-	// Build the env var name: PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>
-	// where account is uppercased with hyphens replaced by underscores.
-	var tokenEnvVar string
-	if account != "" {
-		accountKey := strings.ToUpper(strings.ReplaceAll(account, "-", "_"))
-		roleKey := strings.ToUpper(role)
-		if roleKey == "WORKER" || roleKey == "COORDINATOR" {
-			tokenEnvVar = "PRISM_GITHUB_TOKEN_" + accountKey + "_" + roleKey
-		}
+	// GitHub token — file-path first, env-var fallback, with the $(-literal
+	// guard applied to both env-var sources.  A configured-but-unreadable
+	// file is a hard error (surfaced to the caller so the spawn fails with
+	// a diagnostic naming the path — never the value).
+	tok, err := ResolveGitHubToken(m.cfg)
+	if err != nil {
+		return nil, err
 	}
-
-	// Try specific token first, then fall back to host GITHUB_TOKEN.
-	if tokenEnvVar != "" {
-		if tok := os.Getenv(tokenEnvVar); tok != "" {
-			vars = append(vars, "GITHUB_TOKEN="+tok)
-			return vars
-		}
-	}
-	// Fallback: use host GITHUB_TOKEN (supports --host-mode and migration period).
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+	if tok != "" {
 		vars = append(vars, "GITHUB_TOKEN="+tok)
-		return vars
-	}
-
-	// Last-resort fallback: read the sops secret file directly. On Darwin a
-	// darwin-rebuild switch tears down and re-bootstraps the sops-nix launchd
-	// agent, which re-decrypts asynchronously. A shell that sources
-	// hm-session-vars.sh during that window freezes GITHUB_TOKEN="" (empty, not
-	// unset) into the sticky tmux server env, so the inherited value above is
-	// empty. Reading the file directly makes the agent independent of a
-	// correctly populated inherited environment (#2029). A missing or empty
-	// file is treated as "no token" — we never inject an empty GITHUB_TOKEN=.
-	// The contents are added only to the returned env slice; they are never
-	// logged.
-	if m.cfg.GitHubTokenPath != "" {
-		if data, err := os.ReadFile(m.cfg.GitHubTokenPath); err == nil {
-			if tok := strings.TrimSpace(string(data)); tok != "" {
-				vars = append(vars, "GITHUB_TOKEN="+tok)
-			}
-		}
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and
@@ -209,5 +311,69 @@ func (m *Manager) credentialEnvVars() []string {
 	// GIT_COMMON_DIR breaks ref lookup in the git version used in the container
 	// image and is therefore also omitted.
 
-	return vars
+	return vars, nil
+}
+
+// SanitizeGitHubTokenEnv sanitises the current process's environment so that
+// downstream subprocesses inherit valid GitHub token values regardless of how
+// this process was launched.
+//
+// This is the fix for the sidecar half of issue #2348.  The sidecar (and any
+// prism subcommand that shells out to gh) inherits its env from whatever
+// launched it.  Under the boot-restore path the tmux server was launched from
+// a systemd user unit — a non-shell context — so `$(cat /run/secrets/…)`
+// values propagated verbatim through the process tree.  When the sidecar then
+// spawned `prism review` as a subprocess (via os.Environ()), that subprocess
+// ran gh against the literal `$(cat …)` string and every call 401'd.
+//
+// SanitizeGitHubTokenEnv walks paths (keyed by <ACCOUNT>_<ROLE>) and, for
+// each readable file, sets PRISM_GITHUB_TOKEN_<KEY> in the current process
+// env to the file contents.  It also refreshes the process's own GITHUB_TOKEN
+// from the file that matches (account, role) if provided, so gh calls made
+// directly by THIS process succeed too.
+//
+// A file that is missing or unreadable is logged but is NOT fatal at this
+// layer — the sidecar must start even if one token file is broken.  Downstream
+// resolution via credentialEnvVars / ResolveGitHubToken will surface the
+// per-operation failure with a diagnostic naming the path.
+//
+// account and role are the pair for THIS process's own GITHUB_TOKEN.  Pass
+// account="" (or role="") to only sanitise the four PRISM_GITHUB_TOKEN_* vars
+// without touching GITHUB_TOKEN.
+//
+// This function calls os.Setenv, so it is NOT safe to call from tests that
+// run in parallel without t.Setenv-style isolation.  Callers must not invoke
+// it from an init() or a goroutine — it should be called exactly once,
+// synchronously, near process startup.
+func SanitizeGitHubTokenEnv(paths map[string]string, account, role string) {
+	for key, path := range paths {
+		if path == "" {
+			continue
+		}
+		tok, err := readGitHubTokenFile(path)
+		if err != nil {
+			log.Printf("container: SanitizeGitHubTokenEnv: %s: %v", key, err)
+			continue
+		}
+		if err := os.Setenv("PRISM_GITHUB_TOKEN_"+key, tok); err != nil {
+			log.Printf("container: SanitizeGitHubTokenEnv: setenv PRISM_GITHUB_TOKEN_%s: %v", key, err)
+		}
+	}
+	if key := GitHubTokenKey(account, role); key != "" {
+		if path, ok := paths[key]; ok && path != "" {
+			if tok, err := readGitHubTokenFile(path); err == nil {
+				if setErr := os.Setenv("GITHUB_TOKEN", tok); setErr != nil {
+					log.Printf("container: SanitizeGitHubTokenEnv: setenv GITHUB_TOKEN: %v", setErr)
+				}
+			}
+			// Errors reading the account/role-specific file are already logged
+			// by the loop above; do not double-log here.
+		}
+	} else if inherited := os.Getenv("GITHUB_TOKEN"); IsShellExpansionLiteral(inherited) {
+		// No (account, role) provided but the inherited GITHUB_TOKEN is a
+		// broken shell literal — unset it so downstream gh calls fail
+		// cleanly (with an "unauthenticated" error naming gh) rather than
+		// sending a literal `$(cat …)` string to GitHub.
+		_ = os.Unsetenv("GITHUB_TOKEN")
+	}
 }

@@ -272,6 +272,21 @@ type Config struct {
 	// server env (#2029). When empty, the file fallback is skipped.
 	GitHubTokenPath string
 
+	// GitHubTokenPaths maps <ACCOUNT>_<ROLE> keys (e.g. PRISMATIC_KOI_WORKER,
+	// THANKYOU_PAYROLL_COORDINATOR) to the absolute host path of the
+	// corresponding sops-decrypted GitHub token file. This is the primary
+	// source of truth for GitHub token resolution as of issue #2348:
+	// credentialEnvVars reads the file at spawn time so the token value never
+	// depends on shell expansion having happened for the PRISM_GITHUB_TOKEN_*
+	// env vars — which is what broke every session under the boot-restore
+	// path (tmux started from a systemd unit, `$(cat …)` never expanded).
+	// When a key IS present in this map and the file at that path is missing
+	// or unreadable, credentialEnvVars errors out with a diagnostic naming
+	// the path (never the value). When the map is empty or the key is absent,
+	// credentialEnvVars falls back to the env-var chain (with a $(-literal
+	// guard).
+	GitHubTokenPaths map[string]string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session
@@ -408,6 +423,15 @@ type Manager struct {
 	// BuildArgs. BuildArgs cannot return an error, so the error is stored
 	// here and checked by Prepare after BuildArgs returns.
 	piBwrapErr error
+
+	// credentialsErr holds any error produced by credentialEnvVars during
+	// BuildArgs.  As of issue #2348 credentialEnvVars can fail when a
+	// configured GitHub token file path is unreadable, and the spawn must
+	// fail with a diagnostic naming the path (never the value) rather than
+	// silently proceeding with no token.  BuildArgs cannot return an error,
+	// so it stashes the error here and Prepare surfaces it — same pattern
+	// as piBwrapErr.
+	credentialsErr error
 }
 
 // New creates a Manager for the given config. It does not start the container.

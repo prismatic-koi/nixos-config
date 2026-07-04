@@ -84,6 +84,13 @@ let
     # Last-resort fallback read by credentialEnvVars when the inherited
     # GITHUB_TOKEN is empty (Darwin sops decrypt race, #2029).
     github_token_path = githubTokenPath;
+    # github_token_paths: absolute paths to the four fine-grained PAT files
+    # keyed by <ACCOUNT>_<ROLE> (PRISMATIC_KOI_WORKER, THANKYOU_PAYROLL_COORDINATOR,
+    # …).  credentialEnvVars reads the file at spawn time so token resolution
+    # never depends on shell expansion — the root cause of #2348, where the
+    # boot-restore path started tmux from a systemd unit and every session's
+    # GITHUB_TOKEN was frozen to the literal string $(cat /run/secrets/…).
+    github_token_paths = config.nx.programs.prism.githubTokenPaths;
   };
 in
 {

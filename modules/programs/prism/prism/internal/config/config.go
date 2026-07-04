@@ -101,6 +101,20 @@ type Config struct {
 	// server env (#2029). When empty, the file fallback is skipped.
 	GitHubTokenPath string `json:"github_token_path"`
 
+	// GitHubTokenPaths maps <ACCOUNT>_<ROLE> keys (e.g. PRISMATIC_KOI_WORKER,
+	// THANKYOU_PAYROLL_COORDINATOR) to the absolute host path of the
+	// corresponding sops-decrypted GitHub token file. Threaded into
+	// container.Config so credentialEnvVars can resolve the correct token by
+	// reading the file at spawn time — independent of any shell expansion of
+	// the PRISM_GITHUB_TOKEN_* env vars. This is the primary source of truth
+	// for token resolution as of issue #2348 (boot-restore path launched tmux
+	// from a systemd unit and every session's GITHUB_TOKEN was frozen to the
+	// literal string $(cat /run/secrets/…), because the env vars were rendered
+	// as shell command substitutions that only expand under a login shell).
+	// Empty map means no per-role file paths configured — credentialEnvVars
+	// then falls back to the env-var path with a $(-literal guard.
+	GitHubTokenPaths map[string]string `json:"github_token_paths,omitempty"`
+
 	// Restore behaviour.
 	// RestoreStaggerDelayMs is the delay in milliseconds inserted between
 	// successive session creates in `prism restore` to flatten the startup
@@ -185,6 +199,7 @@ type parsedConfig struct {
 	SshSigningKeyName         string             `json:"ssh_signing_key_name"`
 	SshBin                    string             `json:"ssh_bin"`
 	GitHubTokenPath           string             `json:"github_token_path"`
+	GitHubTokenPaths          *map[string]string `json:"github_token_paths"`
 	PIExtensionDir            string             `json:"pi_extension_dir"`
 	RestoreStaggerDelayMs     *int               `json:"restore_stagger_delay_ms"`
 	BwrapConcurrencyCap       *int               `json:"bwrap_concurrency_cap"`
@@ -357,6 +372,9 @@ func load() Config {
 	}
 	if parsed.GitHubTokenPath != "" {
 		cfg.GitHubTokenPath = parsed.GitHubTokenPath
+	}
+	if parsed.GitHubTokenPaths != nil {
+		cfg.GitHubTokenPaths = *parsed.GitHubTokenPaths
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir

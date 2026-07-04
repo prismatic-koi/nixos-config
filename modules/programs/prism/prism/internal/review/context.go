@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
@@ -151,10 +152,21 @@ const ghTimeout = 30 * time.Second
 // Uses a 30-second timeout (matches mergequeue.execGH convention) so a hanging
 // gh subprocess (network partition, GitHub 5xx, ssh auth prompt) does not
 // block the entire review spawn indefinitely.
+//
+// Env handling (issue #2348): the child process's env is built explicitly
+// rather than inherited implicitly.  If the inherited GITHUB_TOKEN is a
+// shell command-substitution literal (starts with `$(`), it is stripped so
+// that gh does not send the literal `$(cat …)` string to GitHub and 401.
+// This is defence in depth on top of the sidecar's SanitizeGitHubTokenEnv
+// call at startup — the sidecar's fix covers the boot-restore path, and
+// this covers the case of `prism review` being invoked directly from a
+// systemd-launched shell context (e.g. a coordinator running review
+// on the host without going through the sidecar's /review handler).
 func runGH(args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), ghTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", args...)
+	cmd.Env = sanitisedGHEnv(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -168,6 +180,33 @@ func runGH(args ...string) (string, error) {
 		return "", err
 	}
 	return stdout.String(), nil
+}
+
+// sanitisedGHEnv returns env with any GITHUB_TOKEN / PRISM_GITHUB_TOKEN_*
+// entries whose value is a shell command-substitution literal (`$(…)`)
+// removed.  This is the runGH-side defence against the #2348 failure mode
+// where the tmux server was launched from a non-shell context and the token
+// env vars propagated verbatim through the process tree.  Every other
+// non-token entry is passed through untouched.
+func sanitisedGHEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			out = append(out, kv)
+			continue
+		}
+		if (k == "GITHUB_TOKEN" || strings.HasPrefix(k, "PRISM_GITHUB_TOKEN_")) &&
+			container.IsShellExpansionLiteral(v) {
+			// Drop the entry entirely rather than passing `$(cat …)` to gh.
+			// gh will then fall back to its own keyring / config-file token
+			// resolution and emit a clear "unauthenticated" error if none
+			// is available, rather than 401'ing on the literal string.
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // FetchPRContextWithOpts fetches PR metadata, git log, diff, and linked issues.

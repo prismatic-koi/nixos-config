@@ -23,6 +23,12 @@ func RunGHForTest(args ...string) (string, error) {
 	return runGH(args...)
 }
 
+// SanitisedGHEnvForTest exposes sanitisedGHEnv for external test coverage of
+// the $(-literal guard added in issue #2348.
+func SanitisedGHEnvForTest(env []string) []string {
+	return sanitisedGHEnv(env)
+}
+
 // RunGitInWorktreeForTest is an exported wrapper around runGitInWorktree for
 // use in timeout tests.
 func RunGitInWorktreeForTest(worktree string, args ...string) string {

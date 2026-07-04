@@ -245,6 +245,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshSigningKeyName:   cfg.SshSigningKeyName,
 		SshBin:              cfg.SshBin,
 		GitHubTokenPath:     cfg.GitHubTokenPath,
+		GitHubTokenPaths:    cfg.GitHubTokenPaths,
 		HostAPISockPath:     hostAPISockPath,
 		InstanceID:          instanceID,
 		RuntimeEnv:          sandboxRuntimeEnv,
@@ -333,7 +334,15 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 
 	// Inject credential env vars (LLM API keys, GITHUB_TOKEN).
-	env = append(env, m.CredentialEnvVars()...)
+	// A non-nil error means a configured GitHub token file path was
+	// unreadable — fail the spawn loudly with a diagnostic naming the path
+	// (never the value), per issue #2348.  Silently proceeding with no token
+	// would produce a session that 401's on every gh call.
+	credEnv, credErr := m.CredentialEnvVars()
+	if credErr != nil {
+		return fmt.Errorf("agent-run: %w", credErr)
+	}
+	env = append(env, credEnv...)
 
 	// Inject harness-specific runtime env vars and profile AgentEnvVars.
 	env = container.AppendSandboxEnvVarsKV(env, ctrCfg)
