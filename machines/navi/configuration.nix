@@ -76,7 +76,14 @@
     efiSupport = true;
     efiInstallAsRemovable = true;
     device = "nodev";
-    configurationLimit = 20; # Keep only 20 most recent generations in /boot
+    # /boot is 500M; on unstable each kernel+initrd set costs ~92M in
+    # /boot/kernels (14M bzImage + 78M initrd, measured on the host).
+    # 500M / ~92M ≈ 5 sets, minus headroom for the incoming copy during a
+    # switch → 4 is the safe upper bound. install-grub.pl copies the new
+    # initrd BEFORE pruning stale files, so once /boot is full the prune
+    # never runs and every subsequent switch fails at the copy. Do not
+    # bump this back up without also growing /boot.
+    configurationLimit = 4;
   };
 
   networking.hostName = "navi";
