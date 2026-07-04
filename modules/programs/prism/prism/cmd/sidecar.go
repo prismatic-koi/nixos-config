@@ -189,6 +189,21 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	prismCfg := config.Load()
 	_ = prismCfg
 
+	// Sanitise the sidecar's own environment so that any subprocess it later
+	// spawns (e.g. `prism review` via the /review host-API handler, which
+	// inherits os.Environ()) sees valid GitHub token values, regardless of
+	// how prism itself was launched.  Fixes the sidecar half of issue #2348:
+	// under the boot-restore path the tmux server is started from a systemd
+	// user unit, so `$(cat /run/secrets/…)` env-var values propagate
+	// verbatim through the process tree — without this call, gh 401's on
+	// every subprocess-issued API call until a `prism restart` clears the
+	// broken tmux server env.  The account for GITHUB_TOKEN itself is
+	// derived from the worktree's bare repo, which is resolved lower down;
+	// resolve it once here so we can populate GITHUB_TOKEN too.
+	sidecarBareRoot := git.BareRoot(worktree)
+	sidecarAccount := container.GitHubAccountFromBareRoot(sidecarBareRoot)
+	container.SanitizeGitHubTokenEnv(prismCfg.GitHubTokenPaths, sidecarAccount, agentRole)
+
 	// Resolve the agent model once via the harness adapter. The adapter is
 	// constructed transiently here for the EffectiveModel call; a fresh
 	// adapter with the resolved model is constructed below for the sidecar.

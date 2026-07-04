@@ -45,10 +45,20 @@ func clearTokenEnv(t *testing.T) {
 	}
 }
 
-// findGitHubToken returns the value of the GITHUB_TOKEN=… entry in vars, and
-// whether such an entry was present at all. A present-but-empty entry
-// (GITHUB_TOKEN=) returns ("", true) so tests can assert it is never produced.
-func findGitHubToken(vars []string) (string, bool) {
+// findGitHubToken invokes m.CredentialEnvVars and returns the value of the
+// GITHUB_TOKEN=… entry, and whether such an entry was present at all. A
+// present-but-empty entry (GITHUB_TOKEN=) returns ("", true) so tests can
+// assert it is never produced.
+//
+// Treats a non-nil err from CredentialEnvVars as a fatal setup failure via
+// t.Fatal. Tests that specifically exercise the error path do NOT go through
+// this helper — they call m.CredentialEnvVars directly and inspect the error.
+func findGitHubToken(t *testing.T, m *container.Manager) (string, bool) {
+	t.Helper()
+	vars, err := m.CredentialEnvVars()
+	if err != nil {
+		t.Fatalf("CredentialEnvVars returned error: %v", err)
+	}
 	for _, v := range vars {
 		if len(v) >= len("GITHUB_TOKEN=") && v[:len("GITHUB_TOKEN=")] == "GITHUB_TOKEN=" {
 			return v[len("GITHUB_TOKEN="):], true
@@ -75,7 +85,7 @@ func TestCredentialEnvVars_FileFallback_EmptyEnv(t *testing.T) {
 	path := writeTokenFile(t, "ghp_fromfile\n")
 
 	m := container.New(container.Config{GitHubTokenPath: path})
-	tok, ok := findGitHubToken(m.CredentialEnvVars())
+	tok, ok := findGitHubToken(t, m)
 	if !ok {
 		t.Fatal("expected GITHUB_TOKEN to be injected from the file fallback, got none")
 	}
@@ -92,7 +102,7 @@ func TestCredentialEnvVars_TrailingNewlineStripped(t *testing.T) {
 	path := writeTokenFile(t, "  ghp_padded  \n")
 
 	m := container.New(container.Config{GitHubTokenPath: path})
-	tok, ok := findGitHubToken(m.CredentialEnvVars())
+	tok, ok := findGitHubToken(t, m)
 	if !ok {
 		t.Fatal("expected GITHUB_TOKEN to be injected, got none")
 	}
@@ -110,7 +120,7 @@ func TestCredentialEnvVars_InheritedTokenWins(t *testing.T) {
 	path := writeTokenFile(t, "ghp_fromfile\n")
 
 	m := container.New(container.Config{GitHubTokenPath: path})
-	tok, ok := findGitHubToken(m.CredentialEnvVars())
+	tok, ok := findGitHubToken(t, m)
 	if !ok {
 		t.Fatal("expected GITHUB_TOKEN to be injected from the inherited env, got none")
 	}
@@ -148,7 +158,7 @@ func TestCredentialEnvVars_RoleSpecificWins(t *testing.T) {
 		AgentRole:       "worker",
 		GitHubTokenPath: path,
 	})
-	tok, ok := findGitHubToken(m.CredentialEnvVars())
+	tok, ok := findGitHubToken(t, m)
 	if !ok {
 		t.Fatal("expected GITHUB_TOKEN to be injected, got none")
 	}
@@ -165,7 +175,7 @@ func TestCredentialEnvVars_MissingFile_NoInjection(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
 
 	m := container.New(container.Config{GitHubTokenPath: missing})
-	if tok, ok := findGitHubToken(m.CredentialEnvVars()); ok {
+	if tok, ok := findGitHubToken(t, m); ok {
 		t.Errorf("expected no GITHUB_TOKEN entry for a missing file, got GITHUB_TOKEN=%q", tok)
 	}
 }
@@ -177,7 +187,7 @@ func TestCredentialEnvVars_EmptyFile_NoInjection(t *testing.T) {
 	path := writeTokenFile(t, "\n  \n")
 
 	m := container.New(container.Config{GitHubTokenPath: path})
-	if tok, ok := findGitHubToken(m.CredentialEnvVars()); ok {
+	if tok, ok := findGitHubToken(t, m); ok {
 		t.Errorf("expected no GITHUB_TOKEN entry for an empty/whitespace file, got GITHUB_TOKEN=%q", tok)
 	}
 }
@@ -189,7 +199,7 @@ func TestCredentialEnvVars_NoPath_NoInjection(t *testing.T) {
 	clearTokenEnv(t)
 
 	m := container.New(container.Config{})
-	if tok, ok := findGitHubToken(m.CredentialEnvVars()); ok {
+	if tok, ok := findGitHubToken(t, m); ok {
 		t.Errorf("expected no GITHUB_TOKEN entry with no path and empty env, got GITHUB_TOKEN=%q", tok)
 	}
 }

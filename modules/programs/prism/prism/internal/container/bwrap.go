@@ -445,7 +445,16 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 
 	// ── Environment variables ────────────────────────────────────────────────
 	// Inject the per-session env vars as --setenv K V pairs.
-	for _, kv := range m.credentialEnvVars() {
+	// credentialEnvVars returns an error only when a configured GitHub token
+	// file path is unreadable — that is a hard failure per issue #2348 (the
+	// spawn must NOT silently proceed with a broken/missing token).  BuildArgs
+	// cannot return an error, so we stash it on the Manager and surface it in
+	// Prepare, following the same pattern as m.piBwrapErr.
+	credEnv, credErr := m.credentialEnvVars()
+	if credErr != nil {
+		m.credentialsErr = credErr
+	}
+	for _, kv := range credEnv {
 		k, v, _ := strings.Cut(kv, "=")
 		args = append(args, "--setenv", k, v)
 	}

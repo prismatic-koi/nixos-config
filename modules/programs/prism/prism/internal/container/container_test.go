@@ -163,7 +163,10 @@ func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
 	t.Setenv("OPENROUTER_API_KEY", "")
 
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	found := false
 	for _, kv := range vars {
@@ -188,7 +191,10 @@ func TestCredentialEnvVars_AtlassianKeysNotForwarded(t *testing.T) {
 	t.Setenv("ATLASSIAN_API_TOKEN", "atl-secret-token")
 
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	for _, kv := range vars {
 		if strings.HasPrefix(kv, "ATLASSIAN_SITE=") {
@@ -223,7 +229,10 @@ func TestCredentialEnvVars_SpeculativeKeysNotForwarded(t *testing.T) {
 	}
 
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	for _, kv := range vars {
 		for _, k := range speculative {
@@ -243,7 +252,10 @@ func TestCredentialEnvVars_WorkerGetsWorkerToken(t *testing.T) {
 
 	// BareRoot empty — cannot derive account — fallback applies.
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	// With empty BareRoot, no account-specific token can be selected.
 	// Verify GITHUB_TOKEN is not injected (it's also empty here).
@@ -322,7 +334,10 @@ func TestCredentialEnvVars_AccountRoleTokenSelection(t *testing.T) {
 				AgentRole:     tc.agentRole,
 				BareRoot:      bareRoot,
 			})
-			vars := m.credentialEnvVars()
+			vars, err := m.credentialEnvVars()
+			if err != nil {
+				t.Fatalf("credentialEnvVars: %v", err)
+			}
 
 			found := false
 			for _, kv := range vars {
@@ -384,7 +399,10 @@ func TestCredentialEnvVars_CoordinatorGetsCoordinatorToken(t *testing.T) {
 
 	// When BareRoot is empty, the account cannot be derived and we fall back.
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14000, AgentRole: "coordinator"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	found := false
 	for _, kv := range vars {
@@ -401,7 +419,10 @@ func TestCredentialEnvVars_FallbackToGitHubToken(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "fallback-tok")
 
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	found := false
 	for _, kv := range vars {
@@ -433,7 +454,10 @@ func TestCredentialEnvVars_NoGitDirEnvVars(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			vars := New(tc.cfg).credentialEnvVars()
+			vars, err := New(tc.cfg).credentialEnvVars()
+			if err != nil {
+				t.Fatalf("credentialEnvVars: %v", err)
+			}
 			for _, kv := range vars {
 				if strings.HasPrefix(kv, "GIT_DIR=") {
 					t.Errorf("GIT_DIR should not be injected; got %q", kv)
@@ -523,7 +547,10 @@ func TestCredentialEnvVars_NoGitIdentityEnvVars(t *testing.T) {
 	t.Setenv("GIT_COMMITTER_EMAIL", "test@example.com")
 
 	m := New(Config{SessionName: "repo@feat", AllocatedPort: 14000, AgentRole: "worker"})
-	vars := m.credentialEnvVars()
+	vars, err := m.credentialEnvVars()
+	if err != nil {
+		t.Fatalf("credentialEnvVars: %v", err)
+	}
 
 	for _, kv := range vars {
 		if strings.HasPrefix(kv, "GIT_AUTHOR_NAME=") {

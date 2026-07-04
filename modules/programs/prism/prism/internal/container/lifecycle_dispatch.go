@@ -195,9 +195,15 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	// Build the bwrap args. For PI sessions, BuildArgs stores any
 	// appendPIBwrapMounts error in m.piBwrapErr because BuildArgs cannot return
 	// an error. Check and surface it here where we CAN return an error.
+	// credentialsErr uses the same error-stashing pattern for the
+	// configured-but-unreadable GitHub token file case (issue #2348) — fail
+	// the spawn loudly rather than silently proceeding with no token.
 	args := b.BuildArgs(m)
 	if m.piBwrapErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.piBwrapErr)
+	}
+	if m.credentialsErr != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", m.credentialsErr)
 	}
 	return args, nil
 }
