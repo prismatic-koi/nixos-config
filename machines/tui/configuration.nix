@@ -66,6 +66,10 @@
   # Bootloader.
   boot.loader = {
     systemd-boot.enable = true;
+    # Cap generations kept on the ESP; unbounded, they will eventually
+    # fill the partition and wedge the next switch at the initrd copy
+    # (same failure mode as navi, see machines/navi/configuration.nix).
+    systemd-boot.configurationLimit = 10;
     efi.canTouchEfiVariables = true;
   };
 
