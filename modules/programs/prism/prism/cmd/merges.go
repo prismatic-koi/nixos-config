@@ -245,20 +245,35 @@ func runMergesCancel(cmd *cobra.Command, args []string) error {
 	}
 	defer d.Close()
 
-	instanceID, _, err := resolveCallerIdentity(callerSession, d)
+	instanceID, sessionName, err := resolveCallerIdentity(callerSession, d)
 	if err != nil {
 		return fmt.Errorf("prism merges cancel: %w", err)
 	}
 
-	cancelled, err := d.CancelMerge(pr, instanceID)
+	// Resolve the caller's repo authoritatively from agent_status. This is
+	// required so CancelMerge cannot touch a same-numbered row belonging
+	// to a different repo sharing this prism.db (issue #2354), and so the
+	// helper messages below only surface rows from the caller's repo.
+	status, statusErr := d.CurrentStatus(sessionName)
+	if statusErr != nil || status == nil {
+		return fmt.Errorf("prism merges cancel: cannot resolve repo for session %q", sessionName)
+	}
+	repo := status.Repo
+	if repo == "" {
+		return fmt.Errorf("prism merges cancel: session %q has no repo recorded in agent_status", sessionName)
+	}
+
+	cancelled, err := d.CancelMerge(pr, repo, instanceID)
 	if err != nil {
 		return fmt.Errorf("prism merges cancel: %w", err)
 	}
 	if cancelled {
 		fmt.Printf("PR #%d removed from merge queue.\n", pr)
 	} else {
-		// Look up the row to give a helpful message.
-		row, _ := d.PendingMergeByPR(pr)
+		// Look up the row to give a helpful message. Scope by repo so we
+		// only ever surface a row from the caller's own repo — a
+		// same-numbered foreign row must not appear here.
+		row, _ := d.PendingMergeByPR(pr, repo)
 		if row == nil {
 			fmt.Printf("PR #%d is not in the merge queue.\n", pr)
 		} else if row.InstanceID != instanceID {

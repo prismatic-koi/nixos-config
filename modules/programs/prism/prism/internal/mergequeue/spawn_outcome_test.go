@@ -72,10 +72,10 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 	seedWorkerWithPR(t, d, workerIID, workerSess, pr)
 
 	// Enqueue the merge row that succeedAndNotify will terminate.
-	if _, err := d.EnqueueMerge(pr, coordSession, coordIID, nil); err != nil {
+	if _, err := d.EnqueueMerge(pr, "myrepo", coordSession, coordIID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	head, err := d.PendingMergeByPR(pr)
+	head, err := d.PendingMergeByPR(pr, "myrepo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSucceedAndNotify_PersistsPRMergedAt(t *testing.T) {
 	// Pending_merges must also have been transitioned to 'merged' with
 	// merged_at populated — the watcher's existing contract must not be
 	// regressed by the new DB write.
-	pm, err := d.PendingMergeByPR(pr)
+	pm, err := d.PendingMergeByPR(pr, "myrepo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR(after): %v", err)
 	}
@@ -141,10 +141,10 @@ func TestSucceedAndNotify_NoWorkerRow_SkipsPRMergedAt(t *testing.T) {
 	seedCoordinator(t, d, coordSession, coordIID, 0, "pi-sid-orphan")
 
 	// No worker session is seeded — InstanceIDForPRNumber will return "".
-	if _, err := d.EnqueueMerge(pr, coordSession, coordIID, nil); err != nil {
+	if _, err := d.EnqueueMerge(pr, "myrepo", coordSession, coordIID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	head, err := d.PendingMergeByPR(pr)
+	head, err := d.PendingMergeByPR(pr, "myrepo")
 	if err != nil || head == nil {
 		t.Fatalf("PendingMergeByPR: err=%v head=%v", err, head)
 	}
@@ -153,7 +153,7 @@ func TestSucceedAndNotify_NoWorkerRow_SkipsPRMergedAt(t *testing.T) {
 	w.succeedAndNotify(context.Background(), head, mergeOutcomePrismDriven, nil)
 
 	// pending_merges must still have transitioned to merged.
-	pm, err := d.PendingMergeByPR(pr)
+	pm, err := d.PendingMergeByPR(pr, "myrepo")
 	if err != nil || pm == nil {
 		t.Fatalf("PendingMergeByPR(after): err=%v pm=%v", err, pm)
 	}

@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 37
+	currentSchemaVersion = 38
 )
 
 // DB wraps a SQLite connection.
@@ -148,7 +148,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 CREATE TABLE IF NOT EXISTS pending_merges (
-  pr              INTEGER PRIMARY KEY,
+  repo            TEXT NOT NULL,
+  pr              INTEGER NOT NULL,
   session_name    TEXT NOT NULL,
   instance_id     TEXT NOT NULL,
   queue_position  INTEGER NOT NULL,
@@ -158,7 +159,8 @@ CREATE TABLE IF NOT EXISTS pending_merges (
   queued_at       INTEGER NOT NULL,
   last_checked_at INTEGER,
   merged_at       INTEGER,
-  ended_at        INTEGER
+  ended_at        INTEGER,
+  PRIMARY KEY (repo, pr)
 );
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position);
 CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session  ON pending_merges(session_name, status, queue_position);
@@ -685,6 +687,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV36ToV37(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV37ToV38(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -814,6 +819,130 @@ func migrateV36ToV37(conn *sql.DB, version *int) error {
 		return fmt.Errorf("db: migration v36\u2192v37: %w", err)
 	}
 	*version = 37
+	return nil
+}
+
+// migrateV37ToV38 rescopes pending_merges by repo so that PR numbers no
+// longer collide across repositories sharing one prism.db (issue #2354).
+//
+// Background — the incident. Before this migration, pending_merges was
+// keyed by (pr INTEGER PRIMARY KEY) alone, and every WHERE clause in
+// mergequeue.go was `WHERE pr = ?` with no repo scope. On 2026-07-06 an
+// aws-databases coordinator ran `prism merge 47` and its re-entry
+// short-circuit (observeExistingMergeRow, cmd/merge.go) matched a
+// terminal `merged` row that belonged to a DIFFERENT repo's PR #47.
+// The short-circuit printed `PR #47 merged.` and the coordinator
+// destructively cleaned up an unmerged worker.
+//
+// Fix — add repo TEXT NOT NULL and rebuild the table with
+// PRIMARY KEY (repo, pr). SQLite requires a full table rebuild to
+// change a primary key, so this migration follows the rename-and-
+// recreate pattern used by migrateV8toV9. Existing rows are backfilled
+// by parsing session_name at the first '@' — the coordinator session
+// naming convention is `<repo>@<branch>` (see cmd/sidecar.go), so this
+// yields the same short repo slug that agent_status.repo carries.
+// Rows whose session_name contains no '@' (malformed / legacy data)
+// receive an empty-string sentinel. Empty is never a valid repo slug
+// (deriveSessionNameFromCWD always yields a non-empty repo) so callers
+// passing a real repo can never accidentally match these sentinel rows.
+//
+// The migration is guarded by a pragma_table_info check on the `repo`
+// column so it is idempotent on fresh databases where the declarative
+// schema block above already contains the new shape.
+func migrateV37ToV38(conn *sql.DB, version *int) error {
+	if *version >= 38 {
+		return nil
+	}
+	var hasRepo int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('pending_merges') WHERE name = 'repo'`,
+	).Scan(&hasRepo); err != nil {
+		return fmt.Errorf("db: migration v37\u2192v38: check repo column: %w", err)
+	}
+	if hasRepo > 0 {
+		// Fresh DB — declarative schema already created the new shape.
+		// Just bump the schema_version row.
+		if _, err := conn.Exec(`UPDATE schema_version SET version = 38`); err != nil {
+			return fmt.Errorf("db: migration v37\u2192v38: bump version: %w", err)
+		}
+		*version = 38
+		return nil
+	}
+
+	// Existing DB with the pre-migration shape — rebuild pending_merges.
+	// The rebuild is wrapped in a transaction with PRAGMA foreign_keys = OFF
+	// so that the intermediate state (old table dropped, new table renamed)
+	// is never visible to concurrent readers and does not trip spurious FK
+	// violations. pending_merges is not itself a FK target today, but the
+	// pattern is what the SQLite docs recommend for any table rebuild:
+	// https://www.sqlite.org/lang_altertable.html#otheralter
+	if err := func() error {
+		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+			return fmt.Errorf("disable FK: %w", err)
+		}
+		tx, err := conn.Begin()
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback() //nolint:errcheck
+		steps := []string{
+			// Create the new table shape: repo TEXT NOT NULL first, composite
+			// primary key (repo, pr).
+			`CREATE TABLE pending_merges_new (
+			  repo            TEXT NOT NULL,
+			  pr              INTEGER NOT NULL,
+			  session_name    TEXT NOT NULL,
+			  instance_id     TEXT NOT NULL,
+			  queue_position  INTEGER NOT NULL,
+			  status          TEXT NOT NULL,
+			  title           TEXT,
+			  error           TEXT,
+			  queued_at       INTEGER NOT NULL,
+			  last_checked_at INTEGER,
+			  merged_at       INTEGER,
+			  ended_at        INTEGER,
+			  PRIMARY KEY (repo, pr)
+			)`,
+			// Backfill: split session_name at first '@'. Rows without '@'
+			// (malformed / legacy) get repo=''. Empty-string sentinel is
+			// safe because real callers always resolve to a non-empty repo
+			// slug, so an empty-repo lookup can never match by accident.
+			`INSERT INTO pending_merges_new
+			    (repo, pr, session_name, instance_id, queue_position, status, title, error,
+			     queued_at, last_checked_at, merged_at, ended_at)
+			 SELECT
+			    CASE WHEN instr(session_name, '@') > 0
+			         THEN substr(session_name, 1, instr(session_name, '@') - 1)
+			         ELSE ''
+			    END AS repo,
+			    pr, session_name, instance_id, queue_position, status, title, error,
+			    queued_at, last_checked_at, merged_at, ended_at
+			 FROM pending_merges`,
+			`DROP TABLE pending_merges`,
+			`ALTER TABLE pending_merges_new RENAME TO pending_merges`,
+			// DROP TABLE dropped the old indexes; recreate them on the new
+			// table with matching names. The declarative schema block uses
+			// CREATE INDEX IF NOT EXISTS so fresh DBs stay quiet.
+			`CREATE INDEX IF NOT EXISTS idx_pending_merges_status_instance ON pending_merges(instance_id, status, queue_position)`,
+			`CREATE INDEX IF NOT EXISTS idx_pending_merges_status_session ON pending_merges(session_name, status, queue_position)`,
+			`UPDATE schema_version SET version = 38`,
+		}
+		for _, s := range steps {
+			if _, err := tx.Exec(s); err != nil {
+				return fmt.Errorf("step %q: %w", s[:min(60, len(s))], err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+		if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			return fmt.Errorf("re-enable FK: %w", err)
+		}
+		return nil
+	}(); err != nil {
+		return fmt.Errorf("db: migration v37\u2192v38: %w", err)
+	}
+	*version = 38
 	return nil
 }
 

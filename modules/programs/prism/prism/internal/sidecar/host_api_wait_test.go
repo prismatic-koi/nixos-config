@@ -25,10 +25,10 @@ import (
 
 func TestHostAPI_MergesByPR_ReturnsRow(t *testing.T) {
 	d := openTestDB(t)
-	if _, err := d.EnqueueMerge(42, "repo@main", "inst-1", nil); err != nil {
+	if _, err := d.EnqueueMerge(42, "repo", "repo@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(42, "merged", ""); err != nil {
+	if err := d.TerminateMerge(42, "repo", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	sc := newSidecarWithRole(t, "repo@main", "repo", "coordinator", d)

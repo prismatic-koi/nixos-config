@@ -61,7 +61,7 @@ func TestRunMerge_WorkerSessionIsRejected(t *testing.T) {
 		t.Fatalf("openDB for verify: %v", err2)
 	}
 	defer d2.Close()
-	row, rowErr := d2.PendingMergeByPR(42)
+	row, rowErr := d2.PendingMergeByPR(42, "nixos-config")
 	if rowErr != nil {
 		t.Fatalf("PendingMergeByPR: %v", rowErr)
 	}
@@ -246,7 +246,7 @@ func TestRunMerge_ReentrySameRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	first, err := d.PendingMergeByPR(1234)
+	first, err := d.PendingMergeByPR(1234, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestRunMerge_ReentrySameRow(t *testing.T) {
 		t.Fatalf("openDB for verify: %v", err)
 	}
 	defer d2.Close()
-	second, err := d2.PendingMergeByPR(1234)
+	second, err := d2.PendingMergeByPR(1234, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR (after 2nd): %v", err)
 	}
@@ -311,13 +311,13 @@ func TestRunMerge_ReentryAlreadyMergedSkipsGh(t *testing.T) {
 		t.Fatalf("openDB: %v", err)
 	}
 	title := "feat: already done"
-	if _, err := d.EnqueueMerge(2222, coordSession, "inst-reentry-merged", &title); err != nil {
+	if _, err := d.EnqueueMerge(2222, "nixos-config", coordSession, "inst-reentry-merged", &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(2222, "merged", ""); err != nil {
+	if err := d.TerminateMerge(2222, "nixos-config", "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
-	pre, err := d.PendingMergeByPR(2222)
+	pre, err := d.PendingMergeByPR(2222, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR (pre): %v", err)
 	}
@@ -349,7 +349,7 @@ func TestRunMerge_ReentryAlreadyMergedSkipsGh(t *testing.T) {
 		t.Fatalf("openDB for verify: %v", err)
 	}
 	defer d2.Close()
-	post, err := d2.PendingMergeByPR(2222)
+	post, err := d2.PendingMergeByPR(2222, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR (post): %v", err)
 	}
@@ -478,13 +478,13 @@ func testRunMergeReentryAfterTerminalReEnqueues(t *testing.T, pr int, terminalSt
 		t.Fatalf("openDB: %v", err)
 	}
 	title := "feat: needs retry"
-	if _, err := d.EnqueueMerge(pr, coordSession, "inst-reentry-"+terminalStatus, &title); err != nil {
+	if _, err := d.EnqueueMerge(pr, "nixos-config", coordSession, "inst-reentry-"+terminalStatus, &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(pr, terminalStatus, errMsg); err != nil {
+	if err := d.TerminateMerge(pr, "nixos-config", terminalStatus, errMsg); err != nil {
 		t.Fatalf("TerminateMerge(%s): %v", terminalStatus, err)
 	}
-	pre, err := d.PendingMergeByPR(pr)
+	pre, err := d.PendingMergeByPR(pr, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR (pre): %v", err)
 	}
@@ -518,7 +518,7 @@ func testRunMergeReentryAfterTerminalReEnqueues(t *testing.T, pr int, terminalSt
 		t.Fatalf("openDB for verify: %v", err)
 	}
 	defer d2.Close()
-	post, err := d2.PendingMergeByPR(pr)
+	post, err := d2.PendingMergeByPR(pr, "nixos-config")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR (post): %v", err)
 	}
@@ -571,6 +571,12 @@ func TestRunMerge_ProxyReentrySkipsGh(t *testing.T) {
 	}
 	server.mu.Unlock()
 	t.Setenv("PRISM_HOST_API", apiURL)
+	// Provide a callable session so resolveCallerRepo returns
+	// "nixos-config" — without it the repo-gated short-circuit in
+	// observeExistingMergeRow falls through and the assertions on
+	// zero gh calls / zero /merge POSTs fail (issue #2354).
+	t.Setenv("PRISM_SESSION_NAME", "nixos-config@main")
+	t.Setenv("TMUX", "")
 
 	// Install a counting gh stub. A regression that runs preflight on
 	// the re-entry path would be caught here — zero gh calls expected.
