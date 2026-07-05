@@ -1110,16 +1110,28 @@ WHERE ended_at IS NULL
 	return d.queryStatuses(q, repo, repo)
 }
 
-// ActiveStatusForRepoBranch returns the active (ended_at IS NULL) agent_status
-// row for the given repo and worktree (branch) name, or nil when no such row
-// exists. This is the natural-key dedupe check used by prism spawn --reuse.
-func (d *DB) ActiveStatusForRepoBranch(repo, branch string) (*Status, error) {
+// ActiveStatusForRepoWorktree returns the active (ended_at IS NULL)
+// agent_status row for the given repo and worktree path, or nil when no such
+// row exists. This is the natural-key dedupe check used by
+// `prism spawn --reuse` and by the `prism spawn --branch main` default-reuse
+// path (#2352).
+//
+// The second argument MUST be the full worktree filesystem path
+// (e.g. "/Users/me/code/myrepo/main"), NOT the branch name. Every production
+// writer of the `worktree` column stores a full path — SpawnSession seeds
+// via `UpsertStatusSeedRootAgentName(session, repo, opts.Worktree, …)` with
+// `opts.Worktree = worktreePath`, and `event tmux-session-start --worktree`
+// is invoked with the pane's cwd. Passing a branch name here (the pre-#2352
+// signature) silently mismatched every real row, so the dedupe never fired
+// in production and the fall-through path failed at `tmux new-session -ds`
+// with "duplicate session".
+func (d *DB) ActiveStatusForRepoWorktree(repo, worktreePath string) (*Status, error) {
 	const q = `
 SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ? AND worktree = ?
 LIMIT 1`
-	statuses, err := d.queryStatuses(q, repo, branch)
+	statuses, err := d.queryStatuses(q, repo, worktreePath)
 	if err != nil {
 		return nil, err
 	}

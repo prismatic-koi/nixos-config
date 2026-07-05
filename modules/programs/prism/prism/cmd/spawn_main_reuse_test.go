@@ -218,7 +218,12 @@ func TestRunSpawn_MainBranch_HealthySessionReuses(t *testing.T) {
 	port := extractTestServerPort(t, srv.URL)
 	sid := "pi-sid-1"
 	agent := "coordinator"
-	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", "main", "active", nil, &sid, &agent, nil); err != nil {
+	// worktree column must hold the full worktree path (production writers
+	// via SpawnOpts.Worktree and `event tmux-session-start --worktree` both
+	// store the full path). ActiveStatusForRepoWorktree matches on that
+	// column exactly, so the seed must mirror production shape (#2352).
+	mainWt := filepath.Join(bareRoot, "main")
+	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 	// Clear harness so DeliverToSession takes the HTTP fallback path.
@@ -269,9 +274,11 @@ func TestRunSpawn_MainBranch_BrokenSessionErrors(t *testing.T) {
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
-	// Seed a broken (state="error") coordinator session.
+	// Seed a broken (state="error") coordinator session with the full
+	// worktree path in the `worktree` column, mirroring production writes.
 	agent := "coordinator"
-	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", "main", "error", nil, nil, &agent, nil); err != nil {
+	mainWt := filepath.Join(bareRoot, "main")
+	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "error", nil, nil, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 
@@ -335,7 +342,8 @@ func TestRunSpawn_MainBranch_WithPromptDelivers(t *testing.T) {
 	sid := "pi-sid-4"
 	agent := "coordinator"
 	model := "anthropic/claude-sonnet-4-6"
-	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", "main", "active", nil, &sid, &agent, &model); err != nil {
+	mainWt := filepath.Join(bareRoot, "main")
+	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, &model); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 	if err := d.QueryRow("UPDATE agent_status SET harness = '', harness_port = ? WHERE session_name = ? RETURNING 1", port, "myrepo@main").Scan(new(int)); err != nil {
@@ -394,7 +402,8 @@ func TestRunSpawn_MainBranch_WaitingWithPromptRefuses(t *testing.T) {
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
 	agent := "coordinator"
-	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", "main", "waiting", nil, nil, &agent, nil); err != nil {
+	mainWt := filepath.Join(bareRoot, "main")
+	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "waiting", nil, nil, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 
@@ -435,7 +444,8 @@ func TestRunSpawn_MainBranch_ExplicitReuseIdentical(t *testing.T) {
 	port := extractTestServerPort(t, srv.URL)
 	sid := "pi-sid-8"
 	agent := "coordinator"
-	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", "main", "active", nil, &sid, &agent, nil); err != nil {
+	mainWt := filepath.Join(bareRoot, "main")
+	if err := d.UpsertStatusWithRootAgent("myrepo@main", "myrepo", mainWt, "active", nil, &sid, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 	if err := d.QueryRow("UPDATE agent_status SET harness = '', harness_port = ? WHERE session_name = ? RETURNING 1", port, "myrepo@main").Scan(new(int)); err != nil {
@@ -560,9 +570,11 @@ func TestRunSpawn_NonMainBranch_NoReuseStillRefuses(t *testing.T) {
 	bareRoot := initBareRepoWithMainWorktree(t, baseDir, "myrepo")
 	t.Setenv("PRISM_BARE_ROOT", bareRoot)
 
-	// Seed an active worker session for repo="myrepo" branch="feature".
+	// Seed an active worker session for repo="myrepo" branch="feature" with
+	// the full worktree path in the `worktree` column, matching production.
 	agent := "worker"
-	if err := d.UpsertStatusWithRootAgent("myrepo@feature", "myrepo", "feature", "active", nil, nil, &agent, nil); err != nil {
+	featureWt := filepath.Join(bareRoot, "feature")
+	if err := d.UpsertStatusWithRootAgent("myrepo@feature", "myrepo", featureWt, "active", nil, nil, &agent, nil); err != nil {
 		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
 	}
 

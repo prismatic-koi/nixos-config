@@ -4481,6 +4481,108 @@ func TestUpsertStatusSeedRootAgentName_WorktreeUpdatedOnConflict(t *testing.T) {
 	}
 }
 
+// TestActiveStatusForRepoWorktree_MatchesProductionShape verifies that
+// ActiveStatusForRepoWorktree finds a row seeded via the production write
+// path (UpsertStatusSeedRootAgentName with a full worktree filesystem path
+// in the `worktree` column). The primitive was renamed from
+// ActiveStatusForRepoBranch in #2352 after review-context flagged that
+// callers were passing the branch name where a full path was required —
+// silently mismatching every real row and letting the `--reuse` dedupe fall
+// through to a duplicate-tmux-session failure.
+func TestActiveStatusForRepoWorktree_MatchesProductionShape(t *testing.T) {
+	d := openTestDB(t)
+
+	const (
+		sessionName  = "myrepo@main"
+		repo         = "myrepo"
+		worktreePath = "/Users/me/code/myrepo/main"
+	)
+	agentRole := "coordinator"
+
+	// Production writer: SpawnSession → UpsertStatusSeedRootAgentName with
+	// opts.Worktree = worktreePath. The row's `worktree` column carries the
+	// full path.
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, worktreePath, "idle", nil, nil, agentRole, "pi", "host"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	// The correct call: pass the same full worktree path the writer used.
+	got, err := d.ActiveStatusForRepoWorktree(repo, worktreePath)
+	if err != nil {
+		t.Fatalf("ActiveStatusForRepoWorktree: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ActiveStatusForRepoWorktree returned nil for a row seeded via the production writer path — the dedupe never fires in production")
+	}
+	if got.SessionName != sessionName {
+		t.Errorf("SessionName: got %q, want %q", got.SessionName, sessionName)
+	}
+	if got.Worktree != worktreePath {
+		t.Errorf("Worktree: got %q, want %q", got.Worktree, worktreePath)
+	}
+}
+
+// TestActiveStatusForRepoWorktree_BranchNameArgReturnsNil is the regression
+// guard for the pre-#2352 bug: passing the branch name (e.g. "main") where a
+// full worktree path is expected must NOT match a row whose `worktree` column
+// holds the full path. Without this negative assertion the caller could
+// silently regress the primitive to its old broken signature.
+func TestActiveStatusForRepoWorktree_BranchNameArgReturnsNil(t *testing.T) {
+	d := openTestDB(t)
+
+	const (
+		sessionName  = "myrepo@main"
+		repo         = "myrepo"
+		worktreePath = "/Users/me/code/myrepo/main"
+	)
+	agentRole := "coordinator"
+
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, worktreePath, "idle", nil, nil, agentRole, "pi", "host"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+
+	// Wrong-shape call — passing the bare branch name where the full path is
+	// expected. Must return nil so the dedupe correctly reports "no match"
+	// (rather than silently succeeding on some coincidental short-name row).
+	got, err := d.ActiveStatusForRepoWorktree(repo, "main")
+	if err != nil {
+		t.Fatalf("ActiveStatusForRepoWorktree: %v", err)
+	}
+	if got != nil {
+		t.Errorf("ActiveStatusForRepoWorktree(%q, \"main\") = %+v; want nil (branch-name arg must NOT match a full-path row)", repo, got)
+	}
+}
+
+// TestActiveStatusForRepoWorktree_EndedRowIgnored verifies the ended-at
+// filter still holds after the rename: a cleaned-up session (ended_at
+// stamped) is invisible to the reuse dedupe so a re-spawn on the same
+// worktree proceeds.
+func TestActiveStatusForRepoWorktree_EndedRowIgnored(t *testing.T) {
+	d := openTestDB(t)
+
+	const (
+		sessionName  = "myrepo@main"
+		repo         = "myrepo"
+		worktreePath = "/Users/me/code/myrepo/main"
+	)
+	agentRole := "coordinator"
+
+	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, worktreePath, "idle", nil, nil, agentRole, "pi", "host"); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := d.SetEnded(sessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	got, err := d.ActiveStatusForRepoWorktree(repo, worktreePath)
+	if err != nil {
+		t.Fatalf("ActiveStatusForRepoWorktree: %v", err)
+	}
+	if got != nil {
+		t.Errorf("ActiveStatusForRepoWorktree returned non-nil for an ended row; got %+v", got)
+	}
+}
+
 // TestUpsertStatusWithRootAgent_WorktreeUpdatedOnConflict verifies that a
 // second call to UpsertStatusWithRootAgent with the same session name but a
 // different worktree overwrites the stored worktree.

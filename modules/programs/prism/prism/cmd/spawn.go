@@ -597,8 +597,16 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		if dbErr == nil {
 			defer d.Close()
 			repoName := strings.TrimSuffix(filepath.Base(bareRoot), ".git")
-			existing, lookupErr := d.ActiveStatusForRepoBranch(repoName, branch)
-			// ActiveStatusForRepoBranch filters by ended_at IS NULL, so a
+			// Dedupe against the full worktree path — the value production
+			// writers store in `agent_status.worktree` (SpawnOpts.Worktree =
+			// worktreePath at cmd/spawn.go's SpawnSession call site, and
+			// `event tmux-session-start --worktree <dir>` from every pane).
+			// Pre-#2352 this call passed the branch name and coincidentally
+			// tested-passed on rows seeded with worktree="main", but never
+			// matched a real DB row — so the reuse dedupe silently didn't fire
+			// and the caller fell through to a duplicate-tmux-session failure.
+			existing, lookupErr := d.ActiveStatusForRepoWorktree(repoName, filepath.Join(bareRoot, branch))
+			// ActiveStatusForRepoWorktree filters by ended_at IS NULL, so a
 			// session whose row was just `prism cleanup`’d (ended_at
 			// stamped) is invisible here — a re-spawn on the same branch
 			// proceeds and the state-machine table allows the row to be
