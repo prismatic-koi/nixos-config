@@ -148,7 +148,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
 | `--agent <name>` | Agent to use (`worker` or `plan`). Defaults to `worker`. |
 | `--attach` | Switch the current tmux client to the new session instead of spawning headlessly. |
-| `--reuse` | If an active session already exists on the requested branch, return its name/port/agent and exit 0 instead of failing. Without `--reuse`, spawning onto an existing branch exits non-zero and tells you to run `prism cleanup` or pass `--reuse`. |
+| `--reuse` | If an active session already exists on the requested branch, return its name/port/agent and exit 0 instead of failing. Without `--reuse`, spawning onto an existing feature branch exits non-zero and tells you to run `prism cleanup` or pass `--reuse`. For `--branch main`, reuse semantics are the default — the flag is accepted as a harmless no-op. |
 
 ## Behaviour
 
@@ -166,7 +166,7 @@ When you need to delegate work to a repo you are not the coordinator for, route 
 1. Run `prism sessions list` and look for `<repo>@main`.
 2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
 3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
-4. **Not found:** there is no coordinator to delegate to. Escalate to the user and ask them to start a `<repo>@main` coordinator session. Note: you also cannot work around this by spawning onto `main` yourself — in the bare+worktree layout prism uses, `main` already has a worktree, so `prism spawn --branch main` will fail with a git error.
+4. **Not found:** start the coordinator yourself with `prism spawn --repo <repo> --branch main --prompt '...'`. On `--branch main` prism spawn defaults to reuse semantics, so this is idempotent: if a healthy `<repo>@main` already exists the prompt is delivered to it; if not, a detached coordinator is started on the existing main worktree and the prompt is delivered on launch. There is no need to pre-spawn and then prompt.
 
 Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
 
@@ -181,7 +181,9 @@ prism prompt home-ops@main --prompt 'Please update the plex image to the latest 
 # escalate to the user — they need to switch to that session and unblock it
 
 # If home-ops@main does not exist:
-# escalate to the user — ask them to start a coordinator session for home-ops
+# one shot: ensure the coordinator exists, then tell it the task.
+prism spawn --repo home-ops --branch main \
+  --prompt 'Please update the plex image to the latest tag and open a PR'
 ```
 
 ### Example: spawning directly as coordinator
