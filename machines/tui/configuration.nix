@@ -15,14 +15,14 @@
   nx = {
     isLaptop = true;
     desktop = {
-      theme = "onedark";
+      theme = "edge";
       hyprland = {
         lockTimeout.enable = false;
         screenTimeout.duration = 600; # screen off after 10 minutes
         suspendTimeout.duration = 900; # suspend after 15 minutes
       };
       # hyprlock.oled = true;
-      wallpaper.variant = "enso";
+      wallpaper.variant = "enso-6colour";
     };
     programs = {
       prism.profile.default = "anthropic";
