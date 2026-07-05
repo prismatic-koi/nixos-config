@@ -41,6 +41,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/skills"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -578,14 +579,34 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// a half-failed retry and gives the caller a structured error pointing at
 	// recovery options. The check is a single DB query — no worktree, no tmux
 	// session, no DB row is created before this point.
+	//
+	// mainCoordinatorReuse (#2352): `prism spawn --branch main` defaults to
+	// reuse semantics. The bare+worktree layout means the main worktree
+	// already exists at `<bareRoot>/main/`, and there is at most one
+	// coordinator per repo (invariant relied on by `prism escalate`
+	// discovery and the merge queue), so treating a repeat spawn as
+	// "ensure coordinator, then tell it" is unambiguous. The special-case
+	// uses the same literal `branch == "main"` check spawn already uses for
+	// coordinator role inference. Explicit --reuse alongside --branch main
+	// is a harmless no-op.
 	reuseFlag, _ := cmd.Flags().GetBool("reuse")
+	mainCoordinatorReuse := branch == "main"
+	reuseEffective := reuseFlag || mainCoordinatorReuse
 	{
 		d, dbErr := openDB()
 		if dbErr == nil {
 			defer d.Close()
 			repoName := strings.TrimSuffix(filepath.Base(bareRoot), ".git")
-			existing, lookupErr := d.ActiveStatusForRepoBranch(repoName, branch)
-			// ActiveStatusForRepoBranch filters by ended_at IS NULL, so a
+			// Dedupe against the full worktree path — the value production
+			// writers store in `agent_status.worktree` (SpawnOpts.Worktree =
+			// worktreePath at cmd/spawn.go's SpawnSession call site, and
+			// `event tmux-session-start --worktree <dir>` from every pane).
+			// Pre-#2352 this call passed the branch name and coincidentally
+			// tested-passed on rows seeded with worktree="main", but never
+			// matched a real DB row — so the reuse dedupe silently didn't fire
+			// and the caller fell through to a duplicate-tmux-session failure.
+			existing, lookupErr := d.ActiveStatusForRepoWorktree(repoName, filepath.Join(bareRoot, branch))
+			// ActiveStatusForRepoWorktree filters by ended_at IS NULL, so a
 			// session whose row was just `prism cleanup`’d (ended_at
 			// stamped) is invisible here — a re-spawn on the same branch
 			// proceeds and the state-machine table allows the row to be
@@ -598,12 +619,31 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 				// There is an active session for this branch.
 				// Healthy = state not "error" and not "deleted".
 				broken := existing.State == "error" || existing.State == "deleted"
-				if reuseFlag {
+				if reuseEffective {
 					if broken {
 						return fmt.Errorf(
 							"prism spawn --reuse: existing session %q is in a broken state (%s)\n"+
 								"run: prism cleanup --yes --session %s",
 							existing.SessionName, existing.State, existing.SessionName)
+					}
+					// --branch main reuse with --prompt: deliver the prompt to
+					// the running coordinator so `prism spawn --repo <x>
+					// --branch main --prompt '...'` is a one-shot "ensure
+					// coordinator, then tell it" (#2352 AC4). The waiting-state
+					// guard mirrors `prism prompt` (#2352 AC5): a paused
+					// coordinator is expecting direct human input, so a
+					// programmatic prompt would corrupt the input field.
+					//
+					// The guard is scoped to mainCoordinatorReuse so the
+					// legacy `--reuse` (feature-branch) path stays a pure
+					// details-print no-op, unchanged.
+					if mainCoordinatorReuse && promptText != "" {
+						if existing.State == "waiting" {
+							return waitingStateError(existing.SessionName)
+						}
+						if deliverErr := promptdelivery.DeliverToSession(existing.SessionName, existing, promptText, buildPromptBody, "", "steer"); deliverErr != nil {
+							return fmt.Errorf("deliver prompt to %s: %w", existing.SessionName, deliverErr)
+						}
 					}
 					// Healthy session — emit its details and exit 0.
 					agentName := ""
@@ -693,9 +733,27 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the worktree (handles local, remote-tracking, and new branches).
-	worktreePath, err := git.CreateWorktree(bareRoot, branch)
-	if err != nil {
-		return fmt.Errorf("create worktree: %w", err)
+	//
+	// mainCoordinatorReuse path (#2352): `prism spawn --branch main` on a
+	// repo whose main worktree already exists at `<bareRoot>/main/` (the
+	// bare+worktree default) skips `git.CreateWorktree` — which would
+	// otherwise fail with a git "already checked out" error — and starts
+	// the coordinator on the existing worktree. When no main worktree is
+	// registered (e.g. repo default branch is not "main" or the repo has
+	// not been converted), we fall through to CreateWorktree so pre-#2352
+	// behaviour is preserved.
+	var worktreePath string
+	if mainCoordinatorReuse {
+		if wt, ok := existingWorktreeForBranch(bareRoot, branch); ok {
+			worktreePath = wt
+		}
+	}
+	if worktreePath == "" {
+		var wtErr error
+		worktreePath, wtErr = git.CreateWorktree(bareRoot, branch)
+		if wtErr != nil {
+			return fmt.Errorf("create worktree: %w", wtErr)
+		}
 	}
 
 	// For bwrap sessions, write the opencode.json config file to disk now so
@@ -885,6 +943,44 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	return session.Attach(sessionName)
+}
+
+// existingWorktreeForBranch returns the path of a worktree that is already
+// registered for branch under bareRoot, or ("", false) when no such worktree
+// exists. Used by the `prism spawn --branch main` reuse path (#2352) so a
+// headless coordinator can start on the existing main worktree instead of
+// failing at `git.CreateWorktree`.
+//
+// The match is on the exact path `<bareRoot>/<branch>/` — the layout every
+// prism bare+worktree repo uses. A worktree registered elsewhere (e.g. via
+// `git worktree add /tmp/other main`) is intentionally NOT matched because
+// the session naming derives the branch component from the worktree's own
+// git symbolic-ref via `session.NameFor`, and we want the resulting session
+// name to be `<repo>@main` — the coordinator name the escalate discovery
+// and merge queue expect.
+//
+// The comparison uses filepath.EvalSymlinks on both sides so that a bareRoot
+// under a symlinked prefix (e.g. `/tmp/...` → `/private/tmp/...` on macOS)
+// still matches the paths git records in `worktree list --porcelain`.
+// EvalSymlinks failure (e.g. a missing path) falls back to the raw string
+// so the function remains safe when the on-disk state is partially set up.
+func existingWorktreeForBranch(bareRoot, branch string) (string, bool) {
+	expected := filepath.Join(bareRoot, branch)
+	expectedResolved := resolveSymlinksOrRaw(expected)
+	for _, w := range git.Worktrees(bareRoot) {
+		if w == expected || resolveSymlinksOrRaw(w) == expectedResolved {
+			return expected, true
+		}
+	}
+	return "", false
+}
+
+// resolveSymlinksOrRaw returns filepath.EvalSymlinks(p) or p on error.
+func resolveSymlinksOrRaw(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
 
 // prismSkillsDir returns the path to the prism skills directory,

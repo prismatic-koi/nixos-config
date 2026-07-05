@@ -63,6 +63,23 @@ func init() {
 // validDeliverAsModes lists the accepted values for --deliver-as.
 var validDeliverAsModes = []string{"steer", "followUp", "nextTurn"}
 
+// waitingStateError returns the standard "session is waiting for user input"
+// error used by every callsite that would otherwise deliver a prompt to a
+// paused session. Shared by `prism prompt` and by `prism spawn --branch main`
+// on the reuse-with-prompt path (#2352) so the operator sees the same shape
+// of message regardless of entry point.
+func waitingStateError(sessionName string) error {
+	return fmt.Errorf(
+		"session %q is waiting for user input\n\n"+
+			"The agent has paused and is expecting a direct response from the user.\n"+
+			"Please switch to that session and respond there, or escalate to the user\n"+
+			"so they can address it directly.\n\n"+
+			"  prism checkin %s   — inspect the current state\n"+
+			"  (C-f or C-w)       — switch to the session in tmux",
+		sessionName, sessionName,
+	)
+}
+
 func runPrompt(cmd *cobra.Command, args []string) error {
 	sessionName := args[0]
 
@@ -124,15 +141,7 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	}
 
 	if status.State == "waiting" {
-		return fmt.Errorf(
-			"session %q is waiting for user input\n\n"+
-				"The agent has paused and is expecting a direct response from the user.\n"+
-				"Please switch to that session and respond there, or escalate to the user\n"+
-				"so they can address it directly.\n\n"+
-				"  prism checkin %s   — inspect the current state\n"+
-				"  (C-f or C-w)       — switch to the session in tmux",
-			sessionName, sessionName,
-		)
+		return waitingStateError(sessionName)
 	}
 
 	// Derive from_session from the current process CWD using the .bare walk.
