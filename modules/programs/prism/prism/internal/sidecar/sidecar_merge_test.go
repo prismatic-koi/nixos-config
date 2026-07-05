@@ -82,7 +82,7 @@ func TestHostAPI_Merge_EnqueuesRowWithSidecarIdentity(t *testing.T) {
 
 	// Confirm the row landed in the host-side DB with the expected identity —
 	// this is the actual fix for the shadow-DB bug.
-	row, err := d.PendingMergeByPR(1234)
+	row, err := d.PendingMergeByPR(1234, "test-repo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestHostAPI_Merge_ClientIdentityIsIgnored(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
 	}
-	row, err := d.PendingMergeByPR(99)
+	row, err := d.PendingMergeByPR(99, "test-repo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -150,7 +150,7 @@ func TestHostAPI_Merge_StrayClientFields_Rejected(t *testing.T) {
 	}
 	// And: the malformed-spoof request must NOT have caused a DB row to be
 	// written under either the real or spoofed identity.
-	row, err := d.PendingMergeByPR(99)
+	row, err := d.PendingMergeByPR(99, "test-repo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -218,10 +218,10 @@ func TestHostAPI_Merges_ListWatching(t *testing.T) {
 	// Seed a couple of watching rows directly via the DB.
 	t1 := "first"
 	t2 := "second"
-	if _, err := d.EnqueueMerge(101, sess, instance, &t1); err != nil {
+	if _, err := d.EnqueueMerge(101, "test-repo", sess, instance, &t1); err != nil {
 		t.Fatalf("seed EnqueueMerge: %v", err)
 	}
-	if _, err := d.EnqueueMerge(102, sess, instance, &t2); err != nil {
+	if _, err := d.EnqueueMerge(102, "test-repo", sess, instance, &t2); err != nil {
 		t.Fatalf("seed EnqueueMerge: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestHostAPI_MergesCancel_HappyPath(t *testing.T) {
 	)
 	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", instance, d)
 
-	if _, err := d.EnqueueMerge(77, sess, instance, nil); err != nil {
+	if _, err := d.EnqueueMerge(77, "test-repo", sess, instance, nil); err != nil {
 		t.Fatalf("seed EnqueueMerge: %v", err)
 	}
 
@@ -298,7 +298,7 @@ func TestHostAPI_MergesCancel_HappyPath(t *testing.T) {
 	}
 
 	// DB row should be in 'cancelled' state.
-	row, err := d.PendingMergeByPR(77)
+	row, err := d.PendingMergeByPR(77, "test-repo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestHostAPI_MergesCancel_DifferentInstanceReturnsRowWatching(t *testing.T) 
 	sc := newSidecarCoordinatorWithInstance(t, sess, "test-repo", ourInstance, d)
 
 	// Seed a row owned by a DIFFERENT incarnation.
-	if _, err := d.EnqueueMerge(55, sess, theirInstance, nil); err != nil {
+	if _, err := d.EnqueueMerge(55, "test-repo", sess, theirInstance, nil); err != nil {
 		t.Fatalf("seed EnqueueMerge: %v", err)
 	}
 

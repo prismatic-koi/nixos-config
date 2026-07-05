@@ -232,7 +232,7 @@ func TestRunMerge_ProxyDoesNotTouchLocalDB(t *testing.T) {
 		t.Fatalf("openDB for verify: %v", err)
 	}
 	defer d.Close()
-	row, _ := d.PendingMergeByPR(42)
+	row, _ := d.PendingMergeByPR(42, "myrepo")
 	if row != nil {
 		t.Errorf("local DB row exists after proxy call: %+v — proxy must NOT touch the sandbox DB", row)
 	}
@@ -267,7 +267,7 @@ func TestRunMerge_ProxyUnreachableSocketReturnsClearError(t *testing.T) {
 		t.Fatalf("openDB for verify: %v", openErr)
 	}
 	defer d.Close()
-	row, _ := d.PendingMergeByPR(42)
+	row, _ := d.PendingMergeByPR(42, "myrepo")
 	if row != nil {
 		t.Errorf("local DB row exists after unreachable-socket call: %+v — must not fall back to direct DB path", row)
 	}

@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// testRepo is the repo slug the coordinator-style session strings used in
+// these tests parse to: "nixos-config@main" → repo == "nixos-config".
+const testRepo = "nixos-config"
+
 // TestObserveAlreadyTerminal_MergedRow exercises the idempotent-observation
 // AC: calling --wait on a PR that is already merged returns immediately
 // with the merged status (exit 0).
@@ -23,16 +27,16 @@ func TestObserveAlreadyTerminal_MergedRow(t *testing.T) {
 	defer d.Close()
 
 	title := "feat: thing"
-	if _, err := d.EnqueueMerge(99, "nixos-config@main", "inst-1", &title); err != nil {
+	if _, err := d.EnqueueMerge(99, testRepo, "nixos-config@main", "inst-1", &title); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(99, "merged", ""); err != nil {
+	if err := d.TerminateMerge(99, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
 
 	out := captureStdout(t, func() {
-		done, observeErr := observeAlreadyTerminal(99, false)
+		done, observeErr := observeAlreadyTerminal(99, testRepo, false)
 		if !done {
 			t.Fatal("expected observeAlreadyTerminal to short-circuit on merged row")
 		}
@@ -54,16 +58,16 @@ func TestObserveAlreadyTerminal_FailedRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if _, err := d.EnqueueMerge(101, "nixos-config@main", "inst-1", nil); err != nil {
+	if _, err := d.EnqueueMerge(101, testRepo, "nixos-config@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(101, "failed", "CI failed"); err != nil {
+	if err := d.TerminateMerge(101, testRepo, "failed", "CI failed"); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
 
 	_ = captureStdout(t, func() {
-		done, observeErr := observeAlreadyTerminal(101, false)
+		done, observeErr := observeAlreadyTerminal(101, testRepo, false)
 		if !done {
 			t.Fatal("expected short-circuit on failed terminal row")
 		}
@@ -90,12 +94,12 @@ func TestObserveAlreadyTerminal_WatchingRowDoesNotShortCircuit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if _, err := d.EnqueueMerge(202, "nixos-config@main", "inst-1", nil); err != nil {
+	if _, err := d.EnqueueMerge(202, testRepo, "nixos-config@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 	d.Close()
 
-	done, observeErr := observeAlreadyTerminal(202, false)
+	done, observeErr := observeAlreadyTerminal(202, testRepo, false)
 	if done {
 		t.Errorf("expected no short-circuit on watching row, got done=true err=%v", observeErr)
 	}
@@ -111,7 +115,7 @@ func TestWaitForMergeTerminal_PollsUntilTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if _, err := d.EnqueueMerge(303, "nixos-config@main", "inst-1", nil); err != nil {
+	if _, err := d.EnqueueMerge(303, testRepo, "nixos-config@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 	d.Close()
@@ -124,13 +128,13 @@ func TestWaitForMergeTerminal_PollsUntilTerminal(t *testing.T) {
 			return
 		}
 		defer d2.Close()
-		if err := d2.TerminateMerge(303, "merged", ""); err != nil {
+		if err := d2.TerminateMerge(303, testRepo, "merged", ""); err != nil {
 			t.Errorf("TerminateMerge in goroutine: %v", err)
 		}
 	}()
 
 	out := captureStdout(t, func() {
-		err := waitForMergeTerminal(303, false, 5*time.Second)
+		err := waitForMergeTerminal(303, testRepo, false, 5*time.Second)
 		if err != nil {
 			t.Errorf("waitForMergeTerminal: expected nil on merged, got %v", err)
 		}
@@ -150,13 +154,13 @@ func TestWaitForMergeTerminal_TimeoutPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if _, err := d.EnqueueMerge(404, "nixos-config@main", "inst-1", nil); err != nil {
+	if _, err := d.EnqueueMerge(404, testRepo, "nixos-config@main", "inst-1", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 	d.Close()
 
 	out := captureStdoutAndStderr(t, func() {
-		err := waitForMergeTerminal(404, true /* json */, 100*time.Millisecond)
+		err := waitForMergeTerminal(404, testRepo, true /* json */, 100*time.Millisecond)
 		if err == nil {
 			t.Fatal("expected timeout error")
 		}
@@ -208,13 +212,17 @@ func TestRunMerge_WaitJSON_StdoutIsJSONOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("openDB: %v", err)
 	}
-	if _, err := d.EnqueueMerge(777, "nixos-config@main", "inst", nil); err != nil {
+	if _, err := d.EnqueueMerge(777, testRepo, "nixos-config@main", "inst", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(777, "merged", ""); err != nil {
+	if err := d.TerminateMerge(777, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
 	d.Close()
+
+	// Provide a callable prism session so resolveCallerRepo returns testRepo.
+	t.Setenv("PRISM_SESSION_NAME", "nixos-config@main")
+	t.Setenv("TMUX", "")
 
 	// Set the flags on the cobra command.
 	t.Cleanup(func() {
@@ -255,13 +263,13 @@ func TestEmitMergeWaitTerminal_JSONShape(t *testing.T) {
 		t.Fatalf("openDB: %v", err)
 	}
 	defer d.Close()
-	if _, err := d.EnqueueMerge(555, "nixos-config@main", "inst", nil); err != nil {
+	if _, err := d.EnqueueMerge(555, testRepo, "nixos-config@main", "inst", nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
-	if err := d.TerminateMerge(555, "merged", ""); err != nil {
+	if err := d.TerminateMerge(555, testRepo, "merged", ""); err != nil {
 		t.Fatalf("TerminateMerge: %v", err)
 	}
-	row, _ := d.PendingMergeByPR(555)
+	row, _ := d.PendingMergeByPR(555, testRepo)
 
 	out := captureStdout(t, func() {
 		if err := emitMergeWaitTerminal(row, true); err != nil {

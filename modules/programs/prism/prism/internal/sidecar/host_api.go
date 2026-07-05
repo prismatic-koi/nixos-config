@@ -2121,11 +2121,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Use the sidecar's own session_name and instance_id so that the row
-		// is keyed on exactly the values the merge-queue watcher queries
-		// against. This is the architectural reason for routing through the
-		// sidecar at all (#1043).
-		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
+		// Use the sidecar's own repo, session_name and instance_id so that
+		// the row is keyed on exactly the values the merge-queue watcher
+		// queries against. Repo is required because pending_merges is now
+		// keyed on (repo, pr) so PR numbers can safely collide across repos
+		// sharing one prism.db (issue #2354). This is the architectural
+		// reason for routing through the sidecar at all (#1043).
+		row, err := s.cfg.DB.EnqueueMerge(req.PR, s.cfg.Repo, s.cfg.SessionName, s.cfg.InstanceID, req.Title)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merge: EnqueueMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "enqueue merge: "+err.Error())
@@ -2206,7 +2208,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.InstanceID)
+		// Scope by (pr, repo, instance_id) so cancellation can never touch a
+		// same-numbered row belonging to another repo sharing this prism.db
+		// (issue #2354). The instance_id filter continues to prevent one
+		// coordinator incarnation from cancelling another's rows.
+		cancelled, err := s.cfg.DB.CancelMerge(req.PR, s.cfg.Repo, s.cfg.InstanceID)
 		if err != nil {
 			s.logger().Printf("sidecar: host-API /merges/cancel: CancelMerge: %v", err)
 			writeError(w, http.StatusInternalServerError, "cancel merge: "+err.Error())
@@ -2214,8 +2220,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		// Always look up the current row so the client can render a helpful
 		// message when cancellation is a no-op. PendingMergeByPR returning nil
-		// means the row does not exist at all.
-		row, lookupErr := s.cfg.DB.PendingMergeByPR(req.PR)
+		// means the row does not exist for THIS repo — a same-numbered row in
+		// a different repo is intentionally invisible here.
+		row, lookupErr := s.cfg.DB.PendingMergeByPR(req.PR, s.cfg.Repo)
 		if lookupErr != nil {
 			s.logger().Printf("sidecar: host-API /merges/cancel: PendingMergeByPR: %v", lookupErr)
 			// Lookup error is non-fatal — return cancelled status without the row.
@@ -2390,9 +2397,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// single-row / single-shape lookup; rendering and aggregation stay on the
 	// CLI side.
 
-	// GET /merges/by-pr?pr=N
+	// GET /merges/by-pr?pr=N[&repo=slug]
 	// Response: 200 with PendingMerge JSON when the row exists,
-	//           404 {"error":"not found"} when no row exists for that PR.
+	//           404 {"error":"not found"} when no row exists.
+	//
+	// The repo query parameter is optional for back-compat: when omitted
+	// the sidecar substitutes its own repo (s.cfg.Repo). In practice the
+	// only in-process caller (proxyWaitProbe) always passes repo; the
+	// omission fallback exists so that ad-hoc curl / older prism CLIs on
+	// the host cannot accidentally cross-repo through this endpoint.
+	// Repo scoping was added in issue #2354 to close the cross-repo PR-
+	// number collision that produced a false "merged" signal.
 	mux.HandleFunc("/merges/by-pr", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
@@ -2407,7 +2422,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusBadRequest, "pr must be a positive integer")
 			return
 		}
-		row, lookupErr := s.cfg.DB.PendingMergeByPR(prNum)
+		repo := r.URL.Query().Get("repo")
+		if repo == "" {
+			repo = s.cfg.Repo
+		}
+		row, lookupErr := s.cfg.DB.PendingMergeByPR(prNum, repo)
 		if lookupErr != nil {
 			writeError(w, http.StatusInternalServerError, "lookup merge: "+lookupErr.Error())
 			return

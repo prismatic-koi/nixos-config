@@ -195,7 +195,10 @@ func (w *Watcher) tick(ctx context.Context) {
 	}
 
 	log.Printf("[mergequeue] polling head PR #%d (queue_pos=%d)", head.PR, head.QueuePosition)
-	if err := w.db.UpdateMergeLastChecked(head.PR); err != nil {
+	// Pass head.Repo so the heartbeat update only touches the row belonging
+	// to this coordinator's repo, never a same-numbered row from another
+	// repo sharing the same prism.db (issue #2354).
+	if err := w.db.UpdateMergeLastChecked(head.PR, head.Repo); err != nil {
 		log.Printf("[mergequeue] UpdateMergeLastChecked PR #%d: %v", head.PR, err)
 	}
 
@@ -396,7 +399,10 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 	// view of "when did we merge it" is the moment the watcher transitioned
 	// the row, not the moment GitHub recorded the squash commit.
 	mergedAt := time.Now().UnixMilli()
-	if err := w.db.TerminateMerge(head.PR, "merged", ""); err != nil {
+	// Pass head.Repo so the terminal write only touches the row belonging
+	// to this coordinator's repo, never a same-numbered row from another
+	// repo sharing the same prism.db (issue #2354).
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "merged", ""); err != nil {
 		log.Printf("[mergequeue] TerminateMerge(merged) PR #%d: %v", head.PR, err)
 	}
 	// Issue #2110: persist pr_merged_at on the worker's spawn_outcome row
@@ -499,7 +505,9 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 
 // failAndNotify transitions head to failed and notifies the coordinator.
 func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
-	if err := w.db.TerminateMerge(head.PR, "failed", errMsg); err != nil {
+	// Pass head.Repo so the terminal write is scoped to this coordinator's
+	// repo (issue #2354).
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", errMsg); err != nil {
 		log.Printf("[mergequeue] TerminateMerge(failed) PR #%d: %v", head.PR, err)
 	}
 	var notifyText string

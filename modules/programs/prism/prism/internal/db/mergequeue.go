@@ -18,15 +18,21 @@ func isMergeTerminal(status string) bool {
 
 // EnqueueMerge inserts a new pending_merges row with status = 'watching'.
 // queue_position is set to the current Unix millisecond timestamp (monotone
-// insertion order). If a non-terminal row already exists for pr, the existing
-// row is returned unchanged (idempotent success). A terminal row (merged,
-// failed, cancelled, abandoned) is treated as gone — a fresh row is inserted.
-// title is the PR title stored for display in `prism merges list`; pass nil
-// if the title is not known at enqueue time.
+// insertion order). If a non-terminal row already exists for (repo, pr), the
+// existing row is returned unchanged (idempotent success). A terminal row
+// (merged, failed, cancelled, abandoned) is treated as gone — a fresh row
+// is inserted (via ON CONFLICT DO UPDATE).
+//
+// repo is the short repo slug this PR belongs to. It is stored on the row
+// and used together with pr as the composite primary key, so that PR
+// numbers can safely collide across repos sharing one prism.db (issue
+// #2354). title is the PR title stored for display in `prism merges list`;
+// pass nil if the title is not known at enqueue time.
+//
 // Returns the resulting row (existing or newly inserted).
-func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string, title *string) (*PendingMerge, error) {
-	// Check for an existing non-terminal row.
-	existing, err := d.PendingMergeByPR(pr)
+func (d *DB) EnqueueMerge(pr int, repo, sessionName, instanceID string, title *string) (*PendingMerge, error) {
+	// Check for an existing non-terminal row scoped to this (repo, pr).
+	existing, err := d.PendingMergeByPR(pr, repo)
 	if err != nil {
 		return nil, fmt.Errorf("db: enqueue merge: check existing: %w", err)
 	}
@@ -37,9 +43,9 @@ func (d *DB) EnqueueMerge(pr int, sessionName, instanceID string, title *string)
 
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO pending_merges (pr, session_name, instance_id, queue_position, status, title, queued_at)
-VALUES (?, ?, ?, ?, 'watching', ?, ?)
-ON CONFLICT(pr) DO UPDATE SET
+INSERT INTO pending_merges (repo, pr, session_name, instance_id, queue_position, status, title, queued_at)
+VALUES (?, ?, ?, ?, ?, 'watching', ?, ?)
+ON CONFLICT(repo, pr) DO UPDATE SET
   session_name    = excluded.session_name,
   instance_id     = excluded.instance_id,
   queue_position  = excluded.queue_position,
@@ -50,24 +56,30 @@ ON CONFLICT(pr) DO UPDATE SET
   last_checked_at = NULL,
   merged_at       = NULL,
   ended_at        = NULL`
-	if _, err := d.conn.Exec(q, pr, sessionName, instanceID, now, title, now); err != nil {
+	if _, err := d.conn.Exec(q, repo, pr, sessionName, instanceID, now, title, now); err != nil {
 		return nil, fmt.Errorf("db: enqueue merge: insert: %w", err)
 	}
-	row, err := d.PendingMergeByPR(pr)
+	row, err := d.PendingMergeByPR(pr, repo)
 	if err != nil {
 		return nil, fmt.Errorf("db: enqueue merge: refetch: %w", err)
 	}
 	return row, nil
 }
 
-// PendingMergeByPR returns the pending_merges row for pr, or nil if not found.
-func (d *DB) PendingMergeByPR(pr int) (*PendingMerge, error) {
+// PendingMergeByPR returns the pending_merges row for the given (pr, repo),
+// or nil if not found. The composite primary key was introduced in
+// migration v37→v38 (issue #2354) so callers MUST pass the caller's repo
+// to avoid cross-repo PR-number collisions. Passing an empty repo will
+// only ever match rows that failed the migration backfill (session_name
+// contained no '@' at the time of migration); production callers should
+// always pass a non-empty repo.
+func (d *DB) PendingMergeByPR(pr int, repo string) (*PendingMerge, error) {
 	const q = `
-SELECT pr, session_name, instance_id, queue_position, status, title, error,
+SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
- WHERE pr = ?`
-	row := d.conn.QueryRow(q, pr)
+ WHERE repo = ? AND pr = ?`
+	row := d.conn.QueryRow(q, repo, pr)
 	m, err := scanPendingMerge(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -88,9 +100,12 @@ SELECT pr, session_name, instance_id, queue_position, status, title, error,
 // preventing stale rows from a previous sidecar from being re-processed — is
 // handled by AbandonWatchingMerges on sidecar shutdown, which sets rows to
 // 'abandoned' before the new sidecar starts.
+//
+// session_name embeds the repo (`<repo>@<branch>` convention), so this
+// selector remains implicitly repo-scoped without an explicit repo filter.
 func (d *DB) MergeQueueHead(sessionName string) (*PendingMerge, error) {
 	const q = `
-SELECT pr, session_name, instance_id, queue_position, status, title, error,
+SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
        queued_at, last_checked_at, merged_at, ended_at
   FROM pending_merges
  WHERE session_name = ? AND status = 'watching'
@@ -107,12 +122,15 @@ SELECT pr, session_name, instance_id, queue_position, status, title, error,
 	return m, nil
 }
 
-// UpdateMergeLastChecked sets last_checked_at to now for the given pr.
-func (d *DB) UpdateMergeLastChecked(pr int) error {
+// UpdateMergeLastChecked sets last_checked_at to now for the given
+// (pr, repo). repo is required so that the watcher's per-tick heartbeat
+// only ever touches the row belonging to its own coordinator (issue
+// #2354).
+func (d *DB) UpdateMergeLastChecked(pr int, repo string) error {
 	now := time.Now().UnixMilli()
 	_, err := d.conn.Exec(
-		"UPDATE pending_merges SET last_checked_at = ? WHERE pr = ?",
-		now, pr,
+		"UPDATE pending_merges SET last_checked_at = ? WHERE repo = ? AND pr = ?",
+		now, repo, pr,
 	)
 	if err != nil {
 		return fmt.Errorf("db: update merge last checked: %w", err)
@@ -120,11 +138,15 @@ func (d *DB) UpdateMergeLastChecked(pr int) error {
 	return nil
 }
 
-// TerminateMerge transitions a pending_merges row to a terminal status.
-// status must be one of 'merged', 'failed', 'cancelled', or 'abandoned'.
-// errMsg is stored in the error column; pass "" for no error.
-// merged_at is populated when status = 'merged'; ended_at is always set.
-func (d *DB) TerminateMerge(pr int, status, errMsg string) error {
+// TerminateMerge transitions a pending_merges row to a terminal status,
+// scoped to (repo, pr). status must be one of 'merged', 'failed',
+// 'cancelled', or 'abandoned'. errMsg is stored in the error column;
+// pass "" for no error. merged_at is populated when status = 'merged';
+// ended_at is always set.
+//
+// repo is required so that the watcher's terminal write only ever touches
+// the row belonging to its own coordinator (issue #2354).
+func (d *DB) TerminateMerge(pr int, repo, status, errMsg string) error {
 	now := time.Now().UnixMilli()
 	var errPtr *string
 	if errMsg != "" {
@@ -140,8 +162,8 @@ UPDATE pending_merges
        error    = ?,
        merged_at = ?,
        ended_at  = ?
- WHERE pr = ?`
-	_, err := d.conn.Exec(q, status, errPtr, mergedAt, now, pr)
+ WHERE repo = ? AND pr = ?`
+	_, err := d.conn.Exec(q, status, errPtr, mergedAt, now, repo, pr)
 	if err != nil {
 		return fmt.Errorf("db: terminate merge: %w", err)
 	}
@@ -151,6 +173,10 @@ UPDATE pending_merges
 // AbandonWatchingMerges transitions all watching rows for instanceID to
 // 'abandoned' with error = 'coordinator session ended'. Called on sidecar
 // shutdown so that a new coordinator never inherits stale watching rows.
+//
+// Scoping by instance_id is already sufficient to prevent cross-repo
+// spillover: instance_id is unique per coordinator and each coordinator
+// only ever writes rows for its own repo.
 func (d *DB) AbandonWatchingMerges(instanceID string) error {
 	now := time.Now().UnixMilli()
 	const q = `
@@ -169,14 +195,17 @@ UPDATE pending_merges
 // CancelMerge transitions a watching row owned by instanceID to 'cancelled'.
 // Returns (true, nil) when the row was cancelled; (false, nil) when the row
 // does not exist, is already terminal, or is owned by a different instanceID.
-func (d *DB) CancelMerge(pr int, instanceID string) (bool, error) {
+//
+// Scoping is (pr, repo, instance_id) so that a coordinator can only cancel
+// rows in its own repo AND its own incarnation (issue #2354).
+func (d *DB) CancelMerge(pr int, repo, instanceID string) (bool, error) {
 	now := time.Now().UnixMilli()
 	const q = `
 UPDATE pending_merges
    SET status   = 'cancelled',
        ended_at = ?
- WHERE pr = ? AND instance_id = ? AND status = 'watching'`
-	res, err := d.conn.Exec(q, now, pr, instanceID)
+ WHERE repo = ? AND pr = ? AND instance_id = ? AND status = 'watching'`
+	res, err := d.conn.Exec(q, now, repo, pr, instanceID)
 	if err != nil {
 		return false, fmt.Errorf("db: cancel merge: %w", err)
 	}
@@ -196,6 +225,10 @@ UPDATE pending_merges
 //   - "all"            → all non-abandoned rows for instanceID from the last 7 days
 //   - "abandoned"      → abandoned rows for the same session_name but a different
 //     instanceID (previous coordinator incarnations)
+//
+// instance_id is unique per coordinator (and every coordinator only ever
+// writes rows for its own repo), so this selector is already
+// repo-implicit and does not need an explicit repo filter.
 func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]PendingMerge, error) {
 	var (
 		q    string
@@ -205,14 +238,14 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 
 	switch filter {
 	case "failed":
-		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND status = 'failed'
 		      ORDER BY queue_position ASC`
 		args = []any{instanceID}
 	case "abandoned":
-		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE session_name = ? AND instance_id != ? AND status = 'abandoned'
@@ -223,7 +256,7 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		// watching, from the last 7 days, scoped to this instanceID. Per AC:
 		// "includes terminal states (merged, cancelled, failed, abandoned) from
 		// the last 7 days."
-		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND queued_at >= ?
@@ -231,7 +264,7 @@ func (d *DB) MergeQueueForInstance(instanceID, sessionName, filter string) ([]Pe
 		args = []any{instanceID, sevenDaysAgo}
 	default:
 		// Default: only watching rows for this instanceID.
-		q = `SELECT pr, session_name, instance_id, queue_position, status, title, error,
+		q = `SELECT repo, pr, session_name, instance_id, queue_position, status, title, error,
 		            queued_at, last_checked_at, merged_at, ended_at
 		       FROM pending_merges
 		      WHERE instance_id = ? AND status = 'watching'
@@ -269,7 +302,7 @@ func scanPendingMerge(row *sql.Row) (*PendingMerge, error) {
 		endedAtMs       *int64
 	)
 	err := row.Scan(
-		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
+		&m.Repo, &m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
 		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
 	)
 	if err != nil {
@@ -301,7 +334,7 @@ func scanPendingMergeRow(rows *sql.Rows) (PendingMerge, error) {
 		endedAtMs       *int64
 	)
 	err := rows.Scan(
-		&m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
+		&m.Repo, &m.PR, &m.SessionName, &m.InstanceID, &m.QueuePosition, &m.Status,
 		&m.Title, &m.Error, &queuedAtMs, &lastCheckedAtMs, &mergedAtMs, &endedAtMs,
 	)
 	if err != nil {

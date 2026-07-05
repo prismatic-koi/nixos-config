@@ -34,10 +34,12 @@ import (
 // Implementations may close over a *db.DB (host path) or a host-API URL
 // (sandbox path); the wait loops do not care which.
 type waitProbe interface {
-	// Merge returns the pending_merges row for pr, or (nil, nil) when no
-	// row exists. err is reserved for transient failures (the wait loop
-	// retries on err).
-	Merge(pr int) (*db.PendingMerge, error)
+	// Merge returns the pending_merges row for (pr, repo), or (nil, nil)
+	// when no row exists. err is reserved for transient failures (the
+	// wait loop retries on err). repo is required so the lookup cannot
+	// return a row belonging to a different repo that happens to share
+	// the PR number (issue #2354).
+	Merge(pr int, repo string) (*db.PendingMerge, error)
 
 	// SessionStatus returns the agent_status row for sessionName, or
 	// (nil, nil) when no row exists.
@@ -74,8 +76,8 @@ func newWaitProbe() (waitProbe, error) {
 // dbWaitProbe is the host-path implementation: direct DB reads.
 type dbWaitProbe struct{ d *db.DB }
 
-func (p *dbWaitProbe) Merge(pr int) (*db.PendingMerge, error) {
-	return p.d.PendingMergeByPR(pr)
+func (p *dbWaitProbe) Merge(pr int, repo string) (*db.PendingMerge, error) {
+	return p.d.PendingMergeByPR(pr, repo)
 }
 
 func (p *dbWaitProbe) SessionStatus(sessionName string) (*db.Status, error) {
@@ -108,9 +110,12 @@ func (p *dbWaitProbe) Close() {
 // sidecar's read-only wait-probe endpoints.
 type proxyWaitProbe struct{ apiURL string }
 
-func (p *proxyWaitProbe) Merge(pr int) (*db.PendingMerge, error) {
+func (p *proxyWaitProbe) Merge(pr int, repo string) (*db.PendingMerge, error) {
 	var row db.PendingMerge
 	params := map[string]string{"pr": fmt.Sprintf("%d", pr)}
+	if repo != "" {
+		params["repo"] = repo
+	}
 	err := proxyGetFromHostAPI(p.apiURL, "/merges/by-pr", params, &row)
 	if err != nil {
 		// not-found surfaces as a 404; the proxy helper wraps it into an

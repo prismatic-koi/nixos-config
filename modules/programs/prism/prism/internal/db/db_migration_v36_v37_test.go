@@ -238,8 +238,8 @@ func TestMigration_V36ToV37_BodyRuns_AddsBothColumns(t *testing.T) {
 	}
 	defer d.Close()
 
-	if v := readVersion(t, d); v != 37 {
-		t.Errorf("schema_version after migration: got %d, want 37", v)
+	if v := readVersion(t, d); v != 38 {
+		t.Errorf("schema_version after migration: got %d, want 38", v)
 	}
 	assertColumnShape(t, d, "agent_status", "containers_enabled")
 	assertColumnShape(t, d, "spawn_inputs", "containers_flag")
@@ -260,8 +260,8 @@ func TestMigration_V36ToV37_BodySkips_BothColumnsPreExist(t *testing.T) {
 	}
 	defer d.Close()
 
-	if v := readVersion(t, d); v != 37 {
-		t.Errorf("schema_version after migration: got %d, want 37", v)
+	if v := readVersion(t, d); v != 38 {
+		t.Errorf("schema_version after migration: got %d, want 38", v)
 	}
 	if n := countColumn(t, d, "agent_status", "containers_enabled"); n != 1 {
 		t.Errorf("agent_status.containers_enabled count after body-skips: got %d, want 1", n)
@@ -288,8 +288,8 @@ func TestMigration_V36ToV37_BodyMixed_OnlyContainersEnabledPreExists(t *testing.
 	}
 	defer d.Close()
 
-	if v := readVersion(t, d); v != 37 {
-		t.Errorf("schema_version after migration: got %d, want 37", v)
+	if v := readVersion(t, d); v != 38 {
+		t.Errorf("schema_version after migration: got %d, want 38", v)
 	}
 	if n := countColumn(t, d, "agent_status", "containers_enabled"); n != 1 {
 		t.Errorf("agent_status.containers_enabled count: got %d, want 1", n)
@@ -310,8 +310,8 @@ func TestMigration_V36ToV37_BodyMixed_OnlyContainersFlagPreExists(t *testing.T) 
 	}
 	defer d.Close()
 
-	if v := readVersion(t, d); v != 37 {
-		t.Errorf("schema_version after migration: got %d, want 37", v)
+	if v := readVersion(t, d); v != 38 {
+		t.Errorf("schema_version after migration: got %d, want 38", v)
 	}
 	assertColumnShape(t, d, "agent_status", "containers_enabled")
 	if n := countColumn(t, d, "spawn_inputs", "containers_flag"); n != 1 {
@@ -338,8 +338,8 @@ func TestMigration_V36ToV37_Idempotent(t *testing.T) {
 	}
 	defer d2.Close()
 
-	if v := readVersion(t, d2); v != 37 {
-		t.Errorf("schema_version after second open: got %d, want 37", v)
+	if v := readVersion(t, d2); v != 38 {
+		t.Errorf("schema_version after second open: got %d, want 38", v)
 	}
 	if n := countColumn(t, d2, "agent_status", "containers_enabled"); n != 1 {
 		t.Errorf("agent_status.containers_enabled count after idempotent open: got %d, want 1", n)
@@ -362,8 +362,8 @@ func TestMigration_V36ToV37_FreshDB(t *testing.T) {
 	}
 	defer d.Close()
 
-	if v := readVersion(t, d); v != 37 {
-		t.Errorf("schema_version on fresh DB: got %d, want 37", v)
+	if v := readVersion(t, d); v != 38 {
+		t.Errorf("schema_version on fresh DB: got %d, want 38", v)
 	}
 	assertColumnShape(t, d, "agent_status", "containers_enabled")
 	assertColumnShape(t, d, "spawn_inputs", "containers_flag")

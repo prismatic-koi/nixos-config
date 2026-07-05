@@ -66,6 +66,15 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	jsonFlag, _ := cmd.Flags().GetBool("json")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")
 
+	// Resolve the calling session's repo up front. Every downstream probe
+	// and DB write is now repo-scoped (issue #2354) so we need this value
+	// available before the re-entry short-circuit runs. When we cannot
+	// resolve a repo (running outside a prism tmux session, DB error,
+	// row not yet present) callerRepo stays empty and the probe falls
+	// through as if no row exists — the enqueue path below re-derives
+	// repo and produces a clear error if resolution is still impossible.
+	callerRepo := resolveCallerRepo()
+
 	// Re-entry short-circuit (#1875). Probe the merge ledger BEFORE running
 	// the `gh pr view` preflight or hitting the sidecar /merge endpoint.
 	// This is the cmd/-layer side of the DB-level idempotence in
@@ -88,10 +97,13 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	//     distinguishable from the fresh-enqueue line.
 	//   - No row — fall through to the normal enqueue path.
 	//
-	// Uses newWaitProbe() so the lookup works on both the host (direct DB)
-	// and inside a sandbox (host-API proxy); a probe failure falls through
-	// rather than erroring so the user still gets a sensible behaviour.
-	if done, reentryErr := observeExistingMergeRow(pr, waitFlag, jsonFlag, timeoutFlag); done {
+	// The lookup is scoped to callerRepo so a same-numbered row belonging
+	// to a different repo cannot short-circuit our own enqueue (issue
+	// #2354). Uses newWaitProbe() so the lookup works on both the host
+	// (direct DB) and inside a sandbox (host-API proxy); a probe failure
+	// falls through rather than erroring so the user still gets sensible
+	// behaviour.
+	if done, reentryErr := observeExistingMergeRow(pr, callerRepo, waitFlag, jsonFlag, timeoutFlag); done {
 		return reentryErr
 	}
 
@@ -143,7 +155,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if waitFlag {
-			return waitForMergeTerminal(pr, jsonFlag, timeoutFlag)
+			return waitForMergeTerminal(pr, callerRepo, jsonFlag, timeoutFlag)
 		}
 		fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
 		fmt.Println("You will be notified when it merges or fails.")
@@ -190,6 +202,19 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 
 	sessionName := callerSession
 
+	// Prefer the stored repo from agent_status over the session-name split
+	// (which is a best-effort fallback in resolveCallerRepo). agent_status
+	// is written at sidecar startup from the same source, but in tests the
+	// two paths may diverge (e.g. seeded rows use different repo values),
+	// and status.Repo is the authoritative record for this coordinator.
+	repo := status.Repo
+	if repo == "" {
+		repo = callerRepo
+	}
+	if repo == "" {
+		return fmt.Errorf("prism merge: cannot determine repo for session %q — agent_status.repo is empty and session name has no '@' prefix", callerSession)
+	}
+
 	// Pre-flight: verify the PR exists and is open, and fetch its title.
 	// Timeout is kept tight (5s) so the overall command returns well within
 	// the 2-second AC when the GitHub API responds promptly.
@@ -199,11 +224,13 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 	}
 
 	// Enqueue (idempotent). Pass title for `prism merges list` display.
+	// Repo is required so pending_merges rows are keyed on (repo, pr) and
+	// PR numbers can safely collide across repos (issue #2354).
 	var titlePtr *string
 	if title != "" {
 		titlePtr = &title
 	}
-	row, err := d.EnqueueMerge(pr, sessionName, instanceID, titlePtr)
+	row, err := d.EnqueueMerge(pr, repo, sessionName, instanceID, titlePtr)
 	if err != nil {
 		return fmt.Errorf("prism merge: %w", err)
 	}
@@ -218,13 +245,42 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 		}
 	}
 	if waitFlag {
-		return waitForMergeTerminal(pr, jsonFlag, timeoutFlag)
+		return waitForMergeTerminal(pr, repo, jsonFlag, timeoutFlag)
 	}
 	fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
 	fmt.Println("You will be notified when it merges or fails.")
 	fmt.Println()
 	fmt.Println("Track progress with: prism merges")
 	return nil
+}
+
+// resolveCallerRepo returns the short repo slug for the calling prism
+// session, or "" when it cannot be determined. This is the best-effort
+// resolver used by the re-entry short-circuit (which happens BEFORE the
+// main enqueue path opens the DB) so it must not error on missing state.
+//
+// The resolution order is:
+//
+//  1. review.LookupParentSession() — gives us the session name (either
+//     from PRISM_SESSION_NAME or the current tmux session).
+//  2. Split at the first '@' — the coordinator naming convention is
+//     `<repo>@<branch>`, and the pre-migration backfill in
+//     migrateV37ToV38 uses the same split, so this yields the same repo
+//     slug agent_status.repo carries in every prism-managed session.
+//
+// The stronger source — status.Repo from agent_status — is used by the
+// main enqueue path below (which opens the DB anyway) and overrides this
+// fallback when available. This function exists purely so the re-entry
+// probe can be repo-scoped without paying an extra DB open.
+func resolveCallerRepo() string {
+	caller := review.LookupParentSession()
+	if caller == "" {
+		return ""
+	}
+	if idx := strings.Index(caller, "@"); idx > 0 {
+		return caller[:idx]
+	}
+	return ""
 }
 
 // observeExistingMergeRow is the cmd/-layer re-entry short-circuit for
@@ -240,13 +296,21 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 // best-effort short-circuit, never a hard failure. Falling through means
 // the caller pays the gh round-trip but still gets a correct outcome via
 // the idempotent DB layer.
-func observeExistingMergeRow(pr int, waitFlag, jsonMode bool, timeout time.Duration) (bool, error) {
+func observeExistingMergeRow(pr int, repo string, waitFlag, jsonMode bool, timeout time.Duration) (bool, error) {
+	// A missing repo means we cannot safely scope the lookup — a match on
+	// pr alone would re-open the exact cross-repo collision issue #2354
+	// closed. Fall through to the normal enqueue path, which resolves the
+	// repo authoritatively from agent_status and returns a clear error if
+	// resolution is still impossible.
+	if repo == "" {
+		return false, nil
+	}
 	probe, err := newWaitProbe()
 	if err != nil {
 		return false, nil
 	}
 	defer probe.Close()
-	row, err := probe.Merge(pr)
+	row, err := probe.Merge(pr, repo)
 	if err != nil || row == nil {
 		return false, nil
 	}
@@ -279,7 +343,7 @@ func observeExistingMergeRow(pr int, waitFlag, jsonMode bool, timeout time.Durat
 		}
 	}
 	if waitFlag {
-		return true, waitForMergeTerminal(pr, jsonMode, timeout)
+		return true, waitForMergeTerminal(pr, repo, jsonMode, timeout)
 	}
 	return true, nil
 }
@@ -310,13 +374,19 @@ func isMergeTerminalStatus(status string) bool {
 // watcher never writes to, silently returning "no row" and skipping the
 // short-circuit — see issue #1500 review-code feedback for the parallel bug
 // in the wait poll loop below.
-func observeAlreadyTerminal(pr int, jsonMode bool) (bool, error) {
+//
+// repo scopes the lookup so we cannot short-circuit on a same-numbered row
+// from a different repo (issue #2354). An empty repo returns (false, nil).
+func observeAlreadyTerminal(pr int, repo string, jsonMode bool) (bool, error) {
+	if repo == "" {
+		return false, nil
+	}
 	probe, err := newWaitProbe()
 	if err != nil {
 		return false, nil
 	}
 	defer probe.Close()
-	row, err := probe.Merge(pr)
+	row, err := probe.Merge(pr, repo)
 	if err != nil || row == nil {
 		return false, nil
 	}
@@ -337,7 +407,15 @@ func observeAlreadyTerminal(pr int, jsonMode bool) (bool, error) {
 // in-sandbox callers route reads through the sidecar's /merges/by-pr
 // endpoint. Without this, --wait inside a sandbox would poll a tmpfs shadow
 // DB and never observe the terminal (issue #1500 review-code feedback).
-func waitForMergeTerminal(pr int, jsonMode bool, timeout time.Duration) error {
+//
+// repo scopes each poll to the caller's repo so --wait cannot observe a
+// terminal state belonging to a different repo's PR of the same number
+// (issue #2354). An empty repo returns an error rather than polling
+// unscoped — that would reintroduce exactly the incident this fix closes.
+func waitForMergeTerminal(pr int, repo string, jsonMode bool, timeout time.Duration) error {
+	if repo == "" {
+		return fmt.Errorf("prism merge --wait: cannot determine repo for the calling session — --wait requires a resolvable repo to avoid cross-repo PR-number collisions (issue #2354)")
+	}
 	probe, err := newWaitProbe()
 	if err != nil {
 		return fmt.Errorf("prism merge --wait: %w", err)
@@ -348,7 +426,7 @@ func waitForMergeTerminal(pr int, jsonMode bool, timeout time.Duration) error {
 	err = pollWait(context.Background(), timeout,
 		500*time.Millisecond, 5*time.Second,
 		func() (bool, error) {
-			row, qErr := probe.Merge(pr)
+			row, qErr := probe.Merge(pr, repo)
 			if qErr != nil {
 				// Transient — keep polling.
 				proglog.Debugf("[prism merge --wait] probe error: %v (will retry)\n", qErr)
@@ -427,7 +505,16 @@ func emitMergeWaitTerminal(row *db.PendingMerge, jsonMode bool) error {
 		}
 	} else {
 		if row.Status == "merged" {
-			fmt.Printf("PR #%d merged.\n", row.PR)
+			// Include the stored PR title in the already-merged short-circuit
+			// output so a cross-repo mismatch — the incident shape of issue
+			// #2354 — is visually detectable by the caller. When the title
+			// is unavailable (older row, or the row was created before we
+			// captured titles), fall back to the original terse form.
+			if row.Title != nil && *row.Title != "" {
+				fmt.Printf("PR #%d merged: %s\n", row.PR, *row.Title)
+			} else {
+				fmt.Printf("PR #%d merged.\n", row.PR)
+			}
 		} else {
 			fmt.Printf("PR #%d ended with status %q", row.PR, row.Status)
 			if row.Error != nil && *row.Error != "" {

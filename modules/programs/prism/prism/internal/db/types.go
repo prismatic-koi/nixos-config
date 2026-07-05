@@ -118,7 +118,13 @@ type TokenTurn struct {
 }
 
 // PendingMerge represents a row in the pending_merges table.
+//
+// Repo is the short repo slug (e.g. "nixos-config", not the full
+// "owner/name" form). It is part of the composite primary key together
+// with PR so that PR numbers can safely collide across repos sharing one
+// prism.db (issue #2354). See migrateV37ToV38 for the schema history.
 type PendingMerge struct {
+	Repo          string
 	PR            int
 	SessionName   string
 	InstanceID    string

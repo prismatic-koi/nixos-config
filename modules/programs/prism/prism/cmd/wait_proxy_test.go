@@ -143,7 +143,7 @@ func TestObserveAlreadyTerminal_RoutesViaHostAPI(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", apiURL)
 
 	out := captureStdout(t, func() {
-		done, err := observeAlreadyTerminal(99, false)
+		done, err := observeAlreadyTerminal(99, "myrepo", false)
 		if !done {
 			t.Fatal("expected proxy probe to short-circuit on merged row")
 		}
@@ -162,6 +162,13 @@ func TestObserveAlreadyTerminal_RoutesViaHostAPI(t *testing.T) {
 	}
 	if !strings.Contains(server.requests[0], "/merges/by-pr") {
 		t.Errorf("first request was %q, expected /merges/by-pr", server.requests[0])
+	}
+	// The proxy path must forward the caller's repo as a query parameter
+	// (issue #2354). Without repo scoping in the request the sidecar
+	// substitutes its own repo, which can be different when the caller's
+	// session has been reassigned mid-flight.
+	if !strings.Contains(server.requests[0], "repo=myrepo") {
+		t.Errorf("first request was %q, expected repo=myrepo query parameter (issue #2354)", server.requests[0])
 	}
 }
 
