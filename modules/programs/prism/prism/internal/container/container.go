@@ -184,6 +184,17 @@ type Config struct {
 	// be used here). On Linux this is zero.
 	HarnessPipeTCPPort int
 
+	// AgentRunLogPath is the host-side path to the per-session agent-run log
+	// (run/<sessionDirName>/agent-run.log). When non-empty it is exposed to
+	// the sandboxed agent as PRISM_AGENT_RUN_LOG so the PI prism extension
+	// can append a durable diagnostic line when it exhausts its first-connect
+	// retries and gives up (issue #2357) — pane scrollback dies with the
+	// pane, the log file survives. The log lives in the same per-session run
+	// directory as the host-API socket, so the existing bwrap bind-mount and
+	// sandbox-exec SBPL subpath grant for that directory cover it — no new
+	// mount or allow rule is needed.
+	AgentRunLogPath string
+
 	// ContainersEnabled is the per-session runtime gate for the filtering
 	// podman API socket proxy (#2317 / #2321 / #2322). When true, the
 	// per-isolator BuildArgs / SBPL generator emits:

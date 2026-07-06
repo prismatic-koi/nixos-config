@@ -46,6 +46,8 @@ import {
   // Status bar
   formatPrismStatus,
   extractBranch,
+  // Durable first-connect give-up log (issue #2357)
+  writeDurableGiveUpLog,
   // Connection guard
   shouldAttemptConnect,
   // Git-push reminder
@@ -2933,6 +2935,117 @@ describe("#1554: first-connect retry — budget exhaustion", () => {
                 `give-up line must include retry count, got: ${giveUpLines[0]}`)
               resolve()
             } catch (err) {
+              reject(err as Error)
+            }
+          }, 150)
+        })
+      })
+    })
+  })
+})
+
+describe("#2357: durable give-up log", () => {
+  it("writeDurableGiveUpLog appends a diagnostic line to PRISM_AGENT_RUN_LOG", () => {
+    const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2357-"))
+    // Point at a nested path whose directory does not exist yet — host mode
+    // has no agent-run process to pre-create the run dir, so the helper must
+    // mkdir recursively.
+    const logPath = path.join(logDir, "run", "abc123", "agent-run.log")
+    const saved = process.env.PRISM_AGENT_RUN_LOG
+    process.env.PRISM_AGENT_RUN_LOG = logPath
+    try {
+      writeDurableGiveUpLog("127.0.0.1:14001", 5)
+      const content = fs.readFileSync(logPath, "utf8")
+      assert.ok(content.includes("giving up"),
+        `durable log line must include "giving up", got: ${content}`)
+      assert.ok(content.includes("127.0.0.1:14001"),
+        `durable log line must include the endpoint, got: ${content}`)
+      assert.ok(content.includes("after 5 retries"),
+        `durable log line must include the retry count, got: ${content}`)
+    } finally {
+      process.env.PRISM_AGENT_RUN_LOG = saved
+      fs.rmSync(logDir, { recursive: true, force: true })
+    }
+  })
+
+  it("writeDurableGiveUpLog is a no-op when PRISM_AGENT_RUN_LOG is unset", () => {
+    const saved = process.env.PRISM_AGENT_RUN_LOG
+    delete process.env.PRISM_AGENT_RUN_LOG
+    try {
+      // Must not throw — give-up handling can never take the extension down.
+      writeDurableGiveUpLog("127.0.0.1:14001", 5)
+    } finally {
+      process.env.PRISM_AGENT_RUN_LOG = saved
+    }
+  })
+
+  it("writeDurableGiveUpLog swallows write failures (unwritable path)", () => {
+    const saved = process.env.PRISM_AGENT_RUN_LOG
+    // /dev/null/sub cannot be created (parent is not a directory).
+    process.env.PRISM_AGENT_RUN_LOG = "/dev/null/sub/agent-run.log"
+    const origError = console.error.bind(console)
+    const errLines: string[] = []
+    console.error = (...args: unknown[]) => {
+      errLines.push(args.map(String).join(" "))
+    }
+    try {
+      writeDurableGiveUpLog("127.0.0.1:14001", 5)
+      assert.ok(
+        errLines.some((l) => l.includes("failed to write give-up line")),
+        `expected a fallback console.error, got: ${JSON.stringify(errLines)}`,
+      )
+    } finally {
+      console.error = origError
+      process.env.PRISM_AGENT_RUN_LOG = saved
+    }
+  })
+
+  it("exhausting first-connect retries writes the give-up line to the durable log", () => {
+    return new Promise<void>((resolve, reject) => {
+      // Port that is never bound — every connect() gets ECONNREFUSED.
+      const probe = net.createServer()
+      probe.listen(0, "127.0.0.1", () => {
+        const port = (probe.address() as net.AddressInfo).port
+        probe.close(() => {
+          const logDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2357-e2e-"))
+          const logPath = path.join(logDir, "agent-run.log")
+          const savedName = process.env.PRISM_SESSION_NAME
+          const savedPipe = process.env.PRISM_HARNESS_PIPE
+          const savedDelays = process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS
+          const savedLog = process.env.PRISM_AGENT_RUN_LOG
+          process.env.PRISM_SESSION_NAME = "test@main"
+          process.env.PRISM_HARNESS_PIPE = `tcp://127.0.0.1:${port}`
+          process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = FAST_DELAYS_1554
+          process.env.PRISM_AGENT_RUN_LOG = logPath
+
+          const origError = console.error.bind(console)
+          console.error = () => {} // suppress retry/give-up pane noise
+
+          const cleanup = () => {
+            console.error = origError
+            process.env.PRISM_SESSION_NAME = savedName
+            process.env.PRISM_HARNESS_PIPE = savedPipe
+            process.env.PRISM_FIRST_CONNECT_RETRY_DELAYS_MS = savedDelays
+            process.env.PRISM_AGENT_RUN_LOG = savedLog
+            fs.rmSync(logDir, { recursive: true, force: true })
+          }
+
+          const { pi, trigger } = makeMockPI1554()
+          prismExtension(pi as never)
+          void trigger("session_start", {}, {})
+
+          // Budget exhaustion: 1+2+4+8+16 = 31ms. Wait 150ms to be safe.
+          setTimeout(() => {
+            try {
+              const content = fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8") : ""
+              cleanup()
+              assert.ok(content.includes("giving up"),
+                `durable log must contain the give-up line, got: ${JSON.stringify(content)}`)
+              assert.ok(content.includes(`127.0.0.1:${port}`),
+                `durable log must include the endpoint, got: ${JSON.stringify(content)}`)
+              resolve()
+            } catch (err) {
+              cleanup()
               reject(err as Error)
             }
           }, 150)

@@ -795,9 +795,18 @@ func agentPaneEnvVars(opts Opts) map[string]string {
 		// sidecar Unix socket. bwrap and sandbox-exec set this via their own
 		// paths; only inject here for host mode.
 		if opts.HarnessPipeSockPath != "" {
-			return map[string]string{
+			envs := map[string]string{
 				"PRISM_HARNESS_PIPE": "unix://" + opts.HarnessPipeSockPath,
 			}
+			// Durable give-up diagnostics (#2357): host mode has no
+			// agent-run process, but the per-session run dir (which also
+			// holds the pipe socket above) is the durable home for the PI
+			// extension's first-connect give-up line. Best-effort — on
+			// resolve failure the extension falls back to pane-only logging.
+			if logPath, err := AgentRunLogPath(opts.SessionName); err == nil {
+				envs["PRISM_AGENT_RUN_LOG"] = logPath
+			}
+			return envs
 		}
 		return nil
 	}

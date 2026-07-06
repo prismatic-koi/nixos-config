@@ -232,6 +232,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	if status.HarnessSessionID != nil {
 		sandboxHarnessSessionID = *status.HarnessSessionID
 	}
+
+	// Resolve the host-side agent-run log path so PRISM_AGENT_RUN_LOG can be
+	// injected below — the durable target for the PI extension's
+	// first-connect give-up diagnostic (issue #2357). sandbox-exec shares the
+	// host filesystem and the SBPL profile grants RW on the per-session run
+	// dir (the HostAPISockPath sockDir subpath rule), so the extension can
+	// append to the same file this process's logFile handle points at.
+	// Non-fatal on error: the extension falls back to pane-only logging.
+	agentRunLogPath := ""
+	if p, logPathErr := session.AgentRunLogPath(sessionName); logPathErr == nil {
+		agentRunLogPath = p
+	}
 	ctrCfg := container.Config{
 		SessionName:         sessionName,
 		Worktree:            worktree,
@@ -254,6 +266,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		HarnessSessionID:    sandboxHarnessSessionID,
 		ContainersEnabled:   status.ContainersEnabled,
 		PodmanProxySockPath: podmanProxySockPath,
+		AgentRunLogPath:     agentRunLogPath,
 	}
 
 	// For socket-pipe harnesses (PI), the sidecar stores the TCP port it
@@ -389,6 +402,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// convention that does NOT resolve on bare macOS.
 	if ctrCfg.HarnessPipeTCPPort != 0 {
 		env = append(env, fmt.Sprintf("PRISM_HARNESS_PIPE=tcp://127.0.0.1:%d", ctrCfg.HarnessPipeTCPPort))
+	}
+
+	// Durable give-up diagnostics (#2357): expose the host-side agent-run log
+	// path so the PI prism extension can append a diagnostic line if it
+	// exhausts its first-connect retries and gives up. Writes ride the SBPL
+	// run-dir subpath grant (section 6, HostAPISockPath sockDir).
+	if ctrCfg.AgentRunLogPath != "" {
+		env = append(env, "PRISM_AGENT_RUN_LOG="+ctrCfg.AgentRunLogPath)
 	}
 
 	// For PI sessions, set PI_CODING_AGENT_DIR so PI discovers settings.json /

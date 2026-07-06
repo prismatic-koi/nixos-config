@@ -289,6 +289,15 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		harnessPipeSockPath = pipePath
 	}
 
+	// Resolve the host-side agent-run log path so bwrap can expose it as
+	// PRISM_AGENT_RUN_LOG — the durable target for the PI extension's
+	// first-connect give-up diagnostic (issue #2357). Non-fatal on error:
+	// the extension falls back to pane-scrollback-only logging.
+	agentRunLogPath := ""
+	if p, logPathErr := session.AgentRunLogPath(sessionName); logPathErr == nil {
+		agentRunLogPath = p
+	}
+
 	// Populate harness-specific runtime env vars for the bwrap sandbox.
 	// harnessName comes from the DB; if it is not registered, fall back to
 	// a zero-env map rather than failing the entire agent-run.
@@ -340,6 +349,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		GitHubTokenPaths:    cfg.GitHubTokenPaths,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
+		AgentRunLogPath:     agentRunLogPath,
 		InstanceID:          instanceID,
 		ContainersEnabled:   status.ContainersEnabled,
 		PodmanProxySockPath: podmanProxySockPath,

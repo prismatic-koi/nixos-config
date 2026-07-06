@@ -575,6 +575,15 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		args = append(args, "--setenv", "PRISM_HARNESS_PIPE", "unix://"+cfg.HarnessPipeSockPath)
 	}
 
+	// Durable give-up diagnostics (#2357): expose the host-side agent-run log
+	// path so the PI prism extension can append a diagnostic line if it
+	// exhausts its first-connect retries. The log lives in the per-session
+	// run directory that the PRISM_HOST_API block above bind-mounts at its
+	// host path, so no extra bind is needed.
+	if cfg.AgentRunLogPath != "" {
+		args = append(args, "--setenv", "PRISM_AGENT_RUN_LOG", cfg.AgentRunLogPath)
+	}
+
 	// ── Containers-enabled surface (#2317 / #2321) ───────────────────
 	// Wires the per-session FILTERED podman socket and the writable
 	// container-scratch dir into the sandbox. Three argv emissions are
