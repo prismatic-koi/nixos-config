@@ -45,6 +45,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -2001,6 +2002,13 @@ func (s *Sidecar) runStartupSocketPipe(ctx context.Context) error {
 	s.harnessPipeListener = ln
 	s.mu.Unlock()
 
+	// Reload the durable pending-replay buffer (issue #2359 Gap B) so any
+	// /prompt frames buffered by a prior sidecar incarnation are re-armed
+	// before the first handshake. Rows persisted by bufferPendingReplay
+	// survive sidecar exit; they must appear in the in-memory buffer with
+	// their PersistKey set so the post-flush DELETE targets the exact row.
+	s.restorePendingReplayFromDB()
+
 	// closePipeListener closes the listener and removes the socket file on a
 	// clean exit or timeout. Called exactly once at the end of the function.
 	closePipeListener := func() {
@@ -2845,14 +2853,116 @@ func (s *Sidecar) sendPipeError(conn net.Conn, code, message string) {
 	_ = conn.Close()
 }
 
+// restorePendingReplayFromDB seeds the in-memory pendingReplayDeliveries
+// buffer from the durable pending_replay_deliveries table (issue #2359
+// Gap B). Called once at sidecar startup, before the harness-pipe
+// listener starts accepting connections, so any /prompt frames buffered
+// by a prior sidecar incarnation are re-armed for flushPendingReplay to
+// drain on the next handshake.
+//
+// If the buffer contains more entries than pendingReplayCapacity (a
+// prior sidecar with a different capacity, or a downgrade), only the
+// most recent pendingReplayCapacity entries are kept in memory. Older
+// entries are deleted from the DB to preserve the "buffer bounded"
+// contract across restart; without this, a restart could carry
+// arbitrarily many stale entries and the very next partition would
+// drop the newest legitimate delivery when eviction kicks in.
+//
+// Concurrency: acquires s.mu internally; call from a single-threaded
+// startup path (no other flush should be in flight).
+func (s *Sidecar) restorePendingReplayFromDB() {
+	if s.cfg.DB == nil {
+		return
+	}
+	rows, err := s.cfg.DB.LoadPendingReplayDeliveries(s.cfg.SessionName)
+	if err != nil {
+		s.logger().Printf("sidecar: restorePendingReplayFromDB: load failed: %v (starting with empty buffer)", err)
+		return
+	}
+	if len(rows) == 0 {
+		return
+	}
+	// Trim to capacity: keep the most recent entries (FIFO drops from the
+	// head), delete the older ones from the DB.
+	if len(rows) > pendingReplayCapacity {
+		overflow := rows[:len(rows)-pendingReplayCapacity]
+		rows = rows[len(rows)-pendingReplayCapacity:]
+		for _, drop := range overflow {
+			if dbErr := s.cfg.DB.DeletePendingReplayDelivery(s.cfg.SessionName, drop.DeliveryID); dbErr != nil {
+				s.logger().Printf("sidecar: restorePendingReplayFromDB: DB delete of overflow persist_key=%s failed: %v", drop.DeliveryID, dbErr)
+			}
+		}
+		s.logger().Printf("sidecar: restorePendingReplayFromDB: trimmed %d overflow entries to fit capacity=%d", len(overflow), pendingReplayCapacity)
+	}
+	restored := make([]pendingReplayDelivery, 0, len(rows))
+	for _, row := range rows {
+		// The stored DeliveryID may be either the caller-supplied UUID or
+		// the synthetic no-id key. Recover the original DeliveryID (empty
+		// for no-id entries) so the flush-path dedup semantics match the
+		// in-memory buffer exactly.
+		deliveryID := row.DeliveryID
+		if strings.HasPrefix(deliveryID, "no-id:") {
+			deliveryID = ""
+		}
+		restored = append(restored, pendingReplayDelivery{
+			DeliveryID: deliveryID,
+			Text:       row.Text,
+			DeliverAs:  row.DeliverAs,
+			Source:     row.Source,
+			PersistKey: row.DeliveryID,
+		})
+	}
+	s.mu.Lock()
+	s.pendingReplayDeliveries = restored
+	s.mu.Unlock()
+	s.logger().Printf("sidecar: restorePendingReplayFromDB: restored %d pending-replay delivery(ies) from DB (will flush on next handshake)", len(restored))
+}
+
 // bufferPendingReplay appends a pending delivery to the per-sidecar replay
 // buffer, evicting the oldest entry when at capacity. Called by the /prompt
 // handler when DeliverPrompt fails because the PI extension is disconnected.
 // The buffer is drained by flushPendingReplay on the next successful
 // handshake. Issue #1685 AC #7.
 //
+// Issue #2359 Gap B: entries are also persisted to the pending_replay_deliveries
+// DB table so they survive a sidecar exit/restart. The DB round-trip happens
+// BEFORE the in-memory append so that a DB failure fails the buffer call
+// (the /prompt handler must be able to distinguish durable buffering from a
+// dropped delivery), and PersistKey is stamped from the DB's returned key so
+// flushPendingReplay can DELETE the exact row after a successful flush. When
+// s.cfg.DB is nil (unit tests that stub out the DB), persistence is skipped
+// but the in-memory buffer still functions.
+//
+// Eviction ordering: when the buffer is at capacity, the oldest entry is
+// dropped from the in-memory buffer AND from the DB table so the two views
+// remain consistent across restart. A DB-delete failure is logged but not
+// propagated — the in-memory buffer is still bounded, and a stale row will
+// either be flushed on the next reconnect (leading to at-most-16 legitimate
+// replays plus at-most-one stale one) or age out with cleanup.
+//
 // Concurrency: acquires s.mu internally; do NOT call with s.mu held.
 func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
+	if s.cfg.DB != nil {
+		persistKey, err := s.cfg.DB.InsertPendingReplayDelivery(db.PendingReplayRow{
+			SessionName: s.cfg.SessionName,
+			DeliveryID:  d.DeliveryID,
+			Text:        d.Text,
+			DeliverAs:   d.DeliverAs,
+			Source:      d.Source,
+			QueuedAt:    s.cfg.Clock.Now(),
+		})
+		if err != nil {
+			// The durable buffer failed — log the class of failure so the
+			// operator can see it in the audit trail. Continue with the
+			// in-memory append so we do not degrade below the pre-#2359
+			// contract; the coordinator's directive is still deliverable
+			// on the next handshake within this sidecar's lifetime, just
+			// not across a restart.
+			s.logger().Printf("sidecar: bufferPendingReplay: DB persist failed (%v) — falling back to in-memory buffer only for delivery_id=%s", err, d.DeliveryID)
+		} else {
+			d.PersistKey = persistKey
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.pendingReplayDeliveries) >= pendingReplayCapacity {
@@ -2861,6 +2971,11 @@ func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {
 		dropped := s.pendingReplayDeliveries[0]
 		s.pendingReplayDeliveries = s.pendingReplayDeliveries[1:]
 		s.logger().Printf("sidecar: pending-replay buffer at capacity (%d), evicting oldest delivery_id=%s", pendingReplayCapacity, dropped.DeliveryID)
+		if s.cfg.DB != nil && dropped.PersistKey != "" {
+			if err := s.cfg.DB.DeletePendingReplayDelivery(s.cfg.SessionName, dropped.PersistKey); err != nil {
+				s.logger().Printf("sidecar: pending-replay eviction: DB delete failed for persist_key=%s: %v", dropped.PersistKey, err)
+			}
+		}
 	}
 	s.pendingReplayDeliveries = append(s.pendingReplayDeliveries, d)
 }
@@ -2902,12 +3017,21 @@ func (s *Sidecar) flushPendingReplay() {
 			if flushDedup[d.DeliveryID] {
 				s.logger().Printf("sidecar: flushPendingReplay: dropping duplicate delivery_id=%s (already forwarded in this flush pass)", d.DeliveryID)
 				// Drop this entry — do not re-enqueue.
+				// Also purge the duplicate's DB row (issue #2359) so a
+				// subsequent restart-and-flush cannot resurrect it.
+				if s.cfg.DB != nil && d.PersistKey != "" {
+					if dbErr := s.cfg.DB.DeletePendingReplayDelivery(s.cfg.SessionName, d.PersistKey); dbErr != nil {
+						s.logger().Printf("sidecar: flushPendingReplay: DB delete failed for duplicate persist_key=%s: %v", d.PersistKey, dbErr)
+					}
+				}
 				continue
 			}
 		}
 		if !s.deliverPromptFrame(d.Text, d.DeliverAs, true) {
 			// Outbound channel not yet live or another disconnect raced us.
-			// Re-buffer so the next handshake picks it up.
+			// Re-buffer so the next handshake picks it up. The DB row is
+			// intentionally left in place — the entry is still pending, and
+			// PersistKey continues to point at the same row.
 			requeue = append(requeue, d)
 			continue
 		}
@@ -2915,6 +3039,17 @@ func (s *Sidecar) flushPendingReplay() {
 		// that a duplicate entry later in the buffer is detected and dropped.
 		if d.DeliveryID != "" {
 			flushDedup[d.DeliveryID] = true
+		}
+		// Successful enqueue — delete the DB row (issue #2359). A subsequent
+		// sidecar restart must not re-deliver this frame. A DB-delete failure
+		// is logged but does not fail the flush: the in-memory buffer has
+		// already dropped the entry, so the worst-case outcome on restart is
+		// one additional replay (correctly marked replay=true) rather than a
+		// dropped delivery.
+		if s.cfg.DB != nil && d.PersistKey != "" {
+			if dbErr := s.cfg.DB.DeletePendingReplayDelivery(s.cfg.SessionName, d.PersistKey); dbErr != nil {
+				s.logger().Printf("sidecar: flushPendingReplay: DB delete after flush failed for persist_key=%s: %v", d.PersistKey, dbErr)
+			}
 		}
 		// Successful re-enqueue: incoming guidance has reached the session, so
 		// release the escalate same-turn guard (issue #2255) — the next

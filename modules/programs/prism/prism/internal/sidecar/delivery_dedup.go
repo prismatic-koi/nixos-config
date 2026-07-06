@@ -118,9 +118,18 @@ const pendingReplayCapacity = 16
 // successful re-enqueue. In particular, source=="review-complete" is the
 // signal for flushPendingReplay to clear reviewingInFlight (the same flag
 // the synchronous-delivery branch clears post-DeliverPrompt). Issue #1843.
+//
+// PersistKey is the key under which this entry is stored in the durable
+// pending_replay_deliveries DB row (issue #2359 Gap B). For entries with a
+// real minted delivery_id, PersistKey == DeliveryID. For legacy no-ID
+// callers, PersistKey is the synthetic key that DB.InsertPendingReplayDelivery
+// generated so that DB.DeletePendingReplayDelivery can remove the exact row
+// after successful flush. Empty when the entry is not durably backed (e.g.
+// tests that bypass the DB or the DB is nil).
 type pendingReplayDelivery struct {
 	DeliveryID string
 	Text       string
 	DeliverAs  string
 	Source     string
+	PersistKey string
 }

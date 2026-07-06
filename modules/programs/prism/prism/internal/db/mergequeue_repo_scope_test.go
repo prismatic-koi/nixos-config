@@ -500,8 +500,13 @@ func TestMigrationV37ToV38_SchemaVersionAndCompositePK(t *testing.T) {
 	if err := d.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if version != 38 {
-		t.Errorf("schema_version: got %d, want 38", version)
+	// Migrations chain forward through currentSchemaVersion, so on a fresh
+	// Open the row lands at whatever the highest migration produces. This
+	// test's contract is only that the v37→v38 leg has run — verified below
+	// by the pragma_table_info check on the `repo` column — so the version
+	// assertion is a lower-bound check that tolerates later migrations.
+	if version < 38 {
+		t.Errorf("schema_version: got %d, want >= 38", version)
 	}
 
 	// pragma_table_info exposes the repo column.

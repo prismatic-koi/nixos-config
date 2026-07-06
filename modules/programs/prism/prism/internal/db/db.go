@@ -29,7 +29,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 38
+	currentSchemaVersion = 39
 )
 
 // DB wraps a SQLite connection.
@@ -286,6 +286,34 @@ CREATE TABLE IF NOT EXISTS harness_frames (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_frames_session ON harness_frames(session_name, created_at);
 CREATE INDEX IF NOT EXISTS idx_harness_frames_session_dir ON harness_frames(session_name, direction, created_at);
+
+-- pending_replay_deliveries buffers /prompt frames that arrived while the PI
+-- extension was disconnected and could not be enqueued on the outbound
+-- writer. The sidecar drains this table on the next successful pipe
+-- handshake (flushPendingReplay) and marks the replayed prompt frames with
+-- replay=true so the receiving agent can identify them as resumed
+-- deliveries. The in-memory buffer that existed before #2359 was destroyed
+-- on sidecar exit; persisting to disk survives sidecar restart so a
+-- coordinator's reply cannot vanish if the worker's sidecar cycles between
+-- delivery and the next handshake.
+--
+-- PRIMARY KEY (session_name, delivery_id) preserves the existing in-memory
+-- dedup semantics: repeat deliveries for the same delivery_id are dropped
+-- by ON CONFLICT DO NOTHING on INSERT. Rows without a delivery_id
+-- (delivery_id = '', a legacy caller shape) are stored under a synthetic
+-- unique key so they still persist without collapsing all no-ID entries
+-- into one row.
+CREATE TABLE IF NOT EXISTS pending_replay_deliveries (
+  session_name   TEXT    NOT NULL,
+  delivery_id    TEXT    NOT NULL,
+  text           TEXT    NOT NULL,
+  deliver_as     TEXT    NOT NULL,
+  source         TEXT    NOT NULL,
+  queued_at      INTEGER NOT NULL,
+  PRIMARY KEY (session_name, delivery_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
+  ON pending_replay_deliveries(session_name, queued_at);
 `
 
 // Open opens (or creates) the prism database at path.
@@ -690,6 +718,9 @@ func runMigrations(conn *sql.DB) error {
 	if err := migrateV37ToV38(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV38ToV39(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -943,6 +974,46 @@ func migrateV37ToV38(conn *sql.DB, version *int) error {
 		return fmt.Errorf("db: migration v37\u2192v38: %w", err)
 	}
 	*version = 38
+	return nil
+}
+
+// migrateV38ToV39 adds pending_replay_deliveries so that /prompt frames
+// that arrived while the PI extension was disconnected survive a sidecar
+// exit/restart. Before this migration, the pending-replay buffer was
+// in-memory only — if the sidecar exited between accepting a buffered
+// delivery (200 {"buffered": true}) and the next successful pipe
+// handshake, the delivery was destroyed and the coordinator's directive
+// vanished silently. See issue #2359 Gap B for the incident.
+//
+// The migration is idempotent: CREATE TABLE IF NOT EXISTS and CREATE
+// INDEX IF NOT EXISTS make it safe to run on a fresh database whose
+// declarative schema already contains the new table.
+func migrateV38ToV39(conn *sql.DB, version *int) error {
+	if *version >= 39 {
+		return nil
+	}
+	steps := []string{
+		`CREATE TABLE IF NOT EXISTS pending_replay_deliveries (
+		  session_name   TEXT    NOT NULL,
+		  delivery_id    TEXT    NOT NULL,
+		  text           TEXT    NOT NULL,
+		  deliver_as     TEXT    NOT NULL,
+		  source         TEXT    NOT NULL,
+		  queued_at      INTEGER NOT NULL,
+		  PRIMARY KEY (session_name, delivery_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
+		   ON pending_replay_deliveries(session_name, queued_at)`,
+	}
+	for _, step := range steps {
+		if _, err := conn.Exec(step); err != nil {
+			return fmt.Errorf("db: migration v38\u2192v39: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 39`); err != nil {
+		return fmt.Errorf("db: migration v38\u2192v39: bump version: %w", err)
+	}
+	*version = 39
 	return nil
 }
 
