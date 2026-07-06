@@ -44,6 +44,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/git"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
@@ -259,12 +260,15 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	var harnessPipeTCPPort int
 	if isSocketPipe, useTCP := selectHarnessPipeTransport(harnessName, isolationMode); isSocketPipe {
 		if useTCP {
-			// sandbox-exec: allocate a TCP port and store it in harness_port so
-			// that agent-run (sandbox-exec) can read it and inject
-			// PRISM_HARNESS_PIPE.
-			tcpPort, portErr := d.AllocatePort(sessionName)
+			// sandbox-exec: bind the TCP port already recorded in
+			// agent_status.harness_port (written by the spawn/restore path
+			// before the agent pane was created). Never re-allocate when a
+			// port is recorded — agent-run does a one-shot read of the same
+			// column and bakes PRISM_HARNESS_PIPE into PI's immutable env, so
+			// a second allocation here would race that read (issue #2357).
+			tcpPort, portErr := resolveHarnessPipeTCPPort(d, sessionName, port)
 			if portErr != nil {
-				return fmt.Errorf("sidecar: allocate harness pipe TCP port: %w", portErr)
+				return fmt.Errorf("sidecar: resolve harness pipe TCP port: %w", portErr)
 			}
 			harnessPipeTCPPort = tcpPort
 			if ctrCfg != nil {
@@ -517,4 +521,41 @@ func selectHarnessPipeTransport(harnessName string, isolationMode config.Isolati
 		return false, false
 	}
 	return true, isolationMode == config.IsolationSandboxExec
+}
+
+// resolveHarnessPipeTCPPort returns the TCP port the sidecar must bind for
+// the harness pipe listener under sandbox-exec isolation.
+//
+// The authoritative value is the one already recorded in
+// agent_status.harness_port — written synchronously by the spawn/restore
+// path (db.AllocatePort) BEFORE the agent pane was created. `prism
+// agent-run` does a one-shot read of the same column and bakes
+// PRISM_HARNESS_PIPE=tcp://127.0.0.1:<port> into PI's immutable process
+// env. Re-allocating here (the pre-#2357 behaviour) raced that read: when
+// agent-run read first, PI was left pointed at a port nobody binds, forever
+// — the #1554 first-connect retry recovers from a timing race, not a wrong
+// port value — and the session ran headless.
+//
+// portFlag (the --port flag value, i.e. what the spawner allocated) is used
+// only for a divergence warning: agent-run reads the DB, not the flag, so
+// the DB value wins when they disagree.
+//
+// When no port is recorded at all (cleared row, direct sidecar invocation),
+// fall back to db.AllocatePort. Post-#2357 AllocatePort excludes the
+// session's own row from the used-port set and prefers the previously
+// recorded port, so even the fallback is idempotent while the port stays
+// free.
+func resolveHarnessPipeTCPPort(d *db.DB, sessionName string, portFlag int) (int, error) {
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		return 0, fmt.Errorf("read agent_status: %w", err)
+	}
+	if st != nil && st.HarnessPort != nil && *st.HarnessPort != 0 {
+		if portFlag != 0 && portFlag != *st.HarnessPort {
+			proglog.Warnf("[prism sidecar] --port %d diverges from agent_status.harness_port %d for %q — using the DB value (agent-run reads the DB)\n",
+				portFlag, *st.HarnessPort, sessionName)
+		}
+		return *st.HarnessPort, nil
+	}
+	return d.AllocatePort(sessionName)
 }

@@ -1051,6 +1051,40 @@ export function extractBranch(sessionName: string): string {
   return sessionName
 }
 
+/**
+ * Append a first-connect give-up diagnostic to the durable host-side
+ * agent-run log (issue #2357).
+ *
+ * When the extension exhausts its first-connect retries the pane scrollback
+ * is the only record of the failure — and scrollback dies with the pane. The
+ * launcher (prism agent-run on bwrap/sandbox-exec, the host-mode pane env on
+ * host) injects PRISM_AGENT_RUN_LOG with the host-side path of the
+ * per-session agent-run log; this helper appends one timestamped line there
+ * so the give-up survives for post-mortem debugging (`prism checkin`,
+ * headless-session triage).
+ *
+ * Best-effort by design: when the env var is unset (PI invoked outside
+ * prism, older launcher) or the write fails (missing grant, deleted dir),
+ * the failure is logged to the pane and the extension continues — give-up
+ * handling must never throw. Exported for unit testing.
+ */
+export function writeDurableGiveUpLog(endpointStr: string, retries: number): void {
+  const logPath = process.env.PRISM_AGENT_RUN_LOG
+  if (!logPath) return
+  try {
+    // Host mode has no agent-run process to pre-create the run dir; create
+    // it on demand. In bwrap/sandbox-exec the dir already exists (agent-run
+    // opened the log before exec'ing the sandbox) and this is a no-op.
+    fs.mkdirSync(path.dirname(logPath), { recursive: true })
+    fs.appendFileSync(
+      logPath,
+      `${new Date().toISOString()} [prism-extension] giving up: sidecar not accepting on ${endpointStr} after ${retries} retries — PI is running without a sidecar connection\n`,
+    )
+  } catch (err) {
+    console.error("[prism-extension] failed to write give-up line to durable log:", err)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Truncation helpers — exported for unit testing.
 // ---------------------------------------------------------------------------
@@ -2130,6 +2164,10 @@ export default function prismExtension(pi: ExtensionAPI): void {
             endpointStr
           } after ${retryAttempt} retries`,
         )
+        // Pane scrollback is ephemeral — also record the give-up in the
+        // durable per-session agent-run log so a headless session can be
+        // diagnosed after the fact (issue #2357).
+        writeDurableGiveUpLog(endpointStr, retryAttempt)
       } else {
         console.error("[prism-extension] socket error:", err)
       }

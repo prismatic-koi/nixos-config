@@ -617,12 +617,20 @@ func (d *DB) ClearEnded(sessionName string) error {
 	return nil
 }
 
-// AllocatePort picks the lowest unused port from the range PortRangeStart–PortRangeEnd,
+// AllocatePort picks a port from the range PortRangeStart–PortRangeEnd,
 // writes it to agent_status.harness_port for sessionName, and returns it.
 //
-// A port is considered "in use" if it is assigned to a session whose ended_at IS NULL
-// and harness_port IS NOT NULL. Ports assigned to ended sessions (ended_at IS NOT NULL)
-// are reclaimed and available for reuse.
+// Allocation is idempotent per session (issue #2357): when sessionName
+// already has a recorded harness_port that no other active session holds and
+// that is free at the OS level, that same port is returned again — a repeated
+// call (e.g. a sidecar restart, or the sidecar startup path racing the
+// spawn-time allocation) re-acquires the session's existing port instead of
+// drifting to a new one. Otherwise the lowest unused port in the range wins.
+//
+// A port is considered "in use" if it is assigned to ANOTHER session whose
+// ended_at IS NULL and harness_port IS NOT NULL. The requesting session's own
+// row is excluded from the used-port set. Ports assigned to ended sessions
+// (ended_at IS NOT NULL) are reclaimed and available for reuse.
 //
 // In addition to the DB check, each candidate port is probed at the OS level via
 // a brief TCP listen on 127.0.0.1:<port>. This prevents conflicts with non-prism
@@ -692,9 +700,28 @@ func (d *DB) allocatePortOnce(sessionName string) (int, error) {
 		}
 	}()
 
-	// Collect ports currently assigned to active (non-ended) sessions.
+	// Read the port currently recorded for the requesting session (if any).
+	// It is preferred below so that AllocatePort is idempotent per session:
+	// a repeated call (e.g. a sidecar restart for a live session) re-acquires
+	// the same port instead of drifting to a new one. Drifting is fatal for
+	// sandbox-exec pi sessions because `prism agent-run` does a one-shot read
+	// of harness_port and bakes PRISM_HARNESS_PIPE into PI's immutable
+	// process env — see issue #2357.
+	var ownPort sql.NullInt64
+	if err := conn.QueryRowContext(ctx,
+		"SELECT harness_port FROM agent_status WHERE session_name = ?",
+		sessionName,
+	).Scan(&ownPort); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return 0, fmt.Errorf("db: allocate port: query own port: %w", err)
+	}
+
+	// Collect ports currently assigned to OTHER active (non-ended) sessions.
+	// The requesting session's own row is excluded (issue #2357): without the
+	// exclusion, a second AllocatePort call for the same session sees its own
+	// port as "in use" and is guaranteed to pick a different one.
 	rows, err := conn.QueryContext(ctx,
-		"SELECT harness_port FROM agent_status WHERE ended_at IS NULL AND harness_port IS NOT NULL",
+		"SELECT harness_port FROM agent_status WHERE ended_at IS NULL AND harness_port IS NOT NULL AND session_name != ?",
+		sessionName,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("db: allocate port: query used ports: %w", err)
@@ -713,8 +740,23 @@ func (d *DB) allocatePortOnce(sessionName string) (int, error) {
 		return 0, fmt.Errorf("db: allocate port: iterate ports: %w", err)
 	}
 
-	// Find the lowest unused port that is also available at the OS level.
+	// Candidate order: the session's own recorded port first (stickiness —
+	// a restart re-acquires the previous port when it is otherwise free,
+	// even if a lower port has been freed in the meantime), then the range
+	// scan from PortRangeStart. The own port may appear twice in the
+	// sequence; that is harmless — if it fails the checks on the first pass
+	// it fails them identically on the second.
+	candidates := make([]int, 0, PortRangeEnd-PortRangeStart+2)
+	if ownPort.Valid && ownPort.Int64 > 0 {
+		candidates = append(candidates, int(ownPort.Int64))
+	}
 	for port := PortRangeStart; port <= PortRangeEnd; port++ {
+		candidates = append(candidates, port)
+	}
+
+	// Find the first candidate not used by another session that is also
+	// available at the OS level.
+	for _, port := range candidates {
 		if usedPorts[port] {
 			continue
 		}
