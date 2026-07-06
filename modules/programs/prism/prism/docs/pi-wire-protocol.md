@@ -83,7 +83,7 @@ subsystems.
 
 ### 2.2 Darwin: localhost TCP listener
 
-- TCP listener on `127.0.0.1:0` (OS-allocated port). The listener binds on
+- TCP listener on `127.0.0.1:<harness_port>`. The listener binds on
   `127.0.0.1` (loopback only). Unlike the legacy container/gvproxy path —
   where the
   listener bound `0.0.0.0` so gvproxy's bridge interface (`192.168.127.254`)
@@ -91,9 +91,23 @@ subsystems.
   the host**. Both the sidecar and the sandboxed extension share the host
   loopback, so binding only `127.0.0.1` is both sufficient and more secure
   (the port is not reachable from external network interfaces).
-- The allocated port is captured at sidecar startup — *before* the
-  extension is launched — and exposed as `tcp://127.0.0.1:<port>` via
-  the env var (§2.4). **Note:** `host.containers.internal` is a gvproxy
+- Port allocation is single-writer (issue #2357). The **spawn/restore
+  path** allocates the port via `db.AllocatePort` and writes it to
+  `agent_status.harness_port` synchronously, *before* the tmux layout —
+  and therefore the agent pane — exists. `prism agent-run` does a one-shot
+  read of that column and injects `tcp://127.0.0.1:<port>` via the env var
+  (§2.4) into PI's immutable process env. The sidecar does **not**
+  re-allocate: `cmd/sidecar.go:resolveHarnessPipeTCPPort` binds the
+  recorded `harness_port` value (falling back to `db.AllocatePort` only
+  when no port is recorded at all). `AllocatePort` itself is idempotent
+  per session — it excludes the session's own row from the used-port set
+  and prefers the session's previously-recorded port — so a sidecar
+  restart re-acquires the same port. The invariant is: **the port in PI's
+  env always equals the port the sidecar binds**, on both spawn and
+  restore paths, regardless of ordering. (Pre-#2357, the sidecar
+  allocated a second port at startup and overwrote `harness_port`; if
+  agent-run's read landed first, PI dialled a dead port forever and the
+  session ran headless.) **Note:** `host.containers.internal` is a gvproxy
   container-VM convention (resolved by gvproxy inside the container VM)
   and does **not** resolve on bare macOS; using it for sandbox-exec causes
   `ENOTFOUND` on every dial.
