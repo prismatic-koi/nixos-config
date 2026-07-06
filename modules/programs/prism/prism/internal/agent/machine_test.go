@@ -57,6 +57,14 @@ func TestTransition_ValidPairs(t *testing.T) {
 		{StateEscalated, StateError, "sidecar startup failure while escalated"},
 		{StateEscalated, StateDeleted, "session.deleted while escalated"},
 
+		// Dead-pipe escalation paths (issue #2359): a session whose harness
+		// pipe never delivered turn events sits at idle or error while pi is
+		// alive and working. `prism escalate` from those states must still
+		// enter escalated so the finish-notification suppression and
+		// sessions-list visibility contract applies uniformly.
+		{StateIdle, StateEscalated, "prism escalate from dead-pipe idle session (#2359)"},
+		{StateError, StateEscalated, "prism escalate from startup-handshake-timeout error session (#2359)"},
+
 		// Deleted from any state
 		{StateActive, StateDeleted, "session.deleted while active"},
 		{StateWaiting, StateDeleted, "session.deleted while waiting"},
@@ -101,6 +109,12 @@ func TestTransition_InvalidPairs(t *testing.T) {
 		{StateEscalated, StateReviewing, "escalated → reviewing (must go through active)"},
 		{StateEscalated, StateWaiting, "escalated → waiting"},
 		{StateEscalated, StateCompacting, "escalated → compacting"},
+
+		// finished/interrupted are terminal-adjacent and do not have a direct
+		// escalate path (issue #2359): those sessions require session.updated to
+		// resume to active before an escalation makes sense.
+		{StateFinished, StateEscalated, "finished → escalated (must resume first)"},
+		{StateInterrupted, StateEscalated, "interrupted → escalated (must resume first)"},
 	}
 
 	for _, tc := range invalid {
