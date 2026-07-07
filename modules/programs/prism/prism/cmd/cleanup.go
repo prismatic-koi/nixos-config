@@ -263,11 +263,14 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			}
 			// Archive the session storage, then sever the pi resume linkage
 			// (issue #2219): the archive copies the same transcript JSONL the
-			// sever deletes, so the sever runs second — and is skipped when
-			// the archive fails so the transcript is not lost. The TUI path
-			// does not surface the per-update outcome — failures are logged
-			// via proglog inside the helper.
-			archiveErr, _ := archiveThenSeverPiResume(d, m.session, instanceIDForSessions, isolationMode)
+			// hard-mode sever deletes, so the sever runs second — and is
+			// skipped when the archive fails so the transcript is not lost.
+			// doCleanup destroys the worktree and branch, so the sever is
+			// hard: the transcript is removed from the pi sessions root
+			// (issue #2371 mode split). The TUI path does not surface the
+			// per-update outcome — failures are logged via proglog inside
+			// the helper.
+			archiveErr, _ := archiveThenSeverPiResume(d, m.session, instanceIDForSessions, isolationMode, severModeHard)
 			if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 				_ = d.PurgeBusMessages(m.session)
 				d.Close()
@@ -769,9 +772,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 		// Archive the session storage, then sever the pi resume linkage
 		// (issue #2219): the archive copies the same transcript JSONL the
-		// sever deletes, so the sever runs second — and is skipped when the
-		// archive fails so the transcript is not lost.
-		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		// hard-mode sever deletes, so the sever runs second — and is skipped
+		// when the archive fails so the transcript is not lost. This is the
+		// hard-cleanup path (worktree and branch destroyed), so the sever is
+		// hard: the transcript is removed from the pi sessions root (issue
+		// #2371 mode split).
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeHard)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			// Non-fatal: by this point the worktree, branch, tmux
@@ -885,13 +891,15 @@ func closeSession(session string) error {
 			}
 		}
 		// Archive the session storage, then sever the pi resume linkage
-		// (issue #2219): the archive copies the same transcript JSONL the
-		// sever deletes, so the sever runs second — and is skipped when the
-		// archive fails so the transcript is not lost. closeSession is the
-		// interactive @main path and does not surface a JSON envelope — the
-		// per-update outcome is captured by the proglog warnings inside the
-		// helper.
-		archiveErr, _ := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		// (issue #2219): the archive runs first so the transcript is
+		// preserved in the archive even before the sever. closeSession is a
+		// SOFT-close path (the worktree and branch survive), so the sever is
+		// soft: the transcript JSONL stays in the pi sessions root — pi's
+		// /resume keeps working — and only the DB resume pointer is cleared
+		// (issue #2371). closeSession is the interactive @main path and does
+		// not surface a JSON envelope — the per-update outcome is captured
+		// by the proglog warnings inside the helper.
+		archiveErr, _ := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			_ = d.PurgeBusMessages(session)
 			d.Close()
@@ -1010,10 +1018,13 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 			}
 		}
 		// Archive the session storage, then sever the pi resume linkage
-		// (issue #2219): the archive copies the same transcript JSONL the
-		// sever deletes, so the sever runs second — and is skipped when the
-		// archive fails so the transcript is not lost.
-		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode)
+		// (issue #2219): the archive runs first so the transcript is
+		// preserved in the archive even before the sever. This is a
+		// SOFT-close path (coordinator/@main, non-@ sessions, open-PR
+		// workers, --keep-worktree), so the sever is soft: the transcript
+		// JSONL stays in the pi sessions root — pi's /resume keeps working —
+		// and only the DB resume pointer is cleared (issue #2371).
+		archiveErr, severOutcome := archiveThenSeverPiResume(d, session, instanceIDForSessions, isolationMode, severModeSoft)
 		result.HarnessSessionIDCleared = severOutcome
 		if errors.Is(archiveErr, archive.ErrAlreadyExists) {
 			// Non-fatal: see headlessCleanup for rationale.
@@ -1351,10 +1362,53 @@ func init() {
 	rootCmd.AddCommand(cleanupCmd)
 }
 
+// severMode selects how much of the pi conversation-resume linkage the
+// cleanup pipeline tears down after the archive step (issue #2371).
+//
+// The linkage has two halves (see severPiResumeLinkage): the on-disk
+// transcript JSONL in the pi sessions root — the exact file pi's interactive
+// /resume picker reads — and the agent_status.harness_session_id DB pointer
+// that makes the NEXT spawn on the same session name auto-resume. Only the
+// DB pointer is load-bearing for the #2035 defence: spawn appends
+// `--session <id>` only when the DB value is non-empty (see
+// internal/container/pi_invocation.go::PIInvocation), so clearing the column
+// alone guarantees a fresh conversation.
+//
+// That is not just theory — it is empirically confirmed by pi's transcript
+// rollover behaviour (issue #2371 forensics): pi rolls to a new UUID/file
+// mid-session, so a long-lived session accumulates MULTIPLE conversation
+// JSONLs under the encoded-cwd dir, and the sever only ever deleted the one
+// matching the DB's latest harness_session_id. The earlier rollover files
+// have survived every close for months and have never caused a #2035 dud
+// auto-resume. Deleting the latest transcript on a soft close therefore
+// bought nothing — and permanently destroyed the operator's /resume history
+// for the cwd on every Prefix-q (issue #2371).
+type severMode int
+
+const (
+	// severModeHard — after the archive, remove the transcript JSONL from
+	// the pi sessions root AND clear the DB pointer (gated on the archive
+	// actually preserving the transcript — issue #2336). Used by the
+	// hard-cleanup paths (doCleanup, headlessCleanupWithJSONTo), where the
+	// worktree and branch are destroyed and the conversation has no future
+	// outside the archive.
+	severModeHard severMode = iota
+
+	// severModeSoft — after the archive, clear the DB pointer and purge
+	// pending_replay_deliveries WITHOUT touching the transcript JSONL in
+	// the pi sessions root, so pi's /resume keeps working on the preserved
+	// worktree (issue #2371). Used by the soft-close paths (closeSession,
+	// headlessCloseSessionWithJSONTo — i.e. coordinator/@main sessions,
+	// non-@ sessions, open-PR workers, and --keep-worktree).
+	severModeSoft
+)
+
 // severPiResumeLinkage breaks the pi conversation-resume linkage for
 // sessionName so that a future spawn on the same branch name (and therefore
 // the same agent_status row) does NOT silently resume the now-defunct
-// pi conversation (issue #2035).
+// pi conversation (issue #2035). The mode selects whether the on-disk
+// transcript is also removed (severModeHard) or preserved for pi's
+// interactive /resume (severModeSoft — issue #2371).
 //
 // Two surfaces survive a plain `prism cleanup` otherwise:
 //
@@ -1362,7 +1416,8 @@ func init() {
 //     the harness_session_id column persists. cmd/agent_run.go reads it back
 //     on the next spawn and threads it into container.Config, where
 //     PIInvocation appends `--session <id>` to pi when a matching JSONL is
-//     found on disk.
+//     found on disk. Clearing this column is the load-bearing #2035 defence
+//     and runs in BOTH sever modes.
 //
 //  2. <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
 //     where <piSessionsRoot> is $PI_CODING_AGENT_DIR/sessions when the env
@@ -1374,15 +1429,23 @@ func init() {
 //     applies to sandbox-exec sessions (#2210): pi writes there because the
 //     dispatcher injects PI_CODING_AGENT_DIR into the sandbox env, so this
 //     removal is the only step that deletes the transcript — the per-session
-//     work-dir wipe in RemoveSessionWorkDir never touches it.
+//     work-dir wipe in RemoveSessionWorkDir never touches it. The transcript
+//     is what pi's interactive /resume reads, and it is NOT load-bearing for
+//     the #2035 defence (surface 1 is — confirmed empirically by the
+//     rollover files described on the severMode doc comment, which retain
+//     stale conversation JSONLs across every close without ever causing a
+//     dud auto-resume). It is therefore removed ONLY in severModeHard — on
+//     soft-close paths the removal was pure data loss (issue #2371) and is
+//     skipped.
 //
 // Order:
 //
 //   - Capture worktree + harness_session_id from the live agent_status row
 //     BEFORE the DB clear (the clear nulls the latter).
-//   - Remove the on-disk JSONL (FS-side; non-fatal).
+//   - severModeHard only: remove the on-disk JSONL (FS-side; non-fatal).
 //   - Null the DB column (load-bearing; logged on error but cleanup
 //     continues so the rest of the teardown still runs).
+//   - Purge pending_replay_deliveries for the session (both modes).
 //
 // Best-effort — no error path aborts cleanup. A failure here is logged and
 // teardown proceeds: the worst case is that the next spawn on this branch
@@ -1391,19 +1454,18 @@ func init() {
 //
 // Return value (issue #2134): the error from d.ClearHarnessSessionID (the
 // load-bearing DB clear), or nil on success / when the row is absent. The
-// on-disk JSONL removal is defence-in-depth and its failure is logged but
-// not propagated. All four cleanup paths reach this function via
-// archiveThenSeverPiResume (issue #2219), which converts the return value
-// into the JSON-envelope outcome for the headless paths; the interactive
-// paths (doCleanup, closeSession) rely on the proglog warning to surface
-// failures.
-func severPiResumeLinkage(d *db.DB, sessionName string) error {
+// hard-mode on-disk JSONL removal's failure is logged but not propagated.
+// All four cleanup paths reach this function via archiveThenSeverPiResume
+// (issue #2219), which converts the return value into the JSON-envelope
+// outcome for the headless paths; the interactive paths (doCleanup,
+// closeSession) rely on the proglog warning to surface failures.
+func severPiResumeLinkage(d *db.DB, sessionName string, mode severMode) error {
 	status, err := d.CurrentStatus(sessionName)
 	if err != nil || status == nil {
 		// No row to read — no JSONL to scope to, no DB clear needed.
 		return nil
 	}
-	if status.HarnessSessionID != nil && *status.HarnessSessionID != "" && status.Worktree != "" {
+	if mode == severModeHard && status.HarnessSessionID != nil && *status.HarnessSessionID != "" && status.Worktree != "" {
 		cfg := container.Config{
 			SessionName:      sessionName,
 			Worktree:         status.Worktree,
@@ -1435,74 +1497,106 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 }
 
 // archiveThenSeverPiResume runs the session archive for sessionName and then
-// — only when the archive step ACTUALLY PRESERVED THE TRANSCRIPT — severs
-// the pi resume linkage.
+// severs the pi resume linkage in the requested mode.
 //
 // Ordering is load-bearing (issue #2219): runSessionArchive copies the pi
 // transcript JSONL (<piSessionsRoot>/<encodePiCWD(worktree)>/*_<id>.jsonl)
-// into the archive, and severPiResumeLinkage deletes that same file. Post
-// #2210 both resolve the same host-root path in every isolation mode, so
-// severing first produced manifest-only archives: lossy cleanup. All four
-// cleanup paths (doCleanup, headlessCleanupWithJSON, closeSession,
-// headlessCloseSessionWithJSON) route through this helper so the ordering
-// cannot silently diverge per-path again.
+// into the archive, and in severModeHard severPiResumeLinkage deletes that
+// same file. Post #2210 both resolve the same host-root path in every
+// isolation mode, so severing first produced manifest-only archives: lossy
+// cleanup. All four cleanup paths route through this helper so the ordering
+// — and, post issue #2371, the per-path sever mode — cannot silently
+// diverge again:
 //
-// Gate refinement (issue #2336): the previous gate was "archiveErr == nil",
-// which permitted a manifest-only archive (no session.jsonl) to trigger a
-// sever that then deleted the transcript from the live pi sessions dir
-// without preserving a copy. The new gate is (archiveErr == nil AND the
-// adapter reported copied == true). runSessionArchive plumbs the copied
-// bool up from the ArchiveAdapter.Archive return value, so both the six
-// pre-copy skip paths and the manifest-only in-copier case route through
-// the same not-copied guard.
+//   - doCleanup, headlessCleanupWithJSONTo → severModeHard
+//   - closeSession, headlessCloseSessionWithJSONTo → severModeSoft
+//     (`prism cleanup --keep-worktree` also routes through
+//     headlessCloseSessionWithJSONTo, so it is soft by construction)
 //
-// Archive-failure semantic: when runSessionArchive returns an error
-// (including archive.ErrAlreadyExists), the sever is skipped ENTIRELY — the
-// transcript stays on disk and agent_status.harness_session_id stays
-// populated. Leaving both intact keeps cleanup re-runnable: a later attempt
-// can still locate and archive the transcript, whereas clearing the DB
-// pointer while keeping the file would orphan the transcript (the sever
-// scopes its FS removal to the stored id). The trade-off is that a re-spawn
-// on the same branch name could resume the defunct pi conversation (#2035)
-// until a cleanup succeeds — recoverable by the operator, unlike a deleted
-// transcript.
+// Gate refinement (issue #2336) — severModeHard only: the previous gate was
+// "archiveErr == nil", which permitted a manifest-only archive (no
+// session.jsonl) to trigger a sever that then deleted the transcript from
+// the live pi sessions dir without preserving a copy. The hard-mode gate is
+// (archiveErr == nil AND the adapter reported copied == true).
+// runSessionArchive plumbs the copied bool up from the
+// ArchiveAdapter.Archive return value, so both the six pre-copy skip paths
+// and the manifest-only in-copier case route through the same not-copied
+// guard.
 //
-// Transcript-missing semantic: when runSessionArchive returns (false, nil)
-// — archive attempted but no transcript was actually copied — the sever is
-// skipped too, with an explicit "skipped: transcript missing" outcome on
-// the JSON envelope. Same reasoning: the DB pointer stays populated so a
-// re-run can archive-then-sever, and the pi sessions dir is untouched.
+// In severModeSoft the sever runs UNCONDITIONALLY — not gated on the
+// archive outcome at all (documented choice per issue #2371 forensics).
+// Both hard-mode gates exist solely to protect the FS delete: they keep the
+// sever from destroying a transcript the archive step failed to preserve.
+// Soft mode never deletes anything, so there is nothing for either gate to
+// protect — and gating the soft-mode DB clear would be actively harmful:
+// a soft-closed session name is re-spawned routinely (every reopen of the
+// coordinator @main is exactly this), and skipping the DB clear on archive
+// failure or on the runSessionArchive skip paths would leave
+// agent_status.harness_session_id populated next to a deliberately
+// preserved transcript — precisely the combination that silently
+// auto-resumes a defunct conversation on the next spawn (#2035). Soft mode
+// therefore always clears the DB pointer and purges
+// pending_replay_deliveries, and reports the archive error (if any)
+// separately via the returned archiveErr.
+//
+// Archive-failure semantic (severModeHard only): when runSessionArchive
+// returns an error (including archive.ErrAlreadyExists), the hard-mode
+// sever is skipped ENTIRELY — the transcript stays on disk and
+// agent_status.harness_session_id stays populated. Leaving both intact
+// keeps cleanup re-runnable: a later attempt can still locate and archive
+// the transcript, whereas clearing the DB pointer while keeping the file
+// would orphan the transcript (the hard-mode sever scopes its FS removal to
+// the stored id). The trade-off is that a re-spawn on the same branch name
+// could resume the defunct pi conversation (#2035) until a cleanup succeeds
+// — recoverable by the operator, unlike a deleted transcript.
+//
+// Transcript-missing semantic (severModeHard only): when runSessionArchive
+// returns (false, nil) — archive attempted but no transcript was actually
+// copied — the hard-mode sever is skipped too, with an explicit "skipped:
+// transcript missing" outcome on the JSON envelope. Same reasoning: the DB
+// pointer stays populated so a re-run can archive-then-sever, and the pi
+// sessions dir is untouched.
 //
 // Returns the archive error (nil on success or when there was nothing to
 // archive — runSessionArchive treats an empty instanceID and other
 // missing-precondition cases as skips) and the sever outcome in the
 // cleanupResult convention: true when the sever completed, or a string
-// describing why it did not (sever error, or skipped due to archive
-// failure, or skipped due to transcript-missing). Headless callers assign
-// the outcome to result.HarnessSessionIDCleared; the interactive paths
-// discard it and rely on the proglog warnings emitted here and inside
-// severPiResumeLinkage.
-func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode string) (archiveErr error, severOutcome any) {
+// describing why it did not (sever error, or — hard mode only — skipped
+// due to archive failure or transcript-missing). In soft mode a failed
+// archive still returns the archive error alongside the sever outcome, so
+// callers' archive.ErrAlreadyExists handling is mode-independent. Headless
+// callers assign the outcome to result.HarnessSessionIDCleared; the
+// interactive paths discard it and rely on the proglog warnings emitted
+// here and inside severPiResumeLinkage.
+func archiveThenSeverPiResume(d *db.DB, sessionName, instanceID, isolationMode string, mode severMode) (archiveErr error, severOutcome any) {
 	copied, archiveErr := runSessionArchive(d, sessionName, instanceID, isolationMode)
-	if archiveErr != nil {
-		proglog.Warnf("[prism] warning: pi resume sever skipped for %s — archive failed, leaving transcript in place: %v\n",
-			sessionName, archiveErr)
-		return archiveErr, fmt.Sprintf("skipped: archive failed: %v", archiveErr)
+	if mode == severModeHard {
+		if archiveErr != nil {
+			proglog.Warnf("[prism] warning: pi resume sever skipped for %s — archive failed, leaving transcript in place: %v\n",
+				sessionName, archiveErr)
+			return archiveErr, fmt.Sprintf("skipped: archive failed: %v", archiveErr)
+		}
+		if !copied && !severGateForceAlwaysSever {
+			proglog.Warnf("[prism] warning: pi resume sever skipped for %s — transcript not copied (archive step preserved nothing), leaving pi state intact\n",
+				sessionName)
+			return nil, "skipped: transcript missing"
+		}
 	}
-	if !copied && !severGateForceAlwaysSever {
-		proglog.Warnf("[prism] warning: pi resume sever skipped for %s — transcript not copied (archive step preserved nothing), leaving pi state intact\n",
-			sessionName)
-		return nil, "skipped: transcript missing"
+	// severModeSoft reaches here regardless of the archive outcome: the
+	// DB-only sever is the load-bearing #2035 defence and must run even
+	// when the archive step failed — see the doc comment above.
+	if severErr := severPiResumeLinkage(d, sessionName, mode); severErr != nil {
+		return archiveErr, severErr.Error()
 	}
-	if severErr := severPiResumeLinkage(d, sessionName); severErr != nil {
-		return nil, severErr.Error()
-	}
-	return nil, true
+	return archiveErr, true
 }
 
 // severGateForceAlwaysSever is a test-only knob used by the revert-and-watch-
 // fail tests in cleanup_sever_gate_test.go to prove the copied-gate in
-// archiveThenSeverPiResume is not a no-op. Production code never mutates it.
+// archiveThenSeverPiResume is not a no-op. The copied-gate applies to
+// severModeHard only (soft mode bypasses it by design — issue #2371), so
+// the knob is only meaningful on hard-cleanup paths. Production code never
+// mutates it.
 // The variable is package-scoped rather than a `testing.T` argument because
 // the gate is checked inside archiveThenSeverPiResume, which sits several
 // call frames deep and is not reachable from tests without either a knob or

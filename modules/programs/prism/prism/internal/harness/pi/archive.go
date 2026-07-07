@@ -234,9 +234,10 @@ func hostPISessionsRoot() (string, error) {
 // Return value (issue #2336): (true, nil) when session.jsonl was written into
 // archiveDir from a real srcPath; (false, nil) when srcPath does not exist or
 // is a directory (the two "nothing to copy" cases). Callers rely on this bool
-// to gate the sever step — severPiResumeLinkage deletes the same file this
-// method reads, so severing on a not-copied outcome would destroy the
-// transcript without preserving a copy.
+// to gate the HARD-cleanup sever step — in hard mode severPiResumeLinkage
+// deletes the same file this method reads, so severing on a not-copied
+// outcome would destroy the transcript without preserving a copy. Soft
+// closes never delete the file (issue #2371), so the gate is bypassed there.
 func (a *piArchiveAdapter) Archive(_ context.Context, srcPath, archiveDir string) (copied bool, err error) {
 	fi, err := os.Stat(srcPath)
 	if os.IsNotExist(err) {
