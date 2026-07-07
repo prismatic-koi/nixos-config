@@ -258,6 +258,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			ModelsByRole:       opts.ModelsByRole,
 			PIExtensionDir:     opts.PIExtensionDir,
 			ProfileName:        activeProfile,
+			InvokerSession:     opts.ParentSession,
 		})
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {
@@ -553,6 +554,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			ModelsByRole:       opts.ModelsByRole,
 			PIExtensionDir:     opts.PIExtensionDir,
 			ProfileName:        activeProfile,
+			InvokerSession:     opts.ParentSession,
 		})
 		if spawnSessErr := session.SpawnSession(d, spawnOpts); spawnSessErr != nil {
 			if opts.OnProgress != nil {

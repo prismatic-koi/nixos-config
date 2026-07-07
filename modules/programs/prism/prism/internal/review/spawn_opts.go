@@ -54,6 +54,15 @@ type reviewerSpawnInput struct {
 	// agent loop and propagated identically to every reviewer in the
 	// round — preserving the #1207 single-resolve-per-round invariant.
 	ProfileName string
+
+	// InvokerSession is the calling worker / coordinator session that
+	// initiated the review fan-out (Opts.ParentSession). Constant across
+	// the 5 reviewers in one fan-out. Feeds SpawnOpts.InvokerSession so
+	// the durable session.spawn_intent / session.spawn_failed events
+	// written by SpawnSession name the invoker in their payload, and so
+	// the bus_messages audit row on the failure path is addressed to the
+	// invoker rather than dropped on the floor (#2364).
+	InvokerSession string
 }
 
 // newReviewerSpawnOpts returns the SpawnOpts that drives one reviewer
@@ -101,6 +110,10 @@ func newReviewerSpawnOpts(in reviewerSpawnInput) session.SpawnOpts {
 		// to the same profile the parent worker was spawned with,
 		// instead of the host default.
 		ProfileName: in.ProfileName,
+		// InvokerSession is the calling worker (Opts.ParentSession)
+		// so the durable spawn_intent / spawn_failed events written
+		// by SpawnSession name the invoker in their payload (#2364).
+		InvokerSession: in.InvokerSession,
 	}
 	// For socket-pipe harnesses (e.g. "pi") in host isolation mode,
 	// pre-compute the Unix socket path so agentPaneEnvVars can inject
