@@ -266,10 +266,16 @@ func piResumeHostSessionsRoot() (string, bool) {
 // branch name does not resume the cleaned session's pi conversation
 // (issue #2035). DB-side severance alone is sufficient for the bug —
 // PIInvocation only appends `--session <id>` when HarnessSessionID is
-// non-empty AND ResolvePIResumeSession finds a matching JSONL — but
-// removing the on-disk transcript closes the second path explicitly and
-// keeps ~/.pi/agent/sessions/ from accumulating dead conversations across
-// reused branch names.
+// non-empty AND ResolvePIResumeSession finds a matching JSONL. That is
+// confirmed empirically by pi's transcript rollover (issue #2371 forensics):
+// pi rolls to a new UUID/file mid-session, this removal only ever matches
+// the DB's latest id, and the earlier rollover files that survive every
+// close have never caused a dud auto-resume. Removing the on-disk
+// transcript merely keeps ~/.pi/agent/sessions/ from accumulating dead
+// conversations across reused branch names — and because the transcript is
+// also what pi's interactive /resume reads, cleanup invokes this ONLY on
+// hard-cleanup paths (severModeHard in cmd/cleanup.go); soft closes
+// preserve the transcript and rely on the DB clear alone (issue #2371).
 //
 // Resolution mirrors piResumeSessionsRoot: every isolation mode (host,
 // bwrap, sandbox-exec) resolves to the host sessions root —

@@ -73,8 +73,10 @@ type ArchiveAdapter interface {
 	// true means archiveDir now contains the harness transcript in its
 	// final on-disk layout. The cleanup pipeline uses this bool to gate
 	// downstream steps that must only run when the transcript was
-	// preserved — most importantly severPiResumeLinkage, which deletes the
-	// same source file that Archive just copied.
+	// preserved — most importantly the hard-cleanup mode of
+	// severPiResumeLinkage, which deletes the same source file that
+	// Archive just copied (soft closes preserve the source file and bypass
+	// the gate — issue #2371).
 	Archive(ctx context.Context, srcPath, archiveDir string) (copied bool, err error)
 
 	// Version returns the harness binary version string (e.g. "1.1.30"), or
