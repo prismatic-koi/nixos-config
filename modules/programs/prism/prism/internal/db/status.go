@@ -516,7 +516,7 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 // stale harness_session_id and unconditionally resume the dead pi conversation
 // (issue #2035).
 //
-// Cleanup must sever the resume linkage on two surfaces:
+// The linkage has two surfaces:
 //
 //  1. The DB: this method nulls agent_status.harness_session_id so
 //     cmd/agent_run.go's spawn-time read (`status.HarnessSessionID`) returns
@@ -527,8 +527,16 @@ func (d *DB) ClearAllResumePointers() (int64, error) {
 //     <piSessionsRoot>/<encodePiCWD(worktree)>/*_<harness_session_id>.jsonl
 //     — handled by container.RemovePiResumeJSONL on the cleanup side.
 //
-// Fix (1) is load-bearing on its own; fix (2) is defence-in-depth. See the
-// issue body for the full forensics.
+// Surface (1) — this method — is the load-bearing #2035 defence on its own,
+// confirmed empirically by pi's mid-session transcript rollover: stale
+// rollover JSONLs survive every close in the encoded-cwd dir and have never
+// caused a dud auto-resume, because spawn only appends `--session <id>` when
+// the DB value is non-empty. Surface (2) is therefore invoked ONLY on
+// hard-cleanup paths (severModeHard in cmd/cleanup.go) — soft closes
+// preserve the transcript so pi's interactive /resume keeps working (issue
+// #2371) and rely on this DB clear alone. Do NOT re-introduce a
+// filesystem-side sever on soft paths without re-reading #2371: doing so
+// permanently destroys the operator's /resume history on every close.
 //
 // The session name is escaped for SQL LIKE wildcards before being used as a
 // pattern prefix so that names containing `%`, `_`, or `\` are handled

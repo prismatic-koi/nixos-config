@@ -4,22 +4,29 @@ package cmd
 //
 // All four cleanup paths (doCleanup, headlessCleanupWithJSON, closeSession,
 // headlessCloseSessionWithJSON) must archive the pi transcript JSONL BEFORE
-// severing the pi resume linkage — the sever deletes the same host-root file
-// the archive copies (post-#2210 both resolve the same path in every
-// isolation mode), so the inverted ordering produced manifest-only archives:
-// lossy cleanup.
+// severing the pi resume linkage — the hard-mode sever deletes the same
+// host-root file the archive copies (post-#2210 both resolve the same path
+// in every isolation mode), so the inverted ordering produced manifest-only
+// archives: lossy cleanup.
 //
 // Each path is exercised end-to-end against a temp HOME / temp XDG_DATA_HOME
 // and a temp DB, asserting behaviourally (not by inspection) that:
 //
 //  1. the archive directory contains session.jsonl with the transcript bytes,
-//  2. the transcript is then removed from the host sessions root (the sever
-//     still runs, post-archive), and
-//  3. agent_status.harness_session_id is cleared.
+//  2. the sever then runs post-archive — on the HARD paths (doCleanup,
+//     headlessCleanupWithJSON) the transcript is removed from the host
+//     sessions root; on the SOFT paths (closeSession,
+//     headlessCloseSessionWithJSON) the transcript is PRESERVED so pi's
+//     /resume keeps working (issue #2371), and
+//  3. agent_status.harness_session_id is cleared in both modes.
 //
 // The archive-failure semantic is also covered: when the archive step fails,
 // the sever must be skipped entirely — the transcript stays on disk and
 // harness_session_id stays populated so a re-run can archive-then-sever.
+//
+// The soft-close-specific #2371 semantics (pending-replay purge, JSON
+// envelope truthfulness, no-transcript and archive-failure edge cases, and
+// the hard-mode revert guard) live in cleanup_soft_close_test.go.
 
 import (
 	"bytes"
@@ -146,14 +153,35 @@ func assertTranscriptArchived(t *testing.T, f archiveOrderFixture) string {
 	return *sess.ArchivePath
 }
 
-// assertSeveredAfterArchive asserts the post-archive sever ran: the host-root
-// transcript is gone and agent_status.harness_session_id is NULL.
+// assertSeveredAfterArchive asserts the post-archive HARD sever ran: the
+// host-root transcript is gone and agent_status.harness_session_id is NULL.
 func assertSeveredAfterArchive(t *testing.T, f archiveOrderFixture) {
 	t.Helper()
 	if _, err := os.Stat(f.transcript); !os.IsNotExist(err) {
 		t.Errorf("host transcript %s still exists after successful archive (err=%v); want removed (sever must still run post-archive)",
 			f.transcript, err)
 	}
+	assertHarnessSessionIDCleared(t, f)
+}
+
+// assertSoftSeveredAfterArchive asserts the post-archive SOFT sever ran
+// (issue #2371): the host-root transcript is PRESERVED — it is what pi's
+// interactive /resume reads — while agent_status.harness_session_id is NULL
+// (the load-bearing #2035 defence).
+func assertSoftSeveredAfterArchive(t *testing.T, f archiveOrderFixture) {
+	t.Helper()
+	if _, err := os.Stat(f.transcript); err != nil {
+		t.Errorf("host transcript %s missing after soft close (err=%v); want preserved — soft close must not delete the /resume transcript (issue #2371)",
+			f.transcript, err)
+	}
+	assertHarnessSessionIDCleared(t, f)
+}
+
+// assertHarnessSessionIDCleared asserts agent_status.harness_session_id is
+// NULL for the fixture's session — the DB half of the sever, common to both
+// modes.
+func assertHarnessSessionIDCleared(t *testing.T, f archiveOrderFixture) {
+	t.Helper()
 	d, err := db.Open(f.dbFile)
 	if err != nil {
 		t.Fatalf("re-open db: %v", err)
@@ -184,9 +212,12 @@ func TestHeadlessCleanup_ArchivesTranscriptBeforeSever(t *testing.T) {
 	assertSeveredAfterArchive(t, f)
 }
 
-// TestHeadlessCloseSession_ArchivesTranscriptBeforeSever covers the
+// TestHeadlessCloseSession_ArchivesAndPreservesTranscript covers the
 // headlessCloseSessionWithJSON path (prism close --yes / coordinator close).
-func TestHeadlessCloseSession_ArchivesTranscriptBeforeSever(t *testing.T) {
+// This is a SOFT-close path: the archive still runs first (#2219), the DB
+// pointer is still cleared (#2035), but the transcript in the pi sessions
+// root is preserved so /resume keeps working (issue #2371).
+func TestHeadlessCloseSession_ArchivesAndPreservesTranscript(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-soft", "")
 
 	if err := headlessCloseSession(f.session); err != nil {
@@ -194,12 +225,14 @@ func TestHeadlessCloseSession_ArchivesTranscriptBeforeSever(t *testing.T) {
 	}
 
 	assertTranscriptArchived(t, f)
-	assertSeveredAfterArchive(t, f)
+	assertSoftSeveredAfterArchive(t, f)
 }
 
-// TestCloseSession_ArchivesTranscriptBeforeSever covers the interactive
-// closeSession path (@main / non-worktree sessions).
-func TestCloseSession_ArchivesTranscriptBeforeSever(t *testing.T) {
+// TestCloseSession_ArchivesAndPreservesTranscript covers the interactive
+// closeSession path (@main / non-worktree sessions). Same soft-close
+// semantics as above: archive runs, DB pointer cleared, transcript preserved
+// (issue #2371).
+func TestCloseSession_ArchivesAndPreservesTranscript(t *testing.T) {
 	f := setupArchiveOrderFixture(t, "archive-order-close", "")
 
 	if err := closeSession(f.session); err != nil {
@@ -207,7 +240,7 @@ func TestCloseSession_ArchivesTranscriptBeforeSever(t *testing.T) {
 	}
 
 	assertTranscriptArchived(t, f)
-	assertSeveredAfterArchive(t, f)
+	assertSoftSeveredAfterArchive(t, f)
 }
 
 // TestDoCleanup_ArchivesTranscriptBeforeSever covers the interactive TUI

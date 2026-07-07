@@ -97,7 +97,7 @@ func projectEntries() []entry {
 
 // ── worktree second-level picker ──────────────────────────────────────────────
 
-func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) error {
+func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Opts, isoCaps container.Capabilities, cfg config.Config) (retErr error) {
 	worktrees := git.Worktrees(projectPath)
 	createNew := entry{display: "[+ create new worktree]", special: "[+ create new worktree]"}
 
@@ -146,10 +146,22 @@ func handleBareRepo(projectPath string, pf *config.ProfilesFile, opts session.Op
 		if branch == "" {
 			return fmt.Errorf("branch name is empty after sanitisation")
 		}
-		worktreePath, err := git.CreateWorktree(projectPath, branch)
+		created, err := git.CreateWorktree(projectPath, branch)
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
+		worktreePath := created.Path
+		// Caller-level rollback (#2363): a failure in any later step of this
+		// create-new-worktree flow (config injection, blob write,
+		// ensureAndSwitch) removes the freshly created worktree and — only
+		// when freshly forked with no commits — its branch. Existing-worktree
+		// picks never reach this branch of the picker, so they are never
+		// unwound. Rollback failures are logged, never returned.
+		defer func() {
+			if retErr != nil {
+				rollbackCreatedWorktree(projectPath, &created, "prism switch")
+			}
+		}()
 		// Apply per-path isolation override for the new worktree.
 		effIso, effCaps := applyPathIsolationOverride(worktreePath, cfg, &opts, config.IsolationMode(opts.IsolationMode), isoCaps, pf)
 		if effCaps.NeedsConfigBlob && pf != nil {

@@ -395,7 +395,7 @@ func resolveIsolationMode(cmd *cobra.Command, cfg config.Config) (config.Isolati
 	return mode, nil
 }
 
-func runSpawn(cmd *cobra.Command, args []string) error {
+func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// Note: rootCmd sets SilenceUsage + SilenceErrors globally; RunE errors
 	// no longer dump the usage block or double-print (issue #2362).
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
@@ -740,18 +740,34 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	// not been converted), we fall through to CreateWorktree so pre-#2352
 	// behaviour is preserved.
 	var worktreePath string
+	// createdWorktree is non-nil only when THIS spawn created the worktree
+	// — never on the mainCoordinatorReuse fast path (#2352), which reuses
+	// the existing main worktree. It arms the deferred caller-level
+	// rollback below and is disarmed once SpawnSession succeeds.
+	var createdWorktree *git.CreatedWorktree
 	if mainCoordinatorReuse {
 		if wt, ok := existingWorktreeForBranch(bareRoot, branch); ok {
 			worktreePath = wt
 		}
 	}
 	if worktreePath == "" {
-		var wtErr error
-		worktreePath, wtErr = git.CreateWorktree(bareRoot, branch)
+		created, wtErr := git.CreateWorktree(bareRoot, branch)
 		if wtErr != nil {
 			return fmt.Errorf("create worktree: %w", wtErr)
 		}
+		worktreePath = created.Path
+		createdWorktree = &created
 	}
+	// Caller-level rollback (#2363): a failure in any step between worktree
+	// creation and SpawnSession success removes the freshly created worktree
+	// (and deletes the branch only when it was freshly forked by this spawn
+	// and still has no commits beyond its fork point). Rollback failures are
+	// logged, never returned — the original error must not be masked.
+	defer func() {
+		if retErr != nil {
+			rollbackCreatedWorktree(bareRoot, createdWorktree, "prism spawn")
+		}
+	}()
 
 	// For bwrap sessions, write the opencode.json config file to disk now so
 	// it is present before the agent pane opens. prism agent-run reconstructs
@@ -931,6 +947,10 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	if err := session.SpawnSession(d, spawnOpts); err != nil {
 		return err
 	}
+	// The session is live: disarm the worktree rollback. Later failures
+	// (--wait terminal-state polling, tmux attach) happen against a
+	// successfully spawned session and must not tear down its worktree.
+	createdWorktree = nil
 
 	waitFlag, _ := cmd.Flags().GetBool("wait")
 	jsonFlag, _ := cmd.Flags().GetBool("json")
@@ -1424,10 +1444,11 @@ type spawnOneAbtestArgs struct {
 // any error.
 func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, worktreePath string, err error) {
 	// Create the worktree.
-	worktreePath, err = git.CreateWorktree(a.bareRoot, a.branch)
+	created, err := git.CreateWorktree(a.bareRoot, a.branch)
 	if err != nil {
 		return "", "", fmt.Errorf("create worktree for branch %q: %w", a.branch, err)
 	}
+	worktreePath = created.Path
 
 	rootRole := a.plannedRole
 	if rootRole == "" {

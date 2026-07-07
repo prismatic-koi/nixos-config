@@ -224,9 +224,32 @@ func Worktrees(projectPath string) []string {
 	return worktrees
 }
 
+// CreatedWorktree describes the result of a successful CreateWorktree call,
+// carrying what RollbackCreatedWorktree needs to undo the creation when a
+// later spawn step fails (#2363).
+type CreatedWorktree struct {
+	// Path is the filesystem path of the created worktree.
+	Path string
+	// Branch is the branch the worktree was created at.
+	Branch string
+	// BranchForked is true only when CreateWorktree freshly forked the
+	// branch from the repo's default branch (the `worktree add -b <branch>
+	// <base>` path, taken when the branch existed neither locally nor on
+	// the remote). It is false when the branch already existed locally and
+	// false when the branch was checked out from a pre-existing remote
+	// branch — in both cases the branch ref must survive a rollback.
+	BranchForked bool
+	// ForkPoint is the commit the branch pointed at immediately after
+	// creation. Populated only when BranchForked is true;
+	// RollbackCreatedWorktree deletes the branch only while its tip still
+	// equals ForkPoint (i.e. no commits were made beyond the fork point).
+	ForkPoint string
+}
+
 // CreateWorktree creates a new git worktree for a bare-layout repo.
-// branchName must already be sanitised. Returns the worktree path on success.
-func CreateWorktree(projectPath, branchName string) (string, error) {
+// branchName must already be sanitised. Returns a CreatedWorktree describing
+// what was created so callers can register a rollback (#2363).
+func CreateWorktree(projectPath, branchName string) (CreatedWorktree, error) {
 	bare := gitDir(projectPath)
 	worktreePath := filepath.Join(projectPath, branchName)
 
@@ -234,24 +257,28 @@ func CreateWorktree(projectPath, branchName string) (string, error) {
 	localErr := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
 		"refs/heads/"+branchName).Run()
 	if localErr == nil {
-		// Branch exists locally — add worktree at that branch.
+		// Branch exists locally — add worktree at that branch. The branch
+		// pre-exists, so a rollback must never delete it.
 		if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
 			worktreePath, branchName).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("worktree add: %w: %s", err, out)
+			return CreatedWorktree{}, fmt.Errorf("worktree add: %w: %s", err, out)
 		}
-		return worktreePath, nil
+		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
 	}
 
 	// Check if branch exists on remote.
 	remoteErr := exec.Command("git", "--git-dir", bare, "rev-parse", "--verify",
 		"refs/remotes/origin/"+branchName).Run()
 	if remoteErr == nil {
-		// Track the remote branch.
+		// Track the remote branch. The local ref is created here (via -b),
+		// but it checks out a pre-existing remote branch — a rollback must
+		// not delete it (#2363: a failed `prism pr` keeps the PR branch and
+		// loses only the worktree).
 		if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
 			worktreePath, "-b", branchName, "origin/"+branchName).CombinedOutput(); err != nil {
-			return "", fmt.Errorf("worktree add (remote): %w: %s", err, out)
+			return CreatedWorktree{}, fmt.Errorf("worktree add (remote): %w: %s", err, out)
 		}
-		return worktreePath, nil
+		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
 	}
 
 	// New branch — fork from default.
@@ -261,9 +288,98 @@ func CreateWorktree(projectPath, branchName string) (string, error) {
 	}
 	if out, err := exec.Command("git", "--git-dir", bare, "worktree", "add",
 		"-b", branchName, worktreePath, base).CombinedOutput(); err != nil {
-		return "", fmt.Errorf("worktree add (new): %w: %s", err, out)
+		return CreatedWorktree{}, fmt.Errorf("worktree add (new): %w: %s", err, out)
 	}
-	return worktreePath, nil
+	// Record the fork point so a rollback can prove the branch still has no
+	// commits of its own before deleting it. If the lookup fails, stay
+	// conservative: report the branch as not-forked so a rollback keeps it.
+	forkPoint, fpErr := runGit("--git-dir", bare, "rev-parse", "--verify",
+		"refs/heads/"+branchName)
+	if fpErr != nil || forkPoint == "" {
+		return CreatedWorktree{Path: worktreePath, Branch: branchName}, nil
+	}
+	return CreatedWorktree{
+		Path:         worktreePath,
+		Branch:       branchName,
+		BranchForked: true,
+		ForkPoint:    forkPoint,
+	}, nil
+}
+
+// RollbackCreatedWorktree undoes a CreateWorktree call after a later step of
+// a spawn fails (#2363). It removes the created worktree and then deletes
+// the branch — but only when the branch was freshly forked by that
+// CreateWorktree call AND its tip is still at the fork point (no commits
+// were made on it). Branches that pre-existed locally, were checked out
+// from a pre-existing remote branch, or have accumulated commits are never
+// deleted.
+//
+// The rollback is idempotent: a worktree or branch that is already gone is
+// treated as success. All failures are collected into a single returned
+// error so the caller can log them; callers must never let this error mask
+// the original spawn failure.
+func RollbackCreatedWorktree(projectPath string, c CreatedWorktree) error {
+	bare := gitDir(projectPath)
+	var errs []string
+
+	if err := RemoveWorktree(projectPath, c.Path); err != nil {
+		// `git worktree remove` fails when the worktree is already
+		// unregistered or its directory was deleted out from under git.
+		// Both are already-unwound states: prune stale bookkeeping, then
+		// report a failure only if the worktree is still registered.
+		_ = exec.Command("git", "--git-dir", bare, "worktree", "prune").Run()
+		if isWorktreeRegistered(projectPath, c.Path) {
+			errs = append(errs, fmt.Sprintf("remove worktree %q: %v", c.Path, err))
+		}
+	}
+
+	if c.BranchForked && c.Branch != "" {
+		tip, tipErr := runGit("--git-dir", bare, "rev-parse", "--verify",
+			"refs/heads/"+c.Branch)
+		switch {
+		case tipErr != nil:
+			// Branch already gone — idempotent success.
+		case tip != c.ForkPoint:
+			// Commits were made beyond the fork point — keep the branch.
+		default:
+			if delErr := ForceDeleteBranch(projectPath, c.Branch); delErr != nil {
+				errs = append(errs, fmt.Sprintf("delete branch %q: %v", c.Branch, delErr))
+			}
+		}
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("rollback created worktree: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
+// isWorktreeRegistered reports whether path is still registered as a
+// worktree of the bare-layout repo at projectPath. Both sides are
+// symlink-resolved where possible so paths under symlinked prefixes (e.g.
+// /tmp → /private/tmp on Darwin) compare equal; a path whose leaf no longer
+// exists falls back to resolving its parent.
+func isWorktreeRegistered(projectPath, path string) bool {
+	want := resolvePathBestEffort(path)
+	for _, w := range Worktrees(projectPath) {
+		if resolvePathBestEffort(w) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePathBestEffort resolves symlinks in p, falling back to resolving
+// the parent directory when p itself no longer exists, and to a lexical
+// Clean when neither resolves.
+func resolvePathBestEffort(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return filepath.Clean(p)
 }
 
 // convertToBareStepHook is called at each named step inside ConvertToBare.
