@@ -19,11 +19,10 @@ import (
 )
 
 var dbTablesCmd = &cobra.Command{
-	Use:          "tables",
-	Short:        "Print a sorted list of user table names (excludes sqlite_*)",
-	SilenceUsage: true,
-	Args:         cobra.NoArgs,
-	RunE:         runDBTables,
+	Use:   "tables",
+	Short: "Print a sorted list of user table names (excludes sqlite_*)",
+	Args:  cobra.NoArgs,
+	RunE:  runDBTables,
 }
 
 func init() {

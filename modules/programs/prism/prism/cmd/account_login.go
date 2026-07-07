@@ -20,7 +20,6 @@ func init() {
 }
 
 func runAccountLogin(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := account.ResolvePaths()
 	if err != nil {
 		return err

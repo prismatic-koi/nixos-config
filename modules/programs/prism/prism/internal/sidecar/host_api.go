@@ -2733,18 +2733,37 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// PRISM_SESSION_NAME tells the host-side `prism investigate` which session
 		// is invoking, bypassing the CWD walk.
 		cmd.Env = append(os.Environ(), "PRISM_SESSION_NAME="+fromSession, "PRISM_HOST_API=")
-		out, err := cmd.Output()
+		// Capture stdout and stderr separately: the handler parses stdout as
+		// the newly-created session name, and CombinedOutput would corrupt
+		// that parse by interleaving any child stderr into the stream. On
+		// error we surface the stderr tail in the JSON error response so the
+		// caller sees the actionable message (e.g. `invoker session %q has no
+		// agent_status row`) instead of a bare `exit status 1`. On the
+		// success path any non-fatal stderr warnings are logged to the
+		// sidecar log rather than discarded. See issue #2362 / parent #2356.
+		var stdoutBuf, stderrBuf bytes.Buffer
+		cmd.Stdout = &stdoutBuf
+		cmd.Stderr = &stderrBuf
+		err := cmd.Run()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
 				s.logger().Printf("sidecar: host-API /investigate: context fired (%v): killed child after %v", ctx.Err(), 10*time.Minute)
 				writeError(w, status, fmt.Sprintf("investigate aborted: %v", ctx.Err()))
 				return
 			}
-			s.logger().Printf("sidecar: host-API /investigate: %v", err)
-			writeError(w, http.StatusInternalServerError, fmt.Sprintf("investigate failed: %v", err))
+			combined := strings.TrimSpace(stdoutBuf.String() + "\n" + stderrBuf.String())
+			s.logger().Printf("sidecar: host-API /investigate: %v: %s", err, combined)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{
+				"error":  fmt.Sprintf("investigate failed: %v", err),
+				"stdout": stdoutBuf.String(),
+				"stderr": stderrBuf.String(),
+			})
 			return
 		}
-		sessionName := strings.TrimSpace(string(out))
+		if stderrTail := strings.TrimSpace(stderrBuf.String()); stderrTail != "" {
+			s.logger().Printf("sidecar: host-API /investigate: child stderr (exit 0): %s", stderrTail)
+		}
+		sessionName := strings.TrimSpace(stdoutBuf.String())
 		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
 	})
 

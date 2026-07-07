@@ -43,9 +43,8 @@ const dbQueryDefaultTimeout = 5 * time.Second
 const dbQueryRowDisplayLimit = 50
 
 var dbQueryCmd = &cobra.Command{
-	Use:          "query [SQL | -]",
-	Short:        "Run a single read-only SQL statement",
-	SilenceUsage: true,
+	Use:   "query [SQL | -]",
+	Short: "Run a single read-only SQL statement",
 	Long: `Run a single read-only SQL statement against the prism database.
 
 The SQL text may be passed as the first positional argument, or read from

@@ -188,8 +188,6 @@ func init() {
 }
 
 func runAgentContext(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
-
 	includeHidden, _ := cmd.Flags().GetBool("include-hidden")
 
 	doc := buildAgentContextDocument(includeHidden)
