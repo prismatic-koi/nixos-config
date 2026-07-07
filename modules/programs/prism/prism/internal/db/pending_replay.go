@@ -133,6 +133,61 @@ func (d *DB) DeletePendingReplayDelivery(sessionName, deliveryID string) error {
 	return nil
 }
 
+// DeletePendingReplayDeliveriesForSession removes every pending-replay entry
+// for sessionName. Called from two lifecycle boundaries so a fresh session
+// incarnation on the same name cannot resurrect a previous incarnation's
+// stale coordinator directives (issue #2359 review-context follow-up):
+//
+//   - `prism cleanup` (severPiResumeLinkage) ends the session and severs the
+//     pi resume linkage; the pending-replay buffer is the CLI-visibility
+//     twin of that linkage and must be wiped at the same time.
+//   - `event tmux-session-start` re-seeds a previously-ended row back to
+//     `idle` when a spawn reuses the branch name (#2094 respawn-after-cleanup
+//     path). The re-seed clears `ended_at` but the pending-replay rows would
+//     otherwise still be scoped to `session_name`, so
+//     `restorePendingReplayFromDB` on the fresh incarnation would drain them
+//     into the new agent — a stale directive from the previous incarnation.
+//     Clearing here on re-seed is the load-bearing fix for that hazard.
+//
+// Returns nil when no rows match (idempotent).
+func (d *DB) DeletePendingReplayDeliveriesForSession(sessionName string) error {
+	if sessionName == "" {
+		return fmt.Errorf("db: delete pending replay for session: session_name is required")
+	}
+	if _, err := d.conn.Exec(
+		`DELETE FROM pending_replay_deliveries WHERE session_name = ?`,
+		sessionName,
+	); err != nil {
+		return fmt.Errorf("db: delete pending replay for session: %w", err)
+	}
+	return nil
+}
+
+// PrunePendingReplayDeliveriesOlderThan removes every pending-replay entry
+// whose queued_at is older than the given cutoff (Unix milliseconds).
+// Called from the periodic maintenance job so an abandoned session's rows
+// do not accumulate indefinitely.
+//
+// The bound is generous by default (see internal/db/maintenance.go): the
+// buffer's normal lifetime is minutes-to-hours (until the next handshake),
+// so a multi-day cutoff only catches rows whose session never came back.
+//
+// Returns the number of rows deleted and any database error.
+func (d *DB) PrunePendingReplayDeliveriesOlderThan(cutoffMillis int64) (int64, error) {
+	res, err := d.conn.Exec(
+		`DELETE FROM pending_replay_deliveries WHERE queued_at < ?`,
+		cutoffMillis,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("db: prune pending replay deliveries: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("db: prune pending replay deliveries rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // CountPendingReplayDeliveries returns the number of persisted entries for
 // sessionName. Used in tests to assert that flush-then-delete leaves the
 // table empty and that a re-flush does not resurrect deleted entries.

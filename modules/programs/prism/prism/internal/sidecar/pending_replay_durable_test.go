@@ -191,6 +191,56 @@ func TestPendingReplayDurable_DedupAcrossRestart(t *testing.T) {
 	}
 }
 
+// TestPendingReplayDurable_RespawnClearsStaleDirectives verifies the
+// review-context follow-up on issue #2359: respawning on the same branch
+// name (a supported flow via #2094) must NOT resurrect coordinator
+// directives buffered against a previous incarnation. The primary
+// lifecycle hook — the tmux-session-start event — calls
+// DeletePendingReplayDeliveriesForSession before restorePendingReplayFromDB
+// runs on the fresh sidecar.
+//
+// This test simulates the flow at the DB layer: seed a delivery for a
+// session, then simulate cleanup-and-respawn by calling
+// DeletePendingReplayDeliveriesForSession, then a fresh Sidecar's
+// restorePendingReplayFromDB must see an empty buffer.
+func TestPendingReplayDurable_RespawnClearsStaleDirectives(t *testing.T) {
+	d := openTestDB(t)
+	const session = "prism-test@durable-respawn"
+
+	// Sidecar #1 (the doomed incarnation): buffer a delivery.
+	sc1 := newDedupTestSidecar(t, session, d)
+	rr := doHostAPI(t, sc1, http.MethodPost, "/prompt",
+		`{"session":"prism-test@durable-respawn","prompt":"stale-directive","delivery_id":"stale-001"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("buffer stale: got status %d, want 200", rr.Code)
+	}
+	if n, _ := d.CountPendingReplayDeliveries(session); n != 1 {
+		t.Fatalf("post-buffer DB rows = %d, want 1", n)
+	}
+
+	// Simulate `prism cleanup` (severPiResumeLinkage) and the following
+	// re-spawn's tmux-session-start hook: both call
+	// DeletePendingReplayDeliveriesForSession. Either alone must be enough
+	// to wipe the previous incarnation's rows; here we exercise the
+	// tmux-session-start half by calling it explicitly.
+	if err := d.DeletePendingReplayDeliveriesForSession(session); err != nil {
+		t.Fatalf("DeletePendingReplayDeliveriesForSession: %v", err)
+	}
+	if n, _ := d.CountPendingReplayDeliveries(session); n != 0 {
+		t.Errorf("post-purge DB rows = %d, want 0", n)
+	}
+
+	// Sidecar #2 (the fresh incarnation) must see an empty buffer.
+	sc2 := newDedupTestSidecar(t, session, d)
+	sc2.restorePendingReplayFromDB()
+	sc2.mu.Lock()
+	resurrected := len(sc2.pendingReplayDeliveries)
+	sc2.mu.Unlock()
+	if resurrected != 0 {
+		t.Errorf("fresh incarnation resurrected %d stale directive(s) after purge — the respawn safety net is broken", resurrected)
+	}
+}
+
 // TestPendingReplayDurable_LoadPreservesFIFO verifies the restore path
 // preserves the queued_at ordering so a mixed-source buffer replays in the
 // order the coordinator sent it. This mirrors the in-memory FIFO semantics

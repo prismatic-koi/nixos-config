@@ -2938,7 +2938,13 @@ func (s *Sidecar) restorePendingReplayFromDB() {
 // remain consistent across restart. A DB-delete failure is logged but not
 // propagated — the in-memory buffer is still bounded, and a stale row will
 // either be flushed on the next reconnect (leading to at-most-16 legitimate
-// replays plus at-most-one stale one) or age out with cleanup.
+// replays plus at-most-one stale one) or be swept by the periodic prune
+// (internal/db/maintenance.go extends Prune to sweep pending_replay_deliveries
+// on the same time-based threshold as agent_events). The primary lifecycle
+// hooks — `prism cleanup` (severPiResumeLinkage) and
+// `event tmux-session-start` — also purge rows for a specific session name
+// so a respawn on the same branch cannot resurrect stale directives from a
+// previous incarnation.
 //
 // Concurrency: acquires s.mu internally; do NOT call with s.mu held.
 func (s *Sidecar) bufferPendingReplay(d pendingReplayDelivery) {

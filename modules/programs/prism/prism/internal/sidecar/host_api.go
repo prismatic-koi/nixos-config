@@ -1058,9 +1058,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			}
 		}
 
-		// Deliver via prism prompt on the host.
-		args := []string{"prompt", req.Session, "--prompt", req.Prompt}
-		s.logger().Printf("sidecar: host-API /prompt: prism prompt %s <omitted>", req.Session)
+		// Deliver via prism prompt on the host. Pass --json so the child
+		// emits a single JSON envelope on stdout that carries the buffered /
+		// replayed outcome from the target sidecar's response. Without --json
+		// the child's stdout is a plain human-readable line and any
+		// buffered:true signal from the target sidecar is discarded when the
+		// child exits 0 — which is exactly the sandboxed-caller silent-success
+		// class of #2359 that this endpoint is on the hook to fix.
+		args := []string{"prompt", req.Session, "--prompt", req.Prompt, "--json"}
+		s.logger().Printf("sidecar: host-API /prompt: prism prompt --json %s <omitted>", req.Session)
 
 		// Per-endpoint timeout: 5 min. `prism prompt` writes one bus event and
 		// (in pi-harness mode) waits for the harness side to ACK delivery; the
@@ -1071,19 +1077,40 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, prismBinary(), args...)
-		out, err := cmd.CombinedOutput()
+		var childStdout, childStderr bytes.Buffer
+		cmd.Stdout = &childStdout
+		cmd.Stderr = &childStderr
+		err := cmd.Run()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
 				s.logger().Printf("sidecar: host-API /prompt: context fired (%v): killed child after %v", ctx.Err(), 5*time.Minute)
 				writeError(w, status, fmt.Sprintf("prompt delivery aborted: %v", ctx.Err()))
 				return
 			}
-			s.logger().Printf("sidecar: host-API /prompt: %v: %s", err, out)
+			s.logger().Printf("sidecar: host-API /prompt: %v: stdout=%s stderr=%s", err, childStdout.String(), childStderr.String())
 			writeError(w, http.StatusInternalServerError, fmt.Sprintf("prompt delivery failed: %v", err))
 			return
 		}
 
-		writeJSON(w, http.StatusOK, map[string]string{})
+		// Parse the child's --json envelope so the sandboxed caller sees the
+		// same buffered / replayed fields it would from a direct-host
+		// `prism prompt --json` invocation (issue #2359 review-code /
+		// review-context Gap B follow-up). The child's stdout in --json mode
+		// is a single-line JSON object; an empty or unparseable body is not
+		// treated as an error — the pre-#2359 shape of returning `{}` is
+		// preserved on parse failure, matching the direct path's
+		// synchronous-success default.
+		replyEnv := struct {
+			Buffered bool `json:"buffered,omitempty"`
+			Replayed bool `json:"replayed,omitempty"`
+		}{}
+		trimmed := bytes.TrimSpace(childStdout.Bytes())
+		if len(trimmed) > 0 {
+			if jsonErr := json.Unmarshal(trimmed, &replyEnv); jsonErr != nil {
+				s.logger().Printf("sidecar: host-API /prompt: child stdout was not a JSON envelope (%v); returning synchronous-success default. child stdout=%q", jsonErr, childStdout.String())
+			}
+		}
+		writeJSON(w, http.StatusOK, replyEnv)
 	})
 
 	// POST /spawn
