@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -57,6 +58,7 @@ uses prompt_async and does not support delivery modes.`,
 func init() {
 	addPromptFlags(promptCmd)
 	promptCmd.Flags().String("deliver-as", "steer", `Delivery mode for socket-pipe sessions: steer (mid-turn), followUp, or nextTurn.`)
+	promptCmd.Flags().Bool("json", false, `Emit a single JSON object to stdout instead of the human-readable success line. Shape: {"delivered_to":"<session>","delivery_id":"<uuid>","buffered":<bool>,"replayed":<bool>,"transport":"socket-pipe"|"http"}. When buffered=true the delivery was accepted but the PI extension was disconnected — the sidecar will replay it on the next handshake.`)
 	rootCmd.AddCommand(promptCmd)
 }
 
@@ -101,9 +103,10 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--deliver-as must be one of: %s (got: %q)",
 			strings.Join(validDeliverAsModes, ", "), deliverAs)
 	}
+	jsonOut, _ := cmd.Flags().GetBool("json")
 
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		return proxyPrompt(apiURL, sessionName, promptText, deliverAs)
+		return proxyPromptWithOutcome(apiURL, sessionName, promptText, deliverAs, jsonOut)
 	}
 
 	// Open DB.
@@ -178,20 +181,62 @@ func runPrompt(cmd *cobra.Command, args []string) error {
 	buildBody := func(text string, s *db.Status) map[string]any {
 		return buildPromptBody(text, s)
 	}
-	if err := promptdelivery.DeliverToSession(sessionName, status, promptText, buildBody, "", deliverAs); err != nil {
+	outcome, err := promptdelivery.DeliverToSessionEx(sessionName, status, promptText, buildBody, "", deliverAs)
+	if err != nil {
 		return fmt.Errorf("%w", err)
 	}
 	if err := database.WriteBusMessageDelivered(msg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not write audit bus message: %v\n", err)
 	}
-	// Report delivery method for feedback.
+	// Determine transport for human-readable output and JSON envelope.
+	transport := "http"
 	if status.Harness != nil && *status.Harness != "" {
 		if shape, ok := harness.ShapeOf(*status.Harness); ok && shape == harness.TransportSocketPipe {
-			fmt.Printf("prompt delivered to %s via socket-pipe\n", sessionName)
-			return nil
+			transport = "socket-pipe"
 		}
 	}
-	fmt.Printf("prompt delivered to %s via HTTP\n", sessionName)
+	return emitPromptOutcome(cmd.OutOrStdout(), jsonOut, sessionName, transport, outcome)
+}
+
+// emitPromptOutcome renders the result of a `prism prompt` invocation. In
+// human mode it prints a single line that names the buffered outcome when
+// the sidecar responded {"buffered": true} (issue #2359 Gap B) so the
+// caller can distinguish "on the wire" from "parked awaiting reconnect".
+// In --json mode it emits a single JSON object with delivered_to,
+// delivery_id, buffered, replayed, and transport fields.
+//
+// Exit code stays 0 on buffered=true: the delivery is contractually
+// promised, and the sidecar's durable buffer (also #2359 Gap B) means it
+// survives sidecar restart. The distinguishing signal is in the message
+// content, not the exit code.
+func emitPromptOutcome(stdout io.Writer, jsonOut bool, sessionName, transport string, outcome promptdelivery.DeliveryOutcome) error {
+	if jsonOut {
+		obj := map[string]any{
+			"delivered_to": sessionName,
+			"delivery_id":  outcome.DeliveryID,
+			"buffered":     outcome.Buffered,
+			"replayed":     outcome.Replayed,
+			"transport":    transport,
+		}
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return fmt.Errorf("marshal prompt outcome: %w", err)
+		}
+		fmt.Fprintln(stdout, string(b))
+		return nil
+	}
+	switch {
+	case outcome.Buffered:
+		fmt.Fprintf(stdout,
+			"prompt accepted for %s but PI extension is disconnected — buffered for replay on next handshake (delivery_id=%s)\n",
+			sessionName, outcome.DeliveryID)
+	case outcome.Replayed:
+		fmt.Fprintf(stdout,
+			"prompt to %s dropped as replay of a previously-seen delivery_id=%s (dedup at sidecar)\n",
+			sessionName, outcome.DeliveryID)
+	default:
+		fmt.Fprintf(stdout, "prompt delivered to %s via %s\n", sessionName, transport)
+	}
 	return nil
 }
 

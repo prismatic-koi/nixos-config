@@ -42,6 +42,12 @@ import "fmt"
 //     manual kill+recreate).
 //   - interrupted → active: session resumed after an interruption.
 //   - interrupted → idle: same as finished → idle but starting from interrupted.
+//   - error → escalated: `prism escalate` invoked from a session whose startup
+//     handshake timed out and stamped `error` (writeStartupError,
+//     internal/sidecar/sidecar.go). Same rationale as idle→escalated above
+//     (issue #2359): a dead-pipe session that missed its handshake still
+//     needs to be able to hand a question to its coordinator; the escalated
+//     contract must apply regardless of the source state.
 //   - error → idle: same as finished → idle but starting from error. After
 //     `prism cleanup --yes --session <name>` ends a session whose last state
 //     was error, re-spawning on the same branch name reuses the existing
@@ -60,6 +66,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateActive:      true,
 		StateInterrupted: true,
 		StateError:       true, // container startup failure before session.created
+		StateEscalated:   true, // #2359: dead-pipe session sits at idle; escalate must still enter escalated
 		StateDeleted:     true,
 	},
 	StateActive: {
@@ -96,6 +103,7 @@ var ValidTransitions = map[AgentState]map[AgentState]bool{
 		StateInterrupted: true,
 		StateFinished:    true,
 		StateIdle:        true,
+		StateEscalated:   true, // #2359: startup-handshake-timeout session stamped error; escalate must still enter escalated
 		StateDeleted:     true,
 	},
 	// reviewing→finished: PASS verdict received; coordinator notified now.

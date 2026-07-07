@@ -28,6 +28,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/promptdelivery"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
@@ -487,6 +488,47 @@ func proxyPrompt(apiURL, session, prompt, deliverAs string) error {
 		"prompt":     prompt,
 		"deliver_as": deliverAs,
 	}, nil)
+}
+
+// proxyPromptWithOutcome is the outcome-aware variant of proxyPrompt (issue
+// #2359 Gap B). It parses the sidecar's response envelope ({"buffered": true}
+// / {"replayed": true}) and forwards the same human-readable / --json
+// output as the non-proxied path, so a container-side `prism prompt` call
+// carries the buffered outcome all the way back to the operator.
+//
+// The response from the sidecar's host-API /prompt endpoint is a JSON
+// object; the fields we look for are optional and default to false. An
+// empty response body is treated as a synchronous delivery.
+func proxyPromptWithOutcome(apiURL, session, prompt, deliverAs string, jsonOut bool) error {
+	var respEnv struct {
+		Buffered bool `json:"buffered"`
+		Replayed bool `json:"replayed"`
+	}
+	if err := proxyToHostAPI(apiURL, "/prompt", map[string]any{
+		"session":    session,
+		"prompt":     prompt,
+		"deliver_as": deliverAs,
+	}, &respEnv); err != nil {
+		return err
+	}
+	// The proxied path does not have visibility into the delivery_id — the
+	// host-side sidecar's /prompt handler shells to `prism prompt` which
+	// mints a fresh UUID, and the sidecar returns after the child exits.
+	// Callers who need the ID must inspect the host-side bus_messages
+	// audit trail. Surface an empty string in the JSON envelope so the
+	// field is present but distinguishable from a real ID.
+	return emitPromptOutcome(os.Stdout, jsonOut, session, "host-api", promptdeliveryOutcomeForProxy(respEnv.Buffered, respEnv.Replayed))
+}
+
+// promptdeliveryOutcomeForProxy is a small adapter to build a
+// promptdelivery.DeliveryOutcome without pulling the whole struct into every
+// callsite here. Kept as a helper so the proxy path's outcome shape stays
+// aligned with the direct path's.
+func promptdeliveryOutcomeForProxy(buffered, replayed bool) promptdelivery.DeliveryOutcome {
+	return promptdelivery.DeliveryOutcome{
+		Buffered: buffered,
+		Replayed: replayed,
+	}
 }
 
 // proxyReviewAsync proxies an async review request to the host-API sidecar

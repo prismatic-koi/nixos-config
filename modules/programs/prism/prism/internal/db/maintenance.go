@@ -52,6 +52,15 @@ import (
 //     queue. Rows are short-lived (queued → merged
 //     or failed within a single PR cycle) and the
 //     table is not expected to accrete.
+//   - pending_replay_deliveries
+//     — durable buffer for /prompt frames that
+//     arrived while the PI extension was
+//     disconnected. Wiped on `prism cleanup` and
+//     on `event tmux-session-start` (issue #2359)
+//     so the primary lifecycle hooks handle it;
+//     Prune sweeps stragglers via a dedicated
+//     time-based DELETE below with a shorter
+//     window (rows are short-lived by design).
 //   - schema_version     — a single-row table tracking the live schema
 //     version. Pruning it would break startup.
 //
@@ -130,6 +139,19 @@ WHERE group_id NOT IN (
 )`,
 	); err != nil {
 		return fmt.Errorf("db: prune session_groups: %w", err)
+	}
+
+	// pending_replay_deliveries: sweep any straggler rows whose queued_at
+	// is older than the same threshold (issue #2359 review-context
+	// follow-up). The primary lifecycle hooks (cleanup, tmux-session-start)
+	// already purge on the common paths — this catches the abandoned
+	// case where a sidecar buffered a delivery and never came back and
+	// the session was never explicitly cleaned up. No cross-table
+	// dependency, so the DELETE is trivial.
+	if _, err := tx.Exec(
+		"DELETE FROM pending_replay_deliveries WHERE queued_at < ?", threshold,
+	); err != nil {
+		return fmt.Errorf("db: prune pending_replay_deliveries: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

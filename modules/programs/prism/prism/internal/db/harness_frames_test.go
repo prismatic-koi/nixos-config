@@ -264,8 +264,13 @@ func TestHarnessFrame_MigrationCreatesTable(t *testing.T) {
 	if err := d.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if ver != 38 {
-		t.Errorf("schema_version after fresh open = %d, want 38", ver)
+	// Migrations chain forward through currentSchemaVersion, so on a fresh
+	// Open the row lands at whatever the highest migration produces. This
+	// test's contract is only that the harness_frames table exists after
+	// migration — the version check below is a lower-bound so later
+	// migrations do not break it.
+	if ver < 38 {
+		t.Errorf("schema_version after fresh open = %d, want >= 38", ver)
 	}
 
 	// The expected indexes must exist (look them up by name).
@@ -299,8 +304,8 @@ func TestHarnessFrame_MigrationIdempotent(t *testing.T) {
 	if err := d2.QueryRow("SELECT version FROM schema_version").Scan(&ver); err != nil {
 		t.Fatalf("read schema_version: %v", err)
 	}
-	if ver != 38 {
-		t.Errorf("schema_version after second open = %d, want 38", ver)
+	if ver < 38 {
+		t.Errorf("schema_version after second open = %d, want >= 38", ver)
 	}
 
 	// The table must still accept rows.

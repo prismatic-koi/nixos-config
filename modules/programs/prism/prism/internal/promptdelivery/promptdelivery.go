@@ -40,6 +40,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -53,6 +54,38 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/session"
 )
+
+// DeliveryOutcome is the summary result of a /prompt or prompt_async round
+// trip. It surfaces the sidecar's response envelope to the caller so the CLI
+// can distinguish a synchronous delivery from a buffered one and act
+// accordingly. Issue #2359 Gap B.
+//
+// A zero-value DeliveryOutcome (Buffered=false, Replayed=false) is the
+// pre-#2359 default — synchronous success on both socket-pipe and HTTP
+// harness paths.
+type DeliveryOutcome struct {
+	// Buffered is true when the sidecar's /prompt handler returned
+	// {"buffered": true} — the delivery was accepted but the PI extension
+	// was disconnected at the time, so the frame will be flushed on the
+	// next successful handshake (marked replay=true on the wire). Callers
+	// MUST surface this so operators can tell the difference between "on
+	// the wire" and "parked awaiting reconnect". The HTTP fallback path
+	// never produces Buffered=true; only the socket-pipe path does.
+	Buffered bool
+
+	// Replayed is true when the sidecar's /prompt handler returned
+	// {"replayed": true} — the delivery was dropped as a repeat of a
+	// previously-seen delivery_id in the sidecar's dedup ledger.
+	// Existing sender-side dedup UX (e.g. `prism escalate`'s
+	// "OK already delivered" line) does its own bookkeeping; this
+	// field surfaces the receiving-sidecar decision for the direct
+	// `prism prompt` path (#1685).
+	Replayed bool
+
+	// DeliveryID is the delivery_id sent in the request. Callers may want
+	// to include it in their user-facing output for operator debugging.
+	DeliveryID string
+}
 
 // DeliverToSession delivers text to the agent session described by status,
 // routing based on the session's harness field.
@@ -83,13 +116,22 @@ import (
 // Accepted values: "steer", "followUp", "nextTurn". Empty string defaults to
 // "nextTurn" (current behaviour, for backward-compatible callers).
 // For HTTP harness sessions the parameter is ignored (they use prompt_async).
+//
+// The returned DeliveryOutcome is populated when the transport surfaces
+// a distinguishing signal (buffered / replayed); the pre-#2359 shape of
+// returning only an error is preserved for callers that discard it.
 func DeliverToSession(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
-	// Mint a delivery_id per call so the receiving sidecar can dedup
-	// repeats at the bus boundary (issue #1685). Callers do not need to
-	// supply one; legacy callers that want to preserve a specific ID
-	// across deliveries (e.g. retries that should be deduped) should use
-	// DeliverToSessionWithID instead.
-	return DeliverToSessionWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, uuid.NewString())
+	_, err := DeliverToSessionEx(sessionName, status, text, buildHTTPBody, source, deliverAs)
+	return err
+}
+
+// DeliverToSessionEx is the DeliveryOutcome-returning variant of
+// DeliverToSession. Callers who need to surface "buffered" vs
+// "synchronous" or dedup-replay to their own users (e.g. the
+// `prism prompt` CLI) should use this form. Mints a fresh delivery_id
+// so the receiving sidecar can dedup repeats at the bus boundary.
+func DeliverToSessionEx(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) (DeliveryOutcome, error) {
+	return DeliverToSessionExWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, uuid.NewString())
 }
 
 // DeliverToSessionWithID is the explicit-ID variant of DeliverToSession.
@@ -98,6 +140,15 @@ func DeliverToSession(sessionName string, status *db.Status, text string, buildH
 // dedup (legacy behaviour) — the receiving sidecar will then deliver the
 // frame unconditionally. Issue #1685.
 func DeliverToSessionWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) error {
+	_, err := DeliverToSessionExWithID(sessionName, status, text, buildHTTPBody, source, deliverAs, deliveryID)
+	return err
+}
+
+// DeliverToSessionExWithID is the DeliveryOutcome-returning + explicit-ID
+// variant of DeliverToSession. This is the single point where the receiving
+// sidecar's response envelope (buffered / replayed) is parsed and surfaced
+// to callers. Issue #2359 Gap B.
+func DeliverToSessionExWithID(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string, deliveryID string) (DeliveryOutcome, error) {
 	// Determine the transport shape from the harness field.
 	if status.Harness != nil && *status.Harness != "" {
 		shape, ok := harness.ShapeOf(*status.Harness)
@@ -110,7 +161,7 @@ func DeliverToSessionWithID(sessionName string, status *db.Status, text string, 
 	// does not currently honour delivery_id — the harness has its own
 	// queue and is treated as a thin pass-through. If duplication is
 	// observed there in future, plumb deliveryID into buildHTTPBody.
-	return deliverViaHTTP(status, text, buildHTTPBody)
+	return DeliveryOutcome{DeliveryID: deliveryID}, deliverViaHTTP(status, text, buildHTTPBody)
 }
 
 // deliverViaSidecarSocket dials the target session's host-API Unix socket and
@@ -144,10 +195,11 @@ const EnvRestrictHostAPI = "PRISM_TEST_MODE_RESTRICT_HOSTAPI"
 // testable via the public API (issue #1883).
 var sidecarHostAPIPathFn = session.SidecarHostAPIPath
 
-func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID string) error {
+func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID string) (DeliveryOutcome, error) {
+	outcome := DeliveryOutcome{DeliveryID: deliveryID}
 	sockPath, err := sidecarHostAPIPathFn(sessionName)
 	if err != nil {
-		return fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
+		return outcome, fmt.Errorf("resolve host-API socket path for %q: %w", sessionName, err)
 	}
 
 	// Test-mode isolation guard: when PRISM_TEST_MODE_RESTRICT_HOSTAPI is set,
@@ -159,7 +211,7 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	if os.Getenv(EnvRestrictHostAPI) != "" {
 		stateHome := os.Getenv("XDG_STATE_HOME")
 		if stateHome != "" && !hasPathPrefix(sockPath, stateHome) {
-			return fmt.Errorf(
+			return outcome, fmt.Errorf(
 				"test-mode isolation guard: refusing to dial host-API socket at %s — path is outside XDG_STATE_HOME=%s (set PRISM_TEST_MODE_RESTRICT_HOSTAPI only in tests)",
 				sockPath, stateHome,
 			)
@@ -167,7 +219,7 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	}
 
 	if _, statErr := os.Stat(sockPath); statErr != nil {
-		return fmt.Errorf("host-API socket not found at %s (session may have ended): %w", sockPath, statErr)
+		return outcome, fmt.Errorf("host-API socket not found at %s (session may have ended): %w", sockPath, statErr)
 	}
 
 	client := newUnixClient(sockPath)
@@ -187,25 +239,40 @@ func deliverViaSidecarSocket(sessionName, text, source, deliverAs, deliveryID st
 	}
 	body, err := json.Marshal(bodyMap)
 	if err != nil {
-		return fmt.Errorf("marshal prompt body: %w", err)
+		return outcome, fmt.Errorf("marshal prompt body: %w", err)
 	}
 
 	req, err := http.NewRequest(http.MethodPost, "http://prism-hostapi/prompt", bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return outcome, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("dial host-API socket at %s: %w", sockPath, err)
+		return outcome, fmt.Errorf("dial host-API socket at %s: %w", sockPath, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("host-API /prompt returned HTTP %d for session %q", resp.StatusCode, sessionName)
+		return outcome, fmt.Errorf("host-API /prompt returned HTTP %d for session %q", resp.StatusCode, sessionName)
 	}
-	return nil
+
+	// Parse the response envelope to surface {"buffered": true} /
+	// {"replayed": true} to the caller (issue #2359 Gap B / #1685). An
+	// empty or unparseable body is not an error — the pre-#1685 sidecar
+	// replies {} on synchronous success. Cap the read to a small
+	// upper-bound because the sidecar's response envelope is at most a
+	// few dozen bytes; a runaway body indicates a client-side bug rather
+	// than a legitimate response.
+	env := struct {
+		Buffered bool `json:"buffered"`
+		Replayed bool `json:"replayed"`
+	}{}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&env)
+	outcome.Buffered = env.Buffered
+	outcome.Replayed = env.Replayed
+	return outcome, nil
 }
 
 // deliverViaHTTP sends text to the harness HTTP API at

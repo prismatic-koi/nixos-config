@@ -1420,6 +1420,17 @@ func severPiResumeLinkage(d *db.DB, sessionName string) error {
 		proglog.Errorf("[prism] severPiResumeLinkage: clear harness_session_id for %s: %v\n", sessionName, clearErr)
 		return clearErr
 	}
+	// Wipe the durable pending-replay buffer for this session (issue #2359
+	// review-context follow-up). This is the CLI-visibility twin of the
+	// pi resume linkage: the harness_session_id we just cleared points at
+	// the on-disk transcript, and pending_replay_deliveries points at
+	// undelivered coordinator directives for that same conversation. A
+	// re-spawn on this branch name must not pick up either. Best-effort:
+	// a delete failure is logged but not propagated, mirroring the
+	// RemovePiResumeJSONL treatment above.
+	if purgeErr := d.DeletePendingReplayDeliveriesForSession(sessionName); purgeErr != nil {
+		proglog.Warnf("[prism] warning: purge pending_replay_deliveries for %s: %v — continuing cleanup\n", sessionName, purgeErr)
+	}
 	return nil
 }
 

@@ -25,6 +25,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/tmux"
@@ -327,6 +328,19 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 		}
 		if err := d.ClearEnded(session); err != nil {
 			return fmt.Errorf("event tmux-session-start: clear ended: %w", err)
+		}
+		// Wipe the durable pending-replay buffer for this session name so a
+		// fresh incarnation cannot resurrect stale coordinator directives
+		// buffered against a previous incarnation (issue #2359
+		// review-context follow-up). Session names are reused by design
+		// (respawn-after-cleanup, #2094); without this the sidecar's
+		// restorePendingReplayFromDB would drain the previous incarnation's
+		// rows into the fresh agent's next handshake. Best-effort: a purge
+		// failure is logged but does not fail the event — the worst case is
+		// one stale replay-marker prompt, which is preferable to a failed
+		// spawn.
+		if purgeErr := d.DeletePendingReplayDeliveriesForSession(session); purgeErr != nil {
+			proglog.Warnf("[prism] warning: purge pending_replay_deliveries for %s: %v — continuing tmux-session-start\n", session, purgeErr)
 		}
 
 		// Determine the instance_id for this session incarnation. Three cases:
