@@ -44,7 +44,7 @@ var prCmd = &cobra.Command{
 	Use:   "pr <number>",
 	Short: "Check out a PR branch as a new worktree and switch to it",
 	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 		prNumber := args[0]
 		repoFlag, _ := cmd.Flags().GetString("repo")
 		agentFlag, _ := cmd.Flags().GetString("agent")
@@ -138,10 +138,23 @@ var prCmd = &cobra.Command{
 
 		fmt.Printf("checking out PR #%s → branch %q\n", prNumber, branch)
 
-		worktreePath, err := git.CreateWorktree(bareRoot, branch)
+		created, err := git.CreateWorktree(bareRoot, branch)
 		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
 		}
+		worktreePath := created.Path
+		// Caller-level rollback (#2363): a failure in any step between
+		// worktree creation and ensureAndSwitch success removes the freshly
+		// created worktree. A pre-existing PR branch is never deleted —
+		// CreateWorktree marks only freshly forked branches for deletion —
+		// so only the worktree created for it is unwound. Rollback failures
+		// are logged, never returned.
+		createdWorktree := &created
+		defer func() {
+			if retErr != nil {
+				rollbackCreatedWorktree(bareRoot, createdWorktree, "prism pr")
+			}
+		}()
 
 		// Resolve the active profile (flag → state file → nix default), mirroring
 		// the pattern in spawn.go so that --profile and `prism profile use` work.
@@ -247,6 +260,9 @@ var prCmd = &cobra.Command{
 		if err := ensureAndSwitch(worktreePath, bareRoot, opts); err != nil {
 			return err
 		}
+		// The session is live: disarm the worktree rollback. Nothing after
+		// this point may tear down the worktree of a running session.
+		createdWorktree = nil
 
 		// Write spawn_inputs (#2087). prism pr does not go through
 		// SpawnSession — it uses ensureAndSwitch → session.Create — so the
