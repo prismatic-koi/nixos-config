@@ -560,9 +560,12 @@ type cleanupResult struct {
 // whether the bookkeeping actually ran.
 //
 // The harness_session_id clear (severPiResumeLinkage) is intentionally NOT
-// part of this helper: the sever deletes the pi transcript JSONL that the
-// session archive copies, so it must run after runSessionArchive — see
-// archiveThenSeverPiResume (issue #2219). Callers populate
+// part of this helper: on hard-cleanup paths the sever deletes the pi
+// transcript JSONL that the session archive copies, so it must run after
+// runSessionArchive — see archiveThenSeverPiResume (issue #2219). On
+// soft-close paths the sever is DB-only and the transcript is preserved
+// (issue #2371), but the same helper still owns the sequencing so both
+// modes route through one code path. Callers populate
 // result.HarnessSessionIDCleared from that helper's outcome.
 func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
 	// 1. Release the harness port. ReleasePort is idempotent on existing
