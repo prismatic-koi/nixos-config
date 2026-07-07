@@ -268,6 +268,24 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		WorktreeReadOnly: true,
 		// PIExtensionDir for host-mode pi launches (#2065).
 		PIExtensionDir: cfg.PIExtensionDir,
+		// ReadinessTimeout=DefaultReadinessTimeout gates SpawnSession's return
+		// on the child agent's handshake AND (because Prompt is always set for
+		// investigate) on initial prompt delivery via the RequirePromptDelivered
+		// strict gate at internal/session/spawn.go. Without this, the child
+		// process exits 0 the moment tmux + sidecar are kicked off — the caller
+		// (and the host-API /investigate handler which shells to this command)
+		// reports success even when the sidecar dies instantly or the agent
+		// never handshakes. On timeout SpawnSession takes its existing unwind
+		// path: agent_status row ended, port released, tmux session killed.
+		// See issue #2360 (finding B4 of #2356) — the 07:48 2026-07-06 incident
+		// where /investigate returned 200 with no live session afterwards.
+		//
+		// Aside — half-created session unwind on client disconnect mid-spawn
+		// is deliberately out of scope for #2360: with the readiness gate in
+		// place a dead sidecar is caught here, and the adjacent client-timeout
+		// alignment (see cmd/hostapi.go investigateClientTimeout) removes the
+		// worker-side abort path that made the disconnect race observable.
+		ReadinessTimeout: session.DefaultReadinessTimeout,
 	}
 
 	return spawnOpts, isoMode, harnessName, nil
@@ -349,7 +367,14 @@ func proxyInvestigate(apiURL, promptText, suppliedName string) error {
 	if suppliedName != "" {
 		body["name"] = suppliedName
 	}
-	if err := proxyToHostAPI(apiURL, "/investigate", body, &resp); err != nil {
+	// investigateClientTimeout aligns the worker-side client timeout with the
+	// host-side /investigate handler budget (10 min). The default 60 s in
+	// proxyToHostAPI was strictly shorter than the handler budget, so a slow-
+	// but-successful spawn (>60 s — real with the #2360 readiness gate now in
+	// place, which blocks the handler on the child's handshake and initial
+	// prompt delivery) would trip client.Timeout, cancel r.Context() on the
+	// server, and SIGKILL the host child mid-spawn with no unwind (#2360).
+	if err := proxyToHostAPIWithTimeout(apiURL, "/investigate", body, &resp, investigateClientTimeout); err != nil {
 		return err
 	}
 	fmt.Println(resp.SessionName)

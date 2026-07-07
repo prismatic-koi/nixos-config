@@ -120,6 +120,31 @@ func readHostAPIResponse(endpoint string, resp *http.Response, respDst any) erro
 // body is marshalled to JSON and sent as the request body. On success, response
 // JSON is unmarshalled into respDst (may be nil).
 func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
+	return proxyToHostAPIWithTimeout(apiURL, endpoint, body, respDst, 0)
+}
+
+// proxyToHostAPIWithTimeout is the timeout-aware form of proxyToHostAPI.
+// When clientTimeout > 0 it overrides the http.Client's default 60 s
+// timeout — use this for endpoints whose host-side handler budget is
+// materially longer than 60 s so a slow-but-successful call is not aborted
+// by a client-side disconnect (which the host-side handler observes as
+// r.Context() cancel and translates into a SIGKILL of the child process
+// mid-work, with no unwind of any partially-created state).
+//
+// The specific case that motivated this seam is /investigate (issue #2360):
+// the host-side handler carries a 10-minute budget (internal/sidecar/host_api.go
+// /investigate handler) and the pre-fix 60 s client timeout could fire on a
+// slow-but-successful spawn, cancelling r.Context() and SIGKILLing the
+// host-side `prism investigate` mid-spawn. See investigateClientTimeout below
+// for the specific alignment.
+//
+// Note on half-created-session unwind: even with client and server timeouts
+// aligned, a caller that Ctrl-Cs mid-spawn will still cancel r.Context() and
+// SIGKILL the child. Unwinding a session that was partially created at that
+// point is deliberately out of scope for #2360 — the aligned timeouts remove
+// the observed accidental trigger; genuine user-initiated cancellation is
+// rare and left for follow-up.
+func proxyToHostAPIWithTimeout(apiURL, endpoint string, body any, respDst any, clientTimeout time.Duration) error {
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("proxyToHostAPI: marshal request body: %w", err)
@@ -143,6 +168,9 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 		// socket connections but required for a valid HTTP/1.1 request.
 		reqURL = "http://prism-hostapi" + endpoint
 	}
+	if clientTimeout > 0 {
+		client.Timeout = clientTimeout
+	}
 
 	req, err := http.NewRequest(http.MethodPost, reqURL, bytes.NewReader(bodyBytes))
 	if err != nil {
@@ -156,6 +184,22 @@ func proxyToHostAPI(apiURL, endpoint string, body any, respDst any) error {
 	}
 	return readHostAPIResponse(endpoint, resp, respDst)
 }
+
+// investigateClientTimeout is the worker-side (container-side) client
+// timeout for POST /investigate. The host-side /investigate handler carries
+// a 10-minute budget (internal/sidecar/host_api.go); with the readiness gate
+// added in #2360 the handler now blocks on the child agent's handshake and
+// initial prompt delivery, which can plausibly consume most of that budget
+// on a cold host. The worker-side client must therefore be at least as
+// generous as the handler, otherwise a slow-but-successful spawn is aborted
+// by a client disconnect that the handler observes as r.Context() cancel
+// and translates into a SIGKILL of the `prism investigate` child mid-spawn.
+//
+// 11 minutes leaves a small margin over the 10-minute handler budget so the
+// handler's own timeout fires first — which surfaces the aborted-with-
+// reason envelope defined by the handler — rather than the client's raw
+// context.DeadlineExceeded.
+const investigateClientTimeout = 11 * time.Minute
 
 // proxyGetFromHostAPI sends a GET request to the host-API server with optional
 // query parameters and returns the parsed response. apiURL is the value of
