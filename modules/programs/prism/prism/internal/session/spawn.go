@@ -331,6 +331,24 @@ type SpawnOpts struct {
 	// --abtest is used. Both sibling sessions receive the same value so the
 	// rows pair via spawn_inputs.abtest_pair_id (P4.ABTEST, #1216).
 	AbtestPairID string
+
+	// InvokerSession, when non-empty, is the session name of the caller that
+	// invoked the spawn — the coordinator running `prism spawn`, the worker
+	// running `prism investigate`, the worker running `prism review`, or the
+	// invoker whose sidecar host-API /investigate or /spawn handler shelled
+	// out to the CLI. It is used by SpawnSession to:
+	//
+	//   - populate the `from_session` column of the durable
+	//     `session.spawn_intent` / `session.spawn_failed` agent_events
+	//     payloads written for every spawn attempt (#2364);
+	//   - address a best-effort `bus_messages` audit row to the invoker on
+	//     the failure paths so the caller has a forensic breadcrumb even when
+	//     the sidecar hop between them and SpawnSession swallowed the error.
+	//
+	// Optional: bare `prism spawn` invocations outside a prism session leave
+	// this empty. SpawnSession then writes the durable event rows without the
+	// invoker field and skips the bus_messages write entirely.
+	InvokerSession string
 }
 
 // SpawnSession creates a single prism session end-to-end: seeds the
@@ -762,6 +780,17 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		startup.log("spawn-session: sessions row pre-inserted (instance_id=%s)", opts.InstanceID)
 	}
 
+	// Durable spawn-intent event (#2364 B5). Written after the sessions row
+	// (the FK target for agent_events.instance_id) is committed and before
+	// port allocation / layout work runs. Every spawn attempt that reaches
+	// this point leaves an audit-log breadcrumb, so failed spawns are no
+	// longer forensically invisible. This is the chokepoint for all front
+	// doors (CLI spawn, investigate, review fan-out, host-API /spawn) —
+	// handler-side writes would miss the CLI path. Best-effort: a write
+	// failure here is logged but never aborts the spawn (telemetry must not
+	// break the happy path).
+	writeSpawnIntentEvent(d, opts, startup)
+
 	// Write spawn_inputs row (C.4.SRC / C.4.PT, issue #1148; centralised in
 	// SpawnSession per issue #2087). SpawnSession is the single chokepoint:
 	// every front door (`prism spawn`, `prism pr`, `prism investigate`,
@@ -827,6 +856,18 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
 		_ = tmux.KillSession(opts.SessionName)
 		removeInitialPrompt(opts.SessionName)
+		// Durable failure event + best-effort bus-message notification to
+		// the invoker (#2364 B7). Written AFTER cleanupHalfAliveSession so
+		// the bus-message row survives — cleanupHalfAliveSession calls
+		// PurgeBusMessages(sessionName) which would otherwise delete any
+		// undelivered row with from_session = opts.SessionName. The audit
+		// row for the failure is more useful than the DB-consistency signal
+		// PurgeBusMessages provides (which is aimed at pre-existing queued
+		// prompts, not post-hoc failure audit). agent_events writes are
+		// unaffected by the cleanup and stay in chronological order. Both
+		// writes are best-effort — a telemetry failure must not mask the
+		// layout error the operator needs to see.
+		writeSpawnFailedEvent(d, opts, "layout", layoutErr, startup)
 		return fmt.Errorf("%w — to remove side effects run: prism cleanup --yes --session %s",
 			layoutErr, opts.SessionName)
 	}
@@ -895,6 +936,13 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			_ = tmux.KillSession(opts.SessionName)
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
+			// Durable failure event + best-effort bus-message notification
+			// to the invoker (#2364 B7). Written AFTER cleanupHalfAliveSession
+			// so the bus_messages row is not caught by that helper's purge
+			// of undelivered messages for this session (from_session =
+			// opts.SessionName). See the layout-failure branch above for the
+			// full rationale. Both writes are best-effort.
+			writeSpawnFailedEvent(d, opts, "readiness", readyErr, startup)
 			return readyErr
 		}
 		startup.log("spawn-session: ready")
@@ -1262,4 +1310,158 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 // which is the single chokepoint that writes the row.
 func SpawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 	return spawnInputsFromOpts(opts)
+}
+
+// Event types written by SpawnSession (#2364). Named constants so tests and
+// downstream tooling (prism audit, prism review recovery, dashboard) can key
+// off them without stringly-typed drift.
+const (
+	// EventSpawnIntent is the durable agent_events row written after the
+	// sessions row is pre-inserted and before layout/port work runs. It
+	// records that a spawn attempt reached the SpawnSession chokepoint; a
+	// spawn that fails after this row is written surfaces as a
+	// (spawn_intent, spawn_failed) pair, and a successful spawn surfaces as
+	// a lone spawn_intent (plus the usual session_start / state_change
+	// events downstream).
+	EventSpawnIntent = "session.spawn_intent"
+
+	// EventSpawnFailed is the durable agent_events row written when
+	// SpawnSession aborts after EventSpawnIntent was written. The payload
+	// names the failing step (layout or readiness) so forensic queries can
+	// distinguish "the tmux/sidecar setup blew up" from "the agent never
+	// signalled ready".
+	EventSpawnFailed = "session.spawn_failed"
+)
+
+// spawnEventPayload is the JSON payload carried by both the
+// session.spawn_intent and session.spawn_failed durable agent_events rows.
+// Only session_name and instance_id are guaranteed; the other fields are
+// filled in as the spawn progresses.
+type spawnEventPayload struct {
+	SessionName    string `json:"session_name"`
+	InstanceID     string `json:"instance_id"`
+	AgentRole      string `json:"agent_role,omitempty"`
+	InvokerSession string `json:"invoker_session,omitempty"`
+	Repo           string `json:"repo,omitempty"`
+	Layout         string `json:"layout,omitempty"`
+	OccurredAt     string `json:"occurred_at"`
+	// FailingStep names which spawn-pipeline step aborted. Only present on
+	// EventSpawnFailed rows. Values: "layout", "readiness".
+	FailingStep string `json:"failing_step,omitempty"`
+	// Error is the underlying error string on failure rows. Only present on
+	// EventSpawnFailed rows.
+	Error string `json:"error,omitempty"`
+}
+
+// layoutLabel returns a short human-readable name for a Layout value, used
+// in the durable event payloads. Zero-value / unknown layouts render as
+// "unknown" rather than an integer so downstream queries stay readable.
+func layoutLabel(l Layout) string {
+	switch l {
+	case LayoutFull:
+		return "full"
+	case LayoutAgentOnly:
+		return "agent-only"
+	}
+	return "unknown"
+}
+
+// writeSpawnIntentEvent writes the durable EventSpawnIntent row into
+// agent_events. Best-effort: a write failure is logged to the startup log
+// and stderr but does NOT abort the spawn — telemetry must never break the
+// happy path (issue #2364 AC edge-case).
+func writeSpawnIntentEvent(d *db.DB, opts SpawnOpts, startup *startupLogger) {
+	payload := spawnEventPayload{
+		SessionName:    opts.SessionName,
+		InstanceID:     opts.InstanceID,
+		AgentRole:      opts.AgentRole,
+		InvokerSession: opts.InvokerSession,
+		Repo:           opts.Repo,
+		Layout:         layoutLabel(opts.Layout),
+		OccurredAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	writeSpawnEvent(d, opts, EventSpawnIntent, payload, startup)
+}
+
+// writeSpawnFailedEvent writes the durable EventSpawnFailed row into
+// agent_events AND, when opts.InvokerSession is non-empty, a best-effort
+// bus_messages audit row so the invoker's forensic trail names the failure
+// (issue #2364 B7). Both writes are best-effort — a write failure here must
+// never propagate to the caller.
+func writeSpawnFailedEvent(d *db.DB, opts SpawnOpts, failingStep string, cause error, startup *startupLogger) {
+	payload := spawnEventPayload{
+		SessionName:    opts.SessionName,
+		InstanceID:     opts.InstanceID,
+		AgentRole:      opts.AgentRole,
+		InvokerSession: opts.InvokerSession,
+		Repo:           opts.Repo,
+		Layout:         layoutLabel(opts.Layout),
+		OccurredAt:     time.Now().UTC().Format(time.RFC3339),
+		FailingStep:    failingStep,
+	}
+	if cause != nil {
+		payload.Error = cause.Error()
+	}
+	writeSpawnEvent(d, opts, EventSpawnFailed, payload, startup)
+
+	// Bus-message notification to the invoker (design fork #3: durable row
+	// PLUS a bus message when the invoker is known). A bare CLI spawn with
+	// no invoker sends no bus message.
+	if opts.InvokerSession == "" {
+		return
+	}
+	var invokerInstance *string
+	if inv, err := d.CurrentStatus(opts.InvokerSession); err == nil && inv != nil && inv.InstanceID != nil && *inv.InstanceID != "" {
+		invokerInstance = inv.InstanceID
+	}
+	text := fmt.Sprintf("spawn of %q failed at step %q: %v", opts.SessionName, failingStep, cause)
+	msg := db.BusMessage{
+		ID:           uuid.New().String(),
+		FromSession:  opts.SessionName,
+		ToSession:    opts.InvokerSession,
+		ToInstanceID: invokerInstance,
+		Repo:         opts.Repo,
+		Text:         text,
+		Urgency:      "normal",
+		SentAt:       time.Now(),
+	}
+	if err := d.WriteBusMessage(msg); err != nil {
+		startup.log("spawn-session: write spawn_failed bus message FAILED: %v", err)
+		fmt.Fprintf(os.Stderr,
+			"warning: could not write spawn_failed bus message for %q -> %q: %v\n",
+			opts.SessionName, opts.InvokerSession, err)
+	}
+}
+
+// writeSpawnEvent is the shared marshalling+insert path for both the intent
+// and failed event writers. Best-effort: a marshal or DB error is logged but
+// never propagated.
+func writeSpawnEvent(d *db.DB, opts SpawnOpts, eventType string, payload spawnEventPayload, startup *startupLogger) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		startup.log("spawn-session: marshal %s payload FAILED: %v", eventType, err)
+		fmt.Fprintf(os.Stderr, "warning: marshal %s payload for %q: %v\n", eventType, opts.SessionName, err)
+		return
+	}
+	var instancePtr *string
+	if opts.InstanceID != "" {
+		id := opts.InstanceID
+		instancePtr = &id
+	}
+	ev := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: opts.SessionName,
+		Repo:        opts.Repo,
+		Worktree:    opts.Worktree,
+		InstanceID:  instancePtr,
+		Type:        eventType,
+		Payload:     string(body),
+		CreatedAt:   time.Now(),
+	}
+	if err := d.WriteEvent(ev); err != nil {
+		startup.log("spawn-session: write %s event FAILED: %v", eventType, err)
+		fmt.Fprintf(os.Stderr,
+			"warning: could not write %s event for %q: %v\n",
+			eventType, opts.SessionName, err)
+	}
 }

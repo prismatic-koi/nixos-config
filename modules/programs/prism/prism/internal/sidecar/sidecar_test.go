@@ -1226,6 +1226,11 @@ func TestIsHighImpactCommand(t *testing.T) {
 		{"prism spawn nixos-config@feature", true},
 		{"prism cleanup nixos-config@feature", true},
 		{"prism prompt nixos-config@feature --prompt done", true},
+		// prism investigate / pr / review added in #2364 so audit surfaces
+		// the full set of spawn-shaped commands.
+		{"prism investigate --prompt 'root cause X'", true},
+		{"prism pr 1234", true},
+		{"prism review 1234", true},
 		// Case-insensitive.
 		{"GH PR MERGE 42", true},
 		{"GIT PUSH", true},

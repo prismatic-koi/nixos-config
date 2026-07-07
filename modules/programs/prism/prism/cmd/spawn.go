@@ -837,12 +837,21 @@ func runSpawn(cmd *cobra.Command, args []string) error {
 	}
 
 	spawnOpts := session.SpawnOpts{
-		SessionName:      sessionName,
-		Repo:             deriveRepo(worktreePath),
-		Worktree:         worktreePath,
-		AgentRole:        agentRole,
-		Prompt:           promptText,
-		PromptSource:     promptSource,
+		SessionName:  sessionName,
+		Repo:         deriveRepo(worktreePath),
+		Worktree:     worktreePath,
+		AgentRole:    agentRole,
+		Prompt:       promptText,
+		PromptSource: promptSource,
+		// InvokerSession populates the from_session field of the durable
+		// session.spawn_intent / session.spawn_failed events written by
+		// SpawnSession (#2364). Sourced from PRISM_SESSION_NAME so both
+		// tmux-attached spawns (coordinator running `prism spawn`) and
+		// host-API-shelled spawns (sidecar sets PRISM_SESSION_NAME to the
+		// invoker) carry it. Bare CLI spawns run outside a session and
+		// leave this empty — SpawnSession then writes the durable rows
+		// without an invoker field and skips the bus_messages notification.
+		InvokerSession:   os.Getenv("PRISM_SESSION_NAME"),
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
 		IsolationMode:    string(isolationMode),
@@ -1451,12 +1460,16 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		}
 	}
 	spawnOpts := session.SpawnOpts{
-		SessionName:      sessionName,
-		Repo:             deriveRepo(worktreePath),
-		Worktree:         worktreePath,
-		AgentRole:        agentRole,
-		Prompt:           a.promptText,
-		PromptSource:     a.promptSource,
+		SessionName:  sessionName,
+		Repo:         deriveRepo(worktreePath),
+		Worktree:     worktreePath,
+		AgentRole:    agentRole,
+		Prompt:       a.promptText,
+		PromptSource: a.promptSource,
+		// InvokerSession for the durable spawn_intent / spawn_failed events
+		// SpawnSession writes at the chokepoint (#2364). See the main
+		// spawn path above for the full rationale.
+		InvokerSession:   os.Getenv("PRISM_SESSION_NAME"),
 		ConfigContent:    configContent,
 		Layout:           session.LayoutFull,
 		IsolationMode:    string(a.isolationMode),

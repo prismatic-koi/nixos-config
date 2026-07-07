@@ -236,6 +236,13 @@ func buildInvestigateSpawnOpts(database *db.DB, invokerSession, promptText, supp
 		AgentRole:    "investigate",
 		Prompt:       promptText,
 		PromptSource: "cli-positional",
+		// InvokerSession is guaranteed non-empty for `prism investigate`:
+		// runInvestigate rejects an empty invoker before we get here (the
+		// name is validated up front). Feeding it into SpawnOpts lets the
+		// spawn_intent / spawn_failed events written by SpawnSession name
+		// the invoker in their payload and lets the failure path address a
+		// bus_messages audit row back to them (#2364).
+		InvokerSession: invokerSession,
 		// spawn_inputs audit (#2087): record the agent role on the audit row
 		// so investigate spawns show up in `prism stats` group-by queries
 		// alongside `prism spawn` / `prism pr` rows.

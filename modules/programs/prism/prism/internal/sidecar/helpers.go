@@ -95,6 +95,14 @@ func marshalTruncated(v any, maxLen int) string {
 
 // highImpactPrefixes lists the command prefixes that trigger an audit event.
 // Each entry is lowercased and compared against the trimmed, lowercased command.
+//
+// `prism investigate`, `prism pr`, and `prism review` were added in #2364 so
+// their invocations surface in `prism audit` alongside the other spawn-shaped
+// commands. Before the addition, an invoker's `prism investigate` invocation
+// left no audit-log row and a failed spawn (which by design writes durable
+// session.spawn_intent / session.spawn_failed rows now) had no companion
+// audit-log row keyed on the invoker's session, so grep-by-slug forensic
+// queries would return nothing.
 var highImpactPrefixes = []string{
 	"gh pr merge",
 	"gh pr create",
@@ -104,6 +112,9 @@ var highImpactPrefixes = []string{
 	"prism cleanup",
 	"prism prompt",
 	"prism merge",
+	"prism investigate",
+	"prism pr",
+	"prism review",
 }
 
 // isHighImpactCommand reports whether cmd matches any high-impact prefix.
