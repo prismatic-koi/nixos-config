@@ -525,14 +525,19 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		fw.watcher.failAndNotify(head, "merge conflicts")
 
 	case "BLOCKED":
-		if hasCIFailure(prInfoVal.StatusCheckRollup) {
+		// Mirror the production BLOCKED branch (#2375): empty ReviewDecision
+		// routes to the review-required message; any other unrecognised value
+		// fails-and-notifies with the blocked-for-unknown-reason envelope.
+		switch {
+		case hasCIFailure(prInfoVal.StatusCheckRollup):
 			fw.watcher.failAndNotify(head, "CI failed")
-		} else if prInfoVal.ReviewDecision == "REVIEW_REQUIRED" {
+		case prInfoVal.ReviewDecision == "REVIEW_REQUIRED" || prInfoVal.ReviewDecision == "":
 			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
-		} else if prInfoVal.ReviewDecision == "CHANGES_REQUESTED" {
+		case prInfoVal.ReviewDecision == "CHANGES_REQUESTED":
 			fw.watcher.failAndNotify(head, "reviewer requested changes — fix and re-request review")
-		} else {
-			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or known review requirement (reviewDecision=%q) — staying watching", head.PR, prInfoVal.ReviewDecision)
+		default:
+			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfoVal.ReviewDecision)
+			fw.watcher.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfoVal.ReviewDecision))
 		}
 
 	case "UNSTABLE":
@@ -794,18 +799,31 @@ func TestWatcher_BLOCKEDWithCIFailure(t *testing.T) {
 	}
 }
 
-// TestWatcher_BLOCKEDWithoutCIFailureStaysWatching verifies that BLOCKED with
-// no failed checks does not terminate the row (CI still running).
-func TestWatcher_BLOCKEDWithoutCIFailureStaysWatching(t *testing.T) {
+// TestWatcher_BLOCKEDWithInProgressCheckFails is the post-#2375 replacement
+// for the previous "stays watching" test at PR #500. Before #2375, BLOCKED
+// with an in-progress check and empty ReviewDecision was treated as "CI
+// still running" and left the row in watching state indefinitely. Per
+// #2375's AC1, empty ReviewDecision now routes to the review-required
+// notification (branch protection wants a review, none requested yet) so
+// the row never silently stalls, regardless of what the check rollup shows.
+//
+// This test exercises the fakeWatcher path; the AC1 canonical regression
+// test below (TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired)
+// exercises the real w.tick() path.
+func TestWatcher_BLOCKEDWithInProgressCheckFails(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-blocked-noci"
 	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-noci")
 
 	if _, err := d.EnqueueMerge(500, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
 		func(_ context.Context, pr int) (*prInfo, error) {
 			return &prInfo{
 				State:             "OPEN",
@@ -823,8 +841,14 @@ func TestWatcher_BLOCKEDWithoutCIFailureStaysWatching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
-	if row.Status != "watching" {
-		t.Errorf("status: got %q, want watching (no CI failure)", row.Status)
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (#2375: BLOCKED must not stall)", row.Status)
+	}
+	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
+		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
+	}
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator (row silently stalled — #2375 regression)")
 	}
 }
 
@@ -966,38 +990,90 @@ func TestWatcher_BLOCKEDReviewRequiredIsReEnqueueable(t *testing.T) {
 	}
 }
 
-// TestWatcher_BLOCKEDNoReviewDecisionNoCI stays watching (CI still running case).
-func TestWatcher_BLOCKEDNoReviewDecisionNoCIStaysWatching(t *testing.T) {
+// TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired is AC1 of
+// #2375: when a BLOCKED PR has ReviewDecision == "" (empty), the watcher
+// must call failAndNotify with the same "human reviewer approval required
+// before merge" message currently used for REVIEW_REQUIRED. Empty
+// ReviewDecision on a BLOCKED PR reliably means branch protection wants a
+// review but none has been requested yet — the coordinator's response is
+// identical to REVIEW_REQUIRED (request a review, then re-enqueue), so
+// the notification text is intentionally shared.
+//
+// Prior to #2375 this case fell through the else branch and the row sat
+// in "watching" forever, with no notification to the enqueuing
+// coordinator.
+//
+// This test exercises the real w.tick() path (not the fakeWatcher stand-in)
+// with a stubbed runGHFunc, so reverting the production BLOCKED-branch fix
+// makes it fail — satisfying AC6's revert-and-watch-fail proof.
+func TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired(t *testing.T) {
 	d := openTestDB(t)
-	instanceID := "inst-blocked-nostatus"
+	instanceID := "inst-blocked-empty-decision"
 	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-empty-decision")
 
 	if _, err := d.EnqueueMerge(777, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			// No CI failure, no review requirement — e.g. CI still running.
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "PENDING"}},
-				ReviewDecision:    "",
-			}, nil
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			// args[0..1] are "--repo <slug>" (prepended by runGH); the
+			// meaningful subcommand starts at args[2].
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				// BLOCKED with a passing check and empty reviewDecision —
+				// the "branch protection wants a review, none requested
+				// yet" state.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}],"reviewDecision":""}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
 		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
+	}
 
-	fw.processHead(context.Background())
+	w.tick(context.Background())
 
+	// Row must have transitioned to failed with the review-required reason.
+	const wantMsg = "human reviewer approval required before merge"
 	row, err := d.PendingMergeByPR(777, "myrepo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
-	if row.Status != "watching" {
-		t.Errorf("status: got %q, want watching", row.Status)
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (empty ReviewDecision must terminate, not stay watching — #2375)", row.Status)
+	}
+	if row.Error == nil || *row.Error != wantMsg {
+		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
+	}
+
+	// Notification must have been sent — empty ReviewDecision reuses the
+	// REVIEW_REQUIRED notification text so the coordinator response path
+	// is identical.
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator (row silently stalled — #2375 regression)")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
+		t.Fatalf("unmarshal notification body: %v", err)
+	}
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "PR #777") {
+		t.Errorf("notification text %q does not contain 'PR #777'", text)
+	}
+	if !strings.Contains(text, wantMsg) {
+		t.Errorf("notification text %q does not contain review-required message %q", text, wantMsg)
 	}
 }
 
@@ -1069,34 +1145,55 @@ func TestWatcher_BLOCKEDWithChangesRequested(t *testing.T) {
 	}
 }
 
-// TestWatcher_BLOCKEDUnrecognisedReviewDecisionLogsValue verifies the
-// defensive log branch: an unrecognised ReviewDecision value (e.g. a future
-// GitHub enum addition) keeps the row in watching state AND emits a log line
-// containing the literal decision string for forensic visibility.
-func TestWatcher_BLOCKEDUnrecognisedReviewDecisionLogsValue(t *testing.T) {
+// TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies is AC2 of
+// #2375: when a BLOCKED PR falls through all known cases (no CI failure,
+// ReviewDecision is not "", REVIEW_REQUIRED, or CHANGES_REQUESTED), the
+// watcher must call failAndNotify with a message of the form "blocked for
+// unknown reason (reviewDecision=%q)" so the enqueuing coordinator receives
+// a bus notification and the row leaves "watching" state.
+//
+// The operator log line naming the literal ReviewDecision string is retained
+// for forensic triage (AC4).
+//
+// Prior to #2375 this case emitted the log line and left the row watching
+// indefinitely, with no coordinator notification.
+//
+// This test exercises the real w.tick() path (not the fakeWatcher stand-in)
+// with a stubbed runGHFunc, so reverting the production BLOCKED-branch fix
+// makes it fail — satisfying AC6's revert-and-watch-fail proof.
+func TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-blocked-foobar"
 	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-foobar")
 
 	if _, err := d.EnqueueMerge(1885, "myrepo", session, instanceID, nil); err != nil {
 		t.Fatalf("EnqueueMerge: %v", err)
 	}
 
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
-				ReviewDecision:    "FOOBAR",
-			}, nil
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				// BLOCKED with a passing check and an unrecognised
+				// reviewDecision value — e.g. a future GitHub enum
+				// addition we haven't yet mapped.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}],"reviewDecision":"FOOBAR"}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
 		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
+	}
 
-	// Capture log output only around processHead so we don't pick up the
-	// unrelated repo-resolution log lines emitted by New().
+	// Capture log output only around tick() so we don't pick up unrelated
+	// log lines. AC4: the log line naming the literal reviewDecision string
+	// must remain.
 	var buf bytes.Buffer
 	origOut := log.Writer()
 	origFlags := log.Flags()
@@ -1107,21 +1204,51 @@ func TestWatcher_BLOCKEDUnrecognisedReviewDecisionLogsValue(t *testing.T) {
 		log.SetFlags(origFlags)
 	})
 
-	fw.processHead(context.Background())
+	w.tick(context.Background())
 
-	// Row stays in watching state (stay-watching path).
+	// Row must have transitioned to failed with the unknown-reason envelope
+	// carrying the literal reviewDecision string.
+	const wantMsg = `blocked for unknown reason (reviewDecision="FOOBAR")`
 	row, err := d.PendingMergeByPR(1885, "myrepo")
 	if err != nil {
 		t.Fatalf("PendingMergeByPR: %v", err)
 	}
-	if row.Status != "watching" {
-		t.Errorf("status: got %q, want watching (unrecognised decision must not terminate)", row.Status)
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (unrecognised decision must terminate, not silently stall — #2375)", row.Status)
+	}
+	if row.Error == nil || *row.Error != wantMsg {
+		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
 	}
 
-	// Log line must include the literal value "FOOBAR" for forensic visibility.
+	// Notification must have been sent to the enqueuing coordinator with a
+	// readable message containing the reviewDecision string.
+	if srv.called == 0 {
+		t.Fatal("no notification sent to coordinator (row silently stalled — #2375 regression)")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
+		t.Fatalf("unmarshal notification body: %v", err)
+	}
+	parts, _ := body["parts"].([]interface{})
+	if len(parts) == 0 {
+		t.Fatal("notification body has no parts")
+	}
+	part, _ := parts[0].(map[string]interface{})
+	text, _ := part["text"].(string)
+	if !strings.Contains(text, "PR #1885") {
+		t.Errorf("notification text %q does not contain 'PR #1885'", text)
+	}
+	if !strings.Contains(text, `reviewDecision="FOOBAR"`) {
+		t.Errorf("notification text %q does not contain literal reviewDecision=\"FOOBAR\"", text)
+	}
+	if !strings.Contains(text, "blocked for unknown reason") {
+		t.Errorf("notification text %q does not contain the unknown-reason envelope prefix", text)
+	}
+
+	// AC4: operator log line naming the literal decision string is retained.
 	logged := buf.String()
 	if !strings.Contains(logged, "FOOBAR") {
-		t.Errorf("log output %q does not contain literal \"FOOBAR\"", logged)
+		t.Errorf("log output %q does not contain literal \"FOOBAR\" (AC4 — forensic triage line)", logged)
 	}
 	if !strings.Contains(logged, "PR #1885") {
 		t.Errorf("log output %q does not reference PR #1885", logged)

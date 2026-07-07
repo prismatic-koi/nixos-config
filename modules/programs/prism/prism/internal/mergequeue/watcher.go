@@ -240,18 +240,27 @@ func (w *Watcher) tick(ctx context.Context) {
 		w.failAndNotify(head, "merge conflicts")
 
 	case "BLOCKED":
-		// Disambiguate: CI failure, review required, changes requested, or still running.
-		if hasCIFailure(prInfo.StatusCheckRollup) {
+		// Disambiguate: CI failure, review required, changes requested, or an
+		// unrecognised state. Empty ReviewDecision on a BLOCKED PR reliably
+		// means "branch protection wants a review, none requested yet", so it
+		// routes to the same notification as REVIEW_REQUIRED (coordinator's
+		// response is identical: request a review, then re-enqueue). Any other
+		// unrecognised ReviewDecision fails-and-notifies with a distinct
+		// message so the enqueuing coordinator can see the row terminate and
+		// intervene manually, rather than the queue silently stalling (#2375).
+		switch {
+		case hasCIFailure(prInfo.StatusCheckRollup):
 			w.failAndNotify(head, "CI failed")
-		} else if prInfo.ReviewDecision == "REVIEW_REQUIRED" {
+		case prInfo.ReviewDecision == "REVIEW_REQUIRED" || prInfo.ReviewDecision == "":
 			w.failAndNotify(head, "human reviewer approval required before merge")
-		} else if prInfo.ReviewDecision == "CHANGES_REQUESTED" {
+		case prInfo.ReviewDecision == "CHANGES_REQUESTED":
 			w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
-		} else {
-			// Include the actual ReviewDecision string so any future unhandled
-			// value (new GitHub enum addition, unexpected empty/"" state) surfaces
-			// in the operator log rather than vanishing into a generic message.
-			log.Printf("[mergequeue] PR #%d BLOCKED but no CI failure or known review requirement (reviewDecision=%q) — staying watching", head.PR, prInfo.ReviewDecision)
+		default:
+			// Keep the operator log line naming the literal ReviewDecision
+			// string — useful for future triage when GitHub introduces a new
+			// enum value we haven't yet mapped (AC4 of #2375).
+			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfo.ReviewDecision)
+			w.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfo.ReviewDecision))
 		}
 
 	case "UNSTABLE":
@@ -511,17 +520,26 @@ func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 		log.Printf("[mergequeue] TerminateMerge(failed) PR #%d: %v", head.PR, err)
 	}
 	var notifyText string
-	switch errMsg {
-	case "merge conflicts":
+	// Switch-on-true so the unknown-reason case can prefix-match against the
+	// dynamic errMsg (which carries the literal reviewDecision string via %q).
+	// The specific-string cases are kept above the prefix case so their exact
+	// notification text is preserved byte-for-byte (AC3 of #2375).
+	switch {
+	case errMsg == "merge conflicts":
 		notifyText = fmt.Sprintf("PR #%d has merge conflicts — worker rebase needed", head.PR)
-	case "CI failed":
+	case errMsg == "CI failed":
 		notifyText = fmt.Sprintf("PR #%d CI failed — needs worker fix", head.PR)
-	case "PR was closed without merging":
+	case errMsg == "PR was closed without merging":
 		notifyText = fmt.Sprintf("PR #%d was closed without merging — removed from queue", head.PR)
-	case "human reviewer approval required before merge":
+	case errMsg == "human reviewer approval required before merge":
 		notifyText = fmt.Sprintf("PR #%d is blocked — human reviewer approval required before merge", head.PR)
-	case "reviewer requested changes — fix and re-request review":
+	case errMsg == "reviewer requested changes — fix and re-request review":
 		notifyText = fmt.Sprintf("PR #%d is blocked — reviewer requested changes — fix and re-request review", head.PR)
+	case strings.HasPrefix(errMsg, "blocked for unknown reason"):
+		// #2375: fail-and-notify envelope for a BLOCKED PR whose reviewDecision
+		// falls through all known cases. The errMsg carries the literal
+		// reviewDecision string so the coordinator can see the raw state.
+		notifyText = fmt.Sprintf("PR #%d is %s — needs manual investigation, then re-enqueue when unblocked", head.PR, errMsg)
 	default:
 		notifyText = fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	}
