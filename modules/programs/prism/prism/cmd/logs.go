@@ -72,9 +72,8 @@ chronological order; pipe to jq for pretty-printing:
 
 Works identically from the host or inside a coordinator container — in
 container mode the log is fetched via the host API Unix socket (PRISM_HOST_API).`,
-	Args:         cobra.ExactArgs(1),
-	RunE:         runLogs,
-	SilenceUsage: true,
+	Args: cobra.ExactArgs(1),
+	RunE: runLogs,
 }
 
 func init() {

@@ -117,7 +117,6 @@ type accountJSON struct {
 }
 
 func runAccountList(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := resolveAndInit()
 	if err != nil {
 		return err
@@ -159,7 +158,6 @@ func runAccountList(cmd *cobra.Command, args []string) error {
 }
 
 func runAccountCurrent(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := resolveAndInit()
 	if err != nil {
 		return err
@@ -178,7 +176,6 @@ func runAccountCurrent(cmd *cobra.Command, args []string) error {
 }
 
 func runAccountSave(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := resolveAndInit()
 	if err != nil {
 		return err
@@ -191,7 +188,6 @@ func runAccountSave(cmd *cobra.Command, args []string) error {
 }
 
 func runAccountUse(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := resolveAndInit()
 	if err != nil {
 		return err
@@ -204,7 +200,6 @@ func runAccountUse(cmd *cobra.Command, args []string) error {
 }
 
 func runAccountRm(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	p, err := resolveAndInit()
 	if err != nil {
 		return err

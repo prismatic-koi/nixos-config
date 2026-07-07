@@ -20,9 +20,8 @@ import (
 )
 
 var dbSchemaCmd = &cobra.Command{
-	Use:          "schema [table]",
-	Short:        "Print CREATE TABLE / CREATE INDEX statements",
-	SilenceUsage: true,
+	Use:   "schema [table]",
+	Short: "Print CREATE TABLE / CREATE INDEX statements",
 	Long: `Print CREATE TABLE / CREATE INDEX statements from the prism database.
 
 With no argument, prints DDL for every user table and index. With a single

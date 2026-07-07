@@ -74,8 +74,6 @@ func init() {
 }
 
 func runInvestigate(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
-
 	promptText, err := requirePromptInput(cmd)
 	if err != nil {
 		return err

@@ -94,26 +94,20 @@ Subcommands:
 `,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runFeedbackRecord,
-	// SilenceUsage so a usage message is not appended to every error from
-	// this command (matches the convention used by the other write-side
-	// commands like spawn / merge).
-	SilenceUsage: true,
 }
 
 var feedbackListCmd = &cobra.Command{
-	Use:          "list",
-	Short:        "List recorded feedback entries",
-	Args:         cobra.NoArgs,
-	RunE:         runFeedbackList,
-	SilenceUsage: true,
+	Use:   "list",
+	Short: "List recorded feedback entries",
+	Args:  cobra.NoArgs,
+	RunE:  runFeedbackList,
 }
 
 var feedbackPruneCmd = &cobra.Command{
-	Use:          "prune --days N --yes",
-	Short:        "Remove feedback entries older than N days (requires --yes)",
-	Args:         cobra.NoArgs,
-	RunE:         runFeedbackPrune,
-	SilenceUsage: true,
+	Use:   "prune --days N --yes",
+	Short: "Remove feedback entries older than N days (requires --yes)",
+	Args:  cobra.NoArgs,
+	RunE:  runFeedbackPrune,
 }
 
 func init() {

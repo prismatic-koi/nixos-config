@@ -151,7 +151,6 @@ Without --scope the command live-swaps coordinator scope AND updates the state f
 }
 
 func runProfileUse(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
 	name := args[0]
 
 	// Validate the profile name exists regardless of scope — we do not want to
@@ -524,8 +523,6 @@ func buildProfileJSON(name string, entry config.ProfileEntry, active string) pro
 }
 
 func runProfileList(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
-
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	pf, err := config.LoadProfiles()
@@ -568,8 +565,6 @@ func runProfileList(cmd *cobra.Command, args []string) error {
 }
 
 func runProfileShow(cmd *cobra.Command, args []string) error {
-	cmd.SilenceUsage = true
-
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
 	pf, err := config.LoadProfiles()

@@ -262,8 +262,7 @@ Platform support:
   - Linux/Wayland: wl-paste -t image/png
   - Linux/X11: xclip -selection clipboard -t image/png -o
   - macOS: osascript reading NSPasteboard as PNG`,
-	RunE:         runClipboardPasteImage,
-	SilenceUsage: true,
+	RunE: runClipboardPasteImage,
 }
 
 var clipboardCleanCmd = &cobra.Command{
