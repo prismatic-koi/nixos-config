@@ -50,7 +50,10 @@ func cmdBranchExists(t *testing.T, bareRoot, branch string) bool {
 }
 
 // cmdWorktreeListed reports whether path appears in `git worktree list` for
-// the bare-layout repo at bareRoot.
+// the bare-layout repo at bareRoot. Both sides are symlink-resolved before
+// comparing: git prints symlink-resolved paths in the porcelain output, so a
+// raw t.TempDir() path (e.g. /var/folders/... on Darwin, where /var →
+// /private/var) would never match a substring check against the raw path.
 func cmdWorktreeListed(t *testing.T, bareRoot, path string) bool {
 	t.Helper()
 	out, err := exec.Command("git", "--git-dir", filepath.Join(bareRoot, ".bare"),
@@ -58,7 +61,63 @@ func cmdWorktreeListed(t *testing.T, bareRoot, path string) bool {
 	if err != nil {
 		t.Fatalf("git worktree list: %v", err)
 	}
-	return strings.Contains(string(out), "worktree "+path)
+	want := resolveForCompare(path)
+	for _, line := range strings.Split(string(out), "\n") {
+		p, ok := strings.CutPrefix(line, "worktree ")
+		if !ok {
+			continue
+		}
+		if resolveForCompare(p) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// resolveForCompare mirrors internal/git's resolvePathBestEffort: resolve
+// symlinks in p; when p itself no longer exists (the removed-worktree case
+// the negative assertions probe), resolve the parent and re-join the leaf so
+// the comparison still normalises the symlinked prefix; fall back to a
+// lexical Clean. The plain resolveSymlinksOrRaw (cmd/spawn.go) is not enough
+// here — it returns the raw path for removed leaves, which would make the
+// negative assertions vacuous on Darwin.
+func resolveForCompare(p string) string {
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return filepath.Clean(p)
+}
+
+// TestCmdWorktreeListed_SymlinkedBase reproduces the Darwin failure mode on
+// any platform: the repo lives under a symlinked base dir (as /var →
+// /private/var makes every t.TempDir() path on Darwin), so git records and
+// prints the resolved path while the test passes the raw symlinked one. The
+// helper must still match — and still report false after removal.
+func TestCmdWorktreeListed_SymlinkedBase(t *testing.T) {
+	realDir := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	bareRoot := initBareRepoWithMainWorktree(t, link, "myrepo")
+
+	created, err := git.CreateWorktree(bareRoot, "feat-sym")
+	if err != nil {
+		t.Fatalf("CreateWorktree: %v", err)
+	}
+	if !cmdWorktreeListed(t, bareRoot, created.Path) {
+		t.Fatal("cmdWorktreeListed = false for a listed worktree under a symlinked base — raw-path comparison regressed")
+	}
+
+	if err := git.RollbackCreatedWorktree(bareRoot, created); err != nil {
+		t.Fatalf("RollbackCreatedWorktree: %v", err)
+	}
+	if cmdWorktreeListed(t, bareRoot, created.Path) {
+		t.Fatal("cmdWorktreeListed = true after rollback under a symlinked base")
+	}
 }
 
 // ── rollbackCreatedWorktree helper ───────────────────────────────────────────
