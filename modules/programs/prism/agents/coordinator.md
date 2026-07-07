@@ -265,6 +265,7 @@ Once the sense-check passes, enqueue the PR in the merge queue and continue with
    - **`PR #N CI failed...`** — `prism prompt <worker-session>` to investigate and fix, then `prism merge <number>` again.
    - **`PR #N is blocked — human reviewer approval required...`** — request a human review on the PR (e.g. `gh pr review --request <user>`); once approved, `prism merge <number>` again.
    - **`PR #N is blocked — reviewer requested changes...`** — `prism prompt <worker-session>` to address the reviewer's requested changes and re-request review on the PR; once the reviewer re-approves, `prism merge <number>` again.
+   - **`PR #N is blocked for unknown reason (reviewDecision="X")...`** — investigate the specific `reviewDecision` value against the PR's branch-protection settings on GitHub, resolve manually (request a review, wait for a required check to report, etc.), then `prism merge <number>` again. If the value is a new GitHub enum the watcher does not yet map explicitly, file a follow-up issue so the case can be handled with a purpose-built notification.
    - **`PR #N was closed without merging...`** — typically nothing; the PR was closed deliberately.
 3. Use `prism merges` to inspect the current queue at any time.
 
