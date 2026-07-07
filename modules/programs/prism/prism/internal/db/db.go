@@ -468,8 +468,36 @@ CREATE INDEX IF NOT EXISTS idx_pending_replay_deliveries_session
 // backfill: pre-#2105 rows keep their NULL isolation_mode and the renderer
 // falls back to isolation_flag for them.
 func Open(path string) (*DB, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, fmt.Errorf("db: create parent dirs: %w", err)
+	// SQLite recognises the special path ":memory:" as "open a purely
+	// in-memory database" — there is no filesystem file to create or probe
+	// in that case, and doing so would leak a stray file named ":memory:"
+	// into the working directory. Skip both MkdirAll and the pre-flight
+	// probe for that path; leave the DSN construction below untouched so
+	// SQLite still gets exactly the input it recognises.
+	if path != ":memory:" {
+		dir := filepath.Dir(path)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("db: create parent dirs %s: %w", dir, err)
+		}
+
+		// Pre-flight probe: open the DB file for read+write (creating if
+		// absent) and immediately close it. This surfaces a clear OS error
+		// (EACCES / EROFS / ENOSPC / etc.) naming the exact path, rather
+		// than letting the modernc.org/sqlite VFS map the failure to the
+		// misleading text "unable to open database file: out of memory
+		// (14)" at first Exec time.
+		//
+		// The probe is deliberately read-write: Open() is the writable
+		// entry point (it applies schema and runs migrations). The
+		// read-only entry point OpenReadOnly() in readonly.go does NOT
+		// perform this probe — a read-only open of an existing DB in an
+		// unwritable directory is legitimate and must keep working.
+		// (Issue #2361.)
+		if f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644); err != nil {
+			return nil, fmt.Errorf("db: cannot open %s: %w", path, err)
+		} else {
+			f.Close()
+		}
 	}
 
 	// Embed connection-level settings in the DSN so that every connection
