@@ -518,6 +518,7 @@ When a queued PR reaches a terminal outcome, the watcher delivers a bus notifica
 | Closed without merging | `PR #N was closed without merging — removed from queue` |
 | Review required | `PR #N is blocked — human reviewer approval required before merge` |
 | Changes requested | `PR #N is blocked — reviewer requested changes — fix and re-request review` |
+| Blocked (unknown reason) | `PR #N is blocked for unknown reason (reviewDecision="X") — needs manual investigation, then re-enqueue when unblocked` |
 | Other merge failure | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
 
@@ -533,6 +534,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `closed without merging` | Usually nothing — the PR was closed deliberately. Investigate if unexpected. |
 | `blocked — human reviewer approval required` | Request a human review on the PR (e.g. via `gh pr review --request <user>`). Once approved, re-enqueue with `prism merge <pr>`. |
 | `blocked — reviewer requested changes` | `prism prompt <worker-session>` asking it to address the reviewer's requested changes and re-request review on the PR. Once the reviewer re-approves, re-enqueue with `prism merge <pr>`. |
+| `blocked for unknown reason (reviewDecision="X")` | Investigate the specific `reviewDecision` value against the PR's branch-protection settings on GitHub, resolve manually (request a review, wait for a required check to report, etc.), then re-enqueue with `prism merge <pr>`. If the value is a new GitHub enum the watcher does not yet map explicitly, file a follow-up issue so the case can be handled with a purpose-built notification. |
 | `merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
