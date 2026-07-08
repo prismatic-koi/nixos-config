@@ -65,6 +65,17 @@ in
                   commit = {
                     gpgsign = true;
                   };
+                  # Reset the system-level credential helper list. nixpkgs' Darwin
+                  # git ships /nix/store/.../etc/gitconfig with
+                  # credential.helper=osxkeychain baked in, which fails with
+                  # "fatal: failed to store: 100001" in headless / agent
+                  # contexts where the keychain is unavailable. Per
+                  # gitcredentials(7), setting credential.helper to the empty
+                  # string resets the helper list; SSH auth remains the working
+                  # path and no replacement helper is needed.
+                  credential = {
+                    helper = "";
+                  };
                 };
               }
             ];
