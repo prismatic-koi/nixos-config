@@ -6,13 +6,13 @@ description: Load this skill when drafting or editing a Jira Change Request (CR)
 # Writing Change Requests for executive approval
 
 Load alongside the `atlassian` skill when actually creating or editing the
-ticket – this skill covers what to write; the `atlassian` skill covers how
+ticket - this skill covers what to write; the `atlassian` skill covers how
 to invoke the API.
 
 ## Audience model
 
 The primary reader of a CR in the CH project is an executive approver who
-is not deeply technical. They are slightly technical – they know what a
+is not deeply technical. They are slightly technical - they know what a
 database is, they recognise "AWS" and "firewall", but they do not write
 code and will not parse cryptic resource names. They care about:
 
@@ -25,7 +25,7 @@ Write the description for that reader. The implementing engineer reads
 the CLI commands in the custom fields; the approver reads the description.
 
 The engineer-facing ticket (typically a PLAT-* engineering ticket) is where
-the deep technical detail lives – link it under "Related tickets". Don't
+the deep technical detail lives - link it under "Related tickets". Don't
 duplicate that detail into the CR.
 
 ## Tone and language
@@ -38,47 +38,50 @@ duplicate that detail into the CR.
   balancer" instead of "ALB" in prose.
 - Explain mechanical-sounding details that are actually safety mechanisms.
   Example: "AWS returns a short-lived token (LockToken) that we must
-  present when applying the update – a safety mechanism so two people
+  present when applying the update - a safety mechanism so two people
   cannot overwrite each other's changes."
 - Do not oversimplify to the point of being patronising. Slightly
   technical means "don't insult the reader with a metaphor", not "don't
   use any technical words".
 - British/NZ English spelling (colour, defence, behaviour, etc.).
-- No em dashes (— is the typographic character AI tends to overuse). Use
-  en dashes (–) or restructure.
+- No smart punctuation. Em dashes (—), en dashes (–), curly quotes
+  (‘ ’ “ ”), and ellipsis (…) are all AI-tell characters AND all fail
+  in various downstream text pipelines (Jira ADF, IaC provider APIs,
+  paste-into-shell). Use ASCII hyphen (-), straight quotes, literal
+  three dots (...), or restructure.
 - No bold formatting in body text.
 
 ## Description structure
 
 A CR description should have these sections in roughly this order:
 
-1. **What this change does** – one or two paragraphs in plain language.
+1. **What this change does** - one or two paragraphs in plain language.
    Start with who is affected and what they experience today. End with
    what changes for them after the CR lands.
 
-2. **Why it's safe** – a bulleted list of the safety properties. Typical
+2. **Why it's safe** - a bulleted list of the safety properties. Typical
    bullets include: scope is narrow (name it), other protections remain
    in place, the change has been rehearsed or soaked elsewhere, rollback
    is fast, the application/data is not touched.
 
-3. **What's being changed** – numbered steps, in plain English. This is
+3. **What's being changed** - numbered steps, in plain English. This is
    the description-level summary of the mechanism; the precise CLI lives
    in the Implementation Steps custom field.
 
-4. **What's NOT changing** – explicit list of out-of-scope items.
+4. **What's NOT changing** - explicit list of out-of-scope items.
    Executives reviewing changes want to know blast radius. State what is
    excluded: code, data, deployment, other systems, related cleanup
    work tracked elsewhere.
 
-5. **Where it's being changed** – environment, account, region, the
+5. **Where it's being changed** - environment, account, region, the
    specific resource by name. This is the only place hard identifiers
    belong in the prose; everywhere else, use the readable name.
 
-6. **Approval is contingent on** – the conditions that must be true
+6. **Approval is contingent on** - the conditions that must be true
    before the approver signs off. This usually mirrors the Approval
    Conditions custom field (see field-by-field below).
 
-7. **Related tickets** – link to the engineering ticket (PLAT-*),
+7. **Related tickets** - link to the engineering ticket (PLAT-*),
    related cleanup tickets, and any other CRs in the same chain.
 
 ## CH project field-by-field guidance
@@ -133,7 +136,7 @@ rollback into the ticket as a step.
 
 ADF format. Lead with how long rollback takes and whether it has any
 side effects. Include the exact CLI command. State explicitly what the
-post-rollback state is and that it does not introduce new risk – it
+post-rollback state is and that it does not introduce new risk - it
 returns the system to the current state, not to some untested third state.
 
 ### Pre-change testing (`customfield_11138`)
@@ -156,8 +159,8 @@ behaviour), and a monitoring check (no spike in errors).
 ### Approval conditions (`customfield_11140`)
 
 **Plain string field, hard-capped at 255 characters.** Do not try to send
-ADF here – the API rejects it with `Operation value must be a string`.
-Do not try to send the full conditions – the API rejects with
+ADF here - the API rejects it with `Operation value must be a string`.
+Do not try to send the full conditions - the API rejects with
 `Approval conditions can't exceed 255 characters`.
 
 Practical pattern: write the full approval conditions inside the
@@ -222,9 +225,9 @@ end-to-end before drafting a similar CR. It demonstrates:
 
 ## When NOT to load this skill
 
-- Drafting a regular engineering ticket (PLAT-*, etc.) – use the
+- Drafting a regular engineering ticket (PLAT-*, etc.) - use the
   engineering ticket conventions, not CR conventions. Engineering tickets
   are written for engineers, not approvers.
-- Drafting a postmortem or RCA – different artefact, different audience.
+- Drafting a postmortem or RCA - different artefact, different audience.
 - Drafting a change ticket in a different organisation's Jira whose
   Change project does not share the CH project's field shape.
