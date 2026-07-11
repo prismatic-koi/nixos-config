@@ -1,12 +1,18 @@
-// Mirror of griffinmartin/opencode-claude-auth src/betas.ts
+// Mirror of griffinmartin/opencode-claude-auth src/betas.ts (v2.0.0).
 // Source: https://github.com/griffinmartin/opencode-claude-auth
 //
-// pi-specific: isEnable1mContext() reads PI_ANTHROPIC_ENABLE_1M_CONTEXT
-// instead of ANTHROPIC_ENABLE_1M_CONTEXT.
+// pi divergence preserved here: the `ctx.forceAdaptiveThinking` block in
+// `getModelBetas` suppresses the `interleaved-thinking-2025-05-14` beta for
+// adaptive-thinking models (issue #2044). See UPSTREAM.md divergence #10.
 
 import { config, getModelOverride } from "./model-config.ts"
 
-// Beta flags to try removing in order when "long context" errors occur
+// Beta flags to try removing in order when "long context" errors occur.
+//
+// Retained per griffinmartin v2.0.0: while the plugin no longer sends
+// `context-1m-2025-08-07` by default, a user can still opt in manually via
+// `ANTHROPIC_BETA_FLAGS=...,context-1m-2025-08-07,...`; if that path 429s
+// with a long-context error we peel these betas off one at a time.
 export const LONG_CONTEXT_BETAS = config.longContextBetas
 
 function getRequiredBetas(): string[] {
@@ -71,27 +77,6 @@ export function getNextBetaToExclude(modelId: string): string | null {
   return null // All long-context betas already excluded
 }
 
-export function supports1mContext(modelId: string): boolean {
-  const lower = modelId.toLowerCase()
-  if (!lower.includes("opus") && !lower.includes("sonnet")) return false
-  const versionMatch = lower.match(/(opus|sonnet)-(\d+)-(\d+)/)
-  if (!versionMatch) return false
-  const major = parseInt(versionMatch[2], 10)
-  const minor = parseInt(versionMatch[3], 10)
-  // Date suffixes like 20250514 are not minor versions — treat as x.0
-  const effectiveMinor = minor > 99 ? 0 : minor
-  return major > 4 || (major === 4 && effectiveMinor >= 6)
-}
-
-// pi-specific: read PI_ANTHROPIC_ENABLE_1M_CONTEXT env var (mirrors
-// griffinmartin's isEnable1mContext() via plugin-config.ts, but pi has no
-// plugin-config concept so we read the env var directly).
-export function isEnable1mContext(): boolean {
-  const envVal = process.env.PI_ANTHROPIC_ENABLE_1M_CONTEXT
-  if (envVal !== undefined) return envVal === "true"
-  return false
-}
-
 export interface GetModelBetasContext {
   /**
    * Whether the model uses adaptive thinking
@@ -110,43 +95,34 @@ export function getModelBetas(
   excluded?: Set<string>,
   ctx?: GetModelBetasContext,
 ): string[] {
-  const betas = [...getRequiredBetas()]
+  let betas = [...getRequiredBetas()]
 
-  // context-1m is OPT-IN only, matching the official Claude CLI behavior.
-  // The CLI only sends this beta when the model ID has a [1m] suffix.
-  // Without it, the API enforces a 200k context limit. Sending the beta
-  // without a subscription that covers long context billing causes
-  // "Extra usage is required for long context requests" errors.
-  //
-  // Users who want 1M context should set PI_ANTHROPIC_ENABLE_1M_CONTEXT=true
-  // (requires a Claude Max subscription or a plan that covers extra usage).
-  if (isEnable1mContext() && supports1mContext(modelId)) {
-    betas.push(config.longContextBetas[0])
-  }
+  // The legacy context-1m-2025-08-07 beta is never sent — the API supports
+  // 1M context natively without it. (griffinmartin v2.0.0.)
 
   // Apply per-model overrides (e.g. haiku excludes claude-code-20250219)
   const override = getModelOverride(modelId)
   if (override) {
-    if (override.exclude) {
-      for (const ex of override.exclude) {
-        const idx = betas.indexOf(ex)
-        if (idx !== -1) betas.splice(idx, 1)
-      }
+    const { exclude, add } = override
+    if (exclude) {
+      // Remove every occurrence — regenerated configs can contain duplicates
+      // (v2.0.0 baseBetas lists `interleaved-thinking-2025-05-14` twice).
+      betas = betas.filter((beta) => !exclude.includes(beta))
     }
-    if (override.add) {
-      for (const add of override.add) {
-        if (!betas.includes(add)) betas.push(add)
+    if (add) {
+      for (const beta of add) {
+        if (!betas.includes(beta)) betas.push(beta)
       }
     }
   }
 
-  // Adaptive thinking models have interleaved thinking built in — drop the
-  // beta header. Mirrors pi-ai's `anthropic.ts::createClient` ~789. The
-  // legacy beta is harmless for non-adaptive Claude 4.x models and is left in
-  // place there to preserve the existing wire form. Issue #2044.
+  // pi divergence #10 (issue #2044): adaptive-thinking models have
+  // interleaved thinking built in — drop the beta header. Mirrors pi-ai's
+  // `anthropic.ts::createClient` ~789. Uses `filter` (not
+  // indexOf/splice) so both occurrences from the v2.0.0 duplicate in
+  // `baseBetas` are removed.
   if (ctx?.forceAdaptiveThinking) {
-    const idx = betas.indexOf("interleaved-thinking-2025-05-14")
-    if (idx !== -1) betas.splice(idx, 1)
+    betas = betas.filter((beta) => beta !== "interleaved-thinking-2025-05-14")
   }
 
   // Filter out excluded betas (from previous failed requests due to long context errors)
