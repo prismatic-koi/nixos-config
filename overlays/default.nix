@@ -79,6 +79,39 @@ rec {
         else
           prev.direnv;
 
+      # choose-gui: force the link step through `lld` on Darwin to work
+      # around an `ld64` hardening regression that landed with the
+      # nixpkgs staging-next merge on 2026-06-27 (flake bump
+      # d407951 -> 0bb7ec5, PR #2380). The new hardening flag breaks
+      # Objective-C / Cocoa-framework linking on aarch64-darwin; every
+      # xcbuild-driven Cocoa build in the affected class fails at the
+      # final `Ld` step. `choose-gui` builds via `xcbuild` and links
+      # Cocoa, so it's in-class but did not get a per-package fix
+      # upstream.
+      #
+      # nixpkgs shipped ~15 per-package workarounds with this exact
+      # shape (add `llvmPackages.lld` to `nativeBuildInputs`, set
+      # `NIX_CFLAGS_LINK = "-fuse-ld=lld"`), each carrying a
+      # `# TODO: Clean up on \`staging\`.` comment. We mirror the shape
+      # the maintainers used for `python3Packages.pyobjc-framework-Cocoa`
+      # in https://github.com/NixOS/nixpkgs/pull/538151.
+      #
+      # REMOVAL CONDITION: delete this override once
+      # https://github.com/NixOS/nixpkgs/pull/536365 ("ld64: disable
+      # hardening again") lands on `staging` and a subsequent flake bump
+      # picks up the reverted per-package workarounds. At that point the
+      # underlying regression is gone and this block is dead weight.
+      choose-gui =
+        if final.stdenv.isDarwin then
+          prev.choose-gui.overrideAttrs (old: {
+            nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ final.llvmPackages.lld ];
+            env = (old.env or { }) // {
+              NIX_CFLAGS_LINK = ((old.env.NIX_CFLAGS_LINK or "") + " -fuse-ld=lld");
+            };
+          })
+        else
+          prev.choose-gui;
+
       # qutebrowser: widen the built-in AMD+Wayland GBM workaround guard in
       # `misc/backendproblem.py::_fix_wayland_amd_gbm` from exact QtWebEngine
       # 6.11.0 to all 6.11.x. Upstream self-deactivated the workaround on
