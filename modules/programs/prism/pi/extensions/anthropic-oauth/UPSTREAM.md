@@ -17,7 +17,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 
 | Upstream | SHA | Date |
 |---|---|---|
-| `griffinmartin/opencode-claude-auth` main | `df1b0cbc9e94ff9a8081ac98aa837893fd2be35e` | 2026-04 (chore(main): release 1.5.0 #204) |
+| `griffinmartin/opencode-claude-auth` main | `88b0f793` | 2026-07-08 (v2.0.0 merge commit for PR #240 — 1M-context opt-in removed, base betas regenerated) |
 | `griffinmartin/opencode-claude-auth` PR #193 | `9420fbef60567968bcd21a260db21be9f7dd475b` | 2026-04-14 (the MD5 hash obfuscation approach) |
 | `leohenon/pi-anthropic-oauth` | `86d9d97829776a66aec58e3433900173ff7e184a` | 2026-04 (update readme) |
 
@@ -72,9 +72,16 @@ it is more actively maintained and is the source of the PR #193 fix.
    Our `stream.ts` replaces leohenon's `@anthropic-ai/sdk`-based streaming with
    native `fetch()` + manual SSE parsing, matching the zero-npm-deps commitment.
 
-4. **`betas.ts` reads `PI_ANTHROPIC_ENABLE_1M_CONTEXT`** instead of griffinmartin's
-   `ANTHROPIC_ENABLE_1M_CONTEXT` (which goes through `plugin-config.ts`). Pi has
-   no plugin config mechanism, so we read the env var directly.
+4. **~~`betas.ts` reads `PI_ANTHROPIC_ENABLE_1M_CONTEXT`~~** — REMOVED in v2.0.0
+   port (issue #2382, PR to close #2382). Griffinmartin dropped the 1M-context
+   opt-in entirely in v2.0.0 on the rationale that the API supports 1M
+   context natively without the beta flag; we followed suit. `PI_ANTHROPIC_ENABLE_1M_CONTEXT`
+   is now inert. Historical shape: `isEnable1mContext()` in `betas.ts` used to
+   read the env var and, when combined with `supports1mContext(modelId)`,
+   push `context-1m-2025-08-07` into `getModelBetas`. Both helpers are gone;
+   `betas.test.ts` has a regression test that sets the env var and asserts the
+   beta is NOT injected, guarding against accidental reintroduction. A user
+   who still wants the beta can add it manually to `ANTHROPIC_BETA_FLAGS`.
 
 5. **`logger.ts` default log path** is `~/.pi/agent/pi-anthropic-oauth-debug.log`
    instead of griffinmartin's `~/.local/share/opencode/claude-auth-debug.log`.
@@ -136,14 +143,97 @@ it is more actively maintained and is the source of the PR #193 fix.
      capture, including the `forceAdaptiveThinking: false` opt-out case).
    Our offline parity lives in `request-body.test.ts`.
 
-10. **`model-config.ts` `4-8` override and `betas.ts` adaptive
-    suppression**: Both changes from issue #2044. The `4-8` entry mirrors
-    the existing `4-6`/`4-7` pattern (substring match adds the
-    `effort-2025-11-24` beta). The `forceAdaptiveThinking`-driven
-    suppression of `interleaved-thinking-2025-05-14` in `getModelBetas` is
-    keyed off the model's compat flag at call time — it does NOT rely on
-    substring matching, so any future adaptive model from the registry
-    benefits automatically without a `model-config.ts` change.
+10. **`betas.ts::getModelBetas` `forceAdaptiveThinking` suppression** —
+    the pi-only twist that remains on `betas.ts` (issue #2044). When the
+    caller passes `ctx.forceAdaptiveThinking = true` (driven by the model's
+    `compat.forceAdaptiveThinking` flag in the pi-ai registry, currently
+    `claude-opus-4-6/4-7/4-8`), `getModelBetas` filters out every occurrence
+    of `interleaved-thinking-2025-05-14` before returning. Adaptive-thinking
+    models have interleaved thinking built in, so the beta header is
+    redundant — mirrors pi-ai's `anthropic.ts::createClient` (~line 789).
+
+    The suppression is keyed off the model's compat flag at call time —
+    it does NOT rely on substring matching, so any future adaptive model
+    from the registry benefits automatically without a `model-config.ts`
+    change. Implementation uses `.filter()` (not `indexOf`/`splice`) so
+    both occurrences of the duplicate `interleaved-thinking-2025-05-14`
+    entry in griffinmartin 2.0.0's regenerated `baseBetas` are removed.
+
+    Historical note: the v1.5.1 port had a companion `4-8` entry in
+    `model-config.ts::modelOverrides` that added `effort-2025-11-24` for
+    the opus-4-8 substring. Griffinmartin 2.0.0 lifted `effort-2025-11-24`
+    into `baseBetas`, so the per-model `4-6`/`4-7`/`4-8` overrides became
+    no-ops. The v2.0.0 port drops all three overrides (upstream still
+    carries `4-6`/`4-7` as dead entries; we don't). The haiku override
+    stays and still excludes `interleaved-thinking-2025-05-14`.
+
+11. **v1.5.1 auth parity (issue #2381) — ported**. griffinmartin PR #207
+    (Claude Code 2.1.112 subscription-auth fingerprint) and PR #211
+    (`isLongContextError` matches `"You're out of extra usage"`) landed
+    upstream in v1.5.1 and were ported here in-place:
+
+    - `model-config.ts`: `ccVersion` bumped to `2.1.112`;
+      `advisor-tool-2026-03-01` appended to `baseBetas`.
+    - `transforms.ts`: `CLAUDE_CODE_ENTRYPOINT` fallback changed from
+      `"cli"` to `"sdk-cli"` (billing header + user-agent alignment).
+    - `index.ts`: `getUserAgent()` returns `(external, sdk-cli)`;
+      OAuth-mode requests set `anthropic-dangerous-direct-browser-access:
+      true` and eight `x-stainless-*` headers (`getStainlessHeaders`
+      mirror); `/v1/messages` URL gains `?beta=true` via
+      `buildRequestUrl`, applied to both the initial fetch and the 401
+      retry. Caller `options.headers` still override our defaults (mirror
+      of griffinmartin's `!headers.has(key)` guard, implemented via merge
+      order).
+    - `betas.ts`: `isLongContextError` also matches
+      `"You're out of extra usage"`.
+
+    PR #211's `fetchWithRetry` retry-after cap is N/A here: our messages-
+    path `streamSimple` has no retry loop (only a single 401 credential-
+    refresh retry with no delay), and `auth.ts::fetchWithRetry` (used for
+    token exchange, divergence #1) already caps at 30s. See
+    `auth.ts::fetchWithRetry`'s existing cap logic.
+
+    v1.5.2, v1.5.3, and v1.5.4 upstream were reviewed and skipped —
+    they are keychain / multi-account fixes that do not apply here (see
+    divergence #6, single-account only).
+
+12. **v2.0.0 port (issue #2382) — ported**. griffinmartin PR #240 (v2.0.0)
+    removed the 1M-context opt-in, regenerated `baseBetas` with new entries
+    and a duplicate `interleaved-thinking-2025-05-14`, and switched the
+    override-exclude implementation from `indexOf`/`splice` to `filter` so
+    the duplicate is fully removed for excluded betas. Ported here in-place:
+
+    - `betas.ts`: `isEnable1mContext()`, `supports1mContext()`, and their
+      callsite in `getModelBetas` removed; override-exclude uses `filter`.
+      The pi-specific `forceAdaptiveThinking` suppression block (divergence
+      #10) is retained and was also switched to `filter` so the duplicate
+      in `baseBetas` is fully suppressed for adaptive models.
+    - `model-config.ts`: `ccVersion` bumped to `2.1.185`; `baseBetas`
+      regenerated with `thinking-token-count-2026-05-13`,
+      `extended-cache-ttl-2025-04-11`, `effort-2025-11-24`, and a duplicate
+      `interleaved-thinking-2025-05-14` (all mirroring upstream verbatim);
+      per-model `4-6`/`4-7`/`4-8` `effort-2025-11-24` overrides removed
+      (redundant now that the beta is in the base list).
+    - `betas.test.ts`: 1M-opt-in tests replaced with an inertness test
+      that sets `PI_ANTHROPIC_ENABLE_1M_CONTEXT=true` and asserts
+      `context-1m-2025-08-07` is NOT injected; new filter-fix regression
+      tests cover the duplicate-in-baseBetas and duplicate-in-user-flags
+      cases (revert-and-fail-verified: reverting the `filter` fix to
+      `indexOf`/`splice` locally makes both tests fail).
+    - `request-body.test.ts`: `"still adds effort-2025-11-24 for the 4-8
+      substring match"` renamed to reflect the new mechanism (via
+      `baseBetas`, not per-model override), and a companion test proves the
+      beta also appears for non-4-8 models.
+
+    Upstream still keeps `4-6`/`4-7` entries in `modelOverrides` as no-ops
+    (they add a beta already in `baseBetas`); we intentionally dropped
+    both because they add nothing. If a future upstream fix re-adds those
+    entries with different `add` values, port that change here explicitly.
+
+13. **Note on divergence #7 (MD5 vs PascalCase)** — verified accurate as of
+    this port. Griffinmartin main uses PascalCase (per commit `9121ca47` in
+    v1.4.10); we still use MD5 hash-based obfuscation. No changes to
+    `transforms.ts` in this port.
 
 ## Port procedure for future upstream fixes
 

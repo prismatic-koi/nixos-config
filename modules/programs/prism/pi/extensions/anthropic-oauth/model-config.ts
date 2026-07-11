@@ -15,13 +15,22 @@ export interface ModelConfig {
 }
 
 export const config: ModelConfig = {
-  ccVersion: "2.1.90",
+  ccVersion: "2.1.185",
   baseBetas: [
     "claude-code-20250219",
     "oauth-2025-04-20",
     "interleaved-thinking-2025-05-14",
     "prompt-caching-scope-2026-01-05",
     "context-management-2025-06-27",
+    "advisor-tool-2026-03-01",
+    "thinking-token-count-2026-05-13",
+    "extended-cache-ttl-2025-04-11",
+    "effort-2025-11-24",
+    // Duplicate is intentional and mirrors griffinmartin 2.0.0's regenerated
+    // config — do NOT de-dup. It's the reason getModelBetas' override-exclude
+    // uses `.filter()` (removes every occurrence) instead of
+    // indexOf/splice (removes only the first).
+    "interleaved-thinking-2025-05-14",
   ],
   longContextBetas: [
     "context-1m-2025-08-07",
@@ -31,15 +40,6 @@ export const config: ModelConfig = {
     haiku: {
       exclude: ["interleaved-thinking-2025-05-14"],
       disableEffort: true,
-    },
-    "4-6": {
-      add: ["effort-2025-11-24"],
-    },
-    "4-7": {
-      add: ["effort-2025-11-24"],
-    },
-    "4-8": {
-      add: ["effort-2025-11-24"],
     },
   },
 }
