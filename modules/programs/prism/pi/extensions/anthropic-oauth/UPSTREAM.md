@@ -17,7 +17,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 
 | Upstream | SHA | Date |
 |---|---|---|
-| `griffinmartin/opencode-claude-auth` main | `df1b0cbc9e94ff9a8081ac98aa837893fd2be35e` | 2026-04 (chore(main): release 1.5.0 #204) |
+| `griffinmartin/opencode-claude-auth` main | `88a114ef` | 2026-04 (v1.5.1 landing head — PR #211 feat commit) |
 | `griffinmartin/opencode-claude-auth` PR #193 | `9420fbef60567968bcd21a260db21be9f7dd475b` | 2026-04-14 (the MD5 hash obfuscation approach) |
 | `leohenon/pi-anthropic-oauth` | `86d9d97829776a66aec58e3433900173ff7e184a` | 2026-04 (update readme) |
 
@@ -144,6 +144,36 @@ it is more actively maintained and is the source of the PR #193 fix.
     keyed off the model's compat flag at call time — it does NOT rely on
     substring matching, so any future adaptive model from the registry
     benefits automatically without a `model-config.ts` change.
+
+11. **v1.5.1 auth parity (issue #2381) — ported**. griffinmartin PR #207
+    (Claude Code 2.1.112 subscription-auth fingerprint) and PR #211
+    (`isLongContextError` matches `"You're out of extra usage"`) landed
+    upstream in v1.5.1 and were ported here in-place:
+
+    - `model-config.ts`: `ccVersion` bumped to `2.1.112`;
+      `advisor-tool-2026-03-01` appended to `baseBetas`.
+    - `transforms.ts`: `CLAUDE_CODE_ENTRYPOINT` fallback changed from
+      `"cli"` to `"sdk-cli"` (billing header + user-agent alignment).
+    - `index.ts`: `getUserAgent()` returns `(external, sdk-cli)`;
+      OAuth-mode requests set `anthropic-dangerous-direct-browser-access:
+      true` and eight `x-stainless-*` headers (`getStainlessHeaders`
+      mirror); `/v1/messages` URL gains `?beta=true` via
+      `buildRequestUrl`, applied to both the initial fetch and the 401
+      retry. Caller `options.headers` still override our defaults (mirror
+      of griffinmartin's `!headers.has(key)` guard, implemented via merge
+      order).
+    - `betas.ts`: `isLongContextError` also matches
+      `"You're out of extra usage"`.
+
+    PR #211's `fetchWithRetry` retry-after cap is N/A here: our messages-
+    path `streamSimple` has no retry loop (only a single 401 credential-
+    refresh retry with no delay), and `auth.ts::fetchWithRetry` (used for
+    token exchange, divergence #1) already caps at 30s. See
+    `auth.ts::fetchWithRetry`'s existing cap logic.
+
+    v1.5.2, v1.5.3, and v1.5.4 upstream were reviewed and skipped —
+    they are keychain / multi-account fixes that do not apply here (see
+    divergence #6, single-account only).
 
 ## Port procedure for future upstream fixes
 
