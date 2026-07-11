@@ -215,6 +215,66 @@ describe("transformBody — multiple non-core system entries", () => {
 })
 
 // ---------------------------------------------------------------------------
+// [functional] CLAUDE_CODE_ENTRYPOINT fallback — v1.5.1 auth parity (#2381).
+// The billing header injected as system[0] must encode `cc_entrypoint=sdk-cli`
+// when the env var is unset, not `cc_entrypoint=cli`. AC3/AC10.
+// ---------------------------------------------------------------------------
+describe("transformBody — CLAUDE_CODE_ENTRYPOINT fallback", () => {
+  it("encodes cc_entrypoint=sdk-cli in the billing header when env is unset", () => {
+    const original = process.env.CLAUDE_CODE_ENTRYPOINT
+    delete process.env.CLAUDE_CODE_ENTRYPOINT
+    try {
+      const input = JSON.stringify({
+        model: "claude-sonnet-4-5",
+        system: [{ type: "text", text: SYSTEM_IDENTITY }],
+        messages: [{ role: "user", content: "hi" }],
+      })
+      const result = parseResult(transformBody(input))
+      const billing = (result.system ?? []).find((e) =>
+        (e.text ?? "").startsWith("x-anthropic-billing-header"),
+      )
+      assert.ok(billing, "billing header should be system[0]")
+      assert.ok(
+        (billing.text ?? "").includes("cc_entrypoint=sdk-cli"),
+        `billing header should include cc_entrypoint=sdk-cli; got: ${billing.text}`,
+      )
+      assert.ok(
+        !(billing.text ?? "").includes("cc_entrypoint=cli;"),
+        `billing header should not include the legacy cc_entrypoint=cli; got: ${billing.text}`,
+      )
+    } finally {
+      if (original !== undefined) {
+        process.env.CLAUDE_CODE_ENTRYPOINT = original
+      }
+    }
+  })
+
+  it("honours CLAUDE_CODE_ENTRYPOINT when set", () => {
+    const original = process.env.CLAUDE_CODE_ENTRYPOINT
+    process.env.CLAUDE_CODE_ENTRYPOINT = "my-entrypoint"
+    try {
+      const input = JSON.stringify({
+        model: "claude-sonnet-4-5",
+        system: [{ type: "text", text: SYSTEM_IDENTITY }],
+        messages: [{ role: "user", content: "hi" }],
+      })
+      const result = parseResult(transformBody(input))
+      const billing = (result.system ?? []).find((e) =>
+        (e.text ?? "").startsWith("x-anthropic-billing-header"),
+      )
+      assert.ok(billing)
+      assert.ok((billing.text ?? "").includes("cc_entrypoint=my-entrypoint"))
+    } finally {
+      if (original === undefined) {
+        delete process.env.CLAUDE_CODE_ENTRYPOINT
+      } else {
+        process.env.CLAUDE_CODE_ENTRYPOINT = original
+      }
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
 // [edge-case] no non-core system entries → first user message is not mutated.
 // ---------------------------------------------------------------------------
 describe("transformBody — no non-core system entries", () => {
