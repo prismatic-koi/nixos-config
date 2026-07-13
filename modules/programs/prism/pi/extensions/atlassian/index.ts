@@ -11,16 +11,48 @@
 // The API token path (ATLASSIAN_EMAIL + ATLASSIAN_API_TOKEN) only exposes 2
 // Teamwork Graph tools, not the full Jira/Confluence CRUD surface.
 //
+// Cross-process cache coherence (#2389). Each tool invocation goes through
+// `callToolWithAuthRetry` (retry.ts), which delegates to `getValidAccessToken`
+// (auth.ts) whose mtime-aware cache picks up token rotations from sibling pi
+// sessions without requiring /reload. A 401 response invalidates the cache
+// and retries once; a second 401 is surfaced to the caller unchanged.
+//
 // See UPSTREAM.md for auth method rationale and token storage location.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
 import { createMcpSession, type McpSession, type McpTool, getDefaultCloudId } from "./mcp-client.ts"
-import { loadTokens, getValidAccessToken, loginAtlassian, type AtlassianTokens } from "./auth.ts"
+import {
+  loadTokens,
+  getValidAccessToken,
+  loginAtlassian,
+  invalidateCache,
+  type AtlassianTokens,
+} from "./auth.ts"
+import {
+  callToolWithAuthRetry,
+  type AuthCallbacks,
+  type McpCallResult,
+} from "./retry.ts"
 import { slimMcpResultContent } from "./slim.ts"
 
 let _session: McpSession | null = null
-let _tokens: AtlassianTokens | null = null
+
+// Auth callbacks passed to the retry shell. `refresh` pulls a valid token
+// out of auth.ts's mtime-aware cache (or refreshes it) and pushes it onto
+// the session. `invalidate` drops the cache so the next refresh sees whatever
+// a peer process has written (#2389).
+function makeAuthCallbacks(session: McpSession): AuthCallbacks {
+  return {
+    async refresh() {
+      const { token } = await getValidAccessToken()
+      session.updateToken(token)
+    },
+    invalidate() {
+      invalidateCache()
+    },
+  }
+}
 
 function log(msg: string, ...args: unknown[]): void {
   if (process.env.ATLASSIAN_MCP_DEBUG === "1") {
@@ -57,12 +89,17 @@ function mcpSchemaToTypebox(inputSchema: Record<string, unknown>) {
  * Fetch transitions for the issue and merge them into the getJiraIssue response
  * as a top-level `transitions` array. If fetching transitions fails, the original
  * result is returned unchanged (best-effort augmentation).
+ *
+ * The MCP call underneath uses the same auth-retry shell as the primary tool
+ * call, so a mid-session token rotation doesn't strand this call with a stale
+ * bearer (#2389).
  */
 async function augmentGetJiraIssueWithTransitions(
   session: McpSession,
+  auth: AuthCallbacks,
   callParams: Record<string, unknown>,
-  result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
-): Promise<{ content: Array<{ type: string; text?: string }>; isError?: boolean }> {
+  result: McpCallResult,
+): Promise<McpCallResult> {
   const issueIdOrKey = (callParams["issueIdOrKey"] ?? callParams["issueKey"]) as string | undefined
   if (!issueIdOrKey) return result
 
@@ -72,7 +109,12 @@ async function augmentGetJiraIssueWithTransitions(
 
   let transitions: Array<{ id: string; name: string }> = []
   try {
-    const transitionsResult = await session.callTool("getTransitionsForJiraIssue", transitionArgs)
+    const transitionsResult = await callToolWithAuthRetry(
+      session,
+      auth,
+      "getTransitionsForJiraIssue",
+      transitionArgs,
+    )
     if (!transitionsResult.isError) {
       const rawText = transitionsResult.content?.map((c) => c.text ?? "").join("").trim()
       const parsed = JSON.parse(rawText) as { transitions?: Array<{ id: string; name: string }> }
@@ -125,7 +167,7 @@ function registerTools(pi: ExtensionAPI, tools: McpTool[]): void {
       description: tool.description ?? toolName,
       parameters: schema,
       async execute(_toolCallId, params, _signal) {
-        // Ensure we have a live session with a valid token
+        // Ensure we have a live session
         if (!_session) {
           return {
             content: [{ type: "text", text: "Atlassian MCP: no active session" }],
@@ -133,31 +175,13 @@ function registerTools(pi: ExtensionAPI, tools: McpTool[]): void {
           }
         }
 
-        if (!_tokens) {
-          return {
-            content: [{ type: "text", text: "Atlassian MCP: no auth tokens" }],
-            isError: true,
-          }
-        }
-
-        // Refresh token if needed
-        try {
-          const { token, tokens: updatedTokens } = await getValidAccessToken(_tokens)
-          _tokens = updatedTokens
-          _session.updateToken(token)
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          errorLog(`token refresh failed for ${toolName}: ${msg}`)
-          return {
-            content: [{ type: "text", text: `Atlassian auth error: ${msg}` }],
-            isError: true,
-          }
-        }
+        const session = _session
+        const auth = makeAuthCallbacks(session)
 
         try {
           log(`calling ${toolName}`)
           const callParams = params as Record<string, unknown>
-          let result = await _session.callTool(toolName, callParams)
+          let result = await callToolWithAuthRetry(session, auth, toolName, callParams)
 
           if (result.isError) {
             // MCP tool-level error — surface to LLM without crashing
@@ -177,7 +201,8 @@ function registerTools(pi: ExtensionAPI, tools: McpTool[]): void {
           // an extra REST call and included as a top-level "transitions" array.
           if (toolName === "getJiraIssue" && !result.isError) {
             result = await augmentGetJiraIssueWithTransitions(
-              _session,
+              session,
+              auth,
               callParams,
               result,
             )
@@ -253,19 +278,9 @@ function registerTransitionByNameTool(pi: ExtensionAPI): void {
       if (!_session) {
         return { content: [{ type: "text", text: "Atlassian MCP: no active session" }], isError: true }
       }
-      if (!_tokens) {
-        return { content: [{ type: "text", text: "Atlassian MCP: no auth tokens" }], isError: true }
-      }
 
-      // Refresh token
-      try {
-        const { token, tokens: updatedTokens } = await getValidAccessToken(_tokens)
-        _tokens = updatedTokens
-        _session.updateToken(token)
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
-        return { content: [{ type: "text", text: `Atlassian auth error: ${msg}` }], isError: true }
-      }
+      const session = _session
+      const auth = makeAuthCallbacks(session)
 
       const p = params as Record<string, unknown>
       const issueIdOrKey = p["issueIdOrKey"] as string | undefined
@@ -279,13 +294,13 @@ function registerTransitionByNameTool(pi: ExtensionAPI): void {
         return { content: [{ type: "text", text: "transitionJiraIssueByName: transitionName is required" }], isError: true }
       }
 
-      // Step 1: look up available transitions
+      // Step 1: look up available transitions (auth-retry wrapped — #2389)
       log(`transitionJiraIssueByName: fetching transitions for ${issueIdOrKey}`)
-      let transitionsResult: { content: Array<{ type: string; text?: string }>; isError?: boolean }
+      let transitionsResult: McpCallResult
       try {
         const args: Record<string, unknown> = { issueIdOrKey }
         if (cloudId) args["cloudId"] = cloudId
-        transitionsResult = await _session.callTool("getTransitionsForJiraIssue", args)
+        transitionsResult = await callToolWithAuthRetry(session, auth, "getTransitionsForJiraIssue", args)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: "text", text: `transitionJiraIssueByName: failed to fetch transitions: ${msg}` }], isError: true }
@@ -344,12 +359,12 @@ function registerTransitionByNameTool(pi: ExtensionAPI): void {
       const match = matches[0]
       log(`transitionJiraIssueByName: resolved "${transitionName}" to id=${match.id}`)
 
-      // Step 3: call transitionJiraIssue with the resolved ID
-      let transitionResult: { content: Array<{ type: string; text?: string }>; isError?: boolean }
+      // Step 3: call transitionJiraIssue with the resolved ID (auth-retry wrapped — #2389)
+      let transitionResult: McpCallResult
       try {
         const args: Record<string, unknown> = { issueIdOrKey, transitionId: match.id }
         if (cloudId) args["cloudId"] = cloudId
-        transitionResult = await _session.callTool("transitionJiraIssue", args)
+        transitionResult = await callToolWithAuthRetry(session, auth, "transitionJiraIssue", args)
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         return { content: [{ type: "text", text: `transitionJiraIssueByName: transition call failed: ${msg}` }], isError: true }
@@ -378,7 +393,7 @@ async function ensureTokens(pi: ExtensionAPI, ctx: { ui: { notify: (msg: string,
   const stored = loadTokens()
   if (stored) {
     try {
-      const { tokens } = await getValidAccessToken(stored)
+      const { tokens } = await getValidAccessToken()
       return tokens
     } catch {
       // Token refresh failed — will try fresh login
@@ -399,8 +414,6 @@ async function initExtension(pi: ExtensionAPI, ctx: { ui: { notify: (msg: string
     // Non-blocking: extension fails gracefully, pi session continues
     return
   }
-
-  _tokens = tokens
 
   // Connect to MCP server
   let tools: McpTool[]
@@ -427,8 +440,9 @@ function registerLoginCommand(pi: ExtensionAPI): void {
   pi.registerCommand("login-atlassian", {
     description: "Log in to Atlassian MCP (OAuth PKCE flow)",
     async handler(_args, ctx) {
-      // Check if already have valid tokens
-      if (_tokens && Date.now() < _tokens.expiresAt) {
+      // Check if already have valid tokens (respecting mtime cache invalidation)
+      const existing = loadTokens()
+      if (existing && Date.now() < existing.expiresAt) {
         ctx.ui.notify("Atlassian MCP: already authenticated", "info")
         return
       }
@@ -441,7 +455,6 @@ function registerLoginCommand(pi: ExtensionAPI): void {
             ctx.ui.notify(`Atlassian OAuth: ${instructions}\n${url}`, "info")
           },
         })
-        _tokens = tokens
 
         // Reconnect session with new token
         try {
