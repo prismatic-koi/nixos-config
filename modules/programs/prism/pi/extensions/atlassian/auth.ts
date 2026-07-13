@@ -20,10 +20,25 @@
 //
 // Token storage: ~/.pi/agent/atlassian-mcp-oauth.json (mirrors ~/.mcp-auth/mcp-remote-0.1.13/)
 //
+// Cross-process cache coherence (#2389). The extension caches the parsed
+// tokens in memory to avoid re-reading the file on every tool call, but
+// stats the file's mtime on each read and reloads if a peer process (or
+// this session's own /login-atlassian) has rewritten the file. Combined
+// with the 401-retry-once shell in retry.ts and the refresh-failure
+// fallback in getValidAccessToken() below, this mirrors the pattern the
+// anthropic-oauth extension uses for its own auth.json (#2283).
+//
 // See UPSTREAM.md for auth method rationale and provenance.
 
 import { createServer } from "node:http"
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs"
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 
@@ -36,8 +51,7 @@ const CALLBACK_HOST = "127.0.0.1"
 const CALLBACK_PATH = "/oauth/callback"
 const LOCAL_CALLBACK_TIMEOUT = 5 * 60 * 1000
 
-const TOKEN_STORE_DIR = join(homedir(), ".pi", "agent")
-const TOKEN_STORE_PATH = join(TOKEN_STORE_DIR, "atlassian-mcp-oauth.json")
+const TOKEN_STORE_FILENAME = "atlassian-mcp-oauth.json"
 
 export interface AtlassianTokens {
   accessToken: string
@@ -47,28 +61,143 @@ export interface AtlassianTokens {
   clientId: string
 }
 
+/**
+ * Resolve the token store path in precedence order:
+ *
+ *   1. PI_ATLASSIAN_TOKENS         explicit override (tests, manual escape hatch)
+ *   2. PI_CODING_AGENT_DIR/atlassian-mcp-oauth.json
+ *                                  set by the prism bwrap + sandbox-exec
+ *                                  dispatchers, and on the host system-wide.
+ *                                  This is the path that surfaces host-side
+ *                                  writes inside a running sandbox (mirrors the
+ *                                  precedent in anthropic-oauth/credentials.ts).
+ *   3. ~/.pi/agent/atlassian-mcp-oauth.json   legacy fallback.
+ *
+ * The middle entry matters because the bwrap dispatcher dir-binds the host's
+ * ~/.pi/agent at $PI_CODING_AGENT_DIR (a directory bind). Reading via the
+ * dir-bind sees dentry updates from concurrent peer writes; the file-bind at
+ * homedir() would pin the pre-swap inode. See credentials.ts for the full
+ * story.
+ */
+export function getTokenStorePath(): string {
+  if (process.env.PI_ATLASSIAN_TOKENS) return process.env.PI_ATLASSIAN_TOKENS
+  if (process.env.PI_CODING_AGENT_DIR) {
+    return join(process.env.PI_CODING_AGENT_DIR, TOKEN_STORE_FILENAME)
+  }
+  return join(homedir(), ".pi", "agent", TOKEN_STORE_FILENAME)
+}
+
 // ---------------------------------------------------------------------------
-// Token persistence
+// Token persistence with mtime-aware caching
 // ---------------------------------------------------------------------------
 
-export function loadTokens(): AtlassianTokens | null {
+interface CacheEntry {
+  tokens: AtlassianTokens
+  mtimeMs: number
+}
+
+let _cache: CacheEntry | null = null
+
+/**
+ * Read tokens from disk unconditionally, together with the file's mtime.
+ * Returns null if the file is absent, malformed, or missing required fields.
+ */
+function readTokensFromDisk(): CacheEntry | null {
+  const path = getTokenStorePath()
   try {
-    const raw = readFileSync(TOKEN_STORE_PATH, "utf8")
+    const stats = statSync(path)
+    const raw = readFileSync(path, "utf8")
     const data = JSON.parse(raw) as AtlassianTokens
     if (!data.accessToken || !data.refreshToken || !data.clientId) return null
-    return data
+    return { tokens: data, mtimeMs: stats.mtimeMs }
   } catch {
     return null
   }
 }
 
+/**
+ * Return the tokens, using the in-memory cache when the on-disk file has not
+ * been touched since the cache was populated. If a peer process (or a call to
+ * saveTokens() by this process) has written the file, the cache is refreshed
+ * from disk before returning.
+ *
+ * When the token file is deleted after the cache was populated, the cached
+ * copy is returned (last-good-copy semantics — mirrors credentials.ts).
+ *
+ * Returns null if there are no tokens on disk and no cache entry.
+ */
+export function loadTokens(): AtlassianTokens | null {
+  if (_cache) {
+    const path = getTokenStorePath()
+    let mtimeMs = 0
+    try {
+      mtimeMs = statSync(path).mtimeMs
+    } catch {
+      // File missing / unreadable — return the cached copy. This keeps the
+      // extension usable across a transient rename or unlink race and mirrors
+      // the credentials.ts "missing auth.json is a cache miss (does not
+      // throw)" contract.
+      return _cache.tokens
+    }
+    if (mtimeMs > _cache.mtimeMs) {
+      const fresh = readTokensFromDisk()
+      if (fresh) {
+        _cache = fresh
+        return fresh.tokens
+      }
+      // mtime advanced but the file failed to parse — fall through to cache.
+      return _cache.tokens
+    }
+    return _cache.tokens
+  }
+
+  const fresh = readTokensFromDisk()
+  if (!fresh) return null
+  _cache = fresh
+  return fresh.tokens
+}
+
+/**
+ * Persist tokens to disk with mode 0o600 and update the in-memory cache.
+ *
+ * The write is followed by an explicit chmodSync to ensure the mode sticks
+ * even when the file already existed (writeFileSync's `mode` option is only
+ * honoured on create).
+ */
 export function saveTokens(tokens: AtlassianTokens): void {
+  const path = getTokenStorePath()
+  const dir = path.substring(0, Math.max(path.lastIndexOf("/"), 0)) || "."
   try {
-    mkdirSync(TOKEN_STORE_DIR, { recursive: true })
-    writeFileSync(TOKEN_STORE_PATH, JSON.stringify(tokens, null, 2), { mode: 0o600 })
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true, mode: 0o700 })
+    }
+    writeFileSync(path, JSON.stringify(tokens, null, 2), {
+      encoding: "utf-8",
+      mode: 0o600,
+    })
+    if (process.platform !== "win32") {
+      chmodSync(path, 0o600)
+    }
+    let mtimeMs = 0
+    try {
+      mtimeMs = statSync(path).mtimeMs
+    } catch {
+      // Can't stat immediately after writing — leave mtimeMs at 0 so the
+      // next loadTokens() call will re-read.
+    }
+    _cache = { tokens, mtimeMs }
   } catch (err) {
     console.error("[atlassian-mcp] Failed to save tokens:", err)
   }
+}
+
+/**
+ * Drop the in-memory token cache. The next loadTokens() call will re-read
+ * from disk. Used by the 401-retry shell in retry.ts to ensure the retry
+ * picks up whatever a peer process has just written.
+ */
+export function invalidateCache(): void {
+  _cache = null
 }
 
 // ---------------------------------------------------------------------------
@@ -437,16 +566,51 @@ function parseAuthInput(
 // ---------------------------------------------------------------------------
 
 /**
- * Returns a valid access token, refreshing if expired.
- * Saves refreshed tokens back to disk.
- * Throws if tokens are null or refresh fails.
+ * Returns a valid access token, refreshing if the cached copy is expired.
+ * The cache is mtime-aware — if a peer process has rewritten the token file,
+ * this call picks up the on-disk copy before deciding whether a refresh is
+ * needed.
+ *
+ * Refresh-failure fallback (#2389): when the OAuth server rejects our refresh
+ * (typically `invalid_grant` after a peer's refresh_token rotation revoked
+ * ours), we invalidate the cache, reload from disk, and — if the disk copy
+ * has a different, still-valid access token — return it instead of surfacing
+ * the refresh error.
+ *
+ * Throws:
+ *   - `Atlassian MCP: no auth tokens` when no tokens are available on disk.
+ *   - The underlying refresh error when refresh fails and no newer disk copy
+ *     is available.
  */
-export async function getValidAccessToken(tokens: AtlassianTokens): Promise<{ token: string; tokens: AtlassianTokens }> {
-  if (Date.now() < tokens.expiresAt) {
-    return { token: tokens.accessToken, tokens }
+export async function getValidAccessToken(): Promise<{
+  token: string
+  tokens: AtlassianTokens
+}> {
+  const initial = loadTokens()
+  if (!initial) throw new Error("Atlassian MCP: no auth tokens")
+
+  if (Date.now() < initial.expiresAt) {
+    return { token: initial.accessToken, tokens: initial }
   }
-  // Refresh
-  const refreshed = await refreshTokens(tokens)
-  saveTokens(refreshed)
-  return { token: refreshed.accessToken, tokens: refreshed }
+
+  // Expired — try to refresh
+  try {
+    const refreshed = await refreshTokens(initial)
+    saveTokens(refreshed)
+    return { token: refreshed.accessToken, tokens: refreshed }
+  } catch (refreshErr) {
+    // Refresh failed. Peer may have rotated the refresh token on disk before
+    // us. Reload from disk (bypassing cache) and, if the disk copy has a
+    // different, non-expired access token, use it.
+    invalidateCache()
+    const fresh = loadTokens()
+    if (
+      fresh &&
+      fresh.accessToken !== initial.accessToken &&
+      Date.now() < fresh.expiresAt
+    ) {
+      return { token: fresh.accessToken, tokens: fresh }
+    }
+    throw refreshErr
+  }
 }
