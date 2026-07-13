@@ -27,10 +27,10 @@ import {
 import { getCachedCredentials, repairCredentials } from "./credentials.ts"
 import { transformBody, transformResponseStream } from "./transforms.ts"
 import { streamSimpleAnthropic } from "@earendil-works/pi-ai"
-import { getModelBetas, getExcludedBetas } from "./betas.ts"
 import { config } from "./model-config.ts"
 import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
 import { buildRequestBody } from "./request-body.ts"
+import { buildOAuthHeaders, buildRequestUrl } from "./oauth-headers.ts"
 
 function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
   const modelRegistry = ModelRegistry.create(AuthStorage.inMemory())
@@ -67,13 +67,6 @@ function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
     }))
 
   return models
-}
-
-function getUserAgent(): string {
-  return (
-    process.env.ANTHROPIC_USER_AGENT ??
-    `claude-cli/${config.ccVersion} (external, cli)`
-  )
 }
 
 // pi-specific: extension entry point — pi calls this with its ExtensionAPI
@@ -136,32 +129,19 @@ export default function (pi: ExtensionAPI) {
           const isOAuth = isClaudeOAuthAccessToken(apiKey)
 
           const buildHeaders = (): Headers => {
-            const headers = new Headers()
-
             if (isOAuth) {
               const creds = getCachedCredentials()
               const token = creds?.accessToken ?? apiKey
-              const excluded = getExcludedBetas(model.id)
-              const betas = getModelBetas(model.id, excluded, {
-                forceAdaptiveThinking:
-                  model.compat?.forceAdaptiveThinking === true,
-              })
-              headers.set("authorization", `Bearer ${token}`)
-              headers.set("anthropic-version", "2023-06-01")
-              headers.set("anthropic-beta", betas.join(","))
-              headers.set("x-app", "cli")
-              headers.set("user-agent", getUserAgent())
-              headers.set("x-client-request-id", crypto.randomUUID())
+              return buildOAuthHeaders(model, token, options?.headers)
             }
 
+            // API-key mode: pass through caller headers unchanged.
+            const headers = new Headers()
             if (options?.headers) {
               for (const [key, value] of Object.entries(options.headers)) {
-                const norm = key.toLowerCase()
-                if (isOAuth && norm === "x-api-key") continue
                 headers.set(key, value)
               }
             }
-
             return headers
           }
 
@@ -175,7 +155,9 @@ export default function (pi: ExtensionAPI) {
           const transformedBody = isOAuth ? transformBody(bodyStr) : bodyStr
           const headers = buildHeaders()
 
-          let response = await fetch(`${model.baseUrl}/v1/messages`, {
+          const requestUrl = buildRequestUrl(`${model.baseUrl}/v1/messages`)
+
+          let response = await fetch(requestUrl, {
             method: "POST",
             headers,
             body: transformedBody as string,
@@ -184,11 +166,13 @@ export default function (pi: ExtensionAPI) {
 
           log("fetch_response", { status: response.status, modelId: model.id })
 
-          // On 401, rebuild headers (may refresh credential) and retry once
+          // On 401, rebuild headers (may refresh credential) and retry once.
+          // Reuse the beta-appended URL — the retry must hit the same endpoint
+          // as the original request (issue #2381, mirrors griffinmartin PR #207).
           if (response.status === 401 && isOAuth) {
             log("fetch_401_retry", { modelId: model.id })
             const retryHeaders = buildHeaders()
-            response = await fetch(`${model.baseUrl}/v1/messages`, {
+            response = await fetch(requestUrl, {
               method: "POST",
               headers: retryHeaders,
               body: transformedBody as string,

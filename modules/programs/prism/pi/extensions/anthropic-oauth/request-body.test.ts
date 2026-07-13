@@ -338,13 +338,26 @@ describe("getModelBetas — interleaved-thinking suppression for adaptive models
     )
   })
 
-  it("still adds effort-2025-11-24 for the 4-8 substring match", () => {
+  it("claude-opus-4-8 base betas include effort-2025-11-24 (via baseBetas, not per-model add)", () => {
+    // Griffinmartin v2.0.0 lifted `effort-2025-11-24` into `baseBetas` and
+    // removed the per-model `4-6`/`4-7`/`4-8` overrides that used to add it.
+    // The beta must still appear for 4-8 — the mechanism just changed.
     const betas = getModelBetas("claude-opus-4-8", undefined, {
       forceAdaptiveThinking: true,
     })
     assert.ok(
       betas.includes("effort-2025-11-24"),
-      "4-8 model-config override should still add the effort beta",
+      "effort-2025-11-24 must still be present for 4-8 (now via baseBetas)",
+    )
+  })
+
+  it("effort-2025-11-24 is a base beta present for non-4-8 models too", () => {
+    // Proof that effort-2025-11-24 is base-level and not per-model:
+    // it must appear for models that never had a per-model override entry.
+    const sonnet = getModelBetas("claude-sonnet-4-5")
+    assert.ok(
+      sonnet.includes("effort-2025-11-24"),
+      "sonnet-4-5 (no per-model override) should also include effort-2025-11-24 from baseBetas",
     )
   })
 })
