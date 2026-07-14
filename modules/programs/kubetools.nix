@@ -28,6 +28,7 @@ in
             hubble
             krew
             kubectl
+            kubectl-cnpg
             kubelogin
             kubelogin-oidc
             kubernetes-helm
