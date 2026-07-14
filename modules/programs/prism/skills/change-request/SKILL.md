@@ -89,23 +89,48 @@ A CR description should have these sections in roughly this order:
 The CH project has custom fields that must be filled. Each carries a
 specific audience expectation.
 
+> Field IDs below were verified against createmeta on 2026-07-14 for
+> project CH, issue type Task (id `10008`). They are likely
+> instance-specific to the thankyoupayroll.atlassian.net tenant; a
+> different Jira tenant will almost certainly renumber them, so treat
+> the IDs as a snapshot, not a specification. Pattern worth remembering:
+> the ITSM-native fields (Change Risk, Approvers, Team, Start date) live
+> in the `customfield_100xx` range, while the custom CH change-management
+> fields live in the `customfield_111xx` range. Mixing the two ranges is
+> the most common source of hard API failures when creating a CR.
+
 ### Change Category (`customfield_11130`)
 
 One of: `Standard pre-approved change`, `Normal`, `Emergency`. Default to
 `Normal` for engineering CRs unless there is an existing standing pre-
 approval for the change pattern.
 
-### Change Risk (`customfield_11006`)
+### Change Risk (`customfield_10006`)
 
-One of: `Low`, `Medium`, `High`, `Critical`. Bias toward honesty over
-optimism. A change with a fast tested rollback and no application impact
-is `Low`. A change that touches production data, has no rehearsal, or has
-ambiguous rollback is at least `Medium`.
+Select list. Allowed values and their option IDs:
+
+- Critical - id `10007`
+- High - id `10008`
+- Medium - id `10009`
+- Low - id `10010`
+
+Accepted payload shapes are `{"value": "Medium"}` or `{"id": "10009"}`
+(both work). Sending a plain string (e.g. `"Medium"`) fails.
+
+Bias toward honesty over optimism. A change with a fast tested rollback
+and no application impact is `Low`. A change that touches production
+data, has no rehearsal, or has ambiguous rollback is at least `Medium`.
 
 ### Systems/Service Affected (`customfield_11132`)
 
-Free-text labels. Name the system in human terms: `production-WAF`,
-`thankyoupayroll.co.nz`, `ALB-frontend-web`. Not ARNs.
+Labels-type field: send a JSON array of strings. Label values cannot
+contain spaces - Jira rejects a plain string with `Specify the value
+for Systems/Service Affected in an array.` and rejects a whitespace-
+containing label outright.
+
+Array of hyphenated labels - no spaces. Name the system in human terms:
+`["production-web-apps", "production-ALB", "thankyoupayroll.co.nz"]`.
+Not ARNs.
 
 ### Business impact during change (`customfield_11133`)
 
@@ -175,11 +200,14 @@ The agent should not guess these. Flag them in the response to the human
 so they can fill in:
 
 - Assignee
-- Approvers (`customfield_11003`)
+- Approvers (`customfield_10003`)
 - Peer Reviewer (`customfield_11141`)
 - Target Implementation Date/Time (`customfield_11131`)
-- Start date (`customfield_11015`)
-- Team (`customfield_11001`)
+- Start date (`customfield_10015`)
+- Team (`customfield_10001`)
+- Related issues (`customfield_11142`) - optional. Link related Jira
+  issues (typically the engineering PLAT-* ticket, or a parent CR)
+  when the CR is part of a chain.
 
 ## ADF formatting note
 
