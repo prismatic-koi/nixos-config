@@ -75,7 +75,7 @@
           "W503"
           "W293"
         ];
-        libraries = with pkgs.python313Packages; [
+        libraries = with pkgs.python3Packages; [
           tldextract
           pyperclip
         ];
@@ -191,7 +191,7 @@
           "E302"
           "W292"
         ];
-        libraries = with pkgs.python313Packages; [ ];
+        libraries = with pkgs.python3Packages; [ ];
       } (builtins.readFile ./userscripts/bitwarden-prefetch);
     in
     lib.mkMerge [
