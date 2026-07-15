@@ -25,7 +25,7 @@
       wallpaper.variant = "enso-6colour";
     };
     programs = {
-      prism.profile.default = "anthropic";
+      prism.profile.default = "anthropic-standard";
       chromium.enable = true;
       calibre.enable = true;
       darktable.enable = true;
