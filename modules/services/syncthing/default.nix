@@ -234,12 +234,21 @@ in
 
       # Darwin-only: ensure syncthing starts on login/boot
       (lib.mkIf pkgs.stdenv.isDarwin {
-        # Upstream HM module doesn't set RunAtLoad, so syncthing won't start on
-        # login/boot — it relies solely on the activation script to bootstrap it.
-        # If the plist hasn't changed between generations the activation script
-        # skips re-bootstrapping, leaving syncthing dead after a reboot.
+        # Upstream's services.syncthing HM module sets domain = lib.mkDefault
+        # "user", which forces LimitLoadToSessionType = "Background" (see the
+        # HM launchd module). Background/user-domain agents are NOT auto-loaded
+        # into the Aqua session at GUI login — macOS only auto-bootstraps
+        # ~/Library/LaunchAgents/*.plist agents whose domain is "gui". A
+        # Background agent only gets loaded via the explicit
+        # "launchctl bootstrap user/$UID" that home-manager runs during a
+        # switch, so on a fresh boot/login it is never loaded into any session
+        # at all and RunAtLoad = true never gets a chance to fire. Overriding
+        # domain to "gui" here wins over upstream's mkDefault, drops the
+        # Background session-type constraint, and lets RunAtLoad fire at
+        # GUI login.
         home-manager.users.${username}.launchd.agents.syncthing = {
           enable = true;
+          domain = "gui";
           config.RunAtLoad = true;
         };
       })
