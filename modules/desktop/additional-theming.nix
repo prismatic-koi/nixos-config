@@ -9,6 +9,7 @@
     home-manager.users.${config.nx.username} = {
       # set up the cusors and icon themes the way I like it
       home.pointerCursor = {
+        enable = true;
         gtk.enable = true;
         name = "breeze_cursors";
         # this is the cursor I like, from plasma 6

@@ -164,7 +164,7 @@
             pr = {
               # prism quick pr invokes `pi --print` (anthropic-oauth route).
               # See modules/programs/prism/prism/internal/quick/pr.go (#2118).
-              model = "anthropic/claude-sonnet-4-6";
+              model = "anthropic/claude-sonnet-5";
             };
           };
 
