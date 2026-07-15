@@ -94,20 +94,32 @@
           # ── Profiles ────────────────────────────────────────────────────────────
 
           profiles = {
-            anthropic = profileFromSlots {
+            anthropic-standard = profileFromSlots {
               coordinator = slot "coordinator" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               };
               _default = slot "worker" {
                 provider = "anthropic";
-                model = "anthropic/claude-sonnet-4-6";
+                model = "anthropic/claude-sonnet-5";
                 thinking = "low";
               };
             };
 
-            anthropic-opus-medium = profileFromSlots {
+            opus-standard = profileFromSlots {
+              coordinator = slot "coordinator" {
+                provider = "anthropic";
+                model = "anthropic/claude-opus-4-7";
+                thinking = "medium";
+              };
+              _default = slot "worker" {
+                provider = "anthropic";
+                model = "anthropic/claude-opus-4-7";
+              };
+            };
+
+            opus-medium = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
@@ -120,7 +132,7 @@
               };
             };
 
-            anthropic-opus-max = profileFromSlots {
+            opus-max = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
@@ -133,7 +145,7 @@
               };
             };
 
-            anthropic-fable = profileFromSlots {
+            fable-max = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-fable-5";
@@ -146,60 +158,6 @@
               };
             };
 
-            anthropic-opus-max-4-8 = profileFromSlots {
-              _default = slot "worker" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-8";
-                thinking = "xhigh";
-              };
-              coordinator = slot "coordinator" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-8";
-                thinking = "xhigh";
-              };
-            };
-
-            anthropic-opus = profileFromSlots {
-              coordinator = slot "coordinator" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
-                thinking = "medium";
-              };
-              _default = slot "worker" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
-              };
-            };
-
-            gemini-hybrid = profileFromSlots {
-              coordinator = slot "coordinator" {
-                provider = "anthropic";
-                model = "anthropic/claude-sonnet-4-6";
-              };
-              _default = slot "worker" {
-                provider = "google";
-                model = "google/gemini-3.1-pro-preview-customtools";
-              };
-            };
-
-            github-copilot = profileFromSlots {
-              coordinator = slot "coordinator" {
-                provider = "github-copilot";
-                model = "github-copilot/claude-sonnet-4.6";
-                thinking = "medium";
-              };
-              _default = slot "worker" {
-                provider = "github-copilot";
-                model = "github-copilot/claude-sonnet-4.6";
-              };
-            };
-
-            google = profileFromSlots {
-              _default = slot "coordinator" {
-                provider = "google";
-                model = "google/gemini-3-flash";
-              };
-            };
           };
 
           quickProfiles = {

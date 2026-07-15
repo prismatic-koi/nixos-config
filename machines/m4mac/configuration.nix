@@ -25,7 +25,7 @@ in
   nx = {
     programs = {
       prism = {
-        profile.default = "anthropic-opus";
+        profile.default = "anthropic-standard";
         agent.isolation.default = "sandbox-exec";
         pi.atlassian = {
           enable = true;
