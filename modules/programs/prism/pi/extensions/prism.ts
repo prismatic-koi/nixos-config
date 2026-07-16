@@ -822,6 +822,65 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "restore with `git apply /tmp/wip.patch`) instead \u2014 see AGENTS.md " +
       "\u00a7 'Setting WIP aside \u2014 do not use git stash'.",
   },
+  {
+    // #2410 — `gh pr merge` from a worker-class agent bypasses the
+    // coordinator/worker separation. Only the coordinator (via the merge
+    // queue or the manual `gh pr merge --squash` fallback) is supposed to
+    // land PRs. `prism merge` is already denied to workers via its bash
+    // deny list, but `gh pr merge` was not — the guard was bypassable.
+    // During the A/B calibration for #2406, the light-tier worker on
+    // branch `align-workflow-matrix-keys-light` finished, ran
+    // `prism review` (all 5 PASS), then ran `gh pr merge 2408 --squash`
+    // and merged its own PR bypassing the coordinator hand-off. Scoped to
+    // worker-class roles so the coordinator's manual-fallback merge path
+    // is preserved. The regex tolerates the same normalisation shapes as
+    // the pre-existing entries: leading env-var assignments (single or
+    // multiple, with or without `env`), `gh`-level flags before `pr`,
+    // and `pr`-level flags before `merge`, plus arbitrary whitespace
+    // between tokens.
+    id: "gh-pr-merge",
+    match: (segment: string) =>
+      /^\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*gh(?:\s+-\S+(?:\s+\S+)?)*\s+pr(?:\s+-\S+(?:\s+\S+)?)*\s+merge\b/.test(
+        segment,
+      ),
+    appliesToRole: isWorkerClassRole,
+    reason:
+      "blocked by prism extension: `gh pr merge` from a worker-class agent " +
+      "bypasses the coordinator/worker separation \u2014 only the coordinator " +
+      "lands PRs (via the merge queue or its manual `gh pr merge --squash` " +
+      "fallback). Hand off to the coordinator when your PR is open and " +
+      "`prism review` passes; the coordinator enqueues via `prism merge` or " +
+      "merges manually. See issue #2410.",
+  },
+  {
+    // #2410 — same hardening class as `gh-pr-merge`. A worker
+    // self-approving via `gh pr review --approve` games the required-review
+    // gate the same way a self-merge games the merge gate. Review agents
+    // use the `prism review` mechanism (which delivers verdicts through
+    // prism, not through the GitHub review API), so blocking `--approve`
+    // and `--request-changes` for worker-class roles breaks no legitimate
+    // flow. Plain `gh pr review` (no verdict flag) and `--comment` remain
+    // allowed — they map to informational paths, not to gating the merge.
+    //
+    // Both long-form (`--approve` / `--request-changes`) and short-form
+    // (`-a` / `-r`) flags match — `gh pr review --help` lists them as
+    // functionally identical aliases, so blocking one without the other
+    // would leave a trivial bypass of the same class this deny closes.
+    // The trailing `\b` prevents matching e.g. `-abc` or `--approver`;
+    // the leading `\s` prevents matching mid-word (`--foo-a` etc.).
+    id: "gh-pr-review-approve",
+    match: (segment: string) =>
+      /^\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*gh(?:\s+-\S+(?:\s+\S+)?)*\s+pr(?:\s+-\S+(?:\s+\S+)?)*\s+review\b[\s\S]*?\s(?:--approve|-a|--request-changes|-r)\b/.test(
+        segment,
+      ),
+    appliesToRole: isWorkerClassRole,
+    reason:
+      "blocked by prism extension: `gh pr review --approve` / `-a` / " +
+      "`--request-changes` / `-r` from a worker-class agent games the " +
+      "required-review gate the same way `gh pr merge` games the merge " +
+      "gate. Review agents use the `prism review` mechanism, not " +
+      "`gh pr review`. Hand off to the coordinator instead. See issue #2410.",
+  },
 ]
 
 /**
