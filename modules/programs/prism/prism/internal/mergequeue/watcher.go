@@ -251,16 +251,25 @@ func (w *Watcher) tick(ctx context.Context) {
 		switch {
 		case hasCIFailure(prInfo.StatusCheckRollup):
 			w.failAndNotify(head, "CI failed")
-		case prInfo.ReviewDecision == "REVIEW_REQUIRED" || prInfo.ReviewDecision == "":
-			w.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfo.ReviewDecision == "CHANGES_REQUESTED":
-			w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
 		default:
-			// Keep the operator log line naming the literal ReviewDecision
-			// string — useful for future triage when GitHub introduces a new
-			// enum value we haven't yet mapped (AC4 of #2375).
-			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfo.ReviewDecision)
-			w.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfo.ReviewDecision))
+			// A required status check can still be pending (queued/in-progress,
+			// no conclusion yet) while GitHub reports mergeStateStatus BLOCKED —
+			// not just UNSTABLE. An empty ReviewDecision in that window does NOT
+			// mean branch protection wants a review; it means the review
+			// disambiguation below hasn't been reached yet because required
+			// checks haven't concluded. Mirror the UNSTABLE branch's guard here
+			// so we stay watching until required checks conclude, rather than
+			// mis-failing with "human reviewer approval required" (#2415).
+			required, err := w.fetchRequiredChecks(ctx)
+			if err != nil {
+				log.Printf("[mergequeue] PR #%d BLOCKED — cannot fetch required checks: %v — leaving watching", head.PR, err)
+				return
+			}
+			if !requiredChecksAllPassed(prInfo.StatusCheckRollup, required) {
+				log.Printf("[mergequeue] PR #%d BLOCKED — required checks not yet concluded — staying watching", head.PR)
+				return
+			}
+			w.disambiguateBlockedReviewDecision(head, prInfo)
 		}
 
 	case "UNSTABLE":
@@ -777,6 +786,30 @@ func (w *Watcher) fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
 
 // hasCIFailure returns true when at least one check in rollup has
 // conclusion = FAILURE.
+// disambiguateBlockedReviewDecision routes a BLOCKED PR whose required
+// checks have all concluded (no failure, no pending) based on its
+// ReviewDecision. Empty ReviewDecision on a BLOCKED PR at this point
+// reliably means "branch protection wants a review, none requested yet", so
+// it routes to the same notification as REVIEW_REQUIRED (coordinator's
+// response is identical: request a review, then re-enqueue). Any other
+// unrecognised ReviewDecision fails-and-notifies with a distinct message so
+// the enqueuing coordinator can see the row terminate and intervene
+// manually, rather than the queue silently stalling (#2375).
+func (w *Watcher) disambiguateBlockedReviewDecision(head *db.PendingMerge, prInfo *prInfo) {
+	switch {
+	case prInfo.ReviewDecision == "REVIEW_REQUIRED" || prInfo.ReviewDecision == "":
+		w.failAndNotify(head, "human reviewer approval required before merge")
+	case prInfo.ReviewDecision == "CHANGES_REQUESTED":
+		w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
+	default:
+		// Keep the operator log line naming the literal ReviewDecision
+		// string — useful for future triage when GitHub introduces a new
+		// enum value we haven't yet mapped (AC4 of #2375).
+		log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfo.ReviewDecision)
+		w.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfo.ReviewDecision))
+	}
+}
+
 func hasCIFailure(rollup []checkEntry) bool {
 	for _, c := range rollup {
 		if strings.EqualFold(c.Conclusion, "FAILURE") {

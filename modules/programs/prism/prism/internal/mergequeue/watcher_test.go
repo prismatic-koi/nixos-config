@@ -525,19 +525,37 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		fw.watcher.failAndNotify(head, "merge conflicts")
 
 	case "BLOCKED":
-		// Mirror the production BLOCKED branch (#2375): empty ReviewDecision
-		// routes to the review-required message; any other unrecognised value
-		// fails-and-notifies with the blocked-for-unknown-reason envelope.
+		// Mirror the production BLOCKED branch (#2375 + #2415): empty
+		// ReviewDecision routes to the review-required message; any other
+		// unrecognised value fails-and-notifies with the blocked-for-unknown-
+		// reason envelope. If fetchRequiredChecksFn is set (opt-in for tests
+		// that care about the #2415 pending-check guard), mirror the
+		// production stay-watching behaviour when a required check hasn't
+		// concluded yet. Tests that leave fetchRequiredChecksFn nil skip the
+		// guard and fall straight into disambiguation, preserving pre-#2415
+		// fakeWatcher behaviour for tests that don't exercise it.
 		switch {
 		case hasCIFailure(prInfoVal.StatusCheckRollup):
 			fw.watcher.failAndNotify(head, "CI failed")
-		case prInfoVal.ReviewDecision == "REVIEW_REQUIRED" || prInfoVal.ReviewDecision == "":
-			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfoVal.ReviewDecision == "CHANGES_REQUESTED":
-			fw.watcher.failAndNotify(head, "reviewer requested changes — fix and re-request review")
 		default:
-			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfoVal.ReviewDecision)
-			fw.watcher.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfoVal.ReviewDecision))
+			if fw.fetchRequiredChecksFn != nil {
+				required, fetchErr := fw.fetchRequiredChecksFn(ctx)
+				if fetchErr != nil {
+					return
+				}
+				if !requiredChecksAllPassed(prInfoVal.StatusCheckRollup, required) {
+					return // stay watching — required check still pending (#2415)
+				}
+			}
+			switch {
+			case prInfoVal.ReviewDecision == "REVIEW_REQUIRED" || prInfoVal.ReviewDecision == "":
+				fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
+			case prInfoVal.ReviewDecision == "CHANGES_REQUESTED":
+				fw.watcher.failAndNotify(head, "reviewer requested changes — fix and re-request review")
+			default:
+				log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfoVal.ReviewDecision)
+				fw.watcher.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfoVal.ReviewDecision))
+			}
 		}
 
 	case "UNSTABLE":
@@ -1029,10 +1047,16 @@ func TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired(t *testing.T) {
 			// args[0..1] are "--repo <slug>" (prepended by runGH); the
 			// meaningful subcommand starts at args[2].
 			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
-				// BLOCKED with a passing check and empty reviewDecision —
-				// the "branch protection wants a review, none requested
-				// yet" state.
-				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}],"reviewDecision":""}`), nil
+				// BLOCKED with a passing, named, required check and empty
+				// reviewDecision — required checks have concluded (SUCCESS),
+				// so this is the "branch protection wants a review, none
+				// requested yet" state, not the #2415 pending-check window.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"reviewDecision":""}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				// Branch-protection fetch (#2415 guard): "ci" is the sole
+				// required check, and it's already SUCCESS above.
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"ci"}]}}`), nil
 			}
 			return nil, fmt.Errorf("unexpected gh call: %v", args)
 		},
@@ -1182,10 +1206,14 @@ func TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies(t *testing.T)
 		repo:        "myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
 			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
-				// BLOCKED with a passing check and an unrecognised
-				// reviewDecision value — e.g. a future GitHub enum
-				// addition we haven't yet mapped.
-				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}],"reviewDecision":"FOOBAR"}`), nil
+				// BLOCKED with a passing, named, required check and an
+				// unrecognised reviewDecision value — e.g. a future GitHub
+				// enum addition we haven't yet mapped. Required checks have
+				// concluded, so this is not the #2415 pending-check window.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"ci","conclusion":"SUCCESS"}],"reviewDecision":"FOOBAR"}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"ci"}]}}`), nil
 			}
 			return nil, fmt.Errorf("unexpected gh call: %v", args)
 		},
@@ -1252,6 +1280,281 @@ func TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies(t *testing.T)
 	}
 	if !strings.Contains(logged, "PR #1885") {
 		t.Errorf("log output %q does not reference PR #1885", logged)
+	}
+}
+
+// TestWatcher_BLOCKEDStaysWatchingWhenRequiredCheckPending is the positive
+// case of #2415: a BLOCKED PR with empty ReviewDecision while a *required*
+// check is still pending (queued/in-progress, no conclusion yet) must stay
+// in "watching" state and must NOT fail-and-notify. The pre-fix code fell
+// straight through to the ReviewDecision disambiguation and mis-failed with
+// "human reviewer approval required before merge" — the #2413 root cause.
+//
+// This test exercises the real w.tick() path with a stubbed runGHFunc, so
+// reverting the #2415 pending-check guard makes it fail — satisfying the
+// revert-and-watch-fail proof requested in the issue's testing section.
+func TestWatcher_BLOCKEDStaysWatchingWhenRequiredCheckPending(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-pending"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-pending")
+
+	if _, err := d.EnqueueMerge(2413, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				// BLOCKED, empty reviewDecision, required check "go-tests"
+				// still IN_PROGRESS (no conclusion yet) — the #2413 window.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","status":"IN_PROGRESS","conclusion":""}],"reviewDecision":""}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"}]}}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2413, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching (#2415: pending required check must not mis-fail as review-required)", row.Status)
+	}
+	if srv.called != 0 {
+		t.Errorf("notification sent (called=%d) while required check still pending — must stay silent", srv.called)
+	}
+}
+
+// TestWatcher_BLOCKEDMergesOnceRequiredCheckConcludes is the follow-on half
+// of the #2413 scenario: once the pending required check reports SUCCESS and
+// mergeStateStatus flips to CLEAN, the watcher merges on a subsequent tick
+// without operator intervention.
+func TestWatcher_BLOCKEDMergesOnceRequiredCheckConcludes(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-then-clean"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-then-clean")
+
+	if _, err := d.EnqueueMerge(2414, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	var mergeStateStatus = "BLOCKED"
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				if mergeStateStatus == "BLOCKED" {
+					return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","status":"IN_PROGRESS","conclusion":""}],"reviewDecision":""}`), nil
+				}
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[{"name":"go-tests","status":"COMPLETED","conclusion":"SUCCESS"}],"reviewDecision":""}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"}]}}`), nil
+			}
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "merge" {
+				return []byte("merged"), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	// First tick: required check still pending -> stays watching.
+	w.tick(context.Background())
+	row, err := d.PendingMergeByPR(2414, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Fatalf("after first tick: status: got %q, want watching", row.Status)
+	}
+
+	// Required check concludes SUCCESS, mergeStateStatus flips to CLEAN.
+	mergeStateStatus = "CLEAN"
+	w.tick(context.Background())
+	row, err = d.PendingMergeByPR(2414, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("after second tick: status: got %q, want merged (#2413 scenario)", row.Status)
+	}
+}
+
+// TestWatcher_BLOCKEDRequiredCheckFailedStillFailsAndNotifies is the negative
+// (preserve-behaviour) case: a required check in a FAILED conclusion keeps
+// CI-failure precedence over the #2415 pending-check guard — hasCIFailure is
+// checked first, so a genuinely failed required check still terminates with
+// "CI failed" rather than being (wrongly) treated as pending.
+func TestWatcher_BLOCKEDRequiredCheckFailedStillFailsAndNotifies(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-req-failed"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-req-failed")
+
+	if _, err := d.EnqueueMerge(2416, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","status":"COMPLETED","conclusion":"FAILURE"}],"reviewDecision":""}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"}]}}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2416, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+	if row.Error == nil || *row.Error != "CI failed" {
+		t.Errorf("error: got %v, want 'CI failed'", row.Error)
+	}
+}
+
+// TestWatcher_BLOCKEDReviewRequiredAfterChecksConcludedStillFailsAndNotifies
+// is the negative (preserve-behaviour) case: once all required checks have
+// concluded (no pending window left), a BLOCKED PR with
+// reviewDecision=="REVIEW_REQUIRED" still fails-and-notifies with the
+// review-required message — the #2415 guard only defers the disambiguation
+// while a required check is pending, it does not suppress it once checks
+// are done.
+func TestWatcher_BLOCKEDReviewRequiredAfterChecksConcludedStillFailsAndNotifies(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-req-concluded"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-req-concluded")
+
+	if _, err := d.EnqueueMerge(2417, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","status":"COMPLETED","conclusion":"SUCCESS"}],"reviewDecision":"REVIEW_REQUIRED"}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"}]}}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2417, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed", row.Status)
+	}
+	wantMsg := "human reviewer approval required before merge"
+	if row.Error == nil || *row.Error != wantMsg {
+		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
+	}
+}
+
+// TestWatcher_BLOCKEDOptionalPendingCheckDoesNotKeepWatching is the edge-case
+// AC: the pending-check determination reuses the same required-checks
+// resolution as UNSTABLE, so an optional/non-required check that is still
+// pending does NOT keep a BLOCKED PR watching — only a *required* pending
+// check does.
+func TestWatcher_BLOCKEDOptionalPendingCheckDoesNotKeepWatching(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-blocked-optional-pending"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-optional-pending")
+
+	if _, err := d.EnqueueMerge(2418, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
+				// The only required check ("go-tests") is SUCCESS; an
+				// optional, non-required check ("slow-lint") is still
+				// IN_PROGRESS. Only "go-tests" is in the required-checks
+				// list below, so requiredChecksAllPassed must ignore
+				// "slow-lint" entirely.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"slow-lint","status":"IN_PROGRESS","conclusion":""}],"reviewDecision":""}`), nil
+			}
+			if len(args) >= 3 && args[2] == "api" {
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"}]}}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2418, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "failed" {
+		t.Errorf("status: got %q, want failed (optional pending check must not keep BLOCKED PR watching)", row.Status)
+	}
+	wantMsg := "human reviewer approval required before merge"
+	if row.Error == nil || *row.Error != wantMsg {
+		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
 	}
 }
 
