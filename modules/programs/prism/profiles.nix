@@ -93,46 +93,100 @@
 
           # ── Profiles ────────────────────────────────────────────────────────────
 
+          # Tier-based profile naming (issue #2404). Tiers scale by task
+          # complexity — pick with the `complexity-triage` skill. Coordinator
+          # is never the cheapest slot in a tier; worker + all five review-*
+          # roles scale together (uniform per tier); analytical roles
+          # (`ac` / `retro` / `investigate`) get a sonnet floor.
+          #
+          # Helper: build a uniform slot for the worker + five review-* roles.
+          reviewRoles = [
+            "worker"
+            "review-goal"
+            "review-code"
+            "review-security"
+            "review-qa"
+            "review-context"
+          ];
+          reviewSlots =
+            s:
+            lib.genAttrs reviewRoles (
+              role: slot role (removeAttrs s [ "thinking" ] // { thinking = s.thinking or "off"; })
+            );
+
+          analyticalRoles = [
+            "ac"
+            "retro"
+            "investigate"
+          ];
+          analyticalSlots =
+            s:
+            lib.genAttrs analyticalRoles (
+              role: slot role (removeAttrs s [ "thinking" ] // { thinking = s.thinking or "off"; })
+            );
+
           profiles = {
-            anthropic-standard = profileFromSlots {
-              coordinator = slot "coordinator" {
+            light = profileFromSlots (
+              {
+                coordinator = slot "coordinator" {
+                  provider = "anthropic";
+                  model = "anthropic/claude-sonnet-5";
+                  thinking = "low";
+                };
+              }
+              // reviewSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-8";
-                thinking = "medium";
-              };
-              _default = slot "worker" {
+                model = "anthropic/claude-haiku-4-5";
+                thinking = "off";
+              }
+              // analyticalSlots {
                 provider = "anthropic";
                 model = "anthropic/claude-sonnet-5";
                 thinking = "low";
-              };
-            };
+              }
+            );
 
-            opus-standard = profileFromSlots {
-              coordinator = slot "coordinator" {
+            standard = profileFromSlots (
+              {
+                coordinator = slot "coordinator" {
+                  provider = "anthropic";
+                  model = "anthropic/claude-opus-4-8";
+                  thinking = "medium";
+                };
+              }
+              // reviewSlots {
+                provider = "anthropic";
+                model = "anthropic/claude-sonnet-5";
+                thinking = "low";
+              }
+              // analyticalSlots {
+                provider = "anthropic";
+                model = "anthropic/claude-sonnet-5";
+                thinking = "low";
+              }
+            );
+
+            heavy = profileFromSlots (
+              {
+                coordinator = slot "coordinator" {
+                  provider = "anthropic";
+                  model = "anthropic/claude-opus-4-8";
+                  thinking = "medium";
+                };
+              }
+              // reviewSlots {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
                 thinking = "medium";
-              };
-              _default = slot "worker" {
+              }
+              // analyticalSlots {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";
-              };
-            };
+                thinking = "low";
+              }
+            );
 
-            opus-medium = profileFromSlots {
-              _default = slot "worker" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
-                thinking = "medium";
-              };
-              coordinator = slot "coordinator" {
-                provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
-                thinking = "medium";
-              };
-            };
-
-            opus-max = profileFromSlots {
+            max = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
                 model = "anthropic/claude-opus-4-7";

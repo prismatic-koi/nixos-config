@@ -173,7 +173,7 @@
       profile = {
         default = lib.mkOption {
           type = lib.types.enum (builtins.attrNames config.nx.programs.prism.profiles.data.profiles);
-          default = "anthropic";
+          default = "standard";
           description = ''
             The system-wide default profile written as `default` in profiles.json.
             This controls which profile is active when prism spawns a new session

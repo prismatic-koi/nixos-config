@@ -23,7 +23,7 @@
     };
     programs = {
       prism = {
-        profile.default = "opus-standard";
+        profile.default = "heavy";
         agent.isolation.default = "bwrap";
       };
       anki.enable = false; # build broken as of 2025-08-30
