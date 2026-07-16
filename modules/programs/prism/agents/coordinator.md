@@ -38,6 +38,18 @@ Before spawning alongside an in-flight PR, check the file footprint — overlapp
 
 ---
 
+## Complexity triage
+
+Before spawning a worker agent, load the `complexity-triage` skill and apply it inline to score the task and pick the profile tier. Do not delegate this to a subagent — score the task yourself using the rubric from the skill.
+
+The five valid tiers are `light`, `standard`, `heavy`, `max`, and `fable-max`. Pass the selected tier as `--profile <tier>` on the `prism spawn` command. If the machine default already matches the scored tier, `--profile` may be omitted, but the score should still be recorded so retros can compare intent against outcome.
+
+Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage would be overhead.
+
+Order of operations for a non-trivial spawn: complexity-triage (pick tier) → acceptance-criteria (draft or review ACs) → `prism spawn --profile <tier>` with the ACs pasted inline.
+
+---
+
 ## Acceptance criteria
 
 Before spawning a worker agent, load the `acceptance-criteria` skill and apply it inline to produce a tagged AC checklist for the issue or ticket. Do not invoke `@ac` as a subagent — generate or critique the ACs yourself using the rubric from the skill.
