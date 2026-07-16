@@ -38,12 +38,22 @@ jobs:
   build-configs:
     needs: update-flakes
     if: needs.update-flakes.outputs.updated == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        config: [navi, tui]
+        include:
+          - host: navi
+            os: ubuntu-latest
+            attr: nixosConfigurations.navi
+          - host: tui
+            os: ubuntu-latest
+            attr: nixosConfigurations.tui
+          - host: m4mac
+            os: macos-15
+            attr: darwinConfigurations.m4mac
     steps:
       - uses: jlumbroso/free-disk-space@v1.3.1
+        if: runner.os == 'Linux'
         with:
           swap-storage: false
           tool-cache: true
@@ -58,21 +68,21 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: Build NixOS config for ${{ matrix.config }} (before update)
-        run: nix build --out-link result-before '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+      - name: Build config for ${{ matrix.host }} (before update)
+        run: nix build --out-link result-before '.#${{ matrix.attr }}.config.system.build.toplevel'
       - name: Download updated flake
         uses: actions/download-artifact@v8
         with:
           name: updated-flake
-      - name: Build NixOS config for ${{ matrix.config }} (after update)
-        run: nix build --out-link result-after '.#nixosConfigurations.${{ matrix.config }}.config.system.build.toplevel'
+      - name: Build config for ${{ matrix.host }} (after update)
+        run: nix build --out-link result-after '.#${{ matrix.attr }}.config.system.build.toplevel'
       - name: Diff closures
-        run: nix store diff-closures ./result-before ./result-after 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > diff-${{ matrix.config }}.txt || true
+        run: nix store diff-closures ./result-before ./result-after 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > diff-${{ matrix.host }}.txt || true
       - name: Upload diff
         uses: actions/upload-artifact@v7
         with:
-          name: diff-${{ matrix.config }}
-          path: diff-${{ matrix.config }}.txt
+          name: diff-${{ matrix.host }}
+          path: diff-${{ matrix.host }}.txt
 
   create-pr:
     needs: [update-flakes, build-configs]
@@ -84,14 +94,11 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: updated-flake
-      - name: Download diff for navi
+      - name: Download diffs
         uses: actions/download-artifact@v8
         with:
-          name: diff-navi
-      - name: Download diff for tui
-        uses: actions/download-artifact@v8
-        with:
-          name: diff-tui
+          pattern: diff-*
+          merge-multiple: true
       - name: Build PR body
         id: pr-body
         run: |
@@ -102,17 +109,16 @@ jobs:
             echo ''
             echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
             echo ''
-            echo '## Closure diff: navi'
-            echo ''
-            echo '```'
-            cat diff-navi.txt
-            echo '```'
-            echo ''
-            echo '## Closure diff: tui'
-            echo ''
-            echo '```'
-            cat diff-tui.txt
-            echo '```'
+            for f in diff-*.txt; do
+              host="${f#diff-}"
+              host="${host%.txt}"
+              echo "## Closure diff: ${host}"
+              echo ''
+              echo '```'
+              cat "$f"
+              echo '```'
+              echo ''
+            done
             echo "${delim}"
           } >> "$GITHUB_OUTPUT"
       - name: Create Pull Request
