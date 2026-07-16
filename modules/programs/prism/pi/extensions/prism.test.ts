@@ -1729,8 +1729,8 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly four entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 4)
+  it("contains exactly five entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 5)
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -1753,9 +1753,15 @@ describe("BLOCKED_BASH_PATTERNS", () => {
     assert.ok(ids.includes("git-stash"))
   })
 
-  it("only the git-stash entry is role-scoped; the pre-#2202 entries are unscoped", () => {
+  it("has the gh-pr-merge-or-approve entry (#2410)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("gh-pr-merge-or-approve"))
+  })
+
+  it("only the role-scoped entries (git-stash, gh-pr-merge-or-approve) carry appliesToRole; the rest are unscoped", () => {
+    const roleScopedIds = new Set(["git-stash", "gh-pr-merge-or-approve"])
     for (const p of BLOCKED_BASH_PATTERNS) {
-      if (p.id === "git-stash") {
+      if (roleScopedIds.has(p.id)) {
         assert.equal(typeof p.appliesToRole, "function")
       } else {
         assert.equal(p.appliesToRole, undefined)
@@ -2247,6 +2253,139 @@ describe("checkBlockedBash — git stash (positive cases, worker role, #2202)", 
     const hit = checkBlockedBash("echo $(git stash list)", "worker")
     assert.notEqual(hit, null)
     assert.equal(hit!.id, "git-stash")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// gh-pr-merge-or-approve deny entry (#2410)
+// ---------------------------------------------------------------------------
+
+describe("checkBlockedBash — gh pr merge / review --approve (positive cases, worker role, #2410)", () => {
+  it("blocks 'gh pr merge <n> --squash'", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks 'gh pr merge <n> --admin'", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --admin", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks 'gh pr merge <n> --merge'", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --merge", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks bare 'gh pr merge <n>' with no flags", () => {
+    const hit = checkBlockedBash("gh pr merge 2408", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks extra-whitespace variant 'gh  pr   merge'", () => {
+    const hit = checkBlockedBash("gh  pr   merge 2408", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks an env-var-prefixed invocation", () => {
+    const hit = checkBlockedBash("GH_TOKEN=abc123 gh pr merge 2408", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks flags-before-subcommand form 'gh --repo x/y pr merge'", () => {
+    const hit = checkBlockedBash("gh --repo x/y pr merge 2408", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks 'gh pr review <n> --approve'", () => {
+    const hit = checkBlockedBash("gh pr review 2408 --approve", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+
+  it("blocks 'gh pr review <n> --request-changes'", () => {
+    const hit = checkBlockedBash(
+      "gh pr review 2408 --request-changes",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge-or-approve")
+  })
+})
+
+describe("checkBlockedBash — gh pr merge coordinator exemption (#2410)", () => {
+  it("does NOT block 'gh pr merge' for the coordinator role", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "coordinator")
+    assert.equal(hit, null)
+  })
+
+  it("does NOT block 'gh pr review --approve' for the coordinator role", () => {
+    const hit = checkBlockedBash("gh pr review 2408 --approve", "coordinator")
+    assert.equal(hit, null)
+  })
+
+  it("does NOT block 'gh pr review --request-changes' for the coordinator role", () => {
+    const hit = checkBlockedBash(
+      "gh pr review 2408 --request-changes",
+      "coordinator",
+    )
+    assert.equal(hit, null)
+  })
+})
+
+describe("checkBlockedBash — gh pr merge false-positive avoidance (#2410)", () => {
+  it("does not block 'gh pr view'", () => {
+    const hit = checkBlockedBash("gh pr view 2408", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block 'gh pr list'", () => {
+    const hit = checkBlockedBash("gh pr list", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block 'gh pr checks'", () => {
+    const hit = checkBlockedBash("gh pr checks 2408", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block 'gh pr comment'", () => {
+    const hit = checkBlockedBash("gh pr comment 2408 -b 'hi there'", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block 'gh pr diff'", () => {
+    const hit = checkBlockedBash("gh pr diff 2408", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block plain 'gh pr review' with no approve/request-changes flag", () => {
+    const hit = checkBlockedBash("gh pr review 2408", "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block a quoted mention: echo \"gh pr merge 5\"", () => {
+    const hit = checkBlockedBash('echo "gh pr merge 5"', "worker")
+    assert.equal(hit, null)
+  })
+
+  it("does not block a heredoc body containing 'gh pr merge'", () => {
+    const hit = checkBlockedBash(
+      "cat <<'EOF'\ngh pr merge 5\nEOF",
+      "worker",
+    )
+    assert.equal(hit, null)
+  })
+
+  it("does not block for the empty role (pi launched outside prism)", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "")
+    assert.equal(hit, null)
   })
 })
 

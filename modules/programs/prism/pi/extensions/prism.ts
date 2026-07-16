@@ -822,6 +822,49 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "restore with `git apply /tmp/wip.patch`) instead \u2014 see AGENTS.md " +
       "\u00a7 'Setting WIP aside \u2014 do not use git stash'.",
   },
+  {
+    // #2410 — a worker-class agent merged its own PR via `gh pr merge`,
+    // bypassing the pre-existing `prism merge` coordinator-only gate
+    // (cmd/merge.go already refuses to run for non-coordinator sessions,
+    // but that check only guards prism's own subcommand — the `gh` CLI
+    // has no such awareness). Block `gh pr merge` outright for
+    // worker-class roles regardless of flags (`--squash`, `--admin`,
+    // `--merge`, etc.), plus the same-class hardening of `gh pr review
+    // --approve` / `--request-changes`, which effectively land or block a
+    // PR without going through the coordinator. The coordinator is
+    // exempt (isWorkerClassRole returns false for it) so its manual-
+    // fallback merge path via `gh pr merge` is preserved.
+    //
+    // Flags may appear before or after the subcommand pair (`gh --repo
+    // x/y pr merge`), and `gh pr merge`/`gh pr review` may be preceded by
+    // an env-var assignment (e.g. `GH_TOKEN=... gh pr merge 5`) or extra
+    // whitespace — the `\s+` runs match any amount of whitespace.
+    id: "gh-pr-merge-or-approve",
+    match: (segment: string) => {
+      const s = segment.trim()
+      // Strip a leading run of VAR=value env-assignments (mirrors the
+      // nix-build-with-env-override convention above).
+      const withoutEnv = s.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*/, "")
+      const isGhPr = /^gh(\s+\S+)*?\s+pr\s+(merge|review)\b/.test(
+        withoutEnv,
+      )
+      if (!isGhPr) return false
+      if (/\bpr\s+merge\b/.test(withoutEnv)) return true
+      // `gh pr review` is only blocked when it carries --approve or
+      // --request-changes — plain `gh pr review` (viewing) is allowed.
+      return /\bpr\s+review\b.*(--approve|--request-changes)\b/.test(
+        withoutEnv,
+      )
+    },
+    appliesToRole: isWorkerClassRole,
+    reason:
+      "blocked by prism extension: `gh pr merge` and `gh pr review " +
+      "--approve`/`--request-changes` are reserved for the coordinator " +
+      "(issue #2410 \u2014 a worker previously merged its own PR, defeating " +
+      "the review process). When your PR is open and review passes, hand " +
+      "off to the coordinator instead of merging or self-approving \u2014 " +
+      "it reviews and merges via `gh pr merge` or `prism merge`.",
+  },
 ]
 
 /**
