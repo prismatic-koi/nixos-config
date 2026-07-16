@@ -2658,6 +2658,39 @@ describe("checkBlockedBash \u2014 gh pr review --approve (positive cases, worker
     assert.equal(hit!.id, "gh-pr-review-approve")
   })
 
+  it("blocks 'gh pr review 123 -a' (short-form approve, closes cycle-1 review-context finding)", () => {
+    const hit = checkBlockedBash("gh pr review 123 -a", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review -a 123' (short-form approve, flag before pr number)", () => {
+    const hit = checkBlockedBash("gh pr review -a 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review 123 -r' (short-form request-changes)", () => {
+    const hit = checkBlockedBash("gh pr review 123 -r", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review -r 123' (short-form request-changes, flag before pr number)", () => {
+    const hit = checkBlockedBash("gh pr review -r 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'GH_TOKEN=xxx gh pr review 123 -a' (short-form + env-var prefix)", () => {
+    const hit = checkBlockedBash(
+      "GH_TOKEN=xxx gh pr review 123 -a",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
   it("blocks 'gh  pr   review   --approve' (extra whitespace, bypass-attempt)", () => {
     const hit = checkBlockedBash("gh  pr   review   --approve 123", "worker")
     assert.notEqual(hit, null)
@@ -2705,6 +2738,15 @@ describe("checkBlockedBash \u2014 gh pr review role scoping (#2410)", () => {
     )
     assert.equal(
       checkBlockedBash("gh pr review 123 --request-changes", "coordinator"),
+      null,
+    )
+    // Short forms are also allowed for the coordinator.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -a", "coordinator"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -r", "coordinator"),
       null,
     )
   })
@@ -2756,6 +2798,44 @@ describe("checkBlockedBash \u2014 gh pr review (negative cases, #2410)", () => {
         "worker",
       ),
       null,
+    )
+  })
+
+  it("does NOT match short-form flag embedded in a longer flag name (e.g. -abc, -rr)", () => {
+    // `-abc` is not `-a`; the `\b` boundary must reject it.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -abc", "worker"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -rr", "worker"),
+      null,
+    )
+  })
+
+  it("does NOT match `-a` mid-word (--confirm-a)", () => {
+    // The leading `\s` prevents matching a `-a` / `-r` suffix inside a
+    // longer flag — the tokenised segment has no whitespace before the
+    // final `-a` in `--confirm-a`, so the alternation cannot fire.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 --confirm-a", "worker"),
+      null,
+    )
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr review short-form reason string (#2410)", () => {
+  it("names both long and short forms in the reason", () => {
+    const hit = checkBlockedBash("gh pr review 123 -a", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.includes("--approve") && hit!.reason.includes("-a"),
+      `reason should name both --approve and -a: ${hit!.reason}`,
+    )
+    assert.ok(
+      hit!.reason.includes("--request-changes") &&
+        hit!.reason.includes("-r"),
+      `reason should name both --request-changes and -r: ${hit!.reason}`,
     )
   })
 })

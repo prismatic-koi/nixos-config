@@ -861,15 +861,22 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     // and `--request-changes` for worker-class roles breaks no legitimate
     // flow. Plain `gh pr review` (no verdict flag) and `--comment` remain
     // allowed — they map to informational paths, not to gating the merge.
+    //
+    // Both long-form (`--approve` / `--request-changes`) and short-form
+    // (`-a` / `-r`) flags match — `gh pr review --help` lists them as
+    // functionally identical aliases, so blocking one without the other
+    // would leave a trivial bypass of the same class this deny closes.
+    // The trailing `\b` prevents matching e.g. `-abc` or `--approver`;
+    // the leading `\s` prevents matching mid-word (`--foo-a` etc.).
     id: "gh-pr-review-approve",
     match: (segment: string) =>
-      /^\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*gh(?:\s+-\S+(?:\s+\S+)?)*\s+pr(?:\s+-\S+(?:\s+\S+)?)*\s+review\b[\s\S]*?\s(?:--approve|--request-changes)\b/.test(
+      /^\s*(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*gh(?:\s+-\S+(?:\s+\S+)?)*\s+pr(?:\s+-\S+(?:\s+\S+)?)*\s+review\b[\s\S]*?\s(?:--approve|-a|--request-changes|-r)\b/.test(
         segment,
       ),
     appliesToRole: isWorkerClassRole,
     reason:
-      "blocked by prism extension: `gh pr review --approve` / " +
-      "`--request-changes` from a worker-class agent games the " +
+      "blocked by prism extension: `gh pr review --approve` / `-a` / " +
+      "`--request-changes` / `-r` from a worker-class agent games the " +
       "required-review gate the same way `gh pr merge` games the merge " +
       "gate. Review agents use the `prism review` mechanism, not " +
       "`gh pr review`. Hand off to the coordinator instead. See issue #2410.",
