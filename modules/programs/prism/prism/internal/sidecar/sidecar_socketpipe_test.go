@@ -3674,3 +3674,183 @@ func TestSocketPipe_NormalExitWithContent_StillClassifiesFinished(t *testing.T) 
 	conn.Close()
 	_ = wait()
 }
+
+// ── fast-agent race: turn_start persistence lags finished debounce (#2409) ──
+
+// TestSocketPipe_FastAgentRace_OutputProducedFinishesCleanly reproduces the
+// #2409 race: a fast agent produces real assistant output (a msg_assistant
+// frame with non-empty text) and then signals state_change{finished} so
+// quickly that its turn_start's idle → active DB write has not been observed
+// by currentDBState() at 2 s finished-debounce-fire time. Historically the
+// sidecar used "persisted state == idle" as a proxy for "no output" and
+// misclassified this agent as a zero-output exit — discarding valid work
+// (e.g. a review agent that emitted a parseable <verdict>).
+//
+// After the #2409 fix the sidecar consults the sawAssistantOutput latch, sees
+// that the session did produce assistant output this lifetime, reconstructs
+// the legal idle → active step, and lands the session in StateFinished with
+// the "has finished" coordinator wording. The ValidTransitions machine is
+// not weakened (the negative test below covers the true-zero-output case).
+//
+// The test simulates the race by sending msg_assistant + state_change
+// {finished} WITHOUT a turn_start frame. That mimics the observed
+// production log ordering where the turn_start had been received but its
+// idle → active DB write had not yet been observed by currentDBState() at
+// debounce-fire time: from the sidecar's DB-state perspective the two
+// scenarios are indistinguishable, and the latch is the reliable
+// discriminator.
+func TestSocketPipe_FastAgentRace_OutputProducedFinishesCleanly(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newZeroOutputWorkerSidecar(t, sockPath)
+
+	// Same pre-handshake seeding as the #2081 tests: tmux-session-start
+	// wrote state=idle. In this scenario the turn_start's active write is
+	// modelled as "not observed" — the frame is not sent, but the msg_assistant
+	// frame that follows still latches sawAssistantOutput.
+	seedWorkerIdle(t, sc)
+
+	var (
+		deliverMu    sync.Mutex
+		capturedText string
+		capturedCnt  int
+	)
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		capturedCnt++
+		capturedText = text
+		return nil
+	}
+
+	wait := runSocketPipeSidecar(sc)
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Race reproduction: msg_assistant with real text (latches
+	// sawAssistantOutput), then state_change{finished} — no turn_start, so
+	// currentDBState() will still return "idle" when the debounce fires.
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "<verdict>PASS</verdict>"})
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer was created after state_change{finished}")
+	}
+
+	// Pre-fire state must be idle — this is the race precondition.
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateIdle) {
+		t.Fatalf("pre-fire state = %q, want %q (race precondition: turn_start not persisted)", s, agent.StateIdle)
+	}
+
+	timer.Fire()
+
+	// AC #2409-1: session must land in finished, NOT error.
+	got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateFinished), 2*time.Second)
+	if got != string(agent.StateFinished) {
+		t.Errorf("state after fast-agent-race debounce = %q, want %q", got, agent.StateFinished)
+	}
+	if got == string(agent.StateError) {
+		t.Error("fast-agent race was misclassified as error — #2409 regression: the sawAssistantOutput latch is not gating correctly")
+	}
+
+	sc.WaitNotifies()
+
+	deliverMu.Lock()
+	defer deliverMu.Unlock()
+	if capturedCnt != 1 {
+		t.Fatalf("deliverFn invocations = %d, want 1", capturedCnt)
+	}
+	// AC #2409-2: notification wording must be "has finished", not "has errored".
+	wantText := "Agent testrepo@feature has finished its current task"
+	if capturedText != wantText {
+		t.Errorf("coordinator notification text = %q, want %q", capturedText, wantText)
+	}
+	if strings.Contains(capturedText, "has errored") {
+		t.Errorf("coordinator notification incorrectly uses 'has errored' wording for a fast-agent race: %q", capturedText)
+	}
+
+	conn.Close()
+	_ = wait()
+}
+
+// TestSocketPipe_ZeroOutputExit_NoAssistantFrame_StillErrors is the #2081
+// regression guard for the #2409 fix. It reproduces the true-zero-output
+// scenario — no msg_assistant frame ever arrives, and the session signals
+// state_change{finished} from persisted state=idle — and asserts the
+// historical error resolution is preserved: the coordinator sees "has
+// errored" and the state machine's idle → finished rejection stands.
+//
+// This is the negative counterpart to
+// TestSocketPipe_FastAgentRace_OutputProducedFinishesCleanly. The two tests
+// together prove the sawAssistantOutput latch is the discriminator:
+// present → finished, absent → error. Together with
+// TestSocketPipe_ZeroOutputExit_ClassifiesAsError (whose frame order is
+// turn_end + state_change{finished}), the #2081 phantom-PR guard remains
+// intact across all zero-output frame orderings.
+//
+// This test overlaps intentionally with TestSocketPipe_ZeroOutputExit_ClassifiesAsError
+// but omits the turn_end frame so a future refactor that (mis)uses turn_end
+// as an "output produced" signal would fail here.
+func TestSocketPipe_ZeroOutputExit_NoAssistantFrame_StillErrors(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc, clk := newZeroOutputWorkerSidecar(t, sockPath)
+
+	seedWorkerIdle(t, sc)
+
+	var (
+		deliverMu    sync.Mutex
+		capturedText string
+		capturedCnt  int
+	)
+	sc.notifyCoordinatorDeliverFn = func(sessionName string, status *db.Status, text string, buildHTTPBody func(string, *db.Status) map[string]any, source string, deliverAs string) error {
+		deliverMu.Lock()
+		defer deliverMu.Unlock()
+		capturedCnt++
+		capturedText = text
+		return nil
+	}
+
+	wait := runSocketPipeSidecar(sc)
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Zero-output: only state_change{finished}. No turn_start, no msg_assistant,
+	// no turn_end — the agent connected and disconnected without any output.
+	sendJSON(t, conn, map[string]any{"type": "state_change", "state": "finished"})
+
+	timer := clk.WaitForTimerCount(1, 5*time.Second)
+	if timer == nil {
+		t.Fatal("no finished debounce timer was created after state_change{finished}")
+	}
+
+	if s := getState(t, sc.cfg.DB, sc.cfg.SessionName); s != string(agent.StateIdle) {
+		t.Fatalf("pre-fire state = %q, want %q", s, agent.StateIdle)
+	}
+
+	timer.Fire()
+
+	// AC #2409-4: no assistant output → error resolution (#2081 guard preserved).
+	got := waitForState(t, sc.cfg.DB, sc.cfg.SessionName, string(agent.StateError), 2*time.Second)
+	if got != string(agent.StateError) {
+		t.Errorf("state after true-zero-output debounce = %q, want %q", got, agent.StateError)
+	}
+	if got == string(agent.StateFinished) {
+		t.Error("true zero-output exit was misclassified as finished — #2081 regression: the fix widened past its scope")
+	}
+
+	sc.WaitNotifies()
+
+	deliverMu.Lock()
+	defer deliverMu.Unlock()
+	if capturedCnt != 1 {
+		t.Fatalf("deliverFn invocations = %d, want 1", capturedCnt)
+	}
+	wantText := "Agent testrepo@feature has errored its current task"
+	if capturedText != wantText {
+		t.Errorf("coordinator notification text = %q, want %q", capturedText, wantText)
+	}
+	if strings.Contains(capturedText, "has finished") {
+		t.Errorf("coordinator notification incorrectly uses 'has finished' wording for a true zero-output exit: %q", capturedText)
+	}
+
+	conn.Close()
+	_ = wait()
+}

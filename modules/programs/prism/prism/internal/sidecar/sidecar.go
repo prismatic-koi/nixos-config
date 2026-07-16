@@ -513,6 +513,27 @@ type Sidecar struct {
 	// Protected by s.mu.
 	pipeAccum *string
 
+	// sawAssistantOutput is a session-lifetime latch that flips to true the
+	// first time this sidecar observes an assistant text fragment (PI
+	// socket-pipe / stdio msg_assistant frame with non-empty text) or a
+	// completed assistant message on the SSE path with non-empty text. It is
+	// NEVER cleared for the lifetime of the sidecar.
+	//
+	// Used by handleSessionFinished's zero-output-exit branch (issue #2409)
+	// as the reliable "did the agent produce output this session?" signal.
+	// The prior implementation used the persisted "idle" state as a proxy for
+	// that question, which is subject to a timing race: a fast agent's
+	// turn_start (idle -> active) DB write may not be observed by
+	// currentDBState() before the 2 s finished-debounce fires, and the
+	// sidecar previously misclassified such an agent as a zero-output exit
+	// even though it had emitted a full msg_assistant frame (with real
+	// output tokens). The latch is authoritative: if it is true, the agent
+	// demonstrably produced output; if it is false, the agent has emitted no
+	// assistant text this session and the #2081 "phantom PR" guard rightly
+	// resolves to StateError.
+	// Protected by s.mu.
+	sawAssistantOutput bool
+
 	// lastInvestigatorText holds the most recent completed turn text for an
 	// investigate-agent session. Updated on every turn_end; read at completion
 	// time by notifyInvestigatorCompletion to deliver the final report.
@@ -1722,6 +1743,11 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 						s.pipeAccum = &empty
 					}
 					*s.pipeAccum += frame.Text
+					if frame.Text != "" {
+						// Latch the session-lifetime "produced output"
+						// signal (#2409). See sawAssistantOutput docs.
+						s.sawAssistantOutput = true
+					}
 					s.mu.Unlock()
 				case "turn_end":
 					s.mu.Lock()
@@ -1770,6 +1796,11 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 					s.pipeAccum = &empty
 				}
 				*s.pipeAccum += p.Text
+				if p.Text != "" {
+					// Latch the session-lifetime "produced output"
+					// signal (#2409). See sawAssistantOutput docs.
+					s.sawAssistantOutput = true
+				}
 				s.mu.Unlock()
 				continue
 			}
@@ -1795,6 +1826,11 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 				s.pipeAccum = &empty
 			}
 			*s.pipeAccum += frame.Text
+			if frame.Text != "" {
+				// Latch the session-lifetime "produced output" signal
+				// (#2409). See sawAssistantOutput docs.
+				s.sawAssistantOutput = true
+			}
 			s.mu.Unlock()
 
 		case "turn_end":
@@ -2613,6 +2649,14 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 				s.pipeAccum = &empty
 			}
 			*s.pipeAccum += f.Text
+			if f.Text != "" {
+				// Latch the session-lifetime "produced output" signal so
+				// handleSessionFinished can distinguish a genuine zero-output
+				// exit (#2081) from the fast-agent race (#2409) where the
+				// turn_start's idle->active DB write has not yet been observed
+				// by currentDBState() at debounce-fire time.
+				s.sawAssistantOutput = true
+			}
 		}
 
 	case "turn_end":
