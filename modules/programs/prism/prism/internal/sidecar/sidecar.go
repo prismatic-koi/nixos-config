@@ -513,6 +513,21 @@ type Sidecar struct {
 	// Protected by s.mu.
 	pipeAccum *string
 
+	// assistantOutputSeen is set to true the first time any non-empty
+	// assistant text arrives on this session (across all transports:
+	// PI socket-pipe pipeAccum appends, stdio pipeAccum appends, and
+	// SSE handleMessageUpdated). It stays true for the life of the
+	// sidecar — the finished-debounce zero-output-exit branch
+	// (events.go, issue #2409) reads it to distinguish a genuine
+	// zero-output exit (still-idle persisted state AND no assistant
+	// output produced this session — issue #2081 case; resolves to
+	// error) from the fast-agent race where the turn_start
+	// (idle -> active) upsert has not been persisted before the
+	// finished-debounce fires but real output was produced (resolves
+	// to finished via a synthesised idle -> active -> finished path,
+	// preserving ValidTransitions). Protected by s.mu.
+	assistantOutputSeen bool
+
 	// lastInvestigatorText holds the most recent completed turn text for an
 	// investigate-agent session. Updated on every turn_end; read at completion
 	// time by notifyInvestigatorCompletion to deliver the final report.
@@ -1722,6 +1737,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 						s.pipeAccum = &empty
 					}
 					*s.pipeAccum += frame.Text
+					s.markAssistantOutputSeen(frame.Text)
 					s.mu.Unlock()
 				case "turn_end":
 					s.mu.Lock()
@@ -1770,6 +1786,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 					s.pipeAccum = &empty
 				}
 				*s.pipeAccum += p.Text
+				s.markAssistantOutputSeen(p.Text)
 				s.mu.Unlock()
 				continue
 			}
@@ -1795,6 +1812,7 @@ func (s *Sidecar) runStartupStdio(ctx context.Context) error {
 				s.pipeAccum = &empty
 			}
 			*s.pipeAccum += frame.Text
+			s.markAssistantOutputSeen(frame.Text)
 			s.mu.Unlock()
 
 		case "turn_end":
@@ -2613,6 +2631,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 				s.pipeAccum = &empty
 			}
 			*s.pipeAccum += f.Text
+			s.markAssistantOutputSeen(f.Text)
 		}
 
 	case "turn_end":
@@ -2780,6 +2799,17 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 	}
 	return false
+}
+
+// markAssistantOutputSeen latches the assistantOutputSeen flag to true when
+// non-empty assistant text has been observed. Guards the zero-output-exit
+// discriminator (issue #2409) against setting the flag on empty fragments.
+// Must be called with s.mu held.
+func (s *Sidecar) markAssistantOutputSeen(text string) {
+	if text == "" {
+		return
+	}
+	s.assistantOutputSeen = true
 }
 
 // flushPipeAccum writes a msg_assistant event for any text accumulated in

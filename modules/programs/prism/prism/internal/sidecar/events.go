@@ -319,34 +319,54 @@ func (s *Sidecar) handleSessionFinished() {
 			return
 		}
 
-		// Zero-output exit detection (issue #2081): when the persisted state
-		// is still "idle" at debounce-fire time, no turn_start was ever
-		// processed for this session — meaning the worker connected, emitted
-		// state_change{finished}, and disconnected without producing any
-		// assistant output. The persisted-state agent state machine rejects
-		// the idle → finished transition (see agent.ValidTransitions);
-		// previously the in-memory sidecar forced the write through anyway
-		// and the coordinator received a misleading "has finished"
-		// notification, then chased a PR that did not exist.
+		// Zero-output exit detection (issue #2081) with fast-agent race guard
+		// (issue #2409): when the persisted state is still "idle" at
+		// debounce-fire time, two distinct situations must be distinguished.
 		//
-		// Honour the state machine's rejection here: write StateError with a
-		// diagnostic note and route the coordinator notification through
-		// notifyCoordinatorError so the body uses the documented "has
-		// errored its current task" wording (skill: Worker terminal-state
-		// notifications).
+		//   1. True zero-output exit (#2081): the worker connected, emitted
+		//      state_change{finished}, and disconnected without producing any
+		//      assistant output. The persisted-state agent state machine
+		//      rejects the idle → finished transition; write StateError with a
+		//      diagnostic note and route the coordinator notification through
+		//      notifyCoordinatorError ("has errored its current task" wording).
+		//      This is the #2081 phantom-PR guard.
+		//
+		//   2. Fast-agent race (#2409): the worker DID produce assistant
+		//      output this session, but the turn_start frame's
+		//      idle → active upsert has not been persisted before the
+		//      finished-debounce fires. Persisted state is idle for a timing
+		//      reason, not because no work was done. Complete the legal
+		//      idle → active → finished path (rather than widening
+		//      ValidTransitions to allow idle → finished, which would
+		//      re-open the #2081 hole).
+		//
+		// The discriminator is s.assistantOutputSeen, latched to true by
+		// markAssistantOutputSeen on every non-empty msg_assistant fragment
+		// across all transports (PI socket-pipe, stdio, SSE).
 		if currentState == agent.StateIdle {
-			s.logger().Printf("sidecar: transition -> error (cause=zero_output_exit, from_state=%q) — state machine rejects idle→finished", currentState)
-			s.upsertState(agent.StateError, nil, nil)
-			s.writeStateChange(agent.StateError)
-			s.writeEvent("state_change", map[string]string{
-				"state": string(agent.StateError),
-				"note":  "zero-output exit: state_change{finished} received without a prior turn_start",
-			}, nil)
-			s.lastErrorAt = s.cfg.Clock.Now()
-			finalText := s.lastInvestigatorText
-			s.goNotify(s.notifyCoordinatorError)
-			s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
-			return
+			if !s.assistantOutputSeen {
+				s.logger().Printf("sidecar: transition -> error (cause=zero_output_exit, from_state=%q) — no assistant output produced this session", currentState)
+				s.upsertState(agent.StateError, nil, nil)
+				s.writeStateChange(agent.StateError)
+				s.writeEvent("state_change", map[string]string{
+					"state": string(agent.StateError),
+					"note":  "zero-output exit: state_change{finished} received without any assistant output this session",
+				}, nil)
+				s.lastErrorAt = s.cfg.Clock.Now()
+				finalText := s.lastInvestigatorText
+				s.goNotify(s.notifyCoordinatorError)
+				s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
+				return
+			}
+			// Fast-agent race (#2409): assistant output WAS produced this
+			// session, but the turn_start upsert was not persisted in time.
+			// Synthesise the missing idle → active step so the state machine
+			// sees a valid active → finished transition below, and no
+			// spurious idle → finished path is opened for genuine zero-output
+			// exits.
+			s.logger().Printf("sidecar: finished debounce from idle with assistant output seen — synthesising idle -> active before active -> finished (issue #2409)")
+			s.upsertState(agent.StateActive, nil, nil)
+			s.writeStateChange(agent.StateActive)
 		}
 
 		s.logger().Printf("sidecar: transition -> finished (cause=finished_debounce)")
@@ -952,6 +972,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 			eventPayload["ttftMs"] = ttft
 		}
 
+		s.markAssistantOutputSeen(text)
 		s.writeEvent("msg_assistant", eventPayload, nil)
 		s.writtenMessages.set(info.ID, true)
 		s.textByMessage.del(info.ID)
