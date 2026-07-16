@@ -1729,8 +1729,8 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly four entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 4)
+  it("contains exactly six entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 6)
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -1753,14 +1753,29 @@ describe("BLOCKED_BASH_PATTERNS", () => {
     assert.ok(ids.includes("git-stash"))
   })
 
-  it("only the git-stash entry is role-scoped; the pre-#2202 entries are unscoped", () => {
+  it("the git-stash and gh-pr-* entries are role-scoped; the pre-#2202 entries are unscoped", () => {
+    const roleScoped = new Set([
+      "git-stash",
+      "gh-pr-merge",
+      "gh-pr-review-approve",
+    ])
     for (const p of BLOCKED_BASH_PATTERNS) {
-      if (p.id === "git-stash") {
-        assert.equal(typeof p.appliesToRole, "function")
+      if (roleScoped.has(p.id)) {
+        assert.equal(typeof p.appliesToRole, "function", p.id)
       } else {
-        assert.equal(p.appliesToRole, undefined)
+        assert.equal(p.appliesToRole, undefined, p.id)
       }
     }
+  })
+
+  it("has the gh-pr-merge entry (#2410)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("gh-pr-merge"))
+  })
+
+  it("has the gh-pr-review-approve entry (#2410)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("gh-pr-review-approve"))
   })
 
   it("every entry has id, match, and reason fields", () => {
@@ -2389,6 +2404,467 @@ describe("checkBlockedBash — git-stash reason string (#2202)", () => {
 
   it("is prefixed with 'blocked by prism extension'", () => {
     const hit = checkBlockedBash("git stash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// gh-pr-merge deny entry (#2410)
+// ---------------------------------------------------------------------------
+
+describe("checkBlockedBash \u2014 gh pr merge (positive cases, worker role, #2410)", () => {
+  it("blocks 'gh pr merge 2408 --squash' (the incident command)", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks plain 'gh pr merge'", () => {
+    const hit = checkBlockedBash("gh pr merge", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'gh pr merge 123 --admin'", () => {
+    const hit = checkBlockedBash("gh pr merge 123 --admin", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'gh pr merge 123 --merge' and 'gh pr merge 123 --rebase'", () => {
+    for (const cmd of [
+      "gh pr merge 123 --merge",
+      "gh pr merge 123 --rebase",
+      "gh pr merge 123 --delete-branch",
+    ]) {
+      const hit = checkBlockedBash(cmd, "worker")
+      assert.notEqual(hit, null, cmd)
+      assert.equal(hit!.id, "gh-pr-merge", cmd)
+    }
+  })
+
+  it("blocks 'gh  pr   merge 2408 --squash' (extra whitespace, AC: bypass-attempt)", () => {
+    const hit = checkBlockedBash("gh  pr   merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'GH_TOKEN=xxx gh pr merge 2408 --squash' (env-var prefix, AC: bypass-attempt)", () => {
+    const hit = checkBlockedBash(
+      "GH_TOKEN=xxx gh pr merge 2408 --squash",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'env GH_TOKEN=xxx gh pr merge 2408' (leading env)", () => {
+    const hit = checkBlockedBash(
+      "env GH_TOKEN=xxx gh pr merge 2408",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'gh --repo owner/repo pr merge 123 --squash' (gh-level flags before pr)", () => {
+    const hit = checkBlockedBash(
+      "gh --repo owner/repo pr merge 123 --squash",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'gh -R owner/repo pr merge 123' (short-form -R flag)", () => {
+    const hit = checkBlockedBash("gh -R owner/repo pr merge 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks the second segment of 'cd /repo && gh pr merge 123'", () => {
+    const hit = checkBlockedBash("cd /repo && gh pr merge 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+
+  it("blocks 'gh pr merge' inside a command substitution", () => {
+    const hit = checkBlockedBash("echo $(gh pr merge 123 --squash)", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-merge")
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr merge role scoping (#2410)", () => {
+  it("blocks for every review-* role (defence-in-depth)", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      const hit = checkBlockedBash("gh pr merge 123 --squash", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "gh-pr-merge", role)
+    }
+  })
+
+  it("does NOT block for the coordinator (AC: manual-fallback merge preserved)", () => {
+    assert.equal(checkBlockedBash("gh pr merge 2408 --squash", "coordinator"), null)
+    assert.equal(checkBlockedBash("gh pr merge 123", "coordinator"), null)
+    assert.equal(
+      checkBlockedBash("gh --repo o/r pr merge 123 --admin", "coordinator"),
+      null,
+    )
+  })
+
+  it("does NOT block when no role is passed (non-prism pi launch)", () => {
+    assert.equal(checkBlockedBash("gh pr merge 123 --squash"), null)
+    assert.equal(checkBlockedBash("gh pr merge 123 --squash", ""), null)
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr merge (negative cases, #2410)", () => {
+  it("does NOT block 'gh pr view' for workers", () => {
+    assert.equal(checkBlockedBash("gh pr view 123", "worker"), null)
+  })
+
+  it("does NOT block 'gh pr list' for workers", () => {
+    assert.equal(checkBlockedBash("gh pr list", "worker"), null)
+  })
+
+  it("does NOT block 'gh pr checks' for workers", () => {
+    assert.equal(checkBlockedBash("gh pr checks 123", "worker"), null)
+  })
+
+  it("does NOT block 'gh pr comment' for workers", () => {
+    assert.equal(
+      checkBlockedBash('gh pr comment 123 --body "looks good"', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block 'gh pr diff' for workers", () => {
+    assert.equal(checkBlockedBash("gh pr diff 123", "worker"), null)
+  })
+
+  it("does NOT block 'gh pr comment' whose body contains the literal 'gh pr merge' (AC: quoted mention)", () => {
+    assert.equal(
+      checkBlockedBash(
+        'gh pr comment 123 --body "do not run gh pr merge 5 yourself"',
+        "worker",
+      ),
+      null,
+    )
+  })
+
+  it("does NOT block double-quoted 'gh pr merge 5' inside echo (AC: quoted mention)", () => {
+    assert.equal(
+      checkBlockedBash('echo "gh pr merge 5"', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block single-quoted 'gh pr merge' inside echo", () => {
+    assert.equal(
+      checkBlockedBash("echo 'gh pr merge 5 --squash'", "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block a heredoc body containing 'gh pr merge'", () => {
+    const cmd = "cat <<'EOF'\ngh pr merge 5 --squash\nEOF"
+    assert.equal(checkBlockedBash(cmd, "worker"), null)
+  })
+
+  it("does NOT block rg/grep searching for the literal string", () => {
+    assert.equal(
+      checkBlockedBash('rg "gh pr merge" modules/', "worker"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash('grep -rn "gh pr merge" AGENTS.md', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT match 'merge' embedded in a longer word", () => {
+    assert.equal(checkBlockedBash("gh pr merged 123", "worker"), null)
+  })
+
+  it("does NOT match unrelated top-level commands that share the words", () => {
+    assert.equal(checkBlockedBash("git merge main", "worker"), null)
+    assert.equal(checkBlockedBash("echo gh", "worker"), null)
+  })
+})
+
+describe("checkBlockedBash \u2014 gh-pr-merge reason string (#2410)", () => {
+  it("names the coordinator/worker separation", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.toLowerCase().includes("coordinator"),
+      `reason should name the coordinator: ${hit!.reason}`,
+    )
+  })
+
+  it("directs the agent to hand off", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.toLowerCase().includes("hand off"),
+      `reason should say 'hand off': ${hit!.reason}`,
+    )
+  })
+
+  it("references issue #2410", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("#2410"))
+  })
+
+  it("is prefixed with 'blocked by prism extension'", () => {
+    const hit = checkBlockedBash("gh pr merge 2408 --squash", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// gh-pr-review-approve deny entry (#2410)
+// ---------------------------------------------------------------------------
+
+describe("checkBlockedBash \u2014 gh pr review --approve (positive cases, worker role, #2410)", () => {
+  it("blocks 'gh pr review 123 --approve'", () => {
+    const hit = checkBlockedBash("gh pr review 123 --approve", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review --approve 123' (flag before pr number)", () => {
+    const hit = checkBlockedBash("gh pr review --approve 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review 123 --request-changes'", () => {
+    const hit = checkBlockedBash(
+      "gh pr review 123 --request-changes",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review 123 -a' (short-form approve, closes cycle-1 review-context finding)", () => {
+    const hit = checkBlockedBash("gh pr review 123 -a", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review -a 123' (short-form approve, flag before pr number)", () => {
+    const hit = checkBlockedBash("gh pr review -a 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review 123 -r' (short-form request-changes)", () => {
+    const hit = checkBlockedBash("gh pr review 123 -r", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh pr review -r 123' (short-form request-changes, flag before pr number)", () => {
+    const hit = checkBlockedBash("gh pr review -r 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'GH_TOKEN=xxx gh pr review 123 -a' (short-form + env-var prefix)", () => {
+    const hit = checkBlockedBash(
+      "GH_TOKEN=xxx gh pr review 123 -a",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh  pr   review   --approve' (extra whitespace, bypass-attempt)", () => {
+    const hit = checkBlockedBash("gh  pr   review   --approve 123", "worker")
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'GH_TOKEN=xxx gh pr review 123 --approve' (env-var prefix)", () => {
+    const hit = checkBlockedBash(
+      "GH_TOKEN=xxx gh pr review 123 --approve",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+
+  it("blocks 'gh --repo o/r pr review 123 --approve' (gh-level flag before pr)", () => {
+    const hit = checkBlockedBash(
+      "gh --repo o/r pr review 123 --approve",
+      "worker",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "gh-pr-review-approve")
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr review role scoping (#2410)", () => {
+  it("blocks for every review-* role (defence-in-depth)", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      const hit = checkBlockedBash("gh pr review 123 --approve", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "gh-pr-review-approve", role)
+    }
+  })
+
+  it("does NOT block for the coordinator (AC: coordinator unchanged)", () => {
+    assert.equal(
+      checkBlockedBash("gh pr review 123 --approve", "coordinator"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("gh pr review 123 --request-changes", "coordinator"),
+      null,
+    )
+    // Short forms are also allowed for the coordinator.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -a", "coordinator"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -r", "coordinator"),
+      null,
+    )
+  })
+
+  it("does NOT block when no role is passed", () => {
+    assert.equal(checkBlockedBash("gh pr review 123 --approve"), null)
+    assert.equal(checkBlockedBash("gh pr review 123 --approve", ""), null)
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr review (negative cases, #2410)", () => {
+  it("does NOT block plain 'gh pr review 123' without a verdict flag", () => {
+    assert.equal(checkBlockedBash("gh pr review 123", "worker"), null)
+  })
+
+  it("does NOT block 'gh pr review 123 --comment --body \"...\"' (informational)", () => {
+    assert.equal(
+      checkBlockedBash(
+        'gh pr review 123 --comment --body "some notes"',
+        "worker",
+      ),
+      null,
+    )
+  })
+
+  it("does NOT block quoted mention 'echo \"gh pr review --approve\"'", () => {
+    assert.equal(
+      checkBlockedBash('echo "gh pr review --approve"', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block a heredoc body containing 'gh pr review --approve'", () => {
+    const cmd = "cat <<'EOF'\ngh pr review 123 --approve\nEOF"
+    assert.equal(checkBlockedBash(cmd, "worker"), null)
+  })
+
+  it("does NOT block rg searching for '--approve'", () => {
+    assert.equal(
+      checkBlockedBash('rg "gh pr review --approve" modules/', "worker"),
+      null,
+    )
+  })
+
+  it("does NOT block 'gh pr comment' with a body mentioning --approve", () => {
+    assert.equal(
+      checkBlockedBash(
+        'gh pr comment 123 --body "please do not --approve your own PRs"',
+        "worker",
+      ),
+      null,
+    )
+  })
+
+  it("does NOT match short-form flag embedded in a longer flag name (e.g. -abc, -rr)", () => {
+    // `-abc` is not `-a`; the `\b` boundary must reject it.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -abc", "worker"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("gh pr review 123 -rr", "worker"),
+      null,
+    )
+  })
+
+  it("does NOT match `-a` mid-word (--confirm-a)", () => {
+    // The leading `\s` prevents matching a `-a` / `-r` suffix inside a
+    // longer flag — the tokenised segment has no whitespace before the
+    // final `-a` in `--confirm-a`, so the alternation cannot fire.
+    assert.equal(
+      checkBlockedBash("gh pr review 123 --confirm-a", "worker"),
+      null,
+    )
+  })
+})
+
+describe("checkBlockedBash \u2014 gh pr review short-form reason string (#2410)", () => {
+  it("names both long and short forms in the reason", () => {
+    const hit = checkBlockedBash("gh pr review 123 -a", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.includes("--approve") && hit!.reason.includes("-a"),
+      `reason should name both --approve and -a: ${hit!.reason}`,
+    )
+    assert.ok(
+      hit!.reason.includes("--request-changes") &&
+        hit!.reason.includes("-r"),
+      `reason should name both --request-changes and -r: ${hit!.reason}`,
+    )
+  })
+})
+
+describe("checkBlockedBash \u2014 gh-pr-review-approve reason string (#2410)", () => {
+  it("names the required-review gate hazard", () => {
+    const hit = checkBlockedBash("gh pr review 123 --approve", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(
+      hit!.reason.toLowerCase().includes("required-review") ||
+        hit!.reason.toLowerCase().includes("required review"),
+      `reason should name the required-review gate: ${hit!.reason}`,
+    )
+  })
+
+  it("directs the agent to the coordinator", () => {
+    const hit = checkBlockedBash("gh pr review 123 --approve", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.toLowerCase().includes("coordinator"))
+  })
+
+  it("references issue #2410", () => {
+    const hit = checkBlockedBash("gh pr review 123 --approve", "worker")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("#2410"))
+  })
+
+  it("is prefixed with 'blocked by prism extension'", () => {
+    const hit = checkBlockedBash("gh pr review 123 --approve", "worker")
     assert.notEqual(hit, null)
     assert.ok(hit!.reason.startsWith("blocked by prism extension:"))
   })
