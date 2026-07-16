@@ -241,17 +241,31 @@ func (w *Watcher) tick(ctx context.Context) {
 
 	case "BLOCKED":
 		// Disambiguate: CI failure, review required, changes requested, or an
-		// unrecognised state. Empty ReviewDecision on a BLOCKED PR reliably
-		// means "branch protection wants a review, none requested yet", so it
-		// routes to the same notification as REVIEW_REQUIRED (coordinator's
-		// response is identical: request a review, then re-enqueue). Any other
-		// unrecognised ReviewDecision fails-and-notifies with a distinct
-		// message so the enqueuing coordinator can see the row terminate and
-		// intervene manually, rather than the queue silently stalling (#2375).
+		// unrecognised state. Empty ReviewDecision on a BLOCKED PR may mean
+		// either "branch protection wants a review, none requested yet" or
+		// "required checks are still pending". We distinguish by fetching the
+		// required checks: if they haven't all concluded, stay watching; only
+		// if they have all concluded does the empty ReviewDecision reliably
+		// route to the review-required path.
 		switch {
 		case hasCIFailure(prInfo.StatusCheckRollup):
 			w.failAndNotify(head, "CI failed")
-		case prInfo.ReviewDecision == "REVIEW_REQUIRED" || prInfo.ReviewDecision == "":
+		case prInfo.ReviewDecision == "":
+			// Empty ReviewDecision: need to check if required checks are still pending.
+			required, err := w.fetchRequiredChecks(ctx)
+			if err != nil {
+				log.Printf("[mergequeue] PR #%d BLOCKED with empty reviewDecision — cannot fetch required checks: %v — leaving watching", head.PR, err)
+				return
+			}
+			if len(required) > 0 && !requiredChecksAllPassed(prInfo.StatusCheckRollup, required) {
+				// Required checks are not all passed — stay watching.
+				log.Printf("[mergequeue] PR #%d BLOCKED with empty reviewDecision but required checks not yet concluded — staying watching", head.PR)
+				return
+			}
+			// All required checks have passed; empty ReviewDecision now reliably means
+			// "branch protection wants a review, none requested yet".
+			w.failAndNotify(head, "human reviewer approval required before merge")
+		case prInfo.ReviewDecision == "REVIEW_REQUIRED":
 			w.failAndNotify(head, "human reviewer approval required before merge")
 		case prInfo.ReviewDecision == "CHANGES_REQUESTED":
 			w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
