@@ -42,15 +42,15 @@ jobs:
     strategy:
       matrix:
         include:
-          - host: navi
+          - name: navi
             os: ubuntu-latest
-            attr: nixosConfigurations.navi
-          - host: tui
+            target: nixosConfigurations.navi
+          - name: tui
             os: ubuntu-latest
-            attr: nixosConfigurations.tui
-          - host: m4mac
+            target: nixosConfigurations.tui
+          - name: m4mac
             os: macos-15
-            attr: darwinConfigurations.m4mac
+            target: darwinConfigurations.m4mac
     steps:
       - uses: jlumbroso/free-disk-space@v1.3.1
         if: runner.os == 'Linux'
@@ -68,21 +68,21 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: Build config for ${{ matrix.host }} (before update)
-        run: nix build --out-link result-before '.#${{ matrix.attr }}.config.system.build.toplevel'
+      - name: Build config for ${{ matrix.name }} (before update)
+        run: nix build --out-link result-before '.#${{ matrix.target }}.config.system.build.toplevel'
       - name: Download updated flake
         uses: actions/download-artifact@v8
         with:
           name: updated-flake
-      - name: Build config for ${{ matrix.host }} (after update)
-        run: nix build --out-link result-after '.#${{ matrix.attr }}.config.system.build.toplevel'
+      - name: Build config for ${{ matrix.name }} (after update)
+        run: nix build --out-link result-after '.#${{ matrix.target }}.config.system.build.toplevel'
       - name: Diff closures
-        run: nix store diff-closures ./result-before ./result-after 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > diff-${{ matrix.host }}.txt || true
+        run: nix store diff-closures ./result-before ./result-after 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > diff-${{ matrix.name }}.txt || true
       - name: Upload diff
         uses: actions/upload-artifact@v7
         with:
-          name: diff-${{ matrix.host }}
-          path: diff-${{ matrix.host }}.txt
+          name: diff-${{ matrix.name }}
+          path: diff-${{ matrix.name }}.txt
 
   create-pr:
     needs: [update-flakes, build-configs]
