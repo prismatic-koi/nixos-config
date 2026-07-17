@@ -292,3 +292,165 @@ func TestEmitMergeWaitTerminal_JSONShape(t *testing.T) {
 		}
 	}
 }
+
+// ── #2420 initial-state --wait --json regression tests ────────────────────────
+
+// runMergeWaitJSON invokes runMerge with --wait --json set on mergeCmd,
+// isolating the flag-mutation ceremony so the invocation-time-terminal
+// tests below stay focused on the JSON contract. Restores the flags on
+// t.Cleanup so subsequent tests are unaffected.
+func runMergeWaitJSON(t *testing.T, arg string) (string, error) {
+	t.Helper()
+	t.Cleanup(func() {
+		_ = mergeCmd.Flags().Set("wait", "false")
+		_ = mergeCmd.Flags().Set("json", "false")
+	})
+	if err := mergeCmd.Flags().Set("wait", "true"); err != nil {
+		t.Fatalf("set --wait: %v", err)
+	}
+	if err := mergeCmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set --json: %v", err)
+	}
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runMerge(mergeCmd, []string{arg})
+	})
+	return out, runErr
+}
+
+// TestRunMerge_WaitJSON_TerminalShortCircuit_AlreadyMerged verifies the
+// PR-round-2 review-code blocker fix: a fresh invocation (no pending_merges
+// row on disk) of `prism merge --wait --json` against an already-merged PR
+// must emit a single parseable JSON envelope with status=merged, NOT empty
+// stdout. Pre-fix behaviour returned empty stdout with exit 0, silently
+// breaking the SKILL.md `--wait --json` contract for the invocation-time
+// terminal path (the existing TestRunMerge_WaitJSON_StdoutIsJSONOnly test
+// pre-seeded the pending_merges row, so it only exercised the
+// observeExistingMergeRow branch and did not cover this gap).
+func TestRunMerge_WaitJSON_TerminalShortCircuit_AlreadyMerged(t *testing.T) {
+	openMergeTestDB(t)
+	const coordSession = "nixos-config@main"
+	seedCoordinatorWithInstanceID(t, coordSession, "inst-wait-json-merged")
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	// Fresh invocation: no pre-existing pending_merges row. gh reports
+	// the PR as already MERGED — the invocation-time terminal path.
+	stubGhBinStates(t,
+		`{"state":"MERGED","number":8001,"title":"already done","mergedAt":"2026-07-01T00:00:00Z","mergeStateStatus":"","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[]}`,
+		"",
+	)
+
+	out, runErr := runMergeWaitJSON(t, "8001")
+	if runErr != nil {
+		t.Fatalf("runMerge --wait --json on already-merged PR: got err %v, want nil (exit 0)", runErr)
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		t.Fatal("stdout is empty on --wait --json terminal short-circuit — the SKILL.md JSON contract is broken (pre-#2420-review-round-2 regression)")
+	}
+	if !strings.HasPrefix(trimmed, "{") || !strings.HasSuffix(trimmed, "}") {
+		t.Errorf("stdout is not pure JSON — textual chatter leaked through:\n%s", out)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("stdout not parseable as JSON: %v\nout: %s", err, out)
+	}
+	if payload["status"] != "merged" {
+		t.Errorf("status: got %v, want merged", payload["status"])
+	}
+	if int(payload["pr"].(float64)) != 8001 {
+		t.Errorf("pr: got %v, want 8001", payload["pr"])
+	}
+	// Schema keys — mergeWaitJSON always emits every top-level key, even
+	// when the value is null.
+	for _, k := range []string{"pr", "status", "title", "error", "merged_at", "ended_at"} {
+		if _, ok := payload[k]; !ok {
+			t.Errorf("missing required schema key %q in JSON payload: %v", k, payload)
+		}
+	}
+}
+
+// TestRunMerge_WaitJSON_TerminalShortCircuit_ClosedNotMerged verifies the
+// closed-without-merge invocation-time terminal path: JSON is emitted with
+// status=failed and error naming the close, exit non-zero.
+func TestRunMerge_WaitJSON_TerminalShortCircuit_ClosedNotMerged(t *testing.T) {
+	openMergeTestDB(t)
+	const coordSession = "nixos-config@main"
+	seedCoordinatorWithInstanceID(t, coordSession, "inst-wait-json-closed")
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	stubGhBinStates(t,
+		`{"state":"CLOSED","number":8002,"title":"discarded","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		"",
+	)
+
+	out, runErr := runMergeWaitJSON(t, "8002")
+	if runErr == nil {
+		t.Fatal("runMerge --wait --json on closed-not-merged PR: got nil error, want non-zero exit (terminal-fail)")
+	}
+	if ec := exitCodeOf(runErr); ec != waitExitTerminalFail {
+		t.Errorf("exit code: got %d, want %d (waitExitTerminalFail)", ec, waitExitTerminalFail)
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		t.Fatal("stdout is empty on --wait --json terminal short-circuit for closed-not-merged (contract broken)")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("stdout not parseable as JSON: %v\nout: %s", err, out)
+	}
+	if payload["status"] != "failed" {
+		t.Errorf("status: got %v, want failed", payload["status"])
+	}
+	if int(payload["pr"].(float64)) != 8002 {
+		t.Errorf("pr: got %v, want 8002", payload["pr"])
+	}
+	errField, _ := payload["error"].(string)
+	if !strings.Contains(errField, "closed without merging") {
+		t.Errorf("error: got %q, want to contain 'closed without merging'", errField)
+	}
+}
+
+// TestRunMerge_WaitJSON_TerminalShortCircuit_Conflict verifies the merge-
+// conflict invocation-time terminal path: JSON is emitted with status=failed
+// and error="merge conflicts", exit non-zero.
+func TestRunMerge_WaitJSON_TerminalShortCircuit_Conflict(t *testing.T) {
+	openMergeTestDB(t)
+	const coordSession = "nixos-config@main"
+	seedCoordinatorWithInstanceID(t, coordSession, "inst-wait-json-conflict")
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":8003,"title":"conflicted","mergedAt":null,"mergeStateStatus":"DIRTY","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+
+	out, runErr := runMergeWaitJSON(t, "8003")
+	if runErr == nil {
+		t.Fatal("runMerge --wait --json on DIRTY PR: got nil error, want non-zero exit (terminal-fail)")
+	}
+	if ec := exitCodeOf(runErr); ec != waitExitTerminalFail {
+		t.Errorf("exit code: got %d, want %d (waitExitTerminalFail)", ec, waitExitTerminalFail)
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		t.Fatal("stdout is empty on --wait --json terminal short-circuit for merge-conflict (contract broken)")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("stdout not parseable as JSON: %v\nout: %s", err, out)
+	}
+	if payload["status"] != "failed" {
+		t.Errorf("status: got %v, want failed", payload["status"])
+	}
+	if int(payload["pr"].(float64)) != 8003 {
+		t.Errorf("pr: got %v, want 8003", payload["pr"])
+	}
+	errField, _ := payload["error"].(string)
+	if !strings.Contains(errField, "merge conflicts") {
+		t.Errorf("error: got %q, want to contain 'merge conflicts'", errField)
+	}
+}

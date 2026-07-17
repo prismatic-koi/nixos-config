@@ -126,7 +126,7 @@ func runMerge(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("prism merge: %w", probeErr)
 		}
 		quietStdout := waitFlag && jsonFlag
-		if done, dErr := emitInitialStateMessage(decision, quietStdout); done {
+		if done, dErr := emitInitialStateMessage(decision, pr, quietStdout); done {
 			return dErr
 		}
 		title := decision.Title
@@ -231,7 +231,7 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: %w", err)
 	}
 	quietStdout := waitFlag && jsonFlag
-	if done, dErr := emitInitialStateMessage(decision, quietStdout); done {
+	if done, dErr := emitInitialStateMessage(decision, pr, quietStdout); done {
 		return dErr
 	}
 	title := decision.Title
@@ -842,22 +842,83 @@ func pendingRequiredCheckNames(rollup []checkEntry, required []string) []string 
 // For enqueue outcomes it returns (false, nil) and the caller continues into
 // the existing enqueue path.
 //
-// The message is suppressed on the JSON-quiet stdout contract
-// (--wait --json), because that mode's stdout is a single parseable JSON
-// object; the initial state is inferred by the caller from the terminal
-// status probe.
-func emitInitialStateMessage(dec initialStateDecision, quietStdout bool) (bool, error) {
-	if !quietStdout {
-		fmt.Println(dec.Message)
-	}
+// On the JSON-quiet stdout contract (`--wait --json`), the human message is
+// suppressed and the terminal short-circuits synthesise a `mergeWaitJSON`
+// payload equivalent to what emitMergeWaitTerminal would have emitted on the
+// enqueue-then-terminate path — so a `--wait --json` consumer always sees a
+// single parseable JSON object on stdout regardless of whether the PR was
+// terminal at invocation or reached terminal via the poller. PR round-2
+// review-code flagged the pre-fix behaviour: fresh-invocation terminal
+// outcomes produced empty stdout under `--wait --json`, breaking the
+// contract documented in `SKILL.md` ("emits a single JSON object on stdout
+// ... so consumers can `jq` the status").
+func emitInitialStateMessage(dec initialStateDecision, pr int, quietStdout bool) (bool, error) {
 	switch dec.Outcome {
-	case initialOutcomeAlreadyMerged, initialOutcomeClosedNotMerged:
+	case initialOutcomeAlreadyMerged:
+		if quietStdout {
+			if err := emitInitialStateJSON(pr, dec, "merged", ""); err != nil {
+				return true, err
+			}
+			return true, nil
+		}
+		fmt.Println(dec.Message)
+		return true, nil
+	case initialOutcomeClosedNotMerged:
+		if quietStdout {
+			if err := emitInitialStateJSON(pr, dec, "failed", "PR was closed without merging"); err != nil {
+				return true, err
+			}
+			return true, newExitErr(waitExitTerminalFail, "")
+		}
+		fmt.Println(dec.Message)
 		return true, nil
 	case initialOutcomeConflict:
+		if quietStdout {
+			if err := emitInitialStateJSON(pr, dec, "failed", "merge conflicts"); err != nil {
+				return true, err
+			}
+			return true, newExitErr(waitExitTerminalFail, "")
+		}
+		fmt.Println(dec.Message)
 		// Non-zero exit distinguishes this from the successful terminal
 		// short-circuits above. Coordinator prompts worker to rebase.
 		return true, newExitErr(waitExitTerminalFail, "")
 	default:
+		if !quietStdout {
+			fmt.Println(dec.Message)
+		}
 		return false, nil
 	}
+}
+
+// emitInitialStateJSON prints the `mergeWaitJSON` envelope for one of the
+// three invocation-time terminal outcomes. Reuses the `mergeWaitJSON` shape
+// so a `--wait --json` consumer parses invocation-time terminals with the
+// same schema they parse poll-time terminals with:
+//
+//   - status "merged" for AlreadyMerged (exit 0 handled by caller)
+//   - status "failed" with error "PR was closed without merging" for
+//     ClosedNotMerged (exit waitExitTerminalFail handled by caller)
+//   - status "failed" with error "merge conflicts" for Conflict
+//     (exit waitExitTerminalFail handled by caller)
+//
+// Title is populated when present in the decision so a cross-repo mismatch
+// is visually detectable in the same way emitMergeWaitTerminal surfaces it.
+// merged_at and ended_at are intentionally nil for the invocation-time
+// path — no pending_merges row was written, so no queue-wall-clock exists.
+func emitInitialStateJSON(pr int, dec initialStateDecision, status, errStr string) error {
+	payload := mergeWaitJSON{PR: pr, Status: status}
+	if dec.Title != "" {
+		t := dec.Title
+		payload.Title = &t
+	}
+	if errStr != "" {
+		es := errStr
+		payload.Error = &es
+	}
+	data, mErr := json.Marshal(payload)
+	if mErr != nil {
+		return fmt.Errorf("prism merge --wait: marshal JSON: %w", mErr)
+	}
+	return printJSON(data)
 }
