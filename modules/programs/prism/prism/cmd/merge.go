@@ -117,13 +117,19 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	//
 	// Coordinator-only enforcement happens on the sidecar side via
 	// requireCoordinator, which returns HTTP 403 for worker sessions. The
-	// preflight is run inside the sandbox (gh works there) before the proxy
-	// call so that invalid PRs do not pin sidecar resources.
+	// #2420 initial-state probe runs inside the sandbox (gh works there)
+	// before the proxy call so invalid or terminal PRs do not pin sidecar
+	// resources and the coordinator gets the state-table message immediately.
 	if apiURL := sandboxenv.HostAPISocket(); apiURL != "" {
-		title, preflightErr := preflight(pr)
-		if preflightErr != nil {
-			return fmt.Errorf("prism merge: %w", preflightErr)
+		decision, probeErr := probeInitialState(pr)
+		if probeErr != nil {
+			return fmt.Errorf("prism merge: %w", probeErr)
 		}
+		quietStdout := waitFlag && jsonFlag
+		if done, dErr := emitInitialStateMessage(decision, quietStdout); done {
+			return dErr
+		}
+		title := decision.Title
 		var titlePtr *string
 		if title != "" {
 			titlePtr = &title
@@ -147,7 +153,6 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		// set, the terminal status is the only thing on stdout. Suppress
 		// the textual enqueue-confirmation lines on that path so a
 		// `--wait --json` consumer sees a single parseable JSON object.
-		quietStdout := waitFlag && jsonFlag
 		if !quietStdout {
 			fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", row.PR, row.QueuePosition, row.Status)
 			if title != "" {
@@ -157,8 +162,8 @@ func runMerge(cmd *cobra.Command, args []string) error {
 		if waitFlag {
 			return waitForMergeTerminal(pr, callerRepo, jsonFlag, timeoutFlag)
 		}
-		fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
-		fmt.Println("You will be notified when it merges or fails.")
+		fmt.Println("You will be notified when the outcome is decided.")
+
 		fmt.Println()
 		fmt.Println("Track progress with: prism merges")
 		return nil
@@ -215,13 +220,21 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 		return fmt.Errorf("prism merge: cannot determine repo for session %q — agent_status.repo is empty and session name has no '@' prefix", callerSession)
 	}
 
-	// Pre-flight: verify the PR exists and is open, and fetch its title.
-	// Timeout is kept tight (5s) so the overall command returns well within
-	// the 2-second AC when the GitHub API responds promptly.
-	title, err := preflight(pr)
+	// #2420 initial-state probe: describe what will happen, then enqueue
+	// for non-terminal outcomes. Terminal outcomes (already merged, closed
+	// without merge, merge conflict) short-circuit here — no row is written
+	// to pending_merges. Timeout is kept tight (5s per gh call) so the
+	// overall command returns well within the 2-second AC when the API
+	// responds promptly.
+	decision, err := probeInitialState(pr)
 	if err != nil {
 		return fmt.Errorf("prism merge: %w", err)
 	}
+	quietStdout := waitFlag && jsonFlag
+	if done, dErr := emitInitialStateMessage(decision, quietStdout); done {
+		return dErr
+	}
+	title := decision.Title
 
 	// Enqueue (idempotent). Pass title for `prism merges list` display.
 	// Repo is required so pending_merges rows are keyed on (repo, pr) and
@@ -237,7 +250,6 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 
 	// JSON-exclusive contract (#1500): suppress the textual enqueue
 	// confirmation when --wait and --json are both set.
-	quietStdout := waitFlag && jsonFlag
 	if !quietStdout {
 		fmt.Printf("PR #%d enqueued (queue_position=%d, status=%s)\n", pr, row.QueuePosition, row.Status)
 		if title != "" {
@@ -247,8 +259,8 @@ See: modules/programs/prism/agents/coordinator.md`, pr)
 	if waitFlag {
 		return waitForMergeTerminal(pr, repo, jsonFlag, timeoutFlag)
 	}
-	fmt.Println("The merge-queue watcher will drive this PR through CI and merge it automatically.")
-	fmt.Println("You will be notified when it merges or fails.")
+	fmt.Println("You will be notified when the outcome is decided.")
+
 	fmt.Println()
 	fmt.Println("Track progress with: prism merges")
 	return nil
@@ -555,37 +567,297 @@ func emitMergeWaitTimeout(pr int, lastRow *db.PendingMerge, jsonMode bool, timeo
 	return nil
 }
 
-// preflight calls `gh pr view <pr> --json state,number,title` to verify the PR
-// exists and is open. Returns (title, nil) on success. Returns ("", err) if the
-// PR is closed, merged, or not found.
-// Timeout is 5s — callers should complete within ~2s for typical API latency.
+// preflight is a thin adapter over probeInitialState that preserves the
+// pre-#2420 return contract (title, error). Callers that only need the
+// title — the sandbox proxy path and the direct-DB enqueue path — use
+// preflight. Callers that need to emit the #2420 state-table initial-state
+// message use probeInitialState directly.
 func preflight(pr int) (string, error) {
+	decision, err := probeInitialState(pr)
+	if err != nil {
+		return "", err
+	}
+	return decision.Title, nil
+}
+
+// initialStateOutcome names one row in the #2420 state table for
+// `prism merge` invocation. It steers the synchronous message emitted to
+// the coordinator and decides whether the PR is enqueued for polling.
+type initialStateOutcome int
+
+const (
+	// initialOutcomeAlreadyMerged — PR is already MERGED at invocation.
+	// Coordinator is told to clean up; no poller starts.
+	initialOutcomeAlreadyMerged initialStateOutcome = iota
+
+	// initialOutcomeClosedNotMerged — PR is CLOSED without a merge.
+	// Coordinator is told a human closed it; no poller starts.
+	initialOutcomeClosedNotMerged
+
+	// initialOutcomeConflict — PR has merge conflicts at invocation. The
+	// worker must rebase; command exits non-zero, no poller starts.
+	initialOutcomeConflict
+
+	// initialOutcomeEnqueueReady — branch protected, all gates green.
+	// Watcher will merge on the next tick.
+	initialOutcomeEnqueueReady
+
+	// initialOutcomeEnqueuePending — branch protected, required checks
+	// still running. Watcher polls until they finish (or the PR closes).
+	initialOutcomeEnqueuePending
+
+	// initialOutcomeEnqueueReview — branch protected, awaiting human
+	// approval. Watcher polls silently until reviewDecision transitions
+	// to APPROVED (and checks are green), or the PR is closed or merged
+	// out-of-band.
+	initialOutcomeEnqueueReview
+
+	// initialOutcomeEnqueueUnprotected — no branch protection at all.
+	// Watcher polls silently and NEVER auto-merges; a human must merge
+	// or close the PR.
+	initialOutcomeEnqueueUnprotected
+)
+
+// initialStateDecision holds the outcome of the invocation-time probe.
+type initialStateDecision struct {
+	Outcome initialStateOutcome
+	Message string // rendered per the #2420 state-table row for Outcome
+	Title   string // PR title (used for enqueue-row display)
+	BaseRef string // target branch name (empty when not observable)
+}
+
+// probeInitialStatePRView is the parsed shape of `gh pr view --json` used by
+// probeInitialState. Fields absent from the response unmarshal to zero
+// values — the probe treats missing state fields defensively (it can enqueue
+// on partial data; the watcher will observe the full state on the next tick).
+type probeInitialStatePRView struct {
+	State             string       `json:"state"`
+	Number            int          `json:"number"`
+	Title             string       `json:"title"`
+	MergedAt          *string      `json:"mergedAt"`
+	MergeStateStatus  string       `json:"mergeStateStatus"`
+	ReviewDecision    string       `json:"reviewDecision"`
+	BaseRefName       string       `json:"baseRefName"`
+	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
+}
+
+// checkEntry mirrors the mergequeue package's rollup entry shape locally so
+// probeInitialState can parse gh pr view output without an import cycle.
+type checkEntry struct {
+	Name       string `json:"name"`
+	Context    string `json:"context"`
+	Conclusion string `json:"conclusion"`
+	Status     string `json:"status"`
+	State      string `json:"state"`
+}
+
+// probeInitialState is the #2420 synchronous initial-state probe. It queries
+// `gh pr view` for the PR's current shape, and — for non-terminal cases —
+// `gh api repos/:owner/:repo/branches/:branch/protection` to determine
+// whether the target branch is protected. The result names the state-table
+// row and carries the rendered coordinator-facing initial message.
+//
+// Terminology note: this function is a `prism merge` command-side helper, so
+// it uses `gh` in the calling shell's CWD (not `--repo <slug>`); the repo
+// slug is discovered by gh from git config. The watcher's own gh calls in
+// internal/mergequeue always use `--repo <slug>` because the sidecar runs
+// from an unrelated CWD.
+func probeInitialState(pr int) (initialStateDecision, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
-		"--json", "state,number,title").CombinedOutput()
+	prOut, err := exec.CommandContext(ctx, "gh", "pr", "view", fmt.Sprintf("%d", pr),
+		"--json", "state,number,title,mergedAt,mergeStateStatus,reviewDecision,baseRefName,statusCheckRollup").CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(out)))
+		return initialStateDecision{}, fmt.Errorf("PR #%d not found or gh CLI error: %s", pr, strings.TrimSpace(string(prOut)))
 	}
-	var info struct {
-		State  string `json:"state"`
-		Number int    `json:"number"`
-		Title  string `json:"title"`
-	}
-	if jsonErr := json.Unmarshal(out, &info); jsonErr != nil {
-		return "", fmt.Errorf("parse gh pr view output: %w", jsonErr)
-	}
-	switch strings.ToUpper(info.State) {
-	case "OPEN":
-		// Good.
-	case "CLOSED":
-		return "", fmt.Errorf("PR #%d is already closed — cannot enqueue", pr)
-	case "MERGED":
-		return "", fmt.Errorf("PR #%d is already merged — cannot enqueue", pr)
-	default:
-		return "", fmt.Errorf("PR #%d has unexpected state %q — cannot enqueue", pr, info.State)
+	var view probeInitialStatePRView
+	if jsonErr := json.Unmarshal(prOut, &view); jsonErr != nil {
+		return initialStateDecision{}, fmt.Errorf("parse gh pr view output: %w", jsonErr)
 	}
 
-	fmt.Fprintf(os.Stderr, "prism merge: enqueueing PR #%d: %s\n", pr, info.Title)
-	return info.Title, nil
+	dec := initialStateDecision{Title: view.Title, BaseRef: view.BaseRefName}
+
+	// Terminal: already merged (either state=MERGED or non-null mergedAt).
+	if strings.EqualFold(view.State, "MERGED") || (view.MergedAt != nil && *view.MergedAt != "") {
+		dec.Outcome = initialOutcomeAlreadyMerged
+		dec.Message = fmt.Sprintf("PR #%d already merged. Please clean up the branch and worktree.", pr)
+		return dec, nil
+	}
+
+	// Terminal: closed without merge.
+	if strings.EqualFold(view.State, "CLOSED") {
+		dec.Outcome = initialOutcomeClosedNotMerged
+		dec.Message = fmt.Sprintf("PR #%d closed without merge. No action required from you; a human closed this. Please clean up the branch and worktree.", pr)
+		return dec, nil
+	}
+
+	// OPEN. Second: merge conflict?
+	if strings.EqualFold(view.MergeStateStatus, "DIRTY") {
+		dec.Outcome = initialOutcomeConflict
+		dec.Message = fmt.Sprintf("PR #%d has conflicts. Worker needs to rebase.", pr)
+		return dec, nil
+	}
+
+	// Non-terminal. Query branch protection for the PR's base branch
+	// (default main when unknown). A 404 means the repo has no protection
+	// at all — the #2420 rule: NEVER auto-merge, wait for a human.
+	baseRef := view.BaseRefName
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	protected, requiredNames, protectErr := probeBranchProtection(baseRef)
+	if protectErr != nil {
+		return initialStateDecision{}, fmt.Errorf("probe branch protection: %w", protectErr)
+	}
+
+	if !protected {
+		dec.Outcome = initialOutcomeEnqueueUnprotected
+		dec.Message = fmt.Sprintf(
+			"PR #%d has no branch protection configured. Not auto-merging. Waiting for a human to review and either approve the PR or merge it themselves. No action required from you.",
+			pr,
+		)
+		return dec, nil
+	}
+
+	// Protected. CLEAN = ready to merge immediately (watcher will merge on next tick).
+	if strings.EqualFold(view.MergeStateStatus, "CLEAN") {
+		dec.Outcome = initialOutcomeEnqueueReady
+		dec.Message = fmt.Sprintf("PR #%d ready. Merging now.", pr)
+		return dec, nil
+	}
+
+	// Enumerate pending required checks.
+	pending := pendingRequiredCheckNames(view.StatusCheckRollup, requiredNames)
+	if len(pending) > 0 {
+		dec.Outcome = initialOutcomeEnqueuePending
+		dec.Message = fmt.Sprintf(
+			"PR #%d waiting on %d check(s): [%s]. Standing by; will merge when green. No action required from you.",
+			pr, len(pending), strings.Join(pending, ", "),
+		)
+		return dec, nil
+	}
+
+	// Protected, no pending required checks, not CLEAN — human review
+	// required. Include the anti-reviewer-shopping guidance verbatim.
+	dec.Outcome = initialOutcomeEnqueueReview
+	dec.Message = fmt.Sprintf(
+		"PR #%d requires human approval. No action required from you — do not request reviewers, do not add approvers, just wait. Will merge automatically when approved and checks pass, or notify if merged out-of-band.",
+		pr,
+	)
+	return dec, nil
+}
+
+// probeBranchProtection queries the GitHub branch-protection endpoint for the
+// given base branch. Returns (protected, requiredCheckNames, err):
+//
+//   - protected=false, err=nil — the endpoint returned HTTP 404, which is the
+//     canonical "branch not protected" response. #2420 treats this as a state,
+//     not a failure.
+//   - protected=true, err=nil — protection is configured; requiredCheckNames
+//     enumerates the required status checks (union of legacy contexts and
+//     modern check-run names).
+//   - err != nil — the API call failed in a way we cannot classify (network,
+//     permissions). Callers surface the error to the coordinator.
+//
+// The gh CLI resolves the current repo from git config when `--repo` is
+// omitted — this mirrors the invocation shape used elsewhere in cmd/merge.go.
+func probeBranchProtection(baseRef string) (bool, []string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if baseRef == "" {
+		baseRef = "main"
+	}
+	out, err := exec.CommandContext(ctx, "gh", "api",
+		fmt.Sprintf("repos/{owner}/{repo}/branches/%s/protection", baseRef)).CombinedOutput()
+	if err != nil {
+		low := strings.ToLower(string(out))
+		if strings.Contains(low, "http 404") ||
+			strings.Contains(low, "branch not protected") ||
+			strings.Contains(low, "\"status\":\"404\"") {
+			return false, nil, nil
+		}
+		return false, nil, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var resp struct {
+		RequiredStatusChecks struct {
+			Contexts []string `json:"contexts"`
+			Checks   []struct {
+				Context string `json:"context"`
+			} `json:"checks"`
+		} `json:"required_status_checks"`
+	}
+	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
+		return false, nil, fmt.Errorf("parse branch protection response: %w", jsonErr)
+	}
+	seen := make(map[string]bool)
+	var names []string
+	for _, ctx := range resp.RequiredStatusChecks.Contexts {
+		if ctx != "" && !seen[ctx] {
+			seen[ctx] = true
+			names = append(names, ctx)
+		}
+	}
+	for _, c := range resp.RequiredStatusChecks.Checks {
+		if c.Context != "" && !seen[c.Context] {
+			seen[c.Context] = true
+			names = append(names, c.Context)
+		}
+	}
+	return true, names, nil
+}
+
+// pendingRequiredCheckNames returns required check names that are not yet
+// SUCCESS in the rollup (missing, IN_PROGRESS, QUEUED, empty conclusion,
+// etc.). Only required checks are considered — optional/slow checks that
+// do not gate the merge are silently ignored.
+func pendingRequiredCheckNames(rollup []checkEntry, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+	passed := make(map[string]bool, len(rollup))
+	for _, c := range rollup {
+		name := c.Name
+		if name == "" {
+			name = c.Context
+		}
+		if name == "" {
+			continue
+		}
+		ok := strings.EqualFold(c.Conclusion, "SUCCESS") ||
+			strings.EqualFold(c.State, "SUCCESS")
+		passed[name] = ok
+	}
+	var pending []string
+	for _, req := range required {
+		if ok, found := passed[req]; !found || !ok {
+			pending = append(pending, req)
+		}
+	}
+	return pending
+}
+
+// emitInitialStateMessage prints the #2420 initial-state message to stdout
+// and returns whether the caller should short-circuit (no enqueue). For
+// terminal outcomes it returns (true, err) so the caller returns immediately.
+// For enqueue outcomes it returns (false, nil) and the caller continues into
+// the existing enqueue path.
+//
+// The message is suppressed on the JSON-quiet stdout contract
+// (--wait --json), because that mode's stdout is a single parseable JSON
+// object; the initial state is inferred by the caller from the terminal
+// status probe.
+func emitInitialStateMessage(dec initialStateDecision, quietStdout bool) (bool, error) {
+	if !quietStdout {
+		fmt.Println(dec.Message)
+	}
+	switch dec.Outcome {
+	case initialOutcomeAlreadyMerged, initialOutcomeClosedNotMerged:
+		return true, nil
+	case initialOutcomeConflict:
+		// Non-zero exit distinguishes this from the successful terminal
+		// short-circuits above. Coordinator prompts worker to rebase.
+		return true, newExitErr(waitExitTerminalFail, "")
+	default:
+		return false, nil
+	}
 }

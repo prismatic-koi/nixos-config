@@ -398,8 +398,12 @@ func TestRunMerge_ReentryDistinguishableMessage(t *testing.T) {
 		t.Errorf("first call stdout does not report fresh enqueue: %q", firstOut)
 	}
 	callsAfterFirst := countGhCalls(t, counterPath)
-	if callsAfterFirst != 1 {
-		t.Errorf("first call should invoke gh exactly once, got %d", callsAfterFirst)
+	// The #2420 initial-state probe makes two gh invocations per fresh
+	// call: `gh pr view` (state, mergeable, reviewDecision, checks) and
+	// `gh api ...branches/:branch/protection` (protected vs 404). Together
+	// they are the invocation-time state-table probe.
+	if callsAfterFirst != 2 {
+		t.Errorf("first call should invoke gh exactly twice (pr view + branch protection per #2420 initial-state probe), got %d", callsAfterFirst)
 	}
 
 	// Second call: must NOT print the fresh-enqueue line, must print an
@@ -506,8 +510,9 @@ func testRunMergeReentryAfterTerminalReEnqueues(t *testing.T, pr int, terminalSt
 
 	// gh MUST have been called — the short-circuit must not fire on
 	// retry-eligible terminal statuses.
-	if n := countGhCalls(t, counterPath); n != 1 {
-		t.Errorf("gh was called %d times on re-entry of %s PR — expected exactly 1 (preflight must run on retry)", n, terminalStatus)
+	if n := countGhCalls(t, counterPath); n != 2 {
+		// #2420 initial-state probe = pr view + branch protection.
+		t.Errorf("gh was called %d times on re-entry of %s PR — expected exactly 2 (#2420 probe = pr view + branch protection; must run on retry)", n, terminalStatus)
 	}
 
 	// The row must have flipped back to `watching` (EnqueueMerge's

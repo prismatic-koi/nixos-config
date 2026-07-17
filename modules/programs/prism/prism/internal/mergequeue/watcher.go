@@ -38,21 +38,33 @@ import (
 )
 
 const (
-	// PollInterval is how often the watcher ticks.
-	PollInterval = 45 * time.Second
+	// PollInterval is how often the watcher ticks. Reduced from 45s to 30s
+	// as part of the async-poll-and-notify redesign (#2420) so coordinators
+	// see merge outcomes more quickly after human action lands.
+	PollInterval = 30 * time.Second
 )
 
-// requiredChecksCache holds a cached list of required status check names
-// fetched from branch protection, together with an expiry timestamp.
-type requiredChecksCache struct {
-	names   []string
-	fetchAt time.Time
+// protectionCache holds a cached snapshot of the branch-protection state for
+// the target branch, together with an expiry timestamp.
+//
+// configured reports whether the branch is protected at all — the
+// GitHub API returns HTTP 404 when no protection is configured, which the
+// watcher treats as a distinct state ("no protection, wait for a human") per
+// the #2420 redesign, NOT as a merge licence.
+//
+// requiredChecks is meaningful only when configured is true; it holds the
+// deduplicated list of required status check names (both legacy commit-
+// status contexts and modern check-run names).
+type protectionCache struct {
+	configured     bool
+	requiredChecks []string
+	fetchAt        time.Time
 }
 
-// requiredChecksCacheTTL is how long we reuse a cached branch-protection
+// protectionCacheTTL is how long we reuse a cached branch-protection
 // response before re-fetching. Five minutes is short enough to pick up
 // rule changes but long enough to avoid hammering the API on every tick.
-const requiredChecksCacheTTL = 5 * time.Minute
+const protectionCacheTTL = 5 * time.Minute
 
 // Watcher runs the merge-queue polling loop for a single coordinator session.
 type Watcher struct {
@@ -69,10 +81,11 @@ type Watcher struct {
 	// rather than entering a poll loop that can never succeed.
 	repo string
 
-	// requiredChecks caches the branch-protection required status check names
-	// for the target branch. Populated lazily on the first UNSTABLE tick and
-	// refreshed when the TTL expires.
-	requiredChecks requiredChecksCache
+	// protection caches the branch-protection snapshot (configured yes/no plus
+	// the required status check names when configured) for the target branch.
+	// Populated lazily on the first tick that needs it and refreshed when the
+	// TTL expires.
+	protection protectionCache
 
 	// nowFunc returns the current time. Tests may override this to control TTL
 	// expiry without sleeping.
@@ -179,6 +192,24 @@ func (w *Watcher) Run(ctx context.Context) {
 }
 
 // tick processes the head of the queue once.
+//
+// The state machine mirrors the #2420 redesign: the watcher only produces
+// a coordinator notification for four terminal events —
+//
+//   - the watcher squash-merged the PR successfully (`mergeOutcomePrismDriven`),
+//   - the PR was merged out-of-band by a human or another tool
+//     (`mergeOutcomeExternal`),
+//   - the PR was closed without merging, and
+//   - a genuine `gh pr merge` mutation failure that was not a branch-moved race.
+//
+// Every other observed state (checks pending, review pending, changes
+// requested, new commits pushed, unprotected repo, branch behind base) results
+// in a silent continuation — the poller keeps polling and the coordinator's
+// initial-invocation message already told them what to wait for.
+//
+// Critically, an unprotected repo (branch-protection API returns HTTP 404) is
+// NEVER auto-merged, even when GitHub's mergeStateStatus is CLEAN. Absence of
+// protection is not a licence to merge — see the #2420 rationale.
 func (w *Watcher) tick(ctx context.Context) {
 	if ctx.Err() != nil {
 		return
@@ -208,114 +239,90 @@ func (w *Watcher) tick(ctx context.Context) {
 		return
 	}
 
-	// PR closed without merging.
-	if prInfo.State == "CLOSED" && !prInfo.isMerged() {
-		msg := "PR was closed without merging"
-		w.failAndNotify(head, msg)
-		return
-	}
-
-	// PR observed as already MERGED on a fresh poll. The merge was performed
-	// by an external actor (human via GitHub UI, another tool, or a tab racing
-	// the watcher) — prism did NOT execute the merge mutation. Notify the
-	// coordinator with an honest-signal message that distinguishes this from
-	// a prism-driven merge (#2298).
+	// Terminal: PR observed as MERGED on a fresh poll. The merge was
+	// performed by an external actor (human via GitHub UI, another tool,
+	// or a tab racing the watcher) — prism did NOT execute the merge
+	// mutation. Notify with the out-of-band message.
 	if prInfo.State == "MERGED" || prInfo.isMerged() {
 		w.succeedAndNotify(ctx, head, mergeOutcomeExternal, prInfo)
 		return
 	}
 
+	// Terminal: PR closed without merging.
+	if prInfo.State == "CLOSED" && !prInfo.isMerged() {
+		w.notifyClosedNotMerged(ctx, head)
+		return
+	}
+
+	// Branch-protection gate (#2420 core rule): NEVER auto-merge on a repo
+	// without branch protection. A 404 on the protection endpoint is a
+	// description of state, not a licence.
+	prot, err := w.fetchProtection(ctx)
+	if err != nil {
+		log.Printf("[mergequeue] PR #%d branch-protection fetch failed: %v — staying watching", head.PR, err)
+		return
+	}
+	if !prot.configured {
+		log.Printf("[mergequeue] PR #%d has no branch protection — staying watching for human review/approve/merge", head.PR)
+		return
+	}
+
+	// Branch protection IS configured. Trust GitHub's mergeStateStatus
+	// (which reflects the protection rules — required checks, required
+	// reviews, up-to-date-with-base) as the positive signal for CLEAN, and
+	// use the required-checks list to disambiguate UNSTABLE (optional
+	// checks failing but required ones green).
 	switch prInfo.MergeStateStatus {
 	case "CLEAN":
 		w.tryMerge(ctx, head)
+
+	case "UNSTABLE":
+		// UNSTABLE means the PR is mergeable but at least one check is
+		// non-success. We merge iff all REQUIRED checks are SUCCESS,
+		// ignoring optional/slow checks that will never gate the merge
+		// under the repo's protection rules.
+		if requiredChecksAllPassed(prInfo.StatusCheckRollup, prot.requiredChecks) {
+			log.Printf("[mergequeue] PR #%d UNSTABLE but all required checks passed — proceeding to merge", head.PR)
+			w.tryMerge(ctx, head)
+		} else {
+			log.Printf("[mergequeue] PR #%d UNSTABLE — required checks not yet SUCCESS — staying watching silently", head.PR)
+		}
 
 	case "BEHIND":
 		log.Printf("[mergequeue] PR #%d is BEHIND — calling gh pr update-branch", head.PR)
 		if err := w.updateBranch(ctx, head.PR); err != nil {
 			log.Printf("[mergequeue] gh pr update-branch PR #%d: %v — leaving watching", head.PR, err)
 		}
-		// Leave row as watching; next tick will see UNSTABLE→BLOCKED→CLEAN cycle.
+		// Leave row as watching; next tick will pick up the rebased state.
 
-	case "DIRTY":
-		w.failAndNotify(head, "merge conflicts")
-
-	case "BLOCKED":
-		// Disambiguate: CI failure, review required, changes requested, or an
-		// unrecognised state. Empty ReviewDecision on a BLOCKED PR may mean
-		// either "branch protection wants a review, none requested yet" or
-		// "required checks are still pending". We distinguish by fetching the
-		// required checks: if they haven't all concluded, stay watching; only
-		// if they have all concluded does the empty ReviewDecision reliably
-		// route to the review-required path.
-		switch {
-		case hasCIFailure(prInfo.StatusCheckRollup):
-			w.failAndNotify(head, "CI failed")
-		case prInfo.ReviewDecision == "":
-			// Empty ReviewDecision: need to check if required checks are still pending.
-			required, err := w.fetchRequiredChecks(ctx)
-			if err != nil {
-				log.Printf("[mergequeue] PR #%d BLOCKED with empty reviewDecision — cannot fetch required checks: %v — leaving watching", head.PR, err)
-				return
-			}
-			if len(required) > 0 && !requiredChecksAllPassed(prInfo.StatusCheckRollup, required) {
-				// Required checks are not all passed — stay watching.
-				log.Printf("[mergequeue] PR #%d BLOCKED with empty reviewDecision but required checks not yet concluded — staying watching", head.PR)
-				return
-			}
-			// All required checks have passed; empty ReviewDecision now reliably means
-			// "branch protection wants a review, none requested yet".
-			w.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfo.ReviewDecision == "REVIEW_REQUIRED":
-			w.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfo.ReviewDecision == "CHANGES_REQUESTED":
-			w.failAndNotify(head, "reviewer requested changes — fix and re-request review")
-		default:
-			// Keep the operator log line naming the literal ReviewDecision
-			// string — useful for future triage when GitHub introduces a new
-			// enum value we haven't yet mapped (AC4 of #2375).
-			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfo.ReviewDecision)
-			w.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfo.ReviewDecision))
-		}
-
-	case "UNSTABLE":
-		// UNSTABLE means the PR is mergeable but at least one check is
-		// non-success. We fetch the required branch-protection checks and
-		// merge if all of them are SUCCESS, ignoring optional/slow checks.
-		required, err := w.fetchRequiredChecks(ctx)
-		if err != nil {
-			log.Printf("[mergequeue] PR #%d UNSTABLE — cannot fetch required checks: %v — leaving watching", head.PR, err)
-			return
-		}
-		if requiredChecksAllPassed(prInfo.StatusCheckRollup, required) {
-			log.Printf("[mergequeue] PR #%d UNSTABLE but all required checks passed — proceeding to merge", head.PR)
-			w.tryMerge(ctx, head)
-		} else {
-			// Log which required checks are not yet SUCCESS.
-			var pending []string
-			passed := make(map[string]bool, len(prInfo.StatusCheckRollup))
-			for _, c := range prInfo.StatusCheckRollup {
-				name := checkName(c)
-				if name == "" {
-					continue
-				}
-				ok := strings.EqualFold(c.Conclusion, "SUCCESS") ||
-					strings.EqualFold(c.State, "SUCCESS")
-				passed[name] = ok
-			}
-			for _, req := range required {
-				if ok, found := passed[req]; !found || !ok {
-					pending = append(pending, req)
-				}
-			}
-			log.Printf("[mergequeue] PR #%d UNSTABLE — required checks not yet SUCCESS: %v — staying watching", head.PR, pending)
-		}
-
-	case "UNKNOWN", "HAS_HOOKS", "DRAFT":
-		log.Printf("[mergequeue] PR #%d %s — staying watching", head.PR, prInfo.MergeStateStatus)
+	case "DIRTY", "BLOCKED", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+		// #2420: none of these are coordinator-actionable terminal events
+		// mid-poll. DIRTY may resolve when the worker rebases; BLOCKED may
+		// resolve when a human approves the PR or the required checks
+		// finish; UNKNOWN is a transient GitHub side effect; DRAFT and
+		// HAS_HOOKS are the worker's responsibility, not prism's. Keep
+		// polling silently — the initial-invocation message told the
+		// coordinator what to expect.
+		log.Printf("[mergequeue] PR #%d %s — staying watching silently", head.PR, prInfo.MergeStateStatus)
 
 	default:
-		log.Printf("[mergequeue] PR #%d unknown mergeStateStatus=%q — staying watching", head.PR, prInfo.MergeStateStatus)
+		log.Printf("[mergequeue] PR #%d unknown mergeStateStatus=%q — staying watching silently", head.PR, prInfo.MergeStateStatus)
 	}
+}
+
+// notifyClosedNotMerged transitions the head row to terminal (status='failed'
+// per the existing DB schema) and delivers the closed-without-merge
+// notification. The notification text uses the #2420 completion-message
+// discipline: it contains "Please clean up the branch and worktree" and does
+// NOT imply prism performed the cleanup itself.
+func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMerge) {
+	// Scoped by head.Repo per issue #2354.
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "PR was closed without merging"); err != nil {
+		log.Printf("[mergequeue] TerminateMerge(closed) PR #%d: %v", head.PR, err)
+	}
+	text := fmt.Sprintf("PR #%d closed without merge. Please clean up the branch and worktree.", head.PR)
+	log.Printf("[mergequeue] %s", text)
+	w.notify(ctx, head.SessionName, head.InstanceID, text)
 }
 
 // tryMerge attempts `gh pr merge --squash` on head. On success transitions to
@@ -456,10 +463,12 @@ func (w *Watcher) succeedAndNotify(ctx context.Context, head *db.PendingMerge, o
 }
 
 // renderSuccessNotifyText composes the coordinator notification text for one
-// of the three success outcomes (#2298). The prism-driven and reconciled
-// variants include the worker session's archive_path when one is recorded;
-// the external variant omits the archive path because prism did not perform
-// the merge and the coordinator should not run `prism cleanup`.
+// of the three success outcomes (#2298, #2420). All three completion messages
+// end with the discipline phrase "Please clean up the branch and worktree";
+// none imply prism performed the cleanup itself. The prism-driven and
+// reconciled variants surface the worker session's archive_path when one is
+// recorded; the external (out-of-band) variant may omit the archive because
+// prism did not perform the merge, but still ends with the cleanup phrase.
 func (w *Watcher) renderSuccessNotifyText(head *db.PendingMerge, outcome mergeOutcome, prInfoForExternal *prInfo) string {
 	switch outcome {
 	case mergeOutcomeExternal:
@@ -468,35 +477,35 @@ func (w *Watcher) renderSuccessNotifyText(head *db.PendingMerge, outcome mergeOu
 		archivePath := w.lookupWorkerArchivePath(head)
 		if archivePath != "" {
 			return fmt.Sprintf(
-				"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Archive: %s. Run `git pull` in @main and `prism cleanup` the worker session.",
+				"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Archive: %s. Please clean up the branch and worktree.",
 				head.PR, archivePath,
 			)
 		}
 		return fmt.Sprintf(
-			"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Run `git pull` in @main and `prism cleanup` the worker session.",
+			"PR #%d merged. (Reconciled — gh mutation errored but PR is MERGED.) Please clean up the branch and worktree.",
 			head.PR,
 		)
 	default: // mergeOutcomePrismDriven
 		archivePath := w.lookupWorkerArchivePath(head)
 		if archivePath != "" {
 			return fmt.Sprintf(
-				"PR #%d merged. Archive: %s. Run `git pull` in @main and `prism cleanup` the worker session.",
+				"PR #%d merged. Archive: %s. Please clean up the branch and worktree.",
 				head.PR, archivePath,
 			)
 		}
 		return fmt.Sprintf(
-			"PR #%d merged. Run `git pull` in @main and `prism cleanup` the worker session.",
+			"PR #%d merged. Please clean up the branch and worktree.",
 			head.PR,
 		)
 	}
 }
 
-// renderExternalMergeNotifyText composes the external-merge notification text
-// (#2298). The merger field is emitted as "merged by @<login>" when login is
-// available, falling back to a login-less form when gh returned mergedBy=null
-// or an empty login. The merge timestamp is included when present in prInfo.
-// The text deliberately omits `prism cleanup` because prism did not perform
-// the merge.
+// renderExternalMergeNotifyText composes the out-of-band merge notification
+// text (#2298, updated for #2420). Fires when the poller observes a PR in
+// MERGED state that prism did not merge itself — the merger is named by login
+// where available, and a merge timestamp is included when present. The
+// completion-message discipline requires the "Please clean up the branch and
+// worktree" tail; the wording does NOT imply prism performed the cleanup.
 func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 	var login, mergedAt string
 	if prInfo != nil {
@@ -521,42 +530,26 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 	}
 
 	return fmt.Sprintf(
-		"PR #%d was already merged externally%s. No action taken by prism. Run `git pull` if needed.",
+		"PR #%d merged out-of-band%s. Please clean up the branch and worktree.",
 		pr, detail,
 	)
 }
 
 // failAndNotify transitions head to failed and notifies the coordinator.
+//
+// After the #2420 redesign, the polling state machine only reaches
+// failAndNotify via the tryMerge error path (a genuine `gh pr merge --squash`
+// failure that survived the reconciliation and branch-moved-race checks).
+// The BLOCKED-review / CI-failed / merge-conflicts / closed-without-merge
+// cases that previously routed here now either stay watching silently or use
+// notifyClosedNotMerged — see tick() and the #2420 discipline.
 func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 	// Pass head.Repo so the terminal write is scoped to this coordinator's
 	// repo (issue #2354).
 	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", errMsg); err != nil {
 		log.Printf("[mergequeue] TerminateMerge(failed) PR #%d: %v", head.PR, err)
 	}
-	var notifyText string
-	// Switch-on-true so the unknown-reason case can prefix-match against the
-	// dynamic errMsg (which carries the literal reviewDecision string via %q).
-	// The specific-string cases are kept above the prefix case so their exact
-	// notification text is preserved byte-for-byte (AC3 of #2375).
-	switch {
-	case errMsg == "merge conflicts":
-		notifyText = fmt.Sprintf("PR #%d has merge conflicts — worker rebase needed", head.PR)
-	case errMsg == "CI failed":
-		notifyText = fmt.Sprintf("PR #%d CI failed — needs worker fix", head.PR)
-	case errMsg == "PR was closed without merging":
-		notifyText = fmt.Sprintf("PR #%d was closed without merging — removed from queue", head.PR)
-	case errMsg == "human reviewer approval required before merge":
-		notifyText = fmt.Sprintf("PR #%d is blocked — human reviewer approval required before merge", head.PR)
-	case errMsg == "reviewer requested changes — fix and re-request review":
-		notifyText = fmt.Sprintf("PR #%d is blocked — reviewer requested changes — fix and re-request review", head.PR)
-	case strings.HasPrefix(errMsg, "blocked for unknown reason"):
-		// #2375: fail-and-notify envelope for a BLOCKED PR whose reviewDecision
-		// falls through all known cases. The errMsg carries the literal
-		// reviewDecision string so the coordinator can see the raw state.
-		notifyText = fmt.Sprintf("PR #%d is %s — needs manual investigation, then re-enqueue when unblocked", head.PR, errMsg)
-	default:
-		notifyText = fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
-	}
+	notifyText := fmt.Sprintf("PR #%d merge failed: %s", head.PR, errMsg)
 	log.Printf("[mergequeue] %s", notifyText)
 	w.notify(context.Background(), head.SessionName, head.InstanceID, notifyText)
 }
@@ -857,27 +850,52 @@ type branchProtectionResponse struct {
 	} `json:"required_status_checks"`
 }
 
-// fetchRequiredChecks returns the list of required status check names for the
-// protected target branch ("main"), using a short-TTL in-memory cache to
-// avoid hammering the API on every polling tick.
+// isBranchNotProtectedError reports whether a gh api error+output combination
+// indicates the branch is unprotected (HTTP 404 from
+// repos/:owner/:repo/branches/:branch/protection). Both the modern
+// ("Branch not protected") and legacy ("Not Found") response bodies are
+// covered; gh renders the status code as "HTTP 404" in stdout+stderr.
+func isBranchNotProtectedError(combinedOutput string) bool {
+	low := strings.ToLower(combinedOutput)
+	return strings.Contains(low, "http 404") ||
+		strings.Contains(low, "branch not protected") ||
+		strings.Contains(low, "\"status\":\"404\"")
+}
+
+// fetchProtection returns the branch-protection snapshot for the protected
+// target branch ("main"), using a short-TTL in-memory cache to avoid
+// hammering the API on every polling tick.
 //
-// On any error (network, permissions, rate-limit) it returns nil, err so the
-// caller can take the conservative path of staying watching.
-func (w *Watcher) fetchRequiredChecks(ctx context.Context) ([]string, error) {
+// A configured=false result means the branch-protection endpoint returned
+// HTTP 404 — the repo has no branch protection at all. Per the #2420 rule,
+// callers must NOT auto-merge in that case, and this path is treated as a
+// successful probe (no error returned), NOT as a transient failure.
+//
+// On any other error (network, permissions, rate-limit) fetchProtection
+// returns a zero protectionCache and err so the caller can take the
+// conservative path of staying watching without merging.
+func (w *Watcher) fetchProtection(ctx context.Context) (protectionCache, error) {
 	now := w.now()
-	if len(w.requiredChecks.names) > 0 && now.Before(w.requiredChecks.fetchAt.Add(requiredChecksCacheTTL)) {
-		// Cache hit.
-		return w.requiredChecks.names, nil
+	if !w.protection.fetchAt.IsZero() && now.Before(w.protection.fetchAt.Add(protectionCacheTTL)) {
+		// Cache hit — includes cached "not configured" results so a
+		// bootstrap repo doesn't retry on every tick.
+		return w.protection, nil
 	}
 
 	out, err := w.runGH(ctx, "api", fmt.Sprintf("repos/%s/branches/main/protection", w.repo))
 	if err != nil {
-		return nil, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
+		if isBranchNotProtectedError(string(out) + " " + err.Error()) {
+			state := protectionCache{configured: false, fetchAt: now}
+			w.protection = state
+			log.Printf("[mergequeue] branch protection not configured for %s (HTTP 404)", w.repo)
+			return state, nil
+		}
+		return protectionCache{}, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
 	var resp branchProtectionResponse
 	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parse branch protection response: %w", err)
+		return protectionCache{}, fmt.Errorf("parse branch protection response: %w", err)
 	}
 
 	// Collect names from both the legacy contexts list and the modern checks
@@ -897,12 +915,25 @@ func (w *Watcher) fetchRequiredChecks(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	w.requiredChecks = requiredChecksCache{
-		names:   names,
-		fetchAt: now,
+	state := protectionCache{configured: true, requiredChecks: names, fetchAt: now}
+	w.protection = state
+	log.Printf("[mergequeue] fetched branch protection for %s: required=%v", w.repo, names)
+	return state, nil
+}
+
+// fetchRequiredChecks is a thin adapter over fetchProtection that preserves
+// the pre-#2420 return contract (names, err) for callers that only care about
+// the required-checks list. When the branch is unprotected it returns (nil,
+// nil) — the caller then decides whether "no gates configured" is safe.
+//
+// New tick-path code should call fetchProtection directly so the
+// configured=false state is not silently discarded.
+func (w *Watcher) fetchRequiredChecks(ctx context.Context) ([]string, error) {
+	state, err := w.fetchProtection(ctx)
+	if err != nil {
+		return nil, err
 	}
-	log.Printf("[mergequeue] fetched required checks for %s: %v", w.repo, names)
-	return names, nil
+	return state.requiredChecks, nil
 }
 
 // now returns the current time. It uses w.nowFunc when set (for tests) and

@@ -1,11 +1,9 @@
 package mergequeue
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -466,13 +464,22 @@ type fakeWatcher struct {
 	mergeFn               func(ctx context.Context, pr int) ([]byte, error)
 	updateFn              func(ctx context.Context, pr int) error
 	fetchRequiredChecksFn func(ctx context.Context) ([]string, error)
+	// fetchProtectionFn injects a branch-protection snapshot for the #2420
+	// tick path. When nil, protection defaults to configured=true with
+	// requiredChecks derived from fetchRequiredChecksFn (or empty if that is
+	// also nil) so existing tests that predate the branch-protection gate
+	// keep exercising the merge path.
+	fetchProtectionFn func(ctx context.Context) (protectionCache, error)
 	// checkMergedStateFn is called on the error path of tryMerge to reconcile
 	// PR state. When nil, returns "" (unknown / fall-through to keyword check).
 	checkMergedStateFn func(ctx context.Context, pr int) string
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
-// instead of the real gh CLI.
+// instead of the real gh CLI. Mirrors the #2420 async-poll state machine:
+// only prism-driven merge / out-of-band merge / closed-without-merge / genuine
+// merge mutation failure produce a coordinator notification; all other states
+// stay watching silently. An unprotected repo NEVER auto-merges.
 func (fw *fakeWatcher) processHead(ctx context.Context) {
 	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.sessionName)
 	if err != nil || head == nil {
@@ -485,119 +492,89 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 		return
 	}
 
-	if prInfoVal.State == "CLOSED" && !prInfoVal.isMerged() {
-		fw.watcher.failAndNotify(head, "PR was closed without merging")
-		return
-	}
+	// Terminal: out-of-band merge.
 	if prInfoVal.State == "MERGED" || prInfoVal.isMerged() {
 		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeExternal, prInfoVal)
+		return
+	}
+	// Terminal: closed without merging.
+	if prInfoVal.State == "CLOSED" && !prInfoVal.isMerged() {
+		fw.watcher.notifyClosedNotMerged(ctx, head)
+		return
+	}
+
+	// Branch-protection gate (#2420): NEVER auto-merge without protection.
+	prot, protErr := fw.resolveProtection(ctx)
+	if protErr != nil {
+		return // stay watching
+	}
+	if !prot.configured {
+		// Unprotected repo — stay watching for a human to merge/close.
 		return
 	}
 
 	switch prInfoVal.MergeStateStatus {
 	case "CLEAN":
-		out, mergeErr := fw.mergeFn(ctx, head.PR)
-		if mergeErr == nil {
-			fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
-			return
+		fw.attemptMerge(ctx, head)
+
+	case "UNSTABLE":
+		if requiredChecksAllPassed(prInfoVal.StatusCheckRollup, prot.requiredChecks) {
+			fw.attemptMerge(ctx, head)
 		}
-		// First: reconcile by checking the PR's actual state.
-		var reconciledState string
-		if fw.checkMergedStateFn != nil {
-			reconciledState = fw.checkMergedStateFn(ctx, head.PR)
-		}
-		if reconciledState == "MERGED" {
-			fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
-			return
-		}
-		// Second: keyword-based branch-moved-race check.
-		combined := strings.ToLower(string(out) + mergeErr.Error())
-		if isBranchMovedRace(combined) {
-			return // transient
-		}
-		errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
-		fw.watcher.failAndNotify(head, errMsg)
+		// else stay watching if required checks not all passed
 
 	case "BEHIND":
 		_ = fw.updateFn(ctx, head.PR)
 
-	case "DIRTY":
-		fw.watcher.failAndNotify(head, "merge conflicts")
-
-	case "BLOCKED":
-		// Mirror the production BLOCKED branch: distinguish CI failure, review
-		// required, changes requested, or an unrecognised state. Empty
-		// ReviewDecision requires checking if required checks are still pending.
-		switch {
-		case hasCIFailure(prInfoVal.StatusCheckRollup):
-			fw.watcher.failAndNotify(head, "CI failed")
-		case prInfoVal.ReviewDecision == "":
-			// Empty ReviewDecision: check if required checks are still pending.
-			var required []string
-			var fetchErr error
-			if fw.fetchRequiredChecksFn != nil {
-				required, fetchErr = fw.fetchRequiredChecksFn(ctx)
-			}
-			if fetchErr != nil {
-				// stay watching
-				return
-			}
-			// If there are no required checks, or all required checks have passed, proceed.
-			// (Empty required list means no checks to wait for.)
-			if len(required) > 0 && !requiredChecksAllPassed(prInfoVal.StatusCheckRollup, required) {
-				// Required checks are not all passed — stay watching.
-				return
-			}
-			// All required checks have passed (or none configured); empty ReviewDecision routes to review-required.
-			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfoVal.ReviewDecision == "REVIEW_REQUIRED":
-			fw.watcher.failAndNotify(head, "human reviewer approval required before merge")
-		case prInfoVal.ReviewDecision == "CHANGES_REQUESTED":
-			fw.watcher.failAndNotify(head, "reviewer requested changes — fix and re-request review")
-		default:
-			log.Printf("[mergequeue] PR #%d BLOCKED with unrecognised reviewDecision=%q — failing (was previously silent-stall)", head.PR, prInfoVal.ReviewDecision)
-			fw.watcher.failAndNotify(head, fmt.Sprintf("blocked for unknown reason (reviewDecision=%q)", prInfoVal.ReviewDecision))
-		}
-
-	case "UNSTABLE":
-		var required []string
-		var fetchErr error
-		if fw.fetchRequiredChecksFn != nil {
-			required, fetchErr = fw.fetchRequiredChecksFn(ctx)
-		}
-		if fetchErr != nil {
-			// stay watching
-			return
-		}
-		if requiredChecksAllPassed(prInfoVal.StatusCheckRollup, required) {
-			out, mergeErr := fw.mergeFn(ctx, head.PR)
-			if mergeErr == nil {
-				fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
-				return
-			}
-			// First: reconcile state.
-			var reconciledState string
-			if fw.checkMergedStateFn != nil {
-				reconciledState = fw.checkMergedStateFn(ctx, head.PR)
-			}
-			if reconciledState == "MERGED" {
-				fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
-				return
-			}
-			// Second: keyword check.
-			combined := strings.ToLower(string(out) + mergeErr.Error())
-			if isBranchMovedRace(combined) {
-				return
-			}
-			errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
-			fw.watcher.failAndNotify(head, errMsg)
-		}
-		// stay watching if required checks not all passed
-
-	case "UNKNOWN", "HAS_HOOKS", "DRAFT":
-		// stay watching
+	case "DIRTY", "BLOCKED", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+		// #2420: stay watching silently — no coordinator notification.
 
 	}
+}
+
+// resolveProtection returns the injected protection snapshot or a synthetic
+// default (configured=true, requiredChecks from fetchRequiredChecksFn if set)
+// so tests that predate the branch-protection gate continue to exercise the
+// merge path without additional wiring.
+func (fw *fakeWatcher) resolveProtection(ctx context.Context) (protectionCache, error) {
+	if fw.fetchProtectionFn != nil {
+		return fw.fetchProtectionFn(ctx)
+	}
+	var required []string
+	if fw.fetchRequiredChecksFn != nil {
+		var err error
+		required, err = fw.fetchRequiredChecksFn(ctx)
+		if err != nil {
+			return protectionCache{}, err
+		}
+	}
+	return protectionCache{configured: true, requiredChecks: required}, nil
+}
+
+// attemptMerge invokes the injected merge function with the CLEAN/UNSTABLE
+// reconciliation and branch-moved-race handling that production tick uses.
+func (fw *fakeWatcher) attemptMerge(ctx context.Context, head *db.PendingMerge) {
+	out, mergeErr := fw.mergeFn(ctx, head.PR)
+	if mergeErr == nil {
+		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomePrismDriven, nil)
+		return
+	}
+	// First: reconcile by checking the PR's actual state.
+	var reconciledState string
+	if fw.checkMergedStateFn != nil {
+		reconciledState = fw.checkMergedStateFn(ctx, head.PR)
+	}
+	if reconciledState == "MERGED" {
+		fw.watcher.succeedAndNotify(ctx, head, mergeOutcomeReconciled, nil)
+		return
+	}
+	// Second: keyword-based branch-moved-race check.
+	combined := strings.ToLower(string(out) + mergeErr.Error())
+	if isBranchMovedRace(combined) {
+		return // transient
+	}
+	errMsg := fmt.Sprintf("gh pr merge failed: %s", strings.TrimSpace(string(out)))
+	fw.watcher.failAndNotify(head, errMsg)
 }
 
 // newFakeWatcher builds a fakeWatcher for tests.
@@ -741,817 +718,6 @@ func TestWatcher_BEHINDLeaveWatching(t *testing.T) {
 	}
 }
 
-// TestWatcher_DIRTYTransitionToFailed verifies conflict detection.
-func TestWatcher_DIRTYTransitionToFailed(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-dirty"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	sid := "pi-sid-dirty"
-	seedCoordinator(t, d, session, instanceID, port, sid)
-
-	if _, err := d.EnqueueMerge(300, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "DIRTY"}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
-
-	row, err := d.PendingMergeByPR(300, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "merge conflicts" {
-		t.Errorf("error: got %v, want 'merge conflicts'", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDWithCIFailure transitions to failed.
-func TestWatcher_BLOCKEDWithCIFailure(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-ci"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-ci")
-
-	if _, err := d.EnqueueMerge(400, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "FAILURE"}},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
-
-	row, err := d.PendingMergeByPR(400, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "CI failed" {
-		t.Errorf("error: got %v, want 'CI failed'", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDWithInProgressCheckFails is the post-#2375 replacement
-// for the previous "stays watching" test at PR #500. Before #2375, BLOCKED
-// with an in-progress check and empty ReviewDecision was treated as "CI
-// still running" and left the row in watching state indefinitely. Per
-// #2375's AC1, empty ReviewDecision now routes to the review-required
-// notification (branch protection wants a review, none requested yet) so
-// the row never silently stalls, regardless of what the check rollup shows.
-//
-// This test exercises the fakeWatcher path; the AC1 canonical regression
-// test below (TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired)
-// exercises the real w.tick() path.
-func TestWatcher_BLOCKEDWithInProgressCheckFails(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-noci"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-noci")
-
-	if _, err := d.EnqueueMerge(500, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				ReviewDecision:    "",
-				StatusCheckRollup: []checkEntry{{Name: "optional-check", Conclusion: "IN_PROGRESS"}},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// No required checks configured — only optional ones are pending.
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{}, nil // Empty required list — treat as not-gated conservatively.
-	}
-
-	fw.processHead(context.Background())
-
-	row, err := d.PendingMergeByPR(500, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	// With no required checks configured, empty ReviewDecision routes to review-required.
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
-		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
-	}
-	if srv.called == 0 {
-		t.Fatal("no notification sent to coordinator")
-	}
-}
-
-// TestWatcher_BLOCKEDWithReviewRequired transitions to failed with the review
-// notification message when reviewDecision is "REVIEW_REQUIRED" and CI is passing.
-func TestWatcher_BLOCKEDWithReviewRequired(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-review"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-review")
-
-	if _, err := d.EnqueueMerge(555, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
-				ReviewDecision:    "REVIEW_REQUIRED",
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
-
-	// Row must have transitioned to failed.
-	row, err := d.PendingMergeByPR(555, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
-		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
-	}
-
-	// Notification must have been sent and contain the expected text.
-	if srv.called == 0 {
-		t.Fatal("no notification sent to coordinator")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-	parts, _ := body["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
-	if !strings.Contains(text, "PR #555") {
-		t.Errorf("notification text %q does not contain 'PR #555'", text)
-	}
-	if !strings.Contains(text, "human reviewer approval required before merge") {
-		t.Errorf("notification text %q does not contain review-required message", text)
-	}
-}
-
-// TestWatcher_BLOCKEDCIFailureNotMisdiagnosedAsReviewRequired verifies that
-// a BLOCKED PR with a CI failure and REVIEW_REQUIRED reviewDecision is
-// diagnosed as CI failure (CI check takes precedence) — or more precisely,
-// that CI failure is checked first and is not suppressed by reviewDecision.
-func TestWatcher_BLOCKEDCIFailureNotMisdiagnosedAsReviewRequired(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-cifirst"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-cifirst")
-
-	if _, err := d.EnqueueMerge(444, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "FAILURE"}},
-				ReviewDecision:    "REVIEW_REQUIRED",
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
-
-	// Row must be failed with "CI failed" (CI check takes precedence).
-	row, err := d.PendingMergeByPR(444, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "CI failed" {
-		t.Errorf("error: got %v, want 'CI failed'", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDReviewRequiredIsReEnqueueable verifies the edge-case AC:
-// after a terminal "review required" failure, the coordinator can re-enqueue
-// the same PR with prism merge and the new row starts as watching.
-func TestWatcher_BLOCKEDReviewRequiredIsReEnqueueable(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-reenqueue"
-	session := "myrepo@main"
-
-	// First enqueue and fail with review-required.
-	if _, err := d.EnqueueMerge(666, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("first EnqueueMerge: %v", err)
-	}
-	if err := d.TerminateMerge(666, "myrepo", "failed", "human reviewer approval required before merge"); err != nil {
-		t.Fatalf("TerminateMerge: %v", err)
-	}
-
-	// Re-enqueue — simulates coordinator running `prism merge <pr>` after approval.
-	m, err := d.EnqueueMerge(666, "myrepo", session, instanceID, nil)
-	if err != nil {
-		t.Fatalf("second EnqueueMerge: %v", err)
-	}
-	if m.Status != "watching" {
-		t.Errorf("re-enqueued status: got %q, want watching", m.Status)
-	}
-	if m.Error != nil {
-		t.Errorf("re-enqueued error: got %v, want nil", m.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired is AC1 of
-// #2375: when a BLOCKED PR has ReviewDecision == "" (empty), the watcher
-// must call failAndNotify with the same "human reviewer approval required
-// before merge" message currently used for REVIEW_REQUIRED. Empty
-// ReviewDecision on a BLOCKED PR reliably means branch protection wants a
-// review but none has been requested yet — the coordinator's response is
-// identical to REVIEW_REQUIRED (request a review, then re-enqueue), so
-// the notification text is intentionally shared.
-//
-// Prior to #2375 this case fell through the else branch and the row sat
-// in "watching" forever, with no notification to the enqueuing
-// coordinator.
-//
-// This test exercises the real w.tick() path (not the fakeWatcher stand-in)
-// with a stubbed runGHFunc, so reverting the production BLOCKED-branch fix
-// makes it fail — satisfying AC6's revert-and-watch-fail proof.
-func TestWatcher_BLOCKEDEmptyReviewDecisionFailsAsReviewRequired(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-empty-decision"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-empty-decision")
-
-	if _, err := d.EnqueueMerge(777, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	w := &Watcher{
-		db:          d,
-		instanceID:  instanceID,
-		sessionName: session,
-		httpClient:  srv.Client(),
-		repo:        "myrepo",
-		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
-			// args[0..1] are "--repo <slug>" (prepended by runGH); the
-			// meaningful subcommand starts at args[2].
-			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
-				// BLOCKED with all checks passed and empty reviewDecision —
-				// the "branch protection wants a review, none requested
-				// yet" state (all required checks have concluded).
-				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"name":"go-tests","conclusion":"SUCCESS"},{"name":"nix-build","conclusion":"SUCCESS"}],"reviewDecision":""}`), nil
-			}
-			if len(args) >= 2 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection") {
-				// Branch protection query for required checks. Return two required checks.
-				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"go-tests"},{"context":"nix-build"}]}}`), nil
-			}
-			return nil, fmt.Errorf("unexpected gh call: %v", args)
-		},
-	}
-
-	w.tick(context.Background())
-
-	// Row must have transitioned to failed with the review-required reason.
-	const wantMsg = "human reviewer approval required before merge"
-	row, err := d.PendingMergeByPR(777, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed (empty ReviewDecision must terminate, not stay watching — #2375)", row.Status)
-	}
-	if row.Error == nil || *row.Error != wantMsg {
-		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
-	}
-
-	// Notification must have been sent — empty ReviewDecision reuses the
-	// REVIEW_REQUIRED notification text so the coordinator response path
-	// is identical.
-	if srv.called == 0 {
-		t.Fatal("no notification sent to coordinator (row silently stalled — #2375 regression)")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-	parts, _ := body["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
-	if !strings.Contains(text, "PR #777") {
-		t.Errorf("notification text %q does not contain 'PR #777'", text)
-	}
-	if !strings.Contains(text, wantMsg) {
-		t.Errorf("notification text %q does not contain review-required message %q", text, wantMsg)
-	}
-}
-
-// TestWatcher_BLOCKEDWithChangesRequested transitions to failed with the
-// changes-requested notification message when reviewDecision is
-// "CHANGES_REQUESTED" and CI is passing. Regression test for issue #1884:
-// previously this case fell through to the "staying watching" log branch
-// and the PR sat in the queue forever.
-func TestWatcher_BLOCKEDWithChangesRequested(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-changes"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-changes")
-
-	if _, err := d.EnqueueMerge(1884, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:             "OPEN",
-				MergeStateStatus:  "BLOCKED",
-				StatusCheckRollup: []checkEntry{{Conclusion: "SUCCESS"}},
-				ReviewDecision:    "CHANGES_REQUESTED",
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-
-	fw.processHead(context.Background())
-
-	// Row must have transitioned to failed with the expected reason.
-	const wantMsg = "reviewer requested changes — fix and re-request review"
-	row, err := d.PendingMergeByPR(1884, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != wantMsg {
-		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
-	}
-
-	// Notification must have been sent and contain the expected text.
-	if srv.called == 0 {
-		t.Fatal("no notification sent to coordinator")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-	parts, _ := body["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
-	if !strings.Contains(text, "PR #1884") {
-		t.Errorf("notification text %q does not contain 'PR #1884'", text)
-	}
-	if !strings.Contains(text, wantMsg) {
-		t.Errorf("notification text %q does not contain changes-requested message", text)
-	}
-}
-
-// TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies is AC2 of
-// #2375: when a BLOCKED PR falls through all known cases (no CI failure,
-// ReviewDecision is not "", REVIEW_REQUIRED, or CHANGES_REQUESTED), the
-// watcher must call failAndNotify with a message of the form "blocked for
-// unknown reason (reviewDecision=%q)" so the enqueuing coordinator receives
-// a bus notification and the row leaves "watching" state.
-//
-// The operator log line naming the literal ReviewDecision string is retained
-// for forensic triage (AC4).
-//
-// Prior to #2375 this case emitted the log line and left the row watching
-// indefinitely, with no coordinator notification.
-//
-// This test exercises the real w.tick() path (not the fakeWatcher stand-in)
-// with a stubbed runGHFunc, so reverting the production BLOCKED-branch fix
-// makes it fail — satisfying AC6's revert-and-watch-fail proof.
-func TestWatcher_BLOCKEDUnrecognisedReviewDecisionFailsAndNotifies(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-foobar"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-foobar")
-
-	if _, err := d.EnqueueMerge(1885, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	w := &Watcher{
-		db:          d,
-		instanceID:  instanceID,
-		sessionName: session,
-		httpClient:  srv.Client(),
-		repo:        "myrepo",
-		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
-			if len(args) >= 4 && args[2] == "pr" && args[3] == "view" {
-				// BLOCKED with a passing check and an unrecognised
-				// reviewDecision value — e.g. a future GitHub enum
-				// addition we haven't yet mapped.
-				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"BLOCKED","statusCheckRollup":[{"conclusion":"SUCCESS"}],"reviewDecision":"FOOBAR"}`), nil
-			}
-			return nil, fmt.Errorf("unexpected gh call: %v", args)
-		},
-	}
-
-	// Capture log output only around tick() so we don't pick up unrelated
-	// log lines. AC4: the log line naming the literal reviewDecision string
-	// must remain.
-	var buf bytes.Buffer
-	origOut := log.Writer()
-	origFlags := log.Flags()
-	log.SetOutput(&buf)
-	log.SetFlags(0)
-	t.Cleanup(func() {
-		log.SetOutput(origOut)
-		log.SetFlags(origFlags)
-	})
-
-	w.tick(context.Background())
-
-	// Row must have transitioned to failed with the unknown-reason envelope
-	// carrying the literal reviewDecision string.
-	const wantMsg = `blocked for unknown reason (reviewDecision="FOOBAR")`
-	row, err := d.PendingMergeByPR(1885, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed (unrecognised decision must terminate, not silently stall — #2375)", row.Status)
-	}
-	if row.Error == nil || *row.Error != wantMsg {
-		t.Errorf("error: got %v, want %q", row.Error, wantMsg)
-	}
-
-	// Notification must have been sent to the enqueuing coordinator with a
-	// readable message containing the reviewDecision string.
-	if srv.called == 0 {
-		t.Fatal("no notification sent to coordinator (row silently stalled — #2375 regression)")
-	}
-	var body map[string]any
-	if err := json.Unmarshal(srv.lastBody, &body); err != nil {
-		t.Fatalf("unmarshal notification body: %v", err)
-	}
-	parts, _ := body["parts"].([]interface{})
-	if len(parts) == 0 {
-		t.Fatal("notification body has no parts")
-	}
-	part, _ := parts[0].(map[string]interface{})
-	text, _ := part["text"].(string)
-	if !strings.Contains(text, "PR #1885") {
-		t.Errorf("notification text %q does not contain 'PR #1885'", text)
-	}
-	if !strings.Contains(text, `reviewDecision="FOOBAR"`) {
-		t.Errorf("notification text %q does not contain literal reviewDecision=\"FOOBAR\"", text)
-	}
-	if !strings.Contains(text, "blocked for unknown reason") {
-		t.Errorf("notification text %q does not contain the unknown-reason envelope prefix", text)
-	}
-
-	// AC4: operator log line naming the literal decision string is retained.
-	logged := buf.String()
-	if !strings.Contains(logged, "FOOBAR") {
-		t.Errorf("log output %q does not contain literal \"FOOBAR\" (AC4 — forensic triage line)", logged)
-	}
-	if !strings.Contains(logged, "PR #1885") {
-		t.Errorf("log output %q does not reference PR #1885", logged)
-	}
-}
-
-// TestWatcher_BLOCKEDEmptyReviewDecisionWithPendingRequiredChecks verifies
-// the positive case: a PR reported BLOCKED with empty reviewDecision while at
-// least one required check is still pending stays watching, no fail-and-notify.
-func TestWatcher_BLOCKEDEmptyReviewDecisionWithPendingRequiredChecks(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-pending-required"
-	session := "myrepo@main"
-
-	if _, err := d.EnqueueMerge(2415, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "",
-				StatusCheckRollup: []checkEntry{
-					{Name: "go-tests", Status: "IN_PROGRESS", Conclusion: ""},
-					{Name: "nix-build", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"go-tests", "nix-build"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	// Row must stay watching (no fail-and-notify).
-	row, err := d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "watching" {
-		t.Errorf("status: got %q, want watching (pending required check should not trigger review-required fail)", row.Status)
-	}
-	if row.Error != nil {
-		t.Errorf("error: got %v, want nil (pending required check should not set error)", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDEmptyReviewDecisionThenRequiredSuccessAndClean verifies
-// AC1 + AC2 combined: a PR stays watching while required checks are pending,
-// then merges when they all pass and mergeStateStatus becomes CLEAN.
-func TestWatcher_BLOCKEDEmptyReviewDecisionThenRequiredSuccessAndClean(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-then-clean"
-	session := "myrepo@main"
-
-	if _, err := d.EnqueueMerge(2415, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	// First tick: BLOCKED, empty reviewDecision, go-tests still pending.
-	fw := newFakeWatcher(d, instanceID, session, http.DefaultClient,
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "",
-				StatusCheckRollup: []checkEntry{
-					{Name: "go-tests", Status: "IN_PROGRESS", Conclusion: ""},
-					{Name: "nix-build", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"go-tests", "nix-build"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	row, err := d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR after first tick: %v", err)
-	}
-	if row.Status != "watching" {
-		t.Errorf("status after first tick: got %q, want watching", row.Status)
-	}
-
-	// Second tick: all required checks now SUCCESS, mergeStateStatus becomes CLEAN.
-	// The watcher should attempt to merge.
-	fw.fetchFn = func(_ context.Context, pr int) (*prInfo, error) {
-		return &prInfo{
-			State:            "OPEN",
-			MergeStateStatus: "CLEAN",
-			ReviewDecision:   "",
-			StatusCheckRollup: []checkEntry{
-				{Name: "go-tests", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				{Name: "nix-build", Status: "COMPLETED", Conclusion: "SUCCESS"},
-			},
-		}, nil
-	}
-	fw.mergeFn = func(_ context.Context, pr int) ([]byte, error) {
-		return nil, nil // Merge succeeds.
-	}
-
-	fw.processHead(context.Background())
-
-	row, err = d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR after second tick: %v", err)
-	}
-	if row.Status != "merged" {
-		t.Errorf("status after second tick: got %q, want merged (should have merged once CLEAN and all checks passed)", row.Status)
-	}
-}
-
-// TestWatcher_BLOCKEDRequiredCheckFailedStillFailsAsCI verifies AC3:
-// a PR reported BLOCKED with a required check that has FAILED still
-// fails-and-notifies as "CI failed" (terminal, not masked by empty reviewDecision).
-func TestWatcher_BLOCKEDRequiredCheckFailedStillFailsAsCI(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-required-failed"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-blocked-failed")
-
-	if _, err := d.EnqueueMerge(2415, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "",
-				StatusCheckRollup: []checkEntry{
-					{Name: "go-tests", Status: "COMPLETED", Conclusion: "FAILURE"},
-					{Name: "nix-build", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"go-tests", "nix-build"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	// Row must fail with "CI failed" message (terminal, not masked by empty reviewDecision).
-	row, err := d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed (CI failure should be terminal)", row.Status)
-	}
-	if row.Error == nil || *row.Error != "CI failed" {
-		t.Errorf("error: got %v, want 'CI failed'", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDReviewRequiredWithAllRequiredChecksConcluded verifies
-// AC4: a PR reported BLOCKED with reviewDecision="REVIEW_REQUIRED" and all
-// required checks concluded still fails-and-notifies "human reviewer approval
-// required" (genuine review-required behaviour preserved).
-func TestWatcher_BLOCKEDReviewRequiredWithAllRequiredChecksConcluded(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-review-required"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-blocked-review")
-
-	if _, err := d.EnqueueMerge(2415, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "REVIEW_REQUIRED",
-				StatusCheckRollup: []checkEntry{
-					{Name: "go-tests", Status: "COMPLETED", Conclusion: "SUCCESS"},
-					{Name: "nix-build", Status: "COMPLETED", Conclusion: "SUCCESS"},
-				},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"go-tests", "nix-build"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	// Row must fail with review-required message.
-	row, err := d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed", row.Status)
-	}
-	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
-		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
-	}
-}
-
-// TestWatcher_BLOCKEDOptionalCheckPendingDoesNotKeepWatching verifies AC6:
-// the pending-check determination reuses required-checks resolution, so an
-// optional (non-required) pending check does NOT keep a PR watching.
-func TestWatcher_BLOCKEDOptionalCheckPendingDoesNotKeepWatching(t *testing.T) {
-	d := openTestDB(t)
-	instanceID := "inst-blocked-optional-pending"
-	session := "myrepo@main"
-
-	srv := newCapturingServer(t)
-	port := parsePort(t, srv.URL)
-	seedCoordinator(t, d, session, instanceID, port, "sid-blocked-optional")
-
-	if _, err := d.EnqueueMerge(2415, "myrepo", session, instanceID, nil); err != nil {
-		t.Fatalf("EnqueueMerge: %v", err)
-	}
-
-	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
-		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{
-				State:            "OPEN",
-				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "",
-				StatusCheckRollup: []checkEntry{
-					{Name: "go-tests", Status: "COMPLETED", Conclusion: "SUCCESS"},
-					{Name: "optional-slow-check", Status: "IN_PROGRESS", Conclusion: ""},
-				},
-			}, nil
-		},
-		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
-		func(_ context.Context, pr int) error { return nil },
-	)
-	// Only go-tests is required; optional-slow-check is not.
-	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
-		return []string{"go-tests"}, nil
-	}
-
-	fw.processHead(context.Background())
-
-	// Row must fail with review-required (optional check pending does not override).
-	row, err := d.PendingMergeByPR(2415, "myrepo")
-	if err != nil {
-		t.Fatalf("PendingMergeByPR: %v", err)
-	}
-	if row.Status != "failed" {
-		t.Errorf("status: got %q, want failed (optional pending check should not keep watching)", row.Status)
-	}
-	if row.Error == nil || *row.Error != "human reviewer approval required before merge" {
-		t.Errorf("error: got %v, want 'human reviewer approval required before merge'", row.Error)
-	}
-}
-
 // TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending verifies that when
 // UNSTABLE and a required check is still in progress, the row stays watching.
 func TestWatcher_UNSTABLEStaysWatchingWhenRequiredPending(t *testing.T) {
@@ -1664,8 +830,11 @@ func TestWatcher_BranchMovedRaceRetries(t *testing.T) {
 	}
 }
 
-// TestWatcher_ClosedExternallyTransitionsToFailed verifies that a PR closed
-// without merging becomes failed.
+// TestWatcher_ClosedExternallyTransitionsToFailed verifies that during polling,
+// a PR observed as CLOSED (without merge) terminates the row as failed and
+// delivers the #2420 closed-without-merge notification: text contains
+// "closed without merge" plus "Please clean up the branch and worktree" and
+// does not imply prism performed the cleanup.
 func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 	d := openTestDB(t)
 	instanceID := "inst-closed"
@@ -1695,6 +864,23 @@ func TestWatcher_ClosedExternallyTransitionsToFailed(t *testing.T) {
 	}
 	if row.Status != "failed" {
 		t.Errorf("status: got %q, want failed", row.Status)
+	}
+
+	if srv.called == 0 {
+		t.Fatal("no closed-without-merge notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+	if !strings.Contains(text, "PR #900") {
+		t.Errorf("notification text %q does not mention PR #900", text)
+	}
+	if !strings.Contains(text, "closed without merge") {
+		t.Errorf("notification text %q does not contain 'closed without merge' (#2420 discipline)", text)
+	}
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase 'Please clean up the branch and worktree'", text)
+	}
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must NOT imply prism performed the cleanup itself", text)
 	}
 }
 
@@ -1746,10 +932,13 @@ func TestWatcher_NextPRPromotedAfterTerminal(t *testing.T) {
 	port := parsePort(t, srv.URL)
 	seedCoordinator(t, d, session, instanceID, port, "sid-promote")
 
-	// First tick: head is PR 10 — mark as DIRTY so it fails.
+	// First tick: head is PR 10 — report as CLOSED so it terminates via
+	// notifyClosedNotMerged. Using CLOSED (a #2420-terminal state) rather
+	// than DIRTY (which now stays watching silently mid-poll) is the way
+	// to drive a promotion transition in the new state machine.
 	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
 		func(_ context.Context, pr int) (*prInfo, error) {
-			return &prInfo{State: "OPEN", MergeStateStatus: "DIRTY"}, nil
+			return &prInfo{State: "CLOSED", MergedAt: nil}, nil
 		},
 		func(_ context.Context, pr int) ([]byte, error) { return nil, nil },
 		func(_ context.Context, pr int) error { return nil },
@@ -1919,8 +1108,11 @@ func TestWatcher_NotificationBodyContainsPR(t *testing.T) {
 	if !strings.Contains(text, "PR #123") {
 		t.Errorf("notification text %q does not mention PR #123", text)
 	}
-	if !strings.Contains(text, "git pull") {
-		t.Errorf("notification text %q does not mention 'git pull'", text)
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase 'Please clean up the branch and worktree'", text)
+	}
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must not instruct `prism cleanup` — the coordinator does the cleanup, prism does not", text)
 	}
 
 	_ = os.Getenv // avoid unused import
@@ -2560,7 +1752,7 @@ func TestFetchRequiredChecks_CacheTTL(t *testing.T) {
 	}
 
 	// Advance time past TTL.
-	current = current.Add(requiredChecksCacheTTL + time.Second)
+	current = current.Add(protectionCacheTTL + time.Second)
 
 	// Third call after TTL: cache miss, re-fetches.
 	_, err = w.fetchRequiredChecks(context.Background())
@@ -2833,8 +2025,8 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 	if !strings.Contains(text, "PR #2200") {
 		t.Errorf("notification text %q does not mention 'PR #2200'", text)
 	}
-	if !strings.Contains(text, "merged externally") {
-		t.Errorf("notification text %q does not contain 'merged externally' — external-merge case must be distinguished from prism-driven", text)
+	if !strings.Contains(text, "merged out-of-band") {
+		t.Errorf("notification text %q does not contain 'merged out-of-band' — external-merge case must be distinguished from prism-driven (#2420)", text)
 	}
 	if !strings.Contains(text, "@b-h-mck") {
 		t.Errorf("notification text %q does not name merger @b-h-mck", text)
@@ -2842,8 +2034,11 @@ func TestWatcher_ExternalMerge_NotifyTextDistinguishedAndNamesByLogin(t *testing
 	if !strings.Contains(text, mergedAt) {
 		t.Errorf("notification text %q does not include merge timestamp %q", text, mergedAt)
 	}
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase 'Please clean up the branch and worktree'", text)
+	}
 	if strings.Contains(text, "prism cleanup") {
-		t.Errorf("notification text %q must NOT instruct `prism cleanup` for external merges — prism did not perform the merge", text)
+		t.Errorf("notification text %q must NOT imply prism performed the cleanup itself", text)
 	}
 
 	// Row must still terminate as merged (DB state unchanged from current behaviour).
@@ -2897,8 +2092,8 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 	if !strings.Contains(text, "PR #2201") {
 		t.Errorf("notification text %q does not mention 'PR #2201'", text)
 	}
-	if !strings.Contains(text, "merged externally") {
-		t.Errorf("notification text %q does not contain 'merged externally'", text)
+	if !strings.Contains(text, "merged out-of-band") {
+		t.Errorf("notification text %q does not contain 'merged out-of-band' (#2420)", text)
 	}
 	if strings.Contains(text, "@") {
 		t.Errorf("notification text %q contains '@' — with mergedBy=nil the merger should be omitted, not emitted as an empty handle", text)
@@ -2906,8 +2101,8 @@ func TestWatcher_ExternalMerge_MergedByNullDegradesGracefully(t *testing.T) {
 	if !strings.Contains(text, mergedAt) {
 		t.Errorf("notification text %q does not include merge timestamp %q (graceful degrade must still surface mergedAt when present)", text, mergedAt)
 	}
-	if strings.Contains(text, "prism cleanup") {
-		t.Errorf("notification text %q must NOT instruct `prism cleanup` for external merges", text)
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase 'Please clean up the branch and worktree'", text)
 	}
 }
 
@@ -2944,7 +2139,7 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_NoArchive(t *testing.T) {
 	}
 	text := extractNotifyText(t, srv.lastBody)
 
-	want := "PR #2210 merged. Run `git pull` in @main and `prism cleanup` the worker session."
+	want := "PR #2210 merged. Please clean up the branch and worktree."
 	if text != want {
 		t.Errorf("prism-driven notification (no archive) text mismatch —\n got:  %q\n want: %q", text, want)
 	}
@@ -3002,7 +2197,7 @@ func TestWatcher_PrismDrivenMerge_NotifyTextUnchanged_WithArchive(t *testing.T) 
 	}
 	text := extractNotifyText(t, srv.lastBody)
 
-	want := "PR #2211 merged. Archive: /archives/myrepo-2211.tar.gz. Run `git pull` in @main and `prism cleanup` the worker session."
+	want := "PR #2211 merged. Archive: /archives/myrepo-2211.tar.gz. Please clean up the branch and worktree."
 	if text != want {
 		t.Errorf("prism-driven notification (with archive) text mismatch —\n got:  %q\n want: %q", text, want)
 	}
@@ -3052,11 +2247,14 @@ func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
 	if !strings.Contains(text, "Reconciled") {
 		t.Errorf("notification text %q does not contain reconciliation breadcrumb — reconciled case must be distinct from canonical case", text)
 	}
-	if !strings.Contains(text, "prism cleanup") {
-		t.Errorf("notification text %q does not instruct `prism cleanup` — reconciled case is still a prism-driven merge", text)
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase 'Please clean up the branch and worktree' — reconciled case is still a prism-driven merge", text)
 	}
-	if strings.Contains(text, "merged externally") {
-		t.Errorf("notification text %q contains 'merged externally' — reconciled case must NOT be mistaken for external merge", text)
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must NOT imply prism performed the cleanup itself (#2420)", text)
+	}
+	if strings.Contains(text, "merged out-of-band") {
+		t.Errorf("notification text %q contains 'merged out-of-band' — reconciled case must NOT be mistaken for external merge", text)
 	}
 }
 
@@ -3066,7 +2264,7 @@ func TestWatcher_Reconciled_NotifyTextIncludesReconciledNote(t *testing.T) {
 // rendering test (no DB, no notify) so we can pin the exact strings.
 func TestRenderExternalMergeNotifyText_NilPrInfo(t *testing.T) {
 	got := renderExternalMergeNotifyText(42, nil)
-	want := "PR #42 was already merged externally. No action taken by prism. Run `git pull` if needed."
+	want := "PR #42 merged out-of-band. Please clean up the branch and worktree."
 	if got != want {
 		t.Errorf("renderExternalMergeNotifyText(42, nil) =\n got:  %q\n want: %q", got, want)
 	}
@@ -3081,7 +2279,7 @@ func TestRenderExternalMergeNotifyText_LoginAndTimestamp(t *testing.T) {
 		MergedBy: &userRef{Login: "b-h-mck"},
 	}
 	got := renderExternalMergeNotifyText(15, info)
-	want := "PR #15 was already merged externally (merged by @b-h-mck at 2026-06-16T22:32:47Z). No action taken by prism. Run `git pull` if needed."
+	want := "PR #15 merged out-of-band (merged by @b-h-mck at 2026-06-16T22:32:47Z). Please clean up the branch and worktree."
 	if got != want {
 		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
 	}
@@ -3096,7 +2294,7 @@ func TestRenderExternalMergeNotifyText_LoginOnly(t *testing.T) {
 		MergedBy: &userRef{Login: "someone"},
 	}
 	got := renderExternalMergeNotifyText(99, info)
-	want := "PR #99 was already merged externally (merged by @someone). No action taken by prism. Run `git pull` if needed."
+	want := "PR #99 merged out-of-band (merged by @someone). Please clean up the branch and worktree."
 	if got != want {
 		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
 	}
@@ -3111,7 +2309,7 @@ func TestRenderExternalMergeNotifyText_TimestampOnly(t *testing.T) {
 		MergedBy: nil,
 	}
 	got := renderExternalMergeNotifyText(123, info)
-	want := "PR #123 was already merged externally (merged at 2026-06-17T09:00:00Z). No action taken by prism. Run `git pull` if needed."
+	want := "PR #123 merged out-of-band (merged at 2026-06-17T09:00:00Z). Please clean up the branch and worktree."
 	if got != want {
 		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
 	}
@@ -3127,7 +2325,7 @@ func TestRenderExternalMergeNotifyText_EmptyLogin(t *testing.T) {
 		MergedBy: &userRef{Login: ""},
 	}
 	got := renderExternalMergeNotifyText(456, info)
-	want := "PR #456 was already merged externally (merged at 2026-06-17T09:00:00Z). No action taken by prism. Run `git pull` if needed."
+	want := "PR #456 merged out-of-band (merged at 2026-06-17T09:00:00Z). Please clean up the branch and worktree."
 	if got != want {
 		t.Errorf("renderExternalMergeNotifyText —\n got:  %q\n want: %q", got, want)
 	}
@@ -3290,5 +2488,504 @@ func TestFetchRequiredChecks_ErrorStaysWatching(t *testing.T) {
 	}
 	if row.Status != "watching" {
 		t.Errorf("status: got %q, want watching (branch-protection fetch error must not merge)", row.Status)
+	}
+}
+
+// ── #2420 async-poll state-machine tests ──────────────────────────────────────
+
+// TestWatcher_Unprotected_NeverAutoMerges is the core #2420 rule: when the
+// branch-protection API returns HTTP 404, the watcher does NOT auto-merge,
+// even when GitHub reports the PR as CLEAN. The row stays watching so a
+// human can either merge/close the PR or configure branch protection. No
+// coordinator notification fires while polling — the initial invocation
+// message already told them the repo is unprotected.
+func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unprotected"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-unprotected")
+
+	if _, err := d.EnqueueMerge(2420, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			// args[0..1] are "--repo <slug>" (prepended by runGH).
+			switch {
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
+				// A repo without protection typically reports CLEAN
+				// once the (nonexistent) required gates trivially pass.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[],"reviewDecision":""}`), nil
+			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+				// gh api on an unprotected branch returns HTTP 404. gh
+				// renders this as a non-zero exit with "HTTP 404" in
+				// stdout+stderr — replicate that shape here.
+				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "merge":
+				mergeCalled = true
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	if mergeCalled {
+		t.Fatal("watcher invoked gh pr merge on an unprotected repo — #2420 rule violated: unprotected repos are NEVER auto-merged")
+	}
+	row, err := d.PendingMergeByPR(2420, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching (unprotected repo must stay watching for human action)", row.Status)
+	}
+	if srv.called != 0 {
+		t.Errorf("notifications sent: %d — polling on an unprotected repo must be silent", srv.called)
+	}
+}
+
+// TestWatcher_Unprotected_ExternalMergeStillNotifies verifies that the
+// unprotected-repo silent-continuation rule does NOT suppress the terminal
+// out-of-band-merge notification. The row remains in the queue while polling
+// silently, then transitions to merged when the poll observes MERGED state.
+func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-unprot-extmerge"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-unprot-extmerge")
+
+	if _, err := d.EnqueueMerge(2421, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergedAt := "2026-07-18T09:00:00Z"
+	prView := fmt.Sprintf(`{"state":"MERGED","mergedAt":%q,"mergedBy":{"login":"prismatic-koi"},"mergeStateStatus":"","statusCheckRollup":[],"reviewDecision":""}`, mergedAt)
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			switch {
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
+				return []byte(prView), nil
+			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	row, err := d.PendingMergeByPR(2421, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status: got %q, want merged (out-of-band merge on an unprotected repo must still notify)", row.Status)
+	}
+	if srv.called == 0 {
+		t.Fatal("no out-of-band-merge notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+	if !strings.Contains(text, "PR #2421 merged out-of-band") {
+		t.Errorf("notification text %q does not contain 'PR #2421 merged out-of-band'", text)
+	}
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase", text)
+	}
+}
+
+// TestWatcher_BLOCKED_StaysWatchingSilently verifies that during polling,
+// a BLOCKED PR (whether awaiting review or with a CI failure) stays watching
+// with no coordinator notification. This is the #2420 replacement for the
+// pre-#2420 failAndNotify paths for BLOCKED-empty-decision, REVIEW_REQUIRED,
+// CHANGES_REQUESTED, and BLOCKED+CI-failed — all of which now defer to a
+// human via the initial-invocation message rather than firing terminal
+// coordinator alerts mid-poll.
+func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
+	cases := []struct {
+		name string
+		info *prInfo
+	}{
+		{
+			name: "empty_review_decision_checks_passing",
+			info: &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "BLOCKED",
+				ReviewDecision:   "",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			},
+		},
+		{
+			name: "review_required",
+			info: &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "BLOCKED",
+				ReviewDecision:   "REVIEW_REQUIRED",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			},
+		},
+		{
+			name: "changes_requested",
+			info: &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "BLOCKED",
+				ReviewDecision:   "CHANGES_REQUESTED",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			},
+		},
+		{
+			name: "ci_failure",
+			info: &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "BLOCKED",
+				ReviewDecision:   "APPROVED",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "FAILURE", Status: "COMPLETED"},
+				},
+			},
+		},
+		{
+			name: "unrecognised_review_decision",
+			info: &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "BLOCKED",
+				ReviewDecision:   "FOOBAR",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			const session = "myrepo@main"
+			instanceID := "inst-blocked-silent-" + tc.name
+
+			srv := newCapturingServer(t)
+			port := parsePort(t, srv.URL)
+			seedCoordinator(t, d, session, instanceID, port, "sid-blocked-silent-"+tc.name)
+
+			if _, err := d.EnqueueMerge(3400, "myrepo", session, instanceID, nil); err != nil {
+				t.Fatalf("EnqueueMerge: %v", err)
+			}
+
+			fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+				func(_ context.Context, pr int) (*prInfo, error) { return tc.info, nil },
+				func(_ context.Context, pr int) ([]byte, error) {
+					t.Fatal("BLOCKED PR must not attempt to merge (#2420 silent-continuation)")
+					return nil, nil
+				},
+				func(_ context.Context, pr int) error { return nil },
+			)
+			fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+				return []string{"pr-gate"}, nil
+			}
+
+			fw.processHead(context.Background())
+
+			row, err := d.PendingMergeByPR(3400, "myrepo")
+			if err != nil {
+				t.Fatalf("PendingMergeByPR: %v", err)
+			}
+			if row.Status != "watching" {
+				t.Errorf("status: got %q, want watching (#2420 stays-silent-during-polling)", row.Status)
+			}
+			if srv.called != 0 {
+				t.Errorf("notifications sent: %d — BLOCKED during polling must be silent (#2420)", srv.called)
+			}
+		})
+	}
+}
+
+// TestWatcher_DIRTY_StaysWatchingSilently verifies that a DIRTY PR observed
+// mid-poll (worker pushed a bad rebase) stays watching silently. At
+// invocation time DIRTY exits with a "worker needs to rebase" message
+// (handled in cmd/merge.go); mid-poll a DIRTY state is transient — the
+// worker may fix it — and the poller keeps polling silently per #2420.
+func TestWatcher_DIRTY_StaysWatchingSilently(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-dirty-silent"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-dirty-silent")
+
+	if _, err := d.EnqueueMerge(3410, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{State: "OPEN", MergeStateStatus: "DIRTY"}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			t.Fatal("DIRTY PR must not attempt to merge (#2420 silent-continuation)")
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
+
+	fw.processHead(context.Background())
+
+	row, err := d.PendingMergeByPR(3410, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status: got %q, want watching (DIRTY during polling is not terminal — #2420)", row.Status)
+	}
+	if srv.called != 0 {
+		t.Errorf("notifications sent: %d — DIRTY during polling must be silent", srv.called)
+	}
+}
+
+// TestWatcher_NewCommits_KeepsPollingSilently is the AC assertion for
+// "new commits pushed → keep polling silently": we tick once against an
+// UNSTABLE state with a required check in progress, then tick again against
+// a CLEAN state with the check passed. Neither tick should fire an
+// intermediate notification — only the final merge notification.
+func TestWatcher_NewCommits_KeepsPollingSilently(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-newcommits"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-newcommits")
+
+	if _, err := d.EnqueueMerge(3420, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	// First tick: worker just pushed, required check is in progress.
+	fw := newFakeWatcher(d, instanceID, session, srv.Client(),
+		func(_ context.Context, pr int) (*prInfo, error) {
+			return &prInfo{
+				State:            "OPEN",
+				MergeStateStatus: "UNSTABLE",
+				StatusCheckRollup: []checkEntry{
+					{Name: "pr-gate", Status: "IN_PROGRESS", Conclusion: ""},
+				},
+			}, nil
+		},
+		func(_ context.Context, pr int) ([]byte, error) {
+			t.Fatal("in-progress check must not trigger a merge")
+			return nil, nil
+		},
+		func(_ context.Context, pr int) error { return nil },
+	)
+	fw.fetchRequiredChecksFn = func(_ context.Context) ([]string, error) {
+		return []string{"pr-gate"}, nil
+	}
+	fw.processHead(context.Background())
+
+	if srv.called != 0 {
+		t.Errorf("intermediate notification fired during in-progress poll: %d (#2420 must be silent)", srv.called)
+	}
+	row, err := d.PendingMergeByPR(3420, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR after first tick: %v", err)
+	}
+	if row.Status != "watching" {
+		t.Errorf("status after first tick: got %q, want watching", row.Status)
+	}
+
+	// Second tick: required check now green, mergeStateStatus flips to CLEAN.
+	fw.fetchFn = func(_ context.Context, pr int) (*prInfo, error) {
+		return &prInfo{
+			State:            "OPEN",
+			MergeStateStatus: "CLEAN",
+			StatusCheckRollup: []checkEntry{
+				{Name: "pr-gate", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			},
+		}, nil
+	}
+	fw.mergeFn = func(_ context.Context, pr int) ([]byte, error) { return nil, nil }
+
+	fw.processHead(context.Background())
+
+	row, err = d.PendingMergeByPR(3420, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR after second tick: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status after second tick: got %q, want merged", row.Status)
+	}
+	if srv.called != 1 {
+		t.Errorf("total notifications: got %d, want 1 (only the merge notification, no intermediate)", srv.called)
+	}
+	text := extractNotifyText(t, srv.lastBody)
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase", text)
+	}
+}
+
+// TestWatcher_ApprovalDetected_MergesAndNotifies is the "approval + green → merge"
+// AC: a protected repo where reviewDecision transitions to APPROVED and all
+// required checks are green causes the watcher to squash-merge and fire the
+// prism-driven success notification (with the #2420 completion discipline).
+func TestWatcher_ApprovalDetected_MergesAndNotifies(t *testing.T) {
+	d := openTestDB(t)
+	instanceID := "inst-approval"
+	session := "myrepo@main"
+
+	srv := newCapturingServer(t)
+	port := parsePort(t, srv.URL)
+	seedCoordinator(t, d, session, instanceID, port, "sid-approval")
+
+	if _, err := d.EnqueueMerge(3430, "myrepo", session, instanceID, nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+
+	mergeCalled := false
+	w := &Watcher{
+		db:          d,
+		instanceID:  instanceID,
+		sessionName: session,
+		httpClient:  srv.Client(),
+		repo:        "myrepo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			switch {
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
+				// APPROVED + CLEAN — the positive signal for protected repos.
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}],"reviewDecision":"APPROVED"}`), nil
+			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`), nil
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "merge":
+				mergeCalled = true
+				return nil, nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	w.tick(context.Background())
+
+	if !mergeCalled {
+		t.Fatal("watcher did not invoke gh pr merge on APPROVED + CLEAN protected repo")
+	}
+	row, err := d.PendingMergeByPR(3430, "myrepo")
+	if err != nil {
+		t.Fatalf("PendingMergeByPR: %v", err)
+	}
+	if row.Status != "merged" {
+		t.Errorf("status: got %q, want merged", row.Status)
+	}
+	if srv.called == 0 {
+		t.Fatal("no merge notification sent to coordinator")
+	}
+	text := extractNotifyText(t, srv.lastBody)
+	if !strings.Contains(text, "PR #3430 merged") {
+		t.Errorf("notification text %q does not mention PR #3430", text)
+	}
+	if !strings.Contains(text, "Please clean up the branch and worktree") {
+		t.Errorf("notification text %q does not contain #2420 completion-discipline phrase", text)
+	}
+	if strings.Contains(text, "prism cleanup") {
+		t.Errorf("notification text %q must NOT imply prism performed the cleanup", text)
+	}
+}
+
+// TestFetchProtection_404TreatedAsUnconfigured verifies the branch-protection
+// 404 handling: gh api returns HTTP 404 with "Branch not protected" when the
+// endpoint has no protection configured. The fetchProtection helper treats
+// this as configured=false (NOT an error), which the tick() path uses to
+// route to the silent stay-watching branch instead of merging.
+func TestFetchProtection_404TreatedAsUnconfigured(t *testing.T) {
+	d := openTestDB(t)
+
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-404",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        "owner/bootstrap-repo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			return []byte(`HTTP 404: Branch not protected (https://api.github.com/repos/owner/bootstrap-repo/branches/main/protection)`),
+				fmt.Errorf("exit status 1")
+		},
+	}
+
+	state, err := w.fetchProtection(context.Background())
+	if err != nil {
+		t.Fatalf("fetchProtection: got error %v, want nil (404 is a state, not an error)", err)
+	}
+	if state.configured {
+		t.Errorf("fetchProtection: configured=true, want false on 404 (#2420)")
+	}
+	if len(state.requiredChecks) != 0 {
+		t.Errorf("fetchProtection: requiredChecks=%v, want empty on 404", state.requiredChecks)
+	}
+}
+
+// TestFetchProtection_CachesUnconfigured verifies the unconfigured
+// (configured=false) result is cached, so a bootstrap-repo poll does not
+// hammer the API every tick.
+func TestFetchProtection_CachesUnconfigured(t *testing.T) {
+	d := openTestDB(t)
+
+	var calls int
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-404-cache",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        "owner/bootstrap-repo",
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			calls++
+			return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
+		},
+	}
+
+	if _, err := w.fetchProtection(context.Background()); err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if _, err := w.fetchProtection(context.Background()); err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls after two fetches within TTL: got %d, want 1 (unconfigured result must be cached)", calls)
+	}
+}
+
+// TestPollInterval_Is30Seconds pins the #2420 poll cadence: reducing from
+// 45s to 30s so coordinators see merge outcomes more quickly after a human
+// approves the PR.
+func TestPollInterval_Is30Seconds(t *testing.T) {
+	if PollInterval != 30*time.Second {
+		t.Errorf("PollInterval: got %v, want 30s (#2420)", PollInterval)
 	}
 }
