@@ -269,20 +269,22 @@ When a spawned agent opens a PR and announces completion:
 > you spawned. For Case 1 PRs (external authors), stop after relaying the
 > review outcome — do not run `prism merge`.
 
-Once the sense-check passes, enqueue the PR in the merge queue and continue with other work. The queue handles CI waits, rebases, and the merge itself; you act on the bus notification when the merge lands or fails.
+Once the sense-check passes, enqueue the PR in the merge queue and continue with other work. `prism merge` is async poll-and-notify (issue #2420, same shape as `prism review`): the initial invocation returns a synchronous state-table message describing what will happen, and the watcher later delivers a bus notification when the outcome is decided.
 
-1. `prism merge <number>` — enqueue. Returns within ~2 seconds. Continue with other coordinator work while the queue progresses.
-2. When a merge-queue notification arrives via the bus, action it as a high-priority todo (same handling as a worker finished-notification):
-   - **`PR #N merged...`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`.
-   - **`PR #N has merge conflicts...`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again.
-   - **`PR #N CI failed...`** — `prism prompt <worker-session>` to investigate and fix, then `prism merge <number>` again.
-   - **`PR #N is blocked — human reviewer approval required...`** — request a human review on the PR (e.g. `gh pr review --request <user>`); once approved, `prism merge <number>` again.
-   - **`PR #N is blocked — reviewer requested changes...`** — `prism prompt <worker-session>` to address the reviewer's requested changes and re-request review on the PR; once the reviewer re-approves, `prism merge <number>` again.
-   - **`PR #N is blocked for unknown reason (reviewDecision="X")...`** — investigate the specific `reviewDecision` value against the PR's branch-protection settings on GitHub, resolve manually (request a review, wait for a required check to report, etc.), then `prism merge <number>` again. If the value is a new GitHub enum the watcher does not yet map explicitly, file a follow-up issue so the case can be handled with a purpose-built notification.
-   - **`PR #N was closed without merging...`** — typically nothing; the PR was closed deliberately.
-3. Use `prism merges` to inspect the current queue at any time.
+1. `prism merge <number>` — emits the initial-state message and enqueues (for non-terminal states) or exits immediately (for already-merged / closed / merge-conflict).
+2. Read the initial-state message and follow its guidance:
+   - **`PR #N already merged. Please clean up the branch and worktree.`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. No poller runs.
+   - **`PR #N closed without merge. No action required from you; a human closed this. Please clean up the branch and worktree.`** — `prism cleanup --yes --session <worker-session>`. No poller runs.
+   - **`PR #N has conflicts. Worker needs to rebase.`** — `prism prompt <worker-session>` to rebase and push, then `prism merge <number>` again.
+   - **`PR #N ready. Merging now.`** / **`... waiting on N check(s) ...`** / **`... requires human approval ...`** / **`... has no branch protection configured ...`** — the watcher is now polling; continue with other work. Do NOT request reviewers, do NOT add approvers, do NOT try to be helpful — the initial message says "just wait" and it means it.
+3. When the poll-time notification arrives via the bus, action it as a high-priority todo:
+   - **`PR #N merged. ...`** (prism-driven or reconciled) — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`.
+   - **`PR #N merged out-of-band. ...`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. Prism did NOT perform the merge, but the branch/worktree are still yours to clean up.
+   - **`PR #N closed without merge. ...`** — `prism cleanup --yes --session <worker-session>`.
+   - **`PR #N merge failed: <error>`** — read the error, decide whether to retry (`prism merge <number>`) or escalate to the user.
+4. Use `prism merges` to inspect the current queue at any time.
 
-See the prism skill for the full notification table and the `prism merges` command surface.
+See the prism skill for the full state-table + notification tables and the `prism merges` command surface.
 
 ### Manual fallback
 

@@ -120,7 +120,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 ## Merge queue
 
 - `prism merge <pr>` is denied in the bash deny list for every non-coordinator role; only coordinators may enqueue.
-- The merge-queue watcher is a goroutine started by the coordinator's sidecar at init; its lifetime equals the coordinator session's lifetime — there is no persistent daemon across coordinator sessions. It polls the queue head every 45 seconds and processes one PR at a time.
+- The merge-queue watcher is a goroutine started by the coordinator's sidecar at init; its lifetime equals the coordinator session's lifetime — there is no persistent daemon across coordinator sessions. It polls the queue head every 30 seconds (#2420, down from 45s) and processes one PR at a time.
 - Enqueued merge-queue rows carry the coordinator's `instance_id`. On coordinator-session shutdown, every `watching` row for that `instance_id` is transitioned to `abandoned` with `error = 'coordinator session ended'`. `abandoned` rows do not produce a live notification and surface only via `prism merges list --abandoned`.
 - A new coordinator incarnation for the same session name starts with an empty `watching` view and can re-enqueue any abandoned PR with `prism merge <pr>`.
 - Each terminal outcome (`merged`, `failed`, `cancelled`, `abandoned`) delivers a single bus notification to the coordinator session; the `merged` text includes the worker's archive path when known.

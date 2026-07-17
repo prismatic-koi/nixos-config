@@ -944,8 +944,9 @@ func (s *Sidecar) Run(ctx context.Context) error {
 	// PI coordinator sessions receive merge-queue notifications exactly like
 	// HTTP-harness coordinator sessions.
 	//
-	// The watcher polls the pending_merges head on a 45s ticker and drives PRs
-	// through the merge lifecycle. It is started only when:
+	// The watcher polls the pending_merges head on a 30s ticker (mergequeue.PollInterval,
+	// reduced from 45s in #2420) and drives PRs through the merge lifecycle. It is
+	// started only when:
 	//   - AgentRole is "coordinator" (explicit), OR
 	//   - SessionName ends with "@main" (legacy heuristic).
 	// The watcher context is stored so Shutdown() can cancel it before the

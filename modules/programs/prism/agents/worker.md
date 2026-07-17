@@ -145,6 +145,13 @@ When your work is complete and quality gates pass:
    all 5 agents pass.
 5. Provide a clear handoff summary so the coordinator has full context.
 
+**Your job ends at "PR opened and pushed" (issue #2420).** The coordinator
+drives the merge via `prism merge <pr>`, which handles the invocation-time
+state probe, background polling, and the eventual `git pull` / cleanup
+prompt. Do not enqueue the merge yourself, do not wait for the PR to land
+before handing off, and do not attempt to shepherd it through CI — that
+work is the coordinator's.
+
 ## Running a review
 
 Before running `prism review`, load the `prism` skill via the skill tool. The skill contains the full async review workflow and async expectations — loading it first ensures you handle the review-complete prompt correctly.

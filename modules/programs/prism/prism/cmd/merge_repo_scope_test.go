@@ -86,8 +86,9 @@ func TestRunMerge_CrossRepoCollision_EnqueuesFreshRow(t *testing.T) {
 
 	// gh MUST have run: preflight fires exactly once. If a foreign-repo
 	// terminal row short-circuited the enqueue, gh would not run.
-	if n := countGhCalls(t, counterPath); n != 1 {
-		t.Errorf("gh call count = %d, want 1 (foreign-repo terminal row must not short-circuit preflight \u2014 the incident of 2026-07-06 has regressed)", n)
+	if n := countGhCalls(t, counterPath); n != 2 {
+		// #2420 initial-state probe = pr view + branch protection.
+		t.Errorf("gh call count = %d, want 2 (foreign-repo terminal row must not short-circuit the #2420 initial-state probe \u2014 the incident of 2026-07-06 has regressed)", n)
 	}
 
 	// stdout must contain the fresh-enqueue banner and the queue

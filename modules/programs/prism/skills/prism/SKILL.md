@@ -444,9 +444,13 @@ prism cleanup --yes --session <inv-session>
 
 > **Coordinators only.** Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` denied in their bash deny lists. If you are not a coordinator agent, skip this section.
 
-The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 45 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
+The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
-A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watching` → `merged` / `failed` / `cancelled` / `abandoned`. See issue #783 for the full state machine.
+`prism merge <pr>` is **async, poll-and-notify** (issue #2420, same shape as `prism review`): the command emits a synchronous initial-state message describing the detected state and what will happen next, then — for non-terminal states — hands off to the background poller. When the outcome is decided, the watcher delivers a `prism prompt` to the coordinator. For terminal states at invocation (already merged, closed without merge, or merge conflict) the command exits immediately without enqueueing.
+
+**Core rule (#2420):** `prism merge` NEVER squash-merges without a positive signal. On a repo with no branch protection at all, the watcher waits for a human to review, approve, or merge — it does not auto-merge just because GitHub reports the PR as mergeable. Branch-protection presence is a description of the required gates, not a licence.
+
+A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watching` → `merged` / `failed` / `cancelled` / `abandoned`. See issue #783 for the original state machine and issue #2420 for the current async / no-silent-auto-merge redesign.
 
 ### Command surface
 
@@ -505,22 +509,37 @@ prism reviews list --json
 
 Each row carries: PR number (when derivable from the parent branch), parent (worker) session, agent sessions, group state (`in-progress` / `completed` / `empty`), round number, and `started_at` timestamp.
 
-### Notification contract
+### Invocation-time state-table messages (#2420)
 
-When a queued PR reaches a terminal outcome, the watcher delivers a bus notification to the coordinator session. The text is:
+At invocation, `prism merge <pr>` emits a synchronous message that names the detected state and — for non-terminal states — what the poller will do next. The full state table:
 
-| Outcome | Notification text |
+| Detected state | Synchronous message | Then |
+|---|---|---|
+| PR already merged (out-of-band) | `PR #N already merged. Please clean up the branch and worktree.` | Exit; no poller starts. |
+| PR closed without merge | `PR #N closed without merge. No action required from you; a human closed this. Please clean up the branch and worktree.` | Exit; no poller starts. |
+| Merge conflict | `PR #N has conflicts. Worker needs to rebase.` | Exit non-zero; no poller starts. |
+| Branch protection configured, all gates green | `PR #N ready. Merging now.` | Enqueue; watcher squash-merges on next tick, then notifies success. |
+| Branch protection configured, required checks pending | `PR #N waiting on N check(s): [names]. Standing by; will merge when green. No action required from you.` | Enqueue; watcher polls. |
+| Branch protection configured, awaiting approval | `PR #N requires human approval. No action required from you — do not request reviewers, do not add approvers, just wait. Will merge automatically when approved and checks pass, or notify if merged out-of-band.` | Enqueue; watcher polls. |
+| NO branch protection configured | `PR #N has no branch protection configured. Not auto-merging. Waiting for a human to review and either approve the PR or merge it themselves. No action required from you.` | Enqueue; watcher polls silently and NEVER auto-merges. |
+
+### Poll-time notification contract
+
+During polling, the watcher fires a coordinator notification only for the four terminal events below. Every other observed state — including CI failures, new commits pushed, review-changes-requested, and unprotected-repo waits — results in a silent continuation. The initial-invocation message already told the coordinator what to wait for.
+
+| Outcome (during polling) | Notification text |
 |---|---|
-| Merged (with archive path) | ``PR #N merged. Archive: <archive_path>. Run `git pull` in @main and `prism cleanup` the worker session.`` |
-| Merged (no archive path yet) | ``PR #N merged. Run `git pull` in @main and `prism cleanup` the worker session.`` |
-| Merge conflicts | `PR #N has merge conflicts — worker rebase needed` |
-| CI failure | `PR #N CI failed — needs worker fix` |
-| Closed without merging | `PR #N was closed without merging — removed from queue` |
-| Review required | `PR #N is blocked — human reviewer approval required before merge` |
-| Changes requested | `PR #N is blocked — reviewer requested changes — fix and re-request review` |
-| Blocked (unknown reason) | `PR #N is blocked for unknown reason (reviewDecision="X") — needs manual investigation, then re-enqueue when unblocked` |
-| Other merge failure | `PR #N merge failed: <error>` |
+| Prism-driven merge succeeded (with archive path) | `PR #N merged. Archive: <archive_path>. Please clean up the branch and worktree.` |
+| Prism-driven merge succeeded (no archive path yet) | `PR #N merged. Please clean up the branch and worktree.` |
+| Reconciled: gh mutation errored but PR is MERGED (with archive path) | `PR #N merged. (Reconciled — gh mutation errored but PR is MERGED.) Archive: <archive_path>. Please clean up the branch and worktree.` |
+| Reconciled: gh mutation errored but PR is MERGED (no archive path yet) | `PR #N merged. (Reconciled — gh mutation errored but PR is MERGED.) Please clean up the branch and worktree.` |
+| Out-of-band merge (merger named) | `PR #N merged out-of-band (merged by @<login> at <mergedAt>). Please clean up the branch and worktree.` |
+| Out-of-band merge (merger unknown) | `PR #N merged out-of-band. Please clean up the branch and worktree.` |
+| PR closed without merging (mid-poll) | `PR #N closed without merge. Please clean up the branch and worktree.` |
+| Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
+
+Every completion notification contains the exact phrase **"Please clean up the branch and worktree"** and does NOT imply prism performed the cleanup itself — the coordinator does the cleanup, prism does not.
 
 ### Action table
 
@@ -528,14 +547,10 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 
 | Notification | Action |
 |---|---|
-| `merged` | `git pull` in @main, then `prism cleanup --yes --session <worker-session>` |
-| `merge conflicts` | `prism prompt <worker-session>` asking it to rebase onto main and push; re-enqueue with `prism merge <pr>` after the worker finishes |
-| `CI failed` | `prism prompt <worker-session>` asking it to investigate the failed check, fix, and push; re-enqueue with `prism merge <pr>` |
-| `closed without merging` | Usually nothing — the PR was closed deliberately. Investigate if unexpected. |
-| `blocked — human reviewer approval required` | Request a human review on the PR (e.g. via `gh pr review --request <user>`). Once approved, re-enqueue with `prism merge <pr>`. |
-| `blocked — reviewer requested changes` | `prism prompt <worker-session>` asking it to address the reviewer's requested changes and re-request review on the PR. Once the reviewer re-approves, re-enqueue with `prism merge <pr>`. |
-| `blocked for unknown reason (reviewDecision="X")` | Investigate the specific `reviewDecision` value against the PR's branch-protection settings on GitHub, resolve manually (request a review, wait for a required check to report, etc.), then re-enqueue with `prism merge <pr>`. If the value is a new GitHub enum the watcher does not yet map explicitly, file a follow-up issue so the case can be handled with a purpose-built notification. |
-| `merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
+| `PR #N merged. ...` (prism-driven or reconciled) | `git pull` in @main, then `prism cleanup --yes --session <worker-session>` |
+| `PR #N merged out-of-band. ...` | `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. Prism did NOT perform the merge, but the branch/worktree are still yours to clean up. |
+| `PR #N closed without merge. ...` | `prism cleanup --yes --session <worker-session>`. Usually nothing else — the PR was closed deliberately. Investigate if unexpected. |
+| `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 
 ### Why workers cannot invoke it
