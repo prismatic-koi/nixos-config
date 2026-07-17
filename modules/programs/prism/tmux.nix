@@ -385,7 +385,7 @@ in
 
               # Remove HM session vars guard from tmux environment so new shells
               # re-evaluate $(cat ...) substitutions for secrets like GITHUB_TOKEN
-              set-environment -r __HM_SESS_VARS_SOURCED
+              set-environment -gr __HM_SESS_VARS_SOURCED
 
               # vim style copy
               set -g mode-keys vi
