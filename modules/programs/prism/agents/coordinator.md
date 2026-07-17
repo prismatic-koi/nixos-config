@@ -42,9 +42,9 @@ Before spawning alongside an in-flight PR, check the file footprint — overlapp
 
 Before spawning a worker agent, load the `complexity-triage` skill and apply it inline to score the task and pick the profile tier. Do not delegate this to a subagent — score the task yourself using the rubric from the skill.
 
-The five valid tiers are `light`, `standard`, `heavy`, `max`, and `fable-max`. Pass the selected tier as `--profile <tier>` on the `prism spawn` command. If the machine default already matches the scored tier, `--profile` may be omitted, but the score should still be recorded so retros can compare intent against outcome.
+The five valid tiers are `light`, `standard`, `heavy`, `max`, and `fable-max`. Always pass the selected tier as `--profile <tier>` on the `prism spawn` command — this is a primary, routine field, not an optional override. Explicit `--profile` makes the tier decision visible in the spawn command and is captured per-spawn in prism.db (`spawn_inputs.profile_name`), enabling retro comparison of intent against outcome.
 
-Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage would be overhead.
+Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage would be overhead. Trivial spawns may omit `--profile` and run on the machine default.
 
 Order of operations for a non-trivial spawn: complexity-triage (pick tier) → acceptance-criteria (draft or review ACs) → `prism spawn --profile <tier>` with the ACs pasted inline.
 
@@ -69,6 +69,7 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 
 - `--branch` should be meaningful: use the ticket ID if one exists (e.g. `PROJ-123`), otherwise a short kebab-case description of the work (e.g. `add-coordinator-agent`). Never use the default timestamp branch unless the task is truly throwaway.
 - `--prompt` should be self-contained: include enough context that the agent doesn't need to ask clarifying questions. Reference the ticket/issue number so the agent can read it directly.
+- `--profile <tier>` — for non-trivial spawns, pass the tier selected in the Complexity triage section (above). This is a primary field, not an optional override.
 - Note the session name printed by prism — you will need it for check-ins and cleanup.
 
 ---
