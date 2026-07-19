@@ -159,6 +159,19 @@ rec {
         else
           prev.kitty;
 
+      # openscad-unstable: pinned to nixpkgs-stable as the unstable build
+      # in nixpkgs-unstable is broken due to an LTO / ld.lld linker error
+      # (`.debug_gdb_scripts: string is not null terminated`) on source builds.
+      # This blocks the nightly flake updates. The stable version builds
+      # successfully and does not require frequent updates.
+      #
+      # See: https://github.com/NixOS/nixpkgs/issues/543373
+      #
+      # REMOVAL CONDITION: delete this pin once the upstream openscad-unstable
+      # build failure is fixed and a subsequent flake bump picks up the working
+      # derivation from nixpkgs-unstable.
+      openscad-unstable = stablePkgs.openscad-unstable;
+
       # qutebrowser: widen the built-in AMD+Wayland GBM workaround guard in
       # `misc/backendproblem.py::_fix_wayland_amd_gbm` from exact QtWebEngine
       # 6.11.0 to all 6.11.x. Upstream self-deactivated the workaround on
