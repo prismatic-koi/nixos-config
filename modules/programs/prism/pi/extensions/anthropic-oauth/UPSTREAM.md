@@ -102,6 +102,39 @@ it is more actively maintained and is the source of the PR #193 fix.
    directly, so the fallback was dead code and was removed. Do **not**
    re-introduce a hardcoded model object — rely entirely on the registry.
 
+   **pi 0.80.8 registry-construction change (issue #2428).** 0.80.8 removed
+   `AuthStorage` from the `@earendil-works/pi-coding-agent` barrel
+   (`dist/index.d.ts` — only `readStoredCredential` survives from
+   `./core/auth-storage.ts`) and dropped the `ModelRegistry.create()` static
+   factory. Construction is now:
+
+   ```ts
+   import { ModelRegistry, ModelRuntime } from "@earendil-works/pi-coding-agent"
+   const runtime = await ModelRuntime.create()
+   const registry = new ModelRegistry(runtime)
+   await registry.refresh()   // load models.json before sync getAll()
+   ```
+
+   `ModelRegistry` is documented as a "synchronous compatibility facade
+   exposed to extensions"; `refresh()` is `Promise<void>` and MUST be awaited
+   before `getAll()` — skipping it yields an empty list and silently
+   registers the anthropic provider with no models.
+
+   Because `ModelRuntime.create()` is async, `getAnthropicModels()` and the
+   `export default function (pi)` entry point are both `async`. This is safe:
+   pi 0.80.8's extension loader awaits the factory
+   (`dist/core/extensions/loader.js` — `await factory(api)`,
+   `ExtensionFactory = (pi) => void | Promise<void>`), and
+   `pi.registerProvider` calls made during the initial load phase are queued
+   and applied once the runner binds its core context (see the JSDoc on
+   `ExtensionAPI.registerProvider`).
+
+   The 0.80.8 package `exports` map only exposes `.` and `./rpc-entry`, so a
+   deep `./core/...` subpath import of the removed `AuthStorage` is NOT a
+   sanctioned escape hatch — only symbols present in the 0.80.8 barrel may
+   be imported. If registry construction rejects, surface a clear error
+   rather than falling through to an empty-model registration.
+
 9. **Adaptive thinking handling lives in `request-body.ts` and is ported from
    pi-ai — NOT from griffinmartin**. Issue #2044 fixed an erratic-behaviour
    bug on `claude-opus-4-8` (and a silent degradation on `-4-6` / `-4-7`)
