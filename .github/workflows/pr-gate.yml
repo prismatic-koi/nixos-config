@@ -68,7 +68,7 @@ jobs:
               - '.github/workflows/pr-gate.yml'
       - name: Set up Go
         if: steps.changes.outputs.go == 'true'
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: modules/programs/prism/prism/go.mod
           cache-dependency-path: modules/programs/prism/prism/go.sum
@@ -206,7 +206,7 @@ jobs:
               - '.github/workflows/pr-gate.yml'
       - name: Set up Go
         if: steps.changes.outputs.bm == 'true'
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: modules/services/battery-monitor/battery-monitor/go.mod
           cache-dependency-path: modules/services/battery-monitor/battery-monitor/go.sum
