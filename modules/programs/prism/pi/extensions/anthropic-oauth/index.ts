@@ -12,8 +12,8 @@
 // See UPSTREAM.md for the port procedure.
 
 import {
-  AuthStorage,
   ModelRegistry,
+  ModelRuntime,
   type ExtensionAPI,
   type ProviderConfig,
 } from "@earendil-works/pi-coding-agent"
@@ -32,9 +32,18 @@ import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
 import { buildRequestBody } from "./request-body.ts"
 import { buildOAuthHeaders, buildRequestUrl } from "./oauth-headers.ts"
 
-function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
-  const modelRegistry = ModelRegistry.create(AuthStorage.inMemory())
-  const models: NonNullable<ProviderConfig["models"]> = modelRegistry
+// pi 0.80.8 removed `AuthStorage` from the barrel and dropped the
+// `ModelRegistry.create()` static factory. Construction is now
+// `new ModelRegistry(await ModelRuntime.create())`, and `refresh()` must be
+// awaited before the synchronous `getAll()` read (the facade loads
+// models.json lazily). See UPSTREAM.md divergence #8.
+async function getAnthropicModels(): Promise<
+  NonNullable<ProviderConfig["models"]>
+> {
+  const runtime = await ModelRuntime.create()
+  const registry = new ModelRegistry(runtime)
+  await registry.refresh()
+  const models: NonNullable<ProviderConfig["models"]> = registry
     .getAll()
     .filter((model) => model.provider === "anthropic")
     .map((model) => ({
@@ -69,14 +78,36 @@ function getAnthropicModels(): NonNullable<ProviderConfig["models"]> {
   return models
 }
 
-// pi-specific: extension entry point — pi calls this with its ExtensionAPI
-export default function (pi: ExtensionAPI) {
+// pi-specific: extension entry point — pi calls this with its ExtensionAPI.
+// The loader awaits async default exports (see pi 0.80.8
+// `dist/core/extensions/loader.js` — `await factory(api)`), and
+// `pi.registerProvider` calls made before the runner binds its core context
+// are queued and applied on bind. This is the sanctioned pattern for
+// providers whose model list requires async construction.
+export default async function (pi: ExtensionAPI) {
   initLogger()
   log("extension_init", { version: config.ccVersion })
 
   repairCredentials()
 
-  const models = getAnthropicModels()
+  let models: NonNullable<ProviderConfig["models"]>
+  try {
+    models = await getAnthropicModels()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    log("model_registry_error", { error: message })
+    // Surface a clear failure rather than silently registering the anthropic
+    // provider with an empty model list (AC: edge-case).
+    throw new Error(
+      `anthropic-oauth: failed to load Anthropic model registry: ${message}`,
+    )
+  }
+
+  if (models.length === 0) {
+    throw new Error(
+      "anthropic-oauth: Anthropic model registry returned no models after refresh()",
+    )
+  }
 
   pi.registerProvider("anthropic", {
     baseUrl: "https://api.anthropic.com",
