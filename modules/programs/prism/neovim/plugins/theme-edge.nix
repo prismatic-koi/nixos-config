@@ -18,7 +18,6 @@ in
             # lua
             ''
               vim.g.edge_style = "default"
-              vim.g.edge_better_performance = 1
               vim.o.background = "${theme.type}"
 
               -- edge is a vimscript colour scheme without a lua setup() API,
