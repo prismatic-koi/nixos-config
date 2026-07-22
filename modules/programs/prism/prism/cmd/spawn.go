@@ -112,24 +112,18 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		return fmt.Errorf("--abtest requires exactly two profile names (got %d)", len(abtestFlag))
 	}
 
-	// Resolve --pr to a branch client-side when running inside a container.
-	// git is accessible from containers (PRISM_BARE_ROOT is set), so we can
-	// look up the PR branch here and forward it as --branch to the host API.
-	// The --pr flag itself is not forwarded because the host-side handler only
-	// accepts a branch name.
-	if prFlag != "" {
-		if branchFlag != "" {
-			return fmt.Errorf("--pr and --branch are mutually exclusive")
-		}
-		bareRoot, bareErr := resolveBareRoot("")
-		if bareErr != nil {
-			return bareErr
-		}
-		resolvedBranch, branchErr := resolveBranch(bareRoot, "", prFlag)
-		if branchErr != nil {
-			return branchErr
-		}
-		branchFlag = resolvedBranch
+	// --pr and --branch are mutually exclusive. Unlike the pre-#2432 code,
+	// --pr is NOT resolved to a branch client-side here — the raw PR number
+	// is forwarded as "pr" to the host API, and the host-side prism spawn
+	// resolves it via its own resolveBranch/PRBranch path (FetchRemote +
+	// CreateWorktree tracking origin/<real-head>). Resolving client-side and
+	// forwarding only a branch name lost the PR's real head ref the moment
+	// it contained a slash: the host-side resolveBranch would then run it
+	// through git.SanitiseBranch ("/" → "-"), find no matching local or
+	// origin branch, and fork a new branch from the default branch instead
+	// of checking out the PR's commits (issue #2432).
+	if prFlag != "" && branchFlag != "" {
+		return fmt.Errorf("--pr and --branch are mutually exclusive")
 	}
 
 	promptFlag, err := resolvePrompt(cmd)
@@ -173,13 +167,19 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 			SessionNames []string `json:"session_names"`
 		}
 		body := map[string]any{
-			"branch":                 branchFlag,
 			"prompt":                 promptFlag,
 			"agent":                  agentFlag,
 			"model":                  modelFlag,
 			"variant":                variantFlag,
 			"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 			"abtest":                 abtestFlag,
+		}
+		// See the non-abtest body construction below for why --pr is forwarded
+		// as "pr" rather than resolved to a branch client-side (issue #2432).
+		if prFlag != "" {
+			body["pr"] = prFlag
+		} else {
+			body["branch"] = branchFlag
 		}
 		// Forward the keybind discriminator so the host-side /spawn handler
 		// permits an empty prompt on this request. The layer-3 handler still
@@ -229,7 +229,6 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		SessionName string `json:"session_name"`
 	}
 	body := map[string]any{
-		"branch":                 branchFlag,
 		"prompt":                 promptFlag,
 		"agent":                  agentFlag,
 		"profile":                profileFlag,
@@ -237,6 +236,14 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		"variant":                variantFlag,
 		"ignore_concurrency_cap": ignoreConcurrencyCapFlag,
 		"reuse":                  reuseFlag,
+	}
+	// Forward --pr as "pr" (preserving PR identity end-to-end, issue #2432)
+	// rather than resolving it to a branch client-side. Otherwise forward the
+	// (possibly empty, meaning "host picks a timestamped default") branch.
+	if prFlag != "" {
+		body["pr"] = prFlag
+	} else {
+		body["branch"] = branchFlag
 	}
 	// Forward the keybind discriminator so the host-side /spawn handler
 	// permits an empty prompt on this request. The layer-3 handler still
