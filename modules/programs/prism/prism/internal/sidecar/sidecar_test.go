@@ -5583,7 +5583,9 @@ echo "session \"${last}@new-branch\" created"
 }
 
 // TestHostAPI_Spawn_EmptyBranchReturns400 verifies AC: a request with a
-// missing or empty "branch" field still returns 400 "branch is required".
+// missing or empty "branch" (and no "pr") field still returns 400 (issue
+// #2432 updated the wording to "branch or pr is required" once the pr field
+// was added as an alternative).
 func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "test-repo@main", "test-repo", "coordinator", d)
@@ -5594,8 +5596,8 @@ func TestHostAPI_Spawn_EmptyBranchReturns400(t *testing.T) {
 	}
 	var errResp map[string]string
 	decodeJSONBody(t, rr, &errResp)
-	if !strings.Contains(errResp["error"], "branch is required") {
-		t.Errorf("error %q should mention 'branch is required'", errResp["error"])
+	if !strings.Contains(errResp["error"], "branch or pr is required") {
+		t.Errorf("error %q should mention 'branch or pr is required'", errResp["error"])
 	}
 }
 
@@ -5993,6 +5995,143 @@ echo "session \"${last}@iso-branch\" created"
 			if !strings.Contains(string(capturedArgs), want) {
 				t.Errorf("captured args %q do not contain %q; isolation:%q was not forwarded (regression for issue #1059)",
 					string(capturedArgs), want, mode)
+			}
+		})
+	}
+}
+
+// TestHostAPI_Spawn_PRForwardedInsteadOfBranch is the regression test for
+// issue #2432: when a /spawn request carries {"pr":"<n>"}, the sidecar must
+// forward "--pr <n>" to the host-side prism spawn — NOT a client-resolved
+// --branch value. Forwarding only a sanitised branch name silently forked a
+// new branch from the default branch whenever the real PR head ref contained
+// a slash, because the host-side resolveBranch ran it through
+// git.SanitiseBranch ("/" -> "-") and found no matching local or origin
+// branch.
+func TestHostAPI_Spawn_PRForwardedInsteadOfBranch(t *testing.T) {
+	d := openTestDB(t)
+
+	argsFile := filepath.Join(t.TempDir(), "captured-args")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+echo "$*" > ` + argsFile + `
+last=""
+for arg; do last="$arg"; done
+echo "session \"${last}@pr-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"pr":"386","prompt":"hi"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedArgs, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	got := string(capturedArgs)
+	if !strings.Contains(got, "--pr 386") {
+		t.Errorf("captured args %q do not contain --pr 386; pr:\"386\" was not forwarded (regression for issue #2432)", got)
+	}
+	if strings.Contains(got, "--branch") {
+		t.Errorf("captured args %q contain --branch; a pr-only request must not also forward --branch", got)
+	}
+}
+
+// TestHostAPI_Spawn_PRAndBranchMutuallyExclusive verifies that a /spawn
+// request carrying both "pr" and "branch" is rejected with HTTP 400 before
+// any subprocess is spawned.
+func TestHostAPI_Spawn_PRAndBranchMutuallyExclusive(t *testing.T) {
+	d := openTestDB(t)
+	// Stub should never be invoked — the API must reject before exec.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\necho should-not-run; exit 1\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"pr":"386","branch":"some-branch","prompt":"hi"}`)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	var errResp map[string]string
+	decodeJSONBody(t, rr, &errResp)
+	if !strings.Contains(errResp["error"], "mutually exclusive") {
+		t.Errorf("error %q should mention mutually exclusive", errResp["error"])
+	}
+}
+
+// TestHostAPI_Spawn_PRNonNumericRejected verifies that a non-numeric "pr"
+// value is rejected with HTTP 400 server-side, so a malformed value cannot
+// inject CLI flags into the host-side prism spawn invocation (issue #2432
+// security AC).
+func TestHostAPI_Spawn_PRNonNumericRejected(t *testing.T) {
+	d := openTestDB(t)
+	// Stub should never be invoked — the API must reject before exec.
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := "#!/bin/sh\necho should-not-run; exit 1\n"
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	for _, badPR := range []string{"386 --isolation host", "abc", "-1", ""} {
+		if badPR == "" {
+			continue // empty means "absent", tested by the branch-or-pr-required case below
+		}
+		t.Run(badPR, func(t *testing.T) {
+			body := `{"pr":"` + badPR + `","prompt":"hi"}`
+			rr := doHostAPI(t, sc, http.MethodPost, "/spawn", body)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+			}
+			var errResp map[string]string
+			decodeJSONBody(t, rr, &errResp)
+			if !strings.Contains(errResp["error"], "invalid pr") {
+				t.Errorf("error %q should mention invalid pr", errResp["error"])
 			}
 		})
 	}

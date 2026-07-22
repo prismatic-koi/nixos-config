@@ -1143,8 +1143,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		var req struct {
-			Repo                  string   `json:"repo"` // accepted but ignored — ownRepo is always used
-			Branch                string   `json:"branch"`
+			Repo   string `json:"repo"` // accepted but ignored — ownRepo is always used
+			Branch string `json:"branch"`
+			// PR is a PR number to check out, forwarded as --pr to the host-side
+			// prism spawn instead of a client-resolved --branch. This preserves
+			// the PR identity across the host-API boundary so CreateWorktree can
+			// track the real (possibly slash-containing) PR head ref rather than
+			// a sanitised branch name that may not exist locally or on origin
+			// (issue #2432). Mutually exclusive with Branch; validated as a
+			// positive integer string below to prevent CLI-flag injection into
+			// the host-side prism spawn invocation.
+			PR                    string   `json:"pr"`
 			Prompt                string   `json:"prompt"`
 			Agent                 string   `json:"agent"`
 			Profile               string   `json:"profile"`
@@ -1190,9 +1199,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 				return
 			}
 		}
-		if req.Branch == "" {
-			writeError(w, http.StatusBadRequest, "branch is required")
+		if req.PR != "" && req.Branch != "" {
+			writeError(w, http.StatusBadRequest, "pr and branch are mutually exclusive")
 			return
+		}
+		if req.PR == "" && req.Branch == "" {
+			writeError(w, http.StatusBadRequest, "branch or pr is required")
+			return
+		}
+		// Validate the PR number server-side as defence-in-depth: a malformed
+		// value (e.g. "1 --isolation host") could otherwise inject CLI flags
+		// into the host-side prism spawn invocation (issue #2432).
+		if req.PR != "" {
+			validPRNumber := regexp.MustCompile(`^[0-9]+$`)
+			if !validPRNumber.MatchString(req.PR) {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid pr %q: must be a positive integer", req.PR))
+				return
+			}
 		}
 		// Reject an empty prompt at the API boundary (layer 3 of issue #1891).
 		// The CLI proxy (proxySpawn) already rejects empty prompts at layers 1+2,
@@ -1285,7 +1308,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		args := []string{"spawn", "--branch", req.Branch}
+		var args []string
+		if req.PR != "" {
+			args = []string{"spawn", "--pr", req.PR}
+		} else {
+			args = []string{"spawn", "--branch", req.Branch}
+		}
 		// Pass --prompt-source proxy-spawn unconditionally so the host-side spawn
 		// records the correct C.4.SRC discriminator regardless of whether a prompt
 		// is included (C.4.SRC, issue #1148).
@@ -1332,7 +1360,12 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		args = append(args, "--repo", ownRepo)
 
 		// Log without the prompt value — it may contain sensitive context.
-		logArgs := []string{"spawn", "--branch", req.Branch}
+		var logArgs []string
+		if req.PR != "" {
+			logArgs = []string{"spawn", "--pr", req.PR}
+		} else {
+			logArgs = []string{"spawn", "--branch", req.Branch}
+		}
 		if req.Prompt != "" {
 			logArgs = append(logArgs, "--prompt", "<omitted>")
 		}

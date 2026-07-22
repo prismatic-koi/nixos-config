@@ -67,20 +67,22 @@ var prCmd = &cobra.Command{
 			return err
 		}
 
-		// In container mode, proxy the spawn to the host API after resolving
-		// the PR number to a branch locally (git is accessible from containers).
+		// In container mode, proxy the spawn to the host API. The raw PR
+		// number is forwarded as "pr" — NOT resolved to a branch locally — so
+		// the host-side prism spawn (which runs the correct FetchRemote +
+		// PRBranch + CreateWorktree-tracking-origin path) preserves the real
+		// PR head ref end-to-end. Resolving the branch client-side and
+		// forwarding only a sanitised branch name silently forked a new
+		// branch from the default branch whenever the PR head ref contained a
+		// slash (issue #2432).
 		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-			branch, branchErr := resolveBranch(bareRoot, "", prNumber)
-			if branchErr != nil {
-				return branchErr
-			}
 			repo := filepath.Base(bareRoot)
 			var resp struct {
 				SessionName string `json:"session_name"`
 			}
 			body := map[string]any{
 				"repo":                   repo,
-				"branch":                 branch,
+				"pr":                     prNumber,
 				"prompt":                 promptFlag,
 				"agent":                  agentFlag,
 				"ignore_concurrency_cap": ignoreConcurrencyCapFlag,

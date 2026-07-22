@@ -308,6 +308,100 @@ func TestProxySpawn_SendsCorrectPayload(t *testing.T) {
 	}
 }
 
+// TestProxySpawn_PRForwardedInsteadOfBranch is the regression test for issue
+// #2432: proxySpawn must forward --pr as "pr" in the JSON body verbatim,
+// NOT resolve it to a branch name client-side. Resolving it client-side
+// (the pre-fix behaviour) sent only a possibly-sanitised branch name across
+// the host-API boundary, losing the PR's real head ref whenever it contained
+// a slash.
+func TestProxySpawn_PRForwardedInsteadOfBranch(t *testing.T) {
+	type spawnReq struct {
+		Branch string `json:"branch"`
+		PR     string `json:"pr"`
+	}
+
+	reqCh := make(chan spawnReq, 1)
+
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spawn" {
+			http.Error(w, `{"error":"wrong path"}`, http.StatusBadRequest)
+			return
+		}
+		var raw map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&raw)
+		b, _ := json.Marshal(raw)
+		var req spawnReq
+		_ = json.Unmarshal(b, &req)
+		if _, ok := raw["branch"]; !ok {
+			req.Branch = "__absent__"
+		}
+		reqCh <- req
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"nixos-config@feat-lago-staging-db"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("pr", "", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("pr", "386")
+	_ = cmd.Flags().Set("prompt", "hi")
+
+	if err := proxySpawn(srv.apiURL(), cmd); err != nil {
+		t.Fatalf("proxySpawn: %v", err)
+	}
+
+	select {
+	case req := <-reqCh:
+		if req.PR != "386" {
+			t.Errorf("pr = %q, want %q", req.PR, "386")
+		}
+		if req.Branch != "__absent__" {
+			t.Errorf("branch = %q, want absent from request body when --pr is used", req.Branch)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+// TestProxySpawn_PRAndBranchMutuallyExclusive verifies that passing both
+// --pr and --branch is rejected client-side before any request reaches the
+// host API.
+func TestProxySpawn_PRAndBranchMutuallyExclusive(t *testing.T) {
+	called := make(chan struct{}, 1)
+	srv := newMockUnixServer(t, func(w http.ResponseWriter, r *http.Request) {
+		called <- struct{}{}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"session_name":"x"}`))
+	})
+
+	t.Setenv("PRISM_HOST_API", srv.apiURL())
+
+	cmd := &cobra.Command{Use: "spawn"}
+	cmd.Flags().String("branch", "", "")
+	cmd.Flags().String("pr", "", "")
+	addPromptFlags(cmd)
+	_ = cmd.Flags().Set("pr", "386")
+	_ = cmd.Flags().Set("branch", "some-branch")
+	_ = cmd.Flags().Set("prompt", "hi")
+
+	err := proxySpawn(srv.apiURL(), cmd)
+	if err == nil {
+		t.Fatal("expected error for --pr and --branch both set")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q should mention mutually exclusive", err.Error())
+	}
+	select {
+	case <-called:
+		t.Fatal("host API should not have been called")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // TestProxySpawn_IgnoreConcurrencyCapForwarded verifies that when
 // --ignore-concurrency-cap is set, proxySpawn includes ignore_concurrency_cap:true
 // in the JSON body sent to the host-API sidecar.
