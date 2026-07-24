@@ -285,6 +285,123 @@ func TestProbeBranchProtection_ParsesRequiredChecks(t *testing.T) {
 	}
 }
 
+// ── #2436 ruleset-fallback tests ──────────────────────────────────────────────
+
+// stubGhBinRuleset installs a `gh` shim that discriminates between the
+// classic branches/.../protection path and the rules/branches/... path, so
+// tests can exercise the #2436 fallback independently of each other. Both
+// classicJSON and rulesetJSON empty means "404" for that endpoint.
+func stubGhBinRuleset(t *testing.T, prJSON, classicJSON, rulesetJSON string) string {
+	t.Helper()
+	dir := t.TempDir()
+	counterPath := filepath.Join(dir, "gh.calls")
+	ghPath := filepath.Join(dir, "gh")
+
+	renderCase := func(json string) string {
+		if json == "" {
+			return `        echo "HTTP 404: Not Found (https://api.github.com/...)" >&2
+        exit 1
+        ;;`
+		}
+		return fmt.Sprintf(`        cat <<'GHEOF'
+%s
+GHEOF
+        exit 0
+        ;;`, json)
+	}
+
+	script := fmt.Sprintf(`#!/bin/sh
+echo call "$@" >> %q
+case "$1 $2" in
+    "pr view")
+        cat <<'GHEOF'
+%s
+GHEOF
+        exit 0
+        ;;
+    "api "*)
+        case "$2" in
+            */rules/branches/*)
+%s
+            *)
+%s
+        esac
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+`, counterPath, prJSON, renderCase(rulesetJSON), renderCase(classicJSON))
+	if err := os.WriteFile(ghPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write stub gh: %v", err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	return counterPath
+}
+
+// TestProbeBranchProtection_RulesetFallback_Configured is the PR #2435
+// false-negative regression guard: classic protection 404s (as it does on
+// this repo's ruleset-only-protected main) but the rules/branches endpoint
+// reports an actively-enforced required_status_checks rule. The probe must
+// report protected=true with the check name extracted, not "unprotected".
+func TestProbeBranchProtection_RulesetFallback_Configured(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		"", // classic 404s
+		`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate","integration_id":15368}]}},{"type":"pull_request"},{"type":"non_fast_forward"},{"type":"required_linear_history"},{"type":"deletion"}]`,
+	)
+	protected, required, err := probeBranchProtection("main")
+	if err != nil {
+		t.Fatalf("probeBranchProtection: %v", err)
+	}
+	if !protected {
+		t.Fatal("protected: got false, want true (ruleset-only protection must be detected, #2436)")
+	}
+	if len(required) != 1 || required[0] != "pr-gate" {
+		t.Errorf("required: got %v, want [pr-gate]", required)
+	}
+}
+
+// TestProbeBranchProtection_NeitherClassicNorRuleset is the #2420
+// conservative-default regression guard: both endpoints 404, so the probe
+// must still report unprotected.
+func TestProbeBranchProtection_NeitherClassicNorRuleset(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		"", // classic 404s
+		"", // ruleset 404s too
+	)
+	protected, required, err := probeBranchProtection("main")
+	if err != nil {
+		t.Fatalf("probeBranchProtection: %v", err)
+	}
+	if protected {
+		t.Error("protected: got true, want false (no classic protection and no effective ruleset, #2420)")
+	}
+	if len(required) != 0 {
+		t.Errorf("required: got %v, want empty", required)
+	}
+}
+
+// TestProbeInitialState_RulesetProtected_Ready is the PR #2435 end-to-end
+// scenario: a ruleset-protected repo with a CLEAN, all-checks-green PR must
+// reach the enqueue-ready outcome rather than being stuck reporting
+// "no branch protection configured".
+func TestProbeInitialState_RulesetProtected_Ready(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":2435,"title":"ruleset protected","mergedAt":null,"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
+		"", // classic 404s
+		`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}},{"type":"pull_request"}]`,
+	)
+	dec, err := probeInitialState(2435)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome != initialOutcomeEnqueueReady {
+		t.Errorf("outcome: got %v, want EnqueueReady (#2436 must un-block the PR #2435 scenario)", dec.Outcome)
+	}
+}
+
 // ── pendingRequiredCheckNames unit tests ──────────────────────────────────────
 
 func TestPendingRequiredCheckNames(t *testing.T) {

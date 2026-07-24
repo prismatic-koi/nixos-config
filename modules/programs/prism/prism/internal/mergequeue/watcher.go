@@ -32,6 +32,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/branchprotect"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
@@ -839,37 +840,15 @@ func requiredChecksAllPassed(rollup []checkEntry, required []string) bool {
 	return true
 }
 
-// branchProtectionResponse is the subset of the GitHub branch protection API
-// response we care about.
-type branchProtectionResponse struct {
-	RequiredStatusChecks struct {
-		Contexts []string `json:"contexts"` // legacy commit-status names
-		Checks   []struct {
-			Context string `json:"context"`
-		} `json:"checks"` // modern check-run names
-	} `json:"required_status_checks"`
-}
-
-// isBranchNotProtectedError reports whether a gh api error+output combination
-// indicates the branch is unprotected (HTTP 404 from
-// repos/:owner/:repo/branches/:branch/protection). Both the modern
-// ("Branch not protected") and legacy ("Not Found") response bodies are
-// covered; gh renders the status code as "HTTP 404" in stdout+stderr.
-func isBranchNotProtectedError(combinedOutput string) bool {
-	low := strings.ToLower(combinedOutput)
-	return strings.Contains(low, "http 404") ||
-		strings.Contains(low, "branch not protected") ||
-		strings.Contains(low, "\"status\":\"404\"")
-}
-
 // fetchProtection returns the branch-protection snapshot for the protected
 // target branch ("main"), using a short-TTL in-memory cache to avoid
 // hammering the API on every polling tick.
 //
-// A configured=false result means the branch-protection endpoint returned
-// HTTP 404 — the repo has no branch protection at all. Per the #2420 rule,
-// callers must NOT auto-merge in that case, and this path is treated as a
-// successful probe (no error returned), NOT as a transient failure.
+// A configured=false result means neither the classic branch-protection
+// endpoint nor the rulesets effective-rules endpoint found any protection
+// (#2436) — the repo has no protection at all. Per the #2420 rule, callers
+// must NOT auto-merge in that case, and this path is treated as a successful
+// probe (no error returned), NOT as a transient failure.
 //
 // On any other error (network, permissions, rate-limit) fetchProtection
 // returns a zero protectionCache and err so the caller can take the
@@ -882,42 +861,21 @@ func (w *Watcher) fetchProtection(ctx context.Context) (protectionCache, error) 
 		return w.protection, nil
 	}
 
-	out, err := w.runGH(ctx, "api", fmt.Sprintf("repos/%s/branches/main/protection", w.repo))
+	res, err := branchprotect.Probe(ctx, w.runGH,
+		fmt.Sprintf("repos/%s/branches/main/protection", w.repo),
+		fmt.Sprintf("repos/%s/rules/branches/main", w.repo),
+	)
 	if err != nil {
-		if isBranchNotProtectedError(string(out) + " " + err.Error()) {
-			state := protectionCache{configured: false, fetchAt: now}
-			w.protection = state
-			log.Printf("[mergequeue] branch protection not configured for %s (HTTP 404)", w.repo)
-			return state, nil
-		}
-		return protectionCache{}, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
+		return protectionCache{}, err
 	}
 
-	var resp branchProtectionResponse
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return protectionCache{}, fmt.Errorf("parse branch protection response: %w", err)
-	}
-
-	// Collect names from both the legacy contexts list and the modern checks
-	// list, deduplicating.
-	seen := make(map[string]bool)
-	var names []string
-	for _, ctx := range resp.RequiredStatusChecks.Contexts {
-		if ctx != "" && !seen[ctx] {
-			seen[ctx] = true
-			names = append(names, ctx)
-		}
-	}
-	for _, c := range resp.RequiredStatusChecks.Checks {
-		if c.Context != "" && !seen[c.Context] {
-			seen[c.Context] = true
-			names = append(names, c.Context)
-		}
-	}
-
-	state := protectionCache{configured: true, requiredChecks: names, fetchAt: now}
+	state := protectionCache{configured: res.Configured, requiredChecks: res.RequiredChecks, fetchAt: now}
 	w.protection = state
-	log.Printf("[mergequeue] fetched branch protection for %s: required=%v", w.repo, names)
+	if res.Configured {
+		log.Printf("[mergequeue] fetched branch protection for %s: required=%v", w.repo, res.RequiredChecks)
+	} else {
+		log.Printf("[mergequeue] branch protection not configured for %s (no classic protection or effective ruleset)", w.repo)
+	}
 	return state, nil
 }
 

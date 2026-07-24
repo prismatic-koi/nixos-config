@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/branchprotect"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -747,63 +748,37 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	return dec, nil
 }
 
-// probeBranchProtection queries the GitHub branch-protection endpoint for the
-// given base branch. Returns (protected, requiredCheckNames, err):
+// probeBranchProtection queries GitHub for whether the given base branch is
+// protected — via classic branch protection or, when that 404s, via an
+// actively-enforced ruleset (#2436) — and returns (protected, requiredCheckNames, err):
 //
-//   - protected=false, err=nil — the endpoint returned HTTP 404, which is the
-//     canonical "branch not protected" response. #2420 treats this as a state,
-//     not a failure.
-//   - protected=true, err=nil — protection is configured; requiredCheckNames
-//     enumerates the required status checks (union of legacy contexts and
-//     modern check-run names).
-//   - err != nil — the API call failed in a way we cannot classify (network,
+//   - protected=false, err=nil — neither the classic endpoint nor the
+//     rulesets effective-rules endpoint found any protection. #2420 treats
+//     this as a state, not a failure.
+//   - protected=true, err=nil — protection is configured (classic or
+//     ruleset); requiredCheckNames enumerates the required status checks.
+//   - err != nil — an API call failed in a way we cannot classify (network,
 //     permissions). Callers surface the error to the coordinator.
 //
-// The gh CLI resolves the current repo from git config when `--repo` is
-// omitted — this mirrors the invocation shape used elsewhere in cmd/merge.go.
+// The gh CLI resolves the current repo from git config for the {owner}/{repo}
+// placeholders — this mirrors the invocation shape used elsewhere in cmd/merge.go.
 func probeBranchProtection(baseRef string) (bool, []string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if baseRef == "" {
 		baseRef = "main"
 	}
-	out, err := exec.CommandContext(ctx, "gh", "api",
-		fmt.Sprintf("repos/{owner}/{repo}/branches/%s/protection", baseRef)).CombinedOutput()
+	run := func(ctx context.Context, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, "gh", args...).CombinedOutput()
+	}
+	res, err := branchprotect.Probe(ctx, run,
+		fmt.Sprintf("repos/{owner}/{repo}/branches/%s/protection", baseRef),
+		fmt.Sprintf("repos/{owner}/{repo}/rules/branches/%s", baseRef),
+	)
 	if err != nil {
-		low := strings.ToLower(string(out))
-		if strings.Contains(low, "http 404") ||
-			strings.Contains(low, "branch not protected") ||
-			strings.Contains(low, "\"status\":\"404\"") {
-			return false, nil, nil
-		}
-		return false, nil, fmt.Errorf("gh api branch protection: %w: %s", err, strings.TrimSpace(string(out)))
+		return false, nil, err
 	}
-	var resp struct {
-		RequiredStatusChecks struct {
-			Contexts []string `json:"contexts"`
-			Checks   []struct {
-				Context string `json:"context"`
-			} `json:"checks"`
-		} `json:"required_status_checks"`
-	}
-	if jsonErr := json.Unmarshal(out, &resp); jsonErr != nil {
-		return false, nil, fmt.Errorf("parse branch protection response: %w", jsonErr)
-	}
-	seen := make(map[string]bool)
-	var names []string
-	for _, ctx := range resp.RequiredStatusChecks.Contexts {
-		if ctx != "" && !seen[ctx] {
-			seen[ctx] = true
-			names = append(names, ctx)
-		}
-	}
-	for _, c := range resp.RequiredStatusChecks.Checks {
-		if c.Context != "" && !seen[c.Context] {
-			seen[c.Context] = true
-			names = append(names, c.Context)
-		}
-	}
-	return true, names, nil
+	return res.Configured, res.RequiredChecks, nil
 }
 
 // pendingRequiredCheckNames returns required check names that are not yet

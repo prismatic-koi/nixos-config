@@ -2531,6 +2531,10 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 				// renders this as a non-zero exit with "HTTP 404" in
 				// stdout+stderr — replicate that shape here.
 				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
+			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "rules/branches/main"):
+				// #2436: the ruleset-fallback probe also 404s — genuinely
+				// unprotected, neither classic protection nor any ruleset.
+				return []byte(`HTTP 404: Not Found`), fmt.Errorf("exit status 1")
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "merge":
 				mergeCalled = true
 				return nil, nil
@@ -2976,8 +2980,11 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 	if _, err := w.fetchProtection(context.Background()); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
-	if calls != 1 {
-		t.Errorf("calls after two fetches within TTL: got %d, want 1 (unconfigured result must be cached)", calls)
+	// Since #2436, a classic 404 triggers one ruleset-fallback call before
+	// concluding "unconfigured", so the first fetch costs 2 calls; the
+	// second fetch within the TTL must still be a pure cache hit (0 more).
+	if calls != 2 {
+		t.Errorf("calls after two fetches within TTL: got %d, want 2 (classic+ruleset on first fetch, cached on second)", calls)
 	}
 }
 
