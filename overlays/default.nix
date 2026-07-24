@@ -42,27 +42,30 @@ rec {
       # See: https://github.com/prismatic-koi/nixos-config/issues/1894
       bitwarden-cli = stablePkgs.bitwarden-cli;
 
-      # bitwarden-desktop: swap the source-built `electron_39` for the
-      # prebuilt `electron_39-bin` so we don't compile EOL electron from
-      # source. Electron 39 is past end-of-life and has been marked
-      # insecure in nixpkgs; the matching `permittedInsecurePackages =
-      # [ "electron-39.8.10" ];` entry lives in `flake.nix`'s base
-      # config block (module-level `nixpkgs.config` is bypassed because
-      # we pass a pre-built `pkgs` into `nixosSystem`).
+      # bitwarden-desktop: interim master-pin. nixpkgs PR #545058
+      # ("bitwarden-desktop: 2026.6.1 -> 2026.7.0") merged to nixpkgs
+      # `master` on 2026-07-24, bumping the package off the EOL/insecure
+      # electron version onto `electron_41` (upstream fix:
+      # bitwarden/clients#20448, released as desktop-v2026.7.0).
+      # That bump has NOT yet reached `nixos-unstable` (our `nixpkgs`
+      # input), so we pin to `nixpkgs-master` here as an interim measure
+      # rather than continuing to override the old package's EOL
+      # electron with its `-bin` prebuilt variant.
       #
-      # nixpkgs tracking issue (Electron 39 EOL, most dependents bumped):
-      #   https://github.com/NixOS/nixpkgs/issues/521305
-      # nixpkgs issue for bitwarden-desktop specifically:
-      #   https://github.com/NixOS/nixpkgs/issues/526914
-      # Upstream electron bump PR (open, not yet merged):
-      #   https://github.com/bitwarden/clients/pull/20448
+      # nixpkgs bump PR:      https://github.com/NixOS/nixpkgs/pull/545058
+      # Tracking issue:       https://github.com/NixOS/nixpkgs/issues/526914
       #
-      # REMOVAL CONDITION: delete this block (and the matching
-      # `permittedInsecurePackages` entry in `flake.nix`) once
-      # bitwarden/clients#20448 lands and nixpkgs bumps
-      # `bitwarden-desktop` to a build on electron >= 40.
-      bitwarden-desktop = prev.bitwarden-desktop.override {
-        electron_39 = final.electron_39-bin;
+      # The `electron_41` -> `electron_41-bin` override below exists only
+      # to avoid compiling electron from source on uncached master revs
+      # (a build-time concern, not a security requirement).
+      #
+      # REMOVAL CONDITION: delete this master-pin block entirely (reverting
+      # to plain `nixos-unstable` bitwarden-desktop) once our `nixpkgs`
+      # (`nixos-unstable`) input carries `bitwarden-desktop >= 2026.7.0` on
+      # `electron >= 40`. At that point the `-bin` swap becomes a
+      # judgement call, not a security requirement.
+      bitwarden-desktop = masterPkgs.bitwarden-desktop.override {
+        electron_41 = masterPkgs.electron_41-bin;
       };
       # direnv: disable the test phase on Darwin to work around a hang in
       # `direnv-test.zsh` introduced when libarchive was bumped 3.8.4 -> 3.8.6
