@@ -861,7 +861,13 @@ func (w *Watcher) fetchProtection(ctx context.Context) (protectionCache, error) 
 		return w.protection, nil
 	}
 
-	res, err := branchprotect.Probe(ctx, w.runGH,
+	// branchprotect.Probe issues `gh api ...` calls, and `gh api` rejects
+	// the `--repo` flag ("unknown flag: --repo") — unlike `gh pr ...`
+	// subcommands, which require it for CWD-independence (#1055). The paths
+	// below are already fully-qualified (repos/<owner>/<repo>/...), so
+	// routing through w.runGHNoRepo (not w.runGH) here is both correct and
+	// required (#2438).
+	res, err := branchprotect.Probe(ctx, w.runGHNoRepo,
 		fmt.Sprintf("repos/%s/branches/main/protection", w.repo),
 		fmt.Sprintf("repos/%s/rules/branches/main", w.repo),
 	)
@@ -944,6 +950,21 @@ func (w *Watcher) runGH(ctx context.Context, args ...string) ([]byte, error) {
 		return w.runGHFunc(ctx, full...)
 	}
 	return execGH(ctx, full...)
+}
+
+// runGHNoRepo runs `gh <args...>` WITHOUT the "--repo" flag and returns
+// combined output. Used exclusively for `gh api ...` calls (the
+// branch-protection probe), because `gh api` rejects "--repo" outright
+// ("unknown flag: --repo") — unlike `gh pr ...` subcommands, which need it
+// for CWD-independence (#1055). See runGH's doc comment for that path.
+//
+// Like runGH, this dispatches to w.runGHFunc when set (so tests can capture
+// the exact argv handed to gh), falling back to execGH otherwise.
+func (w *Watcher) runGHNoRepo(ctx context.Context, args ...string) ([]byte, error) {
+	if w.runGHFunc != nil {
+		return w.runGHFunc(ctx, args...)
+	}
+	return execGH(ctx, args...)
 }
 
 // execGH is the real gh-CLI invocation. Extracted from runGH so tests can
