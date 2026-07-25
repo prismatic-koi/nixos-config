@@ -2520,18 +2520,21 @@ func TestWatcher_Unprotected_NeverAutoMerges(t *testing.T) {
 		httpClient:  srv.Client(),
 		repo:        "myrepo",
 		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
-			// args[0..1] are "--repo <slug>" (prepended by runGH).
+			// gh pr ... calls go through runGH, so args[0..1] are "--repo
+			// <slug>" (prepended there). gh api ... calls go through
+			// runGHNoRepo (#2438: gh api rejects --repo), so those args
+			// start directly with "api".
 			switch {
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
 				// A repo without protection typically reports CLEAN
 				// once the (nonexistent) required gates trivially pass.
 				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[],"reviewDecision":""}`), nil
-			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "branches/main/protection"):
 				// gh api on an unprotected branch returns HTTP 404. gh
 				// renders this as a non-zero exit with "HTTP 404" in
 				// stdout+stderr — replicate that shape here.
 				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
-			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "rules/branches/main"):
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "rules/branches/main"):
 				// #2436: the ruleset-fallback probe also 404s — genuinely
 				// unprotected, neither classic protection nor any ruleset.
 				return []byte(`HTTP 404: Not Found`), fmt.Errorf("exit status 1")
@@ -2590,7 +2593,7 @@ func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
 			switch {
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
 				return []byte(prView), nil
-			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "branches/main/protection"):
 				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
 			}
 			return nil, fmt.Errorf("unexpected gh call: %v", args)
@@ -2886,7 +2889,7 @@ func TestWatcher_ApprovalDetected_MergesAndNotifies(t *testing.T) {
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
 				// APPROVED + CLEAN — the positive signal for protected repos.
 				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}],"reviewDecision":"APPROVED"}`), nil
-			case len(args) >= 3 && args[2] == "api" && strings.Contains(args[3], "branches/main/protection"):
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "branches/main/protection"):
 				return []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`), nil
 			case len(args) >= 4 && args[2] == "pr" && args[3] == "merge":
 				mergeCalled = true
@@ -2985,6 +2988,105 @@ func TestFetchProtection_CachesUnconfigured(t *testing.T) {
 	// second fetch within the TTL must still be a pure cache hit (0 more).
 	if calls != 2 {
 		t.Errorf("calls after two fetches within TTL: got %d, want 2 (classic+ruleset on first fetch, cached on second)", calls)
+	}
+}
+
+// TestFetchProtection_ProbeCallsOmitRepoFlag is the #2438 regression test.
+//
+// #2437 wired the watcher's branch-protection probe through w.runGH, which
+// unconditionally prepends "--repo <owner/name>" to every gh invocation
+// (the #1055 CWD-independence fix for `gh pr ...`). But `gh api` REJECTS
+// "--repo" outright ("unknown flag: --repo"), so every real-world probe on
+// this ruleset-protected repo failed with a non-404 error, and the watcher
+// stayed "watching" forever.
+//
+// This test captures the exact argv handed to the stubbed gh runner and
+// asserts:
+//   - the branch-protection probe's `gh api ...` calls carry NO "--repo"
+//     flag and target the fully-qualified "repos/<owner>/<repo>/..." path
+//     (both the classic and, on 404, the ruleset-fallback path); and
+//   - a sibling `gh pr view` call (routed through w.runGH, not the probe)
+//     still DOES carry "--repo" -- proving the fix is scoped to the `gh
+//     api` call sites and does not regress #1055.
+//
+// Provenance: reverting the fetchProtection routing back to w.runGH makes
+// this test fail because argv[0] is "--repo" instead of "api" --
+// confirming the assertion is not a no-op.
+func TestFetchProtection_ProbeCallsOmitRepoFlag(t *testing.T) {
+	d := openTestDB(t)
+	const repoSlug = "owner/nixos-config"
+
+	var calls [][]string
+	w := &Watcher{
+		db:          d,
+		instanceID:  "inst-2438-argv",
+		sessionName: "myrepo@main",
+		httpClient:  http.DefaultClient,
+		repo:        repoSlug,
+		runGHFunc: func(_ context.Context, args ...string) ([]byte, error) {
+			snap := make([]string, len(args))
+			copy(snap, args)
+			calls = append(calls, snap)
+			switch {
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "branches/main/protection"):
+				// Classic endpoint 404s -- this repo is ruleset-protected,
+				// not classic-protected (mirrors the live #2435 scenario).
+				return []byte(`HTTP 404: Branch not protected`), fmt.Errorf("exit status 1")
+			case len(args) >= 2 && args[0] == "api" && strings.Contains(args[1], "rules/branches/main"):
+				return []byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}}]`), nil
+			case len(args) >= 4 && args[2] == "pr" && args[3] == "view":
+				return []byte(`{"state":"OPEN","mergedAt":null,"mergeStateStatus":"CLEAN","statusCheckRollup":[],"reviewDecision":""}`), nil
+			}
+			return nil, fmt.Errorf("unexpected gh call: %v", args)
+		},
+	}
+
+	ctx := context.Background()
+
+	state, err := w.fetchProtection(ctx)
+	if err != nil {
+		t.Fatalf("fetchProtection: %v", err)
+	}
+	if !state.configured {
+		t.Fatal("fetchProtection: configured=false, want true (ruleset-fallback should have found the effective rule)")
+	}
+	if len(state.requiredChecks) != 1 || state.requiredChecks[0] != "pr-gate" {
+		t.Errorf("requiredChecks: got %v, want [pr-gate]", state.requiredChecks)
+	}
+
+	if _, err := w.fetchPRInfo(ctx, 2435); err != nil {
+		t.Fatalf("fetchPRInfo: %v", err)
+	}
+
+	if len(calls) != 3 {
+		t.Fatalf("expected 3 gh invocations (classic api, ruleset api, pr view); got %d: %v", len(calls), calls)
+	}
+
+	// Calls 0 and 1 are the protection-probe `gh api` calls: no "--repo".
+	for i, wantSubstr := range []string{"branches/main/protection", "rules/branches/main"} {
+		argv := calls[i]
+		if len(argv) < 2 {
+			t.Fatalf("protection-probe call %d argv too short: %v", i, argv)
+		}
+		if argv[0] == "--repo" {
+			t.Errorf("protection-probe call %d argv: got %q as argv[0], want no --repo flag (gh api rejects --repo) -- full argv: %v", i, argv[0], argv)
+		}
+		if argv[0] != "api" {
+			t.Errorf("protection-probe call %d argv[0]: got %q, want %q", i, argv[0], "api")
+		}
+		if !strings.Contains(argv[1], wantSubstr) {
+			t.Errorf("protection-probe call %d argv[1]: got %q, want substring %q", i, argv[1], wantSubstr)
+		}
+		if !strings.HasPrefix(argv[1], fmt.Sprintf("repos/%s/", repoSlug)) {
+			t.Errorf("protection-probe call %d argv[1]: got %q, want fully-qualified repos/%s/... path", i, argv[1], repoSlug)
+		}
+	}
+
+	// Call 2 is `gh pr view`, routed through w.runGH: --repo IS required
+	// (#1055 CWD-independence).
+	prViewArgv := calls[2]
+	if len(prViewArgv) < 2 || prViewArgv[0] != "--repo" || prViewArgv[1] != repoSlug {
+		t.Errorf("gh pr view call argv: got %v, want [--repo %q ...]", prViewArgv, repoSlug)
 	}
 }
 
