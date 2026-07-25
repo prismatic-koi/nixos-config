@@ -71,9 +71,6 @@
             config = lib.mkMerge [
               {
                 allowUnfree = true;
-                # See overlays/default.nix (bitwarden-desktop block) for
-                # context + removal condition.
-                permittedInsecurePackages = [ "electron-39.8.10" ];
               }
               extraConfig
             ];
