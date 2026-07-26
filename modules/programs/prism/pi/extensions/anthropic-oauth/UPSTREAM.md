@@ -135,6 +135,23 @@ it is more actively maintained and is the source of the PR #193 fix.
    be imported. If registry construction rejects, surface a clear error
    rather than falling through to an empty-model registration.
 
+   **Regression guard.** `verify-extension-loads.mjs` (in this directory)
+   loads this extension end-to-end against a real, installed
+   pi-coding-agent build using pi's own extension-loading mechanism (jiti,
+   aliased the same way `dist/core/extensions/loader.js` aliases it for
+   Node/dev mode) and asserts the anthropic provider registers with a
+   non-empty model list and all OAuth handlers wired. Run it after any
+   pi-coding-agent version bump (overlay pin or nixpkgs bump) — it is what
+   would have caught issue #2428 before it reached an interactive `pi`
+   session:
+
+   ```bash
+   node modules/programs/prism/pi/extensions/anthropic-oauth/verify-extension-loads.mjs
+   # or, to check a specific build not yet the default pkgs.pi-coding-agent:
+   PI_INSTALL_ROOT=/nix/store/...-pi-coding-agent-X.Y.Z \
+     node modules/programs/prism/pi/extensions/anthropic-oauth/verify-extension-loads.mjs
+   ```
+
 9. **Adaptive thinking handling lives in `request-body.ts` and is ported from
    pi-ai — NOT from griffinmartin**. Issue #2044 fixed an erratic-behaviour
    bug on `claude-opus-4-8` (and a silent degradation on `-4-6` / `-4-7`)
