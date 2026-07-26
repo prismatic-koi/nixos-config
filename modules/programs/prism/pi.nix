@@ -239,7 +239,7 @@
           pi-coding-agent
           fd
           tsx # for testing pi extensions
-          mitmproxy # for testing
+          # mitmproxy # for testing; disabled due to upstream msgpack<=1.1.2 skew (issue #2442)
           playwright-cli
         ];
 
