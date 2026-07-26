@@ -25,7 +25,6 @@
           nix
           python
           sql
-          tmux
           toml
           typescript
           vim
