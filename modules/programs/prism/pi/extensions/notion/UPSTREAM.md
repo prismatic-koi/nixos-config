@@ -182,10 +182,61 @@ re-authorize in a browser.
 | 2 | Mandatory cache-bypassing **re-read after acquiring the lock**, before deciding to refresh | `getValidAccessToken` step 3 | same block — "skips the refresh entirely when a peer rotated while we queued" |
 | 3 | **Atomic writes**: temp file created `O_EXCL` + `fchmod 0600` *before* any content, `fsync`, then `rename(2)` | `writeJsonAtomic` | `auth.test.ts` → "atomic token writes" |
 | 4 | **`invalid_grant` is terminal**: clear the store, prompt `/login-notion`, never retry | `refreshTokens` → `NotionAuthTerminalError`; `retry.ts` → `isTerminalAuthError` | `auth.test.ts` → "invalid_grant is terminal"; `retry.test.ts` → "terminal auth errors" |
+| 5 | **Bounded OAuth requests** so a live holder can never outlive its own lock | `oauthFetch` + `TOKEN_REQUEST_TIMEOUT_MS` | `concurrency.test.ts` → "bounded token requests" |
+| 6 | **Lock-ownership re-check before the write** | `ownsLock` / `recoverFromLostLock` in `getValidAccessToken` | `concurrency.test.ts` → "lock-ownership revalidation before the write" |
 
-Plus a fifth, supporting one: the DCR `client_id` is **persisted in a separate
+Plus a seventh, supporting one: the DCR `client_id` is **persisted in a separate
 file and reused** (`ensureClientRegistration`), and that file deliberately
 survives `clearTokens()`.
+
+### Mechanisms 5 and 6: why a lock alone is not enough
+
+Mechanisms 5 and 6 were added after round-1 review of PR #2449, where two
+reviewers independently found that the lock could be broken out from under a
+**live** holder. They are recorded here because the failure is subtle and a
+future maintainer tuning these timings could silently reintroduce it.
+
+`breakStaleLock` deliberately breaks a lock whose owner has not changed for
+longer than the stale threshold — that is how a crashed peer's lock is
+reclaimed. But a live-but-hung holder is indistinguishable from a crashed one:
+same owner id, same frozen timestamp. The original code issued the refresh POST
+with no `AbortSignal`, and undici's default headers timeout is **300 s** against
+a **30 s** stale threshold. A wedged request — sleep/wake mid-POST, VPN flap,
+captive portal — would therefore be judged stale, a peer would break the lock,
+re-read the *still-unchanged* token file, and refresh with the **same refresh
+token**. That is exactly the unserialised double-refresh this whole module
+exists to prevent.
+
+Two invariants now hold, both asserted by tests in `concurrency.test.ts` so a
+future timing change cannot quietly violate them:
+
+| Invariant | Statement |
+|---|---|
+| **A** | `acquireTimeoutMs > staleMs` — a crashed peer's lock always becomes breakable before we give up waiting for it. |
+| **B** | `tokenRequestTimeoutMs * 2 <= staleMs` — a live holder always finishes or aborts well before a peer could judge it stale. |
+
+Invariant B is the primary fix. Mechanism 6 is the backstop for the residual
+cases B cannot cover — `SIGSTOP`, machine sleep, a clock jump — where the
+process itself stops making progress. On detecting lost ownership,
+`recoverFromLostLock` never writes:
+
+- If a peer published a rotation (the on-disk refresh token differs from the one
+  we refreshed with), defer to it. Clobbering a peer's write is the documented
+  hazard: it strands a rotated-away refresh token on disk for the next refresh
+  to replay.
+- If nobody published, the refresh token on disk is the one *we* just rotated
+  away, so it is poison. Clear the store and raise a terminal error. That costs
+  one `/login-notion` instead of the whole workspace grant.
+
+**A heartbeat was considered and rejected.** Refreshing the owner file's `ts`
+on a timer would only help if the holder were still scheduled — and if it is
+scheduled, invariant B already bounds it. The cases B cannot cover are exactly
+the cases where a heartbeat timer would not fire either. It would add moving
+parts for no coverage.
+
+Both `PI_NOTION_TOKEN_TIMEOUT_MS` and the two lock env vars exist for tests
+only. Do not set them in production config; lowering the stale threshold below
+the request timeout re-opens the hole.
 
 Two further deviations from the Atlassian template, both deliberate:
 
@@ -223,6 +274,7 @@ required for this extension.
 |---|---|
 | `notion-mcp-oauth.json` | `{ accessToken, refreshToken, expiresAt, clientId }` |
 | `notion-mcp-client.json` | `{ clientId, redirectUri, registeredAt }` |
+| `notion-mcp-oauth.json.lock/` | Lock directory; contains `owner` = `{ id, pid, ts }` |
 
 Both are mode 0600 in a 0700 directory. Path precedence (`getTokenStorePath`):
 
@@ -251,6 +303,25 @@ both files on impermanent NixOS hosts.
 error resolving the working directory or evaluating the allowlist **fails
 closed**.
 
+The gate is checked at **three** points, and the redundancy is deliberate:
+
+1. `onSessionStart` entry — so a non-allowlisted session performs no token
+   refresh and opens no MCP connection at all.
+2. `onLoginCommand`, after the credential is stored — `/login-notion` itself is
+   available everywhere (logging in is repo-agnostic, and a user who has just
+   edited the allowlist should not have to hunt for an allowlisted directory to
+   authenticate from), but the tool surface and the connection stay gated.
+3. `registerTools` — the single choke point through which tools reach pi.
+
+Point 3 is what makes the contract structural rather than a convention. Round-1
+review of PR #2449 found that `/login-notion` registered the full Notion
+surface — including `notion-update-page`, `notion-move-pages` and
+`notion-duplicate-page` — in directories the allowlist excluded, because the
+gate was checked only in the `session_start` path. With the check inside
+`registerTools`, a future call site cannot reintroduce that bug by forgetting
+to look first. `extension.test.ts` proves each layer independently by driving a
+gate that is open at entry and shut by the time registration runs.
+
 The allowlist is delivered through `nx.programs.prism.agent.envVars`, **not**
 the zsh alias. The alias only reaches interactive shells;
 `agent.envVars` is the channel that actually reaches prism-spawned agents (it
@@ -266,6 +337,28 @@ environment variable.
 
 This is a scoping and least-privilege control, not a security boundary against
 a hostile agent.
+
+## File layout: why `index.ts` is a shell
+
+`index.ts` imports `typebox`, which only resolves inside pi's own runtime. That
+makes anything reachable *only* through `index.ts` impossible to unit test —
+which is why round-1 review could correctly observe that the `/login-notion`
+gate bypass "is untested".
+
+So the pi-agnostic core lives in `extension.ts` behind a small
+injected-dependency surface (`wrapSchema`, `connect`, `login`,
+`isEnabledForCwd`), mirroring the pattern `retry.ts` already uses for its auth
+callbacks. `index.ts` is reduced to wiring: it supplies `Type.Unsafe`, the real
+MCP connector and the real login flow, adapts pi's `registerTool` to the
+structural `ToolHost` interface, and forwards `session_start` and the command
+handler.
+
+Keep logic out of `index.ts`. Anything added there is, by construction,
+untestable.
+
+`createNotionExtension` is a factory rather than module-level mutable state so
+each pi session (and each test) gets its own `session` / `toolsRegistered` pair
+with no cross-contamination.
 
 ## MCP transport
 

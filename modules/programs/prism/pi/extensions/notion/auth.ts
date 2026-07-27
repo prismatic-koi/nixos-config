@@ -25,7 +25,10 @@
 // impossible:
 //
 //   1. `acquireTokenLock()` — a cross-process mkdir(2) lock held across the
-//      ENTIRE read-refresh-write window, with stale-lock breaking.
+//      ENTIRE read-refresh-write window, with stale-lock breaking. Every
+//      token-endpoint request inside that window is bounded by
+//      `TOKEN_REQUEST_TIMEOUT_MS`, which MUST stay well below the stale
+//      threshold so a live holder can never be judged stale and preempted.
 //   2. A mandatory re-read of the token file AFTER the lock is acquired and
 //      BEFORE deciding whether to refresh. The peer that held the lock has
 //      almost always already rotated for us.
@@ -86,14 +89,40 @@ const CLIENT_STORE_FILENAME = "notion-mcp-client.json"
 // refresh across sessions likely — exactly the race we cannot afford here.)
 const REFRESH_MARGIN_MS = 5 * 60 * 1000
 
-// Lock timings. INVARIANT: acquire timeout > stale timeout, so a crashed
-// peer's lock is always broken before we give up waiting for it.
+// Lock timings. Two invariants, both asserted in auth.test.ts:
+//
+//   A. acquire timeout > stale timeout — a crashed peer's lock is always
+//      broken before we give up waiting for it.
+//   B. token request timeout << stale timeout — a LIVE holder always
+//      finishes (or aborts) its network call well before a peer could
+//      judge its lock stale and break it.
+//
+// Invariant B is not cosmetic. `breakStaleLock` only checks that the owner
+// id has not changed, which is exactly what a live-but-hung holder looks
+// like. Without a bound on the request, undici's default headers timeout
+// (300 s) lets a wedged POST — sleep/wake mid-request, VPN flap, captive
+// portal — hold the lock for minutes. A peer would break the lock, re-read
+// the still-unchanged token file, and refresh with the SAME refresh token:
+// precisely the unserialised double-refresh that costs the whole grant.
 const DEFAULT_LOCK_STALE_MS = 30_000
 const DEFAULT_LOCK_ACQUIRE_TIMEOUT_MS = 45_000
+const DEFAULT_TOKEN_REQUEST_TIMEOUT_MS = 10_000
 const LOCK_POLL_MS = 25
+
+/** Exported for the invariant tests in auth.test.ts. */
+export const LOCK_TIMINGS = {
+  staleMs: DEFAULT_LOCK_STALE_MS,
+  acquireTimeoutMs: DEFAULT_LOCK_ACQUIRE_TIMEOUT_MS,
+  tokenRequestTimeoutMs: DEFAULT_TOKEN_REQUEST_TIMEOUT_MS,
+} as const
 
 export const NO_TOKENS_MESSAGE =
   "Notion MCP: no auth tokens — run /login-notion to authenticate."
+
+export const LOST_LOCK_MESSAGE =
+  "Notion MCP: the token lock was broken while a refresh was in flight, so the " +
+  "refresh token on disk has been rotated away and cannot be reused safely. " +
+  "Stored tokens have been cleared — run /login-notion to re-authenticate."
 
 export const INVALID_GRANT_MESSAGE =
   "Notion MCP: the stored refresh token was rejected (invalid_grant). The " +
@@ -296,6 +325,11 @@ function lockAcquireTimeoutMs(): number {
   return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_LOCK_ACQUIRE_TIMEOUT_MS
 }
 
+function tokenRequestTimeoutMs(): number {
+  const raw = Number(process.env.PI_NOTION_TOKEN_TIMEOUT_MS)
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TOKEN_REQUEST_TIMEOUT_MS
+}
+
 export function getLockDirPath(): string {
   return `${getTokenStorePath()}.lock`
 }
@@ -420,6 +454,16 @@ export function releaseTokenLock(handle: LockHandle): void {
   } catch {
     // Best effort — a leaked lock is reclaimed by the stale-breaker.
   }
+}
+
+/**
+ * True when `handle` still owns its lock directory.
+ *
+ * Checked again after any network call made under the lock: if a peer judged
+ * us stale and broke the lock mid-flight, we are no longer entitled to write.
+ */
+export function ownsLock(handle: LockHandle): boolean {
+  return readLockOwner(handle.dir)?.id === handle.id
 }
 
 /** Run `fn` while holding the cross-process token lock. */
@@ -568,10 +612,35 @@ export function saveClientRegistration(reg: NotionClientRegistration): void {
   writeJsonAtomic(getClientStorePath(), reg)
 }
 
+/**
+ * `fetch` against an OAuth endpoint, bounded by `TOKEN_REQUEST_TIMEOUT_MS`.
+ *
+ * Invariant B (see the timing constants) depends on this: no request issued
+ * under the token lock may outlive the stale threshold, or a peer will break
+ * a live lock and double-refresh. An abort is surfaced as an ordinary
+ * (non-terminal) Error so the retry shell treats it as transient — a timeout
+ * says nothing about the validity of the grant.
+ */
+async function oauthFetch(url: string, init: RequestInit, what: string): Promise<Response> {
+  const timeoutMs = tokenRequestTimeoutMs()
+  try {
+    return await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) })
+  } catch (err) {
+    const name = (err as { name?: unknown })?.name
+    if (name === "TimeoutError" || name === "AbortError") {
+      throw new Error(
+        `${what} timed out after ${timeoutMs}ms and was aborted, so the token ` +
+          "lock is released well before a peer could judge it stale.",
+      )
+    }
+    throw err
+  }
+}
+
 /** POST /register. Unauthenticated DCR, `token_endpoint_auth_method: "none"`. */
 export async function registerClient(redirectUri: string): Promise<NotionClientRegistration> {
   debug("registering a new OAuth client")
-  const response = await fetch(REGISTRATION_ENDPOINT, {
+  const response = await oauthFetch(REGISTRATION_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -582,7 +651,7 @@ export async function registerClient(redirectUri: string): Promise<NotionClientR
       client_name: "pi-notion-mcp",
       client_uri: "https://github.com/prismatic-koi/nixos-config",
     }),
-  })
+  }, "Client registration")
 
   if (!response.ok) {
     const body = await response.text()
@@ -823,7 +892,7 @@ async function exchangeCode(
   redirectUri: string,
   verifier: string,
 ): Promise<NotionTokens> {
-  const response = await fetch(TOKEN_ENDPOINT, {
+  const response = await oauthFetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -833,7 +902,7 @@ async function exchangeCode(
       redirect_uri: redirectUri,
       code_verifier: verifier,
     }).toString(),
-  })
+  }, "Token exchange")
 
   if (!response.ok) {
     const body = await response.text()
@@ -846,16 +915,19 @@ async function exchangeCode(
 /**
  * Exchange the stored refresh token for a fresh pair.
  *
- * CALLERS MUST HOLD THE CROSS-PROCESS LOCK. Notion rotates the refresh token
- * on every call and treats a replay of a rotated token as theft, revoking the
- * whole grant.
+ * CALLERS MUST HOLD THE CROSS-PROCESS LOCK, and MUST re-check `ownsLock()`
+ * before writing the result. Notion rotates the refresh token on every call
+ * and treats a replay of a rotated token as theft, revoking the whole grant.
+ *
+ * The request is bounded by `TOKEN_REQUEST_TIMEOUT_MS` so it cannot outlive
+ * the caller's lock (invariant B).
  *
  * An `invalid_grant` response is raised as `NotionAuthTerminalError` so no
  * layer above can retry it.
  */
 export async function refreshTokens(tokens: NotionTokens): Promise<NotionTokens> {
   debug("refreshing access token")
-  const response = await fetch(TOKEN_ENDPOINT, {
+  const response = await oauthFetch(TOKEN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
@@ -863,7 +935,7 @@ export async function refreshTokens(tokens: NotionTokens): Promise<NotionTokens>
       client_id: tokens.clientId,
       refresh_token: tokens.refreshToken,
     }).toString(),
-  })
+  }, "Token refresh")
 
   if (!response.ok) {
     const body = await response.text()
@@ -1025,15 +1097,22 @@ export function parseAuthInput(
  *   3. RE-READ the token file, bypassing the cache. In the common contention
  *      case a peer refreshed while we queued, so there is nothing to do and
  *      we never touch the network.
- *   4. Only now refresh, then write atomically, still holding the lock.
+ *   4. Only now refresh, then RE-CHECK that we still own the lock, then
+ *      write atomically.
  *
  * If step 2 times out we fall back to a READ-ONLY reload. We would rather
  * fail the call than refresh unserialised — an unserialised refresh is how
  * the whole grant gets revoked.
  *
+ * Step 4's re-check is the belt to invariant B's braces: the bounded request
+ * timeout means a live holder should never be judged stale, but if it happens
+ * anyway (SIGSTOP, machine sleep, a clock jump) we must not write. See
+ * `recoverFromLostLock`.
+ *
  * Throws:
- *   - `NotionAuthTerminalError` when there are no tokens, or when Notion
- *     answers `invalid_grant` (in which case the store is cleared first).
+ *   - `NotionAuthTerminalError` when there are no tokens, when Notion answers
+ *     `invalid_grant`, or when the lock was lost mid-refresh (the store is
+ *     cleared first in the latter two cases).
  *   - The underlying refresh error for transient failures.
  */
 export async function getValidAccessToken(): Promise<{
@@ -1070,10 +1149,9 @@ export async function getValidAccessToken(): Promise<{
       return { token: current.accessToken, tokens: current }
     }
 
+    let refreshed: NotionTokens
     try {
-      const refreshed = await refreshTokens(current)
-      saveTokens(refreshed)
-      return { token: refreshed.accessToken, tokens: refreshed }
+      refreshed = await refreshTokens(current)
     } catch (err) {
       if (err instanceof NotionAuthTerminalError) {
         // The grant is dead. Destroy the poisoned refresh token so no peer
@@ -1082,7 +1160,55 @@ export async function getValidAccessToken(): Promise<{
       }
       throw err
     }
+
+    // We hold a freshly rotated pair — but are we still entitled to publish it?
+    if (!ownsLock(handle)) {
+      return recoverFromLostLock(current)
+    }
+
+    saveTokens(refreshed)
+    return { token: refreshed.accessToken, tokens: refreshed }
   } finally {
     releaseTokenLock(handle)
   }
+}
+
+/**
+ * Salvage the least-bad outcome after discovering our lock was broken while a
+ * refresh was in flight.
+ *
+ * We must NOT write our own rotated pair: a peer took the lock and may already
+ * have published its own rotation, and clobbering that is the documented
+ * hazard — it strands a rotated-away refresh token on disk for the next
+ * refresh to replay.
+ *
+ * Two cases:
+ *
+ *   1. A peer published (the on-disk refresh token differs from the one we
+ *      refreshed with). Its write is more recent than ours. Defer to it.
+ *   2. Nobody published. The refresh token still on disk is the one we just
+ *      rotated AWAY, so it is poison — the next refresh would replay it and
+ *      Notion would revoke the grant. Destroy it and force a clean re-auth.
+ *      That costs one /login-notion instead of the whole workspace grant.
+ */
+function recoverFromLostLock(preRefresh: NotionTokens): {
+  token: string
+  tokens: NotionTokens
+} {
+  invalidateCache()
+  const onDisk = loadTokens()
+
+  if (onDisk && onDisk.refreshToken !== preRefresh.refreshToken) {
+    debug("lock broken mid-refresh; deferring to the peer's published rotation")
+    if (!needsRefresh(onDisk)) {
+      return { token: onDisk.accessToken, tokens: onDisk }
+    }
+    throw new Error(
+      "Notion MCP: the token lock was broken mid-refresh and the peer's " +
+        "published tokens are already expired. Retry.",
+    )
+  }
+
+  clearTokens()
+  throw new NotionAuthTerminalError(LOST_LOCK_MESSAGE)
 }
