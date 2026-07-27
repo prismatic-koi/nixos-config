@@ -50,6 +50,33 @@
         each tool call (current behaviour).
       '';
     };
+    nx.programs.prism.pi.notion.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to enable the pi Notion MCP extension. When true, an entry
+        pointing into the notionExtensionDir nix-store path is added to the
+        extensions list in ~/.pi/agent/settings.json, and a
+        home.file.".pi/agent/notion-extension" entry is emitted to GC-root
+        that store path. Authentication is via /login-notion inside a pi
+        session.
+
+        This option controls only the pi-side extension and is independent
+        of the Notion MCP server (https://mcp.notion.com).
+
+        The extension implements an OAuth 2.0 Authorization Code + PKCE
+        (S256) flow against the hosted Notion MCP server, persists tokens
+        at $PI_CODING_AGENT_DIR/notion-mcp-oauth.json (mode 0o600), and
+        serialises token refreshes across concurrent pi sessions with a
+        cross-process file lock — Notion revokes the entire OAuth grant
+        if two workers refresh the same connection concurrently.
+
+        Optional runtime knob: setting NOTION_MCP_REPOS to a colon-
+        separated list of directory prefixes scopes the extension to
+        matching working directories. When unset (default), the
+        extension is unrestricted.
+      '';
+    };
   };
 
   config = lib.mkIf config.nx.programs.prism.pi.enable (
@@ -95,6 +122,17 @@
       atlassianExtensionDir = pkgs.runCommand "pi-atlassian-extension" { } ''
         mkdir -p $out
         cp -r ${./pi/extensions/atlassian}/* $out/
+      '';
+
+      # Notion MCP extension for pi — connects to mcp.notion.com via OAuth
+      # PKCE + persisted dynamic client registration, enumerates tools/list
+      # at startup (subject to the NOTION_MCP_REPOS repo-scoping gate), and
+      # registers each tool via pi.registerTool(). See
+      # pi/extensions/notion/UPSTREAM.md for the auth flow, endpoint
+      # verification, and the concurrency-critical refresh path.
+      notionExtensionDir = pkgs.runCommand "pi-notion-extension" { } ''
+        mkdir -p $out
+        cp -r ${./pi/extensions/notion}/* $out/
       '';
 
       # Prism extension for pi — a single derivation whose root contains
@@ -158,7 +196,15 @@
             # PKCE, enumerates tools/list at startup, and registers each tool.
             # Use /login-atlassian in a pi session to authenticate.
             # See pi/extensions/atlassian/UPSTREAM.md for auth method rationale.
-            "${atlassianExtensionDir}/index.ts";
+            "${atlassianExtensionDir}/index.ts"
+        ++
+          lib.optional config.nx.programs.prism.pi.notion.enable
+            # Notion MCP extension: connects to mcp.notion.com via OAuth
+            # PKCE + persisted DCR, enumerates tools/list at startup, and
+            # registers each tool. Use /login-notion in a pi session to
+            # authenticate. See pi/extensions/notion/UPSTREAM.md for the
+            # concurrency-critical refresh path.
+            "${notionExtensionDir}/index.ts";
       };
 
       colourLib = import ../../colour-scheme/lib.nix;
@@ -291,6 +337,12 @@
         # Only emitted when nx.programs.prism.pi.atlassian.enable is true.
         home.file.".pi/agent/atlassian-extension" = lib.mkIf config.nx.programs.prism.pi.atlassian.enable {
           source = atlassianExtensionDir;
+        };
+        # Notion MCP extension — GC-rooted so the nix-store path referenced
+        # in settings.json is not removed by nix-collect-garbage.
+        # Only emitted when nx.programs.prism.pi.notion.enable is true.
+        home.file.".pi/agent/notion-extension" = lib.mkIf config.nx.programs.prism.pi.notion.enable {
+          source = notionExtensionDir;
         };
 
         home.persistence."/persist" = {
