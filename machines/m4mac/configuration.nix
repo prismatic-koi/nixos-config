@@ -31,6 +31,15 @@ in
           enable = true;
           defaultCloudId = "08986a80-a6ed-4480-ae2d-4a439d50d71b";
         };
+        # Notion MCP, scoped to the Obsidian vault. Scoping keeps ~10 Notion
+        # tool schemas out of the system prompt of every code-repo session,
+        # keeps a full workspace read/write grant away from agents that have
+        # no use for it, and cuts the number of sessions competing to rotate
+        # the shared refresh token. See pi/extensions/notion/UPSTREAM.md.
+        pi.notion = {
+          enable = true;
+          repos = [ "~/Documents/obsidian" ];
+        };
         projects.isolationOverrides = {
           "~/Documents/obsidian" = "host";
         };
