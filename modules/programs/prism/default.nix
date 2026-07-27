@@ -15,6 +15,10 @@
       agent = {
         envVars = lib.mkOption {
           type = lib.types.attrsOf lib.types.str;
+          # NOTE: this is an option *default*, so a machine that defines
+          # nx.programs.prism.agent.envVars at all replaces the whole attrset
+          # rather than merging with it. No machine in this flake does, and the
+          # NOTION_MCP_REPOS entry appended at the bottom relies on that.
           default = {
             KUBECONFIG = "$HOME/.config/kube/agents-config";
             AWS_CONFIG_FILE = "$HOME/.config/aws/readonly-config";
@@ -42,7 +46,26 @@
             # uses a different sandboxing mechanism under bwrap).
             PLAYWRIGHT_MCP_SANDBOX = "false";
             GIT_EDITOR = "true";
-          };
+          }
+          //
+            lib.optionalAttrs
+              (config.nx.programs.prism.pi.notion.enable && config.nx.programs.prism.pi.notion.repos != [ ])
+              {
+                # Repo allowlist for the pi Notion MCP extension (issue #2448).
+                #
+                # This lives in agent.envVars rather than the zsh alias on
+                # purpose. The alias only reaches interactive shells; envVars is
+                # the channel that actually reaches prism-spawned agents (it is
+                # serialised as agent_env_vars in profiles.json and applied by
+                # all three isolators). ATLASSIAN_DEFAULT_CLOUD_ID goes through
+                # the alias and therefore does NOT reach spawned agents — a
+                # pre-existing gap this deliberately does not copy.
+                #
+                # Values are injected verbatim (internal/container/env.go — no
+                # shell in the loop), so a "~/" or "$HOME/" entry arrives
+                # unexpanded; notion/scope.ts::expandPath handles both forms.
+                NOTION_MCP_REPOS = lib.concatStringsSep ":" config.nx.programs.prism.pi.notion.repos;
+              };
           description = "Environment variables to set for the AI agent (pi)";
         };
 
