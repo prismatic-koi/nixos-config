@@ -1057,6 +1057,101 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 
 // ── Env vars (--setenv K V) ──────────────────────────────────────────────────
 
+// ── pi grafana MCP secret bundle (issue #2452 edge-case AC) ──────────────────
+// The pi grafana extension reads a sops-decrypted config bundle at the host
+// path delivered via the GRAFANA_MCP_CONFIG_PATH env var. bwrap must bind
+// that resolved path Dst==Src into the sandbox so the extension can open
+// the file. EvalSymlinks pins the sops-nix concrete /run/secrets.d/<N>/<name>
+// path (inode-based; safe across sops rotations).
+
+func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
+	tmp := t.TempDir()
+	concrete := filepath.Join(tmp, "concrete-grafana-config")
+	if err := os.WriteFile(concrete, []byte("GRAFANA_URL=https://x\nGRAFANA_API_KEY=k\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile concrete: %v", err)
+	}
+	symlink := filepath.Join(tmp, "grafana_config_home")
+	if err := os.Symlink(concrete, symlink); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars: map[string]string{
+			"GRAFANA_MCP_CONFIG_PATH": symlink,
+		},
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	// The resolved path must be bound Dst==Src (the extension reads through
+	// the same env var path, which is delivered verbatim into the sandbox).
+	resolved, err := filepath.EvalSymlinks(symlink)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", symlink, err)
+	}
+	if !hasROBindSrcDst(args, resolved, resolved) {
+		t.Errorf("grafana secret: want --ro-bind %q %q (Dst==Src, EvalSymlinks-resolved) in args: %v",
+			resolved, resolved, args)
+	}
+}
+
+// Negative test: when GRAFANA_MCP_CONFIG_PATH is unset (grafana disabled)
+// no grafana bind is emitted. This is the m4mac / default configuration.
+func TestBwrapBuildArgs_GrafanaSecretBind_UnsetIsNoBind(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a file that COULD be bound (to make the test robust against
+	// silent "bind any file that exists" bugs). Its path is never handed to
+	// the fixture so no bind for it should appear.
+	phantom := filepath.Join(tmp, "grafana_config_home")
+	if err := os.WriteFile(phantom, []byte("fake"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		// AgentEnvVars intentionally omits GRAFANA_MCP_CONFIG_PATH.
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasROBindSrcDst(args, phantom, phantom) {
+		t.Errorf("grafana secret: unexpected --ro-bind %q %q when GRAFANA_MCP_CONFIG_PATH is unset; args=%v",
+			phantom, phantom, args)
+	}
+}
+
+// Edge case: an unresolvable configured secret path (sops activation has not
+// yet run, or a bundle name typo) silently skips the bind so the extension
+// can fail-graceful with a ctx.ui.notify rather than the entire spawn
+// aborting on a missing bind source (bwrap ABORTs on missing --bind sources).
+func TestBwrapBuildArgs_GrafanaSecretBind_UnresolvableIsNoBind(t *testing.T) {
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:   "repo@main",
+		Worktree:      t.TempDir(),
+		AllocatedPort: 14010,
+		AgentEnvVars: map[string]string{
+			"GRAFANA_MCP_CONFIG_PATH": "/nonexistent/does/not/exist",
+		},
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasROBindSrcDst(args, "/nonexistent/does/not/exist", "/nonexistent/does/not/exist") {
+		t.Errorf("grafana secret: unresolvable path should NOT be bound; args=%v", args)
+	}
+}
+
 func TestBwrapBuildArgs_EnvVarsTranslated(t *testing.T) {
 	// Set a known env var that credentialEnvVars() will pick up.
 	t.Setenv("ANTHROPIC_API_KEY", "test-anthropic-key")

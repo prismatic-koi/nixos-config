@@ -433,6 +433,33 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	gitconfigPath := m.gitconfigFilePath()
 	args = append(args, "--ro-bind", gitconfigPath, filepath.Join(home, ".gitconfig"))
 
+	// ── pi grafana MCP secret bundle (RO, EvalSymlinks, Dst==Src, conditional) ─
+	// The pi grafana extension reads its selected sops-decrypted config
+	// bundle from the file path delivered via the GRAFANA_MCP_CONFIG_PATH
+	// env var (populated by nx.programs.prism.pi.grafana in
+	// modules/programs/prism/default.nix). Because prism's Go isolators
+	// inject agent.envVars values verbatim with no shell in the loop, the
+	// env var carries a plain absolute host path — but that path lives
+	// under /run/secrets/ (Linux system-level sops), which is NOT in the
+	// standard sandbox bind set. Bind the resolved file Dst==Src so the
+	// extension can open the same path inside the sandbox.
+	//
+	// EvalSymlinks pins the sops-nix concrete /run/secrets.d/<N>/<name>
+	// path at bind time; because bwrap bind mounts are inode-based on
+	// Linux, a sops rotation mid-session keeps the bound file readable —
+	// same rotation-safety argument as the SSH signing key bind above and
+	// the /run/secrets.d/<N> → <N+1> discussion in the top-of-block
+	// comment there.
+	//
+	// Absent / unresolvable path silently skips the bind; the extension
+	// fails-gracefully with a ctx.ui.notify on the pi side (per issue
+	// #2452 edge-case AC).
+	if grafanaPath := cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]; grafanaPath != "" {
+		if resolved, err := filepath.EvalSymlinks(grafanaPath); err == nil {
+			args = append(args, "--ro-bind", resolved, resolved)
+		}
+	}
+
 	// AWS SSO cache, AWS CLI cache, kube config, the bun transpiler cache,
 	// and the clipboard staging dir are all emitted earlier in this function
 	// via the StandardSandboxMounts walk (A2.M1) — the inline blocks that

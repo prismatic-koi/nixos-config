@@ -32,6 +32,10 @@
           enable = true;
           repos = [ "~/documents/obsidian" ];
         };
+        pi.grafana = {
+          enable = true;
+          config = "home";
+        };
       };
       chromium.enable = true;
       calibre.enable = true;

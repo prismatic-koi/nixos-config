@@ -29,6 +29,10 @@
           enable = true;
           repos = [ "~/documents/obsidian" ];
         };
+        pi.grafana = {
+          enable = true;
+          config = "home";
+        };
       };
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
