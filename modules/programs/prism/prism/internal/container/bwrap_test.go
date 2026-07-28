@@ -1070,7 +1070,7 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	tmp := t.TempDir()
 	concrete := filepath.Join(tmp, "concrete-grafana-config")
-	if err := os.WriteFile(concrete, []byte("GRAFANA_URL=https://x\nGRAFANA_API_KEY=k\n"), 0o600); err != nil {
+	if err := os.WriteFile(concrete, []byte("GRAFANA_URL=https://x\nGRAFANA_SERVICE_ACCOUNT_TOKEN=k\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile concrete: %v", err)
 	}
 	symlink := filepath.Join(tmp, "grafana_config_home")

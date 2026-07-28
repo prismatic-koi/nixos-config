@@ -4,7 +4,7 @@
 //
 //   1. Reads the selected sops config bundle from GRAFANA_MCP_CONFIG_PATH.
 //   2. Spawns the nixpkgs `mcp-grafana` binary (PI_GRAFANA_MCP_BIN) as a
-//      per-session stdio child process with GRAFANA_URL / GRAFANA_API_KEY in
+//      per-session stdio child process with GRAFANA_URL / GRAFANA_SERVICE_ACCOUNT_TOKEN in
 //      its environment.
 //   3. Performs the MCP `initialize` handshake over stdio.
 //   4. Enumerates `tools/list` and registers each returned tool via

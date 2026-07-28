@@ -22,7 +22,7 @@
 //     exits, in-flight requests reject and subsequent calls fail fast.
 //
 // SECURITY: `debug` must never log the child's env or the parsed contents
-// of GRAFANA_API_KEY. The child's stdout carries MCP JSON-RPC (tool results,
+// of GRAFANA_SERVICE_ACCOUNT_TOKEN. The child's stdout carries MCP JSON-RPC (tool results,
 // not credentials) so logging response bodies is acceptable; the child's
 // stderr is passed through to console.error so operators see server-side
 // errors verbatim.
@@ -55,11 +55,11 @@ export interface StdioMcpSessionOptions {
   binPath: string
   /** GRAFANA_URL for the child's env. */
   grafanaUrl: string
-  /** GRAFANA_API_KEY for the child's env. */
+  /** GRAFANA_SERVICE_ACCOUNT_TOKEN for the child's env. */
   grafanaApiKey: string
   /**
    * Additional env vars to pass to the child. Merged over a minimal base
-   * (PATH, HOME, plus GRAFANA_URL / GRAFANA_API_KEY). The bundle's KEY=VALUE
+   * (PATH, HOME, plus GRAFANA_URL / GRAFANA_SERVICE_ACCOUNT_TOKEN). The bundle's KEY=VALUE
    * entries beyond the two well-known keys flow through here so a future
    * bundle format extension (e.g. GRAFANA_ORG_ID) reaches the child without
    * a code change in this client.
@@ -129,7 +129,7 @@ export class StdioMcpSession {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
       HOME: process.env.HOME ?? "/tmp",
       GRAFANA_URL: opts.grafanaUrl,
-      GRAFANA_API_KEY: opts.grafanaApiKey,
+      GRAFANA_SERVICE_ACCOUNT_TOKEN: opts.grafanaApiKey,
       ...(opts.extraEnv ?? {}),
     }
     // TERM is helpful for the child's structured logger to skip colour codes;
