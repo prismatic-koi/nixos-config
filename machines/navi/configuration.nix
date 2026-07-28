@@ -25,6 +25,10 @@
       prism = {
         profile.default = "heavy";
         agent.isolation.default = "bwrap";
+        pi.notion = {
+          enable = true;
+          repos = [ "~/documents/obsidian" ];
+        };
       };
       anki.enable = false; # build broken as of 2025-08-30
       calibre.enable = true;
