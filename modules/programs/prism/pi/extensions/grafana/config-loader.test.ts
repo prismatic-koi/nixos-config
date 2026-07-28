@@ -59,7 +59,7 @@ test("parseDotenv: throws on empty key", () => {
 
 test("loadGrafanaBundle: happy path", () => {
   const { path, cleanup } = tmpFile(
-    "GRAFANA_URL=https://grafana.example\nGRAFANA_API_KEY=abc123\n",
+    "GRAFANA_URL=https://grafana.example\nGRAFANA_SERVICE_ACCOUNT_TOKEN=abc123\n",
   )
   try {
     const b = loadGrafanaBundle(path)
@@ -73,7 +73,7 @@ test("loadGrafanaBundle: happy path", () => {
 
 test("loadGrafanaBundle: extra KEY=VALUE lines flow to extraEnv", () => {
   const { path, cleanup } = tmpFile(
-    "GRAFANA_URL=https://x\nGRAFANA_API_KEY=k\nGRAFANA_ORG_ID=42\nCUSTOM=xyz\n",
+    "GRAFANA_URL=https://x\nGRAFANA_SERVICE_ACCOUNT_TOKEN=k\nGRAFANA_ORG_ID=42\nCUSTOM=xyz\n",
   )
   try {
     const b = loadGrafanaBundle(path)
@@ -84,7 +84,7 @@ test("loadGrafanaBundle: extra KEY=VALUE lines flow to extraEnv", () => {
 })
 
 test("loadGrafanaBundle: missing URL throws GrafanaConfigError", () => {
-  const { path, cleanup } = tmpFile("GRAFANA_API_KEY=k\n")
+  const { path, cleanup } = tmpFile("GRAFANA_SERVICE_ACCOUNT_TOKEN=k\n")
   try {
     assert.throws(() => loadGrafanaBundle(path), GrafanaConfigError)
   } finally {
