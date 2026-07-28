@@ -136,12 +136,13 @@ export class StdioMcpSession {
     // absent TERM is fine (mcp-grafana falls back to plain output).
     if (process.env.TERM) env.TERM = process.env.TERM
 
-    // Explicitly pass no transport argument — mcp-grafana defaults to stdio
-    // when invoked with no `-transport` flag. See `mcp-grafana --help`:
-    // "-transport string  Transport type (stdio, sse or streamable-http)
-    //  (default \"stdio\")".
+    // Pass `-log-level error` to suppress the child's INFO startup logs
+    // (e.g. "Using Grafana configuration", "no MCP datasources discovered").
+    // Stdio remains the default transport — no `-transport` argument is needed.
+    // See `mcp-grafana --help` for available log levels: debug|info|warn|error
+    // (default info).
     debug("spawning", opts.binPath)
-    const child = spawn(opts.binPath, [], {
+    const child = spawn(opts.binPath, ["-log-level", "error"], {
       env,
       stdio: ["pipe", "pipe", "pipe"],
     })
