@@ -2,7 +2,7 @@
 //
 // The bundle is a dotenv-style KEY=VALUE file — see UPSTREAM.md ("Config
 // bundle in sops"). This module reads the file, parses the two well-known
-// keys (GRAFANA_URL, GRAFANA_API_KEY), and returns them alongside any
+// keys (GRAFANA_URL, GRAFANA_SERVICE_ACCOUNT_TOKEN), and returns them alongside any
 // unrecognised KEY=VALUE lines that a future bundle format might introduce.
 //
 // SECURITY: the returned api_key is a live credential. Never log
@@ -96,17 +96,17 @@ export function loadGrafanaBundle(path: string): GrafanaBundle {
   }
 
   const url = kv["GRAFANA_URL"] ?? ""
-  const apiKey = kv["GRAFANA_API_KEY"] ?? ""
+  const apiKey = kv["GRAFANA_SERVICE_ACCOUNT_TOKEN"] ?? ""
   if (url === "") {
     throw new GrafanaConfigError(`config at ${path}: missing GRAFANA_URL`)
   }
   if (apiKey === "") {
-    throw new GrafanaConfigError(`config at ${path}: missing GRAFANA_API_KEY`)
+    throw new GrafanaConfigError(`config at ${path}: missing GRAFANA_SERVICE_ACCOUNT_TOKEN`)
   }
 
   const extraEnv: Record<string, string> = {}
   for (const [k, v] of Object.entries(kv)) {
-    if (k === "GRAFANA_URL" || k === "GRAFANA_API_KEY") continue
+    if (k === "GRAFANA_URL" || k === "GRAFANA_SERVICE_ACCOUNT_TOKEN") continue
     extraEnv[k] = v
   }
 

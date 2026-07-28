@@ -26,7 +26,7 @@ kind, not degree:
 - Session lifecycle: bound to the child process. When the child exits, the
   session is dead — there is no `Mcp-Session-Id` to replay.
 - Auth: no bearer token, no refresh flow. The binary reads `GRAFANA_URL` and
-  `GRAFANA_API_KEY` from its own process environment at startup.
+  `GRAFANA_SERVICE_ACCOUNT_TOKEN` from its own process environment at startup.
 
 ## Config bundle in sops
 
@@ -42,7 +42,7 @@ The bundle format is `KEY=VALUE` lines (dotenv-style), one per line:
 
 ```
 GRAFANA_URL=<grafana-instance-url>
-GRAFANA_API_KEY=<service-account-token>
+GRAFANA_SERVICE_ACCOUNT_TOKEN=<service-account-token>
 ```
 
 The extension reads the file at session_start, parses it line-by-line, and
