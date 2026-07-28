@@ -86,9 +86,12 @@
               # agent.envVars (not sessionVariables) for the same reason
               # NOTION_MCP_REPOS is: only agent.envVars reaches
               # prism-spawned bwrap agents. The bwrap isolator additionally
-              # binds the resolved path Dst==Src into the sandbox
-              # (internal/container/bwrap.go) so the extension can open the
-              # file inside the sandbox namespace.
+              # binds the sops-resolved concrete file at THIS env-var path
+              # (Src=EvalSymlinks(secretPath), Dst=secretPath — same shape
+              # as the AWS/kube XDG binds in mounts.go) so
+              # readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) inside
+              # the sandbox resolves to the concrete file. See
+              # internal/container/bwrap.go for the full Src≠Dst rationale.
               GRAFANA_MCP_CONFIG_PATH = secretPath;
               # Absolute Nix-store path to the mcp-grafana binary. Baked in
               # at eval time so the extension has no PATH dependency inside
