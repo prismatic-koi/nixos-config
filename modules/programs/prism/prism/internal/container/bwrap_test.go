@@ -1058,11 +1058,14 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 // ── Env vars (--setenv K V) ──────────────────────────────────────────────────
 
 // ── pi grafana MCP secret bundle (issue #2452 edge-case AC) ──────────────────
-// The pi grafana extension reads a sops-decrypted config bundle at the host
-// path delivered via the GRAFANA_MCP_CONFIG_PATH env var. bwrap must bind
-// that resolved path Dst==Src into the sandbox so the extension can open
-// the file. EvalSymlinks pins the sops-nix concrete /run/secrets.d/<N>/<name>
-// path (inode-based; safe across sops rotations).
+// The pi grafana extension reads a sops-decrypted config bundle from the
+// path delivered via GRAFANA_MCP_CONFIG_PATH (typically the sops-nix
+// symlink /run/secrets/<name>). bwrap must bind the resolved concrete file
+// at the env-var-referenced path (Src=resolved, Dst=env-var-path) so the
+// extension can open the env-var path inside the sandbox namespace.
+// Same shape as the AWS / kube XDG binds in mounts.go (see the Src≠Dst
+// discussion in bwrap.go for why binding Dst==Src silently breaks the
+// extension).
 
 func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	tmp := t.TempDir()
@@ -1088,15 +1091,32 @@ func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	// The resolved path must be bound Dst==Src (the extension reads through
-	// the same env var path, which is delivered verbatim into the sandbox).
+	// Src is the EvalSymlinks-resolved concrete file (sops rotation safety);
+	// Dst is the env-var-referenced path exactly (so the extension's
+	// readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) inside the sandbox
+	// resolves to a real file). The two paths MUST differ here — that is
+	// the whole point of the EvalSymlinks pinning + logical-path Dst
+	// pattern used throughout mounts.go.
 	resolved, err := filepath.EvalSymlinks(symlink)
 	if err != nil {
 		t.Fatalf("EvalSymlinks(%q): %v", symlink, err)
 	}
-	if !hasROBindSrcDst(args, resolved, resolved) {
-		t.Errorf("grafana secret: want --ro-bind %q %q (Dst==Src, EvalSymlinks-resolved) in args: %v",
-			resolved, resolved, args)
+	if resolved == symlink {
+		t.Fatalf("fixture invariant broken: EvalSymlinks(%q) == %q; the symlink and its target must differ so the test can distinguish Dst=env-var-path from Dst=resolved-path", symlink, resolved)
+	}
+	if !hasROBindSrcDst(args, resolved, symlink) {
+		t.Errorf("grafana secret: want --ro-bind %q %q (Src=EvalSymlinks-resolved, Dst=env-var path) in args: %v",
+			resolved, symlink, args)
+	}
+	// Defence against a regression to the earlier Dst==Src shape, which
+	// would pass the invariant check above but leave the env-var path
+	// unreachable inside the sandbox. The extension calls
+	// readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH); a Dst==resolved
+	// bind only creates /path/to/concrete-file inside the sandbox, not
+	// /path/to/symlink.
+	if hasROBindSrcDst(args, resolved, resolved) {
+		t.Errorf("grafana secret: unexpected --ro-bind %q %q (Dst==Src) — the extension reads process.env.GRAFANA_MCP_CONFIG_PATH which points at the symlink %q, so Dst must equal that env-var path, not the resolved concrete path; args=%v",
+			resolved, resolved, symlink, args)
 	}
 }
 

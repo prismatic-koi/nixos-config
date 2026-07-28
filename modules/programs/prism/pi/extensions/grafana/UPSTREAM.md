@@ -72,10 +72,17 @@ the token off disk-plaintext AND make it reachable inside bwrap is to bind
 the sops-decrypted file itself and let the extension parse it.
 
 The bind is added by `internal/container/bwrap.go`, which reads
-`cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]` and emits an
-`--ro-bind <resolved> <resolved>` Dst==Src pair (EvalSymlinks-resolved for
-sops rotation safety, mirroring the SSH signing-key bind). When the env var
-is unset (grafana disabled), the bind is a no-op.
+`cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]` and emits
+`--ro-bind <EvalSymlinks(env-var-path)> <env-var-path>` (Src≠Dst — same
+shape as the AWS / kube XDG binds in `mounts.go`). Src is the sops-resolved
+concrete file at `/run/secrets.d/<N>/<name>` (EvalSymlinks pins the inode
+for mid-session sops rotation safety, mirroring the SSH signing-key bind).
+Dst is the env-var path exactly — the sops-nix symlink `/run/secrets/<name>`
+— so the extension's `readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH)`
+finds a real file at that path inside the sandbox. Binding Dst==Src (as an
+earlier iteration did) leaves the env-var path unreachable in the sandbox
+namespace and every session ENOENTs silently. When the env var is unset
+(grafana disabled) the bind is a no-op.
 
 ## Sandbox-exec (Darwin) — not supported in v1
 
