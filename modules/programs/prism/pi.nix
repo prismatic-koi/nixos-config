@@ -66,6 +66,46 @@
         OAuth grant fixes the workspace, so there is nothing to select.
       '';
     };
+    nx.programs.prism.pi.grafana.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to enable the pi Grafana MCP extension. When true, an entry
+        pointing into the grafanaExtensionDir nix-store path is added to the
+        extensions list in ~/.pi/agent/settings.json, a
+        home.file.".pi/agent/grafana-extension" entry is emitted to GC-root
+        that store path, and a sops-nix secret is declared for the selected
+        config bundle. GRAFANA_MCP_CONFIG_PATH and PI_GRAFANA_MCP_BIN are
+        appended to nx.programs.prism.agent.envVars so both values reach
+        prism-spawned bwrap agents (agent.envVars is injected verbatim by
+        prism's Go isolators; a `$(cat <path>)` sessionVariables shape would
+        silently break inside a bwrap sandbox).
+
+        Selecting which sops bundle to use is controlled by
+        nx.programs.prism.pi.grafana.config below.
+
+        Linux-only in v1. Enabling on Darwin under sandbox-exec is rejected
+        via an assertion because the sandbox-exec profile denies the entire
+        ~/.config/sops-nix/secrets subtree with a hand-maintained allowlist
+        (collectSecretsDAllowlistNames in internal/container/sandbox_exec.go)
+        — adding grafana to that allowlist is a deliberate audit-required
+        follow-up. Darwin under host-mode isolation is allowed.
+      '';
+    };
+    nx.programs.prism.pi.grafana.config = lib.mkOption {
+      type = lib.types.str;
+      default = "home";
+      example = "work";
+      description = ''
+        Name of the sops config bundle to use for the Grafana MCP extension.
+        Maps to the sops key `grafana_config_<value>` inside
+        modules/programs/prism/secrets/grafana.sops.yaml. Adding a new
+        instance is a new bundle entry plus a one-line change here on the
+        relevant machine; no schema change.
+
+        Only meaningful when nx.programs.prism.pi.grafana.enable is true.
+      '';
+    };
     nx.programs.prism.pi.notion.repos = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -152,6 +192,17 @@
         cp -r ${./pi/extensions/notion}/* $out/
       '';
 
+      # Grafana MCP extension for pi — spawns the nixpkgs mcp-grafana Go
+      # binary as a per-session stdio child, enumerates tools/list, and
+      # registers each returned tool via pi.registerTool(). Unlike the
+      # atlassian and notion clients this is a stdio MCP transport, not
+      # Streamable HTTP; see pi/extensions/grafana/UPSTREAM.md for the
+      # rationale and the sandbox-reachability discussion.
+      grafanaExtensionDir = pkgs.runCommand "pi-grafana-extension" { } ''
+        mkdir -p $out
+        cp -r ${./pi/extensions/grafana}/* $out/
+      '';
+
       # Prism extension for pi — a single derivation whose root contains
       # prism.ts. This path is wired into config.json via piExtensionDir so
       # prism can locate the extension at spawn time.
@@ -222,7 +273,17 @@
             # authenticate. Scope it per-repo with pi.notion.repos.
             # See pi/extensions/notion/UPSTREAM.md for auth method rationale
             # and the refresh-token rotation hazard.
-            "${notionExtensionDir}/index.ts";
+            "${notionExtensionDir}/index.ts"
+        ++
+          lib.optional config.nx.programs.prism.pi.grafana.enable
+            # Grafana MCP extension: spawns the nixpkgs mcp-grafana Go binary
+            # as a per-session stdio child, enumerates tools/list at startup,
+            # and registers each tool. Reads the selected sops config bundle
+            # via GRAFANA_MCP_CONFIG_PATH (injected into the sandbox by
+            # internal/container/bwrap.go). See pi/extensions/grafana/UPSTREAM.md
+            # for the stdio-vs-HTTP rationale and the sandbox-reachability
+            # discussion.
+            "${grafanaExtensionDir}/index.ts";
       };
 
       colourLib = import ../../colour-scheme/lib.nix;
@@ -361,6 +422,12 @@
         # Only emitted when nx.programs.prism.pi.notion.enable is true.
         home.file.".pi/agent/notion-extension" = lib.mkIf config.nx.programs.prism.pi.notion.enable {
           source = notionExtensionDir;
+        };
+        # Grafana MCP extension — GC-rooted so the nix-store path referenced
+        # in settings.json is not removed by nix-collect-garbage. Only
+        # emitted when nx.programs.prism.pi.grafana.enable is true.
+        home.file.".pi/agent/grafana-extension" = lib.mkIf config.nx.programs.prism.pi.grafana.enable {
+          source = grafanaExtensionDir;
         };
 
         home.persistence."/persist" = {

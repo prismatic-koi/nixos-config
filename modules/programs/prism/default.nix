@@ -65,7 +65,41 @@
                 # shell in the loop), so a "~/" or "$HOME/" entry arrives
                 # unexpanded; notion/scope.ts::expandPath handles both forms.
                 NOTION_MCP_REPOS = lib.concatStringsSep ":" config.nx.programs.prism.pi.notion.repos;
-              };
+              }
+          // lib.optionalAttrs config.nx.programs.prism.pi.grafana.enable (
+            let
+              secretName = "grafana_config_${config.nx.programs.prism.pi.grafana.config}";
+              # Cross-platform sops-secret path resolution mirrors
+              # container-tokens.nix: on Linux the system-level sops-nix
+              # secret lives under /run/secrets/, while on Darwin home-manager
+              # sops-nix places it under ~/.config/sops-nix/secrets/.
+              secretPath =
+                if pkgs.stdenv.isLinux then
+                  config.sops.secrets.${secretName}.path
+                else
+                  config.home-manager.users.${config.nx.username}.sops.secrets.${secretName}.path;
+            in
+            {
+              # Absolute host path to the sops-decrypted Grafana config
+              # bundle. The pi grafana extension reads this file at
+              # session_start via config-loader.ts. Delivered via
+              # agent.envVars (not sessionVariables) for the same reason
+              # NOTION_MCP_REPOS is: only agent.envVars reaches
+              # prism-spawned bwrap agents. The bwrap isolator additionally
+              # binds the sops-resolved concrete file at THIS env-var path
+              # (Src=EvalSymlinks(secretPath), Dst=secretPath — same shape
+              # as the AWS/kube XDG binds in mounts.go) so
+              # readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) inside
+              # the sandbox resolves to the concrete file. See
+              # internal/container/bwrap.go for the full Src≠Dst rationale.
+              GRAFANA_MCP_CONFIG_PATH = secretPath;
+              # Absolute Nix-store path to the mcp-grafana binary. Baked in
+              # at eval time so the extension has no PATH dependency inside
+              # the sandbox. bwrap already ro-binds /nix/store, so no extra
+              # binds are needed for the binary itself.
+              PI_GRAFANA_MCP_BIN = "${pkgs.mcp-grafana}/bin/mcp-grafana";
+            }
+          );
           description = "Environment variables to set for the AI agent (pi)";
         };
 
@@ -220,6 +254,7 @@
     ./container-tokens.nix
     ./neovim
     ./pi.nix
+    ./pi/grafana-secret.nix
     ./profiles.nix
     ./secrets.nix
     ./tmux.nix

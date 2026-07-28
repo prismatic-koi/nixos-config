@@ -433,6 +433,42 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	gitconfigPath := m.gitconfigFilePath()
 	args = append(args, "--ro-bind", gitconfigPath, filepath.Join(home, ".gitconfig"))
 
+	// ── pi grafana MCP secret bundle (RO, EvalSymlinks, Src≠Dst, conditional) ─
+	// The pi grafana extension reads its selected sops-decrypted config
+	// bundle from the file path delivered via the GRAFANA_MCP_CONFIG_PATH
+	// env var (populated by nx.programs.prism.pi.grafana in
+	// modules/programs/prism/default.nix). Because prism's Go isolators
+	// inject agent.envVars values verbatim with no shell in the loop, the
+	// env var carries a plain absolute host path — typically the sops-nix
+	// symlink `/run/secrets/<name>` on Linux — and the extension calls
+	// readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) inside the sandbox.
+	//
+	// Src≠Dst is load-bearing here: the env-var value IS the sops symlink,
+	// but /run/secrets/ is not part of any other bind, so the symlink path
+	// only exists inside the sandbox because THIS bind creates it. Emit
+	// Src = EvalSymlinks(sops symlink) = /run/secrets.d/<N>/<name>
+	// (concrete file), Dst = the env-var path itself. bwrap auto-creates
+	// the mount point and its parent directory. Same shape as the AWS /
+	// kube XDG binds in mounts.go: Src is the sops-resolved concrete file;
+	// Dst is the stable path the env var references. Binding Dst==Src
+	// (as an earlier iteration of this block did) leaves the extension's
+	// env-var path unreachable inside the sandbox — readFileSync ENOENTs
+	// and no tools ever register.
+	//
+	// EvalSymlinks pins the sops-nix concrete /run/secrets.d/<N>/<name>
+	// path at bind time; because bwrap bind mounts are inode-based on
+	// Linux, a sops rotation mid-session keeps the bound file readable —
+	// same rotation-safety argument as the SSH signing key bind above.
+	//
+	// Absent / unresolvable path silently skips the bind; the extension
+	// fails-gracefully with a ctx.ui.notify on the pi side (per issue
+	// #2452 edge-case AC).
+	if grafanaPath := cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]; grafanaPath != "" {
+		if resolved, err := filepath.EvalSymlinks(grafanaPath); err == nil {
+			args = append(args, "--ro-bind", resolved, grafanaPath)
+		}
+	}
+
 	// AWS SSO cache, AWS CLI cache, kube config, the bun transpiler cache,
 	// and the clipboard staging dir are all emitted earlier in this function
 	// via the StandardSandboxMounts walk (A2.M1) — the inline blocks that
