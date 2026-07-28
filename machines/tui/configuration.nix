@@ -25,7 +25,14 @@
       wallpaper.variant = "enso-6colour";
     };
     programs = {
-      prism.profile.default = "standard";
+      prism = {
+        profile.default = "standard";
+        agent.isolation.default = "bwrap";
+        pi.notion = {
+          enable = true;
+          repos = [ "~/documents/obsidian" ];
+        };
+      };
       chromium.enable = true;
       calibre.enable = true;
       darktable.enable = true;
