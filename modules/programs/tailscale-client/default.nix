@@ -2,9 +2,9 @@
 #
 # Part of the fleet telemetry train (issues #2458 / #2459). This module is
 # the CLIENT-side seam: the control server, subnet router, and ACL policy
-# (which grants `tag:nixos` reach into prometheus:9090 and loki:3100) live
-# in the home-ops repo and are already deployed at PR time. Here we only
-# enrol navi, tui, and m4mac as tailnet nodes.
+# (which grants reach into prometheus:9090 and loki:3100) live in the
+# home-ops repo and are already deployed at PR time. Here we only enrol
+# navi, tui, and m4mac as tailnet nodes. Nodes enrol untagged; see #2467.
 #
 # Notes on wgnord: `modules/programs/wgnord.nix` is the NordVPN exit
 # client — completely unrelated to this module. We mirror its structural
@@ -46,11 +46,10 @@
 #   tailscale up \
 #     --login-server="$(cat <url-file>)" \
 #     --auth-key="$(cat <key-file>)" \
-#     --advertise-tags=tag:nixos \
 #     --accept-routes
 #
-# `--advertise-tags` and `--accept-routes` are non-secret and hard-coded
-# in the unit. The state-loop pattern is lifted from the built-in
+# `--accept-routes` is non-secret and hard-coded in the unit. The
+# state-loop pattern is lifted from the built-in
 # `tailscaled-autoconnect.service` in nixpkgs — we only run
 # `tailscale up` when BackendState is `NeedsLogin`, `NeedsMachineAuth`,
 # or `Stopped`, and exit cleanly (via `systemd-notify --ready` on Linux)
@@ -117,7 +116,6 @@ let
   # Common baseline flags. These are non-secret and safe to bake into
   # the unit script (i.e. visible in /nix/store).
   baselineFlags = [
-    "--advertise-tags=tag:nixos"
     "--accept-routes"
   ];
   baselineFlagsStr = lib.concatStringsSep " " baselineFlags;
