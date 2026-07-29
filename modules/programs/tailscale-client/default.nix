@@ -159,6 +159,30 @@ in
         # the NixOS module, not the nix-darwin module).
         networking.firewall.checkReversePath = "loose";
 
+        # Persist tailscaled state across reboots on impermanent hosts.
+        # navi and tui both wipe the root btrfs subvolume every boot
+        # (see modules/system/impermanence.nix — nx.system.impermanence
+        # defaults to enabled on Linux). Without persistence, every
+        # reboot re-hits the state loop's `NeedsLogin` branch and:
+        #
+        #   * with a single-use preauth key, enrolment fails after the
+        #     first boot (the key was consumed); or
+        #   * with a reusable preauth key, the host registers as a new
+        #     duplicate node (navi, navi-1, navi-2, …) with a fresh
+        #     tailnet IP, breaking MagicDNS and any Prometheus target
+        #     list keyed on the tailnet address.
+        #
+        # tailscaled's systemd unit sets `StateDirectory=tailscale`, so
+        # the persistent files live at /var/lib/tailscale/ (chiefly
+        # tailscaled.state, which holds the node identity keys).
+        # Mirroring the wgnord and libvirt precedents elsewhere in
+        # this repo.
+        environment.persistence."/persist/system" = {
+          directories = [
+            "/var/lib/tailscale"
+          ];
+        };
+
         # Custom autoconnect unit — reads both secrets at runtime and
         # runs `tailscale up` against headscale. Lifted from the state
         # loop in nixpkgs' tailscaled-autoconnect.service.
