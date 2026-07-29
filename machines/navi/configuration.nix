@@ -47,6 +47,7 @@
       wgnord.enable = true;
     };
     services = {
+      alloy.enable = true;
       flakeUpdateNotifier = {
         enable = true;
         notifyOnWake = true;

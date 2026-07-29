@@ -68,6 +68,7 @@ in
       rofi.enable = true; # For shopping list script (uses choose on Darwin)
     };
     services = {
+      alloy.enable = true;
       flakeUpdateNotifier.enable = true;
       syncthing = {
         enable = true;
