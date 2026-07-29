@@ -1,6 +1,7 @@
 { pkgs, lib, ... }:
 {
   imports = [
+    ./alloy
     ./battery-monitor.nix
     ./blocky.nix
     ./flake-update-notifier.nix
