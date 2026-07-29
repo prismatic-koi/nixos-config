@@ -116,6 +116,7 @@ let
   # Common baseline flags. These are non-secret and safe to bake into
   # the unit script (i.e. visible in /nix/store).
   baselineFlags = [
+    "--reset"
     "--accept-routes"
   ];
   baselineFlagsStr = lib.concatStringsSep " " baselineFlags;
