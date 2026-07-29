@@ -118,6 +118,7 @@ let
   baselineFlags = [
     "--reset"
     "--accept-routes"
+    "--accept-dns=true"
   ];
   baselineFlagsStr = lib.concatStringsSep " " baselineFlags;
 in
