@@ -116,6 +116,12 @@
 
   services.hardware.openrgb.enable = true;
 
+  # QMK/STM32 DFU bootloader access for active-seat user
+  services.udev.extraRules = ''
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="2972", ATTRS{idProduct}=="0047", TAG+="uaccess"
+    SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", TAG+="uaccess"
+  '';
+
   # display settigs for hyprland
   home-manager.users.ben.wayland.windowManager.hyprland.settings = {
     monitor = [
