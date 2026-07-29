@@ -116,11 +116,24 @@
 
   services.hardware.openrgb.enable = true;
 
-  # QMK/STM32 DFU bootloader access for active-seat user
-  services.udev.extraRules = ''
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="2972", ATTRS{idProduct}=="0047", TAG+="uaccess"
-    SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", TAG+="uaccess"
-  '';
+  # QMK/STM32 DFU bootloader access for active-seat user.
+  #
+  # This must ship via services.udev.packages, not services.udev.extraRules:
+  # extraRules is hardcoded (in nixpkgs) to land in /etc/udev/rules.d/99-local.rules,
+  # which sorts AFTER systemd's 70-uaccess.rules. Since 70-uaccess.rules is what
+  # turns TAG+="uaccess" into an actual ACL, a tag set in a 99- file never takes
+  # effect. Shipping the rule in a 60- file sorts it before 70-uaccess.rules,
+  # so the tag is present when uaccess evaluates it.
+  services.udev.packages = [
+    (pkgs.writeTextFile {
+      name = "qmk-dfu-udev-rules";
+      destination = "/etc/udev/rules.d/60-qmk-dfu.rules";
+      text = ''
+        SUBSYSTEM=="usb", ATTRS{idVendor}=="2972", ATTRS{idProduct}=="0047", TAG+="uaccess"
+        SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", TAG+="uaccess"
+      '';
+    })
+  ];
 
   # display settigs for hyprland
   home-manager.users.ben.wayland.windowManager.hyprland.settings = {
