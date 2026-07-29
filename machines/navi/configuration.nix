@@ -43,6 +43,7 @@
       obsidian.enable = true;
       picard.enable = true;
       rclone.enable = true;
+      tailscaleClient.enable = true;
       wgnord.enable = true;
     };
     services = {

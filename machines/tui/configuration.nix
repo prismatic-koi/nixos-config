@@ -45,6 +45,7 @@
       homeAutomation.enable = true;
       obsidian.enable = true;
       picard.enable = true;
+      tailscaleClient.enable = true;
       wgnord.enable = true;
     };
     services = {

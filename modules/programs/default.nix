@@ -42,6 +42,7 @@
     ./rmpc.nix
     ./signal.nix
     ./ssh.nix
+    ./tailscale-client
     ./vimiv.nix
     ./virt-manager.nix
     ./wgnord.nix
