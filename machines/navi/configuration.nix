@@ -116,7 +116,7 @@
 
   services.hardware.openrgb.enable = true;
 
-  # QMK/STM32 DFU bootloader access for active-seat user.
+  # STM32 system-DFU bootloaders (stm32-dfu) - allow the active-seat user to flash without root.
   #
   # This must ship via services.udev.packages, not services.udev.extraRules:
   # extraRules is hardcoded (in nixpkgs) to land in /etc/udev/rules.d/99-local.rules,
@@ -129,7 +129,6 @@
       name = "qmk-dfu-udev-rules";
       destination = "/etc/udev/rules.d/60-qmk-dfu.rules";
       text = ''
-        SUBSYSTEM=="usb", ATTRS{idVendor}=="2972", ATTRS{idProduct}=="0047", TAG+="uaccess"
         SUBSYSTEM=="usb", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="df11", TAG+="uaccess"
       '';
     })
