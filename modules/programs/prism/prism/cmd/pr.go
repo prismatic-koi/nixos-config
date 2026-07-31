@@ -425,7 +425,7 @@ func init() {
 	addPromptFlags(prCmd)
 	prCmd.Flags().String("agent", "", `Agent to use (default: "coordinator" on main, "worker" otherwise)`)
 	prCmd.Flags().Bool("attach", false, "Switch the current tmux client to the new session")
-	prCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	prCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	prCmd.Flags().String("profile", "", "Model profile name from ~/.config/prism/profiles.json (e.g. anthropic, gemini-hybrid)")
 	prCmd.Flags().String("model", "", "Model identifier override (e.g. anthropic/claude-sonnet-4-6); overrides profile's primary model")
 	prCmd.Flags().String("variant", "", "Model variant override for all agents (e.g. high, max, minimal)")

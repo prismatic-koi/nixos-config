@@ -227,6 +227,16 @@ const DefaultBwrapConcurrencyCap = 50
 // sandboxExecConcurrencyCap option (written to config.json). Zero means uncapped.
 const DefaultSandboxExecConcurrencyCap = 50
 
+// IgnoreConcurrencyCapHelp is the shared help text for the
+// --ignore-concurrency-cap flag on spawn, pr, and review. It is
+// mode-neutral (the cap counts active sessions, not "containers" — prism
+// has no container isolation mode) and value-neutral (the cap is
+// configurable per machine and per isolation mode via bwrapConcurrencyCap /
+// sandboxExecConcurrencyCap, so the description must not hardcode a number
+// that can drift from the configured cap).
+const IgnoreConcurrencyCapHelp = "Bypass the soft per-isolation-mode concurrency cap on active sessions " +
+	"(see bwrapConcurrencyCap / sandboxExecConcurrencyCap, default 50, 0 means uncapped)"
+
 // DefaultAgentMaxOpenFilesSoft / DefaultAgentMaxOpenFilesHard are the
 // compiled-in default RLIMIT_NOFILE (soft, hard) caps for agent processes
 // spawned via the bwrap and sandbox-exec exec paths (Layer 1 FD isolation,

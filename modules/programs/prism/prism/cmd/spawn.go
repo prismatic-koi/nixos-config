@@ -322,7 +322,7 @@ func init() {
 	spawnCmd.Flags().String("isolation", "", "Isolation mode: bwrap, sandbox-exec, or host (default: from ~/.config/prism/config.json)")
 	spawnCmd.Flags().Bool("containers", false, "Enable the per-session filtering podman API socket proxy (containers feature, #2317). Default: off. Combine with bwrap or sandbox-exec isolation; host mode bypasses the proxy.")
 	spawnCmd.Flags().String("harness", "pi", "Agent harness to use; valid values are determined by registered harnesses")
-	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	spawnCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	spawnCmd.Flags().Bool("wait", false, "Block until the spawned agent finishes its initial prompt. Without --wait, returns immediately.")
 	spawnCmd.Flags().Duration("wait-timeout", defaultSpawnWaitTimeout, "Timeout for --wait. Ignored when --wait is not set.")
 	spawnCmd.Flags().Bool("json", false, "Emit the terminal status as a JSON object on stdout (only useful with --wait). Suppresses textual output.")
