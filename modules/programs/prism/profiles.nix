@@ -170,18 +170,18 @@
               {
                 coordinator = slot "coordinator" {
                   provider = "anthropic";
-                  model = "anthropic/claude-opus-4-8";
+                  model = "anthropic/claude-opus-5";
                   thinking = "medium";
                 };
               }
               // reviewSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "medium";
               }
               // analyticalSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-4-8";
                 thinking = "low";
               }
             );
@@ -189,29 +189,15 @@
             max = profileFromSlots {
               _default = slot "worker" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-5";
                 thinking = "xhigh";
               };
               coordinator = slot "coordinator" {
                 provider = "anthropic";
-                model = "anthropic/claude-opus-4-7";
+                model = "anthropic/claude-opus-5";
                 thinking = "xhigh";
               };
             };
-
-            fable-max = profileFromSlots {
-              _default = slot "worker" {
-                provider = "anthropic";
-                model = "anthropic/claude-fable-5";
-                thinking = "xhigh";
-              };
-              coordinator = slot "coordinator" {
-                provider = "anthropic";
-                model = "anthropic/claude-fable-5";
-                thinking = "xhigh";
-              };
-            };
-
           };
 
           quickProfiles = {
