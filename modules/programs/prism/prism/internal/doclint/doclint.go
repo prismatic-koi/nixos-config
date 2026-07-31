@@ -34,22 +34,32 @@ import (
 	"strings"
 )
 
-// Finding records a single unresolved backticked token.
+// Finding records a single doclint failure. Two categories share this
+// shape: identifier-resolution findings (Category="" or "unresolved")
+// and ASD-STE100 prose findings (Category="ste").
 type Finding struct {
-	File  string // absolute path
-	Line  int    // 1-based
-	Token string // the backticked text, stripped of trailing punctuation
-	Rule  string // resolution rule that was attempted
-	Note  string // human-readable diagnostic
+	File     string // absolute path
+	Line     int    // 1-based
+	Token    string // the offending text (backticked token or matched prose)
+	Rule     string // resolution rule or STE rule tag (e.g. ste-3.2-modal)
+	Note     string // human-readable diagnostic
+	Category string // "" / "unresolved" for identifier findings, "ste" for prose
 }
 
-// String formats a Finding for test output.
+// String formats a Finding for test output. Preserves the shape used by
+// the identifier scan ("unresolved `token` (rule=X): note") and reports
+// STE findings with an "ste" verb so the two kinds are distinguishable
+// at a glance.
 func (f Finding) String() string {
 	rel := f.File
 	if abs, err := filepath.Abs(f.File); err == nil {
 		rel = abs
 	}
-	return fmt.Sprintf("%s:%d: unresolved `%s` (rule=%s): %s", rel, f.Line, f.Token, f.Rule, f.Note)
+	verb := "unresolved"
+	if f.Category == "ste" {
+		verb = "ste"
+	}
+	return fmt.Sprintf("%s:%d: %s `%s` (rule=%s): %s", rel, f.Line, verb, f.Token, f.Rule, f.Note)
 }
 
 // Scan performs the doclint scan against the given roots.
