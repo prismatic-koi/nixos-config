@@ -90,7 +90,7 @@ Rules:
 
 ### Worked example
 
-Work item: "Add a `--dry-run` flag to the deploy command that prints the resources deploy targets, without executing."
+Work item: "Add a `--dry-run` flag to the deploy command that prints the resources deploy targets, without executing them."
 
 ```
 - [ ] [functional] Running `deploy --dry-run` prints the list of resources that would be deployed and exits 0.
