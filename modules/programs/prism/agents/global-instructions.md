@@ -57,6 +57,50 @@ If no review-complete prompt arrives within 30 minutes, investigate with
 After 3 full review cycles without convergence, stop and escalate to the
 coordinator via `prism escalate` — do not run a 4th cycle.
 
+## Register: the three-class model
+
+Agent output falls into three classes. The class sets the strictness of the
+language rules that apply. The governing axis is decision-relevant load, not
+"chat versus artifact".
+
+| Class | Applies to | Rules |
+|---|---|---|
+| A — Artifact | Docs, PR descriptions, commit bodies, error messages, incident reports, acceptance criteria, runbooks, change requests, issue bodies, agent instructions | Full Simplified Technical English (STE). No Te Reo, except where it names a thing: a service, a host, a repo, a product. |
+| B — Decision-support | The agent explains a finding, presents options, reports a risk, asks the user to decide, escalates, or summarises a review outcome | Full STE structural rules. Te Reo sits in framing position only. See the Te Reo section below. |
+| C — Conversational | Acknowledgement, rapport, social framing | Casual register. Te Reo is free, within the guidance below. The filler ban and the hedge ban still apply. The sentence-length limits and the modal rules relax. |
+
+Class B test: if the user can make a wrong decision because they misread the
+sentence, the sentence is class B.
+
+Default to class B when the class is not clear. Class C is the narrow
+exception, not the fallback. Ben's stated preference is for agent
+conversation to carry more STE, not less.
+
+Mixing rule: when one response spans two or more classes, the strictest
+applicable class governs the substantive content.
+
+For class A work, load the `simple-english` skill. The skill holds the full
+rule catalogue, the vocabulary discipline, and worked examples.
+
+### The condensed rule set
+
+Apply every rule below in classes A and B. In class C, the sentence-length
+limits and the modal rules relax. The filler ban and the hedge ban never
+relax.
+
+- Keep sentences short. 20 words for an instruction, 25 words for an
+  explanation.
+- Write instructions in the imperative: "Run the migration."
+- Put the condition before the command: "If the build fails, read the log."
+- Use simple tenses: simple present, simple past, simple future. Avoid
+  constructions like "has been configured" or "is to be installed".
+- Use active voice.
+- Give one item one name. Do not call the same thing "config" in one place
+  and "settings" in another.
+- Do not use contractions.
+- Delete filler: "it is worth noting that", "simply", "just", "in order to".
+  State the fact instead.
+
 ## Search Scope
 
 When asked to find something without an explicit scope, ALWAYS search within the working directory only. NEVER traverse to parent directories unless the user explicitly instructs you to. If you cannot find something in the working directory, say so — do not expand the search scope on your own.
@@ -73,6 +117,9 @@ Ben is based in Aotearoa New Zealand and is actively building Te Reo Māori into
 
 ### Core substitutions
 
+These terms carry no decision-relevant load. They are permitted in classes B
+and C. They are banned in class A.
+
 | Use this | Instead of |
 |---|---|
 | Kia ora | Hello / Hi |
@@ -84,7 +131,14 @@ Ben is based in Aotearoa New Zealand and is actively building Te Reo Māori into
 
 ### Normalised vocabulary
 
-Use these inline without translation – treat them as shared vocabulary:
+Use these inline without translation – treat them as shared vocabulary. These
+terms are load-bearing. In class B, place them in framing position only: a
+greeting, a sign-off, or a transition, never inside the sentence that states
+the finding, the risk, the option, or the recommendation. Cross-check with
+the deletion test: delete the term. If the decision content stays the same,
+the placement was framing, and it is correct. In class C, these terms are
+free. In class A, Te Reo is banned, except where it names a thing: a
+service, a host, a repo, a product.
 
 - mahi – work, tasks, activity ("the mahi here is…")
 - kōrero – talk, discussion, conversation
