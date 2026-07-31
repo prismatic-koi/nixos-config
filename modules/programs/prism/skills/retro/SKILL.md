@@ -69,7 +69,7 @@ Always consider all five of these dimensions, even if some are uneventful:
 - **Token efficiency** — was the token spend proportionate to the value delivered? High input tokens per turn signal excessive re-reading of context. Many compactions signal the task was too large for one session.
 - **Trajectory directness** — did the worker go straight to the solution, or meander? Count turns spent on dead ends versus productive progress.
 - **Error recovery** — when the worker hit an error, did it adapt or repeat the same approach? Doom loops (same tool + args called 3+ times) are a red flag.
-- **Tool selection** — did the worker use the right tools? Did it reach for bash when a dedicated tool existed, or over-rely on read when grep would be faster?
+- **Tool selection** — did the worker use the right tools? Did it reach for bash when a dedicated tool existed, or over-rely on read when grep is faster?
 - **Scope discipline** — did the worker stay within the stated scope, or drift into unrequested changes? Scope creep burns tokens and confuses reviewers.
 
 ---
@@ -118,7 +118,7 @@ Identify the turning point(s). At what point did the session start struggling? W
 Be direct. Name the actual causes. Draw from this list:
 
 - *Bad prompt / unclear specification* — the task was underspecified or contradicted itself.
-- *Missing context* — information that would have helped was not in scope or not loaded.
+- *Missing context* — helpful information was not in scope or not loaded.
 - *Wrong model for the task* — the model's capabilities were mismatched to the work.
 - *Tool misuse* — wrong tool used repeatedly, or right tool used incorrectly.
 - *Permission gap* — a needed bash command or operation was blocked.
@@ -141,8 +141,8 @@ Convergence: [converging / stuck / hit 3-cycle limit]
 
 If no review cycles ran: "N/A — session had no review cycles."
 
-**What would have helped**
-Counterfactual: what information, instruction, or tooling would have prevented the problems? Be specific:
+**What prevents recurrence**
+Name the information, instruction, or tooling that prevents the problems. Be specific:
 - A specific skill loaded at the start?
 - A different permission set?
 - A different prompt phrasing or tighter scope?

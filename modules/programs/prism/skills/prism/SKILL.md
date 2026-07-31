@@ -584,7 +584,7 @@ prism spawn \
 
 ## Lifecycle: cleaning up after a merge
 
-When you spawn a session and later merge its PR yourself, you are responsible for cleaning up the worktree and session. The spawned agent cannot do this — it would be tearing down its own environment.
+When you spawn a session and later merge its PR yourself, you are responsible for cleaning up the worktree and session. The spawned agent cannot do this — doing so tears down its own environment.
 
 `prism spawn` prints the session name when running headlessly:
 
@@ -807,7 +807,7 @@ The prompt is delivered directly via HTTP to the session. The session must exist
 
 ### Waiting state guard
 
-`prism prompt` will **refuse** to send a prompt if the target session is in `waiting` state. A `waiting` agent has paused and is expecting direct input from the user — injecting a programmatic prompt would corrupt the input field.
+`prism prompt` will **refuse** to send a prompt if the target session is in `waiting` state. A `waiting` agent has paused and is expecting direct input from the user — injecting a programmatic prompt corrupts the input field.
 
 If you encounter this error, **escalate to the user**. Do not attempt to work around the guard. The user must switch to the session themselves (via `C-f` or `C-w`) and respond directly.
 
@@ -928,7 +928,7 @@ This contract supersedes the pre-fix behaviour where `prism escalate` delivered 
 
 ### When to use `prism escalate` vs `prism prompt`
 
-- **`prism escalate`** — you are a worker handing a question or decision to the coordinator and pausing your turn until you hear back. Use this whenever you would have otherwise stopped after sending a hand-crafted `prism prompt`.
+- **`prism escalate`** — you are a worker handing a question or decision to the coordinator and pausing your turn until you hear back. Use this instead of stopping after sending a hand-crafted `prism prompt`.
 - **`prism prompt`** — you are sending an informational follow-up to a running session and either continuing your work (sender keeps going) or expect no response (e.g. delivering a review-complete prompt). Workers prompting their own coordinator are usually better served by `prism escalate` instead.
 
 ### Out of scope (v1)
@@ -955,7 +955,7 @@ The wording is fixed so coordinators can pattern-match on either string.
 
 - **Exactly-once with replay marker (issue #1695).** Each notification carries a `delivery_id` (UUID minted by the sender). The receiving sidecar dedups repeats by ID before they reach the harness pipe. Retried deliveries with the same ID see `{"replayed":true}` in the response so retries are observable, not silent.
 - **Delivery mode is `followUp`.** The notification queues behind any in-flight turn on the coordinator side so it doesn't interleave with an active assistant turn.
-- **Suppressed while escalated.** A worker in the `escalated` state has already informed the coordinator via `session.escalated`; a subsequent "has finished" notification would be a false signal (the worker is paused awaiting guidance, not done). The state clears on any incoming turn_start, after which a normal finish notifies as usual.
+- **Suppressed while escalated.** A worker in the `escalated` state has already informed the coordinator via `session.escalated`; a subsequent "has finished" notification is a false signal (the worker is paused awaiting guidance, not done). The state clears on any incoming turn_start, after which a normal finish notifies as usual.
 
 ## Debugging a running or stuck session
 

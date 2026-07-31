@@ -77,7 +77,7 @@ For MISSED, note what is absent.
 Identify at least 5 edge cases relevant to the implementation. For each:
 - What is the edge case?
 - Does the implementation handle it correctly?
-- What would happen if it doesn't?
+- If it doesn't, what happens?
 
 ### Step 6: Trace representative scenarios
 
@@ -94,7 +94,7 @@ Before issuing a verdict, check the PR's comment history and recent commits for 
 1. You previously returned FAIL on a concern.
 2. The worker has responded — via a commit message, PR comment, or PR body update — with clarification, a scope disclaimer, or a pointer to an out-of-scope clause.
 3. The code you originally flagged has **not changed** in the worker's latest push.
-4. Your current read of the diff would produce the **same FAIL** as before.
+4. Your current read of the diff produces the **same FAIL** as before.
 
 When all four are true, you and the worker disagree on scope. That is a coordinator decision — not yours, not the worker's, and not resolvable by making the worker change more code.
 

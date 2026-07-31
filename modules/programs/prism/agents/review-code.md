@@ -51,13 +51,13 @@ Logic errors, off-by-one mistakes, incorrect conditionals, missing guards, unrea
 Does the code follow existing codebase patterns and conventions? Check AGENTS.md and nearby code for established patterns. Flag where the new code deviates without reason.
 
 ### 3. Naming and readability
-Are identifiers clear and self-documenting? Would a reader understand the intent without reading surrounding code? Flag cryptic names, misleading variable names, or unnecessary abbreviations.
+Are identifiers clear and self-documenting? Does a reader understand the intent without reading surrounding code? Flag cryptic names, misleading variable names, or unnecessary abbreviations.
 
 ### 4. Error handling
 Are errors caught, logged, and propagated correctly? Do errors get swallowed silently? Are error types appropriate? Are there error paths that leave state inconsistent?
 
 ### 5. Type safety
-Proper types used throughout? Unsafe casts? Implicit coercions that can fail at runtime? Missing type annotations where they would catch bugs?
+Proper types used throughout? Unsafe casts? Implicit coercions that can fail at runtime? Missing type annotations where they catch bugs?
 
 ### 6. Performance
 N+1 queries, blocking I/O on hot paths, unbounded data structure growth, repeated work in loops that can be hoisted. Only flag if obviously problematic — do not speculate about hypothetical performance issues.
@@ -82,7 +82,7 @@ Use these severity labels for each issue:
 
 - **CRITICAL** — bug that causes data loss, crashes, or silent corruption. Must fix.
 - **MAJOR** — significant issue that must be fixed before merge (wrong logic, missing error handling, broken API).
-- **MINOR** — improvement that would be good to have but is not blocking (readability, minor inefficiency).
+- **MINOR** — improvement that is good to have but is not blocking (readability, minor inefficiency).
 - **NITPICK** — style preference; optional. Only flag if it clearly violates established project conventions.
 
 Only raise NITPICK issues if they violate conventions documented in AGENTS.md or clearly established project patterns. Do not invent style preferences.

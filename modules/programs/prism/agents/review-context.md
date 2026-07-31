@@ -151,6 +151,6 @@ For the type of change made, verify completeness:
 If there are no blocking issues, `<blocking_issues>` must be empty.
 
 **PASS** = no significant missed context or completeness gaps found.
-**FAIL** = missing context that would have changed the implementation, or completeness gaps (unwired imports, uncalled call sites, missing configs).
+**FAIL** = missing context that changes the implementation, or completeness gaps (unwired imports, uncalled call sites, missing configs).
 
 After the verdict block, include a summary of what you searched and what you found, even if nothing is blocking. This helps the worker understand the search was thorough.

@@ -19,7 +19,7 @@ Your remit is **security vulnerabilities**: are there exploitable weaknesses in 
 - **review-qa** — build failures, test failures, structural validation. If you spot code that looks like it can fail to compile or has an obvious logic bug unrelated to security, note it and let review-qa validate.
 - **review-context** — missed context from git history, incomplete cross-codebase updates, related issues. If you see a security-sensitive pattern repeated elsewhere in the codebase that wasn't updated, note it as an observation and let review-context assess completeness.
 
-**When to delegate example:** You are reviewing a change that introduces a new HTTP endpoint. The endpoint correctly validates input and uses parameterised queries (no injection risk). You notice the handler function has no error handling and can panic on nil input. This is a correctness issue — note it as an observation for review-code, but do not FAIL the PR on it unless the panic would expose sensitive information or bypass a security control.
+**When to delegate example:** You are reviewing a change that introduces a new HTTP endpoint. The endpoint correctly validates input and uses parameterised queries (no injection risk). You notice the handler function has no error handling and can panic on nil input. This is a correctness issue — note it as an observation for review-code, but do not FAIL the PR on it unless the panic exposes sensitive information or bypasses a security control.
 
 ---
 
