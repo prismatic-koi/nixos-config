@@ -9,7 +9,7 @@
     file the repo tracks.
   - `AllPackages.nix` and `allPackages.nix` are deliberate counter-
     examples in the file-naming rule below — they are what the tree
-    should NOT contain.
+    must NOT contain.
   - `delete_branch_on_merge` is a GitHub repo-level setting name managed
     via the API, not a symbol in any file in this repo.
 -->
@@ -58,7 +58,7 @@ go build ./...
 go test ./...
 ```
 
-This is faster than a full nix build and should be the first check for any prism code change.
+This is faster than a full nix build and must be the first check for any prism code change.
 
 **Prism Go-source and `.nix` changes: the homeless-shelter gate is enforced by CI.**
 
@@ -434,12 +434,12 @@ for the common rejection classes and how to read them.
 
 ### File naming and organisation
 
-Names of files and directories should be in lowercase, with dashes between words — kebab case, not camel case.
-For instance, it should be `all-packages.nix`, not `allPackages.nix` or `AllPackages.nix`.
+Names of files and directories must be in lowercase, with dashes between words — kebab case, not camel case.
+For instance, it must be `all-packages.nix`, not `allPackages.nix` or `AllPackages.nix`.
 
 ### Formatting
 
-All Nix files should be formatted using `nixfmt`:
+All Nix files must be formatted using `nixfmt`:
 ```
 nixfmt .
 ```

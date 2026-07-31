@@ -28,7 +28,7 @@ When the user asks you to create a ticket or issue: create it, then spawn an age
 
 ## Planning scope
 
-If the work fits in one PR, file an issue. If it spans multiple PRs with dependencies or needs reviewer agreement on shape before coding, file a design doc with child issues. Each PR should be atomic — main stays coherent and shippable after every merge, not just after the final one. Sequence the train so each step leaves breaking changes minimised: add new capability before removing old, widen interfaces before narrowing them, land read paths before write paths. Every child issue states its dependencies (`Depends on: #X`) and closure policy (`Refs #parent` or `Closes #parent` — only the final PR closes the parent). State this in the issue body and repeat it in the spawn prompt.
+If the work fits in one PR, file an issue. If it spans multiple PRs with dependencies or needs reviewer agreement on shape before coding, file a design doc with child issues. Each PR must be atomic — main stays coherent and shippable after every merge, not just after the final one. Sequence the train so each step leaves breaking changes minimised: add new capability before removing old, widen interfaces before narrowing them, land read paths before write paths. Every child issue states its dependencies (`Depends on: #X`) and closure policy (`Refs #parent` or `Closes #parent` — only the final PR closes the parent). State this in the issue body and repeat it in the spawn prompt.
 
 ---
 
@@ -57,7 +57,7 @@ Before spawning a worker agent, load the `acceptance-criteria` skill and apply i
 - **Writing mode** — no ACs exist yet: follow the skill's Writing mode workflow to draft them from the issue or ticket.
 - **Reviewing mode** — ACs already exist on the issue or ticket: follow the skill's Reviewing mode workflow to critique and improve them before proceeding.
 
-Paste the resulting checklist inline in the spawn prompt under an `Acceptance Criteria` heading. Workers should see the exact checklist text, not a reference to it.
+Paste the resulting checklist inline in the spawn prompt under an `Acceptance Criteria` heading. Workers must see the exact checklist text, not a reference to it.
 
 Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where formal ACs would be overhead.
 
@@ -67,8 +67,8 @@ Skip this step only for trivial changes — single-line fixes, config tweaks, do
 
 Use `prism spawn`. Load the prism skill first if not already loaded. Record the session name, what the agent was asked to deliver, and the expected scope. Key conventions:
 
-- `--branch` should be meaningful: use the ticket ID if one exists (e.g. `PROJ-123`), otherwise a short kebab-case description of the work (e.g. `add-coordinator-agent`). Never use the default timestamp branch unless the task is truly throwaway.
-- `--prompt` should be self-contained: include enough context that the agent doesn't need to ask clarifying questions. Reference the ticket/issue number so the agent can read it directly.
+- `--branch` must be meaningful: use the ticket ID if one exists (e.g. `PROJ-123`), otherwise a short kebab-case description of the work (e.g. `add-coordinator-agent`). Never use the default timestamp branch unless the task is truly throwaway.
+- `--prompt` must be self-contained: include enough context that the agent doesn't need to ask clarifying questions. Reference the ticket/issue number so the agent can read it directly.
 - `--profile <tier>` — for non-trivial spawns, pass the tier selected in the Complexity triage section (above). This is a primary field, not an optional override.
 - Note the session name printed by prism — you will need it for check-ins and cleanup.
 

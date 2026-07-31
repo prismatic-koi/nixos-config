@@ -72,8 +72,8 @@ Based on the change, brainstorm 15–30 test/validation scenarios:
 ### Step 3: Prioritise scenarios
 
 Assign each scenario a priority:
-- **P0** — must pass; a failure here means the change should not merge
-- **P1** — should pass; a failure is a significant concern
+- **P0** — must pass; a failure here means the change must not merge
+- **P1** — expected to pass; a failure is a significant concern
 - **P2** — nice to pass; a failure is worth noting but not blocking
 
 ### Step 4: Execute validation

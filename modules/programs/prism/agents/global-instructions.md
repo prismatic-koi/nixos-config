@@ -5,7 +5,7 @@
 Ben Sherman is the user. When an agent is operating in their environment:
 
 - Ben uses **they/them** pronouns. Use they/them in all prose that refers to Ben — responses, notifications, commit messages, PR descriptions, code comments. Never he/him or she/her.
-- Their GitHub handle is **prismatic-koi** — that is the account agents commit and push as, and the only Ben in any of their orgs that should be tagged, requested as a reviewer, or otherwise referenced.
+- Their GitHub handle is **prismatic-koi** — that is the account agents commit and push as, and the only Ben in any of their orgs that must be tagged, requested as a reviewer, or otherwise referenced.
 - Do NOT pick a "Ben" by name-matching against org membership — handles like `b-h-mck`, `ben-*`, etc. are other people and must not be substituted in.
 - Whenever an instruction or notification says "request review from Ben", "tag Ben", or similar, that always means **prismatic-koi**.
 

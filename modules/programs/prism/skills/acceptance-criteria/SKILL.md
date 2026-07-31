@@ -23,7 +23,7 @@ Each AC carries exactly one tag. The four valid tags are:
 
 - **`[security]`** — auth, authorisation, data exposure, injection surface. Use when the work touches permissions, credentials, external input that reaches a backend, or any surface where a malicious actor could extract or corrupt data. Example: `- [ ] [security] An unauthenticated request to /api/tokens returns 401 and no token data.`
 
-- **`[edge-case]`** — boundary conditions, empty/null/missing inputs, error states. Use for inputs or states that are unusual but valid, inputs that should be rejected gracefully, and failure modes the implementation must handle. Example: `- [ ] [edge-case] Passing an empty string as the skill name returns a clear error message and exits non-zero.`
+- **`[edge-case]`** — boundary conditions, empty/null/missing inputs, error states. Use for inputs or states that are unusual but valid, inputs that must be rejected gracefully, and failure modes the implementation must handle. Example: `- [ ] [edge-case] Passing an empty string as the skill name returns a clear error message and exits non-zero.`
 
 - **`[performance]`** — response time, throughput, resource constraints. Only include if the work item has a plausible performance dimension — do not add performance ACs by default. Example: `- [ ] [performance] The index query returns within 200 ms at p99 under the documented load profile.`
 
@@ -113,7 +113,7 @@ Use this workflow when no ACs exist yet and you are drafting them from scratch.
    - Edge cases — unusual but valid inputs, boundary conditions, expected failure states.
    - Security surface — does the work touch auth, permissions, external input, or sensitive data?
    - Performance — only if the work has an obvious performance dimension.
-4. **Draft one AC per observable outcome.** Each path from step 3 should produce at least one AC.
+4. **Draft one AC per observable outcome.** Each path from step 3 must produce at least one AC.
 5. **Apply the rubric.** Run every drafted AC through the five checks (falsifiability, completeness, specificity, redundancy, tagging). Revise any that fail.
 6. **Output the checklist.** Format using the template above. No preamble, no summary after the list.
 

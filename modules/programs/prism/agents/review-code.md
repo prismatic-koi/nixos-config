@@ -63,7 +63,7 @@ Proper types used throughout? Unsafe casts? Implicit coercions that could fail a
 N+1 queries, blocking I/O on hot paths, unbounded data structure growth, repeated work in loops that could be hoisted. Only flag if obviously problematic — do not speculate about hypothetical performance issues.
 
 ### 7. Abstraction level
-Right level of abstraction — not too concrete (copy-paste), not too abstract (premature generalization)? Are there existing abstractions in the codebase that should be used but aren't? Are new abstractions justified by actual reuse?
+Right level of abstraction — not too concrete (copy-paste), not too abstract (premature generalization)? Are there existing abstractions in the codebase that can be used but aren't? Are new abstractions justified by actual reuse?
 
 ### 8. Testing
 Does new behaviour have corresponding tests? Do existing tests cover the modified code paths? Are tests meaningful or do they just assert that code runs without throwing?
@@ -81,7 +81,7 @@ Does the change introduce new tech debt — painful coupling, undocumented worka
 Use these severity labels for each issue:
 
 - **CRITICAL** — bug that causes data loss, crashes, or silent corruption. Must fix.
-- **MAJOR** — significant issue that should be fixed before merge (wrong logic, missing error handling, broken API).
+- **MAJOR** — significant issue that must be fixed before merge (wrong logic, missing error handling, broken API).
 - **MINOR** — improvement that would be good to have but is not blocking (readability, minor inefficiency).
 - **NITPICK** — style preference; optional. Only flag if it clearly violates established project conventions.
 
@@ -110,7 +110,7 @@ Only raise NITPICK issues if they violate conventions documented in AGENTS.md or
 </blocking_issues>
 ```
 
-If there are no CRITICAL or MAJOR issues, `<blocking_issues>` should be empty. MINOR and NITPICK issues do not block merging — list them after the verdict block as optional improvements.
+If there are no CRITICAL or MAJOR issues, `<blocking_issues>` must be empty. MINOR and NITPICK issues do not block merging — list them after the verdict block as optional improvements.
 
 **PASS** = no CRITICAL or MAJOR issues found.
 **FAIL** = one or more CRITICAL or MAJOR issues found.

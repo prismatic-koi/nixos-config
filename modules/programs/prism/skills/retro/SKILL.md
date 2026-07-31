@@ -122,7 +122,7 @@ Be direct. Name the actual causes. Draw from this list:
 - *Wrong model for the task* — the model's capabilities were mismatched to the work.
 - *Tool misuse* — wrong tool used repeatedly, or right tool used incorrectly.
 - *Permission gap* — a needed bash command or operation was blocked.
-- *Scope too large* — the task was too broad for one session; should have been split.
+- *Scope too large* — the task was too broad for one session and needed to be split.
 - *Compaction pressure* — the context window exhausted, losing important state mid-task.
 - *Doom loop* — repeated the same failing action without changing approach.
 - *Review-cycle divergence* — the worker could not converge on fixes that satisfied the reviewers.

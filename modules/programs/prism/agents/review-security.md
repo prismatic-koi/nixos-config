@@ -86,7 +86,7 @@ Is cryptography used correctly?
 ### 7. File and path operations
 Are file operations safe?
 - Path traversal — can user input escape the intended directory (e.g. `../../etc/passwd`)?
-- Unsafe file operations — following symlinks where they shouldn't be followed?
+- Unsafe file operations — following symlinks that must not be followed?
 - Temporary files created with predictable names in shared directories?
 - File permissions set correctly on newly created files?
 
@@ -130,7 +130,7 @@ Do not speculate about theoretical risks — only flag issues with a realistic e
 </blocking_issues>
 ```
 
-If there are no security vulnerabilities, `<blocking_issues>` should be empty.
+If there are no security vulnerabilities, `<blocking_issues>` must be empty.
 
 **PASS** = no exploitable vulnerabilities found in the 10 checklist items.
 **FAIL** = one or more exploitable vulnerabilities found.
