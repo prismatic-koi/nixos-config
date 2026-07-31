@@ -48,8 +48,8 @@ The review-complete prompt includes a one-line summary header followed by a
 written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
 the full agent reasoning if needed.
 On FAIL: fix all blocking issues, commit, push, and re-run. Non-blocking
-observations on a failed round MAY be actioned alongside the fix.
-On PASS: non-blocking observations MAY be actioned if they align with repo
+observations on a failed round can be actioned alongside the fix.
+On PASS: non-blocking observations can be actioned if they align with repo
 conventions or add defence-in-depth at low cost. You are NOT required to
 action them — shipping the PR is not gated on non-blocking observations.
 If no review-complete prompt arrives within 30 minutes, investigate with

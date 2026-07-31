@@ -153,7 +153,7 @@ sandboxes. Notes:
 The local `nix build .#prism` is a *pre-PR* check, not the authoritative
 gate — CI runs the homeless-shelter build (`nix-build-prism-checked`) on
 every prism-touching PR and that is the build that must be green for merge.
-A worker MAY push without a green local build provided the PR description
+A worker can push without a green local build provided the PR description
 says so.
 
 **If `nix build .#prism` fails inside a worker sandbox, escalate via
@@ -236,7 +236,7 @@ convention and the canonical `captureStdout` helper (issue #1798).
 bare+worktree layout the stash stack (`refs/stash` + its reflog) lives in
 the shared bare repo, so it is repo-wide, not per-worktree. Two sessions
 that stash concurrently race on a single LIFO stack — `git stash pop` takes
-whatever is at `stash@{0}`, which may belong to another worktree. On
+whatever is at `stash@{0}`, which can belong to another worktree. On
 2026-06-11 two concurrent workers' pops crossed and silently swapped their
 WIP (issue #2202). The pi extension's deny list (`BLOCKED_BASH_PATTERNS` in
 `modules/programs/prism/pi/extensions/prism.ts`) blocks `git stash` for
@@ -462,7 +462,7 @@ gh pr merge <number> --squash
 
 Never use `--merge` (creates a merge commit, rejected by the ruleset) or `--rebase` (creates individual commits rather than a squash, also rejected by the ruleset).
 
-**Branch deletion:** Do not pass `--delete-branch` to `gh pr merge`. Branch deletion after merge is handled automatically by GitHub (`delete_branch_on_merge` is enabled at the repo level). Passing `--delete-branch` may cause an API error if the branch is already gone.
+**Branch deletion:** Do not pass `--delete-branch` to `gh pr merge`. Branch deletion after merge is handled automatically by GitHub (`delete_branch_on_merge` is enabled at the repo level). Passing `--delete-branch` can cause an API error if the branch is already gone.
 
 **Build agents:** If you are working on a feature branch, your job ends at "PR opened and pushed". The coordinator on `@main` drives the merge via `prism merge <pr>` — do not attempt to merge the PR yourself, do not enqueue it in the merge queue, and do not wait for it to land before handing off. Once your PR is open and your self-review has passed, you are done.
 

@@ -34,7 +34,7 @@ git show origin/<branch>:<path>  # read full files from the PR branch (not just 
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Always read the full files being modified** — diffs alone are not enough. Code that looks wrong in isolation may be correct given surrounding logic, and vice versa.
+**Always read the full files being modified** — diffs alone are not enough. Code that looks wrong in isolation can be correct given surrounding logic, and vice versa.
 
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
@@ -57,10 +57,10 @@ Are identifiers clear and self-documenting? Would a reader understand the intent
 Are errors caught, logged, and propagated correctly? Do errors get swallowed silently? Are error types appropriate? Are there error paths that leave state inconsistent?
 
 ### 5. Type safety
-Proper types used throughout? Unsafe casts? Implicit coercions that could fail at runtime? Missing type annotations where they would catch bugs?
+Proper types used throughout? Unsafe casts? Implicit coercions that can fail at runtime? Missing type annotations where they would catch bugs?
 
 ### 6. Performance
-N+1 queries, blocking I/O on hot paths, unbounded data structure growth, repeated work in loops that could be hoisted. Only flag if obviously problematic — do not speculate about hypothetical performance issues.
+N+1 queries, blocking I/O on hot paths, unbounded data structure growth, repeated work in loops that can be hoisted. Only flag if obviously problematic — do not speculate about hypothetical performance issues.
 
 ### 7. Abstraction level
 Right level of abstraction — not too concrete (copy-paste), not too abstract (premature generalization)? Are there existing abstractions in the codebase that can be used but aren't? Are new abstractions justified by actual reuse?

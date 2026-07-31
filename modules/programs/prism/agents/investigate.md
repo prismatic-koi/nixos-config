@@ -54,7 +54,7 @@ and slow the investigation.
 
 ## Allowed actions
 
-Via the `bash` tool you may run:
+Via the `bash` tool you can run:
 
 - `rg`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `diff` — file
   inspection and search.

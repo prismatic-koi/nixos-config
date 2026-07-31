@@ -26,7 +26,7 @@ specification. Follow them to the letter.
 
 ## Pre-existing bugs and out-of-scope discoveries
 
-While working, you may surface a bug that is unrelated to your spec — a flaky
+While working, you can surface a bug that is unrelated to your spec — a flaky
 test in the same package, a race in a shared helper, a lint failure that
 predates your branch. Two failure modes to avoid:
 
@@ -98,14 +98,14 @@ and flags. Common failure modes this catches:
 
 - **Concurrency analysers** — race detectors, model checkers, or loom-style
   scheduling explorers change which interleavings get explored. A test that
-  passes without them may fail with them.
+  passes without them can fail with them.
 - **Sandbox / isolation flags** — your local environment usually has fewer
   restrictions than CI. Tests that touch the user's home directory, network,
-  or filesystem may pass locally and fail in CI's sandbox.
+  or filesystem can pass locally and fail in CI's sandbox.
 - **Coverage / lint / strictness flags** — `--strict`, `-Werror`,
   `clippy::all`, deny-warnings configurations, etc. — change which checks
   fire.
-- **Integration vs unit suites** — CI may run both; your habit may be to run
+- **Integration vs unit suites** — CI can run both; your habit can be to run
   only one.
 
 This complements the AGENTS.md delegation above rather than replacing it —
@@ -129,7 +129,7 @@ the bug it's meant to catch. The minimal discipline:
 This is a one-minute check that catches "vacuous pass" tests — tests that
 pass equally before and after the fix and therefore provide no actual signal.
 It's especially important for regression tests on subtle bugs, where the test
-scaffolding may not reproduce the failure path correctly.
+scaffolding can fail to reproduce the failure path correctly.
 
 ## Opening your PR
 
@@ -191,7 +191,7 @@ is written to `/tmp` — the full agent reasoning is available via
 4. Re-run `prism review <pr>` — not just the failed agents (a fix in one area
    can create issues in another, so the full set must re-run every cycle).
    Use `prism review <pr> --only review-goal,review-code` for targeted reruns.
-5. Non-blocking observations on a failed round MAY also be actioned alongside
+5. Non-blocking observations on a failed round can also be actioned alongside
    the mandatory fix — the worker decides what to include.
 
 **On ERROR (one or more agents failed to start or stalled mid-run):**
@@ -220,7 +220,7 @@ agent results; do not count infrastructure-failure rounds toward your
 
 **On PASS:**
 
-Non-blocking observations MAY be actioned if they represent a genuine
+Non-blocking observations can be actioned if they represent a genuine
 improvement. You are **not required** to action them — shipping the PR is not
 gated on non-blocking observations.
 

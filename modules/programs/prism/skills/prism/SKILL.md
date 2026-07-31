@@ -436,7 +436,7 @@ prism cleanup --yes --session <inv-session>
 
 ### Constraint
 
-`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Workers have `prism investigate` in their deny list; only coordinators may use it.
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Workers have `prism investigate` in their deny list; only coordinators can use it.
 
 ---
 
@@ -687,7 +687,7 @@ The workflow is:
 Notes:
 
 - `prism stats compare` shows `—` for aggregate axes while a session is still in progress (state `active`, `idle`, or `reviewing`). The aggregates only stabilise at terminal transition.
-- The `Spawn Inputs` block surfaces whatever the writer captured at spawn time. Pre-#2087 sessions may have a partial row — missing columns render as `—` rather than collapsing the whole block.
+- The `Spawn Inputs` block surfaces whatever the writer captured at spawn time. Pre-#2087 sessions can have a partial row — missing columns render as `—` rather than collapsing the whole block.
 - Use `--json` (preferred) or the equivalent `--format json` for machine-readable output (e.g. when scripting the winner decision); the `spawn_inputs` object carries the same fields shown in the table. On error, both surfaces emit a single-line `{"error":"..."}` JSON envelope to stderr (no cobra usage dump) — script the failure path against the JSON contract too, not by parsing human-readable text (issue #2099).
 
 ## Querying prism state — prefer `--json` for scripting
@@ -891,7 +891,7 @@ The `--json` flag emits a single line to stdout instead:
 {"delivered_to": "<target>", "delivery_id": "<uuid>", "replayed": false}
 ```
 
-In `--json` mode the human-readable line is NOT emitted on stdout (mutual exclusion); it may still be mirrored to stderr for log capture. On error, `--json` emits `{"error": "<message>"}` to stderr and exits non-zero.
+In `--json` mode the human-readable line is NOT emitted on stdout (mutual exclusion); it can still be mirrored to stderr for log capture. On error, `--json` emits `{"error": "<message>"}` to stderr and exits non-zero.
 
 The success signal reaches the caller identically from a direct-host invocation and from inside a bwrap / sandbox-exec sandbox: the sandbox path's sidecar proxy captures the host-side child's stdout and stderr separately and re-emits them on the matching local streams, so the `OK` line lands on the container's stdout (and the mirror on stderr) byte-for-byte the same as a host invocation. `--json` is forwarded to the host child via the proxy request body, so the JSON envelope is also surfaced end-to-end.
 
@@ -924,7 +924,7 @@ The one path that produces a second copy is the reconnect-replay case for AC #7:
 
 **Coordinator-side handling.** Coordinators receiving `prism prompt`-style frames do not need to deduplicate — the sidecar guarantees exactly-once for the same delivery_id. If you see `replay: true` on a prompt frame (visible in the assistant-side prompt body once the PI runtime exposes it; for now, observable only in raw frame archives), the delivery is a buffered resume of a partition-window escalation. Treat it informationally: the original was already accepted, this is the post-reconnect notification of that earlier acceptance.
 
-This contract supersedes the pre-fix behaviour where `prism escalate` could deliver the same prompt body multiple times under load (issue #1685). Sender-side double-invocation (a worker re-running `prism escalate` because the success signal was unclear) is covered by the idempotency guard above; see issue #2018.
+This contract supersedes the pre-fix behaviour where `prism escalate` delivered the same prompt body multiple times under load (issue #1685). Sender-side double-invocation (a worker re-running `prism escalate` because the success signal was unclear) is covered by the idempotency guard above; see issue #2018.
 
 ### When to use `prism escalate` vs `prism prompt`
 
@@ -968,7 +968,7 @@ prism sessions list          # human-readable table
 prism sessions list --json   # parseable when scripting
 ```
 
-Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), the port, and the `last_seen` timestamp. If a session has a DB row but no live tmux session, it may be a zombie (DB row without a live process). Proceed to step 2.
+Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), the port, and the `last_seen` timestamp. If a session has a DB row but no live tmux session, it can be a zombie (DB row without a live process). Proceed to step 2.
 
 **Step 2 — Recent activity:**
 

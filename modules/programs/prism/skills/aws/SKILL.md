@@ -8,7 +8,7 @@ description: Use AWS CLI correctly. Load this skill when doing any AWS work — 
 ## Critical rules
 
 - **Never read `~/.aws/`, `~/.config/aws/`, or any AWS config/credentials file directly.** Use the CLI.
-- The `AWS_CONFIG_FILE` env var may point to a restricted config. Respect it — don't override it or reference the default path.
+- The `AWS_CONFIG_FILE` env var can point to a restricted config. Respect it — don't override it or reference the default path.
 - Never set `AWS_CONFIG_FILE`, `AWS_SHARED_CREDENTIALS_FILE`, `AWS_PROFILE`, or `AWS_DEFAULT_PROFILE` env vars directly to work around the configured env. If a profile isn't available, ask the user.
 
 ## Listing and inspecting profiles

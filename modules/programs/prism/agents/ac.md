@@ -52,13 +52,13 @@ Rules:
 
 ## Write Mode
 
-You will be given a description of the work. This may be a Jira ticket, a GitHub issue, a file, or a freeform prompt. Read it carefully before producing anything.
+You will be given a description of the work. This can be a Jira ticket, a GitHub issue, a file, or a freeform prompt. Read it carefully before producing anything.
 
 Process:
 
 1. Identify the core functional intent — what does "done" look like from a user or system perspective?
 2. Identify security surface — does this touch auth, permissions, external input, or sensitive data?
-3. Identify edge cases — what inputs or states could cause incorrect behaviour?
+3. Identify edge cases — what inputs or states can cause incorrect behaviour?
 4. Identify performance concerns — only if the work has an obvious performance dimension.
 5. Write the checklist. Apply the format above.
 6. Review your own output: are all ACs falsifiable? Is anything vague or untestable? Revise before outputting.

@@ -125,7 +125,7 @@ Be direct. Name the actual causes. Draw from this list:
 - *Scope too large* — the task was too broad for one session and needed to be split.
 - *Compaction pressure* — the context window exhausted, losing important state mid-task.
 - *Doom loop* — repeated the same failing action without changing approach.
-- *Review-cycle divergence* — the worker could not converge on fixes that satisfied the reviewers.
+- *Review-cycle divergence* — the worker did not converge on fixes that satisfied the reviewers.
 
 List all that apply. If none apply (session went cleanly), say so.
 
