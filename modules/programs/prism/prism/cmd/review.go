@@ -58,7 +58,7 @@ func init() {
 	reviewCmd.Flags().String("harness", "pi", "Runtime harness to use for review agents")
 	reviewCmd.Flags().Duration("timeout", 10*time.Minute, "Maximum time to wait per agent")
 	reviewCmd.Flags().String("only", "", "Comma-separated list of agent names to run (e.g. review-goal,review-code)")
-	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, "Bypass the soft concurrency cap and spawn even when >= 6 containers are in flight")
+	reviewCmd.Flags().Bool("ignore-concurrency-cap", false, config.IgnoreConcurrencyCapHelp)
 	reviewCmd.Flags().Int("diff-inline-max", 0,
 		"Max diff lines to inline in agent prompts (0 = use PRISM_REVIEW_DIFF_INLINE_MAX env var or default 500)")
 	reviewCmd.Flags().StringArray("model-override", nil, "Per-role model override in role=model format (repeatable, e.g. review-context=google/gemini-2.5-pro)")
