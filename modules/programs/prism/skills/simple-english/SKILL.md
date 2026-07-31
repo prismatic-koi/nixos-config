@@ -22,8 +22,8 @@ metadata:
 
 Write with the rules of ASD-STE100 Simplified Technical English. STE is the
 controlled language that aerospace and defence manufacturers use for
-maintenance documentation. The rules exist so that a tired reader, who may
-not be a native English speaker, cannot misread an instruction. As a side
+maintenance documentation. The rules exist so that a tired reader who is not a native English
+speaker cannot misread an instruction. As a side
 effect, the rules remove the usual signs of AI-generated text: long
 sentences, synonym rotation, hedges, filler, and decorative clauses.
 
@@ -75,7 +75,7 @@ governing axis is decision-relevant load, not "chat versus artifact".
 | B — Decision-support | The agent explains a finding, presents options, reports a risk, asks the user to decide, escalates, or summarises a review outcome | Full STE structural rules. Te Reo in framing position only (see below). |
 | C — Conversational | Acknowledgement, rapport, social framing | Casual register. Te Reo is free within existing project guidance. The slop ban and the hedge ban still apply. The sentence-length limits and the modal ban relax. |
 
-Test for class B: if the user could make a wrong decision because they
+Test for class B: if the user can make a wrong decision because they
 misread the sentence, the sentence is class B.
 
 Default to class B when the class is not clear. Class C is the narrow
@@ -86,7 +86,7 @@ applicable class governs the substantive content.
 
 ## The Te Reo framing-position rule
 
-Te Reo may sit in framing position: a greeting, a sign-off, an
+Te Reo can sit in framing position: a greeting, a sign-off, an
 acknowledgement, a transition, or any clause that states no fact the user
 must act on. Te Reo must not sit inside the sentence that states the
 finding, the risk, the option, or the recommendation. Use English in those
