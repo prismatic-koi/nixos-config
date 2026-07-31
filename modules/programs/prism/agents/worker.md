@@ -227,7 +227,7 @@ gated on non-blocking observations.
 Prefer actioning observations that:
 - Align the change with repo conventions already present in sibling files
 - Add defence-in-depth at low cost (permissions blocks, input validation)
-- Otherwise requires a dedicated follow-up PR
+- Otherwise require a dedicated follow-up PR
 
 Avoid cosmetic bikeshedding that invites another full review round for no
 substantive gain. When in doubt, ship the PR as-is — review rounds aren't free.
