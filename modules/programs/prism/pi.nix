@@ -162,6 +162,7 @@
         cp -r ${./skills/grill-me}/* $out/grill-me/
         cp -r ${./skills/wip-branch}/* $out/wip-branch/
         cp -r ${./skills/complexity-triage}/* $out/complexity-triage/
+        cp -r ${./skills/simple-english} $out/simple-english
       '';
 
       # Vendored pi extensions directory — built as a single derivation so it
