@@ -6,8 +6,18 @@ import (
 )
 
 // scanDoc runs the token extract + classify + resolve pipeline on a single
-// markdown file and returns the findings for that file.
+// markdown file and returns the findings for that file. When the doc is in
+// the STE-in-scope set (see steInScopeBasenames), it also runs the five
+// mechanical ASD-STE100 prose checks.
 func scanDoc(path string, idx *sourceIndex) ([]Finding, error) {
+	return scanDocWithSteEnabled(path, idx, nil)
+}
+
+// scanDocWithSteEnabled is scanDoc with an optional per-rule STE gate.
+// The `steEnabled` map (nil = all enabled) lets tests disable specific
+// rules to prove that a positive test then fails, i.e. the check is not a
+// no-op — the revert-and-watch-fail discipline as a table-driven test.
+func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]bool) ([]Finding, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
 		// The dual-context constraint: if a doc file disappeared between
@@ -26,6 +36,28 @@ func scanDoc(path string, idx *sourceIndex) ([]Finding, error) {
 	}
 
 	ignore := extractIgnoreSet(content)
+
+	var findings []Finding
+
+	// STE prose checks, gated by the in-scope basename set. Runs BEFORE
+	// identifier resolution so the two finding kinds group naturally by
+	// (file, line) in the sort at the end of Scan.
+	if isSteInScope(path, idx.prismRoot) {
+		prose := steStripToProse(content)
+		for _, s := range runSteChecks(prose, steEnabled) {
+			if ignore[s.text] {
+				continue
+			}
+			findings = append(findings, Finding{
+				File:     path,
+				Line:     s.line,
+				Token:    s.text,
+				Rule:     s.rule,
+				Note:     s.note,
+				Category: "ste",
+			})
+		}
+	}
 	tokens := extractTokens(content)
 
 	// Locate repoRoot by walking up from the doc file's directory until we
@@ -35,7 +67,6 @@ func scanDoc(path string, idx *sourceIndex) ([]Finding, error) {
 	// repo-root disk lookup fallback).
 	repoRoot := findRepoRootForDoc(path, idx.prismRoot)
 
-	var findings []Finding
 	seen := map[string]bool{} // per-file dedup key: line+token+rule
 	for _, tok := range tokens {
 		if tok.Text == "" {

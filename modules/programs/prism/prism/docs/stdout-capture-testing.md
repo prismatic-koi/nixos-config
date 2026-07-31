@@ -28,7 +28,7 @@ The worst offender in this repo is the `agent-context` JSON document
 emitted by `runAgentContext` (`cmd/agent_context.go`), which is
 currently ~69 KiB on `main`. `TestAgentContextCoversAllCommands`
 previously only passed by happenstance of how `encoding/json`'s
-`Encoder` fragments its writes against the pipe; adding a single
+`Encoder` fragments its writes against the pipe. Adding a single
 top-level cobra subcommand was enough to push it over the threshold
 and trigger the hang.
 
@@ -43,7 +43,7 @@ and trigger the hang.
 
 The canonical implementation lives in
 `modules/programs/prism/prism/cmd/checkin_test.go::captureStdout`. New
-helpers should either reuse `captureStdout` (preferred) or follow the
+helpers must either reuse `captureStdout` (preferred) or follow the
 same drain-in-goroutine shape. Do not duplicate the pre-#1797 pattern
 in a new helper.
 

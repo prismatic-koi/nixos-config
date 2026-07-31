@@ -52,8 +52,8 @@ caught.
 
 That pattern — cycle-by-cycle catching identifier drift — is a defining
 signature of "needs a structural fix, not more review." Review cycles cost
-~10 minutes × 5 agents each; a `grep` catches these in seconds and can
-run on every prism-touching PR. Issue #2334 tracks the fix; this document
+~10 minutes × 5 agents each. A `grep` catches these in seconds and can
+run on every prism-touching PR. Issue #2334 tracks the fix. This document
 is its operational spec.
 
 ## What the lint checks
@@ -74,7 +74,7 @@ For each markdown file in scope (see [Scope](#scope) below), the lint:
 | Class | Example | Resolution rule |
 |---|---|---|
 | `file_path` | `` `internal/podmanproxy/policy.go` `` | `os.Stat` against `<prismRoot>/<path>` and `<repoRoot>/<path>`. |
-| `file_with_member` | `` `policy.go::checkHostConfig` `` | The file must exist (bare basename resolves against the walked file index; a full relative path resolves via `os.Stat`), and the member must appear as an identifier in some indexed source file. |
+| `file_with_member` | `` `policy.go::checkHostConfig` `` | The file must exist (bare basename resolves against the walked file index. A full relative path resolves via `os.Stat`), and the member must appear as an identifier in some indexed source file. |
 | `bare_filename` | `` `proxy_test.go` `` | The basename must exist somewhere under the walked source tree. |
 | `dotted` | `` `Config.MaxMemoryBytes` `` or `` `agent_status.instance_id` `` | Every segment must appear as an identifier in some indexed source file. SQL `table.column` references resolve because CREATE TABLE / SELECT strings contain the column and table names as word tokens. |
 | `go_ident` | `` `checkHostConfig`, `NewIsolated` `` | Must appear as an identifier in some indexed source file. Requires mixed case (both upper- and lower-case letters) — pure lowercase words are treated as English prose and skipped. |
@@ -83,13 +83,13 @@ For each markdown file in scope (see [Scope](#scope) below), the lint:
 | `colon_token` | `` `host_bind:<path>`, `cap_add:SYS_ADMIN` `` | The prefix (before `:`) must appear as an identifier OR as a substring of some Go string literal. When the suffix is not a placeholder or plain value, it is recursively resolved against the same rule set. |
 
 The rules are deliberately conservative. When a token is ambiguous — for
-example, a lowercase word that could be Go prose or a Go identifier —
-the lint skips it. High precision beats high recall: a lint that
-false-positives on unrelated PRs will get deleted.
+example, a lowercase word that reads as either Go prose or a Go identifier
+— the lint skips it. High precision beats high recall: a lint that
+false-positives on unrelated PRs gets deleted.
 
 ### Scope
 
-- `modules/programs/prism/prism/docs/*.md` — always scanned; these live
+- `modules/programs/prism/prism/docs/*.md` — always scanned. These live
   inside the prism subtree that the nix sandbox build copies in.
 - The repo-root `AGENTS.md` — scanned when it is present. Inside the nix
   sandbox (`runChecks = true`, only the prism subtree is copied in),
@@ -141,14 +141,99 @@ annotation from "hypothetical" to "vanished from source":
 ```
 
 Opts the entire doc out of the lint. Use only for docs whose identifiers
-live in a codebase outside this repository (e.g. the wire-protocol and RPC
-specs for the external pi coding-agent). The reason text after the colon
-is required so the exemption is self-documenting; its content is not
+live in a codebase outside this repository (for example, the wire-protocol
+and RPC specs for the external pi coding-agent). The reason text after the
+colon is required so the exemption is self-documenting. Its content is not
 otherwise inspected.
 
 Prefer per-token `doclint-ignore` over the whole-file skip. A file that
-mixes in-tree and out-of-tree references should annotate the out-of-tree
+mixes in-tree and out-of-tree references must annotate the out-of-tree
 tokens individually so drift on the in-tree ones still gets caught.
+
+## ASD-STE100 prose checks (issue #2490)
+
+<!-- doclint-ignore: should, would, may, might, could, has, have, had, been, e, i, etc -->
+<!--
+  These are English words the STE section names by rule. They are
+  backticked in the prose below (which strips them from STE scanning),
+  but they can appear in nested doclint contexts. The ignore list is
+  defence in depth.
+-->
+
+Alongside the identifier-resolution scan above, the same package runs
+five mechanical ASD-STE100 (Simplified Technical English) checks on a
+narrow set of docs. The rule of the STE lint matches the rule of the
+identifier lint: high precision beats high recall.
+
+### The five checks
+
+| Rule tag              | STE section | Detects |
+|-----------------------|-------------|---------|
+| `ste-8.1-semicolon`   | 8.1         | Literal `;` outside code. Rule 8.1 requires two sentences instead. |
+| `ste-4.2-contraction` | 4.2         | `` `'ll` ``, `` `'re` ``, `` `'ve` ``, `` `'d` ``, `` `n't` ``. Possessive `` `'s` `` is NOT a contraction and never fires. |
+| `ste-gr6-latin`       | GR-6        | `` `e.g.` ``, `` `i.e.` ``, `` `etc.` ``. Use "for example", "that is", "and more". |
+| `ste-3.2-modal`       | 3.2         | `` `should` ``, `` `would` ``, `` `may` ``, `` `might` ``, `` `could` ``. Apply the modal ladder: `` `must` `` for a requirement, `` `can` `` for capability, delete or restate a recommendation, `` `If X, then Y` `` for a hypothetical. |
+| `ste-3.4-perfect`     | 3.4         | `` `has been` ``, `` `have been` ``, `` `had been` ``. Use the simple past or present. |
+
+Fenced code blocks and inline backticked spans are stripped before the
+checks run, so a doc that documents these rules by name can backtick
+the banned tokens without tripping its own checks. That is why the
+table above backticks every offending example.
+
+### Deliberate omissions
+
+The STE lint deliberately does NOT check any of the following:
+
+- **Sentence length.** Deferred to issue #2496. Sentence segmentation in
+  markdown is hard, and its remediation risks changing the meaning of a
+  technical specification.
+- **Slop words and `-ing` clauses.** Both measured zero across the
+  in-scope docs at issue-authoring time. Deferred to #2496 so that the
+  regex has a positive case in-tree.
+- **Passive voice, part-of-speech rulings, synonym rotation.** Permanently
+  out of scope. These need a grammar parser and belong to the
+  `simple-english` skill and to human review.
+
+### Scope: only these four docs
+
+The STE checks run only against these files, matched by basename under
+`<prismRoot>/docs/` (nested subdirectories like `docs/invariants/` or
+`docs/diagnoses/` do NOT participate):
+
+- `docs/doclint.md`
+- `docs/podman-proxy.md`
+- `docs/sandbox-exec-testing.md`
+- `docs/stdout-capture-testing.md`
+
+The in-scope set is the constant `steInScopeBasenames` in
+`internal/doclint/ste.go`. Extending it beyond these four is a
+deliberate scope decision, not a routine change: `agents/*.md` and
+`skills/*/SKILL.md` carry 73 banned modals tracked by #2493, and a
+lint covering them cannot land green today.
+
+### Global skip semantics (issue #2497)
+
+The existing `<!-- doclint-skip-file: reason -->` directive is **global**
+for v1. A file that carries it is exempt from the STE checks AND from
+the identifier checks. This applies to `docs/pi-rpc-interface.md` and
+`docs/pi-wire-protocol.md`.
+
+This is a deliberate simplification. Scoping the directive per lint
+class (so an out-of-tree identifier doc still gets STE coverage, or
+an STE-in-scope doc opts out of only one rule) is tracked by #2497.
+
+The per-token `<!-- doclint-ignore: <token1>, <token2> -->` directive
+suppresses matching STE findings the same way it suppresses identifier
+findings: the offending text is looked up in the union of all
+doclint-ignore lists in the file, and a match skips the finding.
+
+### Known gap, deliberately accepted
+
+The two skipped docs (`pi-rpc-interface.md` and `pi-wire-protocol.md`)
+carry the largest share of prose violations across the whole docs tree
+but get no STE coverage. Their `doclint-skip-file` reasons concern
+external TypeScript identifier resolution, not prose quality. Making
+the directive per-lint-class (issue #2497) is the correct fix.
 
 ## Failure output
 
@@ -172,8 +257,8 @@ The test runs in two environments and must pass in both:
    Both `modules/programs/prism/prism/docs/*.md` and the repo-root
    `AGENTS.md` are scanned. The index covers Go, Nix, and pi-TS source.
 2. **Nix sandbox** — the `nix-build-prism-checked` CI job with
-   `runChecks = true`. Only the prism subtree is copied into the build;
-   `$HOME=/homeless-shelter` is unwritable. The repo-root `AGENTS.md`
+   `runChecks = true`. Only the prism subtree is copied into the build,
+   and `$HOME=/homeless-shelter` is unwritable. The repo-root `AGENTS.md`
    does not exist and the lint skips it gracefully. The index covers
    Go source only.
 
@@ -193,16 +278,16 @@ rule conservative — err on the side of skipping ambiguous tokens.
 
 - Semantic drift ("this function does X" when it now does Y) — needs
   human review, not a grep.
-- Stale identifiers in Go comments — start with markdown docs; expand
+- Stale identifiers in Go comments — start with markdown docs. Expand
   to comments only if signal justifies it.
 - External references (URLs, third-party docs, stdlib package paths).
-- Cross-repo identifier resolution (e.g. into the pi coding-agent
+- Cross-repo identifier resolution (for example, into the pi coding-agent
   package). Docs that describe such interfaces use
   `<!-- doclint-skip-file -->`.
 
 ## References
 
 - [`internal/doclint/`](../internal/doclint/) — the lint implementation.
-- Issue #2334 — codifies this lint; this doc is its operational spec.
+- Issue #2334 — codifies this lint. This doc is its operational spec.
 - PR #2333 — the podman-proxy Step 8 closer whose three review cycles
   of stale-identifier findings motivated the lint.
