@@ -1113,14 +1113,19 @@ func worktreePathFromSession(session string) string {
 	if err != nil || status == nil {
 		return ""
 	}
-	// Only return the DB path if it still exists on disk; a stale path would
-	// produce a confusing git error later rather than a clear "not found" here.
-	if status.Worktree != "" {
-		if _, statErr := os.Stat(status.Worktree); statErr == nil {
-			return status.Worktree
-		}
-	}
-	return ""
+	// Trust the stored path unconditionally (issue #2506). This used to be
+	// gated on an os.Stat existence check ("a stale path would produce a
+	// confusing git error later rather than a clear 'not found' here"), but
+	// that gate was the actual cause of the DB fallback silently returning ""
+	// for a perfectly healthy row whose worktree directory is real and on
+	// disk (e.g. an orphaned worktree from a session whose tmux pane died —
+	// the exact case this fallback exists to handle). git.BareRoot walks the
+	// path string upward looking for a .bare marker and does not require the
+	// leaf directory to exist, and both git.RemoveWorktree and
+	// git.ForceDeleteBranch already treat their own failures as non-fatal
+	// warnings — so a genuinely-stale DB path degrades gracefully downstream
+	// rather than needing to be pre-filtered here.
+	return status.Worktree
 }
 
 // probeConventionalWorktreePath attempts to locate a worktree for the given
