@@ -47,14 +47,14 @@ A worker agent — by design — runs inside `bwrap` (Linux) or `sandbox-exec`
 (Darwin), with the host's real podman socket NOT exposed inside the sandbox.
 When a session is spawned with `--containers`, prism's sidecar starts a
 per-session HTTP reverse proxy bound to a Unix socket at
-`<XDG_STATE_HOME>/prism/run/<sessionDirName>/podman.sock`, and the sandbox
+`<XDG_STATE_HOME>/prism/run/<sessionDirName>/podman.sock`. The sandbox
 profile exposes only that socket to the worker. The proxy reverse-proxies
 the host's real podman socket, but enforces a **default-deny** policy at
 six layers before any byte reaches the upstream.
 
 The agent's `CONTAINER_HOST` and `DOCKER_HOST` env vars point at the
 filtered socket. The real podman socket path appears in NEITHER the rendered
-bwrap argv NOR the rendered sandbox-exec profile — that absence is asserted
+bwrap argv NOR the rendered sandbox-exec profile. That absence is asserted
 by tests in `internal/sidecar` and the platform-specific
 `cmd/agent_run_sandbox_exec_darwin_test.go` / bwrap test files.
 
@@ -121,8 +121,8 @@ it.
 ## 4. Field-admission process
 
 The cycle-5 schema inversion means any new docker-/podman-API field
-introduced upstream is rejected by default until it is audited
-against the threat table above and explicitly admitted to the relevant
+introduced upstream is rejected by default. Admission requires an audit
+against the threat table above and an explicit addition to the relevant
 typed struct in `internal/podmanproxy/policy.go`.
 
 A workflow that surfaces a needed field will see a 403 response with a body
@@ -185,7 +185,7 @@ this example) that takes an integer share-weight.
    the policy decision the field needs.
 
 The single most important reviewer task on a change to `policy.go` is
-**reading the struct and confirming the rationale comments**, not guessing
+**to read the struct and confirm the rationale comments**. Do not guess
 what the proxy admits. The struct is the security spec.
 
 ## 5. Residual TOCTOU between `EvalSymlinks` and `mount(2)`
@@ -222,12 +222,12 @@ miss.
 ## 6. Verification — the test suite as the spec
 
 The body of evidence for "this policy is enforced" is the test suite at
-`internal/podmanproxy/proxy_security_test.go` — 83 top-level test
-functions at this writing, many with multiple subtests, all green under
-`-race`. (The companion files `proxy_test.go` and
-`proxy_name_prefix_test.go` add a further ~40 top-level tests covering
-the constructor, lifecycle, and cycle-7 Name-prefix policy.) The key
-meta-test is:
+`internal/podmanproxy/proxy_security_test.go`. That file holds 83
+top-level test functions at this writing, many with multiple subtests,
+all green under `-race`. The companion files `proxy_test.go` and
+`proxy_name_prefix_test.go` add a further ~40 top-level tests that
+cover the constructor, lifecycle, and cycle-7 Name-prefix policy. The
+key meta-test is:
 
 ```go
 // TestSecurity_NegativeControl_RootAllowlistPasses mutates Config.AllowedBindSources
@@ -287,8 +287,8 @@ Each line has the shape:
 
 Reason strings below are the **exact tokens** the proxy writes to the
 audit log — grep them verbatim. Each entry cites the `policy.go`
-callsite that formats the token so you can verify the format from the
-source if your version of the proxy drifts.
+callsite that formats the token. If your version of the proxy drifts,
+verify the format from the source.
 
 | Symptom | `reason` token | Fix |
 |---|---|---|
@@ -344,10 +344,10 @@ value that introduces an escape vector is rejected by default until it
 is explicitly admitted via the field-admission process (§4).
 
 The cycle-7 work landed in PR #2332 (Step 7) as the container-name
-auto-prefix policy on `POST /containers/create` — the same six-layer
-shape applied to the `Name` field and the `?name=` URL query, so the
-cleanup sweep can deterministically locate every container belonging
-to a session.
+auto-prefix policy on `POST /containers/create`. The same six-layer
+shape applied to the `Name` field and the `?name=` URL query. As a
+result, the cleanup sweep can deterministically locate every container
+that belongs to a session.
 
 ## 9. Configuration knobs
 
@@ -378,14 +378,14 @@ package itself imposes no policy beyond what the `Config` declares.
 ## 10. Linger decision
 
 **No `loginctl enable-linger <user>` for v1.** The proxy is only
-used by interactive prism sessions — when the user has a graphical
+used by interactive prism sessions. When the user has a graphical
 session, the user-systemd instance is running, and the rootless
 podman socket unit is socket-activated on first use. Users running
 long-lived background workers that need podman across SSH-out can
 re-evaluate later.
 
 This is documented here rather than enforced in nix because the
-decision is operational, not structural: enabling linger requires no
+decision is operational, not structural. Enabling linger requires no
 code change, and disabling it later requires no code change. No
 host in this flake currently sets it, and this PR did not change
 that.

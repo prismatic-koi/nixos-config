@@ -4,10 +4,10 @@
 <!-- `encoding/json` is a Go standard-library package, not a path inside this repo. -->
 
 This document codifies the testing pattern for any helper that redirects
-`os.Stdout` (or `os.Stderr`) through an `os.Pipe` in order to capture what a
+`os.Stdout` (or `os.Stderr`) through an `os.Pipe` to capture what a
 command under test writes. It exists because the previous
 `captureStdout` in `cmd/checkin_test.go` drained the read end of the pipe
-**after** the function under test returned, and that pattern is a latent
+**after** the function under test returned. That pattern is a latent
 deadlock — invisible until the captured output grows past the kernel
 pipe buffer.
 
@@ -18,11 +18,10 @@ re-emerging. The paper trail is #1798.
 
 On Linux, an `os.Pipe` is backed by a kernel ring buffer of 16 pages
 (≈ 64 KiB). Once the buffer fills, the next `write(2)` blocks until a
-reader drains bytes from the read end. If the test helper only starts
-reading **after** the function under test returns, and the function
-writes more than the buffer in a single contiguous burst, the writer
-deadlocks forever — `go test` then hangs until its 10-minute timeout
-fires.
+reader drains bytes from the read end. Suppose the test helper only starts
+reading **after** the function under test returns. If the function writes
+more than the buffer in a single contiguous burst, the writer deadlocks
+forever. Then `go test` hangs until its 10-minute timeout fires.
 
 The worst offender in this repo is the `agent-context` JSON document
 emitted by `runAgentContext` (`cmd/agent_context.go`), which is

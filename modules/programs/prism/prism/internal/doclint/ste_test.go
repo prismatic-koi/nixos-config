@@ -245,25 +245,22 @@ func TestSte_OnlyScansInScopeBasenames(t *testing.T) {
 	}
 }
 
-// TestSte_NoOutOfScopeChecksFire covers the "no findings for sentence
-// length, slop words, -ing clauses, passive voice, part-of-speech misuse,
-// or synonym rotation" AC. We assert this by feeding text that would
-// tickle each of those (out-of-scope) checks and confirming no STE finding
-// fires for content free of the five in-scope patterns.
+// TestSte_NoOutOfScopeChecksFire covers the "no findings for passive
+// voice, part-of-speech misuse, or synonym rotation" AC. Sentence
+// length, slop words, and `-ing`-after-comma ARE in-scope now (#2496)
+// and have dedicated tests below — this test only asserts the
+// permanent omissions still do not fire.
 func TestSte_NoOutOfScopeChecksFire(t *testing.T) {
 	body := strings.Join([]string{
 		"# Test doc",
 		"",
-		// Long sentence (~40 words) with slop words, -ing clauses,
-		// passive voice, synonym rotation. None of these are in the
-		// enabled check set.
-		"The robust and comprehensive system leverages a plethora of powerful",
-		"features, seamlessly enabling users to effortlessly validate their",
-		"configuration by verifying the settings and checking that the config",
-		"is confirmed to be correct.",
-		"",
-		// Passive voice, no modal / no semicolon / no perfect / no Latin.
+		// Passive voice, part-of-speech misuse ("test" as verb, "check"
+		// as verb), synonym rotation (check/verify/validate). None of
+		// these are in the enabled check set.
 		"The file was written by the worker. The result is stored on disk.",
+		"",
+		"You test the pump. You check that the value is correct. You validate",
+		"the reading. You verify that the meter agrees.",
 		"",
 	}, "\n")
 	root, _ := synthSteRoot(t, body)
@@ -274,6 +271,228 @@ func TestSte_NoOutOfScopeChecksFire(t *testing.T) {
 	for _, f := range findings {
 		if f.Category == "ste" {
 			t.Errorf("expected no STE finding for out-of-scope check content, got %s", f.String())
+		}
+	}
+}
+
+// TestSte_SentenceLengthFiresOverLimit covers the "sentence over the
+// applied word limit" AC. A 30-word descriptive sentence must fire.
+func TestSte_SentenceLengthFiresOverLimit(t *testing.T) {
+	// A 30-word single sentence. STE 6.3 limit is 25.
+	body := strings.Join([]string{
+		"# Test doc",
+		"",
+		"The scanner walks every file in the tree and reports a finding for each",
+		"token that does not resolve against the built index of the current",
+		"prism source root, in a repeatable pass.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	saw := false
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-6.3-sentence-length" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("expected ste-6.3-sentence-length finding, got %+v", findings)
+	}
+}
+
+// TestSte_SentenceLengthRuleAppliedIsRule63 covers the "apply the more
+// permissive 25-word limit uniformly" documentation choice: a 22-word
+// sentence must NOT fire even though it exceeds the procedural 20-word
+// Rule 5.1 limit.
+func TestSte_SentenceLengthRuleAppliedIsRule63(t *testing.T) {
+	body := strings.Join([]string{
+		"# Test doc",
+		"",
+		// 22 words — over Rule 5.1's 20 but under Rule 6.3's 25.
+		"The scanner walks every file in the tree and reports one finding for",
+		"every token that does not resolve against the built index.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-6.3-sentence-length" {
+			t.Errorf("expected no length finding on 22-word sentence, got %s", f.String())
+		}
+	}
+}
+
+// TestSte_SentenceLengthTokenisationRules8_5_6_7 covers the "backticked
+// spans, numbers with units, parenthesised text, and hyphenated words
+// each count as one word" AC. A sentence carrying enough Rule 8.5/8.6/8.7
+// tokens that the naive word count would exceed 25 must NOT fire when
+// each such token is correctly counted as one.
+func TestSte_SentenceLengthTokenisationRules8_5_6_7(t *testing.T) {
+	// Naive whitespace-split count would be ~34 words. With the STE
+	// tokeniser: `foo bar baz` = 1 (Rule 8.6 backtick), `(parenthesised
+	// clause here)` = 1 (Rule 8.5), `10 ms` = 1 (Rule 8.6 number+unit),
+	// `sandbox-exec` and `long-hyphenated-word` each count as 1 (Rule
+	// 8.7). Under-25 result, no finding.
+	body := strings.Join([]string{
+		"# Test doc",
+		"",
+		"The scanner runs `foo bar baz quux quux quux quux quux` in " +
+			"`sandbox-exec` for 10 ms per file (parenthesised clause with " +
+			"many words inside it) against the long-hyphenated-word set of " +
+			"tokens carried by the index.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-6.3-sentence-length" {
+			t.Errorf("expected no length finding after Rule 8.5/8.6/8.7 tokenisation, got %s", f.String())
+		}
+	}
+}
+
+// TestSte_SentenceLengthColonTerminatesSentence covers the Rule 8.4 AC:
+// a vertical-list lead-in colon terminates a sentence for word-count
+// purposes. A paragraph that would exceed 25 words if the colon did NOT
+// terminate must, with the terminator honoured, split into two short
+// sentences and produce no finding.
+// Rule 8.4: a vertical-list lead-in colon terminates the sentence for
+// word-count purposes. The check runs on the segmenter directly so the
+// paragraph-boundary segmentation does not accidentally satisfy the AC
+// by acting as a fallback terminator.
+func TestSte_SentenceLengthColonTerminatesSentence(t *testing.T) {
+	paragraph := "The scanner walks every file in the tree and reports a finding for each token it cannot resolve against its index:"
+	sentences := segmentSentences(paragraph)
+	if len(sentences) != 1 {
+		t.Fatalf("expected 1 sentence, got %d: %+v", len(sentences), sentences)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(sentences[0].text), ":") {
+		t.Errorf("expected the sentence text to end at `:`, got %q", sentences[0].text)
+	}
+	// A 22-word lead-in ending at the colon must not fire the length check.
+	body := "# Test\n\n" + paragraph + "\n\n- item\n- item\n"
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-6.3-sentence-length" {
+			t.Errorf("expected the lead-in colon paragraph to not fire, got %s", f.String())
+		}
+	}
+}
+
+// TestSte_SentenceLengthSkipsListItemsHeadingsAndTables covers the
+// "list-item fragments, table cells, and headings produce no
+// sentence-length findings" AC.
+func TestSte_SentenceLengthSkipsListItemsHeadingsAndTables(t *testing.T) {
+	body := strings.Join([]string{
+		// 40+ word heading, list item, and table row.
+		"# The scanner walks every file in the tree and reports a finding for each token that does not resolve against the built index of the current prism source root",
+		"",
+		"- The scanner walks every file in the tree and reports a finding for each token that does not resolve against the built index of the current prism source root.",
+		"",
+		"| Column | Description |",
+		"|---|---|",
+		"| id | The scanner walks every file in the tree and reports a finding for each token that does not resolve against the built index of the current prism source root. |",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-6.3-sentence-length" {
+			t.Errorf("expected no length finding on non-prose lines, got %s", f.String())
+		}
+	}
+}
+
+// TestSte_SlopWordFires covers the "slop word from the documented list"
+// AC.
+func TestSte_SlopWordFires(t *testing.T) {
+	body := "# Test\n\nThis will leverage the tool. Also seamlessly integrated.\nWe use it in order to move faster.\n"
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	sawSingleWord, sawPhrase := false, false
+	for _, f := range findings {
+		if f.Category != "ste" || f.Rule != "ste-slop" {
+			continue
+		}
+		switch strings.ToLower(f.Token) {
+		case "leverage", "seamlessly":
+			sawSingleWord = true
+		case "in order to":
+			sawPhrase = true
+		}
+	}
+	if !sawSingleWord {
+		t.Errorf("expected a single-word slop finding (leverage/seamlessly), got %+v", findings)
+	}
+	if !sawPhrase {
+		t.Errorf("expected a slop phrase finding for `in order to`, got %+v", findings)
+	}
+}
+
+// TestSte_IngAfterCommaFires covers the "-ing clause after a comma"
+// AC. The check runs only on prose paragraphs, so this test uses a
+// paragraph body.
+func TestSte_IngAfterCommaFires(t *testing.T) {
+	body := "# Test\n\nThe migration ran to completion, making the table available for reads.\n"
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	saw := false
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-3.5-ing-after-comma" {
+			saw = true
+		}
+	}
+	if !saw {
+		t.Fatalf("expected ste-3.5-ing-after-comma finding, got %+v", findings)
+	}
+}
+
+// TestSte_IngAfterCommaSkipsTablesAndListItems covers the precision
+// design decision to skip the -ing check on tabular and list content.
+// Rule 3.5 forbids -ing as a verb, but table cells and list items
+// almost always use -ing words as adjectives ("missing required
+// value") or gerund nouns, so firing there is noise.
+func TestSte_IngAfterCommaSkipsTablesAndListItems(t *testing.T) {
+	body := strings.Join([]string{
+		"# Test",
+		"",
+		"| Symptom | Fix |",
+		"|---|---|",
+		"| a value, missing required field | fix the client |",
+		"",
+		"- one thing, including another",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" && f.Rule == "ste-3.5-ing-after-comma" {
+			t.Errorf("expected -ing check to skip table/list content, got %s", f.String())
 		}
 	}
 }
@@ -293,12 +512,14 @@ func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 		{"ste-gr6-latin", "Some things e.g. that.\n", "e.g."},
 		{"ste-3.2-modal", "You should try.\n", "should"},
 		{"ste-3.4-perfect", "It has been broken.\n", "has been"},
+		{"ste-slop", "We will leverage the tool.\n", "leverage"},
+		{"ste-3.5-ing-after-comma", "The migration ran, making the table available.\n", ", making"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.rule, func(t *testing.T) {
 			// Positive path: check enabled, finding present.
 			prose := steStripToProse([]byte(tc.body))
-			fs := runSteChecks(prose, nil)
+			fs := runSteChecks(prose, nil, nil)
 			found := false
 			for _, f := range fs {
 				if f.rule == tc.rule && strings.EqualFold(f.text, tc.token) {
@@ -314,7 +535,7 @@ func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 				enabled[c.rule] = true
 			}
 			enabled[tc.rule] = false
-			fs2 := runSteChecks(prose, enabled)
+			fs2 := runSteChecks(prose, enabled, nil)
 			for _, f := range fs2 {
 				if f.rule == tc.rule {
 					t.Errorf("disabled %q still produced finding: %+v", tc.rule, f)
@@ -322,6 +543,26 @@ func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 			}
 		})
 	}
+
+	// Sentence length runs on a separate function against raw content;
+	// its revert-and-watch-fail proof lives here too.
+	t.Run("ste-6.3-sentence-length", func(t *testing.T) {
+		body := []byte("The scanner walks every file in the tree and reports one finding for each token that does not resolve against the built index of the current prism source root, per pass.\n")
+		fs := runSentenceLengthCheck(body, nil)
+		saw := false
+		for _, f := range fs {
+			if f.rule == "ste-6.3-sentence-length" {
+				saw = true
+			}
+		}
+		if !saw {
+			t.Fatalf("baseline: expected ste-6.3-sentence-length to fire, got %+v", fs)
+		}
+		fs2 := runSentenceLengthCheck(body, map[string]bool{"ste-6.3-sentence-length": false})
+		if len(fs2) != 0 {
+			t.Errorf("disabled ste-6.3-sentence-length still produced findings: %+v", fs2)
+		}
+	})
 }
 
 // TestSte_SandboxRootAbsentDoesNotFail exercises the "runs in the nix

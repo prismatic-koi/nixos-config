@@ -44,7 +44,23 @@ func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]
 	// (file, line) in the sort at the end of Scan.
 	if isSteInScope(path, idx.prismRoot) {
 		prose := steStripToProse(content)
-		for _, s := range runSteChecks(prose, steEnabled) {
+		nonProse := nonProseLineSet(content)
+		for _, s := range runSteChecks(prose, steEnabled, nonProse) {
+			if ignore[s.text] {
+				continue
+			}
+			findings = append(findings, Finding{
+				File:     path,
+				Line:     s.line,
+				Token:    s.text,
+				Rule:     s.rule,
+				Note:     s.note,
+				Category: "ste",
+			})
+		}
+		// Sentence-length uses the raw content so its Rule 8.6 tokeniser
+		// can see backticks. See sentence.go.
+		for _, s := range runSentenceLengthCheck(content, steEnabled) {
 			if ignore[s.text] {
 				continue
 			}
