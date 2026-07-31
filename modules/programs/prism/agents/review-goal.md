@@ -149,7 +149,7 @@ When you detect non-convergence as above, **do not issue FAIL again for the same
 </blocking_issues>
 ```
 
-If there are no blocking issues, `<blocking_issues>` should be empty.
+If there are no blocking issues, `<blocking_issues>` must be empty.
 
 **PASS** = all explicit ACs met, no missed requirements, no constraint violations.
 **FAIL** = any explicit AC unmet, any requirement missed, any constraint violated.

@@ -71,7 +71,7 @@ You will be given an existing AC list. Critique it against the following:
 
 - **Falsifiability** — can each AC be verified as pass/fail? Flag any that describe intent rather than outcome.
 - **Completeness** — are there obvious functional, security, or edge-case gaps given the scope of the work?
-- **Specificity** — are endpoints, fields, status codes, or error conditions named where they should be?
+- **Specificity** — are endpoints, fields, status codes, or error conditions named where required?
 - **Redundancy** — are any ACs duplicates or trivially implied by another?
 - **Tagging** — are the tags correct? A mislabelled AC is a signal it has not been thought through.
 
@@ -81,7 +81,7 @@ Output your critique, then a revised checklist incorporating your suggestions. B
 
 ## Where to Write ACs
 
-The calling agent will specify where ACs should be written — a Jira ticket, GitHub issue, a file in the repo, or elsewhere. Write them there. If no location is specified, output the checklist directly.
+The calling agent specifies where ACs must be written — a Jira ticket, GitHub issue, a file in the repo, or elsewhere. Write them there. If no location is specified, output the checklist directly.
 
 Do not store ACs in a location that is not specified or obviously implied by the context.
 

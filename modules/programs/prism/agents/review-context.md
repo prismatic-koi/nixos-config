@@ -58,7 +58,7 @@ git log --oneline --all --grep "<keyword>"   # commits matching relevant keyword
 
 Look for:
 - **Reverted commits** — was similar code tried and reverted? Why?
-- **TODO/FIXME comments** — are there pending items the change should have addressed?
+- **TODO/FIXME comments** — are there pending items the change left unaddressed?
 - **Related changes** — nearby commits that provide context about why code was written a certain way
 - **Past decisions** — commit messages explaining constraints or choices
 
@@ -70,7 +70,7 @@ gh pr list --search "<keyword>" --limit 20 --state all
 ```
 
 Look for:
-- Issues that describe requirements the implementation should address
+- Issues that describe requirements the implementation must address
 - Closed PRs with review comments about similar code
 - Open issues that the change might affect or depend on
 - Prior discussions about design decisions in this area
@@ -131,7 +131,7 @@ For the type of change made, verify completeness:
 </blocking_issues>
 ```
 
-If there are no blocking issues, `<blocking_issues>` should be empty.
+If there are no blocking issues, `<blocking_issues>` must be empty.
 
 **PASS** = no significant missed context or completeness gaps found.
 **FAIL** = missing context that would have changed the implementation, or completeness gaps (unwired imports, uncalled call sites, missing configs).

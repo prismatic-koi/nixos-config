@@ -10,7 +10,7 @@ description: Spawn isolated agent sessions in their own git worktrees using the 
 Prism provides three introspection layers, ordered from most to least human-readable:
 
 1. **`--help` text** — human-readable usage, intended for humans at a terminal.
-2. **`prism agent-context`** — machine-readable JSON describing the full CLI shape: every command, every flag (with type, enum values, defaults and default sources), available profiles, and cross-cutting precedence rules. **This is the layer-2 surface agents should consult when they need to discover available flags, enum values, or profile names programmatically.** It emits valid JSON to stdout and exits 0.
+2. **`prism agent-context`** — machine-readable JSON describing the full CLI shape: every command, every flag (with type, enum values, defaults and default sources), available profiles, and cross-cutting precedence rules. **This is the layer-2 surface agents must consult when they need to discover available flags, enum values, or profile names programmatically.** It emits valid JSON to stdout and exits 0.
 3. **This SKILL.md** — workflow prose, decision trees, and context that neither `--help` nor `agent-context` capture.
 
 ### Using `prism agent-context`
@@ -56,7 +56,7 @@ Flag `type` is one of: `bool`, `string`, `int`, `duration`, `stringArray`, `enum
 
 # Spawning Agents with prism
 
-`prism spawn` creates a new git worktree, starts a tmux session in it, and launches the agent harness (pi). Use it when work should be isolated, long-running, or in a different repo — rather than a subagent, which shares the current session context.
+`prism spawn` creates a new git worktree, starts a tmux session in it, and launches the agent harness (pi). Use it when work needs isolation, is long-running, or is in a different repo — rather than a subagent, which shares the current session context.
 
 ## When to use prism spawn vs a subagent
 
@@ -64,7 +64,7 @@ Flag `type` is one of: `bool`, `string`, `int`, `duration`, `stringArray`, `enum
 |---|---|
 | User says "spawn an agent" or "use prism" | `prism spawn` |
 | Work is on a PR branch | `prism spawn --pr` or `prism pr` |
-| Task is long-running / should outlive this session | `prism spawn` |
+| Task is long-running / outlives this session | `prism spawn` |
 | Quick research or analysis within this repo | subagent (`@explore`, `@general`) |
 
 ## Converting a repo to bare+worktree layout
@@ -142,7 +142,7 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 | Flag | Description |
 |---|---|
-| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it should be immediately readable in `prism sessions list` and the tmux picker without looking anything up. |
+| `--branch <name>` | Branch name for the new worktree. Defaults to a timestamp. Use a short, descriptive kebab-case name derived from the task (e.g. `update-plex-image`, `fix-login-redirect`) — never an issue number, PR number, or Jira ID. The branch name becomes the session name (e.g. `nixos-config@update-plex-image`), so it must be immediately readable in `prism sessions list` and the tmux picker without looking anything up. |
 | `--pr <number>` | Fetch and check out the branch for this PR number. |
 | `--prompt <text>` | Instruction passed to the agent on launch. Wrap values containing shell metacharacters in **single quotes**. The value `-` is reserved and reads from stdin (cannot pass a literal `-`). |
 | `--prompt-file <path>` | Read the prompt from a file instead of passing it as an argument. Mutually exclusive with `--prompt`. A single trailing newline is stripped. |
@@ -168,7 +168,7 @@ When you need to delegate work to a repo you are not the coordinator for, route 
 3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
 4. **Not found:** start the coordinator yourself with `prism spawn --repo <repo> --branch main --prompt '...'`. On `--branch main` prism spawn defaults to reuse semantics, so this is idempotent: if a healthy `<repo>@main` already exists the prompt is delivered to it; if not, a detached coordinator is started on the existing main worktree and the prompt is delivered on launch. There is no need to pre-spawn and then prompt.
 
-Spawning directly into a feature branch in another repo (bypassing the coordinator) should only happen when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
+Only spawn directly into a feature branch in another repo (bypassing the coordinator) when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
 
 ```bash
 # Check if the target repo has a coordinator session
@@ -201,7 +201,7 @@ prism spawn \
 > **Scope:** `prism review` is for **worker
 > agents and spawned sessions only**. Coordinator agents must never call
 > `prism review` directly. When a user asks a coordinator to review a PR, the
-> coordinator should use `prism pr <number> --prompt 'review this PR'` to spawn
+> coordinator must use `prism pr <number> --prompt 'review this PR'` to spawn
 > a session on the PR branch — that spawned session then runs `prism review`
 > and reports back.
 
@@ -479,7 +479,7 @@ Add `--json` to any `prism merges` / `prism merges list` invocation (including w
 **When to prefer `--wait` vs the notification path:**
 
 - Prefer `--wait` when you have **no other useful work** to do until the job lands — a one-shot script, a deploy that depends on the merge, or a review that gates further commits.
-- Prefer the **notification path** (no `--wait`) when you have **other tasks in flight**. Coordinators with several PRs in flight should never `--wait` — `prism merge <pr>` returns immediately and the merge-queue watcher delivers a notification when each PR lands. Same shape for `prism review` and `prism spawn`.
+- Prefer the **notification path** (no `--wait`) when you have **other tasks in flight**. Coordinators with several PRs in flight must never `--wait` — `prism merge <pr>` returns immediately and the merge-queue watcher delivers a notification when each PR lands. Same shape for `prism review` and `prism spawn`.
 - Add `--json` when scripting: `prism merge <pr> --wait --json` emits a single JSON object on stdout (no human-readable chatter) so consumers can `jq` the status.
 
 **Idempotent observation.** `prism merge <pr> --wait` on an already-merged PR returns immediately with the merged status — safe to call any number of times.
@@ -824,7 +824,7 @@ so they can address it directly.
 
 ## Escalating to your coordinator with `prism escalate`
 
-Workers that hit a decision they cannot make alone (3-cycle review-limit reached, AC contradiction, scope ambiguity, infrastructure block) should use `prism escalate` rather than crafting a `prism prompt` to the coordinator by hand and stopping. The command resolves the right coordinator, delivers the message, transitions the calling session into a new `escalated` state, and emits a `session.escalated` bus event — in one step, with no redundant "has finished" notification.
+Workers that hit a decision they cannot make alone (3-cycle review-limit reached, AC contradiction, scope ambiguity, infrastructure block) must use `prism escalate` rather than crafting a `prism prompt` to the coordinator by hand and stopping. The command resolves the right coordinator, delivers the message, transitions the calling session into a new `escalated` state, and emits a `session.escalated` bus event — in one step, with no redundant "has finished" notification.
 
 ### Surface
 
@@ -929,7 +929,7 @@ This contract supersedes the pre-fix behaviour where `prism escalate` could deli
 ### When to use `prism escalate` vs `prism prompt`
 
 - **`prism escalate`** — you are a worker handing a question or decision to the coordinator and pausing your turn until you hear back. Use this whenever you would have otherwise stopped after sending a hand-crafted `prism prompt`.
-- **`prism prompt`** — you are sending an informational follow-up to a running session and either continuing your work (sender keeps going) or expect no response (e.g. delivering a review-complete prompt). Workers prompting their own coordinator should usually be using `prism escalate` instead.
+- **`prism prompt`** — you are sending an informational follow-up to a running session and either continuing your work (sender keeps going) or expect no response (e.g. delivering a review-complete prompt). Workers prompting their own coordinator are usually better served by `prism escalate` instead.
 
 ### Out of scope (v1)
 

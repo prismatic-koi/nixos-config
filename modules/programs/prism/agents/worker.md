@@ -91,8 +91,8 @@ so problems are caught early.
 ### Match CI's test invocation locally
 
 Before declaring finished, run the **same** test invocation CI uses — not a
-simpler local-shorthand variant. The repo's `AGENTS.md` should point at the
-canonical command; if it doesn't, read the CI workflow files directly
+simpler local-shorthand variant. If the repo's `AGENTS.md` points at the
+canonical command, use it. If it doesn't, read the CI workflow files directly
 (`.github/workflows/`, `.gitlab-ci.yml`, etc.) and mirror the exact command
 and flags. Common failure modes this catches:
 

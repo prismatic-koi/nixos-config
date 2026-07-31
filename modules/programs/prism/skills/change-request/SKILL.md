@@ -53,7 +53,7 @@ duplicate that detail into the CR.
 
 ## Description structure
 
-A CR description should have these sections in roughly this order:
+A CR description must have these sections in roughly this order:
 
 1. **What this change does** - one or two paragraphs in plain language.
    Start with who is affected and what they experience today. End with
@@ -174,7 +174,7 @@ justify why a CR is still appropriate.
 
 ### Post-change validation (`customfield_11139`)
 
-ADF format, numbered list. Each check should specify what is being
+ADF format, numbered list. Each check must specify what is being
 verified, where the evidence comes from, and a time window
 (e.g. "within 5 minutes of apply", "for 30 minutes after apply").
 Include at least one positive check (the thing we wanted to fix is
@@ -196,7 +196,7 @@ Normal.`
 
 ### Fields the human must fill
 
-The agent should not guess these. Flag them in the response to the human
+The agent must not guess these. Flag them in the response to the human
 so they can fill in:
 
 - Assignee
