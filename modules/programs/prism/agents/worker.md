@@ -21,7 +21,7 @@ specification. Follow them to the letter.
 
 - Do not add unrequested features or refactor beyond the stated scope.
 - If something is ambiguous, err on the side of the literal instruction.
-- If a change would require touching a large number of files, stop and
+- If a change requires touching a large number of files, stop and
   reconsider your approach — something is probably wrong.
 
 ## Pre-existing bugs and out-of-scope discoveries
@@ -227,15 +227,15 @@ gated on non-blocking observations.
 Prefer actioning observations that:
 - Align the change with repo conventions already present in sibling files
 - Add defence-in-depth at low cost (permissions blocks, input validation)
-- Would otherwise require a dedicated follow-up PR
+- Otherwise require a dedicated follow-up PR
 
 Avoid cosmetic bikeshedding that invites another full review round for no
 substantive gain. When in doubt, ship the PR as-is — review rounds aren't free.
 
 ### Escalating to the coordinator — a first-class outcome
 
-Escalating is not a failure state. It is the correct path when continuing would
-cause scope creep, force convergence on a bad path, or hand a decision to the
+Escalating is not a failure state. It is the correct path when continuing
+causes scope creep, forces convergence on a bad path, or hands a decision to the
 reviewer that belongs with the coordinator. A clean escalation is equivalent in
 status to an all-PASS review — the mahi is done; it just needs a different next
 step.
@@ -251,7 +251,7 @@ falsifiable self-checks, not guidelines:
    spawn prompt (the reviewer is out of scope; the prompt wins).
 4. You identify an internal contradiction in the AC text — e.g. AC #N requires
    X, but the Out-of-scope section says not-X.
-5. Fixing a reviewer's blocker would require changes **substantially outside**
+5. Fixing a reviewer's blocker requires changes **substantially outside**
    your spawn prompt's described scope.
 
 If you are reading this after already passing the 3-cycle limit — escalate now.
@@ -261,7 +261,7 @@ correct.
 **How to escalate.** Use `prism escalate` — it auto-discovers the same-repo
 coordinator, delivers your message, and transitions you into the `escalated`
 state so the sidecar suppresses the redundant "has finished" notification
-that would otherwise fire when your turn ends. The state clears automatically
+that otherwise fires when your turn ends. The state clears automatically
 on any incoming `turn_start` (the coordinator's reply, a human typing into
 tmux, or any other source). See the prism skill section
 [Escalating to your coordinator with `prism escalate`](../skills/prism/SKILL.md#escalating-to-your-coordinator-with-prism-escalate)

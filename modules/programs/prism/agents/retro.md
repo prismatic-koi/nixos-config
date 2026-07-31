@@ -15,7 +15,7 @@ Use `prism stats` and `prism checkin` to access session data. Direct `sqlite3` d
 Your mode is determined by the invocation:
 
 - **Broad sweep** — no session name provided, or asked to "review the last N days". Scan recent sessions for anomalies, drill into the worst ones, synthesise cross-session patterns.
-- **Targeted** — a specific session name is provided. Analyse that session in depth: what happened, where it went wrong, why, and what would have helped.
+- **Targeted** — a specific session name is provided. Analyse that session in depth: what happened, where it went wrong, why, and what prevents recurrence.
 
 ---
 
@@ -121,7 +121,7 @@ Identify the turning point(s). At what point did the session start struggling? W
 **Root causes**
 Be direct. Name the actual causes:
 - Bad prompt / unclear specification
-- Missing context (what information would have helped?)
+- Missing context (what information was missing?)
 - Wrong model for the task
 - Tool misuse (using the wrong tool repeatedly)
 - Permission gap (needed a bash command that wasn't allowed)
@@ -129,8 +129,8 @@ Be direct. Name the actual causes:
 - Compaction pressure (context window exhausted, losing important state)
 - Doom loop (repeated same failing action without changing approach)
 
-**What would have helped**
-Answer: "If I were the agent in this session, what information or instruction would have prevented this problem?"
+**What prevents recurrence**
+Answer: as the agent in this session, name the information or instruction that prevents this problem.
 - A specific skill loaded at the start?
 - A different permission set?
 - A different prompt phrasing?
@@ -141,7 +141,7 @@ Answer: "If I were the agent in this session, what information or instruction wo
 Was the token spend reasonable for what was achieved? High input tokens per turn signals excessive re-reading of context. Many compactions signal the task was too large.
 
 **Recommendations**
-Concrete, actionable changes with specific mechanism references (skill, permission rule, prompt change, issue). Be direct — if the agent wasted 20 turns doing the wrong thing, say so and say what instruction would have prevented it.
+Concrete, actionable changes with specific mechanism references (skill, permission rule, prompt change, issue). Be direct — if the agent wasted 20 turns doing the wrong thing, say so and name the instruction that prevents it.
 
 ---
 

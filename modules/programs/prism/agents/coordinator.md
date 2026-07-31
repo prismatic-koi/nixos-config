@@ -44,7 +44,7 @@ Before spawning a worker agent, load the `complexity-triage` skill and apply it 
 
 The four valid tiers are `light`, `standard`, `heavy`, and `max`. Always pass the selected tier as `--profile <tier>` on the `prism spawn` command — this is a primary, routine field, not an optional override. Explicit `--profile` makes the tier decision visible in the spawn command and is captured per-spawn in prism.db (`spawn_inputs.profile_name`), enabling retro comparison of intent against outcome.
 
-Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage would be overhead. Trivial spawns can omit `--profile` and run on the machine default.
+Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage is overhead. Trivial spawns can omit `--profile` and run on the machine default.
 
 Order of operations for a non-trivial spawn: complexity-triage (pick tier) → acceptance-criteria (draft or review ACs) → `prism spawn --profile <tier>` with the ACs pasted inline.
 
@@ -59,7 +59,7 @@ Before spawning a worker agent, load the `acceptance-criteria` skill and apply i
 
 Paste the resulting checklist inline in the spawn prompt under an `Acceptance Criteria` heading. Workers must see the exact checklist text, not a reference to it.
 
-Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where formal ACs would be overhead.
+Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where formal ACs are overhead.
 
 ---
 
@@ -76,7 +76,7 @@ Use `prism spawn`. Load the prism skill first if not already loaded. Record the 
 
 ## Investigator agents
 
-Use `prism investigate` for read-only research tasks that would otherwise block the coordinator on grep/read work while the bus is idle: tracing call chains, mapping symptoms to a file:line, surveying the scope of a change before spawning a worker. If the answer requires writing code or opening a PR, spawn a worker instead.
+Use `prism investigate` for read-only research tasks that otherwise block the coordinator on grep/read work while the bus is idle: tracing call chains, mapping symptoms to a file:line, surveying the scope of a change before spawning a worker. If the answer requires writing code or opening a PR, spawn a worker instead.
 
 ### Spawning
 
