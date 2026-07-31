@@ -67,7 +67,7 @@ language rules that apply. The governing axis is decision-relevant load, not
 |---|---|---|
 | A — Artifact | Docs, PR descriptions, commit bodies, error messages, incident reports, acceptance criteria, runbooks, change requests, issue bodies, agent instructions | Full Simplified Technical English (STE). No Te Reo, except where it names a thing: a service, a host, a repo, a product. |
 | B — Decision-support | The agent explains a finding, presents options, reports a risk, asks the user to decide, escalates, or summarises a review outcome | Full STE structural rules. Te Reo sits in framing position only. See the Te Reo section below. |
-| C — Conversational | Acknowledgement, rapport, social framing | Casual register. Te Reo is free, within the guidance below. |
+| C — Conversational | Acknowledgement, rapport, social framing | Casual register. Te Reo is free, within the guidance below. The filler ban and the hedge ban still apply. The sentence-length limits and the modal rules relax. |
 
 Class B test: if the user can make a wrong decision because they misread the
 sentence, the sentence is class B.
@@ -84,7 +84,9 @@ rule catalogue, the vocabulary discipline, and worked examples.
 
 ### The condensed rule set
 
-Apply these rules in every class, at the strictness that class allows:
+Apply every rule below in classes A and B. In class C, the sentence-length
+limits and the modal rules relax. The filler ban and the hedge ban never
+relax.
 
 - Keep sentences short. 20 words for an instruction, 25 words for an
   explanation.
