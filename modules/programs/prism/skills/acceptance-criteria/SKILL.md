@@ -21,7 +21,7 @@ Each AC carries exactly one tag. The four valid tags are:
 
 - **`[functional]`** — core behaviour the work item must exhibit. Use for primary happy-path outcomes: what the system does when everything goes right. Example: `- [ ] [functional] The CLI prints the resolved skill name and path when a skill loads successfully.`
 
-- **`[security]`** — auth, authorisation, data exposure, injection surface. Use when the work touches permissions, credentials, external input that reaches a backend, or any surface where a malicious actor could extract or corrupt data. Example: `- [ ] [security] An unauthenticated request to /api/tokens returns 401 and no token data.`
+- **`[security]`** — auth, authorisation, data exposure, injection surface. Use when the work touches permissions, credentials, external input that reaches a backend, or any surface where a malicious actor can extract or corrupt data. Example: `- [ ] [security] An unauthenticated request to /api/tokens returns 401 and no token data.`
 
 - **`[edge-case]`** — boundary conditions, empty/null/missing inputs, error states. Use for inputs or states that are unusual but valid, inputs that must be rejected gracefully, and failure modes the implementation must handle. Example: `- [ ] [edge-case] Passing an empty string as the skill name returns a clear error message and exits non-zero.`
 
@@ -43,7 +43,7 @@ Run every AC through all five checks before finalising.
 
 Each AC must be verifiable as pass or fail without human judgement. An AC that requires subjective assessment is not an AC.
 
-- **Anti-pattern:** "The output is valid JSON." (What counts as valid? The implementer may disagree.)
+- **Anti-pattern:** "The output is valid JSON." (What counts as valid? The implementer can disagree.)
 - **Fix:** "The output is parseable by `jq` without error and contains a `name` key at the top level."
 
 ### 2. Completeness

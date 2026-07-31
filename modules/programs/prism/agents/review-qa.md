@@ -94,7 +94,7 @@ Run validation in priority order. Stop and report if a P0 scenario fails — do 
 | GitHub Actions | Validate YAML structure; check action references |
 | Generic | Read test files, run any test runner mentioned in AGENTS.md |
 
-Always read `AGENTS.md` before running validation — it contains project-specific commands and may contradict these defaults.
+Always read `AGENTS.md` before running validation — it contains project-specific commands and can contradict these defaults.
 
 ### Step 5: Compile results
 

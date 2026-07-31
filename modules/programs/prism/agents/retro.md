@@ -79,7 +79,7 @@ Concrete, actionable changes. Each recommendation must reference a specific mech
 
 ---
 
-**Edge case:** If there are no sessions in the target window, output: "No sessions found in the last 7 days. The database may be empty or the window may need adjusting."
+**Edge case:** If there are no sessions in the target window, output: "No sessions found in the last 7 days. The database can be empty or the window can need adjusting."
 
 ---
 
