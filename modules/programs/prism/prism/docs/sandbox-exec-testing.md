@@ -21,15 +21,15 @@ This issue is tracked in #1192.
 > 1. Generates the profile via `Manager.PrepareSandboxExec()` (not by
 >    hand-writing SBPL text).
 > 2. Invokes `/usr/bin/sandbox-exec -f <profile>` against a Nix-built
->    ad-hoc-signed test binary (e.g. `bash`, `cat`, `opencode` itself)
->    resolved to its absolute `/nix/store/...` path via `exec.LookPath` +
+>    ad-hoc-signed test binary (for example, `bash`, `cat`, or `opencode` itself)
+>    resolved to its absolute `/nix/store/...` path via `exec.LookPath` and
 >    `filepath.EvalSymlinks`.
 > 3. Asserts the binary exits 0.
 > 4. Has a paired negative test that confirms the test catches regressions:
->    temporarily mutate the profile (e.g. remove a key allow rule) and assert
+>    temporarily mutate the profile (for example, remove a key allow rule) and assert
 >    the binary fails — proving the test is not a no-op.
 >
-> Apple-signed system binaries (`/bin/echo`, `/usr/bin/uname`, etc.) must
+> Apple-signed system binaries (`/bin/echo` and `/usr/bin/uname`) must
 > NOT be used as test targets until the v3 profile migration tracked in
 > #1190 / the v3 spike lands. They SIGABRT in dyld under the current profile
 > shape, which is a separate known limitation.
@@ -51,7 +51,7 @@ fundamentally cannot launch any process (missing `/etc` allow), every test
 was green.
 
 The same class of bug will recur every time someone tightens the profile in
-a future PR if we don't enshrine this convention.
+a future PR if we do not enshrine this convention.
 
 ## Test infrastructure
 
@@ -72,7 +72,7 @@ The Darwin-only integration tests live in
 - `newProfileManagerWithBareRoot(t)` — variant that configures `BareRoot`
   two directory levels deep under HOME so the BareRoot-ancestor block fires
   and grants `file-test-existence`/`file-read-metadata` up to `/`. Use this
-  for positive tests that resolve symlink targets under HOME (e.g.
+  for positive tests that resolve symlink targets under HOME (for example,
   credential reads through `$HOME/.aws/credentials` → host path).
 - `augmentProfileForTest(profile)` — appends the minimum SBPL extras a
   Nix-built binary needs to start under the sandbox during testing (root
@@ -80,7 +80,7 @@ The Darwin-only integration tests live in
   infrastructure only — they are NOT added to the production profile.
 - `withMutatedProfile(t, m, mutate)` — generates the profile via
   `Manager.PrepareSandboxExec()`, applies `mutate(string) string` to the
-  profile content (e.g. remove a specific allow rule), augments it for
+  profile content (for example, remove a specific allow rule), augments it for
   testing, writes it to a temp file, and returns the path. Used in
   negative-case integration tests to confirm that removing a specific allow
   rule causes the test operation to fail.
@@ -97,11 +97,11 @@ grants. Under deny-default, getcwd then fails inside the sandbox:
 
 - **bash** merely warns (`shell-init: error retrieving current directory`)
   and continues — bash-based tests tolerate the hole.
-- **node** dies at bootstrap (`EPERM: process.cwd failed ... uv_cwd`);
+- **node** dies at bootstrap (`EPERM: process.cwd failed ... uv_cwd`).
   **git** dies at startup (`fatal: Unable to read current working
   directory`) — tests built on these binaries fail before exercising the
   rule under test (this is how the #2022 playwright trio and the #2221
-  GitConfigGlobalUsable test shipped without ever being host-green; the
+  GitConfigGlobalUsable test shipped without ever being host-green. The
   hole surfaced on the #2247 host run).
 
 Production sessions never hit this: the agent's CWD is the worktree, which
@@ -118,8 +118,8 @@ never a reason to widen the production profile:
    they cannot mask subtree-scoped negatives.
 3. The launch dir itself deliberately gets no extra rule — its
    accessibility must come from the production rule under test. Strip
-   negatives that disable that rule make the CWD unresolvable by design;
-   such negatives must use bash (tolerant), not node/git.
+   negatives that disable that rule make the CWD unresolvable by design.
+   Such negatives must use bash (tolerant), not node/git.
 4. Keep in-sandbox commands free of deep absolute `mkdir -p` chains: each
    existing-but-ungranted ancestor returns EPERM (not EEXIST), which
    `mkdir -p` treats as fatal. Create only the leaf against an
@@ -132,7 +132,7 @@ never a reason to widen the production profile:
    `GIT_CEILING_DIRECTORIES=:<parent-of-launch-dir>` in the in-sandbox env
    so discovery stops inside the launch dir (the leading empty entry skips
    symlink resolution of the ceiling path, per git(1)). Do not widen the
-   extras to cover ancestor children instead — that would erode the
+   extras to cover ancestor children instead — that erodes the
    masking guarantee in point 2.
 
 ## Negative test pattern
@@ -196,7 +196,7 @@ integration test coverage exists for:
   (`(subpath "<sessionDir>")`, the only per-session writable grant), plus
   the worktree, bare repo, and host-API socket dir.
 - **Env-var credential reads** — sops-backed configs read through stable
-  host paths (e.g. `~/.config/aws/readonly-config` via `AWS_CONFIG_FILE`,
+  host paths (for example, `~/.config/aws/readonly-config` via `AWS_CONFIG_FILE`,
   `~/.config/kube/agents-config` via `KUBECONFIG`, the SSH keys via the
   work-dir ssh-config/gitconfig), riding the broad var-folders allow
   narrowed by the #2211 secrets.d allowlist.
@@ -243,7 +243,7 @@ the load-bearing check.
 
 - #1015, #1016, #1017, #1018 — the four PRs whose test gaps motivated this
   convention.
-- #1187 — first integration test of the convention; landed the seed pattern.
+- #1187 — first integration test of the convention. Landed the seed pattern.
 - #1190 — the v3 profile migration that this convention will continue to
   apply through.
 - #1192 — this issue: codifies the convention and backfills coverage.
