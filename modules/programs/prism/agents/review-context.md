@@ -25,9 +25,9 @@ Your remit is **context and completeness**: did the implementation miss relevant
 
 ## ASD-STE100 dimension
 
-Your role includes checking class A artifacts (documentation, PR descriptions, commit bodies, error messages, acceptance criteria) for ASD-STE100 Simplified Technical English compliance. Review for:
+Your role includes checking class A artifacts (documentation, PR descriptions, commit bodies, error messages, acceptance criteria) and class B decision-support passages for ASD-STE100 Simplified Technical English compliance. Review for:
 
-- **Passive voice** — rewrite as active voice whenever the agent is clear
+- **Passive voice** — rewrite as active voice whenever the actor is known
 - **Synonym rotation** — the same concept must use the same word throughout
 - **Part-of-speech misuse** — a word must fill the same grammatical role everywhere
 - **Condition placement** — a condition must come before the command, divided by a comma
