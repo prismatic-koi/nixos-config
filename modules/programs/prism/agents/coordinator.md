@@ -42,7 +42,7 @@ Before spawning alongside an in-flight PR, check the file footprint — overlapp
 
 Before spawning a worker agent, load the `complexity-triage` skill and apply it inline to score the task and pick the profile tier. Do not delegate this to a subagent — score the task yourself using the rubric from the skill.
 
-The five valid tiers are `light`, `standard`, `heavy`, `max`, and `fable-max`. Always pass the selected tier as `--profile <tier>` on the `prism spawn` command — this is a primary, routine field, not an optional override. Explicit `--profile` makes the tier decision visible in the spawn command and is captured per-spawn in prism.db (`spawn_inputs.profile_name`), enabling retro comparison of intent against outcome.
+The four valid tiers are `light`, `standard`, `heavy`, and `max`. Always pass the selected tier as `--profile <tier>` on the `prism spawn` command — this is a primary, routine field, not an optional override. Explicit `--profile` makes the tier decision visible in the spawn command and is captured per-spawn in prism.db (`spawn_inputs.profile_name`), enabling retro comparison of intent against outcome.
 
 Skip this step only for trivial changes — single-line fixes, config tweaks, documentation typos — where the machine default is fine and formal triage would be overhead. Trivial spawns may omit `--profile` and run on the machine default.
 
