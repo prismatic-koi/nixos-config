@@ -16,6 +16,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -222,6 +223,33 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 			t.Errorf("ended_at is nil — session was not marked as ended")
 		}
 	})
+}
+
+// TestHeadlessCleanup_UnresolvedWorktreePathMessage verifies the AC (#2506):
+// when the worktree path genuinely cannot be resolved (both tmux and the DB
+// fallback come back empty), the emitted warning names both the session and
+// the branch/path it tried, rather than the old bare "worktree path unknown"
+// string.
+func TestHeadlessCleanup_UnresolvedWorktreePathMessage(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+
+	var buf bytes.Buffer
+	session := "myrepo@ghost-branch"
+	if err := headlessCleanupWithJSONTo(session, "ghost-branch", "", "", false, &buf); err != nil {
+		t.Fatalf("headlessCleanupWithJSONTo returned error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, session) {
+		t.Errorf("output %q does not name the session %q", out, session)
+	}
+	if !strings.Contains(out, "ghost-branch") {
+		t.Errorf("output %q does not name the branch/path it tried (%q)", out, "ghost-branch")
+	}
+	if strings.Contains(out, "worktree path unknown — skipping worktree removal for session") {
+		t.Errorf("output %q still uses the old bare message", out)
+	}
 }
 
 // TestHeadlessCleanup_InvalidWorktreePath verifies AC-2:

@@ -672,7 +672,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	}
 
 	if worktreePath == "" {
-		printLine("worktree path unknown — skipping worktree removal for session %s\n", session)
+		// AC (#2506): name both the session and the path we tried, rather than
+		// a bare "worktree path unknown". worktreeName is the branch component
+		// of the session name — the best available stand-in for "the path it
+		// tried" at this call site, since both the tmux and DB (agent_status)
+		// lookups came back empty by the time worktreePath=="" reaches here.
+		printLine("worktree path unknown for session %s (tried tmux and agent_status.worktree for branch %q) — skipping worktree removal\n", session, worktreeName)
 	} else if isSafeToRemoveWorktree(session, worktreePath, bareRoot) {
 		printLine("removing worktree %s...\n", worktreePath)
 		if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
