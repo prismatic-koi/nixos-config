@@ -173,6 +173,58 @@ func TestProbeConventionalWorktreePath(t *testing.T) {
 	})
 }
 
+// TestProbeConventionalWorktreePath_NestedWorktree verifies that the
+// bare-root derivation is depth-agnostic: for a branch name containing "/"
+// (e.g. "feat/my-thing"), the stored worktree path is nested two levels below
+// the bare root, not one. A naive filepath.Dir(status.Worktree) would derive
+// the wrong bare root (the intermediate "feat" directory), mirroring the bug
+// fixed in session.DefaultAgent for issue #2510. This test constructs a
+// genuinely nested worktree with a real .bare marker at the true bare root
+// and asserts probeConventionalWorktreePath still resolves it correctly.
+func TestProbeConventionalWorktreePath_NestedWorktree(t *testing.T) {
+	// Construct: <tmpdir>/bare-root/.bare, <tmpdir>/bare-root/feat/my-thing/.git
+	bareRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bareRoot, ".bare"), []byte("gitdir"), 0o644); err != nil {
+		t.Fatalf("write .bare marker: %v", err)
+	}
+	branch := "feat/my-thing"
+	conventionalPath := filepath.Join(bareRoot, branch)
+	if err := os.MkdirAll(conventionalPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	gitFile := filepath.Join(conventionalPath, ".git")
+	if err := os.WriteFile(gitFile, []byte("gitdir: ../../bare/.git/worktrees/my-thing\n"), 0o644); err != nil {
+		t.Fatalf("write .git file: %v", err)
+	}
+
+	// Seed the DB with a stale worktree path nested at the same depth as the
+	// conventional path (a sibling under bareRoot/feat/ that no longer
+	// exists), so the probe must derive the bare root by walking up two
+	// levels, not one.
+	staleWorktreePath := filepath.Join(bareRoot, "feat", "old-gone-thing")
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	session := "myrepo@" + branch
+	if err := d.UpsertStatus(session, "myrepo", staleWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	gotPath, gotBareRoot := probeConventionalWorktreePath(session, branch)
+	if gotBareRoot != bareRoot {
+		t.Errorf("bareRoot: got %q, want %q (must walk up two levels, not one)", gotBareRoot, bareRoot)
+	}
+	if gotPath != conventionalPath {
+		t.Errorf("worktreePath: got %q, want %q", gotPath, conventionalPath)
+	}
+}
+
 // TestHeadlessCleanup_EmptyWorktreePath verifies that when worktreePath is
 // empty, headlessCleanup skips worktree removal, still marks the session as
 // ended in the DB, and returns nil.
