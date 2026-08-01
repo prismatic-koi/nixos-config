@@ -178,8 +178,9 @@ func DashSocketPath() string {
 // Uses a stat-poll rather than inotify/fsnotify to avoid adding a dependency.
 // The poll interval is 200ms — well under the 1-second target from the spec.
 //
-// This function is used by the popup dashboard only. The persistent dashboard
-// uses StartSocketListener instead.
+// Both dashboard modes use this watcher: the popup calls it directly, and the
+// persistent dashboard calls it via StartPersistentWatchers alongside the
+// push-event socket listener (issue #2522, defect 3).
 func WatchDashboardSentinel(ctx context.Context, p *tea.Program) {
 	sentinelPath := DashSentinelPath()
 	var lastMod time.Time
