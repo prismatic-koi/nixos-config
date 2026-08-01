@@ -4,16 +4,22 @@
 // It polls the head of the pending_merges queue for the sidecar's session_name
 // and drives PRs through the merge lifecycle using the GitHub CLI:
 //
-//   - CLEAN   → gh pr merge --squash
-//   - BEHIND  → gh pr update-branch
-//   - DIRTY   → fail with "merge conflicts"
-//   - BLOCKED → fail on CI failure or review required, keep watching otherwise
-//   - Others  → keep watching (transient)
+//   - CLEAN    → gh pr merge --squash
+//   - UNSTABLE → gh pr merge --squash, but only when every required check
+//     reports SUCCESS; optional checks are ignored
+//   - BEHIND   → gh pr update-branch
+//   - BLOCKED  → terminate as failed when every required check has concluded
+//     and at least one concluded in a failure state (#2525); keep watching
+//     otherwise, because an outstanding approval or a still-running check can
+//     resolve on its own
+//   - Others   → keep watching (transient)
 //
 // On each terminal outcome (merged, failed, closed) a bus notification is
 // delivered to the enqueuing coordinator session via the harness HTTP API.
-// The notification text names the PR, includes the worker session's archive
-// path, and prompts git pull + prism cleanup.
+// Every notification names the PR. The merge and close outcomes add the worker
+// session's archive path and prompt git pull + prism cleanup. The
+// required-check failure outcome deliberately omits the cleanup prompt,
+// because the branch is still needed for the fix (#2525).
 //
 // Watcher lifetime equals coordinator session lifetime. On sidecar shutdown,
 // all watching rows for this instance_id are transitioned to 'abandoned' by
@@ -195,13 +201,17 @@ func (w *Watcher) Run(ctx context.Context) {
 // tick processes the head of the queue once.
 //
 // The state machine mirrors the #2420 redesign: the watcher only produces
-// a coordinator notification for four terminal events —
+// a coordinator notification for five terminal events —
 //
 //   - the watcher squash-merged the PR successfully (`mergeOutcomePrismDriven`),
 //   - the PR was merged out-of-band by a human or another tool
 //     (`mergeOutcomeExternal`),
-//   - the PR was closed without merging, and
-//   - a genuine `gh pr merge` mutation failure that was not a branch-moved race.
+//   - the PR was closed without merging,
+//   - a genuine `gh pr merge` mutation failure that was not a branch-moved race,
+//     and
+//   - the PR is BLOCKED and a required check has concluded in a failure state
+//     (#2525) — the one BLOCKED sub-state that cannot resolve without a new
+//     push, so silent polling would hang the queue forever.
 //
 // Every other observed state (checks pending, review pending, changes
 // requested, new commits pushed, unprotected repo, branch behind base) results
@@ -296,14 +306,39 @@ func (w *Watcher) tick(ctx context.Context) {
 		}
 		// Leave row as watching; next tick will pick up the rebased state.
 
-	case "DIRTY", "BLOCKED", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+	case "BLOCKED":
+		// #2525: BLOCKED covers two states that are not alike.
+		//
+		//  1. A required check still runs, or a human approval is
+		//     outstanding. GitHub resolves this on its own. Silent polling
+		//     is correct.
+		//  2. Every required check has concluded and at least one concluded
+		//     in a failure state. Nothing resolves this without a new push,
+		//     so silent polling hangs the queue until the coordinator
+		//     session ends. The operator, not the coordinator, then finds
+		//     the dead row.
+		//
+		// failedRequiredChecks separates the two. It returns a non-empty
+		// list only when the required-check set is completely accounted for
+		// in the rollup AND a real failure conclusion is present, so the
+		// documented BLOCKED-to-CLEAN drift window between mergeStateStatus
+		// and statusCheckRollup cannot produce a spurious failure.
+		//
+		// This adds a terminal FAILURE transition only. It adds no merge
+		// path — the #2420 rule that prism never merges without a positive
+		// signal is untouched.
+		if failed := failedRequiredChecks(prInfo.StatusCheckRollup, prot.requiredChecks); len(failed) > 0 {
+			w.notifyRequiredChecksFailed(ctx, head, failed)
+			return
+		}
+		log.Printf("[mergequeue] PR #%d BLOCKED but no required check has conclusively failed — staying watching silently", head.PR)
+
+	case "DIRTY", "UNKNOWN", "HAS_HOOKS", "DRAFT":
 		// #2420: none of these are coordinator-actionable terminal events
-		// mid-poll. DIRTY may resolve when the worker rebases; BLOCKED may
-		// resolve when a human approves the PR or the required checks
-		// finish; UNKNOWN is a transient GitHub side effect; DRAFT and
-		// HAS_HOOKS are the worker's responsibility, not prism's. Keep
-		// polling silently — the initial-invocation message told the
-		// coordinator what to expect.
+		// mid-poll. DIRTY may resolve when the worker rebases; UNKNOWN is a
+		// transient GitHub side effect; DRAFT and HAS_HOOKS are the
+		// worker's responsibility, not prism's. Keep polling silently — the
+		// initial-invocation message told the coordinator what to expect.
 		log.Printf("[mergequeue] PR #%d %s — staying watching silently", head.PR, prInfo.MergeStateStatus)
 
 	default:
@@ -324,6 +359,62 @@ func (w *Watcher) notifyClosedNotMerged(ctx context.Context, head *db.PendingMer
 	text := fmt.Sprintf("PR #%d closed without merge. Please clean up the branch and worktree.", head.PR)
 	log.Printf("[mergequeue] %s", text)
 	w.notify(ctx, head.SessionName, head.InstanceID, text)
+}
+
+// notifyRequiredChecksFailed transitions the head row to terminal
+// (status='failed') and tells the coordinator which required checks failed
+// (#2525).
+//
+// The transition is what stops the poll loop: MergeQueueHead only ever
+// returns rows with status='watching', so once this row is 'failed' it is no
+// longer the head and no later tick re-observes it. That is also what bounds
+// the notification to exactly one per PR.
+//
+// The text deliberately does NOT carry the "Please clean up the branch and
+// worktree" phrase that every completion message carries. Nothing merged and
+// nothing closed — the branch still holds the work and the worker needs it to
+// push the fix.
+//
+// failed must be non-empty; the caller guarantees this.
+func (w *Watcher) notifyRequiredChecksFailed(ctx context.Context, head *db.PendingMerge, failed []string) {
+	names := joinFailedCheckNames(failed)
+	// Scoped by head.Repo per issue #2354.
+	if err := w.db.TerminateMerge(head.PR, head.Repo, "failed", "CI failed: "+names); err != nil {
+		log.Printf("[mergequeue] TerminateMerge(ci-failed) PR #%d: %v", head.PR, err)
+	}
+	text := renderRequiredChecksFailedText(head.PR, names)
+	log.Printf("[mergequeue] %s", text)
+	w.notify(ctx, head.SessionName, head.InstanceID, text)
+}
+
+// renderRequiredChecksFailedText composes the required-check-failure
+// notification (#2525). names is the already-joined, already-bounded list
+// produced by joinFailedCheckNames.
+//
+// The wording follows the #2420 message discipline: name the PR, name what
+// failed, name who acts next. It must never contain "Please clean up the
+// branch and worktree" — see notifyRequiredChecksFailed.
+func renderRequiredChecksFailedText(pr int, names string) string {
+	return fmt.Sprintf(
+		"PR #%d CI failed: %s. Worker needs to fix and push. No merge will happen until then.",
+		pr, names,
+	)
+}
+
+// maxFailedCheckNamesLen bounds the rendered failed-check name list. A repo
+// can require an arbitrary number of checks, and the list lands in both the
+// pending_merges.error column and the coordinator notification.
+const maxFailedCheckNamesLen = 400
+
+// joinFailedCheckNames renders check names as a comma-separated list, capped
+// at maxFailedCheckNamesLen bytes. Truncation drops any partial UTF-8 rune at
+// the cut point rather than emitting invalid UTF-8.
+func joinFailedCheckNames(names []string) string {
+	joined := strings.Join(names, ", ")
+	if len(joined) <= maxFailedCheckNamesLen {
+		return joined
+	}
+	return strings.ToValidUTF8(joined[:maxFailedCheckNamesLen], "") + "..."
 }
 
 // tryMerge attempts `gh pr merge --squash` on head. On success transitions to
@@ -783,15 +874,176 @@ func (w *Watcher) fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
 	return &info, nil
 }
 
-// hasCIFailure returns true when at least one check in rollup has
-// conclusion = FAILURE.
-func hasCIFailure(rollup []checkEntry) bool {
-	for _, c := range rollup {
-		if strings.EqualFold(c.Conclusion, "FAILURE") {
+// checkState is the aggregate verdict for one required check name, derived
+// from every rollup entry carrying that name (#2525).
+type checkState int
+
+const (
+	// checkStatePending — the check has not reached a verdict we can read:
+	// queued, in progress, or an entry shape we do not recognise. A required
+	// check in this state means the required set is NOT fully accounted for,
+	// so no failure transition may fire.
+	checkStatePending checkState = iota
+
+	// checkStateConcluded — the check finished and did not conclude in a
+	// recognised failure state. This covers SUCCESS and the neutral-ish
+	// conclusions (NEUTRAL, SKIPPED, and any conclusion GitHub adds later).
+	// It accounts for the check without failing it.
+	checkStateConcluded
+
+	// checkStateFailed — the check finished and concluded in a failure state.
+	checkStateFailed
+)
+
+// requiredCheckFailureConclusions is the check-run `conclusion` allowlist that
+// counts as a real failure for the #2525 terminal transition.
+//
+// The set is deliberately closed and deliberately small. Widening it risks the
+// expensive direction of the trade-off: declaring a good PR dead. Conclusions
+// NOT in this set (SUCCESS, NEUTRAL, SKIPPED, STALE, STARTUP_FAILURE, and
+// anything GitHub adds later) classify as checkStateConcluded — they account
+// for the check so a sibling check's genuine failure can still fire, but they
+// never trigger the transition on their own. Add to this set only with a
+// dedicated audit.
+var requiredCheckFailureConclusions = []string{
+	"FAILURE",
+	"TIMED_OUT",
+	"CANCELLED",
+	"ACTION_REQUIRED",
+}
+
+// legacyStatusFailureStates is the commit-status `state` equivalent of
+// requiredCheckFailureConclusions. Legacy contexts use a separate, smaller
+// enum (EXPECTED, PENDING, SUCCESS, FAILURE, ERROR) with no `status` field, so
+// they need their own mapping. Without it a required legacy context that fails
+// would classify as pending and reproduce the exact silent hang #2525 fixes.
+var legacyStatusFailureStates = []string{
+	"FAILURE",
+	"ERROR",
+}
+
+// classifyCheckEntry maps one rollup entry to a checkState.
+//
+// The rollup mixes two entry shapes. A modern check-run carries `status` plus
+// `conclusion`; a legacy commit status carries only `state`. The ordering of
+// the cases below matters:
+//
+//   - A check-run whose `status` is anything other than COMPLETED is pending,
+//     even when a `conclusion` is also present. A stale conclusion alongside a
+//     re-running check must never count as a failure.
+//   - Only then does a non-empty `conclusion` decide the verdict.
+//   - `state` is consulted last, for legacy contexts.
+//   - An entry with none of the three populated is pending, not concluded. An
+//     unreadable entry is not evidence that a check finished.
+func classifyCheckEntry(c checkEntry) checkState {
+	switch {
+	case c.Status != "" && !strings.EqualFold(c.Status, "COMPLETED"):
+		return checkStatePending
+	case c.Conclusion != "":
+		if matchesAnyFold(c.Conclusion, requiredCheckFailureConclusions) {
+			return checkStateFailed
+		}
+		return checkStateConcluded
+	case c.State != "":
+		if matchesAnyFold(c.State, legacyStatusFailureStates) {
+			return checkStateFailed
+		}
+		if strings.EqualFold(c.State, "SUCCESS") {
+			return checkStateConcluded
+		}
+		// PENDING, EXPECTED, or anything unrecognised: not a verdict.
+		return checkStatePending
+	default:
+		return checkStatePending
+	}
+}
+
+// matchesAnyFold reports whether s case-insensitively equals any candidate.
+func matchesAnyFold(s string, candidates []string) bool {
+	for _, c := range candidates {
+		if strings.EqualFold(s, c) {
 			return true
 		}
 	}
 	return false
+}
+
+// combineCheckStates folds two verdicts for the same check name into one.
+//
+// GitHub can return more than one rollup entry per name — a re-run, or a
+// check-run name that collides with a legacy status context. The precedence is
+// pending > failed > concluded, which is the conservative order: a re-run in
+// flight masks an older failure, so a worker who has already pushed a fix does
+// not get their PR declared dead.
+func combineCheckStates(a, b checkState) checkState {
+	if a == checkStatePending || b == checkStatePending {
+		return checkStatePending
+	}
+	if a == checkStateFailed || b == checkStateFailed {
+		return checkStateFailed
+	}
+	return checkStateConcluded
+}
+
+// failedRequiredChecks returns the names of required checks that concluded in
+// a failure state, but ONLY when the whole required set is accounted for
+// (#2525). It returns nil in every other case, which the caller reads as
+// "keep watching".
+//
+// nil is returned when:
+//
+//   - required is empty. No configured gate means no evidence of a dead end.
+//   - Any required name is absent from the rollup. GitHub populates the rollup
+//     for the PR's current head commit, so an absent name usually means the
+//     check has not registered yet after a push.
+//   - Any required name is still pending (queued, in progress, or re-running).
+//   - Every required name concluded without a recognised failure.
+//
+// This ordering is what makes the helper safe inside the documented
+// BLOCKED-to-CLEAN drift window between mergeStateStatus and
+// statusCheckRollup: a stale BLOCKED reading paired with a green or
+// still-filling rollup yields nil, never a failure.
+//
+// A residual window remains. A worker can push a fix in the gap between
+// GitHub computing the rollup we read and our poll, in which case we report a
+// failure that the new push has already superseded. The row terminates and the
+// coordinator re-runs `prism merge`. That is the accepted cost: a redundant
+// but true report beats the silent hang.
+//
+// Returned names are deduplicated and follow the order of the required list,
+// so the notification text is stable across polls.
+func failedRequiredChecks(rollup []checkEntry, required []string) []string {
+	if len(required) == 0 {
+		return nil
+	}
+
+	states := make(map[string]checkState, len(rollup))
+	for _, c := range rollup {
+		name := checkName(c)
+		if name == "" {
+			continue
+		}
+		state := classifyCheckEntry(c)
+		if prev, seen := states[name]; seen {
+			state = combineCheckStates(prev, state)
+		}
+		states[name] = state
+	}
+
+	var failed []string
+	emitted := make(map[string]bool, len(required))
+	for _, req := range required {
+		state, seen := states[req]
+		if !seen || state == checkStatePending {
+			// The required set is not fully accounted for. Stay silent.
+			return nil
+		}
+		if state == checkStateFailed && !emitted[req] {
+			emitted[req] = true
+			failed = append(failed, req)
+		}
+	}
+	return failed
 }
 
 // checkName returns the canonical name for a rollup entry, preferring the

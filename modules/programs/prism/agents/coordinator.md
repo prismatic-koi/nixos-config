@@ -281,6 +281,7 @@ Once the sense-check passes, enqueue the PR in the merge queue and continue with
    - **`PR #N merged. ...`** (prism-driven or reconciled) — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`.
    - **`PR #N merged out-of-band. ...`** — `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. Prism did NOT perform the merge, but the branch/worktree are still yours to clean up.
    - **`PR #N closed without merge. ...`** — `prism cleanup --yes --session <worker-session>`.
+   - **`PR #N CI failed: <check names>. ...`** — a required check failed, so the merge will never happen on its own (issue #2525). Do NOT clean up; the branch still holds the work. `prism prompt <worker-session>` with the failed check names, then `prism merge <number>` again once the fix is pushed.
    - **`PR #N merge failed: <error>`** — read the error, decide whether to retry (`prism merge <number>`) or escalate to the user.
 4. Use `prism merges` to inspect the current queue at any time.
 
