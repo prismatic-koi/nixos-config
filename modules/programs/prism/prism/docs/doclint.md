@@ -204,6 +204,38 @@ first seven checks run. A doc that documents these rules by name can
 therefore backtick the banned tokens without tripping its own checks.
 That is why the table above backticks every offending example.
 
+### `ste-3.5-ing-after-comma` false positives in inline prose
+
+The table / heading / list-item skip already documented above covers
+the common false-positive surface. An `-ing` word after a comma in a
+table cell, a heading, or a list item is almost always an adjective or a
+gerund noun. It is almost never a trailing participle clause. The same false positive
+also occurs in ordinary prose paragraphs, where the check still runs.
+
+Worked example, hit twice across the Phase 1 and Phase 2 remediations of
+issue #2497: `..., thinking blocks, ...` in a prose enumeration in
+`docs/pi-rpc-interface.md`, and `... specifies the transport layer (§2),
+framing rules (§3), ...` in `docs/pi-wire-protocol.md`. In both cases the
+`-ing` word (`thinking`, `framing`) modifies the following noun
+("thinking blocks", "framing rules") rather than opening a trailing
+participle clause. The check has no way to distinguish that case from a
+genuine Rule 3.5 violation. It matches on the comma-then-`-ing` shape
+alone.
+
+Two resolutions are both acceptable:
+
+- **Reorder** the sentence so the `-ing` word no longer immediately
+  follows a comma. This is what both worked examples above did — for
+  instance, `pi-wire-protocol.md` moved the `framing rules (§3)` item to
+  the front of the list, ahead of any comma.
+- **Per-token `doclint-ignore`** with an explanatory comment, when a
+  reorder would read worse than the original or would obscure the point
+  being made.
+
+Expect roughly one of these per document scanned. The pattern recurs
+whenever a doc enumerates several noun phrases and one of them happens
+to begin with a gerund.
+
 ### Sentence-length tokenisation
 
 The sentence-length check consumes the raw content, not the
@@ -249,6 +281,8 @@ The STE checks run only against these files, matched by basename under
 - `docs/stdout-capture-testing.md`
 - `docs/pi-rpc-interface.md` (added in Phase 1 of issue #2497, alongside
   the scoping of its `doclint-skip-file` directive to identifiers only)
+- `docs/pi-wire-protocol.md` (added in Phase 2 of issue #2497, alongside
+  the same identifiers-only scoping of its `doclint-skip-file` directive)
 
 The in-scope set is the constant `steInScopeBasenames` in
 `internal/doclint/ste.go`. Extending it further is a deliberate scope
@@ -268,12 +302,17 @@ pre-scoping global behaviour. This is the invariant that lets
 `docs/pi-wire-protocol.md` keep its global skip through Phase 1 of
 the #2497 migration without a silent change.
 
-Phase 1 (this migration) moved `docs/pi-rpc-interface.md` to the
-`identifiers`-only scope and cleared the resulting STE findings. Its
-skip reason cites external TypeScript identifier resolution, which
-has nothing to do with prose quality. The doc is a human-readable
-interface spec and its prose is now scanned. Phase 2 will do the
-same for `docs/pi-wire-protocol.md`.
+Phase 1 moved `docs/pi-rpc-interface.md` to the `identifiers`-only scope
+and cleared the resulting STE findings. Its skip reason cites external
+TypeScript identifier resolution, which has nothing to do with prose
+quality. The doc is a human-readable interface spec and its prose is now
+scanned.
+
+Phase 2 did the same for `docs/pi-wire-protocol.md`. It is the larger
+of the two pi docs. It was also the single largest source of STE
+findings measured against the eight checks: 107 findings across seven
+of the eight rule tags. All 107 were remediated. See the Phase 2 PR
+description for the full per-rule breakdown.
 
 The per-token `<!-- doclint-ignore: <token1>, <token2> -->` directive
 suppresses matching STE findings the same way it suppresses identifier

@@ -46,9 +46,10 @@ var steInScopeBasenames = map[string]bool{
 	// migration (issue #2497). Its `doclint-skip-file` directive was
 	// scoped to `identifiers` only — the reason cited external
 	// TypeScript identifier resolution, not prose quality.
-	// pi-wire-protocol.md keeps its unparameterised global skip through
-	// Phase 1 and joins the STE set in Phase 2.
+	// pi-wire-protocol.md joined the STE set in Phase 2 of the same
+	// migration, with the same identifiers-only scoping.
 	"pi-rpc-interface.md": true,
+	"pi-wire-protocol.md": true,
 }
 
 // isSteInScope returns true when the doc path is one of the four in-scope
