@@ -418,10 +418,13 @@ func TestPopupSwitchTarget(t *testing.T) {
 	}
 }
 
-// TestDashModelEnterCursorActivation verifies that in persistent-session mode,
-// pressing Enter when the cursor is inactive activates the cursor without
-// switching sessions — matching the j/k behaviour.
-func TestDashModelEnterCursorActivation(t *testing.T) {
+// TestDashModelEnterSwitchesOnFirstKeypress verifies that in persistent-session
+// mode, pressing Enter on a live row switches on the FIRST keypress even when
+// the cursor is inactive (passive watch mode). Before the issue #2522 fix, the
+// first Enter only re-activated the cursor and swallowed the switch. The switch
+// path deactivates the cursor and returns a switch command (not a
+// CursorTimeoutCmd).
+func TestDashModelEnterSwitchesOnFirstKeypress(t *testing.T) {
 	t.Parallel()
 
 	m := dashboard.PersistentModel{
@@ -435,17 +438,21 @@ func TestDashModelEnterCursorActivation(t *testing.T) {
 	updatedModel, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	pm := updatedModel.(dashboard.PersistentModel)
 
-	if !pm.CursorActive {
-		t.Error("CursorActive should be true after first Enter in persistent mode")
+	// Enter on a live row commits a switch: it deactivates the cursor rather
+	// than re-activating it (the defect-1 behaviour).
+	if pm.CursorActive {
+		t.Error("CursorActive should be false after Enter commits a switch on a live row")
 	}
 	if cmd == nil {
-		t.Error("cmd should be non-nil (CursorTimeoutCmd)")
+		t.Fatal("cmd should be non-nil (switch command)")
 	}
-	// The sessions list is unchanged and no switch was initiated — if a switch
-	// had fired, the handler would have returned tea.Sequence(sideEffect, tea.Quit)
-	// which has a different shape than CursorTimeoutCmd(). We can detect this by
-	// checking that the returned message is a CursorTimeoutMsg (fires after a delay).
-	// We just verify no immediate quit was issued by ensuring the model is still valid.
+	// CursorActive==false with a non-nil cmd uniquely identifies the switch
+	// path: the review-group path activates the cursor, and the empty-list path
+	// returns a nil cmd. The command itself (resolve client + switch) is
+	// exercised without touching real tmux in
+	// internal/dashboard/persistent_switch_internal_test.go. Running it here
+	// would call the host tmux binary, so this test asserts only the model
+	// state transition.
 	if len(pm.Sessions) == 0 {
 		t.Error("sessions should be unchanged")
 	}

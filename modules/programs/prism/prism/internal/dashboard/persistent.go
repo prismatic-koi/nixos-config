@@ -152,15 +152,7 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.CursorActive = false
-				return m, func() tea.Msg {
-					// Always query the current client at switch time (see
-					// Enter handler comment for rationale).
-					client, _ := CurrentClientFunc()
-					if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
-						return DashStatusMsg(errMsg)
-					}
-					return nil
-				}
+				return m, switchToSessionCmd(selected.Name)
 			}
 			return m, cmd
 		}
@@ -178,7 +170,11 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// comment for rationale).
 			m.CursorActive = false
 			return m, func() tea.Msg {
-				client, _ := CurrentClientFunc()
+				// Resolve the viewing client deterministically from the
+				// dashboard session's client list, not display-message, which
+				// is unsound from this pane-resident process (issue #2522,
+				// defect 2).
+				client, _ := resolveDashClientFunc()
 				if client != "" {
 					_ = tmux.SwitchClientLast(client)
 				}
@@ -215,39 +211,24 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, CursorTimeoutCmd()
 
 		case "enter":
-			if !m.CursorActive {
-				// In persistent-session mode the cursor starts inactive (passive
-				// watch mode). Mirror the j/k behaviour: first Enter activates the
-				// cursor without immediately switching, so the user can confirm the
-				// highlighted session before committing.
-				m.CursorActive = true
-				return m, CursorTimeoutCmd()
-			}
 			if len(m.Displayed) == 0 {
 				return m, nil
 			}
 			selected := m.Displayed[m.Cursor]
-			// If the selected row is a review-round group row, toggle it
-			// instead of switching to a session.
+			// Enter on a review-round group row toggles expand/collapse instead
+			// of switching to a session. Activate the cursor so the change is
+			// visible and keep the dashboard open.
 			if selected.IsReviewGroup {
+				m.CursorActive = true
 				m.Shared = ToggleReviewGroup(m.Shared, selected.Name)
 				return m, CursorTimeoutCmd()
 			}
+			// Enter on a live session row switches on the FIRST keypress - no
+			// cursor-activation step is required (issue #2522, defect 1). The
+			// passive-watch cursor is kept for j/k, which still activate before
+			// they move, but Enter must act immediately on the highlighted row.
 			m.CursorActive = false
-			return m, func() tea.Msg {
-				// Always query the current client at switch time rather than
-				// using the cached m.Client. The persistent dashboard is a
-				// single process serving all visitors; m.Client tracks the
-				// last client to trigger FocusMsg, which may differ from the
-				// client that actually pressed Enter. tmux's "current client"
-				// for the dashboard pane is the one that most recently sent
-				// input — i.e. the client that pressed Enter.
-				client, _ := CurrentClientFunc()
-				if errMsg := ensureSessionAndSwitch(selected.Name, client); errMsg != "" {
-					return DashStatusMsg(errMsg)
-				}
-				return nil
-			}
+			return m, switchToSessionCmd(selected.Name)
 		}
 	}
 	return m, nil
@@ -255,6 +236,25 @@ func (m PersistentModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m PersistentModel) View() string {
 	return DashView(m.Shared, m.CurrentSession, m.CursorActive)
+}
+
+// switchToSessionCmd returns a tea.Cmd that resolves the client viewing the
+// persistent dashboard and switches it to sessionName. It resolves the client
+// deterministically via resolveDashClientFunc (issue #2522, defect 2) rather
+// than display-message, which can return a client on another session or an
+// empty string from this pane-resident process. When no client is attached it
+// returns a visible status message instead of a silent no-op.
+func switchToSessionCmd(sessionName string) tea.Cmd {
+	return func() tea.Msg {
+		client, _ := resolveDashClientFunc()
+		if client == "" {
+			return DashStatusMsg("no client is attached to the dashboard - cannot switch")
+		}
+		if errMsg := switchSessionFunc(sessionName, client); errMsg != "" {
+			return DashStatusMsg(errMsg)
+		}
+		return nil
+	}
 }
 
 // fetchCurrentClient queries tmux for the currently-attached client name and

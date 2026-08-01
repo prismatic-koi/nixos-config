@@ -338,3 +338,16 @@ var openDB = defaultOpenDB
 // defaults to tmux.CurrentClient but can be overridden in tests (where no real
 // tmux client is attached to the test server's pane) to inject a known client.
 var CurrentClientFunc = tmux.CurrentClient
+
+// resolveDashClientFunc resolves the tmux client currently viewing the
+// persistent dashboard session. It defaults to tmux.ClientForSession(DashSession),
+// which is sound from the pane-resident dashboard process - unlike
+// CurrentClientFunc (display-message), which can leak a client attached to a
+// different session or return an empty string. It is a package var so tests can
+// inject a known client. See issue #2522 (defect 2).
+var resolveDashClientFunc = func() (string, error) { return tmux.ClientForSession(DashSession) }
+
+// switchSessionFunc ensures the named session exists and switches the given
+// client to it. It defaults to ensureSessionAndSwitch and is a package var so
+// tests can intercept the switch without invoking real tmux. See issue #2522.
+var switchSessionFunc = ensureSessionAndSwitch
