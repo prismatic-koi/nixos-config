@@ -178,8 +178,9 @@ func DashSocketPath() string {
 // Uses a stat-poll rather than inotify/fsnotify to avoid adding a dependency.
 // The poll interval is 200ms — well under the 1-second target from the spec.
 //
-// This function is used by the popup dashboard only. The persistent dashboard
-// uses StartSocketListener instead.
+// Both dashboard modes use this watcher: the popup calls it directly, and the
+// persistent dashboard calls it via StartPersistentWatchers alongside the
+// push-event socket listener (issue #2522, defect 3).
 func WatchDashboardSentinel(ctx context.Context, p *tea.Program) {
 	sentinelPath := DashSentinelPath()
 	var lastMod time.Time
@@ -256,6 +257,29 @@ func StartSocketListener(ctx context.Context, p *tea.Program) (net.Listener, err
 	}()
 
 	return ln, nil
+}
+
+// StartPersistentWatchers wires up the background watchers the persistent
+// dashboard needs. It starts BOTH:
+//
+//   - the push-event socket listener (StartSocketListener), which delivers
+//     sub-second AgentState/AgentTitle updates for sessions already in the
+//     list; and
+//   - the sentinel watcher (WatchDashboardSentinel), which triggers a full
+//     FetchSessionsFromDB whenever `prism event` touches the dashboard
+//     sentinel, so newly spawned or cleaned-up sessions appear or disappear
+//     within one poll interval (200ms) instead of waiting up to 10 seconds for
+//     the next SessionSyncTick.
+//
+// Push events cannot add or remove rows, so the sentinel watcher is required
+// for the persistent dashboard to keep pace with the popup (issue #2522,
+// defect 3). It returns the socket listener for teardown; on socket-creation
+// error the sentinel watcher is still started and the error is returned for the
+// caller to log.
+func StartPersistentWatchers(ctx context.Context, p *tea.Program) (net.Listener, error) {
+	ln, err := StartSocketListener(ctx, p)
+	WatchDashboardSentinel(ctx, p)
+	return ln, err
 }
 
 // handlePushConn reads a single push event from conn and sends a PushEventMsg

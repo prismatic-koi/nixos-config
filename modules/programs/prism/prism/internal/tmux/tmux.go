@@ -177,6 +177,60 @@ func CurrentClient() (string, error) {
 	return run("display-message", "-p", "#{client_name}")
 }
 
+// ClientForSession returns the name of the tmux client attached to the named
+// session, resolved deterministically via list-clients.
+//
+// A pane-resident process (such as the persistent prism-dashboard) has no
+// invoking client, so display-message -p '#{client_name}' is unsound from it:
+// tmux resolves the "current client" indirectly and can return a client that
+// is attached to a different session, or an empty string. This was verified
+// against a throwaway tmux server (issue #2522). list-clients -t <session>
+// lists only the clients that actually view that session, which is the correct
+// switch-client target.
+//
+// When several clients view the session (mirrored viewing), the client with
+// the most recent activity is returned - that is the client that most likely
+// sent the key that triggered the query. When no client is attached, it
+// returns "" with a nil error.
+func ClientForSession(session string) (string, error) {
+	out, err := run("list-clients", "-t", session, "-F", "#{client_activity}|#{client_name}")
+	if err != nil {
+		return "", err
+	}
+	return mostRecentClient(out), nil
+}
+
+// mostRecentClient parses the output of
+// `list-clients -F '#{client_activity}|#{client_name}'` and returns the client
+// name with the greatest activity timestamp. It returns "" when the input has
+// no usable line. It is split out from ClientForSession so the selection logic
+// is unit-testable without a live tmux server.
+func mostRecentClient(out string) string {
+	best := ""
+	var bestAct int64 = -1
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, "|", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		name := strings.TrimSpace(parts[1])
+		if name == "" {
+			continue
+		}
+		var act int64
+		fmt.Sscan(strings.TrimSpace(parts[0]), &act)
+		if act >= bestAct {
+			bestAct = act
+			best = name
+		}
+	}
+	return best
+}
+
 // CurrentPanePath returns the pane_current_path of the current pane.
 func CurrentPanePath() (string, error) {
 	return run("display-message", "-p", "#{pane_current_path}")
