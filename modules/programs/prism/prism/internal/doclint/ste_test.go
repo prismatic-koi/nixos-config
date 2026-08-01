@@ -644,8 +644,9 @@ func TestSte_SkipFileScopedToSteSuppressesSteFindings(t *testing.T) {
 // TestSte_UnparameterisedSkipFileStaysGlobal covers the backwards-compat
 // AC: an existing `<!-- doclint-skip-file: reason -->` without a class
 // list keeps its historical global behaviour — both STE and identifier
-// findings are suppressed. This is the invariant that pi-wire-protocol.md
-// relies on through Phase 1.
+// findings are suppressed. This is the invariant that let
+// pi-wire-protocol.md keep its global skip through Phase 1 of the #2497
+// migration, before Phase 2 migrated it to the `identifiers`-only scope.
 func TestSte_UnparameterisedSkipFileStaysGlobal(t *testing.T) {
 	body := strings.Join([]string{
 		"<!-- doclint-skip-file: external interface, no scoping given -->",
