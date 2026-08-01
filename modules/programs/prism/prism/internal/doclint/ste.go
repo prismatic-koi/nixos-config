@@ -3,22 +3,24 @@ package doclint
 // STE (ASD-STE100) mechanical prose checks.
 //
 // This layer runs alongside the identifier-resolution scan (scanDoc) but
-// operates on a stripped view of the doc's prose. It reports five classes
-// of finding, each identified by a rule tag of the form `ste-<section>-<name>`:
+// operates on a stripped view of the doc's prose. It reports these
+// classes of finding, each identified by a rule tag of the form
+// `ste-<section>-<name>`:
 //
-//   ste-8.1-semicolon   — Rule 8.1: literal `;` outside code.
-//   ste-4.2-contraction — Rule 4.2: `'ll`, `'re`, `'ve`, `'d`, `n't`.
-//                         Possessive `'s` is NOT a contraction and never fires.
-//   ste-gr6-latin       — GR-6:     `e.g.`, `i.e.`, `etc.`.
-//   ste-3.2-modal       — Rule 3.2: `should`, `would`, `may`, `might`, `could`.
-//   ste-3.4-perfect     — Rule 3.4: `has been`, `have been`, `had been`.
+//   ste-8.1-semicolon        — Rule 8.1: literal `;` outside code.
+//   ste-4.2-contraction      — Rule 4.2: `'ll`, `'re`, `'ve`, `'d`, `n't`.
+//                              Possessive `'s` is NOT a contraction and never fires.
+//   ste-gr6-latin            — GR-6:     `e.g.`, `i.e.`, `etc.`.
+//   ste-3.2-modal            — Rule 3.2: `should`, `would`, `may`, `might`, `could`.
+//   ste-3.4-perfect          — Rule 3.4: `has been`, `have been`, `had been`.
+//   ste-slop                 — Slop words from the simple-english skill's
+//                              substitution table.
+//   ste-3.5-ing-after-comma  — Rule 3.5: a `-ing` verb clause after a comma.
+//   ste-6.3-sentence-length  — Rule 6.3: a sentence over the 25-word limit.
 //
-// Deliberately NOT implemented (issue #2490):
-//
-//   - Sentence length (deferred to #2496)
-//   - Slop words, `-ing` clauses (deferred to #2496)
-//   - Passive voice, part-of-speech rulings, synonym rotation (permanently
-//     out of scope; need a grammar parser and belong to human review)
+// Deliberately NOT implemented (permanently out of scope, need a grammar
+// parser and belong to human review): passive voice, part-of-speech
+// rulings, synonym rotation.
 //
 // High precision beats high recall. A lint that false-positives on
 // unrelated PRs gets deleted.
@@ -123,6 +125,37 @@ var steChecks = []steCheck{
 		re:   regexp.MustCompile(`(?i)\b(?:has|have|had)\s+been\b`),
 		note: "Rule 3.4 forbids perfect tenses; use the simple past or present.",
 	},
+	{
+		rule: "ste-slop",
+		// The word list is a conservative subset of the substitution table
+		// in modules/programs/prism/skills/simple-english/SKILL.md, picked
+		// for high precision: only words whose slop reading dominates
+		// legitimate technical use. "just", "easily", "powerful", and
+		// "crucially" are deliberately EXCLUDED — each has enough legit
+		// technical use to be ambiguous. Multi-word phrases go through
+		// steSlopPhraseRe (below) to avoid `\b` boundary trouble.
+		re:   regexp.MustCompile(`(?i)\b(?:leverage|utilize|utilise|seamlessly|effortlessly|robust|comprehensive|performant|functionality|facilitate|streamline|plethora|myriad|blazingly)\b`),
+		note: "Slop word from the simple-english substitution table; write the plain replacement or delete.",
+	},
+	{
+		rule: "ste-slop",
+		// Multi-word slop phrases from the substitution table. Anchored
+		// enough to avoid false positives on ordinary technical prose.
+		re:   regexp.MustCompile(`(?i)\b(?:in order to|prior to|it is worth noting|due to the fact that|in the event that|when it comes to|out of the box|under the hood|state-of-the-art|dive into|delve into|enables you to|allows you to)\b`),
+		note: "Slop phrase from the simple-english substitution table; write the plain replacement or delete.",
+	},
+	{
+		rule: "ste-3.5-ing-after-comma",
+		// A verb ending in `-ing` immediately after a comma is the
+		// characteristic Rule 3.5 offender (trailing participle: "…, making
+		// the table available"). Restrict the ing word to six or more
+		// characters (three-letter root + `ing`) so "king", "ring", and
+		// "sing" do not trip. Use `[ \t]` rather than `\s` so a comma
+		// at end-of-line and an -ing word beginning the next line do
+		// NOT match — that pattern was a false-positive source.
+		re:   regexp.MustCompile(`(?i),[ \t]+[a-z]{3,}ing\b`),
+		note: "Rule 3.5 forbids `-ing` as a verb; restructure into two sentences or use the simple present.",
+	},
 }
 
 // steFinding is an intermediate representation before promotion to the
@@ -135,17 +168,71 @@ type steFinding struct {
 	start int // byte offset within the full doc (for stable ordering)
 }
 
+// nonProseLineSet returns the set of 1-based line numbers that are NOT
+// prose paragraph text — headings, table rows, list items and their
+// wrapped continuations, blockquotes, indented code, HTML block markup,
+// setext underlines. Used to suppress the `-ing`-after-comma check on
+// tabular / list content where an `-ing` word is almost always an
+// adjective or gerund noun, not the trailing participle Rule 3.5
+// forbids.
+func nonProseLineSet(rawContent []byte) map[int]bool {
+	buf := stripFencedBlocks(rawContent)
+	buf = blankHTMLComments(buf)
+	out := map[int]bool{}
+	inListItem := false
+	lineNo := 0
+	for _, lineBytes := range bytes.Split(buf, []byte{'\n'}) {
+		lineNo++
+		line := string(lineBytes)
+		if strings.TrimSpace(line) == "" {
+			inListItem = false
+			out[lineNo] = true
+			continue
+		}
+		if listItemPrefixRe.MatchString(line) {
+			inListItem = true
+			out[lineNo] = true
+			continue
+		}
+		if inListItem && isListItemContinuation(line) {
+			out[lineNo] = true
+			continue
+		}
+		if headingRe.MatchString(line) ||
+			setextUnderlineRe.MatchString(line) ||
+			tableRowRe.MatchString(line) ||
+			blockquoteRe.MatchString(line) ||
+			indentedCodeRe.MatchString(line) ||
+			htmlBlockRe.MatchString(line) {
+			inListItem = false
+			out[lineNo] = true
+			continue
+		}
+		inListItem = false
+	}
+	return out
+}
+
 // runSteChecks scans a doc's prose (already stripped of code and HTML
 // comments) and returns the finding list.
 //
 // The `enabled` map, if non-nil, allows callers to disable specific
 // rule tags — used by the revert-and-watch-fail tests that prove each
-// check is not a no-op (AC in #2490).
-func runSteChecks(prose []byte, enabled map[string]bool) []steFinding {
+// check is not a no-op (AC in #2490 and #2496).
+//
+// `nonProse`, if non-nil, is the set of raw 1-based line numbers on
+// which the `-ing`-after-comma check must NOT fire (tables, headings,
+// list items — see nonProseLineSet).
+//
+// NOTE: the sentence-length check runs against RAW content, not this
+// stripped view (its tokeniser needs backticks visible for Rule 8.6).
+// It is dispatched separately by scanDoc via runSentenceLengthCheck.
+func runSteChecks(prose []byte, enabled map[string]bool, nonProse map[int]bool) []steFinding {
 	var out []steFinding
 	// Precompute line offsets so we can convert byte offsets to 1-based
 	// line numbers cheaply.
 	lines := lineOffsets(prose)
+	seen := map[string]bool{} // dedupe overlapping regex hits (line|rule|text)
 	for _, c := range steChecks {
 		if enabled != nil && !enabled[c.rule] {
 			continue
@@ -153,8 +240,17 @@ func runSteChecks(prose []byte, enabled map[string]bool) []steFinding {
 		for _, m := range c.re.FindAllIndex(prose, -1) {
 			start := m[0]
 			text := string(prose[start:m[1]])
+			line := lineFromOffset(lines, start)
+			key := c.rule + "|" + itoa(line) + "|" + text
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			if c.rule == "ste-3.5-ing-after-comma" && nonProse != nil && nonProse[line] {
+				continue
+			}
 			out = append(out, steFinding{
-				line:  lineFromOffset(lines, start),
+				line:  line,
 				text:  text,
 				rule:  c.rule,
 				note:  c.note,

@@ -3,8 +3,8 @@
 This document codifies the testing convention for changes to the SBPL profile
 generator under `internal/container/sandbox_exec.go`. It exists because four
 PRs (#1015, #1016, #1017, #1018) collectively shipped a non-functional
-sandbox-exec profile (the `/etc` symlink-resolution gap from #1187), and every
-unit test in `sandbox_exec_test.go` was green throughout — those tests asserted
+sandbox-exec profile (the `/etc` symlink-resolution gap from #1187). Every
+unit test in `sandbox_exec_test.go` was green throughout. Those tests asserted
 profile string content (substring checks) but never invoked
 `/usr/bin/sandbox-exec` against the generated profile to confirm it actually
 loaded and ran a binary.
@@ -36,8 +36,8 @@ This issue is tracked in #1192.
 
 String-level substring assertions on the generated profile are necessary but
 **not sufficient**. Every positive integration test must have a paired
-negative test that mutates the profile and asserts failure, proving the
-positive test is not green by accident.
+negative test that mutates the profile and asserts failure. The pair proves
+that the positive test is not green by accident.
 
 ## Why this matters
 
@@ -229,8 +229,8 @@ Apply this convention to any change that touches:
   configs, kube cache, and chromium Library skeleton the env redirects
   point at)
 
-Pure refactors that do not change the generated SBPL output are exempt — but
-the integration tests must continue to pass on the refactored code, which is
+Pure refactors that do not change the generated SBPL output are exempt. The
+integration tests must continue to pass on the refactored code, which is
 the load-bearing check.
 
 ## Out of scope
