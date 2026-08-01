@@ -908,7 +908,19 @@ func setupFullLayout(name, directory string, opts Opts) error {
 	// delivered verbatim to the shell instead of being consumed by tmux.
 	// agentPaneEnvVars returns PRISM_INITIAL_PROMPT when a prompt is set,
 	// enabling bwrap's --prompt delivery path via prism agent-run.
-	_ = tmux.NewWindow(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts))
+	//
+	// The agent window IS the session — if this call fails, the session has
+	// no usable pane and callers that later WaitForReady will silently time
+	// out after 30s with no diagnostic. Surface the error so SpawnSession's
+	// layoutErr cleanup path (KillSidecar + cleanupHalfAliveSession +
+	// tmux.KillSession + spawn_failed event) runs instead. Previously this
+	// call discarded its error, which is the reason issue #2510 presents as
+	// a bare "not ready within 30s" timeout rather than a clear message —
+	// whatever the underlying trigger turns out to be, the discarded error
+	// is what hides it.
+	if err := tmux.NewWindow(name, 1, "agent", directory, agentCmd, agentPaneEnvVars(opts)); err != nil {
+		return fmt.Errorf("setupFullLayout: create agent window for %q: %w", name, err)
+	}
 
 	if !opts.SkipStatusSeed {
 		self, selfErr := os.Executable()
@@ -931,6 +943,13 @@ func setupFullLayout(name, directory string, opts Opts) error {
 		}
 	}
 
+	// Cosmetic windows below: the term window and window-selection are
+	// convenience-only. Their failure does not break the session — the
+	// agent window (created above with a checked error) is the load-bearing
+	// pane. A missing term window means the user has to open one
+	// themselves; a failed SelectWindow leaves the client on window 0
+	// (edit) instead of window 1 (agent). Neither warrants tearing down a
+	// working session, so the errors here are deliberately discarded.
 	_ = tmux.NewWindow(name, 2, "term", directory, "", nil)
 
 	focusIdx := 1
