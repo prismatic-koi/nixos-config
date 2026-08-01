@@ -29,9 +29,11 @@ func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]
 	}
 
 	// Whole-file opt-out for docs that describe an interface living outside
-	// this repository (e.g. pi-rpc-interface.md, pi-wire-protocol.md, whose
-	// identifiers live in the external pi coding-agent package).
-	if hasSkipFileDirective(content) {
+	// this repository (pi-rpc-interface.md, pi-wire-protocol.md). The
+	// directive may be scoped per-category (`identifiers`, `ste`); an
+	// unparameterised directive keeps its historical global meaning.
+	skipScope, hasSkip := parseSkipFileDirective(content)
+	if hasSkip && skipScope.identifiers && skipScope.ste {
 		return nil, nil
 	}
 
@@ -39,10 +41,12 @@ func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]
 
 	var findings []Finding
 
-	// STE prose checks, gated by the in-scope basename set. Runs BEFORE
-	// identifier resolution so the two finding kinds group naturally by
-	// (file, line) in the sort at the end of Scan.
-	if isSteInScope(path, idx.prismRoot) {
+	// STE prose checks, gated by the in-scope basename set and by any
+	// `ste`-scoped skip directive. Runs BEFORE identifier resolution
+	// so the two finding kinds group naturally by (file, line) in the
+	// sort at the end of Scan.
+	steSkipped := hasSkip && skipScope.ste
+	if isSteInScope(path, idx.prismRoot) && !steSkipped {
 		prose := steStripToProse(content)
 		nonProse := nonProseLineSet(content)
 		for _, s := range runSteChecks(prose, steEnabled, nonProse) {
@@ -73,6 +77,10 @@ func scanDocWithSteEnabled(path string, idx *sourceIndex, steEnabled map[string]
 				Category: "ste",
 			})
 		}
+	}
+	// Identifier resolution, gated by any `identifiers`-scoped skip.
+	if hasSkip && skipScope.identifiers {
+		return findings, nil
 	}
 	tokens := extractTokens(content)
 

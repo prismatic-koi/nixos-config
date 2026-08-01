@@ -135,7 +135,7 @@ source":
      walkthrough in §4. It does not exist and is not expected to. -->
 ```
 
-### Per-file: `<!-- doclint-skip-file: reason -->`
+### Per-file: `<!-- doclint-skip-file: [classes | ] reason -->`
 
 ```markdown
 <!-- doclint-skip-file: this doc describes the external pi coding-agent RPC interface, not the prism Go source. -->
@@ -147,9 +147,29 @@ and RPC specs for the external pi coding-agent). The reason text after the
 colon is required so the exemption is self-documenting. Its content is not
 otherwise inspected.
 
+**Per-class scoping (issue #2497).** The directive body may name one or
+more lint classes before a `|` separator to opt out of only those
+classes. Recognised class names: `identifiers`, `ste`.
+
+```markdown
+<!-- doclint-skip-file: identifiers | external TypeScript identifiers -->
+<!-- doclint-skip-file: ste | machine-generated changelog, prose is templated -->
+<!-- doclint-skip-file: identifiers, ste | equivalent to the unparameterised global form -->
+```
+
+An unparameterised directive (no `|` in the body) keeps its historical
+global meaning: both classes are suppressed. This preserves the
+pre-scoping behaviour for any doc that has not been migrated.
+Unknown class names inside the list are silently dropped so a typo
+does not accidentally widen the skip — an all-unknown list therefore
+suppresses nothing.
+
 Prefer per-token `doclint-ignore` over the whole-file skip. A file that
 mixes in-tree and out-of-tree references must annotate the out-of-tree
-tokens individually so drift on the in-tree ones still gets caught.
+tokens individually so drift on the in-tree ones still gets caught. A
+doc that already carries an unparameterised skip should migrate to
+`identifiers` (or the appropriate class list) so the other checks still
+apply to its prose.
 
 ## ASD-STE100 prose checks (issues #2490, #2496)
 
@@ -217,7 +237,7 @@ The STE lint deliberately does NOT check any of the following:
   out of scope. These need a grammar parser and belong to the
   `simple-english` skill and to human review.
 
-### Scope: only these four docs
+### Scope: only these docs
 
 The STE checks run only against these files, matched by basename under
 `<prismRoot>/docs/` (nested subdirectories like `docs/invariants/` or
@@ -227,36 +247,38 @@ The STE checks run only against these files, matched by basename under
 - `docs/podman-proxy.md`
 - `docs/sandbox-exec-testing.md`
 - `docs/stdout-capture-testing.md`
+- `docs/pi-rpc-interface.md` (added in Phase 1 of issue #2497, alongside
+  the scoping of its `doclint-skip-file` directive to identifiers only)
 
 The in-scope set is the constant `steInScopeBasenames` in
-`internal/doclint/ste.go`. Extending it beyond these four is a
-deliberate scope decision, not a routine change. `agents/*.md` and
-`skills/*/SKILL.md` carry 73 banned modals tracked by #2493, and a
-lint covering them cannot land green today.
+`internal/doclint/ste.go`. Extending it further is a deliberate scope
+decision, not a routine change. `agents/*.md` and `skills/*/SKILL.md`
+carry 73 banned modals tracked by #2493, and a lint covering them
+cannot land green today.
 
-### Global skip semantics (issue #2497)
+### Skip-file scoping (issue #2497)
 
-The existing `<!-- doclint-skip-file: reason -->` directive is **global**
-for v1. A file that carries it is exempt from the STE checks AND from
-the identifier checks. This applies to `docs/pi-rpc-interface.md` and
-`docs/pi-wire-protocol.md`.
+The `<!-- doclint-skip-file: reason -->` directive accepts an optional
+class list before a `|` separator. A doc can then opt out of one lint
+category while remaining subject to the other. See the [Per-file](#per-file----doclint-skip-file-classes--reason---)
+section above for the syntax.
 
-This is a deliberate simplification. Scoping the directive per lint
-class (so an out-of-tree identifier doc still gets STE coverage, or
-an STE-in-scope doc opts out of only one rule) is tracked by #2497.
+An unparameterised directive is treated as `identifiers, ste` — the
+pre-scoping global behaviour. This is the invariant that lets
+`docs/pi-wire-protocol.md` keep its global skip through Phase 1 of
+the #2497 migration without a silent change.
+
+Phase 1 (this migration) moved `docs/pi-rpc-interface.md` to the
+`identifiers`-only scope and cleared the resulting STE findings. Its
+skip reason cites external TypeScript identifier resolution, which
+has nothing to do with prose quality. The doc is a human-readable
+interface spec and its prose is now scanned. Phase 2 will do the
+same for `docs/pi-wire-protocol.md`.
 
 The per-token `<!-- doclint-ignore: <token1>, <token2> -->` directive
 suppresses matching STE findings the same way it suppresses identifier
 findings. The offending text is looked up in the union of all
 doclint-ignore lists in the file, and a match skips the finding.
-
-### Known gap, deliberately accepted
-
-The two skipped docs (`pi-rpc-interface.md` and `pi-wire-protocol.md`)
-carry the largest share of prose violations across the whole docs tree
-but get no STE coverage. Their `doclint-skip-file` reasons concern
-external TypeScript identifier resolution, not prose quality. Making
-the directive per-lint-class (issue #2497) is the correct fix.
 
 ## Failure output
 
