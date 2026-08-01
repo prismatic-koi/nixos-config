@@ -292,18 +292,33 @@ const (
 
 // DefaultAgent returns the agent to use for the given directory.
 // If explicit is non-empty it is returned unchanged.
-// Otherwise the parent directory is checked for a .bare entry (prism
-// bare+worktree layout):
-//   - parent has .bare AND basename == "main"  → "coordinator"
-//   - parent has .bare AND basename ≠ "main"   → "worker"
-//   - parent does NOT have .bare               → "" (non-worktree path)
+// Otherwise the directory tree is walked upward (via git.BareRoot) to find
+// the nearest ancestor with a .bare entry (prism bare+worktree layout):
+//   - an ancestor has .bare AND basename == "main"  → "coordinator"
+//   - an ancestor has .bare AND basename ≠ "main"   → "worker"
+//   - no ancestor has .bare                          → "" (non-worktree path)
+//
+// The walk is depth-agnostic: it correctly resolves worktrees nested more
+// than one level below the bare root (e.g. a branch name containing "/",
+// such as "feat/my-thing", produces a worktree at <bare>/feat/my-thing —
+// two levels below the bare root, not one). See issue #2510.
+//
+// Because the walk is depth-agnostic, it resolves a role for ANY directory
+// beneath a bare root, not only worktree roots — e.g. <bare>/main/subdir, or
+// the bare root itself, both resolve as if they were worktrees ("worker"
+// unless basename == "main"). Callers are expected to pass a worktree root.
+// Passing a subdirectory yields "worker"/"coordinator" rather than "", which
+// is a different fallback than the non-worktree-path case documented below.
+// All current callers (agent_run.go, pr.go, spawn.go, switch.go,
+// switch_project.go) pass a worktree root obtained from git worktree
+// listings or picker selections, so this is not currently reachable.
 //
 // Callers must treat "" as "no --agent flag, but use coordinator config blob".
 func DefaultAgent(directory, explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
-	if git.IsBareRepo(filepath.Dir(directory)) {
+	if git.BareRoot(directory) != "" {
 		if filepath.Base(directory) == "main" {
 			return "coordinator"
 		}

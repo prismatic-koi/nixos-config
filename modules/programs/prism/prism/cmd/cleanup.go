@@ -1136,12 +1136,16 @@ func worktreePathFromSession(session string) string {
 // probeConventionalWorktreePath attempts to locate a worktree for the given
 // session at the conventional bare-root layout location: <bare-root>/<branch>/.
 //
-// It derives the bare-root hint from the DB row's worktree_path column (using
-// the parent directory of the stored path, even if that path no longer exists
-// on disk).  This handles the case where the session died before its worktree
-// was visible to the normal worktreePathFromSession lookup (e.g. the stored
-// path points at a now-deleted directory, but the worktree was re-created at
-// the conventional sibling location).
+// It derives the bare-root hint from the DB row's worktree_path column by
+// walking upward from the stored path via git.BareRoot (looking for the
+// nearest ancestor containing a .bare marker), even if that path no longer
+// exists on disk. This handles the case where the session died before its
+// worktree was visible to the normal worktreePathFromSession lookup (e.g. the
+// stored path points at a now-deleted directory, but the worktree was
+// re-created at the conventional sibling location). The upward walk is
+// depth-agnostic, so it correctly resolves the bare root for worktrees nested
+// more than one level below it (e.g. a branch name containing "/", such as
+// "feat/my-thing" — see issue #2510).
 //
 // Return values:
 //   - (probed, bareRoot) where probed is non-empty when a worktree was found at
@@ -1158,11 +1162,22 @@ func probeConventionalWorktreePath(session, worktreeName string) (worktreePath, 
 	if err != nil || status == nil || status.Worktree == "" {
 		return "", ""
 	}
-	// Derive the bare-root as the parent of the stored worktree path.
+	// Derive the bare-root by walking upward from the stored worktree path.
 	// E.g. if the DB contains "/code/nixos-config/sandbox-exec-smoke", the
 	// bare root is "/code/nixos-config" and we probe
-	// "/code/nixos-config/<worktreeName>/.git".
-	candidateBareRoot := filepath.Dir(status.Worktree)
+	// "/code/nixos-config/<worktreeName>/.git". For a nested worktree (branch
+	// name containing "/") such as "/code/nixos-config/feat/my-thing", a
+	// single filepath.Dir call would wrongly yield "/code/nixos-config/feat"
+	// instead of "/code/nixos-config" — git.BareRoot walks upward until it
+	// finds the .bare marker, so it is depth-agnostic (issue #2510).
+	candidateBareRoot := git.BareRoot(status.Worktree)
+	if candidateBareRoot == "" {
+		// Fall back to the immediate parent when no ancestor has a .bare
+		// marker (e.g. the stored path itself no longer exists on disk, so
+		// git.BareRoot's os.Stat-based walk cannot find anything). This
+		// preserves the pre-existing behaviour for that degraded case.
+		candidateBareRoot = filepath.Dir(status.Worktree)
+	}
 	candidate := filepath.Join(candidateBareRoot, worktreeName)
 	if _, statErr := os.Stat(filepath.Join(candidate, ".git")); statErr == nil {
 		return candidate, candidateBareRoot
