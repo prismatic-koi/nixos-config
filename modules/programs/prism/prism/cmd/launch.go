@@ -19,9 +19,9 @@ package cmd
 //	--fresh        start a new session without --continue (used with --path)
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
-	"strings"
 	"syscall"
 	"time"
 
@@ -36,6 +36,15 @@ var (
 	launchPath       string
 	launchFresh      bool
 )
+
+// execStart starts the given *exec.Cmd without waiting for it (mirrors
+// (*exec.Cmd).Start). It is a package-level indirection so tests can redirect
+// the kitty spawn through a real pty (e.g. via `script`) against an isolated
+// test tmux server, to exercise the actual tmux command-list execution
+// semantics that caused issue #2521, instead of only inspecting argv.
+var execStart = func(cmd *exec.Cmd) error {
+	return cmd.Start()
+}
 
 var launchCmd = &cobra.Command{
 	Use:   "launch",
@@ -81,7 +90,10 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 		if err := ensureDashSession(); err != nil {
 			return err
 		}
-		client, _ := tmux.CurrentClient()
+		client, err := tmux.CurrentClient()
+		if err != nil {
+			return fmt.Errorf("resolving current tmux client: %w", err)
+		}
 		return tmux.SwitchClient(client, dashSession)
 
 	case launchInTerminal:
@@ -97,32 +109,35 @@ func runLaunch(_ *cobra.Command, _ []string) error {
 
 	default:
 		// Outside tmux entirely: spawn a new kitty window attached to the
-		// dashboard session. The scratchpad is created in the background so it
-		// is ready for use as a shell without being the initial focus.
+		// dashboard session. The scratchpad and dashboard sessions are ensured
+		// here, on the Go side, exactly as the other two branches do — this
+		// avoids chaining their creation into the same tmux command list as the
+		// final attach. Chaining is what caused issue #2521: when prism-dashboard
+		// already existed, the chained "new-session -ds prism-dashboard" command
+		// failed, which aborted the rest of the tmux command list (including the
+		// trailing "switch-client"/attach), leaving the new kitty window's client
+		// attached to scratchpad instead of the dashboard.
+		if err := ensureScratchpad(); err != nil {
+			return err
+		}
+		if err := ensureDashSession(); err != nil {
+			return err
+		}
 		kittyBin := config.Load().KittyBin
 		if resolved, err := exec.LookPath(kittyBin); err == nil {
 			kittyBin = resolved
 		}
-		// Build the startup command sequence:
-		//   1. Create (or reuse) the scratchpad session in the background.
-		//   2. Create (or reuse) the prism-dashboard session.
-		//   3. Attach the new kitty window to the dashboard.
-		self, err := os.Executable()
-		if err != nil {
-			self = "prism"
-		}
-		loopCmd := "while '" + strings.ReplaceAll(self, "'", "'\\''") + "' dashboard --popup; do true; done"
+		// Attach the new kitty window directly to the (now guaranteed to exist)
+		// dashboard session. Using a single "attach-session" command means there
+		// is nothing else in the command list that can fail and abort the attach.
 		cmd := exec.Command(kittyBin,
 			"--title", "Prism",
-			tmux.TmuxBin, "new-session", "-As", "scratchpad", "-c", os.Getenv("HOME"),
-			";", "rename-window", "-t", "scratchpad:0", "term",
-			";", "new-session", "-ds", dashSession, "-n", "dashboard", loopCmd,
-			";", "switch-client", "-t", dashSession,
+			tmux.TmuxBin, "attach-session", "-t", dashSession,
 		)
 		// Restore() is not called here: prism restart handles restore before
 		// re-execing into launch, and prism-restore.service covers the login/reboot
 		// scenario. runLaunch itself never restores.
-		return cmd.Start()
+		return execStart(cmd)
 	}
 }
 
