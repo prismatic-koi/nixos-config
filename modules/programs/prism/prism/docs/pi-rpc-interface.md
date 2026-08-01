@@ -1,10 +1,10 @@
 # Pi `--rpc` mode audit and interface contract
 
-<!-- doclint-skip-file: this document describes the external pi coding-agent RPC interface (source at /nix/store/...-pi-coding-agent-<version>/), not the prism Go source under this repo. Backticked identifiers here are TypeScript names in the pi package and cannot be resolved by the local doclint. -->
+<!-- doclint-skip-file: identifiers | this document describes the external pi coding-agent RPC interface (source at /nix/store/...-pi-coding-agent-<version>/), not the prism Go source under this repo. Backticked identifiers here are TypeScript names in the pi package and cannot be resolved by the local doclint. The prose is still scanned for ASD-STE100 (issue #2497). -->
 
 **Status:** D-1 deliverable (issue #1626). Prescriptive ground truth for D-3 and
 downstream daemon issues. All claims are grounded in the binary, source code, or
-the existing wire-protocol doc; every citation is reproducible.
+the existing wire-protocol doc. Every citation is reproducible.
 
 **Pi version audited:** `0.72.1` (Nix store path:
 `/nix/store/vmyapz1s657gbn3vn8iyifj6vlg5i9sm-pi-coding-agent-0.72.1/`)
@@ -24,7 +24,7 @@ via `--session <path>` is confirmed. Provider registration via an extension hook
 extension. The credential store path `~/.pi/agent/` is confirmed.
 
 The **one design assumption that does not hold** is the central premise of
-§3.3 and the daemon's tool-dispatch model: pi does **not** emit a `tool_call`
+§3.3 and the daemon's tool-dispatch model. Pi does **not** emit a `tool_call`
 frame and wait for a `tool_result` frame from the daemon before proceeding.
 Pi's RPC protocol is an **observation + steering** protocol, not a
 **delegation** protocol. The daemon cannot intercept tool execution and
@@ -40,8 +40,8 @@ downstream sandbox issues (D-4, D-5) cannot proceed as designed until either:
 
 1. Pi gains a `--delegate-tools` mode where `tool_call` frames are emitted
    on stdout and the process *waits* for a `tool_result` frame on stdin before
-   executing the tool; or
-2. The daemon design is revised to use a different sandboxing strategy that
+   executing the tool.
+2. Or the daemon design is revised to use a different sandboxing strategy that
    does not require intercepting pi's tool calls at the RPC layer.
 
 D-2 (directory skeleton) can proceed independently. D-3 and beyond are blocked
@@ -62,7 +62,7 @@ pending a decision on which path to take.
 ```
 
 The flag is `--mode rpc`, not `--rpc`. The design doc's §3.2 shows the spawn
-command as `pi --rpc [--worktree <path>]`; the correct flag is
+command as `pi --rpc [--worktree <path>]`. The correct flag is
 `--mode rpc` (no `--rpc` shorthand exists).
 
 **Functional verification:**
@@ -92,7 +92,7 @@ and is the current production version pinned by this repo's
 
 **Worktree argument:** The design doc references `--worktree <path>` as a flag
 that scopes the session to a specific directory. This flag does **not exist** in
-pi 0.72.1. Pi uses the process working directory (`cwd`) as its worktree — the
+pi 0.72.1. Pi uses the process working directory (`cwd`) as its worktree. The
 daemon must `chdir()` to the correct worktree before spawning the pi child, or
 pass an initial prompt that references the worktree. There is no `--worktree`
 flag.
@@ -123,13 +123,19 @@ This does not match pi's actual implementation.
 
 **RpcCommand type** (`dist/modes/rpc/rpc-types.d.ts`): The `RpcCommand` union
 type lists all valid commands that can be sent *to* pi on stdin. There is no
-`tool_result` command type. The complete list is: `prompt`, `steer`,
-`follow_up`, `abort`, `new_session`, `get_state`, `set_model`, `cycle_model`,
-`get_available_models`, `set_thinking_level`, `cycle_thinking_level`,
-`set_steering_mode`, `set_follow_up_mode`, `compact`, `set_auto_compaction`,
-`set_auto_retry`, `abort_retry`, `bash`, `abort_bash`, `get_session_stats`,
-`export_html`, `switch_session`, `fork`, `clone`, `get_fork_messages`,
-`get_last_assistant_text`, `set_session_name`, `get_messages`, `get_commands`.
+`tool_result` command type. The complete list follows.
+
+Session commands: `prompt`, `steer`, `follow_up`, `abort`, `new_session`,
+`get_state`, `switch_session`, `fork`, `clone`, `set_session_name`.
+
+Model and behaviour commands: `set_model`, `cycle_model`, `get_available_models`,
+`set_thinking_level`, `cycle_thinking_level`, `set_steering_mode`,
+`set_follow_up_mode`, `compact`, `set_auto_compaction`, `set_auto_retry`,
+`abort_retry`.
+
+Bash and export commands: `bash`, `abort_bash`, `get_session_stats`,
+`export_html`, `get_fork_messages`, `get_last_assistant_text`, `get_messages`,
+`get_commands`.
 
 **Tool execution is internal to pi.** `dist/core/agent-session.js` lines
 170–215 install `agent.beforeToolCall` and `agent.afterToolCall` hooks. These
@@ -160,20 +166,20 @@ The only effect an extension can have on a tool call is:
   lines 349–353.
 - `undefined` → pi executes the tool normally in its own process.
 
-An extension **cannot** return a substitute tool result (e.g. the output of a
-sandboxed subprocess). The `tool_result` frame in `docs/pi-wire-protocol.md`
-is an *outbound* frame emitted by the prism extension to the sidecar over the
-harness socket — it is *not* an RPC command the daemon can send to pi over
-stdin.
+An extension **cannot** return a substitute tool result (for example, the
+output of a sandboxed subprocess). The `tool_result` frame in
+`docs/pi-wire-protocol.md` is an *outbound* frame emitted by the prism
+extension to the sidecar over the harness socket. It is *not* an RPC command
+the daemon can send to pi over stdin.
 
 **Tool events on stdout** (from `dist/core/agent-session.js` lines 439–470 and
 `docs/rpc.md` §Events): pi emits `tool_execution_start`, `tool_execution_update`,
-and `tool_execution_end` events on stdout. These are **observation events** only;
-they do not pause tool execution waiting for a response.
+and `tool_execution_end` events on stdout. These are **observation events**
+only. They do not pause tool execution waiting for a response.
 
 **What is required to make delegation possible:**
 
-Pi would need a new operating mode — call it `--delegate-tools` — in which:
+Delegation requires a new operating mode — call it `--delegate-tools` — in which:
 
 1. When the LLM requests a tool call, pi emits a `tool_call` frame on stdout
    (as an RPC event) and then *suspends* that tool call, waiting for a
@@ -197,9 +203,9 @@ This is a substantial upstream pi change. It does not exist in 0.72.1.
 - **§2, §3.3, §4.1, §5, §6.2, §6.3, §7.2** all assume the daemon intercepts
   tool calls. None of this is implementable without the upstream change
   described above.
-- **§11.1** should be amended: the open question is not "does `--rpc` exist"
-  but "does pi support tool delegation via a `tool_result` stdin command" — and
-  the answer is no.
+- **§11.1** — amend to reflect the finding. The open question is not
+  "does `--rpc` exist" but "does pi support tool delegation via a
+  `tool_result` stdin command" — and the answer is no.
 
 ---
 
@@ -233,10 +239,10 @@ whether it exists.
 |---|---|---|
 | `hello` | **refuted** (as RPC event) | Not in `docs/rpc.md`. In the harness wire protocol (§4.1 of `pi-wire-protocol.md`), `hello` is the first frame the prism *extension* sends to the *sidecar* over the socket. There is no `hello` event emitted by pi on stdout in `--mode rpc`. |
 | `state_change` | **partial** | Not a direct RPC event. Pi emits `agent_start`, `agent_end`, `turn_start`, `turn_end` as lifecycle events. `state_change` is a wire-protocol frame emitted by the prism extension to the sidecar (§5.2 of `pi-wire-protocol.md`), translated from pi's hook events. In RPC mode, the equivalent events are `agent_start` / `agent_end`. |
-| `tool_call` | **confirmed** (as extension wire frame) | As a daemon→pi RPC command: does not exist. As an extension→sidecar wire frame (§5.3 of `pi-wire-protocol.md`): implemented in the prism extension, derived from `tool_execution_start` (`prism.ts:2343`). The extension emits `tool_call` to the sidecar; the sidecar records it in the DB. Pi never waits for a `tool_result` response on stdin. Verified for pi 0.72.1 in issue #1764: the extension API event `tool_execution_start` carries `{toolCallId, toolName, args}` and fires once per tool invocation; the extension translates it to a `msg_assistant`-style observation frame. The shape is pinned by `dist/core/extensions/types.d.ts:519` in pi 0.72.1. |
-| `msg_assistant` | **confirmed** (as extension wire frame) | The prism extension forwards assistant text to the sidecar via two complementary code paths (issue #1764, pi 0.72.1): (a) **streaming** — `message_update` events with `assistantMessageEvent.type === "text_delta"` are forwarded one frame per delta (`prism.ts:isAssistantTextDeltaEvent`); (b) **backstop** — a `message_end` event with `message.role === "assistant"` is consulted when no `text_delta` was forwarded for that message, and the extension emits one `msg_assistant` frame per `{type:"text", text}` block in `message.content` (`prism.ts:extractAssistantText`). The per-message `currentAssistantSawDelta` flag prevents double-emission when both paths fire. The streaming-only model documented in the pre-#1764 version of this row was incomplete: non-streaming providers (or any provider that goes `start → done` without intermediate text_delta) bypass path (a) entirely. The AssistantMessageEvent union (`start`, `text_start`, `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`, `error`) is pinned by `node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225` and asserted by the regression suite in `prism.test.ts`. |
+| `tool_call` | **confirmed** (as extension wire frame) | As a daemon→pi RPC command: does not exist. As an extension→sidecar wire frame (§5.3 of `pi-wire-protocol.md`): implemented in the prism extension, derived from `tool_execution_start` (`prism.ts:2343`). The extension emits `tool_call` to the sidecar. The sidecar records it in the DB. Pi never waits for a `tool_result` response on stdin. Verified for pi 0.72.1 in issue #1764: the extension API event `tool_execution_start` carries `{toolCallId, toolName, args}` and fires once per tool invocation. The extension translates it to a `msg_assistant`-style observation frame. The shape is pinned by `dist/core/extensions/types.d.ts:519` in pi 0.72.1. |
+| `msg_assistant` | **confirmed** (as extension wire frame) | The prism extension forwards assistant text to the sidecar via two complementary code paths (issue #1764, pi 0.72.1). Path (a) **streaming** — `message_update` events with `assistantMessageEvent.type === "text_delta"` are forwarded one frame per delta (`prism.ts:isAssistantTextDeltaEvent`). Path (b) **backstop** — a `message_end` event with `message.role === "assistant"` is consulted when no `text_delta` was forwarded for that message, and the extension emits one `msg_assistant` frame per `{type:"text", text}` block in `message.content` (`prism.ts:extractAssistantText`). The per-message `currentAssistantSawDelta` flag prevents double-emission when both paths fire. The streaming-only model documented in the pre-#1764 version of this row was incomplete. Non-streaming providers (or any provider that goes `start → done` without intermediate text_delta) bypass path (a) entirely. The AssistantMessageEvent union (`start`, `text_start`, `text_delta`, `text_end`, `thinking_start`, `thinking_delta`, `thinking_end`, `toolcall_start`, `toolcall_delta`, `toolcall_end`, `done`, `error`) is pinned by `node_modules/@mariozechner/pi-ai/dist/types.d.ts:185-225` and asserted by the regression suite in `prism.test.ts`. |
 | `turn_start` | **confirmed** | Emitted by pi in RPC mode (`docs/rpc.md` §turn_start / turn_end). |
-| `turn_end` | **confirmed** | Emitted by pi in RPC mode; carries `message` and `toolResults`. The `usage` field is nested in the message. |
+| `turn_end` | **confirmed** | Emitted by pi in RPC mode. Carries `message` and `toolResults`. The `usage` field is nested in the message. |
 | `session_shutdown` | **refuted** (as RPC event) | Not emitted by pi as an RPC stdout event. Pi exits when stdin closes (EOF). The prism extension emits `session_shutdown` to the sidecar on pi's `session_shutdown` hook (§5.10 of `pi-wire-protocol.md`), but this is the harness socket protocol, not the RPC stdout. |
 | `provider_error` | **partial** | In RPC mode, provider errors appear via `auto_retry_start` / `auto_retry_end` events (`docs/rpc.md` §auto_retry_start). The prism extension also emits `provider_error` to the sidecar (§5.8 of `pi-wire-protocol.md`). No direct `provider_error` event on the RPC stdout. |
 | `auto_retry_start` | **confirmed** | Emitted by pi in RPC mode (`docs/rpc.md` §auto_retry_start). Fields: `attempt`, `maxAttempts`, `delayMs`, `errorMessage` (camelCase, not the snake_case from `pi-wire-protocol.md`). |
@@ -249,7 +255,7 @@ whether it exists.
 | `hello_ack` | **refuted** (as RPC command) | No `hello_ack` RPC command type. In the harness wire protocol, `hello_ack` is sent by the sidecar to the extension over the socket (§4.2 of `pi-wire-protocol.md`). No handshake exists in the RPC stdin/stdout protocol. |
 | `tool_result` | **refuted** (as RPC command) / **confirmed** (as extension wire frame) | Not in `RpcCommand` union type (`dist/modes/rpc/rpc-types.d.ts`). See Q2. As an extension→sidecar wire frame (§5.4 of `pi-wire-protocol.md`): emitted by the prism extension on `tool_execution_end` (`prism.ts:2416`), with `{id, success, output, truncated?}` derived from the event's `result.content` (text blocks concatenated via `coerceToolOutput`). Verified for pi 0.72.1 in issue #1764: the extension API event `tool_execution_end` carries `{toolCallId, toolName, result, isError}` and fires once per tool completion. Shape pinned by `dist/core/extensions/types.d.ts:533` in pi 0.72.1. |
 | `prompt` | **confirmed** | `{"type":"prompt","message":"...","streamingBehavior":"steer"|"followUp"}` — fully implemented (`docs/rpc.md` §prompt). |
-| `set_model` | **confirmed** | `{"type":"set_model","provider":"anthropic","modelId":"claude-sonnet-4-20250514"}` — functional, verified by probe. **Field name is `modelId` not `model`** (design doc §3.3 shows `model`; the actual RPC command uses `modelId`). |
+| `set_model` | **confirmed** | `{"type":"set_model","provider":"anthropic","modelId":"claude-sonnet-4-20250514"}` — functional, verified by probe. **Field name is `modelId` not `model`** (design doc §3.3 shows `model`. The actual RPC command uses `modelId`). |
 | `register_provider` | **partial** (see Q4) | Exists as a harness wire-protocol frame handled by the prism extension, not as an RPC stdin command. |
 | `set_active_tools` | **partial** | As an RPC stdin command: does not exist in `RpcCommand` types. As a harness wire-protocol frame: exists and is implemented in the prism extension (lines 1145–1160 of `prism.ts`), which calls `api.setActiveTools(tools)`. Not a direct pi RPC command. |
 | `abort` | **confirmed** | `{"type":"abort"}` — exists as an RPC command (`docs/rpc.md` §abort). |
@@ -261,7 +267,7 @@ Pi emits several events in `--mode rpc` that are not listed in the design doc:
 | RPC event | Meaning |
 |---|---|
 | `agent_start` | Agent begins processing a prompt |
-| `agent_end` | Agent finishes; contains all messages for the run |
+| `agent_end` | Agent finishes. Contains all messages for the run |
 | `message_start` | Assistant message begins |
 | `message_update` | Streaming text/thinking/tool-call delta |
 | `message_end` | Assistant message complete |
@@ -278,7 +284,7 @@ Pi emits several events in `--mode rpc` that are not listed in the design doc:
 
 ## Q4 — Does `register_provider` exist as a runtime frame, or only as static config?
 
-**Verdict: yes, as a runtime harness wire-protocol frame; not as a pi RPC
+**Verdict: yes, as a runtime harness wire-protocol frame. Not as a pi RPC
 stdin command.**
 
 ### Evidence
@@ -311,16 +317,17 @@ provider dynamically is:
 `register_provider` can be sent at any time during the session (it is not
 limited to a startup window). The design doc's §11.5 question "whether pi's
 `--rpc` mode supports `register_provider` before the first `prompt` frame" is
-moot: it is not an RPC-mode concept at all; it is a harness socket concept.
+moot: it is not an RPC-mode concept at all. It is a harness socket concept.
 
 ### Implications for design doc
 
 - **§11.5**: The open question is resolved partially. `register_provider` as a
   *runtime* wire frame is already implemented (via the prism extension). As a
   direct pi RPC command (stdin), it does not exist and is not needed — the
-  prism extension already proxies it. The daemon would send `register_provider`
-  on the harness socket, the extension forwards it to pi's runtime. The
-  existing architecture handles this; no new pi feature is needed.
+  prism extension already proxies it. In this architecture the daemon sends
+  `register_provider` on the harness socket, and the extension forwards it to
+  pi's runtime. The existing architecture handles this. No new pi feature is
+  needed.
 - **§6.4 of `pi-wire-protocol.md`**: The `register_provider` frame spec there
   is normative and implemented correctly in the prism extension.
 
@@ -362,9 +369,9 @@ append-only JSONL files. The first line is a header:
 ```
 
 Subsequent lines are typed entries (model changes, user messages, assistant
-messages, tool calls, tool results, thinking blocks, compaction summaries, etc.)
-forming a tree (branching via fork). The full conversation history is in the
-file.
+messages, tool calls, tool results, compaction summaries, and thinking
+blocks) that form a tree (branching via fork). The full conversation history
+is in the file.
 
 **Session directory layout** (`dist/core/session-manager.js` line 213):
 
@@ -392,9 +399,9 @@ daemon crash and continue from the same conversation, the daemon must:
 
 1. Know the session JSONL file path (stored as `harness_session_id` in the
    prism DB — though the design doc's claim that `harness_session_id` is a
-   session UUID needs refinement; the prism extension sends the session UUID,
-   which prism records; the full file path must be reconstructed from the UUID
-   and the session directory).
+   session UUID needs refinement. The prism extension sends the session UUID,
+   which prism records. The full file path must be reconstructed from the UUID
+   and the session directory.
 2. Spawn `pi --mode rpc --session <file-path>`.
 
 Pi will load all prior conversation history from the JSONL file. The new pi
@@ -408,18 +415,19 @@ supports session continuation is resolved: yes it does, via `--session`.
 - **§9.2**: "pi writes conversation history to `~/.pi/agent/sessions/<session_id>/`"
   is incorrect. The actual path is
   `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`.
-  The `harness_session_id` in the DB records the UUID; the daemon must
+  The `harness_session_id` in the DB records the UUID. The daemon must
   reconstruct the full file path from it. The session directory path depends
   on the session's `cwd`, which must also be stored.
 - **§5.11 of `pi-wire-protocol.md`**: Same correction — `prism cleanup`'s
-  reference to `~/.pi/agent/sessions/<session_id>/` is incorrect; the session
+  reference to `~/.pi/agent/sessions/<session_id>/` is incorrect. The session
   file path is `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`.
 - **§11.6**: Resolved. Pi supports session continuation via `--session <path>`.
   The file path (not just the UUID) must be preserved across daemon restarts.
-  The daemon should store the full JSONL path in the DB at session creation time.
-- **§8.2**: The restore logic described is implementable. The daemon stores the
-  session file path at spawn time; on restart it re-spawns with `--session
-  <path>`.
+  The daemon must store the full JSONL path in the DB at session creation
+  time.
+- **§8.2**: The restore logic described is implementable. The daemon stores
+  the session file path at spawn time. On restart it re-spawns with
+  `--session <path>`.
 
 ---
 
@@ -439,7 +447,8 @@ Pi's credential and config resolution follows this priority chain
    OAuth tokens are auto-refreshed by pi when they expire (with locking to
    prevent races between concurrent pi instances).
 3. **Environment variables** — standard provider env vars (`ANTHROPIC_API_KEY`,
-   `OPENROUTER_API_KEY`, etc.) — resolved after `auth.json`, as a fallback.
+   `OPENROUTER_API_KEY`, and other provider keys) — resolved after
+   `auth.json`, as a fallback.
 4. **`~/.pi/agent/models.json`** — custom provider definitions with embedded
    API keys (via `fallbackResolver`).
 
@@ -455,7 +464,7 @@ All paths are relative to the agent directory (`getAgentDir()` =
 | Path | Content | Written by |
 |---|---|---|
 | `~/.pi/agent/auth.json` | API keys and OAuth tokens (JSON, mode 0o600) | Pi on login / token refresh |
-| `~/.pi/agent/settings.json` | User settings (model, theme, tool config, etc.) | Pi's `/settings` command |
+| `~/.pi/agent/settings.json` | User settings (model, theme, tool config, and more) | Pi's `/settings` command |
 | `~/.pi/agent/models.json` | Custom provider definitions | Pi's model config |
 | `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl` | Append-only conversation tree | Pi (every message, every tool call, every turn) |
 | `~/.pi/agent/atlassian-mcp-oauth.json` | Atlassian MCP OAuth tokens | Pi's `/login-atlassian` |
@@ -472,8 +481,9 @@ a per-cwd directory, not files within a per-session-ID directory. See Q5.
 
 **No new write paths outside of tool calls:** In daemon mode (pi running
 unsandboxed), all pi writes occur to the paths above. Pi does not write to the
-worktree outside of tool calls. The `bash` executor writes to `/tmp/pi-bash-*.log`
-for large outputs; these are transient and not sensitive.
+worktree outside of tool calls. The `bash` executor writes to
+`/tmp/pi-bash-*.log` for large outputs. These are transient and not
+sensitive.
 
 **Atlassian MCP OAuth tokens** (`~/.pi/agent/atlassian-mcp-oauth.json`):
 In the current bwrap model, this file is bind-mounted read-write (see
@@ -487,8 +497,8 @@ writes this file directly from the host with no sandboxing required.
   correction to `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl`.
 - **§8.1**: The design doc claims pi's session path is the `harness_session_id`
   in the DB. This is accurate if the DB stores the full JSONL file path.
-  Currently the DB stores the session UUID (from `session_status.session_id`);
-  the daemon implementation must store the full path, not just the UUID.
+  Currently the DB stores the session UUID (from `session_status.session_id`).
+  The daemon implementation must store the full path, not just the UUID.
 
 ---
 
@@ -542,18 +552,18 @@ must first look up the model by `modelId` from the registry).
 ## Appendix B — design doc sections affected
 
 The following design doc sections contain assumptions that diverge from pi's
-actual interface. This is a flag for a follow-up refresh of the design doc;
-the corrections are not made in this PR.
+actual interface. This is a flag for a follow-up refresh of the design doc.
+The corrections are not made in this PR.
 
 | Section | Claim | Actual |
 |---|---|---|
-| §3.2 | `pi --rpc [--worktree <path>]` | `pi --mode rpc`; no `--worktree` flag; use process `cwd` |
-| §3.3 (frame table) | `tool_call` emitted pi→daemon; daemon sends `tool_result` to pi | Tool calls are executed internally; `tool_result` is not an RPC command |
-| §3.3 (frame table) | `hello` / `hello_ack` in RPC stdout/stdin | These are harness socket frames only; no RPC handshake |
-| §3.3 (frame table) | `session_shutdown` emitted pi→daemon via RPC | No RPC `session_shutdown` event; pi exits on stdin EOF |
-| §3.3 (frame table) | `state_change` emitted pi→daemon via RPC | No RPC `state_change` event; pi emits `agent_start`/`agent_end` |
-| §3.3 (frame table) | `set_active_tools` frame daemon→pi | Exists on harness socket only; not an RPC stdin command |
-| §3.3 (frame table) | `register_provider` frame daemon→pi | Exists on harness socket only; not an RPC stdin command |
+| §3.2 | `pi --rpc [--worktree <path>]` | `pi --mode rpc`. No `--worktree` flag. Use process `cwd` |
+| §3.3 (frame table) | `tool_call` emitted pi→daemon. Daemon sends `tool_result` to pi | Tool calls are executed internally. `tool_result` is not an RPC command |
+| §3.3 (frame table) | `hello` / `hello_ack` in RPC stdout/stdin | These are harness socket frames only. No RPC handshake |
+| §3.3 (frame table) | `session_shutdown` emitted pi→daemon via RPC | No RPC `session_shutdown` event. Pi exits on stdin EOF |
+| §3.3 (frame table) | `state_change` emitted pi→daemon via RPC | No RPC `state_change` event. Pi emits `agent_start`/`agent_end` |
+| §3.3 (frame table) | `set_active_tools` frame daemon→pi | Exists on harness socket only. Not an RPC stdin command |
+| §3.3 (frame table) | `register_provider` frame daemon→pi | Exists on harness socket only. Not an RPC stdin command |
 | §3.3 (frame table) | `set_model` with field `model` | Field is `modelId` in the RPC command |
 | §9.2 | `~/.pi/agent/sessions/<session_id>/` | `~/.pi/agent/sessions/<encoded-cwd>/<ts>_<uuid>.jsonl` |
 | §5.11 (pi-wire-protocol.md) | `prism cleanup` locates `~/.pi/agent/sessions/<session_id>/` | Same correction as §9.2 |

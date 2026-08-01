@@ -43,7 +43,11 @@ var ignoreDirectiveRe = regexp.MustCompile(`(?ms)^\s*<!--\s*doclint-ignore:\s*(.
 //
 // Same line-start anchoring and fenced-block guard as ignoreDirectiveRe
 // apply, for the same reason.
-var skipFileDirectiveRe = regexp.MustCompile(`(?m)^\s*<!--\s*doclint-skip-file:\s*[^\n]+?\s*-->`)
+//
+// The capture group holds the directive body (everything after
+// `doclint-skip-file:`), which parseSkipFileDirective splits into an
+// optional class list and a reason. See docs/doclint.md for the syntax.
+var skipFileDirectiveRe = regexp.MustCompile(`(?m)^\s*<!--\s*doclint-skip-file:\s*([^\n]+?)\s*-->`)
 
 // backtickRe matches a single-backtick span on one line (double backticks are
 // used to quote content that itself contains a backtick — we match those with
@@ -79,14 +83,64 @@ func extractIgnoreSet(content []byte) map[string]bool {
 	return out
 }
 
-// hasSkipFileDirective reports whether the document opts out of doclint
-// entirely via a `<!-- doclint-skip-file: reason -->` annotation.
+// skipFileScope records which lint categories a `doclint-skip-file`
+// directive suppresses.
 //
-// As with extractIgnoreSet, fenced code blocks are stripped first — a
-// documentation example of the directive syntax must not silently opt
-// the doc that documents it out of the lint.
+// An unparameterised directive (`<!-- doclint-skip-file: reason -->`)
+// keeps its historical global meaning: both categories are true. A
+// scoped directive names one or more categories before a `|`
+// separator (`<!-- doclint-skip-file: identifiers | reason -->` or
+// `<!-- doclint-skip-file: identifiers, ste | reason -->`) and only
+// those categories are suppressed.
+//
+// Recognised class names: `identifiers`, `ste`. Unknown names are
+// silently ignored so a typo does not accidentally widen the skip.
+// Callers must therefore treat an all-false scope as a no-op.
+type skipFileScope struct {
+	identifiers bool
+	ste         bool
+}
+
+// parseSkipFileDirective returns the scope of the first
+// `doclint-skip-file` directive in content, plus a boolean indicating
+// whether any directive was present. When no directive is present the
+// returned scope is the zero value.
+//
+// As with extractIgnoreSet, fenced code blocks are stripped first —
+// a documentation example of the directive syntax must not silently
+// opt the doc that documents it out of the lint.
+func parseSkipFileDirective(content []byte) (skipFileScope, bool) {
+	prose := stripFencedBlocks(content)
+	m := skipFileDirectiveRe.FindSubmatch(prose)
+	if m == nil {
+		return skipFileScope{}, false
+	}
+	body := string(m[1])
+	pipe := strings.Index(body, "|")
+	if pipe < 0 {
+		// Unparameterised: global scope, matches the pre-scoping
+		// behaviour. The whole body is the reason.
+		return skipFileScope{identifiers: true, ste: true}, true
+	}
+	var scope skipFileScope
+	for _, c := range strings.Split(body[:pipe], ",") {
+		switch strings.ToLower(strings.TrimSpace(c)) {
+		case "identifiers":
+			scope.identifiers = true
+		case "ste":
+			scope.ste = true
+		}
+	}
+	return scope, true
+}
+
+// hasSkipFileDirective reports whether the document opts out of
+// every doclint category. Retained for tests that check the global
+// case; new callers should use parseSkipFileDirective and inspect the
+// per-category fields.
 func hasSkipFileDirective(content []byte) bool {
-	return skipFileDirectiveRe.Match(stripFencedBlocks(content))
+	scope, ok := parseSkipFileDirective(content)
+	return ok && scope.identifiers && scope.ste
 }
 
 // stripFencedBlocks returns content with every ```-fenced or ~~~-fenced

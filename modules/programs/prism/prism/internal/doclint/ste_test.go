@@ -565,6 +565,191 @@ func TestSte_EachCheckIsNotANoOp(t *testing.T) {
 	})
 }
 
+// TestSte_SkipFileScopedToIdentifiersKeepsSteFindings covers the Phase 1
+// per-lint scoping AC (#2497): a doc carrying `<!-- doclint-skip-file:
+// identifiers | reason -->` must still be scanned by STE, and produce STE
+// findings on prose that violates a rule.
+func TestSte_SkipFileScopedToIdentifiersKeepsSteFindings(t *testing.T) {
+	body := strings.Join([]string{
+		"<!-- doclint-skip-file: identifiers | external interface, TypeScript identifiers only -->",
+		"",
+		"# Test doc",
+		"",
+		"This paragraph has a semicolon; and a modal should.",
+		"A reference to `mountTypeAllowlist` which does not exist as a Go ident.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	sawSemi, sawModal, sawIdent := false, false, false
+	for _, f := range findings {
+		switch f.Rule {
+		case "ste-8.1-semicolon":
+			sawSemi = true
+		case "ste-3.2-modal":
+			sawModal = true
+		}
+		if f.Token == "mountTypeAllowlist" {
+			sawIdent = true
+		}
+	}
+	if !sawSemi {
+		t.Errorf("expected ste-8.1-semicolon under identifier-scoped skip, got %+v", findings)
+	}
+	if !sawModal {
+		t.Errorf("expected ste-3.2-modal under identifier-scoped skip, got %+v", findings)
+	}
+	if sawIdent {
+		t.Errorf("expected identifier check to be suppressed under identifier-scoped skip, got finding for mountTypeAllowlist")
+	}
+}
+
+// TestSte_SkipFileScopedToSteSuppressesSteFindings covers the reverse:
+// `<!-- doclint-skip-file: ste | reason -->` must suppress STE prose
+// findings but keep identifier resolution active.
+func TestSte_SkipFileScopedToSteSuppressesSteFindings(t *testing.T) {
+	body := strings.Join([]string{
+		"<!-- doclint-skip-file: ste | this doc is a machine-generated changelog -->",
+		"",
+		"# Test doc",
+		"",
+		"This paragraph has a semicolon; and a modal should.",
+		"A reference to `mountTypeAllowlist` which does not exist as a Go ident.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	for _, f := range findings {
+		if f.Category == "ste" {
+			t.Errorf("expected no STE finding under ste-scoped skip, got %s", f.String())
+		}
+	}
+	sawIdent := false
+	for _, f := range findings {
+		if f.Token == "mountTypeAllowlist" {
+			sawIdent = true
+		}
+	}
+	if !sawIdent {
+		t.Errorf("expected identifier resolution to remain active under ste-scoped skip, got %+v", findings)
+	}
+}
+
+// TestSte_UnparameterisedSkipFileStaysGlobal covers the backwards-compat
+// AC: an existing `<!-- doclint-skip-file: reason -->` without a class
+// list keeps its historical global behaviour — both STE and identifier
+// findings are suppressed. This is the invariant that pi-wire-protocol.md
+// relies on through Phase 1.
+func TestSte_UnparameterisedSkipFileStaysGlobal(t *testing.T) {
+	body := strings.Join([]string{
+		"<!-- doclint-skip-file: external interface, no scoping given -->",
+		"",
+		"# Test doc",
+		"",
+		"This paragraph has a semicolon; and a modal should.",
+		"A reference to `mountTypeAllowlist` which does not exist as a Go ident.",
+		"",
+	}, "\n")
+	root, _ := synthSteRoot(t, body)
+	findings, err := Scan(root, "")
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected global suppression from unparameterised skip-file, got %d findings: %+v", len(findings), findings)
+	}
+}
+
+// TestParseSkipFileDirective_Shapes covers the parser directly across the
+// shapes the AC calls out: no directive, unparameterised (global),
+// identifiers-only, ste-only, both classes, unknown class (silently
+// dropped so a typo does not widen the skip).
+func TestParseSkipFileDirective_Shapes(t *testing.T) {
+	cases := []struct {
+		name      string
+		body      string
+		wantHas   bool
+		wantScope skipFileScope
+	}{
+		{
+			name:    "no directive",
+			body:    "# Hello\n\nSome prose.\n",
+			wantHas: false,
+		},
+		{
+			name:      "unparameterised is global",
+			body:      "<!-- doclint-skip-file: a reason -->\n",
+			wantHas:   true,
+			wantScope: skipFileScope{identifiers: true, ste: true},
+		},
+		{
+			name:      "identifiers-only",
+			body:      "<!-- doclint-skip-file: identifiers | external interface -->\n",
+			wantHas:   true,
+			wantScope: skipFileScope{identifiers: true},
+		},
+		{
+			name:      "ste-only",
+			body:      "<!-- doclint-skip-file: ste | machine-generated -->\n",
+			wantHas:   true,
+			wantScope: skipFileScope{ste: true},
+		},
+		{
+			name:      "both classes explicit",
+			body:      "<!-- doclint-skip-file: identifiers, ste | both -->\n",
+			wantHas:   true,
+			wantScope: skipFileScope{identifiers: true, ste: true},
+		},
+		{
+			name:      "unknown class is silently dropped",
+			body:      "<!-- doclint-skip-file: identifers | typo of identifiers -->\n",
+			wantHas:   true,
+			wantScope: skipFileScope{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, has := parseSkipFileDirective([]byte(tc.body))
+			if has != tc.wantHas {
+				t.Fatalf("has: got %v, want %v", has, tc.wantHas)
+			}
+			if got != tc.wantScope {
+				t.Errorf("scope: got %+v, want %+v", got, tc.wantScope)
+			}
+		})
+	}
+}
+
+// TestSte_SkipScopingIsNotANoOp is the revert-and-watch-fail proof for
+// Phase 1: hasSkipFileDirective (the pre-scoping global gate) must NOT
+// short-circuit STE scanning when the directive is scoped to identifiers.
+// The check simulates the pre-scoping behaviour by calling
+// hasSkipFileDirective on the same content that
+// TestSte_SkipFileScopedToIdentifiersKeepsSteFindings uses — that helper
+// returns true only when both categories are suppressed. If it returned
+// true for an identifier-scoped directive, the STE pass would silently
+// skip and the AC test above would still pass vacuously.
+func TestSte_SkipScopingIsNotANoOp(t *testing.T) {
+	identScoped := []byte("<!-- doclint-skip-file: identifiers | reason -->\n")
+	if hasSkipFileDirective(identScoped) {
+		t.Fatal("identifier-scoped skip must not report as global; the STE pass would then be short-circuited")
+	}
+	steScoped := []byte("<!-- doclint-skip-file: ste | reason -->\n")
+	if hasSkipFileDirective(steScoped) {
+		t.Fatal("ste-scoped skip must not report as global; the identifier pass would then be short-circuited")
+	}
+	global := []byte("<!-- doclint-skip-file: reason -->\n")
+	if !hasSkipFileDirective(global) {
+		t.Fatal("unparameterised skip must remain global")
+	}
+}
+
 // TestSte_SandboxRootAbsentDoesNotFail exercises the "runs in the nix
 // sandbox where the repo root is absent" AC. Passing repoRoot="" is the
 // canonical simulation.
