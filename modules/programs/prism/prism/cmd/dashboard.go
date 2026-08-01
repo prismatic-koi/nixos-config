@@ -104,6 +104,11 @@ func ensureDashSession() error {
 	return c.Run()
 }
 
+// syscallExec is a package-level indirection over syscall.Exec so tests can
+// intercept the final exec call (which otherwise replaces the test process)
+// and assert on its arguments instead of actually exec'ing.
+var syscallExec = syscall.Exec
+
 // syscallExecTmux replaces the current process with tmux attached to session
 // using syscall.Exec so no parent process remains.
 // Uses tmux.TmuxBin (ldflags-injected absolute path on NixOS) so the exec
@@ -115,7 +120,7 @@ func syscallExecTmux(sess string) error {
 		// doesn't exist in the PATH search; try using it directly.
 		tmuxBin = tmux.TmuxBin
 	}
-	return syscall.Exec(tmuxBin, []string{"tmux", "attach-session", "-t", sess}, os.Environ())
+	return syscallExec(tmuxBin, []string{"tmux", "attach-session", "-t", sess}, os.Environ())
 }
 
 func init() {
