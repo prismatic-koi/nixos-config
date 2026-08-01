@@ -305,8 +305,17 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 			args = append(args, "--bind", bareDir, bareDir)
 		}
 		// Worktree private git state (HEAD, index, logs, etc.) — read-write.
+		// A missing directory here is a real error, not a silent skip: as of
+		// issue #2518 WorktreeGitDir is resolved from the worktree's own
+		// authoritative .git gitdir pointer, so if it does not exist on disk
+		// something is genuinely wrong (e.g. corrupted worktree bookkeeping)
+		// and the sandbox must not silently start without the agent's git
+		// state bound in. BuildArgs cannot return an error, so the error is
+		// stashed on the Manager and surfaced by Prepare.
 		if _, err := os.Stat(cfg.WorktreeGitDir); err == nil {
 			args = append(args, "--bind", cfg.WorktreeGitDir, cfg.WorktreeGitDir)
+		} else {
+			m.worktreeGitDirErr = fmt.Errorf("worktree git dir %q: %w", cfg.WorktreeGitDir, err)
 		}
 	}
 
