@@ -298,9 +298,10 @@ category while remaining subject to the other. See the [Per-file](#per-file----d
 section above for the syntax.
 
 An unparameterised directive is treated as `identifiers, ste` — the
-pre-scoping global behaviour. This is the invariant that lets
+pre-scoping global behaviour. This is the invariant that let
 `docs/pi-wire-protocol.md` keep its global skip through Phase 1 of
-the #2497 migration without a silent change.
+the #2497 migration without a silent change. Phase 2 then migrated it
+to the `identifiers`-only scope described below.
 
 Phase 1 moved `docs/pi-rpc-interface.md` to the `identifiers`-only scope
 and cleared the resulting STE findings. Its skip reason cites external
