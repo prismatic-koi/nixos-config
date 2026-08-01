@@ -43,12 +43,12 @@ Backticked identifiers in markdown drift from the source they reference as
 the code evolves — functions get renamed, fields get added/removed, files
 get split. PR #2333 (the podman-proxy train's closer) went through three
 review cycles of `review-code` and `review-context` catching stale
-identifiers by hand: `bind_source_outside_allowlist:<path>` where the
-source emits `host_bind:<path>`, `mountTypeAllowlist` where the source has
-an inline `switch`, `agent_status.work_dir` where the column is
-`instance_id`, and six others. Each cycle's fixup commit closed one batch
-and missed another 1–3 of the same class, which the next cycle then
-caught.
+identifiers by hand. Examples: `bind_source_outside_allowlist:<path>`
+where the source emits `host_bind:<path>`, `mountTypeAllowlist` where the
+source has an inline `switch`, `agent_status.work_dir` where the column
+is `instance_id`, and six others. Each cycle's fixup commit closed one
+batch and missed another 1–3 of the same class, which the next cycle
+then caught.
 
 That pattern — cycle-by-cycle catching identifier drift — is a defining
 signature of "needs a structural fix, not more review." Review cycles cost
@@ -105,11 +105,11 @@ The source index that resolution runs against covers:
 
 ## Annotation — opting out of a specific finding
 
-Some backticked identifiers are intentionally unresolvable — for example,
-a hypothetical field used in a walkthrough (`CgroupBudget` in the podman
-proxy field-admission walkthrough), a name that describes an external
-system (git internals like `refs/stash`), or a deliberate counter-example
-(`AllPackages.nix` used in the file-naming rule).
+Some backticked identifiers are intentionally unresolvable. Examples
+include a hypothetical field used in a walkthrough (`CgroupBudget` in
+the podman proxy field-admission walkthrough), a name that describes an
+external system (git internals like `refs/stash`), and a deliberate
+counter-example (`AllPackages.nix` used in the file-naming rule).
 
 Two annotation directives are recognised, both as HTML comments so they
 do not render in the visible doc:
@@ -124,9 +124,10 @@ Lists tokens to exempt from the lint for this file. Whitespace inside the
 list is ignored. Multiple directives per file are allowed and their lists
 union together.
 
-Best practice: add a follow-up HTML comment explaining WHY the token is
-intentionally unresolvable, so future readers do not silently promote the
-annotation from "hypothetical" to "vanished from source":
+Best practice: add a follow-up HTML comment that explains WHY the token
+is intentionally unresolvable. That comment stops future readers from
+silently promoting the annotation from "hypothetical" to "vanished from
+source":
 
 ```markdown
 <!-- doclint-ignore: CgroupBudget -->
@@ -150,9 +151,9 @@ Prefer per-token `doclint-ignore` over the whole-file skip. A file that
 mixes in-tree and out-of-tree references must annotate the out-of-tree
 tokens individually so drift on the in-tree ones still gets caught.
 
-## ASD-STE100 prose checks (issue #2490)
+## ASD-STE100 prose checks (issues #2490, #2496)
 
-<!-- doclint-ignore: should, would, may, might, could, has, have, had, been, e, i, etc -->
+<!-- doclint-ignore: should, would, may, might, could, has, have, had, been, e, i, etc, leverage, seamlessly, robust, comprehensive, plethora, myriad -->
 <!--
   These are English words the STE section names by rule. They are
   backticked in the prose below (which strips them from STE scanning),
@@ -161,35 +162,57 @@ tokens individually so drift on the in-tree ones still gets caught.
 -->
 
 Alongside the identifier-resolution scan above, the same package runs
-five mechanical ASD-STE100 (Simplified Technical English) checks on a
+mechanical ASD-STE100 (Simplified Technical English) checks on a
 narrow set of docs. The rule of the STE lint matches the rule of the
 identifier lint: high precision beats high recall.
 
-### The five checks
+### The eight checks
 
-| Rule tag              | STE section | Detects |
-|-----------------------|-------------|---------|
-| `ste-8.1-semicolon`   | 8.1         | Literal `;` outside code. Rule 8.1 requires two sentences instead. |
-| `ste-4.2-contraction` | 4.2         | `` `'ll` ``, `` `'re` ``, `` `'ve` ``, `` `'d` ``, `` `n't` ``. Possessive `` `'s` `` is NOT a contraction and never fires. |
-| `ste-gr6-latin`       | GR-6        | `` `e.g.` ``, `` `i.e.` ``, `` `etc.` ``. Use "for example", "that is", "and more". |
-| `ste-3.2-modal`       | 3.2         | `` `should` ``, `` `would` ``, `` `may` ``, `` `might` ``, `` `could` ``. Apply the modal ladder: `` `must` `` for a requirement, `` `can` `` for capability, delete or restate a recommendation, `` `If X, then Y` `` for a hypothetical. |
-| `ste-3.4-perfect`     | 3.4         | `` `has been` ``, `` `have been` ``, `` `had been` ``. Use the simple past or present. |
+| Rule tag                  | STE section | Detects |
+|---------------------------|-------------|---------|
+| `ste-8.1-semicolon`       | 8.1         | Literal `;` outside code. Rule 8.1 requires two sentences instead. |
+| `ste-4.2-contraction`     | 4.2         | `` `'ll` ``, `` `'re` ``, `` `'ve` ``, `` `'d` ``, `` `n't` ``. Possessive `` `'s` `` is NOT a contraction and never fires. |
+| `ste-gr6-latin`           | GR-6        | `` `e.g.` ``, `` `i.e.` ``, `` `etc.` ``. Use "for example", "that is", "and more". |
+| `ste-3.2-modal`           | 3.2         | `` `should` ``, `` `would` ``, `` `may` ``, `` `might` ``, `` `could` ``. Apply the modal ladder: `` `must` `` for a requirement, `` `can` `` for capability, delete or restate a recommendation, `` `If X, then Y` `` for a hypothetical. |
+| `ste-3.4-perfect`         | 3.4         | `` `has been` ``, `` `have been` ``, `` `had been` ``. Use the simple past or present. |
+| `ste-slop`                | (skill)     | A word or phrase from the substitution table in the `simple-english` skill: `` `leverage` ``, `` `utilize` ``, `` `seamlessly` ``, `` `effortlessly` ``, `` `robust` ``, `` `comprehensive` ``, `` `performant` ``, `` `functionality` ``, `` `facilitate` ``, `` `streamline` ``, `` `plethora` ``, `` `myriad` ``, `` `blazingly` ``. Phrases: `` `in order to` ``, `` `prior to` ``, `` `it is worth noting` ``, `` `due to the fact that` ``, `` `in the event that` ``, `` `when it comes to` ``, `` `out of the box` ``, `` `under the hood` ``, `` `state-of-the-art` ``, `` `dive into` ``, `` `delve into` ``, `` `enables you to` ``, `` `allows you to` ``. Delete the word or write the plain replacement. |
+| `ste-3.5-ing-after-comma` | 3.5         | An `-ing` verb clause after a comma (trailing participle). Restructure into two sentences or use the simple present. The check runs only on prose paragraphs — tables, headings, and list items are skipped because `-ing` words there are almost always adjectives or gerund nouns. |
+| `ste-6.3-sentence-length` | 6.3 / 5.1   | A sentence over 25 words. Rule 5.1 sets a stricter 20-word limit for procedural text and Rule 6.3 sets 25 for descriptive text. The lint cannot classify a passage as procedural or descriptive, so the more permissive descriptive 25-word limit applies uniformly. |
 
 Fenced code blocks and inline backticked spans are stripped before the
-checks run, so a doc that documents these rules by name can backtick
-the banned tokens without tripping its own checks. That is why the
-table above backticks every offending example.
+first seven checks run. A doc that documents these rules by name can
+therefore backtick the banned tokens without tripping its own checks.
+That is why the table above backticks every offending example.
+
+### Sentence-length tokenisation
+
+The sentence-length check consumes the raw content, not the
+stripped-code view. Rule 8.6 needs backticks visible so that each
+backticked span counts as ONE word, not as its internal letter count.
+The tokeniser applies these STE rules from Section 8:
+
+- **Rule 8.5.** Text inside parentheses counts as ONE word.
+- **Rule 8.6.** A backticked span, a number with a unit (`5 s`, `10ms`,
+  `100%`), quoted text, and an alphanumeric identifier each count as
+  ONE word.
+- **Rule 8.7.** A hyphenated word counts as ONE word.
+- **Rule 8.4.** A vertical-list lead-in colon ends a sentence for
+  word-count purposes. In markdown, a paragraph that ends with `:`
+  before a list block satisfies this naturally.
+
+Sentence boundaries: a `.`, `!`, or `?` followed by whitespace and a
+capital letter, an emphasis marker (`*`, `_`), an open bracket, or a
+backtick. The heuristic under-detects rather than over-detects. A bare
+`.` mid-sentence, `1.5`, `.md`, and abbreviations like `U.S.` do not
+split, which biases the check toward precision.
+
+List items, table cells, headings, block quotes, HTML block markup,
+and indented code blocks are excluded from sentence-length scanning.
 
 ### Deliberate omissions
 
 The STE lint deliberately does NOT check any of the following:
 
-- **Sentence length.** Deferred to issue #2496. Sentence segmentation in
-  markdown is hard, and its remediation risks changing the meaning of a
-  technical specification.
-- **Slop words and `-ing` clauses.** Both measured zero across the
-  in-scope docs at issue-authoring time. Deferred to #2496 so that the
-  regex has a positive case in-tree.
 - **Passive voice, part-of-speech rulings, synonym rotation.** Permanently
   out of scope. These need a grammar parser and belong to the
   `simple-english` skill and to human review.
@@ -207,7 +230,7 @@ The STE checks run only against these files, matched by basename under
 
 The in-scope set is the constant `steInScopeBasenames` in
 `internal/doclint/ste.go`. Extending it beyond these four is a
-deliberate scope decision, not a routine change: `agents/*.md` and
+deliberate scope decision, not a routine change. `agents/*.md` and
 `skills/*/SKILL.md` carry 73 banned modals tracked by #2493, and a
 lint covering them cannot land green today.
 
@@ -224,7 +247,7 @@ an STE-in-scope doc opts out of only one rule) is tracked by #2497.
 
 The per-token `<!-- doclint-ignore: <token1>, <token2> -->` directive
 suppresses matching STE findings the same way it suppresses identifier
-findings: the offending text is looked up in the union of all
+findings. The offending text is looked up in the union of all
 doclint-ignore lists in the file, and a match skips the finding.
 
 ### Known gap, deliberately accepted
@@ -270,9 +293,9 @@ or `os.Getwd()`, so nothing about the environment matters other than
 
 If a new identifier shape recurs in prose and the current classifier
 skips it, extend `internal/doclint/classify.go` with a new
-`tokenClass`, add the resolver in `internal/doclint/resolve.go`, and
-add a unit test in `classify_test.go` / `scan_test.go`. Keep the
-rule conservative — err on the side of skipping ambiguous tokens.
+`tokenClass`. Then add the resolver in `internal/doclint/resolve.go`
+and a unit test in `classify_test.go` / `scan_test.go`. Keep the rule
+conservative — err on the side of skipping ambiguous tokens.
 
 ## Out of scope
 
