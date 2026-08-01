@@ -632,9 +632,14 @@ func renderExternalMergeNotifyText(pr int, prInfo *prInfo) string {
 // After the #2420 redesign, the polling state machine only reaches
 // failAndNotify via the tryMerge error path (a genuine `gh pr merge --squash`
 // failure that survived the reconciliation and branch-moved-race checks).
-// The BLOCKED-review / CI-failed / merge-conflicts / closed-without-merge
-// cases that previously routed here now either stay watching silently or use
-// notifyClosedNotMerged — see tick() and the #2420 discipline.
+// The other cases that previously routed here now go elsewhere:
+//
+//   - closed without merging → notifyClosedNotMerged
+//   - required check concluded in failure → notifyRequiredChecksFailed (#2525)
+//   - BLOCKED awaiting review or approval, and merge conflicts → no terminal
+//     transition at all; the poller stays watching silently
+//
+// See tick() for the routing, plus the #2420 and #2525 discipline.
 func (w *Watcher) failAndNotify(head *db.PendingMerge, errMsg string) {
 	// Pass head.Repo so the terminal write is scoped to this coordinator's
 	// repo (issue #2354).

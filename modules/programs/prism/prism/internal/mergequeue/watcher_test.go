@@ -476,10 +476,16 @@ type fakeWatcher struct {
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
-// instead of the real gh CLI. Mirrors the #2420 async-poll state machine:
-// only prism-driven merge / out-of-band merge / closed-without-merge / genuine
-// merge mutation failure produce a coordinator notification; all other states
-// stay watching silently. An unprotected repo NEVER auto-merges.
+// instead of the real gh CLI. Mirrors the #2420 async-poll state machine as
+// amended by #2525: a coordinator notification is produced only by a
+// prism-driven merge, an out-of-band merge, a close without merge, a genuine
+// merge mutation failure, or a BLOCKED PR whose required checks have all
+// concluded with at least one failure. All other states stay watching
+// silently. An unprotected repo NEVER auto-merges.
+//
+// Prefer driving the real Watcher.tick through an injected runGHFunc for new
+// tests — see watcher_blocked_ci_failure_test.go. This mirror must be kept in
+// step with tick() by hand, so it is the weaker signal of the two.
 func (fw *fakeWatcher) processHead(ctx context.Context) {
 	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.sessionName)
 	if err != nil || head == nil {
