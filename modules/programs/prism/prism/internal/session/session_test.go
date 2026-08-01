@@ -1058,3 +1058,85 @@ func TestCreate_TmuxNewSessionFailure(t *testing.T) {
 		t.Errorf("error %q does not mention the session name", err.Error())
 	}
 }
+
+// failTmuxBinOnAgentWindow installs a fake tmux binary that succeeds for
+// every invocation EXCEPT one that creates the agent window (matched by the
+// presence of both "new-window" and "agent" in argv). Used by
+// TestSetupFullLayout_AgentWindowFailure_Propagates to exercise the
+// discarded-error surface at internal/session/session.go:setupFullLayout —
+// the fix for issue #2510 makes that failure surface up to the caller
+// instead of being swallowed.
+func failTmuxBinOnAgentWindow(t *testing.T) {
+	t.Helper()
+	wrapperPath := t.TempDir() + "/tmux"
+	// The script fails only when both "new-window" and "agent" appear as
+	// arguments. Every other invocation (new-session, rename-window,
+	// send-keys, and even the term-window creation which passes -n term)
+	// succeeds silently, so the failure mode is scoped to the agent pane.
+	script := `#!/bin/sh
+has_new_window=0
+has_agent=0
+for a in "$@"; do
+  case "$a" in
+    new-window) has_new_window=1 ;;
+    agent) has_agent=1 ;;
+  esac
+done
+if [ "$has_new_window" = 1 ] && [ "$has_agent" = 1 ]; then
+  echo "tmux: cannot create agent window (injected by test)" >&2
+  exit 1
+fi
+exit 0
+`
+	if err := os.WriteFile(wrapperPath, []byte(script), 0755); err != nil {
+		t.Fatalf("failTmuxBinOnAgentWindow: write wrapper: %v", err)
+	}
+	orig := tmux.TmuxBin
+	tmux.TmuxBin = wrapperPath
+	t.Cleanup(func() { tmux.TmuxBin = orig })
+}
+
+// TestSetupFullLayout_AgentWindowFailure_Propagates verifies that when the
+// agent window (tmux window index 1, the load-bearing pane that runs `prism
+// agent-run` or a direct pi invocation) fails to be created, Create() returns
+// a non-nil error naming the session. Pre-fix this call site discarded its
+// error via `_ = tmux.NewWindow(...)` and setupFullLayout returned nil, so
+// the caller (SpawnSession) proceeded to the readiness gate and eventually
+// surfaced only a bare "not ready within 30s" timeout — the misdirection
+// that made issue #2510 hard to triage.
+//
+// Revert-and-watch-fail: with the `_ = tmux.NewWindow(name, 1, "agent", ...)`
+// line restored (error discarded), this test passes vacuously because
+// setupFullLayout carries on past the failure and returns nil once the
+// tmux-session-start seed subprocess exits (PRISM_TEST_SUBPROCESS=1 makes
+// the re-execed test binary exit 0 as a stub). With the fix in place
+// (checked error) the wrap returns a non-nil error immediately and the
+// assertions below trip only on regressions.
+func TestSetupFullLayout_AgentWindowFailure_Propagates(t *testing.T) {
+	_, _ = openSpawnTestDB(t)
+	failTmuxBinOnAgentWindow(t)
+	// PRISM_TEST_SUBPROCESS=1 makes the sidecar stub in TestMain exit
+	// immediately when os.Executable() is re-invoked from setupFullLayout
+	// (both StartSidecarWithOpts and the tmux-session-start seed hop).
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	dir := t.TempDir()
+	opts := Opts{
+		SessionName:    "myrepo@branch--nested",
+		Layout:         LayoutFull,
+		IsolationMode:  "bwrap",
+		PIExtensionDir: testPIExtensionDir,
+		ForceFresh:     true,
+	}
+	err := Create("myrepo@branch--nested", dir, opts)
+	if err == nil {
+		t.Fatal("expected non-nil error when the agent window fails to be created, got nil (issue #2510 regression: discarded tmux.NewWindow error hides the failure)")
+	}
+	if !strings.Contains(err.Error(), "myrepo@branch--nested") {
+		t.Errorf("error %q does not mention the session name", err.Error())
+	}
+	if !strings.Contains(err.Error(), "agent window") {
+		t.Errorf("error %q does not mention 'agent window' — the caller-facing error should name the failing step", err.Error())
+	}
+}
