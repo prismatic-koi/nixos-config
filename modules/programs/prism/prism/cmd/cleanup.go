@@ -109,6 +109,12 @@ type cleanupModel struct {
 	state        cleanupState
 	session      string
 	worktreeName string
+	// branchName is the actual git branch name resolved from worktreePath's
+	// HEAD (see resolveBranchName), as opposed to worktreeName which is the
+	// sanitised session component ('/' mapped to '--', not reversible — see
+	// issue #2501). All git branch operations must use effectiveBranchName(),
+	// not worktreeName, so branches containing '/' resolve correctly.
+	branchName   string
 	worktreePath string
 	bareRoot     string
 	defaultBr    string
@@ -120,14 +126,68 @@ type cleanupModel struct {
 }
 
 func newCleanupModel(session, worktreeName, worktreePath, bareRoot, defaultBr string) cleanupModel {
+	branchName := worktreeName
+	if resolved, ok := resolveBranchName(worktreePath); ok {
+		branchName = resolved
+	} else if worktreePath != "" {
+		proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to session-derived name %q, which is wrong for branches containing '/' (issue #2501)\n", worktreePath, worktreeName)
+	}
 	return cleanupModel{
 		state:        stateInfo,
 		session:      session,
 		worktreeName: worktreeName,
+		branchName:   branchName,
 		worktreePath: worktreePath,
 		bareRoot:     bareRoot,
 		defaultBr:    defaultBr,
 	}
+}
+
+// effectiveBranchName returns the resolved git branch name for git
+// operations, falling back to worktreeName (the sanitised session
+// component) when branchName was never resolved — e.g. a cleanupModel
+// constructed directly by a test without going through newCleanupModel.
+func (m cleanupModel) effectiveBranchName() string {
+	if m.branchName != "" {
+		return m.branchName
+	}
+	return m.worktreeName
+}
+
+// resolveBranchName returns the git branch actually checked out in
+// worktreePath, read directly from the worktree's HEAD via git.SymbolicRef,
+// rather than reconstructed by reversing the session-name sanitisation
+// performed by sanitiseBranchComponent.
+//
+// That reverse mapping cannot work: '/' maps to '--' when building the
+// session name, and the mapping is not injective — a branch literally named
+// "a--b" and a branch named "a/b" both sanitise to the session component
+// "a--b". For any branch containing '/', reconstructing the name from the
+// session component yields a name that does not exist, so downstream
+// git.BranchExists / git.ForceDeleteBranch calls silently no-op. This was
+// the root cause of issue #2501's silent branch leak (24 `quick/pr-*`
+// branches accumulated over ~2.5 months).
+//
+// Callers MUST invoke this before the worktree is removed: SymbolicRef reads
+// worktreePath's on-disk .git file, which `git worktree remove` deletes.
+//
+// Returns (branch, true) on success. Returns ("", false) when worktreePath
+// is empty, no longer exists on disk, or HEAD is detached (no "refs/heads/"
+// prefix) — callers must warn and fall back to the sanitised name rather
+// than silently trusting an unresolved value.
+func resolveBranchName(worktreePath string) (string, bool) {
+	if worktreePath == "" {
+		return "", false
+	}
+	ref, err := git.SymbolicRef(worktreePath)
+	if err != nil {
+		return "", false
+	}
+	const prefix = "refs/heads/"
+	if !strings.HasPrefix(ref, prefix) {
+		return "", false
+	}
+	return strings.TrimPrefix(ref, prefix), true
 }
 
 func (m cleanupModel) Init() tea.Cmd { return nil }
@@ -148,7 +208,7 @@ func (m cleanupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case stateConfirmRemove:
 			if key == "y" {
 				// Check if branch exists to offer deletion.
-				if git.BranchExists(m.bareRoot, m.worktreeName) {
+				if git.BranchExists(m.bareRoot, m.effectiveBranchName()) {
 					m.state = stateConfirmBranch
 				} else {
 					m.state = stateDone
@@ -163,7 +223,7 @@ func (m cleanupModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if key == "y" {
 				m.deleteBranch = true
 				// Check if merged.
-				if !git.BranchMerged(m.bareRoot, m.worktreeName, m.defaultBr) {
+				if !git.BranchMerged(m.bareRoot, m.effectiveBranchName(), m.defaultBr) {
 					m.state = stateConfirmForceDel
 				} else {
 					m.state = stateDone
@@ -189,6 +249,18 @@ type cleanupDoneMsg struct{ err error }
 
 func (m cleanupModel) doCleanup() tea.Cmd {
 	return func() tea.Msg {
+		// Resolve the actual branch name BEFORE the worktree is removed —
+		// git.RemoveWorktree deletes worktreePath's .git file, after which
+		// resolveBranchName can no longer read HEAD. m.branchName is normally
+		// already resolved by newCleanupModel; this is a defence-in-depth
+		// re-resolution for models constructed directly (e.g. by tests).
+		branchName := m.effectiveBranchName()
+		if resolved, ok := resolveBranchName(m.worktreePath); ok {
+			branchName = resolved
+		} else if m.deleteBranch {
+			proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to %q, which is wrong for branches containing '/' (issue #2501)\n", m.worktreePath, branchName)
+		}
+
 		// Remove worktree first (while still in the session).
 		if err := git.RemoveWorktree(m.bareRoot, m.worktreePath); err != nil {
 			return cleanupDoneMsg{fmt.Errorf("worktree remove: %w", err)}
@@ -198,9 +270,9 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 		if m.deleteBranch {
 			var branchErr error
 			if m.forceDelete {
-				branchErr = git.ForceDeleteBranch(m.bareRoot, m.worktreeName)
+				branchErr = git.ForceDeleteBranch(m.bareRoot, branchName)
 			} else {
-				branchErr = git.DeleteBranch(m.bareRoot, m.worktreeName)
+				branchErr = git.DeleteBranch(m.bareRoot, branchName)
 			}
 			if branchErr != nil {
 				// Non-fatal — log but continue.
@@ -308,7 +380,7 @@ func (m cleanupModel) View() string {
 	sb.WriteString("\n")
 	sb.WriteString(fmt.Sprintf("  session  : %s\n", styleBold.Render(m.session)))
 	sb.WriteString(fmt.Sprintf("  worktree : %s\n", styleDim.Render(m.worktreePath)))
-	sb.WriteString(fmt.Sprintf("  branch   : %s\n", styleBold.Render(m.worktreeName)))
+	sb.WriteString(fmt.Sprintf("  branch   : %s\n", styleBold.Render(m.effectiveBranchName())))
 	sb.WriteString("\n")
 
 	if m.errMsg != "" {
@@ -327,12 +399,12 @@ func (m cleanupModel) View() string {
 
 	case stateConfirmBranch:
 		sb.WriteString(styleYellow.Render(
-			fmt.Sprintf("also delete branch '%s'? [y/N] ", m.worktreeName)) + "\n")
+			fmt.Sprintf("also delete branch '%s'? [y/N] ", m.effectiveBranchName())) + "\n")
 		sb.WriteString(styleDim.Render("  y delete branch  n keep branch") + "\n")
 
 	case stateConfirmForceDel:
 		sb.WriteString(styleYellow.Render(
-			fmt.Sprintf("branch '%s' is not fully merged — force delete? [y/N] ", m.worktreeName)) + "\n")
+			fmt.Sprintf("branch '%s' is not fully merged — force delete? [y/N] ", m.effectiveBranchName())) + "\n")
 		sb.WriteString(styleDim.Render("  y force delete  n keep branch") + "\n")
 
 	case stateDone:
@@ -671,6 +743,19 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		}
 	}
 
+	// Resolve the actual branch name from worktreePath's HEAD BEFORE the
+	// worktree is removed below — see resolveBranchName's doc comment.
+	// worktreeName (the sanitised session component) is used only as a
+	// fallback and for the "worktree path unknown" message, since it is not
+	// reversible to the real branch name for branches containing '/'
+	// (issue #2501).
+	branchName := worktreeName
+	if resolved, ok := resolveBranchName(worktreePath); ok {
+		branchName = resolved
+	} else if worktreePath != "" {
+		proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to session-derived name %q, which is wrong for branches containing '/' (issue #2501)\n", worktreePath, worktreeName)
+	}
+
 	if worktreePath == "" {
 		// AC (#2506): name both the session and the path we tried, rather than
 		// a bare "worktree path unknown". worktreeName is the branch component
@@ -693,13 +778,20 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		proglog.Warnf("[prism] warning: cleanup: refusing to remove worktree %s — path matches main worktree or an active session's worktree; skipping filesystem removal\n", worktreePath)
 	}
 
-	if bareRoot != "" && git.BranchExists(bareRoot, worktreeName) {
-		printLine("deleting branch %s...\n", worktreeName)
-		if err := git.ForceDeleteBranch(bareRoot, worktreeName); err != nil {
-			proglog.Warnf("[prism] warning: branch delete: %v — continuing cleanup\n", err)
+	if bareRoot != "" {
+		if git.BranchExists(bareRoot, branchName) {
+			printLine("deleting branch %s...\n", branchName)
+			if err := git.ForceDeleteBranch(bareRoot, branchName); err != nil {
+				proglog.Warnf("[prism] warning: branch delete: %v — continuing cleanup\n", err)
+			} else {
+				bn := branchName
+				result.BranchDeleted = &bn
+			}
 		} else {
-			bn := worktreeName
-			result.BranchDeleted = &bn
+			// AC (#2501): name the branch that was looked for rather than
+			// silently skipping — the same treatment #2509 gave the
+			// worktree-path-unknown case above.
+			proglog.Warnf("[prism] warning: branch %q not found — skipping branch delete for session %s\n", branchName, session)
 		}
 	}
 

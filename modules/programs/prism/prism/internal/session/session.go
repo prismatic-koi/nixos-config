@@ -304,11 +304,16 @@ const (
 // two levels below the bare root, not one). See issue #2510.
 //
 // Because the walk is depth-agnostic, it resolves a role for ANY directory
-// beneath a bare root, not only worktree roots — e.g. <bare>/main/subdir, or
-// the bare root itself, both resolve as if they were worktrees ("worker"
-// unless basename == "main"). Callers are expected to pass a worktree root.
-// Passing a subdirectory yields "worker"/"coordinator" rather than "", which
-// is a different fallback than the non-worktree-path case documented below.
+// beneath a bare root, not only worktree roots — e.g. <bare>/main/subdir
+// resolves as if it were a worktree ("worker" unless basename == "main").
+// The bare root itself does NOT resolve this way: BareRoot starts its walk
+// at filepath.Dir(directory), so BareRoot(<bare>) looks one level above
+// <bare> and returns "" unless that ancestor is itself a bare repo. Passing
+// the bare root therefore falls through to the non-worktree-path case below
+// ("", not "worker"). Callers are expected to pass a worktree root. Passing
+// a subdirectory of a worktree yields "worker"/"coordinator" rather than "",
+// which is a different fallback than the non-worktree-path case documented
+// below.
 // All current callers (agent_run.go, pr.go, spawn.go, switch.go,
 // switch_project.go) pass a worktree root obtained from git worktree
 // listings or picker selections, so this is not currently reachable.
