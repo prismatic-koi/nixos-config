@@ -525,7 +525,9 @@ At invocation, `prism merge <pr>` emits a synchronous message that names the det
 
 ### Poll-time notification contract
 
-During polling, the watcher fires a coordinator notification only for the four terminal events below. Every other observed state — including CI failures, new commits pushed, review-changes-requested, and unprotected-repo waits — results in a silent continuation. The initial-invocation message already told the coordinator what to wait for.
+During polling, the watcher fires a coordinator notification only for the terminal events below. Every other observed state — new commits pushed, review-changes-requested, checks still running, and unprotected-repo waits — results in a silent continuation. The initial-invocation message already told the coordinator what to wait for.
+
+One CI outcome is terminal (issue #2525). When `mergeStateStatus` is `BLOCKED`, every required check has concluded, and at least one concluded in a failure state (`FAILURE`, `TIMED_OUT`, `CANCELLED`, `ACTION_REQUIRED`), nothing resolves the PR without a new push. The watcher terminates the row and notifies. A failing check outside the repo's required-checks list does NOT trigger this, and neither does a required check that is still queued, still running, or absent from `statusCheckRollup`.
 
 | Outcome (during polling) | Notification text |
 |---|---|
@@ -536,10 +538,13 @@ During polling, the watcher fires a coordinator notification only for the four t
 | Out-of-band merge (merger named) | `PR #N merged out-of-band (merged by @<login> at <mergedAt>). Please clean up the branch and worktree.` |
 | Out-of-band merge (merger unknown) | `PR #N merged out-of-band. Please clean up the branch and worktree.` |
 | PR closed without merging (mid-poll) | `PR #N closed without merge. Please clean up the branch and worktree.` |
+| BLOCKED, required check concluded in failure | `PR #N CI failed: <check names>. Worker needs to fix and push. No merge will happen until then.` |
 | Genuine `gh pr merge` failure (rare fallback) | `PR #N merge failed: <error>` |
 | Coordinator session ended while watching | Row transitions to `abandoned` — surfaces via `prism merges list --abandoned` only; no live notification. |
 
-Every completion notification contains the exact phrase **"Please clean up the branch and worktree"** and does NOT imply prism performed the cleanup itself — the coordinator does the cleanup, prism does not.
+Every *completion* notification contains the exact phrase **"Please clean up the branch and worktree"** and does NOT imply prism performed the cleanup itself — the coordinator does the cleanup, prism does not.
+
+The CI-failure notification deliberately omits that phrase. Nothing merged and nothing closed, so the branch and worktree must survive for the worker to push the fix.
 
 ### Action table
 
@@ -550,6 +555,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 | `PR #N merged. ...` (prism-driven or reconciled) | `git pull` in @main, then `prism cleanup --yes --session <worker-session>` |
 | `PR #N merged out-of-band. ...` | `git pull` in @main, then `prism cleanup --yes --session <worker-session>`. Prism did NOT perform the merge, but the branch/worktree are still yours to clean up. |
 | `PR #N closed without merge. ...` | `prism cleanup --yes --session <worker-session>`. Usually nothing else — the PR was closed deliberately. Investigate if unexpected. |
+| `PR #N CI failed: <check names>. ...` | Do NOT clean up — the branch is still needed. `prism prompt <worker-session>` with the failed check names so the worker fixes and pushes. Re-run `prism merge <pr>` after the fix lands; the row is terminal, so it does not resume on its own. |
 | `PR #N merge failed: <error>` | Read the error, decide whether to retry (`prism merge <pr>`) or escalate to the user. |
 | `abandoned` (via `--abandoned` listing) | A new coordinator decides whether to re-enqueue with `prism merge <pr>`. |
 

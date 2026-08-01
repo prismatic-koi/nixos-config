@@ -476,10 +476,16 @@ type fakeWatcher struct {
 }
 
 // processHead is a test-friendly version of tick() that uses injected functions
-// instead of the real gh CLI. Mirrors the #2420 async-poll state machine:
-// only prism-driven merge / out-of-band merge / closed-without-merge / genuine
-// merge mutation failure produce a coordinator notification; all other states
-// stay watching silently. An unprotected repo NEVER auto-merges.
+// instead of the real gh CLI. Mirrors the #2420 async-poll state machine as
+// amended by #2525: a coordinator notification is produced only by a
+// prism-driven merge, an out-of-band merge, a close without merge, a genuine
+// merge mutation failure, or a BLOCKED PR whose required checks have all
+// concluded with at least one failure. All other states stay watching
+// silently. An unprotected repo NEVER auto-merges.
+//
+// Prefer driving the real Watcher.tick through an injected runGHFunc for new
+// tests — see watcher_blocked_ci_failure_test.go. This mirror must be kept in
+// step with tick() by hand, so it is the weaker signal of the two.
 func (fw *fakeWatcher) processHead(ctx context.Context) {
 	head, err := fw.watcher.db.MergeQueueHead(fw.watcher.sessionName)
 	if err != nil || head == nil {
@@ -526,7 +532,15 @@ func (fw *fakeWatcher) processHead(ctx context.Context) {
 	case "BEHIND":
 		_ = fw.updateFn(ctx, head.PR)
 
-	case "DIRTY", "BLOCKED", "UNKNOWN", "HAS_HOOKS", "DRAFT":
+	case "BLOCKED":
+		// #2525: terminal only when the required set is fully accounted for
+		// and a real failure conclusion is present; otherwise silent.
+		if failed := failedRequiredChecks(prInfoVal.StatusCheckRollup, prot.requiredChecks); len(failed) > 0 {
+			fw.watcher.notifyRequiredChecksFailed(ctx, head, failed)
+			return
+		}
+
+	case "DIRTY", "UNKNOWN", "HAS_HOOKS", "DRAFT":
 		// #2420: stay watching silently — no coordinator notification.
 
 	}
@@ -2622,12 +2636,18 @@ func TestWatcher_Unprotected_ExternalMergeStillNotifies(t *testing.T) {
 }
 
 // TestWatcher_BLOCKED_StaysWatchingSilently verifies that during polling,
-// a BLOCKED PR (whether awaiting review or with a CI failure) stays watching
-// with no coordinator notification. This is the #2420 replacement for the
-// pre-#2420 failAndNotify paths for BLOCKED-empty-decision, REVIEW_REQUIRED,
-// CHANGES_REQUESTED, and BLOCKED+CI-failed — all of which now defer to a
-// human via the initial-invocation message rather than firing terminal
-// coordinator alerts mid-poll.
+// a BLOCKED PR awaiting a human stays watching with no coordinator
+// notification. This is the #2420 replacement for the pre-#2420 failAndNotify
+// paths for BLOCKED-empty-decision, REVIEW_REQUIRED and CHANGES_REQUESTED —
+// all of which now defer to a human via the initial-invocation message rather
+// than firing terminal coordinator alerts mid-poll.
+//
+// #2525 carved one sub-state back out of this rule: a BLOCKED PR whose
+// required checks have all concluded with at least one failure IS terminal,
+// because nothing resolves it without a new push. That case moved to
+// TestWatcher_BLOCKED_RequiredCheckFailed_TerminatesAndNotifies. The
+// optional_check_failure case below pins the boundary — a failing check
+// outside the required set is still silent.
 func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 	cases := []struct {
 		name string
@@ -2667,13 +2687,16 @@ func TestWatcher_BLOCKED_StaysWatchingSilently(t *testing.T) {
 			},
 		},
 		{
-			name: "ci_failure",
+			// A failing check that branch protection does not require must
+			// not trigger the #2525 transition.
+			name: "optional_check_failure",
 			info: &prInfo{
 				State:            "OPEN",
 				MergeStateStatus: "BLOCKED",
-				ReviewDecision:   "APPROVED",
+				ReviewDecision:   "REVIEW_REQUIRED",
 				StatusCheckRollup: []checkEntry{
-					{Name: "pr-gate", Conclusion: "FAILURE", Status: "COMPLETED"},
+					{Name: "pr-gate", Conclusion: "SUCCESS", Status: "COMPLETED"},
+					{Name: "validate-flakes", Conclusion: "FAILURE", Status: "COMPLETED"},
 				},
 			},
 		},
