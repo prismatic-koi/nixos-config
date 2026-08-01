@@ -48,6 +48,15 @@ func TestDefaultAgent(t *testing.T) {
 	mainWorktree := filepath.Join(bareRoot, "main")
 	featureWorktree := filepath.Join(bareRoot, "feature-branch")
 
+	// Nested worktree: a branch name containing "/" (e.g. "feat/my-thing")
+	// produces a worktree two levels below the bare root, not one. See
+	// issue #2510 - DefaultAgent must walk upward to find the bare root
+	// rather than only checking the immediate parent.
+	nestedWorktree := filepath.Join(bareRoot, "feat", "my-thing")
+	if err := os.MkdirAll(nestedWorktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name      string
 		directory string
@@ -61,6 +70,8 @@ func TestDefaultAgent(t *testing.T) {
 		{"explicit overrides main", mainWorktree, "worker", "worker"},
 		{"explicit overrides feature", featureWorktree, "coordinator", "coordinator"},
 		{"explicit overrides regular", regularRepo, "worker", "worker"},
+		{"nested worktree (branch name with slash) → worker", nestedWorktree, "", "worker"},
+		{"explicit overrides nested worktree", nestedWorktree, "coordinator", "coordinator"},
 	}
 
 	for _, tc := range tests {
