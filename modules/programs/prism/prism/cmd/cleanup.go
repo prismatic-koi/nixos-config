@@ -672,7 +672,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 	}
 
 	if worktreePath == "" {
-		printLine("worktree path unknown — skipping worktree removal for session %s\n", session)
+		// AC (#2506): name both the session and the path we tried, rather than
+		// a bare "worktree path unknown". worktreeName is the branch component
+		// of the session name — the best available stand-in for "the path it
+		// tried" at this call site, since both the tmux and DB (agent_status)
+		// lookups came back empty by the time worktreePath=="" reaches here.
+		printLine("worktree path unknown for session %s (tried tmux and agent_status.worktree for branch %q) — skipping worktree removal\n", session, worktreeName)
 	} else if isSafeToRemoveWorktree(session, worktreePath, bareRoot) {
 		printLine("removing worktree %s...\n", worktreePath)
 		if err := git.RemoveWorktree(bareRoot, worktreePath); err != nil {
@@ -1113,14 +1118,19 @@ func worktreePathFromSession(session string) string {
 	if err != nil || status == nil {
 		return ""
 	}
-	// Only return the DB path if it still exists on disk; a stale path would
-	// produce a confusing git error later rather than a clear "not found" here.
-	if status.Worktree != "" {
-		if _, statErr := os.Stat(status.Worktree); statErr == nil {
-			return status.Worktree
-		}
-	}
-	return ""
+	// Trust the stored path unconditionally (issue #2506). This used to be
+	// gated on an os.Stat existence check ("a stale path would produce a
+	// confusing git error later rather than a clear 'not found' here"), but
+	// that gate was the actual cause of the DB fallback silently returning ""
+	// for a perfectly healthy row whose worktree directory is real and on
+	// disk (e.g. an orphaned worktree from a session whose tmux pane died —
+	// the exact case this fallback exists to handle). git.BareRoot walks the
+	// path string upward looking for a .bare marker and does not require the
+	// leaf directory to exist, and both git.RemoveWorktree and
+	// git.ForceDeleteBranch already treat their own failures as non-fatal
+	// warnings — so a genuinely-stale DB path degrades gracefully downstream
+	// rather than needing to be pre-filtered here.
+	return status.Worktree
 }
 
 // probeConventionalWorktreePath attempts to locate a worktree for the given

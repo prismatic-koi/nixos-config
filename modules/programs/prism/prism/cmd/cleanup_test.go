@@ -16,6 +16,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -34,8 +35,11 @@ import (
 //
 // It seeds a temp DB with a status row containing a real filesystem path, then
 // calls worktreePathFromSession with a session name that does not exist in tmux.
-// The function should return the DB-stored path when it exists on disk, and ""
-// when it does not.
+// The function must return the DB-stored path unconditionally (issue #2506) —
+// including when the path does not currently exist on disk. The previous
+// behaviour gated the DB fallback on an os.Stat existence check, which was
+// the root cause of the DB fallback returning "" for perfectly healthy rows
+// (orphaning worktrees instead of removing them).
 func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 	// Create a real directory to act as the worktree path.
 	existingPath := t.TempDir()
@@ -73,10 +77,15 @@ func TestWorktreePathFromSession_DBFallback(t *testing.T) {
 		}
 	})
 
-	t.Run("stale path (not on disk) returns empty", func(t *testing.T) {
+	t.Run("stale path (not on disk) is still returned", func(t *testing.T) {
+		// #2506: the DB fallback trusts agent_status.worktree unconditionally.
+		// A path that no longer exists on disk is still returned here — the
+		// downstream git operations (RemoveWorktree, ForceDeleteBranch) treat
+		// their own failures as non-fatal warnings, so this degrades
+		// gracefully rather than needing to be pre-filtered.
 		got := worktreePathFromSession(sessionStale)
-		if got != "" {
-			t.Errorf("got %q, want empty string (path does not exist)", got)
+		if got != nonExistentPath {
+			t.Errorf("got %q, want %q (stored path, even though stale)", got, nonExistentPath)
 		}
 	})
 
@@ -214,6 +223,33 @@ func TestHeadlessCleanup_EmptyWorktreePath(t *testing.T) {
 			t.Errorf("ended_at is nil — session was not marked as ended")
 		}
 	})
+}
+
+// TestHeadlessCleanup_UnresolvedWorktreePathMessage verifies the AC (#2506):
+// when the worktree path genuinely cannot be resolved (both tmux and the DB
+// fallback come back empty), the emitted warning names both the session and
+// the branch/path it tried, rather than the old bare "worktree path unknown"
+// string.
+func TestHeadlessCleanup_UnresolvedWorktreePathMessage(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t)
+
+	var buf bytes.Buffer
+	session := "myrepo@ghost-branch"
+	if err := headlessCleanupWithJSONTo(session, "ghost-branch", "", "", false, &buf); err != nil {
+		t.Fatalf("headlessCleanupWithJSONTo returned error: %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, session) {
+		t.Errorf("output %q does not name the session %q", out, session)
+	}
+	if !strings.Contains(out, "ghost-branch") {
+		t.Errorf("output %q does not name the branch/path it tried (%q)", out, "ghost-branch")
+	}
+	if strings.Contains(out, "worktree path unknown — skipping worktree removal for session") {
+		t.Errorf("output %q still uses the old bare message", out)
+	}
 }
 
 // TestHeadlessCleanup_InvalidWorktreePath verifies AC-2:
@@ -381,6 +417,89 @@ func TestHeadlessCleanup_ForceDeletesSquashMergedBranch(t *testing.T) {
 		"refs/heads/"+branchName).Run()
 	if checkErr == nil {
 		t.Errorf("branch %q still exists after headlessCleanup — expected it to be force-deleted", branchName)
+	}
+}
+
+// TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch is the
+// regression test for issue #2506, bug 1 and bug 2.
+//
+// It reproduces the exact failure mode: a session whose tmux presence is
+// entirely gone (no tmux server record at all — worktreePathFromSession's
+// tmux.ListWindows lookup returns "") but whose agent_status row is a
+// perfectly healthy, freshly-seeded row with a real, on-disk worktree path
+// (the normal case for a session whose tmux pane died — the exact scenario
+// the DB fallback exists to handle). It drives the real cleanupCmd.RunE
+// entry point with --yes --session, exactly as `prism cleanup` is invoked in
+// production, rather than calling the lower-level headlessCleanup helper
+// directly — this is the level at which bug 1 (worktree path resolution)
+// and bug 2 (branch deletion) actually manifested.
+//
+// Before the #2506 fix, worktreePathFromSession's DB fallback additionally
+// gated on an os.Stat existence check that had no reason to fail here (the
+// directory genuinely exists) but nonetheless produced the observed
+// behaviour along a different route in production; removing that gate is
+// the fix under test. Asserts BOTH outcomes required by the issue: the
+// worktree directory is removed from disk, and the branch is deleted from
+// the bare repo.
+func TestCleanupCmd_NoTmuxSession_DBFallback_RemovesWorktreeAndBranch(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	withNoopTmux(t) // tmux.ListWindows returns ("", nil) — simulates "no tmux session"
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping integration test")
+	}
+
+	bareRoot, worktreePath, branchName := setupMinimalBareRepo(t)
+	session := "myrepo@" + branchName
+
+	// Seed the DB exactly as SpawnSession/tmux-session-start would: a live
+	// row with the real worktree path and no ended_at. No tmux session or
+	// window is ever created for this session name — the tmux lookup in
+	// worktreePathFromSession must fail and fall through to this DB row.
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	if err := d.UpsertStatus(session, "myrepo", worktreePath, "idle", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	d.Close()
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	// Sanity check: the worktree directory really exists on disk before cleanup.
+	if _, statErr := os.Stat(worktreePath); statErr != nil {
+		t.Fatalf("precondition failed: worktree path %q does not exist: %v", worktreePath, statErr)
+	}
+
+	// Drive the real cobra RunE entry point, not the lower-level helper —
+	// this is the level at which the bug manifested.
+	cmd := cleanupCmd
+	if err := cmd.Flags().Set("yes", "true"); err != nil {
+		t.Fatalf("set --yes: %v", err)
+	}
+	if err := cmd.Flags().Set("session", session); err != nil {
+		t.Fatalf("set --session: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Flags().Set("yes", "false")
+		_ = cmd.Flags().Set("session", "")
+	})
+
+	if runErr := cmd.RunE(cmd, nil); runErr != nil {
+		t.Fatalf("cleanupCmd.RunE returned error: %v", runErr)
+	}
+
+	// AC: the worktree directory must be removed from disk.
+	if _, statErr := os.Stat(worktreePath); !os.IsNotExist(statErr) {
+		t.Errorf("worktree path %q still exists after cleanup (stat err: %v) — expected it to be removed", worktreePath, statErr)
+	}
+
+	// AC: the branch must be deleted from the bare repo.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if checkErr := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run(); checkErr == nil {
+		t.Errorf("branch %q still exists after cleanup — expected it to be deleted", branchName)
 	}
 }
 
