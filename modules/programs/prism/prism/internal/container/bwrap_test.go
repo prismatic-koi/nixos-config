@@ -712,6 +712,42 @@ func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 	}
 }
 
+func TestBwrapBuildArgs_MissingWorktreeGitDirStashesError(t *testing.T) {
+	// Issue #2518: a missing WorktreeGitDir must be a real, surfaced error
+	// (via m.worktreeGitDirErr, checked by Prepare) rather than a silent skip.
+	// Now that WorktreeGitDir is resolved from the worktree's own
+	// authoritative .git pointer, a missing directory means something is
+	// genuinely wrong, and the sandbox must not silently start without the
+	// agent's git state bound in.
+	bareRoot := t.TempDir()
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := os.MkdirAll(bareDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll bareDir: %v", err)
+	}
+
+	// worktreeGitDir does NOT exist on disk.
+	worktreeGitDir := filepath.Join(t.TempDir(), "does-not-exist")
+
+	m, _, cleanup := bwrapFixture(t, Config{
+		SessionName:    "repo@feat",
+		Worktree:       t.TempDir(),
+		AllocatedPort:  14010,
+		BareRoot:       bareRoot,
+		WorktreeGitDir: worktreeGitDir,
+	})
+	defer cleanup()
+
+	b := &bwrapIsolator{name: m.name}
+	args := b.BuildArgs(m)
+
+	if hasBind(args, worktreeGitDir) {
+		t.Errorf("missing worktreeGitDir %q should not be bound: %v", worktreeGitDir, args)
+	}
+	if m.worktreeGitDirErr == nil {
+		t.Fatal("expected m.worktreeGitDirErr to be set for a missing WorktreeGitDir, got nil")
+	}
+}
+
 func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 	// When BareRoot is set but the .bare directory does not exist,
 	// the bind should be omitted.

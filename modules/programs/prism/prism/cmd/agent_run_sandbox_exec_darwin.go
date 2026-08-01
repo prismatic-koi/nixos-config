@@ -166,9 +166,9 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		return fmt.Errorf("agent-run: session %q has no recorded worktree", sessionName)
 	}
 	bareRoot := git.BareRoot(worktree)
-	var worktreeGitDir string
-	if bareRoot != "" {
-		worktreeGitDir = filepath.Join(bareRoot, ".bare", "worktrees", filepath.Base(worktree))
+	worktreeGitDir, err := git.ResolveWorktreeGitDir(worktree)
+	if err != nil {
+		return fmt.Errorf("agent-run: session %q: resolve worktree git dir: %w", sessionName, err)
 	}
 
 	port := 0

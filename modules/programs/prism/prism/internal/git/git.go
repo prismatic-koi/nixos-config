@@ -861,6 +861,54 @@ func PRBranch(projectPath, prNumber string) (string, error) {
 	return branch, nil
 }
 
+// ResolveWorktreeGitDir returns the absolute path to worktreePath's private
+// git-state directory (the entry under <bareRoot>/.bare/worktrees/<name>),
+// by reading the authoritative pointer recorded in worktreePath's own .git
+// file rather than deriving the name from filepath.Base(worktreePath).
+//
+// Git does not always name a worktree's registry entry after the worktree's
+// basename — when two worktrees have colliding basenames (e.g. "feat/login"
+// and "bugfix/login" both basename to "login"), git deduplicates with a
+// numeric suffix ("login", "login1", ...). Deriving the name by basename
+// therefore silently resolves to the WRONG worktree's git-state directory
+// for every colliding worktree after the first (issue #2518).
+//
+// The worktree's .git file is always the single authoritative source: it
+// contains a line "gitdir: <path>", where <path> may be absolute or relative
+// to worktreePath. This function reads that line and resolves it to an
+// absolute path.
+//
+// Returns an error if worktreePath's .git file is missing, unreadable, or
+// malformed (no "gitdir: " line) — callers must treat that as a real error,
+// not silently skip the resolution (see bwrap.go's os.Stat guard, which used
+// to mask exactly this class of bug when combined with a derived-and-wrong
+// path).
+func ResolveWorktreeGitDir(worktreePath string) (string, error) {
+	gitFile := filepath.Join(worktreePath, ".git")
+	data, err := os.ReadFile(gitFile)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", gitFile, err)
+	}
+
+	const prefix = "gitdir: "
+	var pointer string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, prefix) {
+			pointer = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+			break
+		}
+	}
+	if pointer == "" {
+		return "", fmt.Errorf("%s: no %q line found", gitFile, prefix)
+	}
+
+	if filepath.IsAbs(pointer) {
+		return filepath.Clean(pointer), nil
+	}
+	return filepath.Clean(filepath.Join(worktreePath, pointer)), nil
+}
+
 // BareRoot walks up from worktreePath to find the nearest ancestor with a
 // .bare subdirectory (the prism bare repo root). Returns empty string if not
 // found. Starts at the parent of worktreePath because the path itself is a

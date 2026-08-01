@@ -443,6 +443,17 @@ type Manager struct {
 	// so it stashes the error here and Prepare surfaces it — same pattern
 	// as piBwrapErr.
 	credentialsErr error
+
+	// worktreeGitDirErr holds any error produced when WorktreeGitDir does not
+	// exist on disk at BuildArgs time. Previously this case was silently
+	// skipped (an os.Stat failure just meant the --bind was never emitted),
+	// which combined with a derived-and-possibly-wrong WorktreeGitDir path to
+	// make the failure invisible (issue #2518). Now that WorktreeGitDir is
+	// resolved from the worktree's authoritative .git pointer, a missing
+	// directory is a real error and must be reported, not skipped. BuildArgs
+	// cannot return an error, so it stashes the error here and Prepare
+	// surfaces it — same pattern as piBwrapErr.
+	worktreeGitDirErr error
 }
 
 // New creates a Manager for the given config. It does not start the container.

@@ -205,6 +205,13 @@ func (b *bwrapIsolator) Prepare(ctx context.Context, m *Manager) ([]string, erro
 	if m.credentialsErr != nil {
 		return nil, fmt.Errorf("container: bwrap: %w", m.credentialsErr)
 	}
+	// worktreeGitDirErr uses the same error-stashing pattern: a missing
+	// WorktreeGitDir used to be a silent skip (issue #2518) — now that the
+	// path is authoritative (resolved from the worktree's .git pointer), a
+	// missing directory is a real error and must fail the spawn.
+	if m.worktreeGitDirErr != nil {
+		return nil, fmt.Errorf("container: bwrap: %w", m.worktreeGitDirErr)
+	}
 	return args, nil
 }
 
