@@ -115,3 +115,16 @@ The repo `AGENTS.md` states the rule: worker-class sessions never use `git stash
 In the bare+worktree layout the stash stack (`refs/stash` + its reflog) lives in the shared bare repo, so it is repo-wide, not per-worktree. Two sessions that stash concurrently race on a single LIFO stack — `git stash pop` takes whatever is at `stash@{0}`, which can belong to another worktree. On 2026-06-11 two concurrent workers' pops crossed and silently swapped their WIP (issue #2202). The pi extension's deny list (`BLOCKED_BASH_PATTERNS` in `modules/programs/prism/pi/extensions/prism.ts`) blocks `git stash` for worker-class agents as defence in depth; the coordinator — the single session on the main worktree — is exempt and is then the only prism writer to the shared stack.
 
 The "verify your tests aren't no-ops" discipline (revert fix → rerun test → re-apply) is the common trigger for reaching for a stash — use a temp commit or patch file (see repo `AGENTS.md`) instead.
+
+## The git apply silent-failure pattern (#2575 class incident)
+
+`AGENTS.md` recommends the temp-commit pattern as the default, not the patch-file pattern, and if using patch files, requires checking the result. This is why.
+
+`git apply` is all-or-nothing: if the patch does not apply cleanly to the current tree state, it fails and leaves the tree partially modified — it will not undo the hunks it successfully applied (unlike `git stash pop`, which refuses loudly and keeps the stash entry if any conflict arises). Worse, `git apply` reports failure only on stderr and exit status; it is silent on stdout.
+
+One worker ran the patch-file restore leg with stderr suppressed (`2>/dev/null`), `git apply` failed to apply the patch cleanly, and the tree was left with broken code restored. The failure was caught only because a coinciding guard test for that symbol was present. Without it, the broken code would have reached review or merged.
+
+Safeguards:
+- Prefer the temp-commit pattern (`git add -A && git commit -m wip`, then `git reset --soft HEAD~1` to restore). It cannot half-apply — `git reset --soft` is atomic.
+- If using patch files, **always** run `git apply --check /tmp/wip.patch` first to verify the patch applies cleanly before running `git apply /tmp/wip.patch`. Never suppress stderr of `git apply` or any tree-restoring command.
+- General rule: never run any tree-modifying or tree-restoring command with stderr suppressed (`2>/dev/null`).
