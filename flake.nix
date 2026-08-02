@@ -163,12 +163,31 @@
         battery-monitor = pkgs.callPackage ./pkgs/battery-monitor.nix { };
       });
 
-      devShells = forEachSystem (pkgs: {
-        default = pkgs.mkShell {
-          buildInputs = [
-            pkgs.sops
-          ];
-        };
-      });
+      devShells = forEachSystem (
+        pkgs:
+        let
+          # Apply the repo overlay so `pi-coding-agent` resolves to the
+          # pinned version (see overlays/default.nix) rather than
+          # whatever plain nixpkgs carries. Used by the `pi-extension-tests`
+          # CI job (see .github/workflows/pr-gate.yml) to run
+          # verify-extension-loads.mjs against a real, installed build.
+          overlaidPkgs = pkgs.extend self.overlays.modifications;
+        in
+        {
+          default = pkgs.mkShell {
+            buildInputs = [
+              pkgs.sops
+              # nodejs, tsx and pi-coding-agent: used to run the pi
+              # extension TypeScript tests (tsx --test) and the
+              # anthropic-oauth extension-load smoke test
+              # (verify-extension-loads.mjs, invoked via a bare `node`) in
+              # the `pi-extension-tests` CI job.
+              overlaidPkgs.nodejs
+              overlaidPkgs.tsx
+              overlaidPkgs.pi-coding-agent
+            ];
+          };
+        }
+      );
     };
 }
