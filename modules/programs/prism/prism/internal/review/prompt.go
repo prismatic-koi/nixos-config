@@ -25,10 +25,11 @@ import (
 // that agents read full context first and role directives second.
 //
 // roleFile is the filename stem for the agent's definition file under
-// $XDG_CONFIG_HOME/prism/agents/ (e.g. "review-goal"). The file contents are spliced into the prompt
-// in place of the former "Your role-specific instructions follow below."
-// trailer so that every harness (including PI) receives the full role rubric
-// inline.
+// $XDG_CONFIG_HOME/prism/agents/ (e.g. "review-goal"). The role rubric itself
+// is NOT spliced into this prompt — it is appended to the system prompt by
+// prism.ts's composeRoleSystemPrompt at before_agent_start (issue #2534).
+// Splicing it here too would deliver the same ~7000-byte rubric twice per
+// agent, paid from a cold (uncached) user-message turn.
 func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) string {
 	if prCtx == nil || prCtx.FetchFailed {
 		// Fallback: minimal prompt with only the PR number.
@@ -167,47 +168,40 @@ func buildReviewPrompt(prNumber string, prCtx *PRContext, roleFile string) strin
 		"it's faster, works offline, and doesn't consume API rate limits.\n\n")
 	sb.WriteString("---\n\n")
 
-	// ── Role-specific instructions ────────────────────────────────────────
-	// Splice the role definition file inline so that every harness (pi,
-	// PI, etc.) receives the full rubric without relying on an out-of-band
-	// system-prompt injection. The redundancy in pi (which also loads
-	// the file server-side) is harmless — same content, same agent.
-	sb.WriteString("## Your role-specific instructions\n\n")
-	sb.WriteString(resolveRoleDefinition(roleFile))
+	// Role-specific instructions are NOT spliced here — see the doc comment
+	// on buildReviewPrompt above. They arrive via the agent's system prompt.
 
 	return sb.String()
 }
 
-// resolveRoleDefinition reads the role definition file for the given agent
-// from the agents directory ($XDG_CONFIG_HOME/prism/agents/).
+// roleDefinitionPath returns the path where the role definition file for
+// roleFile is expected to live ($XDG_CONFIG_HOME/prism/agents/<roleFile>.md).
 //
 // roleFile is the filename stem (without the .md extension), e.g. "review-goal".
 // It matches Agent.Name directly — the on-disk file is <roleFile>.md.
-//
-// When the file is present and non-empty its contents are returned verbatim.
-// When the file is missing or empty a clearly-marked notice is returned instead
-// so agents and human readers can see what happened without the prompt
-// silently providing no guidance.
-func resolveRoleDefinition(roleFile string) string {
+func roleDefinitionPath(roleFile string) string {
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		home, _ := os.UserHomeDir()
 		configHome = filepath.Join(home, ".config")
 	}
-	path := filepath.Join(configHome, "prism", "agents", roleFile+".md")
+	return filepath.Join(configHome, "prism", "agents", roleFile+".md")
+}
 
-	data, err := os.ReadFile(path)
+// roleDefinitionMissing reports whether the role definition file for roleFile
+// is absent or empty. The Go side no longer reads role rubric content into
+// the review prompt (issue #2534 — that content now arrives solely via the
+// agent's system prompt, injected by prism.ts's composeRoleSystemPrompt at
+// before_agent_start). This check exists so a missing/empty role file is
+// still surfaced to the operator via OnProgress rather than failing silently
+// — the agent starts regardless, but with a degraded (rubric-less) system
+// prompt, and that degradation must be visible.
+func roleDefinitionMissing(roleFile string) bool {
+	data, err := os.ReadFile(roleDefinitionPath(roleFile))
 	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Sprintf("(role definition for %s not found at %s)\n", roleFile, path)
-		}
-		// Other read errors (permissions, etc.) — surface the error.
-		return fmt.Sprintf("(role definition for %s could not be read from %s: %v)\n", roleFile, path, err)
+		return true
 	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return fmt.Sprintf("(role definition for %s not found at %s)\n", roleFile, path)
-	}
-	return string(data)
+	return len(strings.TrimSpace(string(data))) == 0
 }
 
 // sortStrings sorts a slice of strings in-place (insertion sort — small slices only).
