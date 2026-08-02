@@ -1,228 +1,72 @@
 package review_test
 
-// prompt_test.go — unit tests for buildReviewPrompt and resolveRoleDefinition.
+// prompt_test.go — unit tests for buildReviewPrompt and the role-file
+// existence check used by run.go.
 //
-// These tests exercise the role-definition splice behaviour introduced in
-// issue #1439: the full role rubric is now embedded inline in the prompt so
-// that every harness (pi, etc.) receives it without relying on an
-// out-of-band system-prompt injection.
+// Issue #2534: the role rubric used to be spliced into this prompt as well
+// as appended to the system prompt by prism.ts, delivering it twice per
+// agent. buildReviewPrompt no longer reads or splices role-definition files
+// at all — these tests assert the negative (no splice, no role-specific
+// section) and cover the context sections that remain.
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/review"
 )
 
-// setupAgentsDir creates a temporary $XDG_CONFIG_HOME, registers the cleanup,
-// and returns the path to the agents directory. The caller may write role files
-// into it before calling BuildReviewPromptForTest.
-func setupAgentsDir(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	agentsDir := filepath.Join(dir, "prism", "agents")
-	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	return agentsDir
-}
+// ── No role splice ──────────────────────────────────────────────────────────
 
-// ── Role file present ─────────────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_RoleFilePresentAndSpliced verifies that when the role
-// definition file exists and is non-empty, its full content appears in the
-// prompt under the "## Your role-specific instructions" heading.
-func TestBuildReviewPrompt_RoleFilePresentAndSpliced(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	const roleContent = "# review-security\n\nYou are a security auditor. Check for vulnerabilities.\n"
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-security.md"), []byte(roleContent), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
+// TestBuildReviewPrompt_NoRoleSpecificSection verifies that the prompt no
+// longer contains a "## Your role-specific instructions" section — that
+// content now arrives solely via the system prompt (prism.ts,
+// before_agent_start).
+func TestBuildReviewPrompt_NoRoleSpecificSection(t *testing.T) {
 	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security")
 
-	// Role-section header must be present.
-	if !findSubstring(prompt, "## Your role-specific instructions") {
-		t.Errorf("prompt missing '## Your role-specific instructions'\nprompt:\n%s", prompt)
-	}
-	// Full role content must be spliced in.
-	if !findSubstring(prompt, "You are a security auditor") {
-		t.Errorf("prompt missing role content\nprompt:\n%s", prompt)
-	}
-	// The old dangling trailer must NOT appear.
-	if findSubstring(prompt, "Your role-specific instructions follow below.") {
-		t.Errorf("prompt must not contain old dangling trailer\nprompt:\n%s", prompt)
+	if findSubstring(prompt, "## Your role-specific instructions") {
+		t.Errorf("prompt must not contain '## Your role-specific instructions'\nprompt:\n%s", prompt)
 	}
 }
 
-// TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric verifies that each of
-// the five review agents receives the content of its own definition file,
-// not a shared or empty block.
-func TestBuildReviewPrompt_AllFiveRolesGetTheirOwnRubric(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	roles := []string{
-		"review-goal",
-		"review-code",
-		"review-security",
-		"review-qa",
-		"review-context",
-	}
-	for _, vn := range roles {
-		content := "# " + vn + " unique rubric content\n"
-		if err := os.WriteFile(filepath.Join(agentsDir, vn+".md"), []byte(content), 0o644); err != nil {
-			t.Fatalf("WriteFile for %s: %v", vn, err)
-		}
-	}
-
-	ctx := samplePRContext()
-	for _, vn := range roles {
-		prompt := review.BuildReviewPromptForTest("99", ctx, vn)
-		expectedContent := vn + " unique rubric content"
-		if !findSubstring(prompt, expectedContent) {
-			t.Errorf("role %q: prompt missing expected rubric content %q\nprompt:\n%s", vn, expectedContent, prompt)
-		}
-		// Other roles' content must NOT appear (each prompt is distinct).
-		for _, otherVN := range roles {
-			if otherVN == vn {
-				continue
-			}
-			otherContent := otherVN + " unique rubric content"
-			if findSubstring(prompt, otherContent) {
-				t.Errorf("role %q: prompt unexpectedly contains content for other role %q\nprompt:\n%s", vn, otherVN, prompt)
-			}
-		}
-	}
-}
-
-// ── Role file missing ─────────────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_MissingRoleFile_NoErrorNoPanic verifies that when the
-// role definition file is absent, buildReviewPrompt returns a valid prompt
-// without panicking or returning an error.
-func TestBuildReviewPrompt_MissingRoleFile_NoErrorNoPanic(t *testing.T) {
-	// Point XDG_CONFIG_HOME at an empty temp dir — no agent files exist.
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-
-	// Must not panic.
+// TestBuildReviewPrompt_NoRoleFileContentLeaks verifies that even when a role
+// file exists on disk, buildReviewPrompt does not read or splice its content
+// — the function takes no dependency on $XDG_CONFIG_HOME for role content.
+func TestBuildReviewPrompt_NoRoleFileContentLeaks(t *testing.T) {
+	// No XDG_CONFIG_HOME setup at all: if buildReviewPrompt tried to read a
+	// role file it would hit an unset/garbage path, not a crafted fixture.
+	// The assertion is simply that nothing role-shaped appears.
 	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-goal")
 
-	// Must still be a non-empty string.
+	for _, marker := range []string{
+		"role-specific",
+		"role definition for",
+	} {
+		if findSubstring(prompt, marker) {
+			t.Errorf("prompt unexpectedly contains role-related marker %q\nprompt:\n%s", marker, prompt)
+		}
+	}
+}
+
+// TestBuildReviewPrompt_EmptyRoleArgument_NoPanic verifies that an empty role
+// argument (used by callers exercising the fallback/edge case) does not
+// panic and still returns a non-empty prompt.
+func TestBuildReviewPrompt_EmptyRoleArgument_NoPanic(t *testing.T) {
+	prompt := review.BuildReviewPromptForTest("42", samplePRContext())
 	if len(prompt) == 0 {
-		t.Fatal("prompt is empty; expected a non-empty fallback prompt")
-	}
-}
-
-// TestBuildReviewPrompt_MissingRoleFile_ContainsNotice verifies that when the
-// role definition file is absent, the prompt includes a clearly-marked notice
-// so the receiving agent and human readers can see what happened.
-func TestBuildReviewPrompt_MissingRoleFile_ContainsNotice(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-goal")
-
-	// Must contain a notice mentioning the roleFile stem and "not found".
-	if !findSubstring(prompt, "role definition for review-goal not found") {
-		t.Errorf("prompt should contain 'role definition for review-goal not found'\nprompt:\n%s", prompt)
-	}
-	// The notice must name the path so readers know where to look.
-	if !findSubstring(prompt, "prism/agents/review-goal.md") {
-		t.Errorf("prompt should include the expected path in the notice\nprompt:\n%s", prompt)
-	}
-}
-
-// ── Role file empty ───────────────────────────────────────────────────────────
-
-// TestBuildReviewPrompt_EmptyRoleFile_ContainsSameNoticeAsMissing verifies that
-// when the role definition file exists but is empty (or whitespace-only), the
-// prompt includes the same clearly-marked notice as the missing-file case,
-// rather than appending blank lines.
-func TestBuildReviewPrompt_EmptyRoleFile_ContainsSameNoticeAsMissing(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-code.md"), []byte("   \n\t\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-code")
-
-	// Must contain the same "not found" notice as the missing-file case.
-	if !findSubstring(prompt, "role definition for review-code not found") {
-		t.Errorf("prompt should contain 'role definition for review-code not found' for empty file\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_EmptyRoleFile_NoBlanksOnly verifies that the empty-file
-// case does not result in a prompt that simply appends blank lines where the
-// role content should be.
-func TestBuildReviewPrompt_EmptyRoleFile_NoBlanksOnly(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-qa.md"), []byte(""), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-qa")
-
-	// The role section must contain a notice, not just trailing whitespace.
-	if !findSubstring(prompt, "not found") {
-		t.Errorf("prompt for empty role file should contain 'not found' notice\nprompt:\n%s", prompt)
-	}
-}
-
-// ── Trailer absent in all cases ───────────────────────────────────────────────
-
-// TestBuildReviewPrompt_TrailerAbsentWhenFilePresent verifies that the old
-// "Your role-specific instructions follow below." trailer is absent even when
-// the role file exists and is spliced in successfully.
-func TestBuildReviewPrompt_TrailerAbsentWhenFilePresent(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-context.md"), []byte("# context rubric\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-context")
-
-	if findSubstring(prompt, "Your role-specific instructions follow below.") {
-		t.Errorf("prompt must not contain the old dangling trailer\nprompt:\n%s", prompt)
-	}
-}
-
-// TestBuildReviewPrompt_TrailerAbsentWhenFileMissing verifies that the old
-// trailer is also absent when the role file is missing.
-func TestBuildReviewPrompt_TrailerAbsentWhenFileMissing(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-
-	prompt := review.BuildReviewPromptForTest("42", samplePRContext(), "review-security")
-
-	if findSubstring(prompt, "Your role-specific instructions follow below.") {
-		t.Errorf("prompt must not contain the old dangling trailer\nprompt:\n%s", prompt)
+		t.Fatal("prompt is empty; expected a non-empty prompt")
 	}
 }
 
 // ── Context sections unchanged ────────────────────────────────────────────────
 
-// TestBuildReviewPrompt_ContextSectionsUnchanged verifies that the presence of
-// the role-definition splice does not alter the PR metadata, recent commits,
+// TestBuildReviewPrompt_ContextSectionsUnchanged verifies that removing the
+// role-definition splice does not alter the PR metadata, recent commits,
 // branch commits, or diff sections.
 func TestBuildReviewPrompt_ContextSectionsUnchanged(t *testing.T) {
-	agentsDir := setupAgentsDir(t)
-
-	if err := os.WriteFile(filepath.Join(agentsDir, "review-goal.md"), []byte("role rubric\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile: %v", err)
-	}
-
 	ctx := samplePRContext()
 	prompt := review.BuildReviewPromptForTest("819", ctx, "review-goal")
 
-	// All core context sections must still be present.
 	required := []string{
 		"## Context for your review",
 		"### PR metadata",
@@ -235,7 +79,17 @@ func TestBuildReviewPrompt_ContextSectionsUnchanged(t *testing.T) {
 	}
 	for _, s := range required {
 		if !findSubstring(prompt, s) {
-			t.Errorf("context section missing %q after role splice\nprompt:\n%s", s, prompt)
+			t.Errorf("context section missing %q\nprompt:\n%s", s, prompt)
 		}
+	}
+}
+
+// TestBuildReviewPrompt_FallbackPrompt_NoRoleContent verifies the fallback
+// path (nil/failed prCtx) also carries no role-specific content.
+func TestBuildReviewPrompt_FallbackPrompt_NoRoleContent(t *testing.T) {
+	prompt := review.BuildReviewPromptForTest("42", nil, "review-security")
+
+	if findSubstring(prompt, "role") {
+		t.Errorf("fallback prompt unexpectedly mentions role content\nprompt:\n%s", prompt)
 	}
 }
