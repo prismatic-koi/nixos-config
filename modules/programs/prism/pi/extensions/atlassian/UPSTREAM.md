@@ -75,13 +75,53 @@ The file contains:
 }
 ```
 
-The extension reads this file on every `session_start`. If the token is expired, it
-attempts a refresh using `refreshToken` before falling back to a fresh OAuth login.
+The extension reads this file when the family is activated (see "Deferred
+registration" below), not at `session_start`. If the token is expired, it
+attempts a refresh using `refreshToken` before reporting that a fresh OAuth
+login is needed.
 
 A fresh login requires interactive user action (browser-based PKCE flow). The local
 callback server listens on `localhost:3737/oauth/callback`.
 
 To trigger a fresh login, run `/login-atlassian` from within a pi session.
+
+## Deferred registration (issue #2532)
+
+The extension registers exactly ONE tool at `session_start`:
+`activate_atlassian`. It reads no token file and opens no connection.
+Everything else — token resolution, the connection to `mcp.atlassian.com`,
+`tools/list`, and the registration of all ~31 tools plus the synthetic
+`transitionJiraIssueByName` — happens on the first call to
+`activate_atlassian`.
+
+Why: tool schemas sit in the Anthropic `tools` array, the first segment of the
+cached prompt prefix, so every session on this machine paid for the Atlassian
+surface whether or not it ever touched Jira. See issue #2531 for the
+measurement and `../grafana/UPSTREAM.md` for the full mechanism note; the
+shared state machine lives in `../mcp-activation/activation.ts`.
+
+`nx.programs.prism.pi.atlassian.eagerRoles` names the agent roles that skip the
+tool call and activate from their first `before_agent_start`. It defaults to
+`[ "coordinator" ]`: the coordinator files Jira tickets in most sessions, so it
+would pay the activation cost nearly every time. Workers and review agents get
+one tool schema instead.
+
+The role is read with `pi.getFlag("agent")`, which pi binds AFTER every
+extension factory has returned, so it is not readable in a factory prologue.
+This extension calls `pi.registerFlag("agent", ...)` itself, because pi scopes
+`getFlag` to the registering extension.
+
+`/login-atlassian` now registers through the SAME gateway. Before #2532 a login
+after a successful startup re-registered every tool. pi tolerates that —
+`registerTool` overwrites by name — but each re-registration calls
+`refreshTools()` and so costs a full prompt-cache write. The gateway reports
+"already active" instead.
+
+NIX LAYOUT NOTE. `mcp-activation` is copied into this extension's derivation
+and this extension's files move down one level, so the store tree is
+`$out/atlassian/index.ts` next to `$out/mcp-activation/activation.ts`. That is
+what makes the relative import `../mcp-activation/activation.ts` resolve
+identically in the source tree and in the nix store.
 
 ## Slim field-drop provenance
 

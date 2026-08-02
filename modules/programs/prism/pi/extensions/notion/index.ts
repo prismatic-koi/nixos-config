@@ -12,10 +12,14 @@
 //
 // On session_start the extension:
 // 1. Checks the repo-scoping gate (scope.ts). Outside the allowlist it
-//    registers nothing and opens no connection.
-// 2. Loads OAuth tokens (or notifies the user to run /login-notion).
-// 3. Connects to https://mcp.notion.com/mcp via Streamable HTTP.
-// 4. Calls tools/list and registers each tool.
+//    registers nothing — not even `activate_notion` — and opens no connection.
+// 2. Inside the allowlist it registers exactly ONE tool, `activate_notion`.
+//
+// The rest happens only when `activate_notion` is called, or at the first
+// before_agent_start for a role named in NOTION_MCP_EAGER_ROLES (issue #2532):
+// 3. Loads OAuth tokens (or reports that /login-notion is needed).
+// 4. Connects to https://mcp.notion.com/mcp via Streamable HTTP.
+// 5. Calls tools/list and registers each tool.
 //
 // Auth: OAuth 2.0 authorization code + PKCE (S256) with persisted dynamic
 // client registration. See auth.ts — it is NOT a copy of the Atlassian one,
@@ -60,6 +64,20 @@ export default async function notionExtension(pi: ExtensionAPI): Promise<void> {
     },
   })
 
+  // Register --agent so pi.getFlag("agent") resolves for THIS extension. pi
+  // scopes getFlag to the registering extension (dist/core/extensions/
+  // loader.js: `if (!extension.flags.has(name)) return undefined`), so the
+  // prism extension's own registration is not visible here. Duplicate
+  // registration across extensions is safe: applyExtensionFlagValues builds a
+  // flat name->flag map (dist/core/agent-session-services.js) and both
+  // registrations declare the same string type, so the flag resolves
+  // identically whichever extension is consulted.
+  pi.registerFlag("agent", {
+    description:
+      "Primary agent identity (worker, coordinator, review-*, etc.) — selects the role system prompt appended to pi's base prompt at before_agent_start.",
+    type: "string",
+  })
+
   pi.on("session_start", async (_event, ctx) => {
     // session_start (not before_agent_start): registration must happen exactly
     // once per session, and before_agent_start fires once per TURN.
@@ -69,6 +87,19 @@ export default async function notionExtension(pi: ExtensionAPI): Promise<void> {
       // Non-blocking: errors here must not prevent pi from starting.
       const msg = err instanceof Error ? err.message : String(err)
       console.error("[notion-mcp] ERROR: extension init failed:", msg)
+    }
+  })
+
+  pi.on("before_agent_start", async (_event, ctx) => {
+    // The earliest hook at which pi.getFlag("agent") is bound. The core guards
+    // itself so only the first turn does the eager check.
+    try {
+      const flag = pi.getFlag("agent")
+      const role = typeof flag === "string" ? flag : undefined
+      await extension.onBeforeAgentStart(host, ctx, role)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.error("[notion-mcp] ERROR: eager activation failed:", msg)
     }
   })
 }

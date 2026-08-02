@@ -50,6 +50,40 @@
         each tool call (current behaviour).
       '';
     };
+    nx.programs.prism.pi.atlassian.eagerRoles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "coordinator" ];
+      example = [
+        "coordinator"
+        "worker"
+      ];
+      description = ''
+        Agent roles that receive the Atlassian tool family eagerly, with no
+        activate_atlassian call.
+
+        Since issue #2532 the extension registers exactly one tool at
+        session_start — activate_atlassian — and connects to
+        mcp.atlassian.com only when that tool is called. The full ~31-tool
+        surface used to sit in the cached prompt prefix of every session on
+        this machine, whether or not the session ever touched Jira.
+
+        A role named here skips the tool call: the extension activates from
+        its first before_agent_start instead, which is the earliest point at
+        which pi.getFlag("agent") is readable.
+
+        The default is [ "coordinator" ] because the coordinator files Jira
+        tickets in most sessions, so it would pay the activation cost nearly
+        every time. Workers and review agents pay one tool schema instead.
+
+        The value is delivered to the extension as the colon-separated
+        ATLASSIAN_MCP_EAGER_ROLES environment variable via
+        nx.programs.prism.agent.envVars, so it reaches prism-spawned agents
+        as well as interactive shells. Set to [ ] to make every role
+        activate on demand.
+
+        Only meaningful when nx.programs.prism.pi.atlassian.enable is true.
+      '';
+    };
     nx.programs.prism.pi.notion.enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -64,6 +98,30 @@
 
         There is no Notion analogue of pi.atlassian.defaultCloudId: a Notion
         OAuth grant fixes the workspace, so there is nothing to select.
+      '';
+    };
+    nx.programs.prism.pi.notion.eagerRoles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "coordinator" ];
+      description = ''
+        Agent roles that receive the Notion tool family eagerly, with no
+        activate_notion call. See
+        nx.programs.prism.pi.atlassian.eagerRoles for the mechanism.
+
+        The default is [ ] — every role activates on demand. Notion is
+        already scoped to a small set of directories by
+        nx.programs.prism.pi.notion.repos, so the sessions that reach it are
+        few, and a session that never opens Notion should not connect.
+
+        The repo-scoping gate wins over this option: a session outside
+        NOTION_MCP_REPOS registers neither the family nor activate_notion,
+        whatever its role.
+
+        Delivered as the colon-separated NOTION_MCP_EAGER_ROLES environment
+        variable via nx.programs.prism.agent.envVars.
+
+        Only meaningful when nx.programs.prism.pi.notion.enable is true.
       '';
     };
     nx.programs.prism.pi.grafana.enable = lib.mkOption {
@@ -102,6 +160,29 @@
         modules/programs/prism/secrets/grafana.sops.yaml. Adding a new
         instance is a new bundle entry plus a one-line change here on the
         relevant machine; no schema change.
+
+        Only meaningful when nx.programs.prism.pi.grafana.enable is true.
+      '';
+    };
+    nx.programs.prism.pi.grafana.eagerRoles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "investigate" ];
+      description = ''
+        Agent roles that receive the Grafana tool family eagerly, with no
+        activate_grafana call. See
+        nx.programs.prism.pi.atlassian.eagerRoles for the mechanism.
+
+        The default is [ ] — every role activates on demand. Grafana is by
+        far the largest surface in the tree (65 tools, about 26400 cached
+        tokens — issue #2531), and most sessions never call one of its tools,
+        so no role earns the cost by default.
+
+        Delivered as the colon-separated GRAFANA_MCP_EAGER_ROLES environment
+        variable via nx.programs.prism.agent.envVars. The value is inert
+        without GRAFANA_MCP_CONFIG_PATH and PI_GRAFANA_MCP_BIN, which are the
+        two vars the extension actually self-gates on, and which
+        internal/config/agent_env_roles.go already strips for review roles.
 
         Only meaningful when nx.programs.prism.pi.grafana.enable is true.
       '';
@@ -177,34 +258,51 @@
         cp -r ${./pi/extensions/anthropic-oauth}/* $out/anthropic-oauth/
       '';
 
+      # Shared deferred-registration gateway (issue #2532). Each MCP extension
+      # registers one activate_<family> tool at session_start and does the real
+      # work — read config, connect or spawn, tools/list, registerTool — only
+      # when that tool is called.
+      #
+      # It is COPIED into each provider's derivation rather than shared through
+      # one store path, and each provider's own files move down one level into
+      # $out/<provider>/. That layout is what makes the relative import
+      # `../mcp-activation/activation.ts` resolve identically in the source
+      # tree and in the nix store, so `tsx --test` and pi's jiti loader agree.
+      mcpActivationSrc = ./pi/extensions/mcp-activation;
+
       # Atlassian MCP extension for pi — connects to mcp.atlassian.com via
-      # OAuth PKCE, enumerates tools/list at startup, and registers each tool
-      # via pi.registerTool(). See pi/extensions/atlassian/UPSTREAM.md.
+      # OAuth PKCE, enumerates tools/list when activate_atlassian is called,
+      # and registers each tool via pi.registerTool().
+      # See pi/extensions/atlassian/UPSTREAM.md.
       atlassianExtensionDir = pkgs.runCommand "pi-atlassian-extension" { } ''
-        mkdir -p $out
-        cp -r ${./pi/extensions/atlassian}/* $out/
+        mkdir -p $out/atlassian $out/mcp-activation
+        cp -r ${./pi/extensions/atlassian}/* $out/atlassian/
+        cp -r ${mcpActivationSrc}/* $out/mcp-activation/
       '';
 
       # Notion MCP extension for pi — connects to mcp.notion.com via OAuth 2.0
-      # authorization code + PKCE, enumerates tools/list at startup, and
-      # registers each tool via pi.registerTool().
+      # authorization code + PKCE, enumerates tools/list when activate_notion
+      # is called, and registers each tool via pi.registerTool().
       # See pi/extensions/notion/UPSTREAM.md — in particular the
       # refresh-token rotation hazard, which is why notion/auth.ts is not a
       # copy of the Atlassian one.
       notionExtensionDir = pkgs.runCommand "pi-notion-extension" { } ''
-        mkdir -p $out
-        cp -r ${./pi/extensions/notion}/* $out/
+        mkdir -p $out/notion $out/mcp-activation
+        cp -r ${./pi/extensions/notion}/* $out/notion/
+        cp -r ${mcpActivationSrc}/* $out/mcp-activation/
       '';
 
       # Grafana MCP extension for pi — spawns the nixpkgs mcp-grafana Go
-      # binary as a per-session stdio child, enumerates tools/list, and
-      # registers each returned tool via pi.registerTool(). Unlike the
-      # atlassian and notion clients this is a stdio MCP transport, not
-      # Streamable HTTP; see pi/extensions/grafana/UPSTREAM.md for the
-      # rationale and the sandbox-reachability discussion.
+      # binary as a per-session stdio child when activate_grafana is called,
+      # enumerates tools/list, and registers each returned tool via
+      # pi.registerTool(). Unlike the atlassian and notion clients this is a
+      # stdio MCP transport, not Streamable HTTP; see
+      # pi/extensions/grafana/UPSTREAM.md for the rationale and the
+      # sandbox-reachability discussion.
       grafanaExtensionDir = pkgs.runCommand "pi-grafana-extension" { } ''
-        mkdir -p $out
-        cp -r ${./pi/extensions/grafana}/* $out/
+        mkdir -p $out/grafana $out/mcp-activation
+        cp -r ${./pi/extensions/grafana}/* $out/grafana/
+        cp -r ${mcpActivationSrc}/* $out/mcp-activation/
       '';
 
       # Prism extension for pi — a single derivation whose root contains
@@ -264,30 +362,34 @@
         ]
         ++
           lib.optional config.nx.programs.prism.pi.atlassian.enable
-            # Atlassian MCP extension: connects to mcp.atlassian.com via OAuth
-            # PKCE, enumerates tools/list at startup, and registers each tool.
+            # Atlassian MCP extension: registers activate_atlassian at
+            # session_start, then connects to mcp.atlassian.com via OAuth PKCE
+            # and registers the full tools/list surface when that tool is
+            # called (or eagerly, for a role in pi.atlassian.eagerRoles).
             # Use /login-atlassian in a pi session to authenticate.
             # See pi/extensions/atlassian/UPSTREAM.md for auth method rationale.
-            "${atlassianExtensionDir}/index.ts"
+            "${atlassianExtensionDir}/atlassian/index.ts"
         ++
           lib.optional config.nx.programs.prism.pi.notion.enable
-            # Notion MCP extension: connects to mcp.notion.com via OAuth 2.0
-            # authorization code + PKCE, enumerates tools/list at startup, and
-            # registers each tool. Use /login-notion in a pi session to
-            # authenticate. Scope it per-repo with pi.notion.repos.
+            # Notion MCP extension: registers activate_notion at session_start
+            # (inside pi.notion.repos only), then connects to mcp.notion.com
+            # via OAuth 2.0 authorization code + PKCE and registers the full
+            # tools/list surface when that tool is called. Use /login-notion
+            # in a pi session to authenticate.
             # See pi/extensions/notion/UPSTREAM.md for auth method rationale
             # and the refresh-token rotation hazard.
-            "${notionExtensionDir}/index.ts"
+            "${notionExtensionDir}/notion/index.ts"
         ++
           lib.optional config.nx.programs.prism.pi.grafana.enable
-            # Grafana MCP extension: spawns the nixpkgs mcp-grafana Go binary
-            # as a per-session stdio child, enumerates tools/list at startup,
-            # and registers each tool. Reads the selected sops config bundle
+            # Grafana MCP extension: registers activate_grafana at
+            # session_start, then spawns the nixpkgs mcp-grafana Go binary as a
+            # per-session stdio child and registers the full tools/list surface
+            # when that tool is called. Reads the selected sops config bundle
             # via GRAFANA_MCP_CONFIG_PATH (injected into the sandbox by
             # internal/container/bwrap.go). See pi/extensions/grafana/UPSTREAM.md
             # for the stdio-vs-HTTP rationale and the sandbox-reachability
             # discussion.
-            "${grafanaExtensionDir}/index.ts";
+            "${grafanaExtensionDir}/grafana/index.ts";
       };
 
       colourLib = import ../../colour-scheme/lib.nix;

@@ -8,6 +8,13 @@
 // SECURITY: the returned api_key is a live credential. Never log
 // `loadedConfig`, `apiKey`, or the raw file contents. `debug` is limited to
 // the file path.
+//
+// The same rule now binds the EXCEPTION MESSAGES. Since issue #2532 the bundle
+// is loaded from inside the `activate_grafana` tool call, so a
+// GrafanaConfigError message reaches the model's transcript, not only a UI
+// notification. Messages therefore name the path and, at most, a line number —
+// never the text of the offending line, which in a malformed bundle can be a
+// fragment of the credential itself.
 
 import { readFileSync } from "node:fs"
 
@@ -43,7 +50,9 @@ export class GrafanaConfigError extends Error {
  *     be a caller bug we cannot fix here.
  *
  * Malformed lines (no `=` after the key) throw. The caller catches and
- * surfaces via ctx.ui.notify per the "fail-gracefully" AC.
+ * surfaces via ctx.ui.notify per the "fail-gracefully" AC. The thrown message
+ * carries the line NUMBER only — see the security note at the top of this
+ * file.
  */
 export function parseDotenv(contents: string): Record<string, string> {
   const out: Record<string, string> = {}
@@ -55,9 +64,9 @@ export function parseDotenv(contents: string): Record<string, string> {
     if (trimmed === "" || trimmed.startsWith("#")) continue
     const eq = line.indexOf("=")
     if (eq < 0) {
-      throw new GrafanaConfigError(
-        `line ${i + 1}: expected KEY=VALUE, got ${JSON.stringify(trimmed.slice(0, 40))}`,
-      )
+      // SECURITY: do NOT echo the line. A malformed bundle can put credential
+      // text on this line, and this message now travels into a tool result.
+      throw new GrafanaConfigError(`line ${i + 1}: expected KEY=VALUE`)
     }
     const key = line.slice(0, eq).trim()
     const value = line.slice(eq + 1)

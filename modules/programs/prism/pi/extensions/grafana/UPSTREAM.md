@@ -45,10 +45,15 @@ GRAFANA_URL=<grafana-instance-url>
 GRAFANA_SERVICE_ACCOUNT_TOKEN=<service-account-token>
 ```
 
-The extension reads the file at session_start, parses it line-by-line, and
-passes the two values through to the `mcp-grafana` child process's env. The
-env-file shape is deliberately trivial to parse and is what mcp-grafana would
-consume itself if invoked from a shell.
+The extension reads the file when the family is activated (see "Deferred
+registration" below), parses it line-by-line, and passes the two values through
+to the `mcp-grafana` child process's env. The env-file shape is deliberately
+trivial to parse and is what mcp-grafana would consume itself if invoked from a
+shell.
+
+`config-loader.ts` keeps bundle CONTENT out of its exception messages. Since
+issue #2532 those messages travel into a tool result, and therefore into the
+model's transcript, so a malformed line is reported by line number only.
 
 ## Env-var routing and the sandbox reachability gotcha
 
@@ -99,9 +104,54 @@ name to `collectSecretsDAllowlistNames` behind a config gate, add the
 positive+negative test pair per `sandbox-exec-testing.md`, and drop the
 assertion.
 
+## Deferred registration (issue #2532)
+
+The extension registers exactly ONE tool at `session_start`:
+`activate_grafana`. It reads two environment variables and nothing else — no
+sops bundle read, no `mcp-grafana` child process, no `tools/list`. Everything
+else happens on the first call to `activate_grafana`.
+
+Why: the 65 tool schemas sit in the Anthropic `tools` array, which is the first
+segment of the cached prompt prefix. Every session paid about 26400 cached
+tokens for them (issue #2531), and most sessions never call a Grafana tool.
+
+The mechanism is native to pi and needs no third-party MCP CLI:
+
+- An unregistered tool never reaches the wire. The request `tools` array is
+  built from `agent.state.tools`.
+- `registerTool()` works after startup and refreshes the registry immediately.
+- A tool registered mid-session AUTO-ACTIVATES, so "defer registration
+  entirely" is the correct shape; `setActiveTools` is not used here.
+- `emitBeforeAgentStart` is awaited before the request is built, so the eager
+  path registers in time for the turn that triggered it.
+
+Two rules follow, because activation invalidates the Anthropic prompt cache
+once (tools sit in front of every cache breakpoint):
+
+1. Activate the whole family in one call. Never one tool at a time.
+2. Never deactivate to tidy up. pi has no `unregisterTool`.
+
+The shared state machine lives in `../mcp-activation/activation.ts` and is used
+by all three MCP extensions. `nx.programs.prism.pi.grafana.eagerRoles` names
+the agent roles that skip the tool call and activate from their first
+`before_agent_start`; it defaults to `[ ]`.
+
+The role is read with `pi.getFlag("agent")`, which pi binds AFTER every
+extension factory has returned, so it is not readable in a factory prologue.
+Each MCP extension calls `pi.registerFlag("agent", ...)` itself, because pi
+scopes `getFlag` to the registering extension. Duplicate registration across
+extensions is safe — `applyExtensionFlagValues` builds a flat name-to-flag map
+and every registration declares the same string type.
+
+NIX LAYOUT NOTE. `mcp-activation` is copied into each provider's derivation and
+the provider's own files move down one level, so the store tree is
+`$out/grafana/index.ts` next to `$out/mcp-activation/activation.ts`. That is
+what makes the relative import `../mcp-activation/activation.ts` resolve
+identically in the source tree and in the nix store.
+
 ## Tool surface
 
-Full surface for v1 — the extension calls `tools/list` at startup and
+Full surface for v1 — on activation the extension calls `tools/list` and
 registers every returned tool via `pi.registerTool()` with no filtering.
 mcp-grafana returns roughly 30-40 tools spanning dashboards, alerting,
 data-source queries (Prometheus, Loki, ClickHouse, Elasticsearch, Athena,
@@ -117,12 +167,21 @@ from starting when anything on the grafana path fails. The three
 degradation paths:
 
 1. **`GRAFANA_MCP_CONFIG_PATH` unset** — grafana is not configured on this
-   machine; we log a debug line and return.
-2. **Config file missing or malformed** — surfaced via `ctx.ui.notify` as a
-   warning; no tools registered; session proceeds.
+   machine; we log a debug line and return. Not even `activate_grafana` is
+   registered.
+2. **Config file missing or malformed** — surfaced as an `{isError:true}`
+   result from `activate_grafana`; no tools registered; session proceeds.
 3. **`mcp-grafana` child fails to spawn, exits, or errors during initialise /
-   tools/list** — surfaced via `ctx.ui.notify` as an error; the child is
-   torn down; no tools registered; session proceeds.
+   tools/list** — surfaced as an `{isError:true}` result from
+   `activate_grafana`; the child is torn down; no tools registered; session
+   proceeds.
+
+Since #2532 these failures land inside a tool call rather than at
+`session_start`. That is a SMALLER blast radius, not a larger one: a broken
+provider now produces one bad tool result instead of a startup-time error, and
+the gateway stays retryable so a fixed config works without a restart. On the
+eager path there is no tool result to carry the message, so a failure is
+surfaced via `ctx.ui.notify` instead.
 
 Once tools ARE registered, a runtime `tools/call` failure (child died,
 stdio pipe broken, timeout) is surfaced to the caller as a `{isError:true}`
@@ -141,6 +200,9 @@ tool result, not as an exception. The session continues.
   cleanly — the same argument that `bwrap.go`'s SSH signing-key comment
   spells out at length).
 - **New mcp-grafana tools.** Automatic — the extension enumerates
-  `tools/list` at every session_start and registers whatever the current
-  binary version returns.
+  `tools/list` on activation and registers whatever the current binary version
+  returns. If the new tools change what the family covers, update
+  `ACTIVATE_GRAFANA_DESCRIPTION` in `extension.ts` too: that description is the
+  only Grafana text a non-eager session ever sees, so it is what the agent uses
+  to decide whether to activate.
 - **Darwin support.** See "Sandbox-exec (Darwin) — not supported in v1" above.

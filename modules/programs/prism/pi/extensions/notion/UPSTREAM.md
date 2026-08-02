@@ -338,6 +338,36 @@ environment variable.
 This is a scoping and least-privilege control, not a security boundary against
 a hostile agent.
 
+## Deferred registration (issue #2532)
+
+Inside the allowlist the extension registers exactly ONE tool at
+`session_start`: `activate_notion`. It reads no token file and opens no
+connection. Token resolution, the connection to `mcp.notion.com`, `tools/list`
+and the registration of the family all happen on the first call to
+`activate_notion`.
+
+The repo-scoping gate WINS over this. A session outside `NOTION_MCP_REPOS`
+registers neither the family nor `activate_notion`, whatever its role — the
+gate is checked before the gateway is registered, again inside `activate`, and
+again inside `registerTools`.
+
+`nx.programs.prism.pi.notion.eagerRoles` names the agent roles that skip the
+tool call and activate from their first `before_agent_start`. It defaults to
+`[ ]`, because the allowlist already keeps the reachable session count small.
+
+See `../grafana/UPSTREAM.md` for the mechanism note; the shared state machine
+lives in `../mcp-activation/activation.ts`.
+
+`/login-notion` now registers through the SAME gateway, so a login after a
+successful activation reports "already active" instead of re-registering the
+surface.
+
+NIX LAYOUT NOTE. `mcp-activation` is copied into this extension's derivation
+and this extension's files move down one level, so the store tree is
+`$out/notion/index.ts` next to `$out/mcp-activation/activation.ts`. That is
+what makes the relative import `../mcp-activation/activation.ts` resolve
+identically in the source tree and in the nix store.
+
 ## File layout: why `index.ts` is a shell
 
 `index.ts` imports `typebox`, which only resolves inside pi's own runtime. That
@@ -350,8 +380,8 @@ injected-dependency surface (`wrapSchema`, `connect`, `login`,
 `isEnabledForCwd`), mirroring the pattern `retry.ts` already uses for its auth
 callbacks. `index.ts` is reduced to wiring: it supplies `Type.Unsafe`, the real
 MCP connector and the real login flow, adapts pi's `registerTool` to the
-structural `ToolHost` interface, and forwards `session_start` and the command
-handler.
+structural `ToolHost` interface, and forwards `session_start`,
+`before_agent_start` and the command handler.
 
 Keep logic out of `index.ts`. Anything added there is, by construction,
 untestable.
@@ -415,8 +445,8 @@ silently:
   Notion advises consulting it because "Tools are listed on every plan" — i.e.
   `tools/list` over-reports, and some registered tools will only ever return
   upgrade prompts. Filtering registration by it is a cheap improvement, but it
-  adds a second network call to `session_start` and so a second failure mode;
-  it was left out of the initial change on scope grounds.
+  adds a second network call to the activation path and so a second failure
+  mode; it was left out of the initial change on scope grounds.
 - **Ephemeral callback port.** The callback server binds a fixed
   `127.0.0.1:3738` (3737 is taken by the Atlassian extension). Moving to port 0
   would need the DCR call reordered after the bind, since the redirect URI must

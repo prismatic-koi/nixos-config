@@ -1,11 +1,27 @@
 // pi extension: Atlassian MCP client bridge.
 //
-// On session_start, this extension:
-// 1. Loads OAuth tokens from disk (or prompts the user to login).
+// DEFERRED REGISTRATION (issue #2532)
+//
+// On session_start this extension registers exactly ONE tool,
+// `activate_atlassian`. It opens no connection and reads no token file. The
+// full ~31-tool surface used to sit in the prompt prefix of every session on
+// this machine, whether or not the session ever touched Jira.
+//
+// When `activate_atlassian` is called — or, for a role named in
+// ATLASSIAN_MCP_EAGER_ROLES, at the first `before_agent_start` — it:
+// 1. Loads OAuth tokens from disk (or reports that /login-atlassian is needed).
 // 2. Connects to mcp.atlassian.com via the Streamable HTTP MCP transport.
 // 3. Calls tools/list to enumerate all available tools.
 // 4. Registers each tool via pi.registerTool() with slim field-drop applied
 //    to all responses (ported from opencode/mcp-atlassian-slim-proxy.mjs).
+//
+// The eager-roles default is [ "coordinator" ]: the coordinator files Jira
+// tickets in most sessions, so it would pay the activation cost nearly every
+// time. See nx.programs.prism.pi.atlassian.eagerRoles.
+//
+// A failure now surfaces inside a tool call instead of at startup. That is a
+// smaller blast radius, not a larger one — an unreachable mcp.atlassian.com
+// returns an error tool result and the pi session keeps running.
 //
 // Auth: OAuth PKCE + dynamic client registration via the Atlassian MCP auth server.
 // The API token path (ATLASSIAN_EMAIL + ATLASSIAN_API_TOKEN) only exposes 2
@@ -21,6 +37,12 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
 import { Type } from "typebox"
+import {
+  createActivationGateway,
+  isEagerRole,
+  type GatewayHost,
+  type GatewayToolSpec,
+} from "../mcp-activation/activation.ts"
 import { createMcpSession, type McpSession, type McpTool, getDefaultCloudId } from "./mcp-client.ts"
 import {
   loadTokens,
@@ -37,6 +59,22 @@ import {
 import { slimMcpResultContent } from "./slim.ts"
 
 let _session: McpSession | null = null
+
+// ---------------------------------------------------------------------------
+// The description the model sees
+//
+// This is the ONLY Atlassian text in the prompt prefix of a non-eager session,
+// so it has to name the capability areas well enough that the agent knows when
+// to reach for the family — and it has to stay short, because every session
+// pays for it.
+// ---------------------------------------------------------------------------
+
+export const ACTIVATE_ATLASSIAN_DESCRIPTION =
+  "Reveal the Atlassian MCP tool family (about 31 tools): Jira issue search (JQL), " +
+  "read, create, update, comment, and workflow transitions; Jira project and field " +
+  "metadata; Confluence page and space search, read, create, and update. Only this " +
+  "tool is registered until you call it; calling it registers the full surface and " +
+  "returns the number of tools available. No arguments."
 
 // Auth callbacks passed to the retry shell. `refresh` pulls a valid token
 // out of auth.ts's mtime-aware cache (or refreshes it) and pushes it onto
@@ -149,10 +187,10 @@ async function augmentGetJiraIssueWithTransitions(
 // Register all tools from the MCP session into pi
 // ---------------------------------------------------------------------------
 
-function registerTools(pi: ExtensionAPI, tools: McpTool[]): void {
+function registerTools(pi: ExtensionAPI, tools: McpTool[]): number {
   if (tools.length === 0) {
     warn("tools/list returned 0 tools — nothing registered")
-    return
+    return 0
   }
 
   log(`registering ${tools.length} tools`)
@@ -229,6 +267,10 @@ function registerTools(pi: ExtensionAPI, tools: McpTool[]): void {
 
   // Issue #2: register synthetic transitionJiraIssueByName tool
   registerTransitionByNameTool(pi)
+
+  // +1 for the synthetic tool, so the count the activation reports matches
+  // what the agent can actually call.
+  return tools.length + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -385,37 +427,41 @@ function registerTransitionByNameTool(pi: ExtensionAPI): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Ensure we have valid tokens, prompting OAuth login if needed.
- * Returns the tokens or null if auth is unavailable/declined.
+ * Return usable tokens, or throw with an actionable message.
+ *
+ * This used to notify and return null, because it ran at session_start where
+ * there was no caller to report to. It now runs inside the activation path, so
+ * the failure has somewhere to go: the gateway turns the rejection into an
+ * error tool result the agent can read and act on (issue #2532).
  */
-async function ensureTokens(pi: ExtensionAPI, ctx: { ui: { notify: (msg: string, type?: string) => void } }): Promise<AtlassianTokens | null> {
-  // Try loading from disk first
+async function resolveTokens(): Promise<AtlassianTokens> {
   const stored = loadTokens()
   if (stored) {
     try {
       const { tokens } = await getValidAccessToken()
       return tokens
     } catch {
-      // Token refresh failed — will try fresh login
-      warn("Stored token refresh failed, attempting fresh login")
+      // Token refresh failed — a fresh login is the only way forward.
+      // SECURITY: the underlying error can quote a token in a request body,
+      // so it is deliberately NOT forwarded.
+      warn("Stored token refresh failed")
     }
   }
 
-  // Need fresh login
-  warn("No valid Atlassian MCP OAuth tokens found — starting login flow")
-  ctx.ui.notify("Atlassian MCP: No auth tokens. Use /login-atlassian to authenticate.", "warning")
-  return null
+  warn("No valid Atlassian MCP OAuth tokens found")
+  throw new Error("no valid OAuth tokens. Run /login-atlassian to authenticate, then try again.")
 }
 
-async function initExtension(pi: ExtensionAPI, ctx: { ui: { notify: (msg: string, type?: string) => void } }): Promise<void> {
-  // Get or refresh tokens
-  const tokens = await ensureTokens(pi, ctx)
-  if (!tokens) {
-    // Non-blocking: extension fails gracefully, pi session continues
-    return
-  }
+/**
+ * The deferred work: resolve tokens, connect, tools/list, register.
+ * Rejects on failure; the gateway converts the rejection into an error tool
+ * result and stays retryable.
+ *
+ * NOTHING in here runs at session_start. That is the whole point of #2532.
+ */
+async function activateAtlassian(pi: ExtensionAPI): Promise<number> {
+  const tokens = await resolveTokens()
 
-  // Connect to MCP server
   let tools: McpTool[]
   try {
     _session = await createMcpSession(tokens.accessToken)
@@ -423,20 +469,18 @@ async function initExtension(pi: ExtensionAPI, ctx: { ui: { notify: (msg: string
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     errorLog(`Failed to connect to mcp.atlassian.com: ${msg}`)
-    ctx.ui.notify(`Atlassian MCP unavailable: ${msg}`, "error")
     _session = null
-    return
+    throw new Error(`could not reach mcp.atlassian.com: ${msg}`)
   }
 
-  // Register all tools
-  registerTools(pi, tools)
+  return registerTools(pi, tools)
 }
 
 // ---------------------------------------------------------------------------
 // Login command
 // ---------------------------------------------------------------------------
 
-function registerLoginCommand(pi: ExtensionAPI): void {
+function registerLoginCommand(pi: ExtensionAPI, gateway: AtlassianGateway): void {
   pi.registerCommand("login-atlassian", {
     description: "Log in to Atlassian MCP (OAuth PKCE flow)",
     async handler(_args, ctx) {
@@ -450,28 +494,30 @@ function registerLoginCommand(pi: ExtensionAPI): void {
       ctx.ui.notify("Atlassian MCP: starting OAuth login flow...", "info")
 
       try {
-        const tokens = await loginAtlassian({
+        await loginAtlassian({
           onAuthUrl(url, instructions) {
             ctx.ui.notify(`Atlassian OAuth: ${instructions}\n${url}`, "info")
           },
         })
-
-        // Reconnect session with new token
-        try {
-          _session = await createMcpSession(tokens.accessToken)
-          const tools = await _session.listTools()
-          registerTools(pi, tools)
-          ctx.ui.notify(`Atlassian MCP: authenticated and registered ${tools.length} tools`, "info")
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err)
-          errorLog(`Failed to reconnect after login: ${msg}`)
-          ctx.ui.notify(`Atlassian MCP: login succeeded but connection failed: ${msg}`, "error")
-        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         errorLog(`Login failed: ${msg}`)
         ctx.ui.notify(`Atlassian login failed: ${msg}`, "error")
+        return
       }
+
+      // Connect and register through the SAME gateway the activate tool uses,
+      // so a login after a successful activation reports "already active"
+      // instead of re-registering every tool (which pi tolerates, but which
+      // costs a full prompt-cache write). The credential is on disk now, so
+      // the gateway's own token lookup picks it up.
+      const outcome = await gateway.run()
+      ctx.ui.notify(
+        outcome.status === "failed"
+          ? `Atlassian MCP: login succeeded but ${outcome.message}`
+          : `Atlassian MCP: authenticated. ${outcome.message}`,
+        outcome.status === "failed" ? "error" : "info",
+      )
     },
   })
 }
@@ -480,16 +526,74 @@ function registerLoginCommand(pi: ExtensionAPI): void {
 // Extension entry point
 // ---------------------------------------------------------------------------
 
-export default async function atlassianExtension(pi: ExtensionAPI): Promise<void> {
-  registerLoginCommand(pi)
+type AtlassianGateway = ReturnType<typeof createActivationGateway>
 
-  pi.on("session_start", async (_event, ctx) => {
-    // Non-blocking: errors here must not prevent pi from starting
+export default async function atlassianExtension(pi: ExtensionAPI): Promise<void> {
+  // pi's registerTool is generic over the TypeBox schema type; the gateway
+  // hands back an already-wrapped schema, so the host adapter is a cast.
+  const host: GatewayHost = {
+    registerTool(tool: GatewayToolSpec) {
+      pi.registerTool(tool as unknown as Parameters<ExtensionAPI["registerTool"]>[0])
+    },
+  }
+
+  const gateway = createActivationGateway({
+    family: "atlassian",
+    label: "Atlassian",
+    description: ACTIVATE_ATLASSIAN_DESCRIPTION,
+    wrapSchema: (schema) => mcpSchemaToTypebox(schema),
+    activate: () => activateAtlassian(pi),
+  })
+
+  registerLoginCommand(pi, gateway)
+
+  // Register --agent so pi.getFlag("agent") resolves for THIS extension. pi
+  // scopes getFlag to the registering extension (dist/core/extensions/
+  // loader.js: `if (!extension.flags.has(name)) return undefined`), so the
+  // prism extension's own registration is not visible here. Duplicate
+  // registration across extensions is safe: applyExtensionFlagValues builds a
+  // flat name->flag map (dist/core/agent-session-services.js) and both
+  // registrations declare the same string type, so the flag resolves
+  // identically whichever extension is consulted.
+  pi.registerFlag("agent", {
+    description:
+      "Primary agent identity (worker, coordinator, review-*, etc.) — selects the role system prompt appended to pi's base prompt at before_agent_start.",
+    type: "string",
+  })
+
+  pi.on("session_start", async (_event, _ctx) => {
+    // Registers activate_atlassian and nothing else: no token read, no
+    // connection. Non-blocking — errors here must not prevent pi from
+    // starting.
     try {
-      await initExtension(pi, ctx)
+      gateway.register(host)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       errorLog(`Extension init failed: ${msg}`)
+    }
+  })
+
+  // The earliest hook at which pi.getFlag("agent") is bound: pi binds
+  // extension flags during applyExtensionFlagValues, after every extension
+  // factory has returned. before_agent_start fires once per TURN, so the
+  // eager check is guarded to run at most once per session.
+  let eagerChecked = false
+  pi.on("before_agent_start", async (_event, ctx) => {
+    if (eagerChecked) return
+    eagerChecked = true
+    try {
+      const flag = pi.getFlag("agent")
+      const role = typeof flag === "string" ? flag : undefined
+      if (!isEagerRole(role, process.env.ATLASSIAN_MCP_EAGER_ROLES)) return
+
+      log(`role "${role}" is in ATLASSIAN_MCP_EAGER_ROLES — activating eagerly`)
+      const outcome = await gateway.run()
+      if (outcome.status === "failed") {
+        ctx.ui.notify(outcome.message, "error")
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errorLog(`Eager activation failed: ${msg}`)
     }
   })
 }
