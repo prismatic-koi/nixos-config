@@ -409,6 +409,72 @@ func TestDefaultDir_FallsBackToHome(t *testing.T) {
 	}
 }
 
+// TestDirForHome_PrefersXDGStateHome pins the resolution ORDER of the helper
+// the sandbox mount builders share with DefaultDir (issue #2572): when
+// $XDG_STATE_HOME is set it wins outright and the home argument is ignored.
+// A regression here would make the sandbox bind a different directory from
+// the one the writer and pi/extensions/prism.ts resolve.
+func TestDirForHome_PrefersXDGStateHome(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "/tmp/xdg-state-fixture")
+	got := DirForHome("/tmp/home-fixture")
+	want := filepath.Join("/tmp/xdg-state-fixture", "prism", "usage")
+	if got != want {
+		t.Errorf("DirForHome() = %q, want %q", got, want)
+	}
+}
+
+func TestDirForHome_FallsBackToHomeArgument(t *testing.T) {
+	// The home ARGUMENT wins over $HOME: container callers resolve the host
+	// home once and pass it down, and their fixtures drive it directly.
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("HOME", "/tmp/env-home-must-not-be-used")
+	got := DirForHome("/tmp/home-fixture")
+	want := filepath.Join("/tmp/home-fixture", ".local", "state", "prism", "usage")
+	if got != want {
+		t.Errorf("DirForHome() = %q, want %q", got, want)
+	}
+}
+
+// TestDirForHome_UnresolvableReturnsEmpty covers the caller contract: with
+// neither $XDG_STATE_HOME nor a home argument there is nothing to resolve,
+// and the empty string tells the sandbox mount builders to skip the entry
+// rather than emit a bind rooted at "/".
+func TestDirForHome_UnresolvableReturnsEmpty(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", "")
+	if got := DirForHome(""); got != "" {
+		t.Errorf("DirForHome(\"\") = %q, want \"\"", got)
+	}
+}
+
+// TestDirForHome_MatchesDefaultDir proves the two entry points cannot drift:
+// DefaultDir must be DirForHome(os.UserHomeDir()) for both resolution
+// branches. prism.ts's usageSnapshotPath() mirrors the same two branches.
+func TestDirForHome_MatchesDefaultDir(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		stateEnv string
+	}{
+		{"xdg-state-home-set", "/tmp/xdg-state-fixture"},
+		{"xdg-state-home-empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_STATE_HOME", tc.stateEnv)
+			t.Setenv("HOME", "/tmp/home-fixture")
+			home, err := os.UserHomeDir()
+			if err != nil {
+				t.Fatalf("UserHomeDir: %v", err)
+			}
+			want, err := DefaultDir()
+			if err != nil {
+				t.Fatalf("DefaultDir: %v", err)
+			}
+			if got := DirForHome(home); got != want {
+				t.Errorf("DirForHome(%q) = %q, DefaultDir() = %q — the two must agree", home, got, want)
+			}
+		})
+	}
+}
+
 // TestCurrentAccountName_NoAccountStore covers the AC: when no account store
 // exists, the resolver reports "unknown" rather than failing.
 func TestCurrentAccountName_NoAccountStore(t *testing.T) {
