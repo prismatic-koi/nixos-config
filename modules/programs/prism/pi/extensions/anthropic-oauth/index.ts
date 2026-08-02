@@ -31,6 +31,7 @@ import { config } from "./model-config.ts"
 import { fromClaudeCodeToolName, parseSSEStream } from "./stream.ts"
 import { buildRequestBody } from "./request-body.ts"
 import { buildOAuthHeaders, buildRequestUrl } from "./oauth-headers.ts"
+import { captureRateLimitSnapshot } from "./ratelimit.ts"
 
 // pi 0.80.8 removed `AuthStorage` from the barrel and dropped the
 // `ModelRegistry.create()` static factory. Construction is now
@@ -209,6 +210,28 @@ export default async function (pi: ExtensionAPI) {
               body: transformedBody as string,
               signal: options?.signal,
             })
+          }
+
+          // Rate-limit usage capture (issue #2538, parent #2537). A LOCAL
+          // ADDITION with no upstream counterpart — see UPSTREAM.md
+          // divergence #14.
+          //
+          // This is the one point in the request path where the headers are
+          // fully populated and the body is not yet consumed. The
+          // log("fetch_response", …) call above fires BEFORE the 401 retry,
+          // so it would report the pre-retry response; parseSSEStream only
+          // ever sees the body; transforms.ts runs on the error branch too.
+          //
+          // Reads `response`, not `finalResponse`: the raw fetch Response is
+          // the authoritative source of the headers, so the capture does not
+          // depend on transformResponseStream continuing to propagate them.
+          //
+          // captureRateLimitSnapshot returns void synchronously and never
+          // throws. It touches headers only, never the body, and it does not
+          // await the POST — an exception or a stall here would break every
+          // API call on this machine.
+          if (isOAuth) {
+            captureRateLimitSnapshot(response.status, response.headers)
           }
 
           const finalResponse = isOAuth

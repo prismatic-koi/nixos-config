@@ -24,6 +24,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/harness"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/usage"
 )
 
 // statusClientClosedRequest is the de-facto HTTP status code (popularised by
@@ -211,6 +212,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /merges        — list merge queue entries (coordinator only)
 //	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
 //	POST /event         — write a lifecycle event to the host DB (all roles)
+//	POST /usage/snapshot — persist a rate-limit snapshot for the active account (all roles)
 //	POST /escalate      — escalate to coordinator (worker sessions)
 //	POST /investigate   — spawn an investigate-agent session (worker sessions)
 //	POST /feedback      — append a feedback entry to the host feedback.jsonl (all roles)
@@ -2447,6 +2449,88 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"path": path})
 	})
 
+	// POST /usage/snapshot
+	// Request:  usageSnapshotRequest JSON — the parsed
+	//           `anthropic-ratelimit-unified-*` header set (see the type below).
+	// Response: {"account":"<resolved account name>"} | {"error":"..."}
+	//
+	// Persists a Claude subscription rate-limit snapshot to
+	// $XDG_STATE_HOME/prism/usage/<account>.json and .../current.json
+	// (issue #2538, parent #2537). The caller is the vendored `anthropic-oauth`
+	// pi extension, which captures the headers off a 200 response on the OAuth
+	// path and POSTs them here without awaiting the result.
+	//
+	// The sidecar is the ONLY writer. Three reasons the extension cannot write
+	// the files itself (issue #2537):
+	//
+	//  1. ~/.config/prism/accounts/ is deliberately not bound into agent
+	//     sandboxes (internal/container/mounts.go), so a sandboxed session
+	//     cannot resolve the account name at all.
+	//  2. Resolving the account here, at write time, stays correct when the
+	//     user switches accounts mid-session — the scenario the feature exists
+	//     to serve. A name captured at spawn time would misattribute usage.
+	//  3. A single host-side writer serialises concurrent writes. N sandboxed
+	//     sessions writing the same per-account file would race and lose
+	//     updates.
+	//
+	// All roles (worker and coordinator) are permitted: every session runs pi
+	// on the OAuth path, so every session is a legitimate producer. The
+	// endpoint is low-privilege — it accepts a closed set of numeric and enum
+	// fields and writes a derived cache. It carries no credential and reads
+	// none.
+	//
+	// The account name is NOT accepted from the caller. The request schema has
+	// no field for it, so DisallowUnknownFields rejects any attempt to supply
+	// one.
+	mux.HandleFunc("/usage/snapshot", func(w http.ResponseWriter, r *http.Request) {
+		if !requirePost(w, r) {
+			return
+		}
+
+		var req usageSnapshotRequest
+		// Body cap: default 1 MiB (issue #1848), which is orders of magnitude
+		// more than the ~300-byte payload this endpoint expects. The final
+		// argument is allowUnknownFields=false, so DisallowUnknownFields is on.
+		// That is load-bearing here: it is what keeps the persisted object
+		// restricted to the allowlisted header set and stops a caller from
+		// injecting `account`, `captured_at`, or any credential-shaped field.
+		if status, err := decodeRequestJSON(w, r, &req, defaultMaxBodyBytes, false); err != nil {
+			writeError(w, status, "invalid JSON: "+err.Error())
+			return
+		}
+
+		// An empty object carries no rate-limit information. Persisting it
+		// would clobber a good snapshot with an empty one, so reject instead.
+		// The extension already declines to POST in this case; this is the
+		// server-side half of the same rule.
+		if req.isEmpty() {
+			writeError(w, http.StatusBadRequest, "no rate-limit fields in request body")
+			return
+		}
+
+		dir, err := usage.DefaultDir()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "resolve usage dir: "+err.Error())
+			return
+		}
+
+		// Host-side resolution. Never fails: an absent or malformed account
+		// store yields usage.UnknownAccount.
+		accountName := usage.CurrentAccountName()
+		snap := req.toSnapshot(accountName, usage.FormatCapturedAt(time.Now()))
+
+		if err := usage.NewStore(dir).Write(snap); err != nil {
+			s.logger().Printf("sidecar: host-API /usage/snapshot: write: %v", err)
+			writeError(w, http.StatusInternalServerError, "write usage snapshot: "+err.Error())
+			return
+		}
+
+		// The log line names the account and nothing else — no header values,
+		// no token material, no request body echo.
+		s.logger().Printf("sidecar: host-API /usage/snapshot: wrote snapshot for account %q", snap.Account)
+		writeJSON(w, http.StatusOK, map[string]string{"account": snap.Account})
+	})
+
 	// POST /escalate
 	// Request:  {"prompt":"...","to":"<session>" (optional),"from":"<session>" (optional)}
 	// Response: {} on success, {"error":"..."} otherwise.
@@ -3284,6 +3368,133 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	})
 
 	return mux
+}
+
+// ── /usage/snapshot request schema ───────────────────────────────────────────
+//
+// usageSnapshotRequest is the closed wire schema of POST /usage/snapshot. Each
+// field maps 1:1 to one of the allowlisted `anthropic-ratelimit-unified-*`
+// response headers confirmed in issue #2537. The type is deliberately separate
+// from usage.Snapshot: the persisted object also carries `captured_at` and
+// `account`, and both are set host-side. Keeping them off the request schema
+// means DisallowUnknownFields rejects a caller that tries to supply either.
+//
+// Every field is optional. A header the response did not carry is omitted by
+// the extension and stays nil here, so it is omitted from the persisted JSON
+// too — a reader can tell "not present" from "zero".
+//
+// Numeric types are strict. `*int64` on the reset fields rejects a
+// fractional value at decode time rather than silently truncating it, which
+// keeps "reset fields are stored as integer unix seconds" true by
+// construction. The extension truncates before it sends.
+type usageSnapshotRequest struct {
+	UnifiedStatus       string                 `json:"unified_status"`
+	RepresentativeClaim string                 `json:"representative_claim"`
+	UnifiedReset        *int64                 `json:"unified_reset"`
+	Windows             *usageSnapshotWindows  `json:"windows"`
+	Fallback            *usageSnapshotFallback `json:"fallback"`
+	Overage             *usageSnapshotOverage  `json:"overage"`
+}
+
+type usageSnapshotWindows struct {
+	FiveHour *usageSnapshotWindow `json:"five_hour"`
+	SevenDay *usageSnapshotWindow `json:"seven_day"`
+}
+
+type usageSnapshotWindow struct {
+	Status             string   `json:"status"`
+	Utilization        *float64 `json:"utilization"`
+	Reset              *int64   `json:"reset"`
+	SurpassedThreshold *float64 `json:"surpassed_threshold"`
+}
+
+// usageSnapshotFallback mirrors the `-fallback` / `-fallback-percentage` pair.
+type usageSnapshotFallback struct {
+	Status     string   `json:"status"`
+	Percentage *float64 `json:"percentage"`
+}
+
+type usageSnapshotOverage struct {
+	Status         string `json:"status"`
+	DisabledReason string `json:"disabled_reason"`
+}
+
+// isEmpty reports whether the request carries no rate-limit information at
+// all. A `{}` body, or a body whose only content is empty nested objects,
+// must not overwrite a good snapshot.
+func (r usageSnapshotRequest) isEmpty() bool {
+	if r.UnifiedStatus != "" || r.RepresentativeClaim != "" || r.UnifiedReset != nil {
+		return false
+	}
+	if w := r.Windows; w != nil {
+		if !w.FiveHour.isEmpty() || !w.SevenDay.isEmpty() {
+			return false
+		}
+	}
+	if f := r.Fallback; f != nil {
+		if f.Status != "" || f.Percentage != nil {
+			return false
+		}
+	}
+	if o := r.Overage; o != nil {
+		if o.Status != "" || o.DisabledReason != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// isEmpty reports whether the window carries no data. A nil receiver counts
+// as empty so callers need no separate nil check.
+func (w *usageSnapshotWindow) isEmpty() bool {
+	if w == nil {
+		return true
+	}
+	return w.Status == "" && w.Utilization == nil && w.Reset == nil && w.SurpassedThreshold == nil
+}
+
+// toWindow converts to the persisted shape, returning nil for an empty window
+// so it is omitted from the JSON rather than written as `{}`.
+func (w *usageSnapshotWindow) toWindow() *usage.Window {
+	if w.isEmpty() {
+		return nil
+	}
+	return &usage.Window{
+		Status:             w.Status,
+		Utilization:        w.Utilization,
+		Reset:              w.Reset,
+		SurpassedThreshold: w.SurpassedThreshold,
+	}
+}
+
+// toSnapshot builds the persisted object. accountName and capturedAt are
+// supplied by the handler — they are host-side facts, not caller input.
+//
+// Empty nested groups collapse to nil so the persisted JSON omits them
+// entirely; that is what lets a reader distinguish "the response carried no
+// fallback headers" from "fallback was reported as empty".
+func (r usageSnapshotRequest) toSnapshot(accountName, capturedAt string) usage.Snapshot {
+	snap := usage.Snapshot{
+		CapturedAt:          capturedAt,
+		Account:             accountName,
+		UnifiedStatus:       r.UnifiedStatus,
+		RepresentativeClaim: r.RepresentativeClaim,
+		UnifiedReset:        r.UnifiedReset,
+	}
+	if r.Windows != nil {
+		fiveHour := r.Windows.FiveHour.toWindow()
+		sevenDay := r.Windows.SevenDay.toWindow()
+		if fiveHour != nil || sevenDay != nil {
+			snap.Windows = &usage.Windows{FiveHour: fiveHour, SevenDay: sevenDay}
+		}
+	}
+	if f := r.Fallback; f != nil && (f.Status != "" || f.Percentage != nil) {
+		snap.Fallback = &usage.Fallback{Status: f.Status, Percentage: f.Percentage}
+	}
+	if o := r.Overage; o != nil && (o.Status != "" || o.DisabledReason != "") {
+		snap.Overage = &usage.Overage{Status: o.Status, DisabledReason: o.DisabledReason}
+	}
+	return snap
 }
 
 // eventKindAllowlist is the set of valid kind values accepted by the /event
