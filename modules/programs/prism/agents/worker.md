@@ -74,11 +74,17 @@ Push your branch when work is complete. Work is not done until pushed.
 
 If your spawn prompt references a Jira ticket (e.g. `PLAT-123`), keep its state in sync with your actual progress:
 
-1. **Before your first commit**, transition the ticket to `In Progress`:
+1. **Activate the Atlassian tools first.** A worker session registers only
+   `activate_atlassian`, not the Jira surface — the family is deferred so its
+   schemas stay out of the cached prompt prefix of every session (issue #2532).
+   If you cannot see `transitionJiraIssueByName` in your tool list, call
+   `activate_atlassian` once, with no arguments. It is a no-op when the family
+   is already active, so calling it is always safe.
+2. **Before your first commit**, transition the ticket to `In Progress`:
    ```
    transitionJiraIssueByName(issueIdOrKey: "PLAT-123", transitionName: "In Progress")
    ```
-2. **After your PR is merged** (or, for non-PR work, after the change is live), transition the ticket to its terminal state. Use `Done` if it is available; otherwise call `getTransitionsForJiraIssue` to find the correct closed state for this project (`Closed`, `Resolved`, `Complete`, etc.).
+3. **After your PR is merged** (or, for non-PR work, after the change is live), transition the ticket to its terminal state. Use `Done` if it is available; otherwise call `getTransitionsForJiraIssue` to find the correct closed state for this project (`Closed`, `Resolved`, `Complete`, etc.).
 
 Load the `atlassian` skill for full tool usage. Reading a ticket to gather context or decide whether to action it does not change the ticket state — transition only when you actually start or finish work.
 
