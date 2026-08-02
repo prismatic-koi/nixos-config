@@ -459,6 +459,14 @@ func buildDirectAgentCmd(opts Opts) string {
 			cmd += " --extension " + shellQuote(extPath)
 		}
 	}
+	// --exclude-tools <names> for role-scoped builtin tool restriction
+	// (issue #2531), host-mode mirror of container.PIInvocation. See
+	// internal/config/agent_tool_roles.go for the role list and rationale.
+	if (opts.HarnessName == "pi" || opts.HarnessName == "") && agent != "" {
+		if excluded := config.ExcludedToolsForRole(agent); len(excluded) > 0 {
+			cmd += " --exclude-tools " + shellQuote(strings.Join(excluded, ","))
+		}
+	}
 	// CLI overrides for model and variant (issue #2086). Scoped to the pi
 	// harness (or empty, which defaults to pi). The flag pair must appear
 	// before the positional prompt so pi parses them as named flags rather

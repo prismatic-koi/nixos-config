@@ -185,6 +185,40 @@ func TestPIInvocation_AgentFlagOrder(t *testing.T) {
 	}
 }
 
+// TestPIInvocation_ExcludeToolsForReviewRoles is the issue #2531 coverage:
+// review roles get --exclude-tools write,edit; non-review roles get no
+// --exclude-tools flag at all. See internal/config/agent_tool_roles.go for
+// the role list and rationale.
+func TestPIInvocation_ExcludeToolsForReviewRoles(t *testing.T) {
+	reviewRoles := []string{
+		"review-goal",
+		"review-code",
+		"review-context",
+		"review-qa",
+		"review-security",
+	}
+	for _, role := range reviewRoles {
+		t.Run(role, func(t *testing.T) {
+			cfg := Config{AgentRole: role}
+			args := PIInvocation(cfg)
+			if !hasPair(args, "--exclude-tools", "write,edit") {
+				t.Errorf("expected --exclude-tools write,edit in PIInvocation args for role %q; got %v", role, args)
+			}
+		})
+	}
+
+	nonReviewRoles := []string{"worker", "coordinator", "investigate", "ac", "retro", ""}
+	for _, role := range nonReviewRoles {
+		t.Run("no-exclusion/"+role, func(t *testing.T) {
+			cfg := Config{AgentRole: role}
+			args := PIInvocation(cfg)
+			if hasArg(args, "--exclude-tools") {
+				t.Errorf("--exclude-tools must not appear for role %q; got %v", role, args)
+			}
+		})
+	}
+}
+
 // TestPIInvocation_CLIOverrideWinsOverSlot is the issue #2086 regression
 // guard. The end-to-end picture: `prism spawn --model X` is translated by
 // `populatePIConfig` into a PIModel/PIThinking override that wins over the
