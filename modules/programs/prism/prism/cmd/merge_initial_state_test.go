@@ -138,6 +138,83 @@ func TestProbeInitialState_Conflict(t *testing.T) {
 	}
 }
 
+// TestProbeInitialState_CIFailed is the #2527 core case: mergeStateStatus is
+// BLOCKED and the required check has COMPLETED with conclusion FAILURE.
+// Before the fix this misclassified as merely "pending" (via
+// pendingRequiredCheckNames, which does not consult Status) and told the
+// coordinator to keep waiting for something that could never happen.
+func TestProbeInitialState_CIFailed(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":106,"title":"ci failed","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"FAILURE","status":"COMPLETED"}]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+	dec, err := probeInitialState(106)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome != initialOutcomeCIFailed {
+		t.Errorf("outcome: got %v, want CIFailed", dec.Outcome)
+	}
+	if !strings.Contains(dec.Message, "PR #106 CI failed: pr-gate.") {
+		t.Errorf("message %q does not match expected shape", dec.Message)
+	}
+	if !strings.Contains(dec.Message, "Worker needs to fix and push") {
+		t.Errorf("message %q does not contain 'Worker needs to fix and push'", dec.Message)
+	}
+	if strings.Contains(dec.Message, "Please clean up the branch and worktree") {
+		t.Errorf("message %q must not contain 'Please clean up the branch and worktree' — the branch is still needed", dec.Message)
+	}
+}
+
+// TestProbeInitialState_CIFailed_StillPendingStaysWatching is the #2525
+// conservative-bias edge case, checked at the invocation surface: BLOCKED
+// with the required check still IN_PROGRESS must not be reported as failed.
+func TestProbeInitialState_CIFailed_StillPendingStaysWatching(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":107,"title":"still running","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"","status":"IN_PROGRESS"}]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+	dec, err := probeInitialState(107)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome == initialOutcomeCIFailed {
+		t.Errorf("outcome: got CIFailed for an in-progress required check, want non-terminal")
+	}
+}
+
+// TestProbeInitialState_CIFailed_AbsentCheckStaysWatching: a required check
+// missing from the rollup entirely must not be reported as failed.
+func TestProbeInitialState_CIFailed_AbsentCheckStaysWatching(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":108,"title":"not yet registered","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+	dec, err := probeInitialState(108)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome == initialOutcomeCIFailed {
+		t.Errorf("outcome: got CIFailed for a check absent from the rollup, want non-terminal")
+	}
+}
+
+// TestProbeInitialState_CIFailed_NonRequiredFailureStaysWatching: a
+// non-required check failing must not trigger the terminal state.
+func TestProbeInitialState_CIFailed_NonRequiredFailureStaysWatching(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":109,"title":"optional check failed","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"},{"name":"slow-optional","conclusion":"FAILURE","status":"COMPLETED"}]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+	dec, err := probeInitialState(109)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome == initialOutcomeCIFailed {
+		t.Errorf("outcome: got CIFailed from a non-required check's failure, want non-terminal")
+	}
+}
+
 func TestProbeInitialState_ProtectedReady(t *testing.T) {
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":103,"title":"ready","mergedAt":null,"mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
@@ -576,6 +653,51 @@ func TestRunMerge_MergeConflict_ExitsFailure(t *testing.T) {
 	row, _ := d.PendingMergeByPR(7003, "nixos-config")
 	if row != nil {
 		t.Errorf("pending_merges row exists for DIRTY PR: %+v (must not enqueue)", row)
+	}
+}
+
+// TestRunMerge_CIFailed_ExitsFailureNoEnqueue is the #2527 acceptance case:
+// `prism merge` on a PR whose required check already COMPLETED with FAILURE
+// prints the CI-failed message, exits non-zero, and does not enqueue a row
+// (no poller starts for a PR that can never resolve on its own).
+func TestRunMerge_CIFailed_ExitsFailureNoEnqueue(t *testing.T) {
+	openMergeTestDB(t)
+	const coordSession = "nixos-config@main"
+	seedCoordinatorWithInstanceID(t, coordSession, "inst-ci-failed")
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":7006,"title":"ci failed","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"FAILURE","status":"COMPLETED"}]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runMerge(mergeCmd, []string{"7006"})
+	})
+
+	if runErr == nil {
+		t.Fatal("runMerge on BLOCKED PR with a FAILURE required check: got nil error, want non-nil (must exit non-zero)")
+	}
+	if !strings.Contains(out, "PR #7006 CI failed: pr-gate.") {
+		t.Errorf("stdout %q does not contain the expected CI-failed message", out)
+	}
+	if !strings.Contains(out, "Worker needs to fix and push") {
+		t.Errorf("stdout %q does not contain 'Worker needs to fix and push'", out)
+	}
+	if strings.Contains(out, "Please clean up the branch and worktree") {
+		t.Errorf("stdout %q must not contain 'Please clean up the branch and worktree'", out)
+	}
+
+	d, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer d.Close()
+	row, _ := d.PendingMergeByPR(7006, "nixos-config")
+	if row != nil {
+		t.Errorf("pending_merges row exists for CI-failed PR: %+v (must not enqueue)", row)
 	}
 }
 
