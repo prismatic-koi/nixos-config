@@ -43,6 +43,7 @@ it is more actively maintained and is the source of the PR #193 fix.
 | `signing.ts` | griffinmartin | `src/signing.ts` | *(no equivalent)* |
 | `model-config.ts` | griffinmartin | `src/model-config.ts` | *(no equivalent)* |
 | `logger.ts` | griffinmartin | `src/logger.ts` | *(no equivalent)* |
+| `ratelimit.ts` | *(none — local addition, see divergence 14)* | *(no equivalent)* | *(no equivalent)* |
 | `anthropic-prompt.txt` | griffinmartin | `src/anthropic-prompt.txt` | *(no equivalent)* |
 
 ## Known divergences
@@ -284,6 +285,50 @@ it is more actively maintained and is the source of the PR #193 fix.
     this port. Griffinmartin main uses PascalCase (per commit `9121ca47` in
     v1.4.10); we still use MD5 hash-based obfuscation. No changes to
     `transforms.ts` in this port.
+
+14. **`ratelimit.ts` is a LOCAL ADDITION, not an upstream port** (issue
+    #2538, parent #2537). Neither griffinmartin nor leohenon captures the
+    `anthropic-ratelimit-unified-*` response headers. Do NOT look for an
+    upstream counterpart, and do NOT delete this file during a future port
+    because it is absent upstream.
+
+    **What it does.** Anthropic returns a unified rate-limit header set on
+    every successful `/v1/messages` response on the Claude Code OAuth path.
+    `ratelimit.ts` reads that allowlisted set, converts it to the snapshot
+    shape documented in #2537, and POSTs it to the prism sidecar's host-API
+    endpoint `/usage/snapshot`. The sidecar resolves the active account and
+    persists `~/.local/state/prism/usage/<account>.json` plus `current.json`.
+    Prism reads those files back to show subscription usage.
+
+    **Where it hooks.** One call in `index.ts::streamSimple`, immediately
+    after the 401-retry block and before `finalResponse` is computed. That
+    is the only point where the headers are fully populated and the body is
+    not yet consumed. `stream.ts` and `transforms.ts` are deliberately NOT
+    hooked — `parseSSEStream` sees only the body, and `transforms.ts` runs
+    on the error branch too.
+
+    **Two invariants a future port must not break.** The hook sits in the
+    live OAuth request path, so an exception or a stall there breaks every
+    API call for every session on the machine:
+
+    - `captureRateLimitSnapshot` returns void SYNCHRONOUSLY and never
+      throws. It does not await the POST.
+    - It reads response HEADERS only. It never touches `response.body`,
+      `.text()`, or `.json()`.
+
+    **Token-leak guard.** The parser reads an explicit header allowlist. A
+    bulk `Object.fromEntries(response.headers)` would sweep up
+    `authorization`; `ratelimit.test.ts` has a regression test that feeds in
+    `authorization`, `x-api-key`, and `cookie` and asserts none reaches the
+    POST body.
+
+    **When PRISM_HOST_API is unset** (a session running outside a prism
+    sandbox) the hook makes no network call at all.
+
+    Tests: `ratelimit.test.ts` (parser, transport, and request-path
+    guarantees). Live capture cannot be verified from a worktree — `pi.nix`
+    mounts this directory as a read-only nix-store symlink, so a change
+    needs `nh switch` first.
 
 ## Port procedure for future upstream fixes
 
