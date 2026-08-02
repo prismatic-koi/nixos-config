@@ -38,10 +38,21 @@ func withAccountFixture(t *testing.T) (configDir, authPath string) {
 	return cfg, auth
 }
 
+// runSubcommand invokes a subcommand's RunE against a throwaway cobra command
+// and returns its combined stdout+stderr.
+//
+// `no-refresh` defaults to TRUE here, inverting the production default. Unit
+// tests must never make a live Anthropic request, and `prism account usage`
+// refreshes a missing or stale snapshot by default (#2541). Tests that need
+// the refresh path use runAccountUsageWithRefresh in
+// account_usage_refresh_test.go, which registers the real production flag set
+// via addAccountUsageFlags and redirects the API and the accounts directory
+// into fixtures.
 func runSubcommand(t *testing.T, runE func(*cobra.Command, []string) error, args []string) (string, error) {
 	t.Helper()
 	c := &cobra.Command{Use: "test"}
 	c.Flags().Bool("json", false, "")
+	c.Flags().Bool("no-refresh", true, "")
 	var buf bytes.Buffer
 	c.SetOut(&buf)
 	c.SetErr(&buf)
