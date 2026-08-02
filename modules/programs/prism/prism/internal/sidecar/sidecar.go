@@ -528,9 +528,18 @@ type Sidecar struct {
 	// preserving ValidTransitions). Protected by s.mu.
 	assistantOutputSeen bool
 
-	// lastInvestigatorText holds the most recent completed turn text for an
-	// investigate-agent session. Updated on every turn_end; read at completion
-	// time by notifyInvestigatorCompletion to deliver the final report.
+	// lastInvestigatorText holds the most recent completed turn text for ANY
+	// session — the name predates issue #2528 and is investigator-specific in
+	// name only; it carries no role gate and is populated identically for
+	// investigate-agent sessions and ordinary worker sessions alike. Updated
+	// on every turn_end. Read at completion time by two consumers:
+	//   - notifyInvestigatorCompletion, to deliver the investigator's final
+	//     report to its invoker.
+	//   - the worker terminal-notification path (notifyCoordinator /
+	//     notifyCoordinatorError, via buildWorkerNotifyText in notify.go), to
+	//     extract an opt-in <follow_ups> section for the coordinator.
+	// Do not role-gate this field to investigate-agent sessions only — doing
+	// so would silently disable the worker follow-ups feature.
 	// Protected by s.mu.
 	lastInvestigatorText string
 
