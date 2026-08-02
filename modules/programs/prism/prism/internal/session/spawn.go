@@ -1105,6 +1105,23 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 	}
 }
 
+// agentOnlyAgentEnvVars resolves the profile-level AgentEnvVars map for the
+// agent-only layout, filtered for opts.AgentRole (issue #2533).
+//
+// When the caller supplies an explicit map, that map is filtered. Otherwise
+// the map is loaded from profiles.json through config.AgentEnvVarsForRole —
+// the same resolver `prism agent-run` uses for bwrap and sandbox-exec, so a
+// given role gets the same env map in host mode and in a sandbox.
+//
+// Loading is best-effort: a missing or malformed profiles.json yields a nil
+// map and the session starts without profile env vars.
+func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
+	if opts.AgentEnvVars != nil {
+		return config.FilterAgentEnvVarsForRole(opts.AgentRole, opts.AgentEnvVars)
+	}
+	return config.AgentEnvVarsForRole(opts.AgentRole)
+}
+
 // spawnAgentOnlyLayout creates a 2-window tmux session for a review-style
 // agent: window 0 is a bare shell, window 1 runs the agent command. The
 // sidecar is started directly (it is owned by the session, not by a tmux
@@ -1165,8 +1182,14 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		// CLI overrides (issue #2086) for review-style agent-only layouts.
 		Model:   opts.Model,
 		Variant: opts.Variant,
-		// AgentEnvVars intentionally omitted: review sessions don't inject
-		// profile env vars in host mode today.
+		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
+		// This used to be omitted entirely, so a host-mode review session got
+		// no profile env vars while the same session under bwrap or
+		// sandbox-exec got the full set. Both paths now resolve the map
+		// through the same role filter, so host mode and sandboxed mode agree.
+		// The field is load-bearing for host mode only — the sandboxed modes
+		// run `prism agent-run`, which resolves the same map itself.
+		AgentEnvVars: agentOnlyAgentEnvVars(opts),
 	}
 	agentCmd, err := BuildAgentCmd(buildOpts)
 	if err != nil {
