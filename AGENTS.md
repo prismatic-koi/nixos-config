@@ -137,7 +137,7 @@ Never use `--merge` (creates a merge commit, rejected by the ruleset) or `--reba
 
 **Branch deletion:** Do not pass `--delete-branch` to `gh pr merge`. Branch deletion after merge is handled automatically by GitHub (`delete_branch_on_merge` is enabled at the repo level). Passing `--delete-branch` can cause an API error if the branch is already gone.
 
-**Required checks:** The required status check on `main` is `pr-gate`. The ruleset uses strict required-status-checks, so a branch must be up to date with `main` before it can merge. When `gh pr merge` fails because the branch is behind, run `gh pr update-branch <number>` to bring it up to date.
+**Build agents:** If you are working on a feature branch, your job ends at "PR opened and pushed". The coordinator on `@main` drives the merge via `prism merge <pr>` — do not attempt to merge the PR yourself, do not enqueue it in the merge queue, and do not wait for it to land before handing off. Once your PR is open and your self-review has passed, you are done.
 
 ### General Workflow Principles
 
