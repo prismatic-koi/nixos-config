@@ -187,9 +187,119 @@ func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 	}
 }
 
+// followUpsByteCap bounds the follow-ups body appended to a worker's
+// coordinator notification (issue #2528). The section is opt-in and
+// worker-authored, but the cap is a defensive backstop so a worker cannot
+// deliver an unbounded body regardless of what it writes between the
+// markers. When the extracted section exceeds the cap it is truncated and
+// the notification says so explicitly, with a prism checkin pointer to the
+// untruncated turn.
+const followUpsByteCap = 4096
+
+// followUpsOpenTag delimits the worker follow-ups section (issue #2528). A
+// worker opts in to a body-bearing coordinator notification by wrapping
+// findings in this tag pair during its handoff turn:
+//
+//	<follow_ups>
+//	...content...
+//	</follow_ups>
+//
+// This mirrors the existing <summary>/<blocking_issues> convention review
+// agents use (internal/review/results.go's extractTag) so the two
+// structured-output conventions stay consistent. Matching is case-insensitive
+// and the first well-formed pair wins; an absent or unterminated tag is
+// treated as "no follow-ups section" — the notification falls back to the
+// generic finish/error wording unchanged, and delivery is never blocked by a
+// malformed marker.
+const followUpsOpenTag = "follow_ups"
+
+// extractTag returns the trimmed content between the first well-formed
+// <tag>...</tag> pair in s (case-insensitive), or ("", false) when no such
+// pair exists. This is a sidecar-local copy of the same primitive
+// internal/review/results.go uses for <summary>/<blocking_issues> extraction
+// — kept local rather than exported across packages to avoid coupling the
+// worker follow-ups convention (issue #2528) to the review package's
+// internals.
+func extractTag(s, tag string) (string, bool) {
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	lower := strings.ToLower(s)
+	lopen := strings.ToLower(open)
+	lclose := strings.ToLower(close)
+
+	start := strings.Index(lower, lopen)
+	if start < 0 {
+		return "", false
+	}
+	inner := start + len(open)
+	end := strings.Index(lower[inner:], lclose)
+	if end < 0 {
+		return "", false
+	}
+	return strings.TrimSpace(s[inner : inner+end]), true
+}
+
+// extractFollowUps pulls the worker-authored follow-ups section out of
+// finalText, if present. It returns the trimmed section content, whether it
+// was truncated to followUpsByteCap, and whether a well-formed section was
+// found at all. A missing or unterminated tag, or a section that is empty or
+// whitespace-only once trimmed, reports found=false — callers must treat
+// that identically to "no section" (issue #2528 AC: empty/whitespace-only
+// sections are treated the same as absent ones).
+func extractFollowUps(finalText string) (content string, truncated bool, found bool) {
+	raw, ok := extractTag(finalText, followUpsOpenTag)
+	if !ok {
+		return "", false, false
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false, false
+	}
+	if len(raw) > followUpsByteCap {
+		return truncateBytes([]byte(raw), followUpsByteCap), true, true
+	}
+	return raw, false, true
+}
+
+// buildWorkerNotifyText composes the coordinator-facing notification body for
+// a worker terminal-state transition. baseText is the existing generic
+// wording ("Agent %s has finished/errored its current task"); finalText is
+// the text of the worker's last completed turn, from which an opt-in
+// follow-ups section is extracted (see extractFollowUps).
+//
+// When no follow-ups section is present, baseText is returned unchanged — no
+// behaviour change from before this issue. When a section is present, the
+// notification carries: baseText, the follow-ups content (truncated and
+// flagged if it exceeded followUpsByteCap), the source session name (so a
+// coordinator with several workers in flight can route it), and a
+// `prism checkin <session>` pointer to the full turn.
+func buildWorkerNotifyText(baseText, sessionName, finalText string) string {
+	content, truncated, found := extractFollowUps(finalText)
+	if !found {
+		return baseText
+	}
+
+	var b strings.Builder
+	b.WriteString(baseText)
+	b.WriteString(fmt.Sprintf("\n\nFollow-ups from %s:\n%s", sessionName, content))
+	if truncated {
+		b.WriteString(fmt.Sprintf("\n\n[truncated to %d bytes]", followUpsByteCap))
+	}
+	b.WriteString(fmt.Sprintf("\n\nFor the full turn: prism checkin %s", sessionName))
+	return b.String()
+}
+
 // notifyCoordinator sends a "finished" notification to the coordinator session
 // for this repo. It is called asynchronously (via go) after writing
 // StateFinished, so s.mu must NOT be held when this method runs.
+//
+// finalText is the text of the worker's last completed turn (the same value
+// events.go captures into finalText := s.lastInvestigatorText immediately
+// before calling this method). When finalText contains a well-formed
+// <follow_ups> section, its content is appended to the notification body via
+// buildWorkerNotifyText (issue #2528). When finalText is empty or carries no
+// such section, the notification is the unchanged generic "has finished"
+// string — no behaviour change from before this issue.
 //
 // The coordinator is discovered by looking up "<repo>@main" in the DB.
 // Notification is delivered via the coordinator's host-API Unix socket
@@ -208,21 +318,25 @@ func (s *Sidecar) notifyParentWorkerOnReviewFailure(failureText string) {
 //
 // Delivery is a single attempt via promptdelivery.DeliverToSession; there is
 // no retry loop or backoff in this function.
-func (s *Sidecar) notifyCoordinator() {
-	s.notifyCoordinatorWithText(fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName))
+func (s *Sidecar) notifyCoordinator(finalText string) {
+	baseText := fmt.Sprintf("Agent %s has finished its current task", s.cfg.SessionName)
+	s.notifyCoordinatorWithText(buildWorkerNotifyText(baseText, s.cfg.SessionName, finalText))
 }
 
 // notifyCoordinatorError sends an "errored" notification to the coordinator
 // session for this repo. The wording is the verbatim error-terminal-state
 // counterpart of notifyCoordinator's "has finished" wording (skill table:
-// Worker terminal-state notifications).
+// Worker terminal-state notifications). Like notifyCoordinator, finalText's
+// optional <follow_ups> section (issue #2528) is appended via
+// buildWorkerNotifyText when present.
 //
 // Called asynchronously (via goNotify) after writing StateError on the
 // zero-output-exit path (issue #2081). All suppression guards (self,
 // review-agent, investigate-agent, escalated, muted) and the audit-row
 // behaviour are shared with notifyCoordinator via notifyCoordinatorWithText.
-func (s *Sidecar) notifyCoordinatorError() {
-	s.notifyCoordinatorWithText(fmt.Sprintf("Agent %s has errored its current task", s.cfg.SessionName))
+func (s *Sidecar) notifyCoordinatorError(finalText string) {
+	baseText := fmt.Sprintf("Agent %s has errored its current task", s.cfg.SessionName)
+	s.notifyCoordinatorWithText(buildWorkerNotifyText(baseText, s.cfg.SessionName, finalText))
 }
 
 // notifyCoordinatorWithText is the shared implementation used by

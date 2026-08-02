@@ -1175,7 +1175,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// of the same write-ordering invariant. notifyCoordinator() acquires no
 			// locks held by this goroutine, so running it inline is safe.
 			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
-				s.notifyCoordinator()
+				// No completed turn text exists on the startup-timeout path (the
+				// harness never reached the listening state, let alone produced
+				// output), so there is nothing to extract a follow-ups section from.
+				s.notifyCoordinator("")
 			}
 
 			// Emit a `[timing] harness listening` line recording the timeout
@@ -2791,7 +2794,8 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		if wasEscalated {
 			s.logger().Printf("sidecar: session_shutdown: finish notification suppressed (cause=escalated — session.escalated already informed coordinator)")
 		} else {
-			s.goNotify(s.notifyCoordinator)
+			finalText := s.lastInvestigatorText
+			s.goNotify(func() { s.notifyCoordinator(finalText) })
 		}
 		return true
 

@@ -193,7 +193,7 @@ func (s *Sidecar) handleServerConnected() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		finalText := s.lastInvestigatorText
-		s.goNotify(s.notifyCoordinator)
+		s.goNotify(func() { s.notifyCoordinator(finalText) })
 		s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateFinished, finalText) })
 	})
 }
@@ -354,7 +354,7 @@ func (s *Sidecar) handleSessionFinished() {
 				}, nil)
 				s.lastErrorAt = s.cfg.Clock.Now()
 				finalText := s.lastInvestigatorText
-				s.goNotify(s.notifyCoordinatorError)
+				s.goNotify(func() { s.notifyCoordinatorError(finalText) })
 				s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateError, finalText) })
 				return
 			}
@@ -373,7 +373,7 @@ func (s *Sidecar) handleSessionFinished() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		finalText := s.lastInvestigatorText
-		s.goNotify(s.notifyCoordinator)
+		s.goNotify(func() { s.notifyCoordinator(finalText) })
 		s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateFinished, finalText) })
 	})
 }
@@ -447,7 +447,7 @@ func (s *Sidecar) handleSessionIdle() {
 		s.upsertState(agent.StateFinished, nil, nil)
 		s.writeStateChange(agent.StateFinished)
 		finalText := s.lastInvestigatorText
-		s.goNotify(s.notifyCoordinator)
+		s.goNotify(func() { s.notifyCoordinator(finalText) })
 		s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateFinished, finalText) })
 	})
 }
@@ -913,7 +913,7 @@ func (s *Sidecar) handleMessageUpdated(evt harness.HarnessEvent) {
 				s.upsertState(agent.StateFinished, nil, nil)
 				s.writeStateChange(agent.StateFinished)
 				finalText := s.lastInvestigatorText
-				s.goNotify(s.notifyCoordinator)
+				s.goNotify(func() { s.notifyCoordinator(finalText) })
 				s.goNotify(func() { s.notifyInvestigatorCompletion(agent.StateFinished, finalText) })
 			})
 		}

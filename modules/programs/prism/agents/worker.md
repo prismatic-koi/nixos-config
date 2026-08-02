@@ -152,6 +152,41 @@ prompt. Do not enqueue the merge yourself, do not wait for the PR to land
 before handing off, and do not attempt to shepherd it through CI — that
 work is the coordinator's.
 
+## Follow-ups for the coordinator
+
+Your terminal notification to the coordinator is normally a fixed, bodyless
+"has finished" ping. If your handoff turn found something the coordinator
+should see without asking — a pre-existing defect you verified but left out of
+scope, a deliberate scope call, a caveat on your own work — say so in a
+follow-ups section, and the notification carries it as the body instead of
+the generic ping.
+
+**Marker syntax.** In your final turn, wrap the content in a `<follow_ups>`
+tag pair:
+
+```
+<follow_ups>
+- internal/merge.go:142 reports an already-failed required check as
+  "waiting on 1 check(s)" — reproduces on main without my changes, filed as
+  #2527. Root cause: cmd/merge.go has its own local checkEntry type, so the
+  shared helper needs lifting before this can be fixed properly.
+</follow_ups>
+```
+
+- **Section absent or empty** (including whitespace-only) — the coordinator
+  gets the existing generic finish message. No behaviour change.
+- **Section present and non-empty** — the coordinator's notification carries
+  the section's content, your session name, and a `prism checkin <session>`
+  pointer to the full turn.
+- **Length** — the section is capped; content past the cap is truncated and
+  the notification says so. Keep it to the findings that matter, not a
+  transcript — use `prism checkin` for that.
+- This is a separate channel from `prism escalate`. Use `prism escalate` when
+  you need a decision from the coordinator before you can continue (see
+  above). Use a follow-ups section when you have information to hand off
+  alongside work that is otherwise complete — it does not block or wait for a
+  reply.
+
 ## Running a review
 
 Before running `prism review`, load the `prism` skill via the skill tool. The skill contains the full async review workflow and async expectations — loading it first ensures you handle the review-complete prompt correctly.

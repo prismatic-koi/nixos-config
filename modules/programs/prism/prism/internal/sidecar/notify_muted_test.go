@@ -82,7 +82,7 @@ func TestNotifyCoordinator_MutedSuppresses(t *testing.T) {
 		t.Fatalf("SetMuted: %v", err)
 	}
 
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 
 	if got := tr.Count(); got != 0 {
 		t.Errorf("muted worker delivered %d coordinator notification(s); want 0", got)
@@ -109,7 +109,7 @@ func TestNotifyCoordinator_MutedAndEscalatedBothSuppressed(t *testing.T) {
 		t.Fatalf("SetMuted: %v", err)
 	}
 
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 
 	if got := tr.Count(); got != 0 {
 		t.Errorf("muted+escalated worker delivered %d coordinator notification(s); want 0", got)
@@ -131,7 +131,7 @@ func TestNotifyCoordinator_UnmuteRestoresNotification(t *testing.T) {
 	if _, err := bus.DB.SetMuted(workerSession, true); err != nil {
 		t.Fatalf("SetMuted true: %v", err)
 	}
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 	if got := tr.Count(); got != 0 {
 		t.Fatalf("muted notify delivered %d; want 0", got)
 	}
@@ -140,7 +140,7 @@ func TestNotifyCoordinator_UnmuteRestoresNotification(t *testing.T) {
 	if _, err := bus.DB.SetMuted(workerSession, false); err != nil {
 		t.Fatalf("SetMuted false: %v", err)
 	}
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 	if got := tr.Count(); got != 1 {
 		t.Fatalf("after unmute, delivered %d coordinator notification(s); want 1", got)
 	}
@@ -164,7 +164,7 @@ func TestNotifyCoordinator_ExistingGuardsStillFireWhenUnmuted(t *testing.T) {
 		if err := bus.DB.UpsertStatus(workerSession, repo, "/tmp/w", "escalated", nil, nil); err != nil {
 			t.Fatalf("UpsertStatus: %v", err)
 		}
-		s.notifyCoordinator()
+		s.notifyCoordinator("")
 		if got := tr.Count(); got != 0 {
 			t.Errorf("escalated guard regressed: %d deliveries; want 0", got)
 		}
@@ -176,7 +176,7 @@ func TestNotifyCoordinator_ExistingGuardsStillFireWhenUnmuted(t *testing.T) {
 		s, bus, tr := newMutedTestSidecar(t, workerSession, coordSession, repo)
 		// Plain finished state, no muted flag.
 		_ = bus
-		s.notifyCoordinator()
+		s.notifyCoordinator("")
 		if got := tr.Count(); got != 0 {
 			t.Errorf("review-agent guard regressed: %d deliveries; want 0", got)
 		}
@@ -202,7 +202,7 @@ func TestNotifyCoordinator_MutedFinishThenUnmute_NoRetroactivePing(t *testing.T)
 	if _, err := bus.DB.SetMuted(workerSession, true); err != nil {
 		t.Fatalf("SetMuted true: %v", err)
 	}
-	s.notifyCoordinator() // suppressed
+	s.notifyCoordinator("") // suppressed
 	if got := tr.Count(); got != 0 {
 		t.Fatalf("muted notify delivered %d; want 0", got)
 	}

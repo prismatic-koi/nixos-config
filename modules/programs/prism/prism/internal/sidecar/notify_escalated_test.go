@@ -73,7 +73,7 @@ func TestNotifyCoordinator_EscalatedSuppressed(t *testing.T) {
 	// suppresses). We do not need to drive the full debounce machinery; the
 	// suppression guard inside notifyCoordinator must short-circuit before
 	// any HTTP call is attempted.
-	worker.notifyCoordinator()
+	worker.notifyCoordinator("")
 
 	// Allow any in-flight goroutine work to settle, though notifyCoordinator
 	// is synchronous from the goroutine that calls it.
