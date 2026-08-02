@@ -178,7 +178,7 @@ func TestCredentialEnvVars_LLMKeysForwarded(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("ANTHROPIC_API_KEY not forwarded; vars = %v", vars)
+		t.Errorf("ANTHROPIC_API_KEY not forwarded; vars = %v", redactedArgs(vars))
 	}
 }
 
@@ -346,7 +346,7 @@ func TestCredentialEnvVars_AccountRoleTokenSelection(t *testing.T) {
 				}
 			}
 			if !found {
-				t.Errorf("expected GITHUB_TOKEN=%s in vars; got: %v", tc.wantGHToken, vars)
+				t.Errorf("expected GITHUB_TOKEN=%s in vars; got: %v", tc.wantGHToken, redactedArgs(vars))
 			}
 		})
 	}
@@ -411,7 +411,7 @@ func TestCredentialEnvVars_CoordinatorGetsCoordinatorToken(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("fallback GITHUB_TOKEN not injected when BareRoot is empty; vars=%v", vars)
+		t.Errorf("fallback GITHUB_TOKEN not injected when BareRoot is empty; vars=%v", redactedArgs(vars))
 	}
 }
 
@@ -431,7 +431,7 @@ func TestCredentialEnvVars_FallbackToGitHubToken(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("fallback GITHUB_TOKEN not forwarded; vars=%v", vars)
+		t.Errorf("fallback GITHUB_TOKEN not forwarded; vars=%v", redactedArgs(vars))
 	}
 }
 
@@ -1103,12 +1103,12 @@ func TestSandboxExecPrepare_EmptyIdentityAborts(t *testing.T) {
 	iso := &sandboxExecIsolator{name: m.name}
 	args, prepErr := iso.Prepare(context.Background(), m)
 	if prepErr == nil {
-		t.Fatalf("Prepare returned nil error, want git-identity error (args=%v)", args)
+		t.Fatalf("Prepare returned nil error, want git-identity error (args=%v)", redactedArgs(args))
 	}
 	if !strings.Contains(prepErr.Error(), "git identity missing") {
 		t.Errorf("Prepare error %q must mention 'git identity missing'", prepErr.Error())
 	}
 	if args != nil {
-		t.Errorf("Prepare args must be nil on error; got %v", args)
+		t.Errorf("Prepare args must be nil on error; got %v", redactedArgs(args))
 	}
 }

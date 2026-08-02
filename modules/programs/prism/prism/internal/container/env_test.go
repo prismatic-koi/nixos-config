@@ -64,11 +64,11 @@ func TestAppendStandardEnv_AllAgentEnvVarsFlow(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("AppendStandardEnv must emit %q (all AgentEnvVars flow since #2235); got: %v", w, got)
+			t.Errorf("AppendStandardEnv must emit %q (all AgentEnvVars flow since #2235); got: %v", w, redactedArgs(got))
 		}
 	}
 	if len(got) != len(envFixtureWantPairs) {
-		t.Errorf("AppendStandardEnv emitted %d vars, want exactly %d: %v", len(got), len(envFixtureWantPairs), got)
+		t.Errorf("AppendStandardEnv emitted %d vars, want exactly %d: %v", len(got), len(envFixtureWantPairs), redactedArgs(got))
 	}
 }
 
@@ -87,10 +87,10 @@ func TestAppendSandboxEnvVarsKV_AllAgentEnvVarsFlow(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("AppendSandboxEnvVarsKV must emit %q (all AgentEnvVars flow since #2235); got: %v", w, env)
+			t.Errorf("AppendSandboxEnvVarsKV must emit %q (all AgentEnvVars flow since #2235); got: %v", w, redactedArgs(env))
 		}
 	}
 	if len(env) != len(envFixtureWantPairs) {
-		t.Errorf("AppendSandboxEnvVarsKV emitted %d vars, want exactly %d: %v", len(env), len(envFixtureWantPairs), env)
+		t.Errorf("AppendSandboxEnvVarsKV emitted %d vars, want exactly %d: %v", len(env), len(envFixtureWantPairs), redactedArgs(env))
 	}
 }

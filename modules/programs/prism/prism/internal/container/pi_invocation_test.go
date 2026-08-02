@@ -30,19 +30,19 @@ func TestPIInvocation_BasicFlags(t *testing.T) {
 	} {
 		flag, val := pair[0], pair[1]
 		if !hasPair(args, flag, val) {
-			t.Errorf("expected %q %q in args; got %v", flag, val, args)
+			t.Errorf("expected %q %q in args; got %v", flag, val, redactedArgs(args))
 		}
 	}
 	// --no-session must NOT appear — PI must use its native OAuth session
 	// persistence so that spawned sessions can authenticate with Anthropic.
 	if hasArg(args, "--no-session") {
-		t.Errorf("--no-session must not appear in PIInvocation args; got %v", args)
+		t.Errorf("--no-session must not appear in PIInvocation args; got %v", redactedArgs(args))
 	}
 	// --append-system-prompt must NOT appear — the role system prompt is
 	// injected at runtime by the prism PI extension (before_agent_start), not
 	// via a CLI flag or a staged file (design #2031).
 	if hasArg(args, "--append-system-prompt") {
-		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", args)
+		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", redactedArgs(args))
 	}
 }
 
@@ -55,7 +55,7 @@ func TestPIInvocation_NoOptionalFlags(t *testing.T) {
 
 	for _, flag := range []string{"--provider", "--model", "--thinking"} {
 		if hasArg(args, flag) {
-			t.Errorf("expected %q to be absent; got %v", flag, args)
+			t.Errorf("expected %q to be absent; got %v", flag, redactedArgs(args))
 		}
 	}
 }
@@ -70,7 +70,7 @@ func TestPIInvocation_OffThinkingPassedThrough(t *testing.T) {
 	}
 	args := PIInvocation(cfg)
 	if !hasPair(args, "--thinking", "off") {
-		t.Errorf("expected --thinking off in PI invocation args; got %v", args)
+		t.Errorf("expected --thinking off in PI invocation args; got %v", redactedArgs(args))
 	}
 }
 
@@ -81,11 +81,11 @@ func TestPIInvocation_DefaultSandboxPaths(t *testing.T) {
 
 	// --append-system-prompt must be absent (system prompt via PI_CODING_AGENT_DIR).
 	if hasArg(args, "--append-system-prompt") {
-		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", args)
+		t.Errorf("--append-system-prompt must not appear in PIInvocation args; got %v", redactedArgs(args))
 	}
 	expectedExt := filepath.Join(piExtensionSandboxDefault, piExtensionFilename)
 	if !hasPair(args, "--extension", expectedExt) {
-		t.Errorf("expected default extension path %q; got %v", expectedExt, args)
+		t.Errorf("expected default extension path %q; got %v", expectedExt, redactedArgs(args))
 	}
 }
 
@@ -96,10 +96,10 @@ func TestPIInvocation_InitialPrompt(t *testing.T) {
 	// The prompt must appear as a bare positional argument (last element),
 	// not as --prompt <text>.
 	if hasArg(args, "--prompt") {
-		t.Errorf("--prompt flag must not appear; pi takes the message as a positional arg; got %v", args)
+		t.Errorf("--prompt flag must not appear; pi takes the message as a positional arg; got %v", redactedArgs(args))
 	}
 	if len(args) == 0 || args[len(args)-1] != "do the thing" {
-		t.Errorf("expected 'do the thing' as last positional arg; got %v", args)
+		t.Errorf("expected 'do the thing' as last positional arg; got %v", redactedArgs(args))
 	}
 }
 
@@ -108,11 +108,11 @@ func TestPIInvocation_NoInitialPrompt(t *testing.T) {
 	args := PIInvocation(cfg)
 
 	if hasArg(args, "--prompt") {
-		t.Errorf("expected --prompt to be absent; got %v", args)
+		t.Errorf("expected --prompt to be absent; got %v", redactedArgs(args))
 	}
 	// When no prompt, the last arg must not be an empty string positional arg.
 	if len(args) > 0 && args[len(args)-1] == "" {
-		t.Errorf("expected no empty positional arg appended; got %v", args)
+		t.Errorf("expected no empty positional arg appended; got %v", redactedArgs(args))
 	}
 }
 
@@ -141,7 +141,7 @@ func TestPIInvocation_AgentFlag(t *testing.T) {
 			cfg := Config{AgentRole: tc.role}
 			args := PIInvocation(cfg)
 			if !hasPair(args, "--agent", tc.role) {
-				t.Errorf("expected --agent %q in PIInvocation args; got %v", tc.role, args)
+				t.Errorf("expected --agent %q in PIInvocation args; got %v", tc.role, redactedArgs(args))
 			}
 		})
 	}
@@ -155,7 +155,7 @@ func TestPIInvocation_NoAgentFlagWhenEmpty(t *testing.T) {
 	cfg := Config{}
 	args := PIInvocation(cfg)
 	if hasArg(args, "--agent") {
-		t.Errorf("--agent must not appear when AgentRole is empty; got %v", args)
+		t.Errorf("--agent must not appear when AgentRole is empty; got %v", redactedArgs(args))
 	}
 }
 
@@ -178,10 +178,10 @@ func TestPIInvocation_AgentFlagOrder(t *testing.T) {
 		}
 	}
 	if extIdx == -1 || agentIdx == -1 {
-		t.Fatalf("expected both --extension and --agent in args; got %v", args)
+		t.Fatalf("expected both --extension and --agent in args; got %v", redactedArgs(args))
 	}
 	if agentIdx < extIdx {
-		t.Errorf("expected --agent to appear after --extension; got --extension at %d, --agent at %d in %v", extIdx, agentIdx, args)
+		t.Errorf("expected --agent to appear after --extension; got --extension at %d, --agent at %d in %v", extIdx, agentIdx, redactedArgs(args))
 	}
 }
 
@@ -202,7 +202,7 @@ func TestPIInvocation_ExcludeToolsForReviewRoles(t *testing.T) {
 			cfg := Config{AgentRole: role}
 			args := PIInvocation(cfg)
 			if !hasPair(args, "--exclude-tools", "write,edit") {
-				t.Errorf("expected --exclude-tools write,edit in PIInvocation args for role %q; got %v", role, args)
+				t.Errorf("expected --exclude-tools write,edit in PIInvocation args for role %q; got %v", role, redactedArgs(args))
 			}
 		})
 	}
@@ -213,7 +213,7 @@ func TestPIInvocation_ExcludeToolsForReviewRoles(t *testing.T) {
 			cfg := Config{AgentRole: role}
 			args := PIInvocation(cfg)
 			if hasArg(args, "--exclude-tools") {
-				t.Errorf("--exclude-tools must not appear for role %q; got %v", role, args)
+				t.Errorf("--exclude-tools must not appear for role %q; got %v", role, redactedArgs(args))
 			}
 		})
 	}
@@ -245,10 +245,10 @@ func TestPIInvocation_CLIOverrideWinsOverSlot(t *testing.T) {
 		}
 		args := PIInvocation(cfg)
 		if !hasPair(args, "--model", "anthropic/claude-opus-4-7") {
-			t.Errorf("expected --model anthropic/claude-opus-4-7 (slot value); got %v", args)
+			t.Errorf("expected --model anthropic/claude-opus-4-7 (slot value); got %v", redactedArgs(args))
 		}
 		if !hasPair(args, "--thinking", "medium") {
-			t.Errorf("expected --thinking medium (slot value); got %v", args)
+			t.Errorf("expected --thinking medium (slot value); got %v", redactedArgs(args))
 		}
 	})
 
@@ -267,17 +267,17 @@ func TestPIInvocation_CLIOverrideWinsOverSlot(t *testing.T) {
 		}
 		args := PIInvocation(cfg)
 		if !hasPair(args, "--model", "anthropic/claude-opus-4-8") {
-			t.Errorf("expected --model anthropic/claude-opus-4-8 (override); got %v", args)
+			t.Errorf("expected --model anthropic/claude-opus-4-8 (override); got %v", redactedArgs(args))
 		}
 		if !hasPair(args, "--thinking", "high") {
-			t.Errorf("expected --thinking high (override); got %v", args)
+			t.Errorf("expected --thinking high (override); got %v", redactedArgs(args))
 		}
 		// Negative checks: the pre-override slot values must not appear.
 		if hasPair(args, "--model", "anthropic/claude-opus-4-7") {
-			t.Errorf("slot model leaked into argv after override; got %v", args)
+			t.Errorf("slot model leaked into argv after override; got %v", redactedArgs(args))
 		}
 		if hasPair(args, "--thinking", "medium") {
-			t.Errorf("slot thinking leaked into argv after override; got %v", args)
+			t.Errorf("slot thinking leaked into argv after override; got %v", redactedArgs(args))
 		}
 	})
 }
@@ -464,21 +464,21 @@ func TestAppendPIBwrapMounts_EmitsParentDirUnconditionally(t *testing.T) {
 	// Must contain --dir /etc/prism (the parent of the default sandbox ext dir).
 	expectedParent := filepath.Dir(piExtensionSandboxDefault) // /etc/prism
 	if !hasPair(args, "--dir", expectedParent) {
-		t.Errorf("expected --dir %q in args (parent dir); got %v", expectedParent, args)
+		t.Errorf("expected --dir %q in args (parent dir); got %v", expectedParent, redactedArgs(args))
 	}
 	// Must also contain --dir /etc/prism/pi-extensions (the target dir itself).
 	if !hasPair(args, "--dir", piExtensionSandboxDefault) {
-		t.Errorf("expected --dir %q in args (target dir); got %v", piExtensionSandboxDefault, args)
+		t.Errorf("expected --dir %q in args (target dir); got %v", piExtensionSandboxDefault, redactedArgs(args))
 	}
 
 	// Must set PI_CODING_AGENT_DIR to the default sandbox agent config dir.
 	if !hasPair(args, "--setenv", "PI_CODING_AGENT_DIR") {
-		t.Errorf("expected --setenv PI_CODING_AGENT_DIR in args; got %v", args)
+		t.Errorf("expected --setenv PI_CODING_AGENT_DIR in args; got %v", redactedArgs(args))
 	}
 
 	// Must ro-bind-mount the PI binary so it is accessible inside the sandbox.
 	if !hasTriple(args, "--ro-bind", fakePI, fakePI) {
-		t.Errorf("expected --ro-bind %q %q for PI binary in args; got %v", fakePI, fakePI, args)
+		t.Errorf("expected --ro-bind %q %q for PI binary in args; got %v", fakePI, fakePI, redactedArgs(args))
 	}
 }
 
@@ -516,7 +516,7 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q in args; got %v", customSandboxDir, args)
+		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q in args; got %v", customSandboxDir, redactedArgs(args))
 	}
 
 	// Post #2034: the agent config dir must be RW-bind-mounted (--bind, not
@@ -531,12 +531,12 @@ func TestAppendPIBwrapMounts_SetsAgentConfigDirEnv(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected --bind %q %q in args; got %v", agentConfigDir, customSandboxDir, args)
+		t.Errorf("expected --bind %q %q in args; got %v", agentConfigDir, customSandboxDir, redactedArgs(args))
 	}
 	// The parent mount must NOT be --ro-bind — OAuth refresh would EPERM.
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--ro-bind" && args[i+1] == agentConfigDir && args[i+2] == customSandboxDir {
-			t.Errorf("parent agent config dir mount must be --bind (RW) not --ro-bind; got %v", args)
+			t.Errorf("parent agent config dir mount must be --bind (RW) not --ro-bind; got %v", redactedArgs(args))
 		}
 	}
 }
@@ -571,7 +571,7 @@ func TestAppendPIBwrapMounts_NoPIAuthJSONEnvVar(t *testing.T) {
 	// PI_AUTH_JSON must NEVER be set — it is a fictional env var.
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == "--setenv" && args[i+1] == "PI_AUTH_JSON" {
-			t.Errorf("PI_AUTH_JSON must never be set (fictional env var); got %v", args)
+			t.Errorf("PI_AUTH_JSON must never be set (fictional env var); got %v", redactedArgs(args))
 		}
 	}
 }
@@ -613,11 +613,11 @@ func TestAppendPIBwrapMounts_BindsAuthJSONWhenExists(t *testing.T) {
 
 	// Must contain --bind authPath authPath (read-write, not --ro-bind).
 	if !hasTriple(args, "--bind", authPath, authPath) {
-		t.Errorf("expected --bind %q %q in args; got %v", authPath, authPath, args)
+		t.Errorf("expected --bind %q %q in args; got %v", authPath, authPath, redactedArgs(args))
 	}
 	// Must NOT use --ro-bind for auth.json (OAuth refreshes need write access).
 	if hasTriple(args, "--ro-bind", authPath, authPath) {
-		t.Errorf("--ro-bind must not be used for auth.json (need write access for token refresh); got %v", args)
+		t.Errorf("--ro-bind must not be used for auth.json (need write access for token refresh); got %v", redactedArgs(args))
 	}
 }
 
@@ -652,7 +652,7 @@ func TestAppendPIBwrapMounts_NoBindWhenAuthJSONAbsent(t *testing.T) {
 	for i := 0; i+2 < len(args); i++ {
 		if (args[i] == "--bind" || args[i] == "--ro-bind") &&
 			strings.HasSuffix(args[i+1], piAuthSuffix) {
-			t.Errorf("auth.json bind mount must be absent when file does not exist; got %v", args)
+			t.Errorf("auth.json bind mount must be absent when file does not exist; got %v", redactedArgs(args))
 		}
 	}
 }
@@ -694,11 +694,11 @@ func TestAppendPIBwrapMounts_BindsAtlassianOAuthWhenExists(t *testing.T) {
 
 	// Must contain --bind atlasPath atlasPath (read-write, not --ro-bind).
 	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
-		t.Errorf("expected --bind %q %q in args; got %v", atlasPath, atlasPath, args)
+		t.Errorf("expected --bind %q %q in args; got %v", atlasPath, atlasPath, redactedArgs(args))
 	}
 	// Must NOT use --ro-bind (OAuth refreshes need write access).
 	if hasTriple(args, "--ro-bind", atlasPath, atlasPath) {
-		t.Errorf("--ro-bind must not be used for atlassian-mcp-oauth.json; got %v", args)
+		t.Errorf("--ro-bind must not be used for atlassian-mcp-oauth.json; got %v", redactedArgs(args))
 	}
 }
 
@@ -745,7 +745,7 @@ func TestAppendPIBwrapMounts_CreatesAndBindsAtlassianOAuthWhenAbsent(t *testing.
 
 	// Must contain --bind atlasPath atlasPath.
 	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
-		t.Errorf("expected --bind %q %q in args after placeholder creation; got %v", atlasPath, atlasPath, args)
+		t.Errorf("expected --bind %q %q in args after placeholder creation; got %v", atlasPath, atlasPath, redactedArgs(args))
 	}
 }
 
@@ -788,18 +788,18 @@ func TestAppendPIBwrapMounts_SharedPiAgentRwBindAtSandboxPath(t *testing.T) {
 	// Must contain --bind <host ~/.pi/agent> /run/prism/pi-agent (RW).
 	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
 		t.Errorf("expected --bind %q %q (RW shared mount) in args; got %v",
-			piAgentDir, piAgentConfigSandboxDefault, args)
+			piAgentDir, piAgentConfigSandboxDefault, redactedArgs(args))
 	}
 	// Must NOT use --ro-bind for the parent mount — proper-lockfile mkdir
 	// needs write access to the parent dir for OAuth refresh to succeed.
 	if hasTriple(args, "--ro-bind", piAgentDir, piAgentConfigSandboxDefault) {
 		t.Errorf("parent ~/.pi/agent mount must be --bind (RW) not --ro-bind "+
-			"— OAuth proper-lockfile needs to mkdir auth.json.lock in the parent dir; got %v", args)
+			"— OAuth proper-lockfile needs to mkdir auth.json.lock in the parent dir; got %v", redactedArgs(args))
 	}
 	// PI_CODING_AGENT_DIR must point at the canonical sandbox path.
 	if !hasTriple(args, "--setenv", "PI_CODING_AGENT_DIR", piAgentConfigSandboxDefault) {
 		t.Errorf("expected --setenv PI_CODING_AGENT_DIR %q; got %v",
-			piAgentConfigSandboxDefault, args)
+			piAgentConfigSandboxDefault, redactedArgs(args))
 	}
 }
 
@@ -845,16 +845,16 @@ func TestAppendPIBwrapMounts_AuthJSONReachableRwViaSharedMount(t *testing.T) {
 	// (the path pi actually reads via PI_CODING_AGENT_DIR) reach the host.
 	// This is the primary write-through mechanism for OAuth token refresh.
 	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", args)
+		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", redactedArgs(args))
 	}
 	// Host-path RW bind retained for $HOME-relative access.
 	if !hasTriple(args, "--bind", authPath, authPath) {
-		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", authPath, authPath, args)
+		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", authPath, authPath, redactedArgs(args))
 	}
 	// Must NOT use --ro-bind for auth.json or its parent.
 	if hasTriple(args, "--ro-bind", authPath, authPath) ||
 		hasTriple(args, "--ro-bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("auth.json / parent dir must not be --ro-bind; got %v", args)
+		t.Errorf("auth.json / parent dir must not be --ro-bind; got %v", redactedArgs(args))
 	}
 }
 
@@ -896,11 +896,11 @@ func TestAppendPIBwrapMounts_AtlassianOAuthReachableRwViaSharedMount(t *testing.
 
 	// Parent is RW.
 	if !hasTriple(args, "--bind", piAgentDir, piAgentConfigSandboxDefault) {
-		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", args)
+		t.Errorf("expected RW --bind of parent ~/.pi/agent at sandbox path; got %v", redactedArgs(args))
 	}
 	// Host-path bind retained.
 	if !hasTriple(args, "--bind", atlasPath, atlasPath) {
-		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", atlasPath, atlasPath, args)
+		t.Errorf("expected --bind %q %q (host-path access) in args; got %v", atlasPath, atlasPath, redactedArgs(args))
 	}
 }
 
