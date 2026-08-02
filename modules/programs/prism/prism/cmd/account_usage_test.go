@@ -3,14 +3,19 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/prismatic-koi/prism/internal/account"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
 
@@ -18,10 +23,27 @@ import (
 // returns the usage directory (which does not yet exist — callers create it
 // via usage.NewStore(dir).Write, or leave it absent to exercise the
 // missing-directory path).
+//
+// It also pins $XDG_CONFIG_HOME and $PI_AUTH_JSON. That is not cosmetic
+// isolation: `prism account usage` refreshes a missing or stale snapshot by
+// default (#2541), and the refresh reads its bearer token from auth.json and
+// its account name from $XDG_CONFIG_HOME/prism/accounts/. Left unpinned, both
+// resolve to the DEVELOPER'S REAL FILES, and any test here whose snapshot is
+// missing or stale posts a live, authenticated request to api.anthropic.com —
+// spending real subscription quota, silently, on every `go test ./...`.
+// Round 1 of the #2569 review measured exactly that: three hits from three
+// tests, all still reporting PASS.
+//
+// Pinning here is the structural fix. It holds for every test in this file,
+// present and future, regardless of which flags the test registers on its
+// cobra command. TestAccountUsage_FixtureAloneBlocksTheNetwork pins the
+// guarantee.
 func withUsageFixture(t *testing.T) (dir string) {
 	t.Helper()
 	root := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", root)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "config"))
+	t.Setenv("PI_AUTH_JSON", filepath.Join(root, "pi-agent", "auth.json"))
 	return filepath.Join(root, "prism", "usage")
 }
 
@@ -287,4 +309,164 @@ func TestAccountUsage_NoTokenValuePrinted(t *testing.T) {
 			t.Errorf("output contains a token-shaped fragment %q:\n%s", forbidden, out)
 		}
 	}
+}
+
+// ── Network-isolation regression (#2569 review round 1) ──────────────────────
+
+// countingTransport records every outbound request and refuses to perform it.
+// Reaching it at all is the failure the test is looking for.
+type countingTransport struct{ hits atomic.Int64 }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.hits.Add(1)
+	return nil, errors.New("countingTransport: refusing to perform a real request")
+}
+
+// installCountingRefresher points the refresh path at a transport that never
+// dials, and returns the hit counter.
+func installCountingRefresher(t *testing.T) *countingTransport {
+	t.Helper()
+	tr := &countingTransport{}
+	prev := newUsageRefresher
+	t.Cleanup(func() { newUsageRefresher = prev })
+	newUsageRefresher = func() *usage.Refresher {
+		return &usage.Refresher{
+			BaseURL:    "https://api.anthropic.example",
+			HTTPClient: &http.Client{Transport: tr},
+		}
+	}
+	return tr
+}
+
+// seedRefreshableAccount writes a valid, unexpired credential pair plus a
+// stale snapshot under the fixture's tempdirs, so that a refresh is both
+// WANTED (stale) and POSSIBLE (a token resolves). Any test using it that
+// records zero outbound requests proves the block came from the code under
+// test, not from an absent credential.
+func seedRefreshableAccount(t *testing.T, usageDir string) {
+	t.Helper()
+	blob := `{"type":"oauth","access":"fixture-token","refresh":"r","expires":` +
+		strconv.FormatInt(time.Now().Add(time.Hour).UnixMilli(), 10) + `}`
+
+	paths, err := account.ResolvePaths()
+	if err != nil {
+		t.Fatalf("ResolvePaths: %v", err)
+	}
+	if err := os.MkdirAll(paths.Dir, 0o700); err != nil {
+		t.Fatalf("mkdir accounts: %v", err)
+	}
+	if err := os.WriteFile(paths.AccountPath("work"), []byte(blob), 0o600); err != nil {
+		t.Fatalf("write account blob: %v", err)
+	}
+	if err := os.WriteFile(paths.Current, []byte("work\n"), 0o600); err != nil {
+		t.Fatalf("write accounts/current: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.AuthJSON), 0o700); err != nil {
+		t.Fatalf("mkdir pi agent dir: %v", err)
+	}
+	if err := os.WriteFile(paths.AuthJSON, []byte(`{"anthropic":`+blob+`}`), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+
+	reset := time.Now().Add(time.Hour).Unix()
+	util := 0.5
+	if err := usage.NewStore(usageDir).Write(usage.Snapshot{
+		CapturedAt: usage.FormatCapturedAt(time.Now().Add(-time.Hour)), // stale
+		Account:    "work",
+		Windows:    &usage.Windows{FiveHour: &usage.Window{Utilization: &util, Reset: &reset}},
+	}); err != nil {
+		t.Fatalf("seed stale snapshot: %v", err)
+	}
+}
+
+// TestAccountUsage_FixtureAloneBlocksTheNetwork is the regression test for the
+// round-1 review-qa finding on PR #2569.
+//
+// Before the fix, `withUsageFixture` pinned only $XDG_STATE_HOME. Three tests
+// in this file build a bare cobra command that registers only `json`, so
+// `GetBool("no-refresh")` returned (false, err), the discarded error left
+// noRefresh false, and the refresh ran against the DEVELOPER'S REAL
+// ~/.config/prism/accounts/ and ~/.pi/agent/auth.json. The measured result was
+// three live authenticated POSTs to api.anthropic.com per `go test ./cmd/`,
+// with every test still reporting PASS. CI never saw it — the runner has no
+// accounts directory.
+//
+// Two independent defences now hold, and each sub-test below isolates ONE of
+// them. Testing them together would let either mask the other, which is how a
+// mutation probe caught an earlier version of this very test.
+func TestAccountUsage_FixtureAloneBlocksTheNetwork(t *testing.T) {
+	// Defence 1, asserted DIRECTLY rather than by observing an effect.
+	//
+	// An effect-based assertion ("no request was made") passes vacuously on
+	// any machine that happens to have no ~/.config/prism/accounts/ — which
+	// includes every CI runner and every agent sandbox. That is precisely why
+	// the original defect survived a full review round. Asserting the
+	// resolved paths instead fails deterministically everywhere.
+	t.Run("fixture pins the credential paths inside the tempdir", func(t *testing.T) {
+		usageDir := withUsageFixture(t)
+		root := filepath.Dir(filepath.Dir(usageDir)) // <root>/prism/usage → <root>
+
+		paths, err := account.ResolvePaths()
+		if err != nil {
+			t.Fatalf("ResolvePaths: %v", err)
+		}
+		if !strings.HasPrefix(paths.Dir, root) {
+			t.Errorf("accounts dir resolved to %q, outside the test tempdir %q — "+
+				"a refresh would read the developer's real credentials", paths.Dir, root)
+		}
+		if !strings.HasPrefix(paths.AuthJSON, root) {
+			t.Errorf("auth.json resolved to %q, outside the test tempdir %q — "+
+				"a refresh would read the developer's real bearer token", paths.AuthJSON, root)
+		}
+	})
+
+	// Defence 2, isolated from defence 1: credentials ARE present and the
+	// snapshot IS stale, so the only thing that can stop the request is the
+	// fail-closed read of the unregistered `no-refresh` flag. This is the
+	// exact command shape the three offending tests build.
+	t.Run("bare command with no no-refresh flag fails closed", func(t *testing.T) {
+		usageDir := withUsageFixture(t)
+		t.Setenv("PRISM_HOST_API", "")
+		seedRefreshableAccount(t, usageDir)
+		tr := installCountingRefresher(t)
+
+		c := &cobra.Command{}
+		c.Flags().Bool("json", false, "")
+		var out, errOut strings.Builder
+		c.SetOut(&out)
+		c.SetErr(&errOut)
+
+		if err := runAccountUsage(c, nil); err != nil {
+			t.Fatalf("account usage: %v", err)
+		}
+		if n := tr.hits.Load(); n != 0 {
+			t.Fatalf("outbound request count = %d, want 0 — an unregistered "+
+				"no-refresh flag must fail closed", n)
+		}
+	})
+
+	// Control: the same fixture with the flag registered and refresh ENABLED
+	// does reach the transport. Without this, the sub-test above could pass
+	// because the refresh path is broken rather than because it fails closed.
+	t.Run("control: registered flag with refresh enabled does reach the transport", func(t *testing.T) {
+		usageDir := withUsageFixture(t)
+		t.Setenv("PRISM_HOST_API", "")
+		seedRefreshableAccount(t, usageDir)
+		tr := installCountingRefresher(t)
+
+		c := &cobra.Command{Use: "usage"}
+		addAccountUsageFlags(c) // no-refresh defaults to false: refresh ON
+		var out, errOut strings.Builder
+		c.SetOut(&out)
+		c.SetErr(&errOut)
+
+		if err := runAccountUsage(c, nil); err != nil {
+			t.Fatalf("account usage: %v", err)
+		}
+		if n := tr.hits.Load(); n != 1 {
+			t.Fatalf("outbound request count = %d, want 1 — the fail-closed "+
+				"sub-test above is vacuous unless this path genuinely fires "+
+				"(stderr: %s)", n, errOut.String())
+		}
+	})
 }

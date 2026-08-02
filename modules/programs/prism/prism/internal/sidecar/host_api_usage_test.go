@@ -477,3 +477,70 @@ func TestHostAPI_UsageSnapshot_NoCredentialInFilesOrLog(t *testing.T) {
 		t.Errorf("expected a /usage/snapshot log line, got: %s", logBuf.String())
 	}
 }
+
+// TestHostAPI_UsageSnapshot_AcceptsTheRefreshPayload pins the wire contract
+// between the active refresh (issue #2541) and this endpoint.
+//
+// The refresh marshals a usage.SnapshotPayload and POSTs it here. The handler
+// decodes with DisallowUnknownFields, so ONE extra or renamed field on that
+// struct rejects the whole request and the refresh silently stops persisting.
+// Neither package's own tests can catch that: this is the only place the two
+// halves meet.
+func TestHostAPI_UsageSnapshot_AcceptsTheRefreshPayload(t *testing.T) {
+	usageDir := usageTestEnv(t)
+	seedAccountPointer(t, "work")
+	sc := newUsageSidecar(t)
+
+	h := http.Header{}
+	h.Set("anthropic-ratelimit-unified-status", "allowed_warning")
+	h.Set("anthropic-ratelimit-unified-representative-claim", "five_hour")
+	h.Set("anthropic-ratelimit-unified-reset", "1785634800")
+	h.Set("anthropic-ratelimit-unified-5h-status", "allowed_warning")
+	h.Set("anthropic-ratelimit-unified-5h-utilization", "0.94")
+	h.Set("anthropic-ratelimit-unified-5h-reset", "1785634800")
+	h.Set("anthropic-ratelimit-unified-5h-surpassed-threshold", "0.9")
+	h.Set("anthropic-ratelimit-unified-7d-status", "allowed")
+	h.Set("anthropic-ratelimit-unified-7d-utilization", "0.42")
+	h.Set("anthropic-ratelimit-unified-7d-reset", "1786021200")
+	h.Set("anthropic-ratelimit-unified-fallback", "available")
+	h.Set("anthropic-ratelimit-unified-fallback-percentage", "0.5")
+	h.Set("anthropic-ratelimit-unified-overage-status", "rejected")
+	h.Set("anthropic-ratelimit-unified-overage-disabled-reason", "out_of_credits")
+
+	payload := usage.ParseRateLimitHeaders(h)
+	if payload == nil {
+		t.Fatal("ParseRateLimitHeaders returned nil for the full header set")
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/usage/snapshot", string(raw))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200 — the refresh payload no longer matches the endpoint schema",
+			rr.Code, rr.Body.String())
+	}
+
+	snap := readSnapshot(t, filepath.Join(usageDir, "work.json"))
+	if snap["account"] != "work" {
+		t.Errorf("account = %v, want work (resolved host-side, not from the payload)", snap["account"])
+	}
+	if snap["unified_status"] != "allowed_warning" {
+		t.Errorf("unified_status = %v, want allowed_warning", snap["unified_status"])
+	}
+	windows, ok := snap["windows"].(map[string]any)
+	if !ok {
+		t.Fatalf("windows is not an object: %v", snap["windows"])
+	}
+	fiveHour, ok := windows["five_hour"].(map[string]any)
+	if !ok {
+		t.Fatalf("windows.five_hour is not an object: %v", windows["five_hour"])
+	}
+	if fiveHour["utilization"] != 0.94 {
+		t.Errorf("five_hour utilization = %v, want 0.94", fiveHour["utilization"])
+	}
+	if fiveHour["reset"] != float64(1785634800) {
+		t.Errorf("five_hour reset = %v, want an integer 1785634800", fiveHour["reset"])
+	}
+}

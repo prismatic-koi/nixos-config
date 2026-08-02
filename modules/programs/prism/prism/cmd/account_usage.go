@@ -4,16 +4,20 @@ package cmd
 // snapshots (issue #2539, parent #2537).
 //
 // This subcommand is a READER of the snapshot format `internal/usage` owns
-// (issue #2538). It never writes a snapshot. The sidecar is the only
-// writer.
+// (issue #2538). It never writes a snapshot itself. The sidecar is the only
+// writer — the active refresh added in #2541 persists by POSTing to the
+// sidecar's /usage/snapshot endpoint (see account_usage_refresh.go).
 //
-// Sandbox constraint: this command must identify the active account from
+// Sandbox constraint: the DISPLAY path must identify the active account from
 // current.json inside the usage directory, never from
 // ~/.config/prism/accounts/, which is invisible inside an agent sandbox
-// (internal/container/mounts.go). All active-account resolution happens in
-// internal/usage.ReadAll.
+// (internal/container/mounts.go). All active-account resolution for display
+// happens in internal/usage.ReadAll. The refresh path does need the accounts
+// directory, and therefore runs host-side only; account_usage_refresh.go
+// handles the sandboxed case explicitly.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -32,15 +36,32 @@ persisted snapshot.
 
 Snapshots are captured passively from Anthropic's rate-limit response
 headers and written by the prism sidecar to
-~/.local/state/prism/usage/<account>.json. This command only reads that
-directory — it never makes a live API call and never writes a snapshot.`,
+~/.local/state/prism/usage/<account>.json.
+
+When the active account's snapshot is missing or more than 15 minutes old,
+one live request is made to refresh it, and the result is persisted by the
+sidecar. Pass --no-refresh to read stored data only.
+
+The refresh must read ~/.config/prism/accounts/ to learn which account it is
+refreshing. That directory is not visible inside an agent sandbox, so a
+sandboxed invocation always reads stored data and says so.`,
 	Args: cobra.NoArgs,
 	RunE: runAccountUsage,
 }
 
 func init() {
 	accountCmd.AddCommand(accountUsageCmd)
-	accountUsageCmd.Flags().Bool("json", false, "Emit a JSON array of usage snapshots instead of the human-readable list")
+	addAccountUsageFlags(accountUsageCmd)
+}
+
+// addAccountUsageFlags registers the subcommand's flags.
+//
+// Factored out of init so the refresh tests can build a command carrying the
+// PRODUCTION defaults (refresh enabled) rather than asserting against a
+// hand-built flag set that could drift from the real one.
+func addAccountUsageFlags(c *cobra.Command) {
+	c.Flags().Bool("json", false, "Emit a JSON array of usage snapshots instead of the human-readable list")
+	c.Flags().Bool("no-refresh", false, "Print stored snapshots only; make no live API request")
 }
 
 // windowJSON is the snake_case --json shape for one rate-limit window.
@@ -71,20 +92,59 @@ func runAccountUsage(cmd *cobra.Command, args []string) error {
 
 	jsonMode, _ := cmd.Flags().GetBool("json")
 
+	// Fail CLOSED on the refresh flag. pflag returns (false, err) when the
+	// flag is not registered, and false means "refresh", so discarding the
+	// error would make an unregistered flag spend real quota with a real
+	// credential. Production always registers it via addAccountUsageFlags, so
+	// the error branch only fires for a caller that built the command by hand
+	// — which is exactly the case that must not reach the network.
+	noRefresh, flagErr := cmd.Flags().GetBool("no-refresh")
+	if flagErr != nil {
+		noRefresh = true
+	}
+
 	rows, err := usage.ReadAll(dir)
+	missingDir := ""
 	if err != nil {
 		var missing *usage.ErrUsageDirMissing
-		if isUsageDirMissing(err, &missing) {
-			if jsonMode {
-				return printJSON([]byte("[]"))
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "usage directory %s does not exist\n", missing.Dir)
-			return nil
+		if !isUsageDirMissing(err, &missing) {
+			return err
 		}
-		return err
+		// A missing directory is not fatal: it is exactly the cold-account
+		// case a refresh exists to fill. Carry on with no rows.
+		missingDir = missing.Dir
+		rows = nil
 	}
 
 	now := time.Now()
+
+	// AC: --no-refresh makes NO network request. The whole refresh path is
+	// skipped, not merely short-circuited inside it.
+	if !noRefresh {
+		// cobra's Command.Context() returns nil unless Execute set it, and a
+		// nil parent panics context.WithTimeout. Unit tests call RunE
+		// directly, so the guard is load-bearing, not defensive padding.
+		parent := cmd.Context()
+		if parent == nil {
+			parent = context.Background()
+		}
+		ctx, cancel := context.WithTimeout(parent, usage.DefaultTimeout)
+		defer cancel()
+		outcome := maybeRefresh(ctx, rows, now)
+		writeRefreshWarning(cmd.ErrOrStderr(), outcome)
+		if outcome.Snapshot != nil {
+			rows = mergeRefreshed(rows, outcome.Snapshot, outcome.Account)
+			missingDir = ""
+		}
+	}
+
+	if missingDir != "" && len(rows) == 0 {
+		if jsonMode {
+			return printJSON([]byte("[]"))
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "usage directory %s does not exist\n", missingDir)
+		return nil
+	}
 
 	if jsonMode {
 		return renderAccountUsageJSON(rows, now)
