@@ -115,8 +115,11 @@ func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--session" && args[i+1] == harnessSessionID {
 			if i+2 != len(args)-1 {
+				// Redact the whole argv and then slice: slicing first can cut a
+				// "--setenv NAME VALUE" triple in half, which leaves the value
+				// with no flag in front of it for the helper to key on.
 				t.Errorf("expected --session <id> immediately before the InitialPrompt positional; got args[%d:]=%v",
-					i, args[i:])
+					i, redactedArgs(args)[i:])
 			}
 		}
 	}
