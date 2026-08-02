@@ -188,11 +188,23 @@ is written to `/tmp` — the full agent reasoning is available via
 1. Read each agent's `<blocking_issues>` carefully — they are mandatory.
 2. Fix every blocking issue identified.
 3. Commit and push your fixes.
-4. Re-run `prism review <pr>` — not just the failed agents (a fix in one area
-   can create issues in another, so the full set must re-run every cycle).
-   Use `prism review <pr> --only review-goal,review-code` for targeted reruns.
+4. Re-run `prism review <pr>` according to the targeted-rerun condition below.
 5. Non-blocking observations on a failed round can also be actioned alongside
    the mandatory fix — the worker decides what to include.
+
+#### Targeted-rerun condition
+
+You may use `prism review <pr> --only <failed-agents>` for the next cycle if
+and only if **both** of the following hold:
+
+1. The inter-cycle diff (from the failed round to the current commit) contains
+   **only** comment lines or documentation files. Any change to code lines —
+   including whitespace-only changes to code — re-runs the full 5-agent set.
+2. The inter-cycle diff does not touch any file cited in a FAIL finding from
+   the previous round, except for the specific file(s) the finding named.
+
+If either condition is false, re-run the full 5-agent set. A targeted round
+still counts as one cycle against your 3-cycle limit.
 
 **On ERROR (one or more agents failed to start or stalled mid-run):**
 
