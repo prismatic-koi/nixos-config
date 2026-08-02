@@ -73,6 +73,18 @@ export interface ExtensionDeps {
   isEnabledForCwd?: () => boolean
   /** Environment source. Defaults to process.env. */
   env?: Record<string, string | undefined>
+  //
+  // Auth seams. Injected so the session_start token-refresh path is directly
+  // observable in tests — see "keeping the refresh-token clock alive" below.
+  // Each defaults to the real auth.ts function, so production behaviour is
+  // unchanged.
+  //
+  /** Token store reader. Defaults to auth.ts loadTokens. */
+  loadTokens?: () => NotionTokens | null
+  /** Refresh helper. Defaults to auth.ts getValidAccessToken. */
+  getValidAccessToken?: () => Promise<{ token: string; tokens: NotionTokens }>
+  /** Staleness predicate. Defaults to auth.ts needsRefresh. */
+  needsRefresh?: (tokens: NotionTokens) => boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +141,9 @@ function errorLog(msg: string, ...args: unknown[]): void {
 export function createNotionExtension(deps: ExtensionDeps) {
   const isEnabledForCwd = deps.isEnabledForCwd ?? (() => isNotionEnabledForCwd())
   const env = deps.env ?? process.env
+  const readTokens = deps.loadTokens ?? loadTokens
+  const refreshTokens = deps.getValidAccessToken ?? getValidAccessToken
+  const isStale = deps.needsRefresh ?? needsRefresh
 
   let session: NotionSessionLike | null = null
   let toolsRegistered = false
@@ -258,16 +273,16 @@ export function createNotionExtension(deps: ExtensionDeps) {
    * provider's response body, so no token text travels with them.
    */
   async function resolveTokens(): Promise<NotionTokens> {
-    const stored = loadTokens()
+    const stored = readTokens()
     if (!stored) {
       warn("no Notion MCP OAuth tokens found")
       throw new Error("no auth tokens. Run /login-notion to authenticate, then try again.")
     }
 
-    if (!needsRefresh(stored)) return stored
+    if (!isStale(stored)) return stored
 
     try {
-      const { tokens } = await getValidAccessToken()
+      const { tokens } = await refreshTokens()
       return tokens
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -279,6 +294,65 @@ export function createNotionExtension(deps: ExtensionDeps) {
       }
       warn(`token refresh failed: ${msg}`)
       throw new Error(`token refresh failed — ${msg}`)
+    }
+  }
+
+  /**
+   * Refresh the OAuth tokens if they are stale, WITHOUT registering any tools
+   * and WITHOUT opening an MCP connection.
+   *
+   * WHY THIS EXISTS — the 30-day inactivity clock (round-3 review of #2568).
+   *
+   * Notion refresh tokens die after 30 consecutive days of inactivity (see
+   * UPSTREAM.md "Token lifetimes"). Before #2532, `onSessionStart` called
+   * `ensureTokens` on every session inside NOTION_MCP_REPOS, so ordinary
+   * session starts kept the rotation alive as a side effect. Deferring the
+   * whole of that behind `activate_notion` moved the clock: with
+   * `notion.eagerRoles = [ ]`, a refresh would happen only when a Notion tool
+   * was actually called. Thirty quiet days in the vault would kill the grant,
+   * and the only recovery is `/login-notion` — an interactive browser flow a
+   * headless worker CANNOT complete.
+   *
+   * Token refresh and tool registration are separate concerns that merely
+   * shared a call site. This PR defers the SURFACE; tokens are not surface.
+   * Refreshing here costs one token-file read, and at most one refresh request
+   * per access-token lifetime (~8h) — no `tools/list`, no tool schemas, so the
+   * cached-prefix saving is preserved in full.
+   *
+   * Never throws. A dead or absent grant must not stop pi from starting.
+   */
+  async function keepTokensAlive(ctx: NotifyContext): Promise<void> {
+    const stored = readTokens()
+    if (!stored) {
+      // Same signal the pre-#2532 session_start gave. Actionable, and not new
+      // noise: this fired on every tokenless vault session before too.
+      warn("no Notion MCP OAuth tokens found")
+      ctx.ui.notify(
+        "Notion MCP: no auth tokens. Use /login-notion to authenticate.",
+        "warning",
+      )
+      return
+    }
+
+    // Fresh enough: no network at all. Most session starts land here.
+    if (!isStale(stored)) return
+
+    try {
+      await refreshTokens()
+      log("refreshed Notion tokens at session_start (keeps the 30-day clock alive)")
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (isTerminalAuthError(err)) {
+        // invalid_grant, or a lock lost mid-refresh — auth.ts has already
+        // cleared the store. Do NOT retry; tell the user, who must re-login.
+        warn("Notion grant is no longer usable")
+        ctx.ui.notify(msg, "warning")
+        return
+      }
+      // Transient (offline, 5xx, lock contention). Log and carry on —
+      // activate_notion reports it as a tool result if this session actually
+      // needs Notion.
+      log(`token refresh at session_start did not succeed: ${msg}`)
     }
   }
 
@@ -342,6 +416,9 @@ export function createNotionExtension(deps: ExtensionDeps) {
      * NOTION_MCP_REPOS registers neither the family NOR the activate tool.
      */
     async onSessionStart(host: ToolHost, ctx: NotifyContext): Promise<void> {
+      // The cwd gate runs FIRST and covers the refresh too: a session outside
+      // the vault scope reads no token file, performs no refresh, opens no
+      // connection, and registers nothing at all. AC 11 is unchanged.
       if (!isEnabledForCwd()) {
         log("working directory is outside NOTION_MCP_REPOS — Notion not initialised")
         return
@@ -349,16 +426,24 @@ export function createNotionExtension(deps: ExtensionDeps) {
 
       toolHost = host
       gateway.register(host)
+
+      // Keep the refresh-token rotation alive without registering the surface.
+      // See keepTokensAlive for why this is separate from activation.
+      await keepTokensAlive(ctx)
     },
 
     /**
      * pi `before_agent_start`. Fires once per TURN, so the eager check is
      * guarded to run at most once per session.
      *
-     * `role` comes from `pi.getFlag("agent")`, which is not readable in an
-     * extension factory prologue — pi binds extension flags after every
-     * factory has returned. This hook is the earliest point at which the role
-     * is available.
+     * `role` is read from argv by the caller (`readAgentRoleFromArgv`), NOT
+     * from `pi.getFlag("agent")` — registering that flag in a second extension
+     * is a FATAL startup conflict. See ../mcp-activation/activation.ts.
+     *
+     * argv is readable in a factory prologue, so this hook is not forced by
+     * flag binding. It is still the right one: registration from here takes
+     * effect on the CURRENT turn, and it keeps the eager check on the same
+     * path the gateway tool uses.
      */
     async onBeforeAgentStart(
       host: ToolHost,

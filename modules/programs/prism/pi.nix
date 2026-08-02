@@ -68,8 +68,22 @@
         this machine, whether or not the session ever touched Jira.
 
         A role named here skips the tool call: the extension activates from
-        its first before_agent_start instead, which is the earliest point at
-        which pi.getFlag("agent") is readable.
+        its first before_agent_start instead. The role is read from the pi
+        process argv (prism emits `--agent <role>`), NOT via
+        pi.getFlag("agent") — getFlag is unreachable without registerFlag, and
+        registering --agent in a second extension makes pi exit 1 because
+        prism.ts already owns that flag. See readAgentRoleFromArgv in
+        pi/extensions/mcp-activation/activation.ts.
+
+        SCOPE. Eagerness keys off an EXPLICIT role on argv. A session with no
+        role is never eager and must call activate_atlassian — including a
+        coordinator-config session on a normal (non-bare) clone, where
+        internal/session/DefaultAgent returns "" and buildDirectAgentCmd omits
+        --agent altogether. That exclusion is deliberate: inferring
+        "coordinator" from an absent flag would make every hand-launched
+        interactive pi eager too, which inverts the point of the deferral. It
+        is not a regression — the flag is equally absent under the older
+        pi.getFlag("agent") approach.
 
         The default is [ "coordinator" ] because the coordinator files Jira
         tickets in most sessions, so it would pay the activation cost nearly

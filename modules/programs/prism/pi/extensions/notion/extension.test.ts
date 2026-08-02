@@ -28,7 +28,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { invalidateCache, type NotionTokens } from "./auth.ts"
+import { invalidateCache, NotionAuthTerminalError, type NotionTokens } from "./auth.ts"
 import {
   ACTIVATE_NOTION_DESCRIPTION,
   createNotionExtension,
@@ -601,6 +601,150 @@ describe("a broken provider never blocks pi", () => {
 
     assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
     assert.ok(ctx.notices.some((n) => n.type === "error"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The 30-day refresh-token inactivity clock (round-3 review of PR #2568)
+//
+// Notion refresh tokens die after 30 consecutive days of inactivity. Before
+// #2532, onSessionStart called ensureTokens on every vault session, so ordinary
+// session starts kept the rotation alive. Deferring everything behind
+// activate_notion moved that clock: with eagerRoles = [ ], a refresh would only
+// happen when a Notion tool was called, and 30 quiet days would kill the grant.
+// Recovery is /login-notion — a browser flow a headless worker cannot complete.
+//
+// These tests exist because the regression is INVISIBLE FOR 30 DAYS. Nothing
+// else stands between us and a repeat.
+//
+// Revert-and-watch-fail: delete the `await keepTokensAlive(ctx)` call from
+// onSessionStart → "refreshes a stale token at session_start" and "keeps the
+// clock alive without registering the surface" both fail.
+// ---------------------------------------------------------------------------
+
+describe("session_start keeps the refresh-token clock alive", () => {
+  function makeAuthSpy(opts: { stale?: boolean; tokens?: NotionTokens | null; refreshThrows?: Error } = {}) {
+    const spy = { loadCalls: 0, refreshCalls: 0 }
+    const stored =
+      opts.tokens === undefined
+        ? makeTokens({ accessToken: "stored" })
+        : opts.tokens
+    return {
+      spy,
+      overrides: {
+        loadTokens: () => {
+          spy.loadCalls++
+          return stored
+        },
+        needsRefresh: () => opts.stale ?? false,
+        getValidAccessToken: async () => {
+          spy.refreshCalls++
+          if (opts.refreshThrows) throw opts.refreshThrows
+          const t = makeTokens({ accessToken: "refreshed" })
+          return { token: t.accessToken, tokens: t }
+        },
+      } satisfies Partial<ExtensionDeps>,
+    }
+  }
+
+  it("refreshes a stale token at session_start", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(auth.spy.refreshCalls, 1, "a stale grant must be refreshed at session_start")
+  })
+
+  it("keeps the clock alive without registering the surface or connecting", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    // The whole point: the token stays alive and the schemas stay out.
+    assert.equal(auth.spy.refreshCalls, 1)
+    assert.equal(rec.connectCalls, 0, "no MCP connection at session_start")
+    assert.deepEqual(
+      host.registered.map((t) => t.name),
+      ["activate_notion"],
+      "no tool schemas may enter the prompt prefix",
+    )
+    assert.equal(ext.isActive(), false)
+  })
+
+  it("performs no network refresh when the token is still fresh", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: false })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(auth.spy.loadCalls >= 1, true, "the store is still read (it is cheap)")
+    assert.equal(auth.spy.refreshCalls, 0, "most session starts must cost no network")
+  })
+
+  it("reads no token file and refreshes nothing outside the vault scope (AC 11)", async () => {
+    const rec = makeDeps({ isEnabledForCwd: () => false })
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({
+      ...rec.deps,
+      ...auth.overrides,
+      isEnabledForCwd: () => false,
+    })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    assert.equal(auth.spy.loadCalls, 0, "an out-of-scope session must touch nothing")
+    assert.equal(auth.spy.refreshCalls, 0)
+    assert.deepEqual(host.registered, [])
+  })
+
+  it("a terminal auth failure notifies and does not throw", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({
+      stale: true,
+      refreshThrows: new NotionAuthTerminalError(
+        "Notion MCP: the grant was revoked. Run /login-notion.",
+      ),
+    })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(host.host, ctx.ctx)
+
+    assert.ok(ctx.notices.some((n) => /login-notion/.test(n.msg)))
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+  })
+
+  it("a transient refresh failure does not stop the session or nag", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true, refreshThrows: new Error("fetch failed") })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(host.host, ctx.ctx)
+
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.deepEqual(ctx.notices, [], "a transient fault is logged, not surfaced")
+  })
+
+  it("notifies when there are no tokens at all", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ tokens: null })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(makeHost().host, ctx.ctx)
+
+    assert.equal(auth.spy.refreshCalls, 0)
+    assert.ok(ctx.notices.some((n) => /login-notion/.test(n.msg)))
   })
 })
 

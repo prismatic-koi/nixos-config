@@ -355,6 +355,33 @@ again inside `registerTools`.
 tool call and activate from their first `before_agent_start`. It defaults to
 `[ ]`, because the allowlist already keeps the reachable session count small.
 
+### Token refresh is NOT deferred, and must not be
+
+The surface is deferred; the tokens are not. `onSessionStart` calls
+`keepTokensAlive` on every in-scope session, which refreshes a stale grant
+without opening an MCP connection or registering a single tool schema.
+
+This is load-bearing, and it is easy to "tidy away" by mistake. Refresh tokens
+die after **30 consecutive days of inactivity** (see "Token lifetimes" above).
+Before #2532, `onSessionStart` called `ensureTokens` on every vault session, so
+ordinary session starts kept the rotation alive as a side effect. Deferring all
+of that behind `activate_notion` moved the clock: with `eagerRoles = [ ]`, a
+refresh would happen only when a Notion tool was actually called. Thirty quiet
+days in the vault would kill the grant, and the only recovery is
+`/login-notion` — an interactive browser flow a **headless worker cannot
+complete**. Round-3 review of PR #2568 caught this before it shipped.
+
+The cost of keeping it is negligible: one token-file read per in-scope session,
+and at most one refresh request per access-token lifetime (~8h). No
+`tools/list`, no schemas, so the cached-prefix saving is preserved in full.
+
+The `NOTION_MCP_REPOS` gate still runs first, so an out-of-scope session reads
+no token file and refreshes nothing. `keepTokensAlive` never throws: a dead
+grant notifies, a transient fault is logged, and neither stops pi from starting.
+`extension.test.ts` has a dedicated "keeps the refresh-token clock alive" block;
+removing the call from `onSessionStart` fails five of its tests. That block
+exists because this regression is invisible for thirty days.
+
 See `../grafana/UPSTREAM.md` for the mechanism note; the shared state machine
 lives in `../mcp-activation/activation.ts`.
 

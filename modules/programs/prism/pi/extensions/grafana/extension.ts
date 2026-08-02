@@ -23,8 +23,12 @@
 //   - the sops bundle is not read until activation;
 //   - the `mcp-grafana` child process does not start until activation;
 //   - a role listed in GRAFANA_MCP_EAGER_ROLES activates from the first
-//     `before_agent_start`, which is where `pi.getFlag("agent")` first becomes
-//     readable.
+//     `before_agent_start`.
+//
+// The role is read from argv (`readAgentRoleFromArgv`), NOT via
+// `pi.getFlag("agent")` — `getFlag` is unreachable without `registerFlag`, and
+// registering `--agent` in a second extension makes pi exit 1. See
+// ../mcp-activation/activation.ts for the reproduction.
 //
 // Every failure path stays non-blocking: a pi session MUST NOT be prevented
 // from starting — or from continuing — when grafana is unconfigured, its
@@ -320,13 +324,15 @@ export function createGrafanaExtension(deps: GrafanaExtensionDeps) {
      * pi `before_agent_start`. Fires once per TURN, so the eager check is
      * guarded to run at most once per session.
      *
-     * `role` comes from `pi.getFlag("agent")`, which is not readable in an
-     * extension factory prologue — pi binds extension flags during
-     * `applyExtensionFlagValues`, after every factory has returned. This hook
-     * is the earliest point at which the role is available.
+     * `role` is read from argv by the caller (`readAgentRoleFromArgv`), NOT
+     * from `pi.getFlag("agent")` — registering that flag in a second extension
+     * is a FATAL startup conflict. See ../mcp-activation/activation.ts.
      *
-     * Registering from here still takes effect on the CURRENT turn:
-     * `emitBeforeAgentStart` is awaited before the request is built.
+     * argv is readable in a factory prologue, so `before_agent_start` is not
+     * forced by flag binding. It is still the right hook: registration from
+     * here takes effect on the CURRENT turn, because `emitBeforeAgentStart` is
+     * awaited before the request is built, and it keeps the eager check on the
+     * same path the gateway tool uses.
      */
     async onBeforeAgentStart(
       host: GatewayHost,
