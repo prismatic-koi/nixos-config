@@ -521,6 +521,66 @@ INSERT OR REPLACE INTO spawn_outcome (
 	return nil
 }
 
+// WriteSpawnOutcomeCascade writes a spawn_outcome row for sessionName and for
+// every review-agent child session whose session_name matches the pattern
+// "<sessionName>~review-%" (issue #2591). WriteSpawnOutcome is called from
+// four sites in cmd/cleanup.go, and until this cascade existed each call only
+// ever wrote a row for the parent named on the command line — review-agent
+// children never got one (measured coverage: 1.2% of ~review-% sessions).
+//
+// This mirrors the cascade SetEnded already performs for ended_at: it
+// resolves every distinct instance_id among rows where
+// session_name = sessionName OR session_name LIKE '<sessionName>~review-%',
+// then calls WriteSpawnOutcome for each one found. Both the parent lookup and
+// the children lookup go through the same query, so a parent with no rows in
+// agent_status (e.g. never spawned via prism, or already purged) simply
+// contributes no instance_id and is silently skipped — WriteSpawnOutcome's
+// own pre-migration tolerance is preserved.
+//
+// The session name is escaped for SQL LIKE wildcards before being used as a
+// pattern prefix, matching the convention used by SetEnded and
+// ClearHarnessSessionID.
+//
+// Each resolved instance_id is written independently via WriteSpawnOutcome,
+// so one child's failure does not prevent the others (or the parent) from
+// being written. The first error encountered, if any, is returned after all
+// writes have been attempted.
+func (d *DB) WriteSpawnOutcomeCascade(sessionName string) error {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(sessionName)
+	const q = `
+SELECT DISTINCT instance_id
+FROM   agent_status
+WHERE  (session_name = ? OR session_name LIKE ? || '~review-%' ESCAPE '\')
+  AND  instance_id IS NOT NULL`
+	rows, err := d.conn.Query(q, sessionName, escaped)
+	if err != nil {
+		return fmt.Errorf("db: write spawn outcome cascade: query instance ids: %w", err)
+	}
+
+	var instanceIDs []string
+	for rows.Next() {
+		var id string
+		if scanErr := rows.Scan(&id); scanErr != nil {
+			rows.Close()
+			return fmt.Errorf("db: write spawn outcome cascade: scan instance id: %w", scanErr)
+		}
+		instanceIDs = append(instanceIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("db: write spawn outcome cascade: iterate instance ids: %w", err)
+	}
+	rows.Close()
+
+	var firstErr error
+	for _, instanceID := range instanceIDs {
+		if writeErr := d.WriteSpawnOutcome(instanceID); writeErr != nil && firstErr == nil {
+			firstErr = fmt.Errorf("db: write spawn outcome cascade: instance %s: %w", instanceID, writeErr)
+		}
+	}
+	return firstErr
+}
+
 // UpdateSpawnOutcomePR records the PR number opened by the worker session
 // identified by instanceID. Issue #2110: pr_number was previously read by the
 // `prism stats compare` renderer but never written by any code path. This is

@@ -7805,6 +7805,245 @@ func TestWriteSpawnOutcome_IdempotentOverwrite(t *testing.T) {
 	}
 }
 
+// ── WriteSpawnOutcomeCascade (issue #2591) ───────────────────────────────────
+
+// seedSessionAndStatus creates both the agent_status row (via UpsertStatus +
+// SetInstanceID) and the sessions row (via InsertSession) for sessionName,
+// linked by instanceID. This is the shape WriteSpawnOutcomeCascade's query
+// depends on: it resolves instance ids from agent_status, then aggregates
+// from the sessions/agent_events tables keyed on that instance id.
+func seedSessionAndStatus(t *testing.T, d *db.DB, sessionName, instanceID string) {
+	t.Helper()
+	if err := d.UpsertStatus(sessionName, "nixos-config", "/wt/feat", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus %q: %v", sessionName, err)
+	}
+	if err := d.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID %q: %v", sessionName, err)
+	}
+	if err := d.InsertSession(db.Session{
+		InstanceID:  instanceID,
+		SessionName: sessionName,
+		Repo:        "nixos-config",
+		Worktree:    "/wt/feat",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-5 * time.Minute),
+	}); err != nil {
+		t.Fatalf("InsertSession %q: %v", sessionName, err)
+	}
+}
+
+// TestWriteSpawnOutcomeCascade_WritesParentAndChildren verifies that calling
+// WriteSpawnOutcomeCascade on a parent session writes a spawn_outcome row for
+// the parent AND for every <parent>~review-% child, while leaving an
+// unrelated session (and a similarly-prefixed but non-review session)
+// untouched.
+func TestWriteSpawnOutcomeCascade_WritesParentAndChildren(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+
+	childNames := []string{
+		parent + "~review-1-review-goal",
+		parent + "~review-1-review-code",
+		parent + "~review-1-review-security",
+	}
+	childIIDs := make([]string, len(childNames))
+	for i, c := range childNames {
+		childIIDs[i] = uuid.New().String()
+		seedSessionAndStatus(t, d, c, childIIDs[i])
+	}
+
+	// Unrelated session — must not get a row.
+	unrelated := "other-repo@main"
+	unrelatedIID := uuid.New().String()
+	seedSessionAndStatus(t, d, unrelated, unrelatedIID)
+
+	// Shares the parent's prefix but is not a review child — must not get a row.
+	notReview := "nixos-config@feat-other"
+	notReviewIID := uuid.New().String()
+	seedSessionAndStatus(t, d, notReview, notReviewIID)
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
+	}
+
+	if out, err := d.SpawnOutcomeByInstanceID(parentIID); err != nil || out == nil {
+		t.Fatalf("parent spawn_outcome row missing: out=%v err=%v", out, err)
+	}
+	for i, c := range childNames {
+		if out, err := d.SpawnOutcomeByInstanceID(childIIDs[i]); err != nil || out == nil {
+			t.Errorf("child %q spawn_outcome row missing: out=%v err=%v", c, out, err)
+		}
+	}
+	if out, err := d.SpawnOutcomeByInstanceID(unrelatedIID); err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID unrelated: %v", err)
+	} else if out != nil {
+		t.Errorf("unrelated session got a spawn_outcome row, want none")
+	}
+	if out, err := d.SpawnOutcomeByInstanceID(notReviewIID); err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID notReview: %v", err)
+	} else if out != nil {
+		t.Errorf("notReview session got a spawn_outcome row, want none")
+	}
+}
+
+// TestWriteSpawnOutcomeCascade_NoChildrenIsNoop verifies that cascading on a
+// parent with no review children cleans up with no error and writes only its
+// own row.
+func TestWriteSpawnOutcomeCascade_NoChildrenIsNoop(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "solo-repo@main"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
+	}
+
+	out, err := d.SpawnOutcomeByInstanceID(parentIID)
+	if err != nil || out == nil {
+		t.Fatalf("parent spawn_outcome row missing: out=%v err=%v", out, err)
+	}
+}
+
+// TestWriteSpawnOutcomeCascade_ChildWithNoEventsGetsZeroCountRow verifies that
+// a child with no agent_events rows still gets a spawn_outcome row, with zero
+// counts, rather than no row at all.
+func TestWriteSpawnOutcomeCascade_ChildWithNoEventsGetsZeroCountRow(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat-zero"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+
+	child := parent + "~review-1-review-goal"
+	childIID := uuid.New().String()
+	seedSessionAndStatus(t, d, child, childIID)
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
+	}
+
+	out, err := d.SpawnOutcomeByInstanceID(childIID)
+	if err != nil {
+		t.Fatalf("SpawnOutcomeByInstanceID child: %v", err)
+	}
+	if out == nil {
+		t.Fatal("child spawn_outcome row missing, want a zero-count row")
+	}
+	if out.TokensInputTotal != 0 || out.TokensOutputTotal != 0 || out.ToolCallCount != 0 || out.MsgAssistantCount != 0 {
+		t.Errorf("child row not zero-count: %+v", out)
+	}
+}
+
+// TestWriteSpawnOutcomeCascade_ParentRowUnchangedInValue verifies that the
+// parent's own spawn_outcome row is unaffected in value by the presence of
+// review children — it matches what WriteSpawnOutcome alone would have
+// produced for the parent's instance id.
+func TestWriteSpawnOutcomeCascade_ParentRowUnchangedInValue(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat-parentval"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+
+	// Give the parent some events so it has non-zero aggregates to compare.
+	ev := db.Event{
+		ID:          uuid.New().String(),
+		SessionName: parent,
+		Repo:        "nixos-config",
+		Worktree:    "/wt/feat",
+		InstanceID:  &parentIID,
+		Type:        "msg_assistant",
+		Payload:     `{"inputTokens":123,"outputTokens":45}`,
+		CreatedAt:   time.Now().Add(-2 * time.Minute),
+	}
+	if err := d.WriteEvent(ev); err != nil {
+		t.Fatalf("WriteEvent: %v", err)
+	}
+
+	// A child, so the cascade path actually has children to traverse.
+	child := parent + "~review-1-review-goal"
+	childIID := uuid.New().String()
+	seedSessionAndStatus(t, d, child, childIID)
+
+	want, err := d.ComputeSpawnOutcome(parentIID)
+	if err != nil || want == nil {
+		t.Fatalf("ComputeSpawnOutcome: out=%v err=%v", want, err)
+	}
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade: %v", err)
+	}
+
+	got, err := d.SpawnOutcomeByInstanceID(parentIID)
+	if err != nil || got == nil {
+		t.Fatalf("SpawnOutcomeByInstanceID parent: out=%v err=%v", got, err)
+	}
+	got.ComputedAt = want.ComputedAt
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("parent row diverges from ComputeSpawnOutcome\n want: %+v\n got:  %+v", want, got)
+	}
+}
+
+// TestWriteSpawnOutcomeCascade_Idempotent verifies that cascading twice
+// produces identical rows for the parent and every child (no double-counting,
+// no corruption of an already-written child row).
+func TestWriteSpawnOutcomeCascade_Idempotent(t *testing.T) {
+	d := openTestDB(t)
+
+	parent := "nixos-config@feat-idem"
+	parentIID := uuid.New().String()
+	seedSessionAndStatus(t, d, parent, parentIID)
+
+	child := parent + "~review-1-review-goal"
+	childIID := uuid.New().String()
+	seedSessionAndStatus(t, d, child, childIID)
+
+	// Simulate one of the existing 41 pre-cascade rows: the child already
+	// carries a spawn_outcome row (e.g. from a hand-cleaned session) before
+	// the parent's cleanup cascade ever runs.
+	if err := d.WriteSpawnOutcome(childIID); err != nil {
+		t.Fatalf("WriteSpawnOutcome (pre-seed child): %v", err)
+	}
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade (first): %v", err)
+	}
+	firstParent, err := d.SpawnOutcomeByInstanceID(parentIID)
+	if err != nil || firstParent == nil {
+		t.Fatalf("SpawnOutcomeByInstanceID parent (first): out=%v err=%v", firstParent, err)
+	}
+	firstChild, err := d.SpawnOutcomeByInstanceID(childIID)
+	if err != nil || firstChild == nil {
+		t.Fatalf("SpawnOutcomeByInstanceID child (first): out=%v err=%v", firstChild, err)
+	}
+
+	if err := d.WriteSpawnOutcomeCascade(parent); err != nil {
+		t.Fatalf("WriteSpawnOutcomeCascade (second): %v", err)
+	}
+	secondParent, err := d.SpawnOutcomeByInstanceID(parentIID)
+	if err != nil || secondParent == nil {
+		t.Fatalf("SpawnOutcomeByInstanceID parent (second): out=%v err=%v", secondParent, err)
+	}
+	secondChild, err := d.SpawnOutcomeByInstanceID(childIID)
+	if err != nil || secondChild == nil {
+		t.Fatalf("SpawnOutcomeByInstanceID child (second): out=%v err=%v", secondChild, err)
+	}
+
+	secondParent.ComputedAt = firstParent.ComputedAt
+	if !reflect.DeepEqual(firstParent, secondParent) {
+		t.Errorf("parent row changed across idempotent cascades\n first:  %+v\n second: %+v", firstParent, secondParent)
+	}
+	secondChild.ComputedAt = firstChild.ComputedAt
+	if !reflect.DeepEqual(firstChild, secondChild) {
+		t.Errorf("child row changed across idempotent cascades\n first:  %+v\n second: %+v", firstChild, secondChild)
+	}
+}
+
 // ── ActiveSessionCountForMode / ActiveSessionsForMode ────────────────────────
 
 // TestActiveSessionCountForMode_Empty verifies the count is 0 on a fresh DB.
