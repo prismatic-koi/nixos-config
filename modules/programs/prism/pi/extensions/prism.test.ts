@@ -70,6 +70,17 @@ import {
   composeRoleSystemPrompt,
   resolveRolePromptForTurn,
   type RolePromptCache,
+  // Usage status segment (issue #2540)
+  formatCountdown,
+  colorPercent,
+  formatUsageWindow,
+  formatUsageSegment,
+  readUsageSnapshot,
+  buildUsageStatusSegment,
+  usageSnapshotPath,
+  USAGE_STALE_MS,
+  USAGE_STATUS_REFRESH_INTERVAL_MS,
+  type UsageSnapshot,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -2985,6 +2996,379 @@ describe("formatPrismStatus — unknown role", () => {
   it("shows [unknown] with (host) suffix in host mode", () => {
     const text = formatPrismStatus("", "main", "host", null, 0)
     assert.equal(text, "[unknown] main (host)")
+  })
+})
+
+describe("formatPrismStatus — usage segment (issue #2540)", () => {
+  it("appends the usage segment after the existing prefix", () => {
+    const text = formatPrismStatus("coordinator", "main", "sandbox-exec", null, 0, "work · 5h 94% (1h56m)")
+    assert.equal(text, "[coordinator] main · work · 5h 94% (1h56m)")
+  })
+
+  it("appends after the (host) suffix", () => {
+    const text = formatPrismStatus("coordinator", "main", "host", null, 0, "work · 5h 94% (1h56m)")
+    assert.equal(text, "[coordinator] main (host) · work · 5h 94% (1h56m)")
+  })
+
+  it("appends after the review PR/cycle suffix", () => {
+    const text = formatPrismStatus("review", "fix-login", "sandbox-exec", "42", 2, "work · 5h 94% (1h56m)")
+    assert.equal(text, "[review] fix-login · PR#42 · 2 cycles · work · 5h 94% (1h56m)")
+  })
+
+  it("is byte-for-byte unaffected when usageSegment is null (default)", () => {
+    assert.equal(
+      formatPrismStatus("coordinator", "main", "sandbox-exec", null, 0),
+      formatPrismStatus("coordinator", "main", "sandbox-exec", null, 0, null),
+    )
+  })
+
+  it("is unaffected when usageSegment is the empty string", () => {
+    const text = formatPrismStatus("coordinator", "main", "sandbox-exec", null, 0, "")
+    assert.equal(text, "[coordinator] main")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Usage status segment (issue #2540)
+// ---------------------------------------------------------------------------
+
+describe("formatCountdown", () => {
+  const now = Date.parse("2026-08-02T20:00:00Z")
+
+  it("drops the zero-value leading day unit", () => {
+    const resetSec = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+    assert.equal(formatCountdown(now, resetSec), "1h56m")
+  })
+
+  it("shows at most two units, dropping minutes when days is non-zero", () => {
+    const resetSec = Math.floor((now + (4 * 86400 + 13 * 3600 + 5 * 60) * 1000) / 1000)
+    assert.equal(formatCountdown(now, resetSec), "4d13h")
+  })
+
+  it("shows minutes alone when both days and hours are zero", () => {
+    const resetSec = Math.floor((now + 5 * 60 * 1000) / 1000)
+    assert.equal(formatCountdown(now, resetSec), "5m")
+  })
+
+  it("renders '<1m' for under a minute remaining", () => {
+    const resetSec = Math.floor((now + 30 * 1000) / 1000)
+    assert.equal(formatCountdown(now, resetSec), "<1m")
+  })
+
+  it("renders 'now' when the reset timestamp equals now", () => {
+    assert.equal(formatCountdown(now, Math.floor(now / 1000)), "now")
+  })
+
+  it("renders 'now' when the reset timestamp is in the past", () => {
+    const resetSec = Math.floor((now - 60_000) / 1000)
+    assert.equal(formatCountdown(now, resetSec), "now")
+  })
+})
+
+describe("colorPercent", () => {
+  it("colours green below 60", () => {
+    assert.equal(colorPercent(42, false), "\x1b[32m42%\x1b[0m")
+  })
+
+  it("colours yellow at the 60 boundary (inclusive)", () => {
+    assert.equal(colorPercent(60, false), "\x1b[33m60%\x1b[0m")
+  })
+
+  it("colours yellow at the 85 boundary (inclusive)", () => {
+    assert.equal(colorPercent(85, false), "\x1b[33m85%\x1b[0m")
+  })
+
+  it("colours red above 85", () => {
+    assert.equal(colorPercent(94, false), "\x1b[31m94%\x1b[0m")
+  })
+
+  it("dims a stale percentage in addition to its threshold colour", () => {
+    assert.equal(colorPercent(94, true), "\x1b[2m\x1b[31m94%\x1b[0m")
+  })
+})
+
+describe("formatUsageWindow", () => {
+  const now = Date.parse("2026-08-02T20:00:00Z")
+
+  it("returns null when the window is undefined", () => {
+    assert.equal(formatUsageWindow("5h", undefined, false, now, false), null)
+  })
+
+  it("returns null when utilization or reset is missing", () => {
+    assert.equal(
+      formatUsageWindow("5h", { status: "allowed" }, false, now, false),
+      null,
+    )
+  })
+
+  it("formats a non-governing window without bold marking", () => {
+    const resetSec = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+    const text = formatUsageWindow(
+      "5h",
+      { utilization: 0.94, reset: resetSec },
+      false,
+      now,
+      false,
+    )
+    assert.equal(text, "5h \x1b[31m94%\x1b[0m (1h56m)")
+  })
+
+  it("bold-marks the governing window's label", () => {
+    const resetSec = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+    const text = formatUsageWindow(
+      "5h",
+      { utilization: 0.94, reset: resetSec },
+      true,
+      now,
+      false,
+    )
+    assert.equal(text, "\x1b[1m5h\x1b[0m \x1b[31m94%\x1b[0m (1h56m)")
+  })
+
+  it("marks the percentage stale (dim) when the snapshot is stale by age", () => {
+    const resetSec = Math.floor((now + (4 * 86400 + 13 * 3600) * 1000) / 1000)
+    const text = formatUsageWindow(
+      "7d",
+      { utilization: 0.42, reset: resetSec },
+      false,
+      now,
+      true,
+    )
+    assert.equal(text, "7d \x1b[2m\x1b[32m42%\x1b[0m (4d13h)")
+  })
+
+  it("renders 'now' and marks stale when reset is in the past, regardless of age staleness", () => {
+    const resetSec = Math.floor((now - 60_000) / 1000)
+    const text = formatUsageWindow(
+      "5h",
+      { utilization: 0.94, reset: resetSec },
+      false,
+      now,
+      false,
+    )
+    assert.equal(text, "5h \x1b[2m\x1b[31m94%\x1b[0m (now)")
+  })
+
+  it("does not colour the countdown text", () => {
+    const resetSec = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+    const text = formatUsageWindow(
+      "5h",
+      { utilization: 0.94, reset: resetSec },
+      false,
+      now,
+      false,
+    )
+    assert.ok(text?.includes("(1h56m)"), "countdown must appear uncoloured")
+  })
+})
+
+describe("formatUsageSegment", () => {
+  const now = Date.parse("2026-08-02T23:43:28Z")
+  const fiveHourReset = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+  const sevenDayReset = Math.floor((now + (4 * 86400 + 13 * 3600) * 1000) / 1000)
+
+  it("renders the account name plus both windows, governing window bold", () => {
+    const snapshot: UsageSnapshot = {
+      captured_at: "2026-08-02T23:43:00Z",
+      account: "work",
+      representative_claim: "five_hour",
+      windows: {
+        five_hour: { utilization: 0.94, reset: fiveHourReset },
+        seven_day: { utilization: 0.42, reset: sevenDayReset },
+      },
+    }
+    const text = formatUsageSegment(snapshot, now)
+    assert.equal(
+      text,
+      "work · \x1b[1m5h\x1b[0m \x1b[31m94%\x1b[0m (1h56m) · 7d \x1b[32m42%\x1b[0m (4d13h)",
+    )
+  })
+
+  it("omits a missing window and renders only the available one", () => {
+    const snapshot: UsageSnapshot = {
+      captured_at: "2026-08-02T23:43:00Z",
+      account: "work",
+      representative_claim: "five_hour",
+      windows: {
+        five_hour: { utilization: 0.94, reset: fiveHourReset },
+      },
+    }
+    const text = formatUsageSegment(snapshot, now)
+    assert.equal(text, "work · \x1b[1m5h\x1b[0m \x1b[31m94%\x1b[0m (1h56m)")
+  })
+
+  it("returns null when neither window is renderable", () => {
+    const snapshot: UsageSnapshot = {
+      captured_at: "2026-08-02T23:43:00Z",
+      account: "work",
+    }
+    assert.equal(formatUsageSegment(snapshot, now), null)
+  })
+
+  it("marks percentages stale when captured_at is older than 15 minutes", () => {
+    const staleCapturedAt = new Date(now - (USAGE_STALE_MS + 60_000)).toISOString()
+    const snapshot: UsageSnapshot = {
+      captured_at: staleCapturedAt,
+      account: "work",
+      windows: {
+        five_hour: { utilization: 0.94, reset: fiveHourReset },
+      },
+    }
+    const text = formatUsageSegment(snapshot, now)
+    assert.ok(text?.includes("\x1b[2m"), "stale snapshot must dim the percentage")
+  })
+
+  it("does not mark percentages stale within the 15-minute window", () => {
+    const freshCapturedAt = new Date(now - 60_000).toISOString()
+    const snapshot: UsageSnapshot = {
+      captured_at: freshCapturedAt,
+      account: "work",
+      windows: {
+        five_hour: { utilization: 0.94, reset: fiveHourReset },
+      },
+    }
+    const text = formatUsageSegment(snapshot, now)
+    assert.ok(!text?.includes("\x1b[2m"), "fresh snapshot must not dim the percentage")
+  })
+})
+
+describe("usageSnapshotPath", () => {
+  it("honours XDG_STATE_HOME first", () => {
+    const original = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = "/tmp/xdg-state-test"
+    try {
+      assert.equal(
+        usageSnapshotPath(),
+        path.join("/tmp/xdg-state-test", "prism", "usage", "current.json"),
+      )
+    } finally {
+      if (original === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = original
+    }
+  })
+
+  it("falls back to $HOME/.local/state when XDG_STATE_HOME is unset", () => {
+    const original = process.env.XDG_STATE_HOME
+    delete process.env.XDG_STATE_HOME
+    try {
+      assert.equal(
+        usageSnapshotPath(),
+        path.join(os.homedir(), ".local", "state", "prism", "usage", "current.json"),
+      )
+    } finally {
+      if (original !== undefined) process.env.XDG_STATE_HOME = original
+    }
+  })
+})
+
+describe("readUsageSnapshot — missing/malformed file (edge-case ACs)", () => {
+  it("returns null when the file does not exist, without throwing", () => {
+    const missingPath = path.join(os.tmpdir(), `prism-usage-test-missing-${Date.now()}.json`)
+    assert.doesNotThrow(() => {
+      assert.equal(readUsageSnapshot(missingPath), null)
+    })
+  })
+
+  it("returns null for malformed JSON, without throwing", () => {
+    const tmpPath = path.join(os.tmpdir(), `prism-usage-test-malformed-${Date.now()}.json`)
+    fs.writeFileSync(tmpPath, "{ not valid json")
+    try {
+      assert.doesNotThrow(() => {
+        assert.equal(readUsageSnapshot(tmpPath), null)
+      })
+    } finally {
+      fs.rmSync(tmpPath, { force: true })
+    }
+  })
+
+  it("returns null when required fields (captured_at/account) are missing", () => {
+    const tmpPath = path.join(os.tmpdir(), `prism-usage-test-incomplete-${Date.now()}.json`)
+    fs.writeFileSync(tmpPath, JSON.stringify({ windows: {} }))
+    try {
+      assert.equal(readUsageSnapshot(tmpPath), null)
+    } finally {
+      fs.rmSync(tmpPath, { force: true })
+    }
+  })
+
+  it("parses a valid snapshot file", () => {
+    const tmpPath = path.join(os.tmpdir(), `prism-usage-test-valid-${Date.now()}.json`)
+    const snapshot = { captured_at: "2026-08-02T23:43:28Z", account: "work" }
+    fs.writeFileSync(tmpPath, JSON.stringify(snapshot))
+    try {
+      assert.deepEqual(readUsageSnapshot(tmpPath), snapshot)
+    } finally {
+      fs.rmSync(tmpPath, { force: true })
+    }
+  })
+})
+
+describe("buildUsageStatusSegment — end-to-end via XDG_STATE_HOME (edge-case ACs)", () => {
+  it("returns null when current.json does not exist (pre-change status line, no error)", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-usage-missing-"))
+    const original = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = tmpDir
+    try {
+      assert.doesNotThrow(() => {
+        assert.equal(buildUsageStatusSegment(Date.now()), null)
+      })
+    } finally {
+      if (original === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = original
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it("returns null when current.json is unreadable/malformed, without throwing", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-usage-malformed-"))
+    fs.mkdirSync(path.join(tmpDir, "prism", "usage"), { recursive: true })
+    fs.writeFileSync(path.join(tmpDir, "prism", "usage", "current.json"), "not json at all")
+    const original = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = tmpDir
+    try {
+      assert.doesNotThrow(() => {
+        assert.equal(buildUsageStatusSegment(Date.now()), null)
+      })
+    } finally {
+      if (original === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = original
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+
+  it("reads and formats a valid snapshot end-to-end", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-usage-valid-"))
+    fs.mkdirSync(path.join(tmpDir, "prism", "usage"), { recursive: true })
+    const now = Date.parse("2026-08-02T23:43:28Z")
+    const fiveHourReset = Math.floor((now + (1 * 3600 + 56 * 60) * 1000) / 1000)
+    const snapshot = {
+      captured_at: "2026-08-02T23:43:00Z",
+      account: "work",
+      representative_claim: "five_hour",
+      windows: {
+        five_hour: { utilization: 0.94, reset: fiveHourReset },
+      },
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, "prism", "usage", "current.json"),
+      JSON.stringify(snapshot),
+    )
+    const original = process.env.XDG_STATE_HOME
+    process.env.XDG_STATE_HOME = tmpDir
+    try {
+      const text = buildUsageStatusSegment(now)
+      assert.equal(text, "work · \x1b[1m5h\x1b[0m \x1b[31m94%\x1b[0m (1h56m)")
+    } finally {
+      if (original === undefined) delete process.env.XDG_STATE_HOME
+      else process.env.XDG_STATE_HOME = original
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("USAGE_STATUS_REFRESH_INTERVAL_MS", () => {
+  it("defaults to at most 60 seconds (issue #2540 AC)", () => {
+    assert.ok(USAGE_STATUS_REFRESH_INTERVAL_MS <= 60_000)
   })
 })
 
