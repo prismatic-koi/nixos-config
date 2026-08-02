@@ -895,11 +895,13 @@ describe("refreshTokens", () => {
 
     const before = Date.now()
     const refreshed = await refreshTokens(makeTokens())
-    const realExpiry = before + 28800 * 1000
+    const after = Date.now()
+    const realExpiryLower = before + 28800 * 1000
+    const realExpiryUpper = after + 28800 * 1000
 
-    assert.ok(refreshed.expiresAt < realExpiry, "expiresAt must precede the true expiry")
+    assert.ok(refreshed.expiresAt < realExpiryLower, "expiresAt must precede the true expiry")
     assert.ok(
-      realExpiry - refreshed.expiresAt >= 5 * 60 * 1000,
+      realExpiryUpper - refreshed.expiresAt >= 5 * 60 * 1000,
       "the margin must be at least the 5 minutes Notion recommends",
     )
   })
