@@ -1105,13 +1105,6 @@ func spawnAgentPaneEnvVars(opts SpawnOpts) map[string]string {
 	}
 }
 
-// spawnAgentOnlyLayout creates a 2-window tmux session for a review-style
-// agent: window 0 is a bare shell, window 1 runs the agent command. The
-// sidecar is started directly (it is owned by the session, not by a tmux
-// hook — review sessions do not run the tmux-session-start seeding hook).
-//
-// No nvim/term windows — review agents do not need an editor or terminal;
-// the worktree is read-only for them.
 // agentOnlyAgentEnvVars resolves the profile-level AgentEnvVars map for the
 // agent-only layout, filtered for opts.AgentRole (issue #2533).
 //
@@ -1129,6 +1122,13 @@ func agentOnlyAgentEnvVars(opts SpawnOpts) map[string]string {
 	return config.AgentEnvVarsForRole(opts.AgentRole)
 }
 
+// spawnAgentOnlyLayout creates a 2-window tmux session for a review-style
+// agent: window 0 is a bare shell, window 1 runs the agent command. The
+// sidecar is started directly (it is owned by the session, not by a tmux
+// hook — review sessions do not run the tmux-session-start seeding hook).
+//
+// No nvim/term windows — review agents do not need an editor or terminal;
+// the worktree is read-only for them.
 func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 	mode := opts.IsolationMode
 	// When IsolationMode is not set, resolve the machine default from config
