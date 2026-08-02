@@ -1065,6 +1065,7 @@ export const GIT_PUSH_REMINDER_MESSAGE =
  *   [worker] fix-login-redirect
  *   [review] PR#42 · 2 cycles
  *   [coordinator] obsidian (host)
+ *   [coordinator] main · work · 5h 94% (1h56m) · 7d 42% (4d13h)
  *
  * The isolation mode suffix is appended only when the session is running in
  * "host" isolation mode (or when isolation_mode is absent/unknown, treated
@@ -1076,6 +1077,10 @@ export const GIT_PUSH_REMINDER_MESSAGE =
  * @param isolationMode - isolation mode from hello_ack ("sandbox-exec", "bwrap", "host", or "" for absent)
  * @param prNumber      - detected PR number (null when unknown)
  * @param cycles        - current review cycle count
+ * @param usageSegment  - pre-formatted account+usage segment (see formatUsageSegment), or
+ *                        null when there is nothing to show (issue #2540). Appended verbatim
+ *                        after the existing prefix/suffix so all pre-existing formatting is
+ *                        unaffected when usageSegment is null.
  */
 export function formatPrismStatus(
   role: string,
@@ -1083,6 +1088,7 @@ export function formatPrismStatus(
   isolationMode: string,
   prNumber: string | null,
   cycles: number,
+  usageSegment: string | null = null,
 ): string {
   const roleLabel = role.length > 0 ? role : "unknown"
   const prefix = `[${roleLabel}] ${branch}`
@@ -1090,11 +1096,241 @@ export function formatPrismStatus(
   // Sandboxed modes ("sandbox-exec", "bwrap") are the default — no suffix.
   const isHostMode = isolationMode !== "sandbox-exec" && isolationMode !== "bwrap"
   const isolationSuffix = isHostMode ? " (host)" : ""
+  let base: string
   if (roleLabel === "review" && prNumber !== null) {
     const cycleLabel = cycles === 1 ? "1 cycle" : `${cycles} cycles`
-    return `${prefix}${isolationSuffix} · PR#${prNumber} · ${cycleLabel}`
+    base = `${prefix}${isolationSuffix} · PR#${prNumber} · ${cycleLabel}`
+  } else {
+    base = `${prefix}${isolationSuffix}`
   }
-  return `${prefix}${isolationSuffix}`
+  return usageSegment ? `${base} · ${usageSegment}` : base
+}
+
+// ---------------------------------------------------------------------------
+// Usage status segment (issue #2540) — reads the passive-capture snapshot
+// written by the sidecar (internal/usage/usage.go, issue #2538) and formats
+// the "<account> · 5h <pct>% (<countdown>) · 7d <pct>% (<countdown>)" segment
+// appended by formatPrismStatus above.
+//
+// This module is a READER of the snapshot format documented in issue #2537
+// and internal/usage/usage.go — it must not redefine or write it.
+// ---------------------------------------------------------------------------
+
+/** One rate-limit window from the persisted snapshot. All fields optional —
+ * an absent header is omitted from the JSON, never zero-filled (see
+ * internal/usage/usage.go). */
+export interface UsageWindow {
+  status?: string
+  utilization?: number
+  reset?: number
+  surpassed_threshold?: number
+}
+
+export interface UsageWindows {
+  five_hour?: UsageWindow
+  seven_day?: UsageWindow
+}
+
+/** The persisted per-account snapshot shape written by the sidecar
+ * (internal/usage/usage.go Snapshot). `captured_at` and `account` are the
+ * only fields not sourced from an optional header, so they are the minimum
+ * bar for treating a parsed file as a valid snapshot. */
+export interface UsageSnapshot {
+  captured_at: string
+  account: string
+  unified_status?: string
+  representative_claim?: string
+  unified_reset?: number
+  windows?: UsageWindows
+  fallback?: { status?: string; percentage?: number }
+  overage?: { status?: string; disabled_reason?: string }
+}
+
+/** A snapshot older than this is stale (issue #2537 "Agreed decisions"). The
+ * countdown itself is unaffected by staleness — it is computed from the
+ * absolute reset timestamp, which stays correct at any snapshot age. Only
+ * the percentage is marked stale. */
+export const USAGE_STALE_MS = 15 * 60 * 1000
+
+// How often the status bar re-renders the usage segment on its own timer,
+// independent of hello_ack/turn_start (issue #2540 AC: at least once every
+// 60s). PRISM_USAGE_STATUS_REFRESH_INTERVAL_MS overrides the cadence for
+// testing, mirroring TOOL_HEARTBEAT_INTERVAL_MS above.
+export const USAGE_STATUS_REFRESH_INTERVAL_MS: number = (() => {
+  const override = process.env.PRISM_USAGE_STATUS_REFRESH_INTERVAL_MS
+  if (override !== undefined) {
+    const parsed = Number(override)
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return parsed
+    }
+  }
+  return 30_000
+})()
+
+// ANSI SGR codes. sanitizeStatusText (footer.js:9-15) does not strip \x1b and
+// truncateToWidth is ANSI-width-aware, so embedding raw escapes is the
+// documented colour mechanism — there is no colour parameter on setStatus.
+const ANSI_RESET = "\x1b[0m"
+const ANSI_BOLD = "\x1b[1m"
+const ANSI_DIM = "\x1b[2m"
+const ANSI_GREEN = "\x1b[32m"
+const ANSI_YELLOW = "\x1b[33m"
+const ANSI_RED = "\x1b[31m"
+
+/**
+ * Resolve the absolute path of the active-account usage snapshot
+ * (`~/.local/state/prism/usage/current.json`), honouring $XDG_STATE_HOME
+ * first like internal/usage/usage.go's DefaultDir. Exported for unit
+ * testing.
+ */
+export function usageSnapshotPath(): string {
+  const stateHome = process.env.XDG_STATE_HOME
+  const base =
+    stateHome && stateHome.length > 0 ? stateHome : path.join(os.homedir(), ".local", "state")
+  return path.join(base, "prism", "usage", "current.json")
+}
+
+/**
+ * Read and parse the active-account usage snapshot. Returns null — never
+ * throws — when the file does not exist, cannot be read, or does not parse
+ * as a JSON object carrying at least `captured_at` and `account` strings.
+ * One `readFileSync` call per invocation, no network access (issue #2540
+ * performance AC).
+ */
+export function readUsageSnapshot(filePath: string = usageSnapshotPath()): UsageSnapshot | null {
+  try {
+    const raw = fs.readFileSync(filePath, "utf8")
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return null
+    }
+    const obj = parsed as Record<string, unknown>
+    if (typeof obj.captured_at !== "string" || typeof obj.account !== "string") {
+      return null
+    }
+    return obj as unknown as UsageSnapshot
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Format a remaining-time countdown from nowMs to resetEpochSeconds.
+ *
+ * At most two units, dropping zero-value LEADING units ("1h56m", never
+ * "0d1h56m"). Under one minute remaining renders "<1m". A reset timestamp
+ * at or before now renders "now". Exported for unit testing.
+ */
+export function formatCountdown(nowMs: number, resetEpochSeconds: number): string {
+  const resetMs = resetEpochSeconds * 1000
+  if (resetMs <= nowMs) {
+    return "now"
+  }
+  const diffSec = Math.floor((resetMs - nowMs) / 1000)
+  if (diffSec < 60) {
+    return "<1m"
+  }
+  const days = Math.floor(diffSec / 86400)
+  const hours = Math.floor((diffSec % 86400) / 3600)
+  const minutes = Math.floor((diffSec % 3600) / 60)
+  const units: Array<[number, string]> = [
+    [days, "d"],
+    [hours, "h"],
+    [minutes, "m"],
+  ]
+  let start = 0
+  while (start < units.length - 1 && units[start][0] === 0) {
+    start++
+  }
+  return units
+    .slice(start, start + 2)
+    .map(([value, suffix]) => `${value}${suffix}`)
+    .join("")
+}
+
+/**
+ * Colour a percentage per the traffic-light thresholds: green below 60,
+ * yellow 60-85 inclusive, red above 85. A stale percentage is additionally
+ * dimmed (SGR 2) so staleness is visually distinguishable without changing
+ * the width-affecting glyph set. Exported for unit testing.
+ */
+export function colorPercent(pct: number, stale: boolean): string {
+  const color = pct > 85 ? ANSI_RED : pct >= 60 ? ANSI_YELLOW : ANSI_GREEN
+  const prefix = stale ? `${ANSI_DIM}${color}` : color
+  return `${prefix}${pct}%${ANSI_RESET}`
+}
+
+/**
+ * Format one window's segment ("5h 94% (1h56m)"). Returns null when the
+ * window is absent or missing the fields required to render (utilization,
+ * reset) — this is how a snapshot missing one window renders only the
+ * available window (issue #2540 edge-case AC).
+ *
+ * The governing window (named by `representative_claim`) is visually marked
+ * with a bold label. The account name and countdown text are never
+ * coloured — only the percentage carries colour/dim SGR codes.
+ */
+export function formatUsageWindow(
+  labelText: string,
+  window: UsageWindow | undefined,
+  isGoverning: boolean,
+  nowMs: number,
+  ageStale: boolean,
+): string | null {
+  if (!window || typeof window.utilization !== "number" || typeof window.reset !== "number") {
+    return null
+  }
+  const pct = Math.round(window.utilization * 100)
+  const resetMs = window.reset * 1000
+  const pastReset = resetMs <= nowMs
+  const stale = ageStale || pastReset
+  const countdown = formatCountdown(nowMs, window.reset)
+  const label = isGoverning ? `${ANSI_BOLD}${labelText}${ANSI_RESET}` : labelText
+  return `${label} ${colorPercent(pct, stale)} (${countdown})`
+}
+
+/**
+ * Format the full "<account> · 5h ... · 7d ..." segment from a parsed
+ * snapshot, or null when there is nothing renderable (no windows present).
+ * Exported for unit testing.
+ */
+export function formatUsageSegment(snapshot: UsageSnapshot, nowMs: number): string | null {
+  const capturedAtMs = Date.parse(snapshot.captured_at)
+  const ageStale = !Number.isFinite(capturedAtMs) || nowMs - capturedAtMs > USAGE_STALE_MS
+  const fiveHour = formatUsageWindow(
+    "5h",
+    snapshot.windows?.five_hour,
+    snapshot.representative_claim === "five_hour",
+    nowMs,
+    ageStale,
+  )
+  const sevenDay = formatUsageWindow(
+    "7d",
+    snapshot.windows?.seven_day,
+    snapshot.representative_claim === "seven_day",
+    nowMs,
+    ageStale,
+  )
+  const windowParts = [fiveHour, sevenDay].filter((p): p is string => p !== null)
+  if (windowParts.length === 0) {
+    return null
+  }
+  const account = snapshot.account.length > 0 ? snapshot.account : null
+  return [account, ...windowParts].filter((p): p is string => p !== null).join(" · ")
+}
+
+/**
+ * Read the active-account snapshot and format the usage segment for the
+ * status bar in one call, or null when there is nothing to show (no
+ * snapshot file, malformed snapshot, or no renderable windows). Reads at
+ * most one file. Exported for unit testing.
+ */
+export function buildUsageStatusSegment(nowMs: number = Date.now()): string | null {
+  const snapshot = readUsageSnapshot()
+  if (!snapshot) {
+    return null
+  }
+  return formatUsageSegment(snapshot, nowMs)
 }
 
 /**
@@ -2123,6 +2359,43 @@ export default function prismExtension(pi: ExtensionAPI): void {
     toolHeartbeats.clear()
   }
 
+  // ── Usage status bar refresh (issue #2540) ──────────────────────────
+  //
+  // Recomputes the status line — role/branch/isolation prefix plus the
+  // account+usage segment — and pushes it via ctx.ui.setStatus. Shared by the
+  // hello_ack handler, turn_start, and the timer below so all three stay in
+  // sync. A no-op before the handshake completes, matching the existing
+  // turn_start gate.
+  const refreshStatusBar = (): void => {
+    if (!handshakeComplete) return
+    const usageSegment = buildUsageStatusSegment()
+    const statusText = formatPrismStatus(
+      sessionRole,
+      sessionBranch,
+      sessionIsolationMode,
+      null,
+      0,
+      usageSegment,
+    )
+    lastCtx?.ui?.setStatus("prism", statusText)
+  }
+
+  // Refresh on a timer independent of hello_ack/turn_start (issue #2540 AC:
+  // at least once every 60s) so a long-idle session's countdown and
+  // percentage still advance/refresh between turns. unref'd — a
+  // best-effort display refresh must never pin the event loop open.
+  const usageStatusTimer = setInterval(() => {
+    try {
+      refreshStatusBar()
+    } catch (err) {
+      console.error("[prism-extension] usage status refresh failed:", err)
+    }
+  }, USAGE_STATUS_REFRESH_INTERVAL_MS)
+  const maybeUnrefUsageTimer = (usageStatusTimer as { unref?: () => void }).unref
+  if (typeof maybeUnrefUsageTimer === "function") {
+    maybeUnrefUsageTimer.call(usageStatusTimer)
+  }
+
   // ── First-connect retry state ─────────────────────────────────────────
   //
   // firstConnect starts true and is set to false only after a successful
@@ -2351,8 +2624,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
         // the status bar's review_cycles field is fixed at 0 and pr_number is
         // empty — the worker reads cycle/PR context from the LOOP-LIMIT footer
         // on the review-complete prompt instead.
-        const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, null, 0)
-        lastCtx?.ui?.setStatus("prism", statusText)
+        refreshStatusBar()
         if (writer) {
           writer.write({
             type: "session_status",
@@ -2554,8 +2826,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // review_cycles=0. The LOOP-LIMIT footer on the review-complete prompt
     // is the canonical signal that the worker should escalate.
     if (handshakeComplete) {
-      const statusText = formatPrismStatus(sessionRole, sessionBranch, sessionIsolationMode, null, 0)
-      lastCtx?.ui?.setStatus("prism", statusText)
+      refreshStatusBar()
       if (writer) {
         writer.write({
           type: "session_status",
@@ -3008,6 +3279,9 @@ export default function prismExtension(pi: ExtensionAPI): void {
     // Cancel any in-flight tool heartbeats on shutdown (#1761) so the
     // timers don't fire after the writer is closed.
     cancelAllToolHeartbeats()
+    // Cancel the usage status refresh timer (issue #2540) so it does not
+    // fire after the writer is closed.
+    clearInterval(usageStatusTimer)
     if (writer) {
       writer.close()
     }
