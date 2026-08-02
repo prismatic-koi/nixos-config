@@ -41,6 +41,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/config"
 )
 
 const (
@@ -128,6 +130,15 @@ func PIInvocation(cfg Config) []string {
 	// with no role file falls back to pi's base system prompt unchanged.
 	if cfg.AgentRole != "" {
 		args = append(args, "--agent", cfg.AgentRole)
+	}
+
+	// --exclude-tools <names> for role-scoped builtin tool restriction
+	// (issue #2531). Review roles never legitimately call write/edit; see
+	// internal/config/agent_tool_roles.go for the rationale and the role
+	// list. A role with no exclusions (including "", worker, coordinator)
+	// emits no flag and keeps pi's default builtin tool set.
+	if excluded := config.ExcludedToolsForRole(cfg.AgentRole); len(excluded) > 0 {
+		args = append(args, "--exclude-tools", strings.Join(excluded, ","))
 	}
 
 	// --session <id> for conversation resume (#1838). Skipped silently when
