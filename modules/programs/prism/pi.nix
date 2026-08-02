@@ -126,11 +126,23 @@
         The default is [ ] — every role activates on demand. Notion is
         already scoped to a small set of directories by
         nx.programs.prism.pi.notion.repos, so the sessions that reach it are
-        few, and a session that never opens Notion should not connect.
+        few, and a session that never opens Notion should not open an MCP
+        connection or carry its tool schemas.
+
+        THIS DOES NOT MEAN "do nothing". An in-scope session still refreshes
+        the OAuth grant at session_start (keepTokensAlive in
+        pi/extensions/notion/extension.ts) without connecting and without
+        registering a single schema. Notion refresh tokens die after 30
+        consecutive days of inactivity, and the only recovery is the
+        interactive /login-notion browser flow, which a headless worker cannot
+        complete — so deferring the refresh along with the surface would let
+        the grant lapse silently. Do not "tidy" that call away on the strength
+        of the paragraph above: refresh is not surface. See the notion
+        UPSTREAM.md section "Token refresh is NOT deferred, and must not be".
 
         The repo-scoping gate wins over this option: a session outside
         NOTION_MCP_REPOS registers neither the family nor activate_notion,
-        whatever its role.
+        performs no token refresh, and opens no connection, whatever its role.
 
         Delivered as the colon-separated NOTION_MCP_EAGER_ROLES environment
         variable via nx.programs.prism.agent.envVars.
