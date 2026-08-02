@@ -139,6 +139,8 @@ Never use `--merge` (creates a merge commit, rejected by the ruleset) or `--reba
 
 **Build agents:** If you are working on a feature branch, your job ends at "PR opened and pushed". The coordinator on `@main` drives the merge via `prism merge <pr>` — do not attempt to merge the PR yourself, do not enqueue it in the merge queue, and do not wait for it to land before handing off. Once your PR is open and your self-review has passed, you are done.
 
+**Required status checks:** The required status check on `main` is `pr-gate`. Your branch must be up to date with `main` before it can merge. If `gh pr merge` fails because the branch is behind, use `gh pr update-branch <number>` to sync it.
+
 ### General Workflow Principles
 
 - **Atomic Changes:** Group all related modifications (e.g., creating a new module, importing it, and removing the old package entry) into a single logical change and commit them together.
