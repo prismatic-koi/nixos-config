@@ -1,6 +1,5 @@
 # `prism retro` — a retrospective surface for coordinators
 
-<!-- doclint-ignore: CgroupBudget -->
 <!--
   This document describes a surface that does not exist yet. It is the
   design that the four child issues under #2529 implement. Read it before
