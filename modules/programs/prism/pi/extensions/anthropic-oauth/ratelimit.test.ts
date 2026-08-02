@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { initLogger, closeLogger } from "./logger.ts"
 import {
   parseUnifiedRateLimitHeaders,
   buildSnapshotRequestOptions,
@@ -371,6 +372,35 @@ describe("sendSnapshot", () => {
     await sendSnapshot(`unix://${join(dir, "no-such.sock")}`, {
       unified_status: "allowed",
     })
+  })
+
+  it("survives a logger that throws from a detached handler", async () => {
+    // The catch-all in captureRateLimitSnapshot cannot reach the 'error',
+    // 'timeout', and 'end' callbacks — they run on later ticks, so a throw
+    // there is an uncaught exception that kills the whole pi process rather
+    // than one API call. Route the logger at a stream whose write() throws
+    // and drive the failure path that logs.
+    initLogger({
+      stream: {
+        write() {
+          throw new Error("logger exploded")
+        },
+      } as unknown as Parameters<typeof initLogger>[0]["stream"],
+    })
+    try {
+      // Connection refused → the 'error' handler → safeLog.
+      await sendSnapshot(`unix://${join(dir, "no-such.sock")}`, {
+        unified_status: "allowed",
+      })
+      // Non-2xx → the 'end' handler → safeLog.
+      respondWith = 500
+      await sendSnapshot(`unix://${sockPath}`, { unified_status: "allowed" })
+      // Unsupported URL → the synchronous skip path → safeLog.
+      await sendSnapshot("ftp://nope", { unified_status: "allowed" })
+    } finally {
+      closeLogger()
+      respondWith = 200
+    }
   })
 
   it("resolves rather than rejecting for an unsupported PRISM_HOST_API value", async () => {

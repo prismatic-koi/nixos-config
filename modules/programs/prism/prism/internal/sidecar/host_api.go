@@ -2460,8 +2460,8 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// pi extension, which captures the headers off a 200 response on the OAuth
 	// path and POSTs them here without awaiting the result.
 	//
-	// The sidecar is the ONLY writer. Three reasons the extension cannot write
-	// the files itself (issue #2537):
+	// The write happens here, host-side, rather than in the extension. Three
+	// reasons (issue #2537):
 	//
 	//  1. ~/.config/prism/accounts/ is deliberately not bound into agent
 	//     sandboxes (internal/container/mounts.go), so a sandboxed session
@@ -2469,9 +2469,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//  2. Resolving the account here, at write time, stays correct when the
 	//     user switches accounts mid-session — the scenario the feature exists
 	//     to serve. A name captured at spawn time would misattribute usage.
-	//  3. A single host-side writer serialises concurrent writes. N sandboxed
-	//     sessions writing the same per-account file would race and lose
-	//     updates.
+	//  3. Every sidecar runs on the host, outside the sandbox, so every write
+	//     lands in the one real state directory.
+	//
+	// Note on concurrency: prism runs ONE SIDECAR PER SESSION, so N active
+	// sessions means N writers to the same per-account file — this endpoint is
+	// not a serialisation point and must not be described as one. Safety comes
+	// from usage.Store.Write being atomic (tempfile plus rename): a reader
+	// always sees a complete object, and concurrent writers resolve to
+	// last-write-wins. That is the correct semantic here, because every writer
+	// is reporting the same server-side counter for the same account, so the
+	// freshest write is the one a reader wants.
 	//
 	// All roles (worker and coordinator) are permitted: every session runs pi
 	// on the OAuth path, so every session is a legitimate producer. The

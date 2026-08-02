@@ -33,6 +33,28 @@ import { request as httpRequest } from "node:http"
 import type { ClientRequest, RequestOptions } from "node:http"
 import { log } from "./logger.ts"
 
+/**
+ * log() that cannot throw.
+ *
+ * The catch-all in captureRateLimitSnapshot does NOT cover the callbacks
+ * below — the 'error', 'timeout', and 'end' handlers in sendSnapshot run
+ * detached on later ticks of the event loop, so a throw there is an uncaught
+ * exception that takes down the whole pi process rather than one API call.
+ *
+ * The logger is not throw-free: it does `appendFileSync` when
+ * PI_ANTHROPIC_OAUTH_DEBUG names a file, which fails on ENOSPC, EACCES, or a
+ * log directory removed mid-session. That is a narrow window — the debug env
+ * var is off by default and no config in this repo sets it — but the blast
+ * radius is the entire process, so it is worth one wrapper.
+ */
+function safeLog(event: string, data?: Record<string, unknown>): void {
+  try {
+    log(event, data)
+  } catch {
+    // A failed debug log must never disturb the request path.
+  }
+}
+
 /** The sidecar host-API path this module POSTs to. */
 export const USAGE_SNAPSHOT_PATH = "/usage/snapshot"
 
@@ -339,7 +361,9 @@ export function sendSnapshot(
     try {
       const options = buildSnapshotRequestOptions(apiURL)
       if (options === null) {
-        log("ratelimit_capture_skipped", { reason: "unsupported_host_api_url" })
+        safeLog("ratelimit_capture_skipped", {
+          reason: "unsupported_host_api_url",
+        })
         finish()
         return
       }
@@ -350,25 +374,25 @@ export function sendSnapshot(
         res.resume()
         res.on("end", () => {
           if (status < 200 || status >= 300) {
-            log("ratelimit_capture_rejected", { status })
+            safeLog("ratelimit_capture_rejected", { status })
           }
           finish()
         })
         res.on("error", () => finish())
       })
       req.on("error", (error) => {
-        log("ratelimit_capture_failed", { error: String(error) })
+        safeLog("ratelimit_capture_failed", { error: String(error) })
         finish()
       })
       req.setTimeout(timeoutMs, () => {
-        log("ratelimit_capture_failed", { error: "timeout", timeoutMs })
+        safeLog("ratelimit_capture_failed", { error: "timeout", timeoutMs })
         req.destroy()
         finish()
       })
       req.end(body)
     } catch (error) {
       // Covers a synchronous throw from httpRequest / JSON.stringify.
-      log("ratelimit_capture_failed", { error: String(error) })
+      safeLog("ratelimit_capture_failed", { error: String(error) })
       finish()
     }
   })
@@ -424,10 +448,6 @@ export function captureRateLimitSnapshot(
     void Promise.resolve(send(apiURL, snapshot)).catch(() => {})
   } catch (error) {
     // Nothing in the capture path may escape into the request path.
-    try {
-      log("ratelimit_capture_failed", { error: String(error) })
-    } catch {
-      // Even the log is best-effort.
-    }
+    safeLog("ratelimit_capture_failed", { error: String(error) })
   }
 }
