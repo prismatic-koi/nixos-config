@@ -1301,14 +1301,23 @@ func TestBuildMonitorResults_ErrorNoCrashMidRun(t *testing.T) {
 // ── buildDeliveryMessage (#1222) ─────────────────────────────────────────────
 
 // TestBuildDeliveryMessage_AllPassed verifies the all-passed header.
+//
+// The member carries a parseable PASS verdict: under #2573 the all-passed
+// header requires a COMPLETE round (every expected agent produced a verdict),
+// not just the allPassed flag the caller hands in. A finished member with no
+// assistant message produced no verdict and is covered by
+// TestBuildDeliveryMessage_AllPassedFlagWithMissingAgent below.
 func TestBuildDeliveryMessage_AllPassed(t *testing.T) {
 	sess := "nixos-config@parent~review-1-review-code"
 	groupData := map[string]db.GroupMemberResult{
-		sess: {SessionName: sess, State: "finished"},
+		sess: {SessionName: sess, State: "finished", LastMessage: `{"text":"<verdict>PASS</verdict>"}`},
 	}
 	msg := review.BuildDeliveryMessageForTest("42", 1, "results text", true, groupData, []string{sess})
 	if !findSubstring(msg, "All 5 review agents passed") {
 		t.Errorf("all-passed: header missing 'All 5 review agents passed': %q", msg)
+	}
+	if findSubstring(msg, "Agents with no verdict") {
+		t.Errorf("all-passed: complete round must not grow a no-verdict section: %q", msg)
 	}
 }
 

@@ -110,13 +110,20 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 		groupData = map[string]db.GroupMemberResult{}
 	}
 
-	results := buildMonitorResults(agents, agentSessions, groupData)
+	// members comes from GroupMembersForGroup, which — unlike GroupResults —
+	// includes rows whose ended_at is set. endedRows carries exactly those
+	// rows so a member reaped mid-review is reported with its recorded cause
+	// rather than as an unexplained absence (#2573).
+	endedRows := endedRowsFrom(members)
+
+	results := buildMonitorResults(agents, agentSessions, groupData, endedRows)
+	status := ClassifyRound(agents, agentSessions, groupData, endedRows)
 	output, allPassed := FormatResults(results, info.PRNumber, info.Round, 0)
-	deliveryText := buildDeliveryMessage(info.PRNumber, info.Round, output, allPassed, groupData, agentSessions)
+	deliveryText := buildDeliveryMessage(info.PRNumber, info.Round, output, allPassed, status)
 
 	// LOOP-LIMIT footer (#1512) — mirror the MonitorFunc gating exactly so a
 	// recovery-path delivery is indistinguishable from a happy-path delivery.
-	if !allPassed && currentCycleProducedVerdicts(groupData) {
+	if !allPassed && status.CountsAsCycle() {
 		prior, ccErr := CompletedReviewCyclesForParent(d, info.ParentSession, groupID)
 		if ccErr != nil {
 			proglog.Warnf("[prism review recovery] warning: cycle count failed: %v — footer suppressed\n", ccErr)

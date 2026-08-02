@@ -313,6 +313,11 @@ Rounds that **do not count** toward the 3-cycle limit:
   (no frames received — e.g. the container never bound its port) and/or
   stalled mid-run (the agent ran, then stopped producing frames — #2239).
   Header mentions "infrastructure failure".
+- **Incomplete rounds** (#2573) — ANY agent produced no verdict, even when
+  the other four did. Header says **"Round incomplete: N of M review
+  agents produced a verdict"** and the report carries an **"Agents with
+  no verdict"** section. Re-run the named agents; the round does not
+  count.
 - **Ran-but-no-parseable-verdict rounds** (#1995) — one or more agents
   reached `finished` state without emitting a parseable
   `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag (e.g.
@@ -429,6 +434,40 @@ Signs of a mid-run stall:
   frame(s) received, last at <t>)`
 - The delivery message header says "stalled mid-run" and mentions
   "infrastructure failure"
+
+### Handling an incomplete round (an agent produced no verdict)
+
+A round is **incomplete** when any of the five agents produced no verdict —
+whatever the cause: it never started, it stalled, it crashed, or its session
+was closed mid-round. The remaining verdicts are NOT the result of the
+round: the missing agent's dimension was never examined (#2573).
+
+The most dangerous shape is four PASS plus one blank, because it reads as
+"four passed". It is not. Read a missing verdict as unreviewed, never as a
+pass.
+
+Signs of an incomplete round:
+- The header says **"Round incomplete: N of M review agents produced a
+  verdict"**
+- The report carries an **"Agents with no verdict"** section that names each
+  affected agent, its class, and the reason recorded for it
+- The section ends with the targeted re-run command, e.g.
+  `prism review 2568 --only review-qa`
+
+What to do:
+
+1. Fix any blocking issues the agents that DID run reported.
+2. Push, then run the targeted re-run command from the report.
+3. The round does **not** count toward the 3-cycle limit — the report says
+   so explicitly.
+
+One class needs a different response: **"session ended mid-review"** means
+the agent's `agent_status` row was closed while the round was running (the
+tmux session ended, the harness deleted the session, or a cleanup path ran).
+The report names the state the row was left in and the time it closed. If
+the same agent is reaped in two consecutive rounds, escalate to the
+coordinator rather than re-running a third time — a repeatable reap is a
+platform fault, not a flake.
 
 ### Handling ran-but-no-parseable-verdict in review-complete prompts
 

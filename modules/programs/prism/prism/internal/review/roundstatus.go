@@ -1,0 +1,382 @@
+package review
+
+// roundstatus.go — the single classifier for "did every agent in this review
+// round produce a verdict, and if not, why?" (#2573).
+//
+// Background. Before this file existed, three separate call sites answered
+// overlapping parts of that question with their own ad-hoc scans of the
+// db.GroupResults map:
+//
+//   - buildMonitorResults      → per-agent AgentResult.Output strings
+//   - buildDeliveryMessage     → the header branch (no-start / stall / …)
+//   - currentCycleProducedVerdicts + CompletedReviewCyclesForParent
+//     → whether the round counts against the 3-cycle LOOP-LIMIT
+//
+// All three read `groupData` only, so an agent whose row was NOT in that map
+// was invisible to two of them. db.GroupResults deliberately drops any
+// agent_status row whose ended_at is set (the #1495 cleanup escape hatch),
+// so a review agent whose session was closed mid-round simply vanished: the
+// round reported "4 verdicts" and counted as a full cycle, and the lost
+// dimension read as a pass. That is the #2573 silent failure.
+//
+// ClassifyRound is now the single source of truth. It walks the EXPECTED
+// agent list (not the map that happened to come back), so an absent member is
+// a first-class outcome with a class and a reason, exactly like a no-start or
+// a mid-run stall.
+//
+// Cycle-counting contract. A round counts against the 3-cycle limit only when
+// every expected agent produced a parseable verdict — RoundStatus.CountsAsCycle
+// is Complete(). This extends the existing "rounds that do not count"
+// machinery (#1512 / #1995 / #2239) rather than adding a parallel mechanism;
+// the same predicate now backs both the in-flight monitor gate and the
+// historical count in CompletedReviewCyclesForParent.
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/prismatic-koi/prism/internal/db"
+)
+
+// NoVerdictClass names the reason an expected review agent produced no
+// verdict. The string value is the short human label used in reports.
+type NoVerdictClass string
+
+const (
+	// NoVerdictNoStart — the sidecar wrote a startup_error event: the agent
+	// never ran (#1222).
+	NoVerdictNoStart NoVerdictClass = "failed to start"
+	// NoVerdictStalled — the inactivity watchdog fired after one or more
+	// inbound frames: the agent ran, then went silent (#2239).
+	NoVerdictStalled NoVerdictClass = "stalled mid-run"
+	// NoVerdictCrashed — the member reached state "error" with neither a
+	// startup_error nor a stall_error event: a mid-run crash.
+	NoVerdictCrashed NoVerdictClass = "ended in error state"
+	// NoVerdictSessionEnded — the member's agent_status row exists but its
+	// ended_at is set, so db.GroupResults excluded it. The session was
+	// reaped mid-round; no verdict was recorded (#2573).
+	NoVerdictSessionEnded NoVerdictClass = "session ended mid-review"
+	// NoVerdictSessionUnknown — no agent_status row for the member could be
+	// read at all: the row was deleted, or it was never registered against
+	// the group.
+	NoVerdictSessionUnknown NoVerdictClass = "session not found in group results"
+	// NoVerdictNoOutput — the agent reached "finished" with no recorded
+	// msg_assistant event (#1995).
+	NoVerdictNoOutput NoVerdictClass = "finished with no output"
+	// NoVerdictUnparseable — the agent reached "finished" and produced text
+	// with no parseable <verdict> tag (#1995).
+	NoVerdictUnparseable NoVerdictClass = "finished with no parseable verdict"
+	// NoVerdictUnexpectedState — the group reported complete while this
+	// member was still in a non-terminal state (monitor safety timeout).
+	NoVerdictUnexpectedState NoVerdictClass = "ended in an unexpected state"
+)
+
+// Infrastructure reports whether the class is an infrastructure fault rather
+// than a defect in the agent's own output.
+//
+// The distinction drives report wording, not cycle counting: EVERY class here
+// leaves a review dimension unexamined, so no class consumes a review cycle.
+// The two non-infrastructure classes (#1995) are the ones where the agent
+// itself ran to completion and simply failed to emit a usable verdict.
+func (c NoVerdictClass) Infrastructure() bool {
+	switch c {
+	case NoVerdictNoStart, NoVerdictStalled, NoVerdictCrashed,
+		NoVerdictSessionEnded, NoVerdictSessionUnknown, NoVerdictUnexpectedState:
+		return true
+	default:
+		return false
+	}
+}
+
+// countLabel is the class label used in the report's count summary. It adds
+// the disambiguating detail the operator needs to pick a response.
+func (c NoVerdictClass) countLabel() string {
+	switch c {
+	case NoVerdictNoStart:
+		return "failed to start (no frames received)"
+	default:
+		return string(c)
+	}
+}
+
+// MissingVerdict records one expected agent that produced no verdict.
+type MissingVerdict struct {
+	// Agent is the role name, e.g. "review-qa".
+	Agent string
+	// Session is the agent's prism session name.
+	Session string
+	// Class is the reason class.
+	Class NoVerdictClass
+	// Reason is the detail recorded for this agent: the startup_error text,
+	// the stall reason, or the state/ended_at of a reaped row.
+	Reason string
+}
+
+// RoundStatus is the classification of one review round.
+type RoundStatus struct {
+	// Expected is the number of agents the round spawned.
+	Expected int
+	// Verdicts is the number of agents that produced a parseable verdict.
+	Verdicts int
+	// Missing lists every expected agent that produced no verdict, in the
+	// order the agents were spawned.
+	Missing []MissingVerdict
+}
+
+// Complete reports whether every expected agent produced a parseable verdict.
+// A round with zero expected agents is never complete.
+func (rs RoundStatus) Complete() bool {
+	return rs.Expected > 0 && len(rs.Missing) == 0
+}
+
+// CountsAsCycle reports whether this round consumes one of the worker's three
+// review cycles. Only a complete round does (#2573 AC-3 / AC-6).
+func (rs RoundStatus) CountsAsCycle() bool {
+	return rs.Complete()
+}
+
+// MissingOfClass returns the missing entries of one class, in spawn order.
+func (rs RoundStatus) MissingOfClass(c NoVerdictClass) []MissingVerdict {
+	var out []MissingVerdict
+	for _, m := range rs.Missing {
+		if m.Class == c {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// HasInfrastructureFailure reports whether any missing agent failed for an
+// infrastructure reason.
+func (rs RoundStatus) HasInfrastructureFailure() bool {
+	for _, m := range rs.Missing {
+		if m.Class.Infrastructure() {
+			return true
+		}
+	}
+	return false
+}
+
+// MissingAgentNames returns the role names of every agent with no verdict, in
+// spawn order and de-duplicated.
+func (rs RoundStatus) MissingAgentNames() []string {
+	seen := make(map[string]struct{}, len(rs.Missing))
+	out := make([]string, 0, len(rs.Missing))
+	for _, m := range rs.Missing {
+		if m.Agent == "" {
+			continue
+		}
+		if _, dup := seen[m.Agent]; dup {
+			continue
+		}
+		seen[m.Agent] = struct{}{}
+		out = append(out, m.Agent)
+	}
+	return out
+}
+
+// TargetedRerunCommand returns the `prism review … --only …` command that
+// re-runs exactly the agents that produced no verdict (#2573 AC-5). It
+// returns "" when no agent is missing or no agent name could be recovered.
+func (rs RoundStatus) TargetedRerunCommand(prNumber string) string {
+	names := rs.MissingAgentNames()
+	if len(names) == 0 {
+		return ""
+	}
+	pr := prNumber
+	if pr == "" {
+		pr = "<pr>"
+	}
+	return fmt.Sprintf("prism review %s --only %s", pr, strings.Join(names, ","))
+}
+
+// ClassSummary renders the per-class counts, e.g.
+// "1 failed to start (no frames received), 2 stalled mid-run". Classes appear
+// in a stable order so the text does not churn between rounds.
+func (rs RoundStatus) ClassSummary() string {
+	order := []NoVerdictClass{
+		NoVerdictNoStart,
+		NoVerdictStalled,
+		NoVerdictCrashed,
+		NoVerdictSessionEnded,
+		NoVerdictSessionUnknown,
+		NoVerdictUnexpectedState,
+		NoVerdictNoOutput,
+		NoVerdictUnparseable,
+	}
+	var parts []string
+	for _, c := range order {
+		if n := len(rs.MissingOfClass(c)); n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, c.countLabel()))
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ClassifyRound classifies a completed review round.
+//
+// agents and agentSessions are parallel slices describing the agents the round
+// spawned — the EXPECTED set. groupData is the db.GroupResults map, which
+// omits any member whose agent_status row has been closed (ended_at set) or
+// deleted. endedRows supplies those omitted rows, keyed by session name, so
+// the classifier can report why the member vanished; pass nil when the caller
+// has no DB handle (the member is then classified as
+// NoVerdictSessionUnknown).
+func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) RoundStatus {
+	rs := RoundStatus{Expected: len(agents)}
+	for i, ag := range agents {
+		session := ""
+		if i < len(agentSessions) {
+			session = agentSessions[i]
+		}
+		name := ag.Name
+		if name == "" {
+			name = agentNameFromSession(session)
+		}
+
+		mr, present := groupData[session]
+		if session == "" || !present {
+			class, reason := classifyAbsentMember(session, endedRows)
+			rs.Missing = append(rs.Missing, MissingVerdict{
+				Agent:   name,
+				Session: session,
+				Class:   class,
+				Reason:  reason,
+			})
+			continue
+		}
+
+		class, reason, ok := classifyMember(mr)
+		if ok {
+			rs.Verdicts++
+			continue
+		}
+		rs.Missing = append(rs.Missing, MissingVerdict{
+			Agent:   name,
+			Session: session,
+			Class:   class,
+			Reason:  reason,
+		})
+	}
+	return rs
+}
+
+// classifyMember classifies one member that IS present in the GroupResults
+// map. It returns (class, reason, producedVerdict). When producedVerdict is
+// true the class and reason are meaningless and must be ignored.
+//
+// The branch order mirrors buildMonitorResults so the per-agent AgentResult
+// and the round-level classification cannot disagree:
+//
+//  1. startup_error present → no-start, whatever the state says (#1222).
+//  2. state "error" + stall_error → mid-run stall (#2239). The state check
+//     keeps a stale stall_error on a member that later resumed and finished
+//     (#1495) from relabelling a real verdict.
+//  3. state "error" otherwise → mid-run crash.
+//  4. state "finished" → verdict, no output, or unparseable output (#1995).
+//  5. anything else → non-terminal at group completion.
+func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, bool) {
+	if mr.StartupError != "" {
+		return NoVerdictNoStart, mr.StartupError, false
+	}
+	if mr.State == "error" {
+		if mr.StallError != "" {
+			return NoVerdictStalled, mr.StallError, false
+		}
+		return NoVerdictCrashed, "agent did not complete cleanly (state: error)", false
+	}
+	if mr.State == "finished" {
+		if mr.LastMessage == "" {
+			return NoVerdictNoOutput, "no msg_assistant event was recorded for the session", false
+		}
+		text := ExtractAssistantText(mr.LastMessage)
+		if _, kind := AssessPassed(text); kind == VerdictNone {
+			return NoVerdictUnparseable, "the last assistant message carried no <verdict>PASS</verdict> / <verdict>FAIL</verdict> tag", false
+		}
+		return "", "", true
+	}
+	return NoVerdictUnexpectedState, fmt.Sprintf("the group completed while this member was still in state %q", mr.State), false
+}
+
+// classifyAbsentMember explains why an expected member is absent from the
+// GroupResults map (#2573).
+//
+// db.GroupResults reads `agent_status WHERE group_id = ? AND ended_at IS
+// NULL`, so there are exactly two ways to be absent:
+//
+//   - the row exists but its ended_at is set — the session was REAPED
+//     mid-round by one of the SetEnded paths (the tmux-session-end event
+//     hook, the sidecar's harness session.deleted handler, the readiness-
+//     timeout cleanup, `prism cleanup`, `prism reset`). endedRows carries
+//     that row, so the report can name the state and the closing time.
+//   - no row can be read at all — the row was deleted (DB prune), or it was
+//     never registered against the group.
+//
+// The group itself never "loses" a member: group_id linkage is intact in both
+// cases, which is why db.GroupCompleted still reports the round complete.
+func classifyAbsentMember(session string, endedRows map[string]db.Status) (NoVerdictClass, string) {
+	if session == "" {
+		return NoVerdictSessionUnknown, "no session name was recorded for this agent slot"
+	}
+	row, ok := endedRows[session]
+	if !ok {
+		return NoVerdictSessionUnknown,
+			"no agent_status row could be read for the session (row deleted, or never registered against the group)"
+	}
+	when := "an unrecorded time"
+	if row.EndedAt != nil {
+		when = row.EndedAt.UTC().Format(time.RFC3339)
+	}
+	return NoVerdictSessionEnded, fmt.Sprintf(
+		"the agent_status row was closed at %s in state %q, so it is excluded from the group results — %s",
+		when, row.State, endedRowHint(row.State))
+}
+
+// endedRowHint maps the state a reaped row was left in to the lifecycle path
+// that most likely closed it. It is a diagnostic hint for the operator, not a
+// guarantee: every path listed writes ended_at, and only the state string
+// distinguishes them.
+func endedRowHint(state string) string {
+	switch state {
+	case "deleted":
+		return "the harness reported session.deleted (the sidecar closes the row on that event)"
+	case "interrupted":
+		return "the session was interrupted and then closed, e.g. by `prism cleanup`"
+	case "error":
+		return "the session was force-terminated, or its readiness gate failed"
+	case "finished":
+		return "the agent finished but its row was closed before results were aggregated, e.g. by the tmux-session-end hook"
+	default:
+		return fmt.Sprintf("the row was closed while the agent was still in state %q, e.g. by the tmux-session-end hook or `prism reset`", state)
+	}
+}
+
+// endedGroupMembers returns the group's agent_status rows whose ended_at is
+// set, keyed by session name. These are exactly the rows db.GroupResults
+// drops. Errors are non-fatal: the caller degrades to the
+// NoVerdictSessionUnknown class rather than losing the delivery.
+func endedGroupMembers(d *db.DB, groupID string) map[string]db.Status {
+	if d == nil || groupID == "" {
+		return nil
+	}
+	members, err := d.GroupMembersForGroup(groupID)
+	if err != nil {
+		return nil
+	}
+	return endedRowsFrom(members)
+}
+
+// endedRowsFrom filters a member slice down to the rows whose ended_at is set.
+func endedRowsFrom(members []db.Status) map[string]db.Status {
+	out := make(map[string]db.Status, len(members))
+	for _, m := range members {
+		if m.EndedAt != nil {
+			out[m.SessionName] = m
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
