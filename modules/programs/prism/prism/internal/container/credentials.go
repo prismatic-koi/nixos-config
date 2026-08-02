@@ -24,6 +24,31 @@ const gitBareRootTimeout = 5 * time.Second
 // cache never needs to be invalidated.
 var githubAccountCache sync.Map // map[string]string
 
+// Names of the host environment variables that carry a credential.
+//
+// These are declared once because two consumers must agree on them: the
+// injection path below, and the test-only argv redaction that keeps their
+// VALUES out of a test failure message (redactedArgs in
+// argv_redact_test.go, issue #2581). A credential added here is redacted
+// there without a second edit.
+const (
+	// githubTokenEnvKey is the inherited GitHub token — the final env-var
+	// fallback in ResolveGitHubToken, and the name credentialEnvVars injects.
+	githubTokenEnvKey = "GITHUB_TOKEN"
+
+	// prismGitHubTokenEnvPrefix prefixes the per-(account, role) tokens,
+	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>.
+	prismGitHubTokenEnvPrefix = "PRISM_GITHUB_TOKEN_"
+)
+
+// credentialForwardEnvKeys are the external-tool credentials credentialEnvVars
+// forwards verbatim from the host environment to every agent role. See
+// credentialEnvVars for the keys that are intentionally NOT forwarded.
+var credentialForwardEnvKeys = []string{
+	"ANTHROPIC_API_KEY",
+	"OPENROUTER_API_KEY",
+}
+
 // githubAccountFromBareRoot returns the GitHub account (organisation or user)
 // for the repo by reading the origin remote URL from the bare git dir.
 // Returns "" when the bare root is empty, git is unavailable, or the remote
@@ -208,13 +233,13 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 
 	// 2. Legacy per-role env var, guarded against $(-literals.
 	if key != "" {
-		if tok := os.Getenv("PRISM_GITHUB_TOKEN_" + key); tok != "" && !IsShellExpansionLiteral(tok) {
+		if tok := os.Getenv(prismGitHubTokenEnvPrefix + key); tok != "" && !IsShellExpansionLiteral(tok) {
 			return tok, nil
 		}
 	}
 
 	// 3. Inherited GITHUB_TOKEN, same guard.
-	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" && !IsShellExpansionLiteral(tok) {
+	if tok := os.Getenv(githubTokenEnvKey); tok != "" && !IsShellExpansionLiteral(tok) {
 		return tok, nil
 	}
 
@@ -276,11 +301,7 @@ func (m *Manager) credentialEnvVars() ([]string, error) {
 	//   GOOGLE_API_KEY    — speculative; same as GEMINI_API_KEY.
 	//   GITHUB_COPILOT_TOKEN — speculative; Copilot provider uses its own auth flow.
 	//   DEEPSEEK_API_KEY  — speculative; not populated and no consumer in-repo.
-	forwardKeys := []string{
-		"ANTHROPIC_API_KEY",
-		"OPENROUTER_API_KEY",
-	}
-	for _, k := range forwardKeys {
+	for _, k := range credentialForwardEnvKeys {
 		if v := os.Getenv(k); v != "" && !IsShellExpansionLiteral(v) {
 			vars = append(vars, k+"="+v)
 		}
@@ -295,7 +316,7 @@ func (m *Manager) credentialEnvVars() ([]string, error) {
 		return nil, err
 	}
 	if tok != "" {
-		vars = append(vars, "GITHUB_TOKEN="+tok)
+		vars = append(vars, githubTokenEnvKey+"="+tok)
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and
@@ -355,25 +376,25 @@ func SanitizeGitHubTokenEnv(paths map[string]string, account, role string) {
 			log.Printf("container: SanitizeGitHubTokenEnv: %s: %v", key, err)
 			continue
 		}
-		if err := os.Setenv("PRISM_GITHUB_TOKEN_"+key, tok); err != nil {
-			log.Printf("container: SanitizeGitHubTokenEnv: setenv PRISM_GITHUB_TOKEN_%s: %v", key, err)
+		if err := os.Setenv(prismGitHubTokenEnvPrefix+key, tok); err != nil {
+			log.Printf("container: SanitizeGitHubTokenEnv: setenv %s%s: %v", prismGitHubTokenEnvPrefix, key, err)
 		}
 	}
 	if key := GitHubTokenKey(account, role); key != "" {
 		if path, ok := paths[key]; ok && path != "" {
 			if tok, err := readGitHubTokenFile(path); err == nil {
-				if setErr := os.Setenv("GITHUB_TOKEN", tok); setErr != nil {
+				if setErr := os.Setenv(githubTokenEnvKey, tok); setErr != nil {
 					log.Printf("container: SanitizeGitHubTokenEnv: setenv GITHUB_TOKEN: %v", setErr)
 				}
 			}
 			// Errors reading the account/role-specific file are already logged
 			// by the loop above; do not double-log here.
 		}
-	} else if inherited := os.Getenv("GITHUB_TOKEN"); IsShellExpansionLiteral(inherited) {
+	} else if inherited := os.Getenv(githubTokenEnvKey); IsShellExpansionLiteral(inherited) {
 		// No (account, role) provided but the inherited GITHUB_TOKEN is a
 		// broken shell literal — unset it so downstream gh calls fail
 		// cleanly (with an "unauthenticated" error naming gh) rather than
 		// sending a literal `$(cat …)` string to GitHub.
-		_ = os.Unsetenv("GITHUB_TOKEN")
+		_ = os.Unsetenv(githubTokenEnvKey)
 	}
 }

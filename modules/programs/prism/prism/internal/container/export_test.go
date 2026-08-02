@@ -32,3 +32,11 @@ func ClearGithubAccountCacheForTest() {
 
 // GitBareRootTimeoutForTest exposes gitBareRootTimeout for assertions.
 const GitBareRootTimeoutForTest = gitBareRootTimeout
+
+// RedactedArgsForTest is an exported wrapper around redactedArgs, for the
+// external test files (package container_test). Every dump of a whole argv or
+// env slice must go through it: a built argv carries live host credentials
+// (issue #2581). See argv_redact_test.go for the full rationale.
+func RedactedArgsForTest(args []string) []string {
+	return redactedArgs(args)
+}
