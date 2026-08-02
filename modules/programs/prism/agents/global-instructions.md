@@ -11,57 +11,16 @@ Ben Sherman is the user. When an agent is operating in their environment:
 
 ## Skills
 
-When working in environments with domain-specific skills available (via the `skill` tool), err on the side of loading them. If a conversation touches a domain that has a skill, load it – even if you think you know the conventions from other context sources.
-Skills exist to prevent context drift and ensure consistency, not just for when you're uncertain. Loading a skill is cheap; missing domain-specific conventions or creating inconsistency is expensive.
+When a domain-specific skill is available (via the `skill` tool), err on the side of loading it — even when you think you know the conventions. Loading a skill is cheap; missing its conventions or creating inconsistency is expensive.
 
 ## Web Fetching
 
-Reach for bash-based HTTP utilities first — `curl`, `wget`, `gh api`, and the like. When those fail in ways a plain HTTP client cannot recover from (403 Forbidden, Cloudflare or similar anti-bot challenges, JS-rendered SPAs that ship no content in the initial HTML), fall back to `playwright-cli` via the Bash tool to fetch the content with a real browser instead.
-There is a skill for playwright-cli, activate it if you need it.
-
-After using playwright-cli, delete the .playwright-cli/ directory as soon as the results are no longer needed – don't wait until the end of the session.
-
-## Infrastructure-as-Code string values: ASCII only
-
-When authoring string *values* in Infrastructure-as-Code that will be sent to a cloud provider API — Terraform/OpenTofu `.tf` files, CloudFormation YAML/JSON, Pulumi, CDK — stick to ASCII. Use hyphen-minus (`-`), straight quotes (`"` and `'`), and three literal dots (`...`) instead of smart punctuation. Cloud provider APIs frequently enforce regex validation on these fields and reject Unicode punctuation. AWS IAM description fields are the loudest offender: a single em-dash in a role description silently breaks every subsequent `tofu apply` in the affected repo until the character is removed. Em-dash (U+2014), en-dash (U+2013), curly single/double quotes (U+2018/U+2019/U+201C/U+201D), and ellipsis (U+2026) are all known offenders — treat the whole class as unsafe.
-
-The rule targets IaC string *values* only. It does NOT apply to:
-
-- Comments in `.tf` / `.tofu` / YAML files (UTF-8 is fine there).
-- Markdown, PR descriptions, commit messages, ticket bodies — stay expressive.
-- Nix files, application source code, documentation.
-- Te reo Māori with macrons anywhere except IaC-string-value context — the "Te Reo Māori Integration" section below remains authoritative for prose.
-
-If in doubt about whether a field is user-facing prose or an API payload, assume API payload and stick to ASCII.
-
-## Pull Request Reviews
-
-`prism review <pr>` is **async** — it spawns 5 review agents in a group and
-returns immediately with a "review in progress" acknowledgement.
-Results are delivered to you via a follow-up `prism prompt` when all agents complete.
-**Do NOT block waiting for review results.** You are free to do other work
-(answer clarifications, etc.), but do NOT commit further changes, merge, or
-announce completion until the review-complete prompt arrives.
-The review-complete prompt includes a one-line summary header followed by a
-`## Per-agent findings` section with structured fields: verdict, extracted
-`<summary>` content, and extracted `<blocking_issues>` content. No file is
-written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
-the full agent reasoning if needed.
-On FAIL: fix all blocking issues, commit, push, and re-run. Non-blocking
-observations on a failed round can be actioned alongside the fix.
-On PASS: non-blocking observations can be actioned if they align with repo
-conventions or add defence-in-depth at low cost. You are NOT required to
-action them — shipping the PR is not gated on non-blocking observations.
-If no review-complete prompt arrives within 30 minutes, investigate with
-`prism checkin <session>~review-<N>-review-goal`.
-After 3 full review cycles without convergence, stop and escalate to the
-coordinator via `prism escalate` — do not run a 4th cycle.
+Prefer bash HTTP tools — `curl`, `wget`, `gh api`. If they fail on 403s, anti-bot challenges, or JS-rendered pages, load the `playwright-cli` skill and fetch with a real browser.
 
 ## Register: the three-class model
 
 Agent output falls into three classes. The class sets the strictness of the
-language rules that apply. The governing axis is decision-relevant load, not
-"chat versus artifact".
+language rules that apply. The governing axis is decision-relevant load.
 
 | Class | Applies to | Rules |
 |---|---|---|
@@ -73,33 +32,12 @@ Class B test: if the user can make a wrong decision because they misread the
 sentence, the sentence is class B.
 
 Default to class B when the class is not clear. Class C is the narrow
-exception, not the fallback. Ben's stated preference is for agent
-conversation to carry more STE, not less.
+exception, not the fallback. When one response spans two or more classes, the
+strictest applicable class governs the substantive content.
 
-Mixing rule: when one response spans two or more classes, the strictest
-applicable class governs the substantive content.
-
-For class A work, load the `simple-english` skill. The skill holds the full
-rule catalogue, the vocabulary discipline, and worked examples.
-
-### The condensed rule set
-
-Apply every rule below in classes A and B. In class C, the sentence-length
-limits and the modal rules relax. The filler ban and the hedge ban never
-relax.
-
-- Keep sentences short. 20 words for an instruction, 25 words for an
-  explanation.
-- Write instructions in the imperative: "Run the migration."
-- Put the condition before the command: "If the build fails, read the log."
-- Use simple tenses: simple present, simple past, simple future. Avoid
-  constructions like "has been configured" or "is to be installed".
-- Use active voice.
-- Give one item one name. Do not call the same thing "config" in one place
-  and "settings" in another.
-- Do not use contractions.
-- Delete filler: "it is worth noting that", "simply", "just", "in order to".
-  State the fact instead.
+For class A work, load the `simple-english` skill. The skill holds the
+condensed rule set, the full rule catalogue, the vocabulary discipline, and
+worked examples.
 
 ## Search Scope
 
@@ -107,7 +45,7 @@ When asked to find something without an explicit scope, ALWAYS search within the
 
 ## Local Environment Instructions
 
-Avoid excessive use of `cd` commands at the start of your commands, if you are already in the right working directory, there is no need to `cd` into it before your command.
+Avoid unnecessary `cd` at the start of commands; if you are already in the right directory, do not `cd` into it first.
 
 Use podman, not docker. Before use on Darwin, always run `podman machine start`.
 

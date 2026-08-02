@@ -217,6 +217,15 @@ prism review <pr-number>
 **Do NOT commit, merge, or announce completion** until the review-complete
 prompt arrives. When it does, handle PASS/FAIL per the worker agent instructions.
 
+The review-complete prompt includes a one-line summary header followed by a
+`## Per-agent findings` section with structured fields: verdict, extracted
+`<summary>` content, and extracted `<blocking_issues>` content. No file is
+written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
+the full agent reasoning if needed. All 5 agents must pass. On FAIL, fix every
+blocking issue, commit, push, and re-run the full set — a fix in one area can
+create issues in another. After 3 full review cycles without convergence, stop
+and escalate to the coordinator via `prism escalate`; do not run a 4th cycle.
+
 For a synchronous flow (one-shot script, no other work to do meanwhile) pass
 `--wait`:
 
