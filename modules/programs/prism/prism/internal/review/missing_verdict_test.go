@@ -484,7 +484,13 @@ func TestBuildDeliveryMessage_CompleteFailRoundUnchanged(t *testing.T) {
 
 // TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth verifies the mixed
 // shape keeps both signals: fix what the agents that ran found, and re-run the
-// dimension that was never examined (AC-1, AC-4, AC-5).
+// dimension that was never examined (AC-1, AC-4).
+//
+// It also pins the targeted-rerun gate. A FAIL verdict means the worker must
+// change code before re-running, which makes every verdict in this round stale
+// — so the report must advertise the FULL re-run, never `--only`. Advertising
+// `--only` here would reopen the hole #2530 / #2557 closed: four PASS verdicts
+// recorded against the pre-fix commit.
 func TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth(t *testing.T) {
 	sessions := fiveAgentSessions(1)
 	groupData := map[string]db.GroupMemberResult{
@@ -499,13 +505,88 @@ func TestBuildDeliveryMessage_MixedInfraAndCodeFailNamesBoth(t *testing.T) {
 
 	for _, want := range []string{
 		"Round incomplete: 4 of 5",
-		"Fix any blocking issues from the agents that ran",
-		"prism review 2568 --only review-qa",
+		"Fix the blocking issues from the agents that ran",
 		"session ended mid-review",
+		"targeted `--only` re-run is NOT valid here",
+		"prism review 2568",
 	} {
 		if !findSubstring(msg, want) {
 			t.Errorf("mixed infra + code FAIL: message missing %q:\n%s", want, msg)
 		}
+	}
+	if findSubstring(msg, "--only review-qa") {
+		t.Errorf("mixed infra + code FAIL: must NOT advertise a targeted re-run "+
+			"— the fix invalidates the verdicts this round produced (#2530 / #2557):\n%s", msg)
+	}
+}
+
+// TestBuildDeliveryMessage_NoFailAdvertisesTargetedRerun is the other arm of
+// the gate: with no FAIL verdict there is nothing to fix, so the targeted
+// command is valid — but only if the worker pushes nothing else. The report
+// must carry that caveat and the full-set fallback (AC-5).
+func TestBuildDeliveryMessage_NoFailAdvertisesTargetedRerun(t *testing.T) {
+	sessions := fiveAgentSessions(1)
+	groupData := map[string]db.GroupMemberResult{}
+	for _, s := range sessions {
+		if s == sessions[3] {
+			continue
+		}
+		groupData[s] = passedMember(s)
+	}
+	endedRows := map[string]db.Status{sessions[3]: reapedRow(sessions[3], "deleted")}
+
+	msg := review.BuildDeliveryMessageWithEndedForTest("2568", 1, "results text", false, groupData, sessions, endedRows)
+
+	for _, want := range []string{
+		"prism review 2568 --only review-qa",
+		"provided you push nothing else first",
+		"other than formatter output, comments, or documentation",
+		"re-run the full set instead",
+	} {
+		if !findSubstring(msg, want) {
+			t.Errorf("no-FAIL round: message missing %q:\n%s", want, msg)
+		}
+	}
+	if findSubstring(msg, "NOT valid here") {
+		t.Errorf("no-FAIL round: the targeted command is valid, so the report must not refuse it:\n%s", msg)
+	}
+}
+
+// TestRoundStatus_FailVerdictGatesTargetedRerun pins the gate at the source.
+func TestRoundStatus_FailVerdictGatesTargetedRerun(t *testing.T) {
+	sessions := fiveAgentSessions(1)
+	base := map[string]db.GroupMemberResult{
+		sessions[0]: passedMember(sessions[0]),
+		sessions[1]: passedMember(sessions[1]),
+		sessions[2]: passedMember(sessions[2]),
+		sessions[4]: passedMember(sessions[4]),
+	}
+	endedRows := map[string]db.Status{sessions[3]: reapedRow(sessions[3], "deleted")}
+	agents := review.AgentsFromSessionsForTest(sessions)
+
+	st := review.ClassifyRound(agents, sessions, base, endedRows)
+	if st.Fails != 0 {
+		t.Errorf("Fails = %d, want 0", st.Fails)
+	}
+	if !st.TargetedRerunAllowed() {
+		t.Error("TargetedRerunAllowed() = false with no FAIL verdict; want true")
+	}
+
+	withFail := map[string]db.GroupMemberResult{}
+	for k, v := range base {
+		withFail[k] = v
+	}
+	withFail[sessions[1]] = failedMember(sessions[1])
+
+	st = review.ClassifyRound(agents, sessions, withFail, endedRows)
+	if st.Fails != 1 {
+		t.Errorf("Fails = %d, want 1", st.Fails)
+	}
+	if st.TargetedRerunAllowed() {
+		t.Error("TargetedRerunAllowed() = true with a FAIL verdict; want false (#2530 / #2557)")
+	}
+	if got, want := st.FullRerunCommand("2568"), "prism review 2568"; got != want {
+		t.Errorf("FullRerunCommand = %q, want %q", got, want)
 	}
 }
 
@@ -551,6 +632,74 @@ func TestBuildMonitorResults_ReapedSessionNamesReason(t *testing.T) {
 		if !r.Passed || r.IsError {
 			t.Errorf("sibling %d (%s): Passed=%v IsError=%v, want true/false", i, r.Agent.Name, r.Passed, r.IsError)
 		}
+	}
+}
+
+// TestFormatResultsForRound_RetryHintMatchesRerunAdvice pins the summary
+// footer against the re-run advice below it. The two used to be able to
+// contradict each other: the footer always offered `--only`, even in a round
+// where a FAIL made a targeted retry invalid.
+func TestFormatResultsForRound_RetryHintMatchesRerunAdvice(t *testing.T) {
+	sessions := fiveAgentSessions(1)
+	agents := review.AgentsFromSessionsForTest(sessions)
+	endedRows := map[string]db.Status{sessions[3]: reapedRow(sessions[3], "deleted")}
+
+	build := func(withFail bool) (string, review.RoundStatus) {
+		groupData := map[string]db.GroupMemberResult{}
+		for _, s := range sessions {
+			if s == sessions[3] {
+				continue
+			}
+			groupData[s] = passedMember(s)
+		}
+		if withFail {
+			groupData[sessions[1]] = failedMember(sessions[1])
+		}
+		st := review.ClassifyRound(agents, sessions, groupData, endedRows)
+		results := review.BuildMonitorResultsWithEndedForTest(agents, sessions, groupData, endedRows)
+		out, _ := review.FormatResultsForRound(results, "2568", 1, 0, st)
+		return out, st
+	}
+
+	// Incomplete, no FAIL: the targeted retry is valid and still offered.
+	out, _ := build(false)
+	if !findSubstring(out, "Retry: prism review 2568 --only review-qa") {
+		t.Errorf("incomplete, no FAIL: want the targeted retry hint:\n%s", out)
+	}
+
+	// Incomplete with a FAIL: the targeted retry is invalid, so the footer
+	// must offer the full set instead.
+	out, _ = build(true)
+	if findSubstring(out, "--only") {
+		t.Errorf("incomplete + FAIL: footer must not offer a targeted retry (#2530 / #2557):\n%s", out)
+	}
+	if !findSubstring(out, "Retry: prism review 2568") {
+		t.Errorf("incomplete + FAIL: want the full-set retry hint:\n%s", out)
+	}
+}
+
+// TestFormatResultsForRound_CompleteRoundFooterUnchanged is the AC-6 guard for
+// the footer: a complete FAIL round must render byte-for-byte as FormatResults
+// renders it today.
+func TestFormatResultsForRound_CompleteRoundFooterUnchanged(t *testing.T) {
+	sessions := fiveAgentSessions(1)
+	agents := review.AgentsFromSessionsForTest(sessions)
+	groupData := map[string]db.GroupMemberResult{}
+	for _, s := range sessions {
+		groupData[s] = passedMember(s)
+	}
+	groupData[sessions[1]] = failedMember(sessions[1])
+
+	st := review.ClassifyRound(agents, sessions, groupData, nil)
+	results := review.BuildMonitorResultsForTest(agents, sessions, groupData)
+
+	withStatus, passedA := review.FormatResultsForRound(results, "2568", 1, 0, st)
+	legacy, passedB := review.FormatResults(results, "2568", 1, 0)
+	if withStatus != legacy || passedA != passedB {
+		t.Errorf("complete round: classification-aware output diverged from the legacy output\n--- with status ---\n%s\n--- legacy ---\n%s", withStatus, legacy)
+	}
+	if !findSubstring(withStatus, "Retry: prism review 2568 --only review-code") {
+		t.Errorf("complete FAIL round: want the unchanged targeted retry hint:\n%s", withStatus)
 	}
 }
 

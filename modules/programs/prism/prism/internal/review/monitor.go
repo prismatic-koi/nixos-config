@@ -169,8 +169,9 @@ func MonitorFunc(opts MonitorOpts) error {
 	// both the report wording and the cycle-counter gate below (#2573).
 	status := ClassifyRound(opts.Agents, opts.AgentSessions, groupData, endedRows)
 
-	// Format the delivery message.
-	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, 0)
+	// Format the delivery message. FormatResultsForRound keeps the summary
+	// footer's retry hint consistent with the re-run advice below (#2573).
+	output, allPassed := FormatResultsForRound(results, opts.PRNumber, opts.Round, 0, status)
 	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, status)
 
 	// Issue #2110: persist the latest-round review verdict and counts on the
@@ -582,10 +583,18 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 			status.Verdicts, status.Expected))
 		sb.WriteString(fmt.Sprintf("Agents with no verdict: %s — infrastructure failure. ",
 			status.ClassSummary()))
-		if status.Verdicts > 0 {
-			sb.WriteString("Those dimensions were never examined; a missing verdict is NOT a pass and is NOT a code-quality verdict. ")
-			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` to cover the agents that produced no verdict. ")
-		} else {
+		switch {
+		case status.HasFailVerdict():
+			// A FAIL means the worker must change code, and that change makes
+			// every verdict in this round stale — so the whole set has to run
+			// again. See the targeted-rerun condition (#2530 / #2557).
+			sb.WriteString("The missing dimensions were never examined; a missing verdict is NOT a pass and is NOT a code-quality verdict. ")
+			sb.WriteString(fmt.Sprintf("Fix the blocking issues from the agents that ran, then re-run the FULL set (`%s`) — your fix invalidates the verdicts this round produced. ",
+				status.FullRerunCommand(prNumber)))
+		case status.Verdicts > 0:
+			sb.WriteString("The agents that ran all passed, but the round is not a pass: the missing dimensions were never examined. ")
+			sb.WriteString("Re-run the agents named below. ")
+		default:
 			sb.WriteString("This is NOT a code-quality verdict — no agent produced a verdict. ")
 			sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL. ")
 		}
@@ -625,11 +634,47 @@ func buildNoVerdictSection(status RoundStatus, prNumber string) string {
 			sb.WriteString(fmt.Sprintf("- **%s** — %s: %s\n", name, m.Class, m.Reason))
 		}
 	}
-	if cmd := status.TargetedRerunCommand(prNumber); cmd != "" {
-		sb.WriteString("\nRe-run only the agents above:\n\n")
-		sb.WriteString("    " + cmd + "\n")
-	}
+	sb.WriteString(buildRerunAdvice(status, prNumber))
 	sb.WriteString("\nThis round does NOT count toward the 3-cycle limit.\n")
+	return sb.String()
+}
+
+// buildRerunAdvice renders the re-run instruction for an incomplete round.
+//
+// The targeted-rerun condition (#2530, widened by #2557) is prose-only: a
+// worker may re-run a subset of the agents only when the inter-cycle diff is
+// exactly formatter output, comments, or documentation. The report cannot see
+// that diff, so it must not print a bare `--only` command as if the condition
+// always held — a worker that fixed a FAIL and then re-ran one agent would
+// carry four verdicts produced against the pre-fix commit.
+//
+// Two cases:
+//
+//   - An agent that ran returned FAIL — a code change is coming, so the
+//     targeted command is invalid. Print the full-set command only.
+//   - No agent returned FAIL — print the targeted command, with the
+//     push-nothing-else caveat and the full-set fallback.
+func buildRerunAdvice(status RoundStatus, prNumber string) string {
+	targeted := status.TargetedRerunCommand(prNumber)
+	if targeted == "" {
+		return ""
+	}
+	full := status.FullRerunCommand(prNumber)
+
+	var sb strings.Builder
+	if !status.TargetedRerunAllowed() {
+		sb.WriteString("\nAn agent that ran returned FAIL, so a targeted `--only` re-run is NOT valid here: ")
+		sb.WriteString("the verdicts above were produced against the pre-fix commit. ")
+		sb.WriteString("Fix the blocking issues, push, then re-run the full set:\n\n")
+		sb.WriteString("    " + full + "\n")
+		return sb.String()
+	}
+
+	sb.WriteString("\nRe-run only the agents above, provided you push nothing else first:\n\n")
+	sb.WriteString("    " + targeted + "\n")
+	sb.WriteString("\nIf you push any change other than formatter output, comments, or documentation ")
+	sb.WriteString("before re-running, the verdicts above are stale — re-run the full set instead:\n\n")
+	sb.WriteString("    " + full + "\n")
 	return sb.String()
 }
 

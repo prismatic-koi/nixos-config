@@ -219,7 +219,7 @@ these rows); only the cycle-counter predicate is missing the check.
 The minimal-risk fix is a one-line tightening of
 `currentCycleProducedVerdicts`: require the `LastMessage` to contain a
 parseable verdict tag, not just be non-empty. The same tightening applies
-to `CompletedReviewCyclesForParent`'s `producedVerdict` predicate.
+to `CompletedReviewCyclesForParent`'s per-group predicate.
 
 ```go
 // Sketch — not applied in this PR; tracked in a follow-up issue.

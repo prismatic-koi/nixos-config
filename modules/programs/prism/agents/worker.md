@@ -265,8 +265,8 @@ one blank is an incomplete round, not four passes: the missing agent's
 dimension was never examined (#2573).
 
 The report carries an **"Agents with no verdict"** section that names each
-affected agent, its class, the reason recorded for it, and the targeted
-re-run command. The classes are:
+affected agent, its class, the reason recorded for it, and the re-run command
+to use. The classes are:
 
 - **failed to start (no frames received)** — the agent never ran
   (spawn/handshake/auth failure). Worth an immediate re-run.
@@ -288,9 +288,16 @@ re-run command. The classes are:
 
 If the prompt is mixed — some agents returned FAIL verdicts **and** some
 produced no verdict — fix the blocking issues from the agents that ran, then
-run the targeted re-run command from the report to cover the rest. Count
-re-run cycles from the first round that had a full set of agent results; an
-incomplete round does not count toward your 3-cycle limit.
+re-run the **full** set. Your fix changes the code the other agents reviewed,
+so their verdicts are stale and the targeted-rerun condition below is not met.
+The report applies this rule for you: it prints the full-set command and
+refuses the targeted form whenever an agent that ran returned FAIL, and prints
+the targeted command only when no agent did. A targeted command in the report
+still assumes you push nothing else — the report cannot see your inter-cycle
+diff, so that half of the condition stays yours to check.
+
+Count re-run cycles from the first round that had a full set of agent results;
+an incomplete round does not count toward your 3-cycle limit.
 
 **On PASS:**
 

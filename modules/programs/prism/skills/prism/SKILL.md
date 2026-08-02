@@ -451,13 +451,23 @@ Signs of an incomplete round:
   verdict"**
 - The report carries an **"Agents with no verdict"** section that names each
   affected agent, its class, and the reason recorded for it
-- The section ends with the targeted re-run command, e.g.
-  `prism review 2568 --only review-qa`
+- The section ends with the re-run command to use — see the two cases below
 
 What to do:
 
 1. Fix any blocking issues the agents that DID run reported.
-2. Push, then run the targeted re-run command from the report.
+2. Re-run with the command the report prints. Which command that is depends
+   on the round, and the report applies the rule for you:
+   - **An agent that ran returned FAIL** — the report prints the FULL re-run
+     (`prism review <pr>`) and refuses the targeted form. Your fix changes
+     the code the other agents reviewed, so their verdicts are stale.
+   - **No agent returned FAIL** — the report prints the targeted command
+     (`prism review <pr> --only <agents>`) with the caveat that it holds only
+     while you push nothing else. Push any change beyond formatter output,
+     comments, or documentation and you must re-run the full set instead.
+     This is the targeted-rerun condition (#2530 / #2557) stated in the
+     worker agent instructions; the report cannot evaluate it on its own,
+     because it cannot see your inter-cycle diff.
 3. The round does **not** count toward the 3-cycle limit — the report says
    so explicitly.
 

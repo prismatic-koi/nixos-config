@@ -118,7 +118,7 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 
 	results := buildMonitorResults(agents, agentSessions, groupData, endedRows)
 	status := ClassifyRound(agents, agentSessions, groupData, endedRows)
-	output, allPassed := FormatResults(results, info.PRNumber, info.Round, 0)
+	output, allPassed := FormatResultsForRound(results, info.PRNumber, info.Round, 0, status)
 	deliveryText := buildDeliveryMessage(info.PRNumber, info.Round, output, allPassed, status)
 
 	// LOOP-LIMIT footer (#1512) — mirror the MonitorFunc gating exactly so a

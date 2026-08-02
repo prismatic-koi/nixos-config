@@ -119,9 +119,19 @@ type RoundStatus struct {
 	Expected int
 	// Verdicts is the number of agents that produced a parseable verdict.
 	Verdicts int
+	// Fails is the number of agents that produced a parseable FAIL verdict.
+	// It gates the re-run advice: a FAIL means the worker must change code,
+	// which makes every other verdict in the round stale (see
+	// TargetedRerunAllowed).
+	Fails int
 	// Missing lists every expected agent that produced no verdict, in the
 	// order the agents were spawned.
 	Missing []MissingVerdict
+}
+
+// HasFailVerdict reports whether any agent that ran returned a FAIL verdict.
+func (rs RoundStatus) HasFailVerdict() bool {
+	return rs.Fails > 0
 }
 
 // Complete reports whether every expected agent produced a parseable verdict.
@@ -179,16 +189,51 @@ func (rs RoundStatus) MissingAgentNames() []string {
 // TargetedRerunCommand returns the `prism review … --only …` command that
 // re-runs exactly the agents that produced no verdict (#2573 AC-5). It
 // returns "" when no agent is missing or no agent name could be recovered.
+//
+// Callers must not print this command unconditionally — see TargetedRerunAllowed for
+// the gate.
 func (rs RoundStatus) TargetedRerunCommand(prNumber string) string {
 	names := rs.MissingAgentNames()
 	if len(names) == 0 {
 		return ""
 	}
-	pr := prNumber
-	if pr == "" {
-		pr = "<pr>"
+	return fmt.Sprintf("prism review %s --only %s", prLabelForCommand(prNumber), strings.Join(names, ","))
+}
+
+// FullRerunCommand returns the `prism review …` command that re-runs the whole
+// agent set.
+func (rs RoundStatus) FullRerunCommand(prNumber string) string {
+	return fmt.Sprintf("prism review %s", prLabelForCommand(prNumber))
+}
+
+// prLabelForCommand renders the PR argument of a re-run command, degrading to
+// a placeholder when the PR number is not known (the recovery path can
+// reconstruct a group with no PR number).
+func prLabelForCommand(prNumber string) string {
+	if prNumber == "" {
+		return "<pr>"
 	}
-	return fmt.Sprintf("prism review %s --only %s", pr, strings.Join(names, ","))
+	return prNumber
+}
+
+// TargetedRerunAllowed reports whether the report may advertise a targeted `--only`
+// re-run of the agents that produced no verdict.
+//
+// The targeted-rerun condition (#2530, widened by #2557, stated in
+// `modules/programs/prism/agents/worker.md`) is prose-only — no code enforces
+// it. A worker may re-run a subset only when the inter-cycle diff is exactly
+// formatter output, comments, or documentation, and touches no file cited in a
+// FAIL finding. Any other change makes the verdicts from the agents that ran
+// stale, because they were produced against the pre-fix commit.
+//
+// The report cannot see the inter-cycle diff, so it applies the one part of
+// the condition it CAN evaluate: when an agent that ran returned FAIL, the
+// worker has to change code before re-running, so a targeted re-run is not
+// valid and the report must print the full-set command instead. When no agent
+// returned FAIL, the report prints the targeted command with the
+// push-nothing-else caveat attached.
+func (rs RoundStatus) TargetedRerunAllowed() bool {
+	return !rs.HasFailVerdict()
 }
 
 // ClassSummary renders the per-class counts, e.g.
@@ -247,9 +292,12 @@ func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]
 			continue
 		}
 
-		class, reason, ok := classifyMember(mr)
-		if ok {
+		class, reason, kind := classifyMember(mr)
+		if kind != VerdictNone {
 			rs.Verdicts++
+			if kind == VerdictFail {
+				rs.Fails++
+			}
 			continue
 		}
 		rs.Missing = append(rs.Missing, MissingVerdict{
@@ -263,8 +311,9 @@ func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]
 }
 
 // classifyMember classifies one member that IS present in the GroupResults
-// map. It returns (class, reason, producedVerdict). When producedVerdict is
-// true the class and reason are meaningless and must be ignored.
+// map. It returns (class, reason, kind). A kind of VerdictNone means the
+// member produced no verdict and the class and reason apply; VerdictPass or
+// VerdictFail means it did, and the class and reason must be ignored.
 //
 // The branch order mirrors buildMonitorResults so the per-agent AgentResult
 // and the round-level classification cannot disagree:
@@ -276,27 +325,28 @@ func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]
 //  3. state "error" otherwise → mid-run crash.
 //  4. state "finished" → verdict, no output, or unparseable output (#1995).
 //  5. anything else → non-terminal at group completion.
-func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, bool) {
+func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKind) {
 	if mr.StartupError != "" {
-		return NoVerdictNoStart, mr.StartupError, false
+		return NoVerdictNoStart, mr.StartupError, VerdictNone
 	}
 	if mr.State == "error" {
 		if mr.StallError != "" {
-			return NoVerdictStalled, mr.StallError, false
+			return NoVerdictStalled, mr.StallError, VerdictNone
 		}
-		return NoVerdictCrashed, "agent did not complete cleanly (state: error)", false
+		return NoVerdictCrashed, "agent did not complete cleanly (state: error)", VerdictNone
 	}
 	if mr.State == "finished" {
 		if mr.LastMessage == "" {
-			return NoVerdictNoOutput, "no msg_assistant event was recorded for the session", false
+			return NoVerdictNoOutput, "no msg_assistant event was recorded for the session", VerdictNone
 		}
 		text := ExtractAssistantText(mr.LastMessage)
-		if _, kind := AssessPassed(text); kind == VerdictNone {
-			return NoVerdictUnparseable, "the last assistant message carried no <verdict>PASS</verdict> / <verdict>FAIL</verdict> tag", false
+		_, kind := AssessPassed(text)
+		if kind == VerdictNone {
+			return NoVerdictUnparseable, "the last assistant message carried no <verdict>PASS</verdict> / <verdict>FAIL</verdict> tag", VerdictNone
 		}
-		return "", "", true
+		return "", "", kind
 	}
-	return NoVerdictUnexpectedState, fmt.Sprintf("the group completed while this member was still in state %q", mr.State), false
+	return NoVerdictUnexpectedState, fmt.Sprintf("the group completed while this member was still in state %q", mr.State), VerdictNone
 }
 
 // classifyAbsentMember explains why an expected member is absent from the
