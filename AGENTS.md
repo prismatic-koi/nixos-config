@@ -85,7 +85,7 @@ Specifically, do NOT override any of `XDG_DATA_HOME`, `NIX_STORE_DIR`, `NIX_DATA
 
 Sanctioned WIP-set-aside patterns — both are worktree-local:
 
-- **Temp commit** (preferred — commit history is disposable on squash-merged branches):
+- **Temp commit** (preferred):
 
   ```bash
   git add -A && git commit -m wip   # set WIP aside
@@ -93,13 +93,31 @@ Sanctioned WIP-set-aside patterns — both are worktree-local:
   git reset --soft HEAD~1           # restore: changes return, staged
   ```
 
+  Preferred because `git reset --soft HEAD~1` is all-or-nothing and will fail loudly if anything goes wrong. Commit history is disposable on squash-merged branches.
+
 - **Patch file**:
 
   ```bash
   git diff > /tmp/wip.patch && git restore .   # set WIP aside
   # ... do the other thing ...
-  git apply /tmp/wip.patch                     # restore
+  git apply --check /tmp/wip.patch              # verify before restore
+  git apply /tmp/wip.patch                      # restore
   ```
+
+  If using the patch file pattern, **always** run `git apply --check` first, or test the exit status of `git apply`. Never suppress its stderr. `git apply` fails silently — it will not restore the tree if the patch does not apply cleanly. The prism-testing skill carries the full incident rationale (#2202 class incident). General rule: never run any tree-restoring command with stderr suppressed.
+
+### Tool-surface changes — concept grep required
+
+When making a change to a tool surface — adding, removing, renaming, or gating a tool family — grep for the CONCEPT, not the tool name. Concept grep finds the prose that governs agent behaviour; name grep finds only call sites.
+
+Example of the difference: `coordinator.md` says "Use the Atlassian MCP for Jira tickets", naming no tool at all. A name grep for `atlassian` or `transitionJiraIssueByName` would miss it. A concept grep for the tool family (case-insensitive, across `agents/`, `skills/`, and `*.nix`) finds it immediately.
+
+Scope:
+- All files in `modules/programs/prism/agents/` and `modules/programs/prism/skills/`
+- All `*.nix` files that mention the tool or its family
+- Concept terms: tool names, family names, and the primary problem the tool solves
+
+Why: The prose tells agents what they can do. Stale prose — especially false statements like "this tool is available" when it is not — directly governs behaviour.
 
 ### Podman support for workers
 
