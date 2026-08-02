@@ -99,6 +99,51 @@ func TestAccountUsage_StaleSnapshotMarked(t *testing.T) {
 	}
 }
 
+// TestAccountUsage_PercentageRoundsNotTruncates guards against a
+// floating-point truncation bug: 0.29*100 evaluates to
+// 28.999999999999996 in float64, so int(x*100) yields 28, not 29.
+// Percentages must round, not truncate.
+func TestAccountUsage_PercentageRoundsNotTruncates(t *testing.T) {
+	dir := withUsageFixture(t)
+	writeUsageSnapshot(t, dir, usage.Snapshot{
+		CapturedAt: usage.FormatCapturedAt(time.Now()),
+		Account:    "work",
+		Windows: &usage.Windows{
+			FiveHour: &usage.Window{Utilization: f64u(0.29), Reset: i64u(time.Now().Add(time.Hour).Unix())},
+		},
+	})
+
+	out, err := runSubcommand(t, runAccountUsage, nil)
+	if err != nil {
+		t.Fatalf("account usage: %v", err)
+	}
+	if !strings.Contains(out, "29%") {
+		t.Errorf("expected 0.29 to render as 29%%, got:\n%s", out)
+	}
+	if strings.Contains(out, "28%") {
+		t.Errorf("0.29 must not truncate to 28%%, got:\n%s", out)
+	}
+
+	c := &cobra.Command{}
+	c.Flags().Bool("json", true, "")
+	if err := c.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json: %v", err)
+	}
+	captured := captureStdout(t, func() {
+		if err := runAccountUsage(c, nil); err != nil {
+			t.Fatalf("account usage --json: %v", err)
+		}
+	})
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(captured)), &rows); err != nil {
+		t.Fatalf("parse json: %v (raw: %q)", err, captured)
+	}
+	fiveHour, _ := rows[0]["five_hour"].(map[string]any)
+	if fiveHour["percent_used"] != float64(29) {
+		t.Errorf("percent_used = %v, want 29", fiveHour["percent_used"])
+	}
+}
+
 func TestAccountUsage_MissingWindowPrintsNoData(t *testing.T) {
 	dir := withUsageFixture(t)
 	writeUsageSnapshot(t, dir, usage.Snapshot{

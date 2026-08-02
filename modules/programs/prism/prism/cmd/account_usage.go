@@ -16,6 +16,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -136,7 +137,7 @@ func windowToJSON(w *usage.Window, now time.Time) *windowJSON {
 		reset = time.Unix(*w.Reset, 0).UTC().Format(time.RFC3339)
 	}
 	return &windowJSON{
-		PercentUsed: int(*w.Utilization * 100),
+		PercentUsed: int(math.Round(*w.Utilization * 100)),
 		Reset:       reset,
 	}
 }
@@ -187,7 +188,7 @@ func formatWindowText(w *usage.Window, now time.Time) string {
 	if w == nil || w.Utilization == nil {
 		return "no data"
 	}
-	pct := int(*w.Utilization * 100)
+	pct := int(math.Round(*w.Utilization * 100))
 	if w.Reset == nil {
 		return fmt.Sprintf("%d%%", pct)
 	}
