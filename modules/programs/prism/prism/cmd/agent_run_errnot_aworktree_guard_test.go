@@ -30,7 +30,6 @@ package cmd
 // (issue #1869) and agent_env_roles_guard_test.go (issue #2533).
 
 import (
-	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -228,11 +227,3 @@ func isEmptyString(expr ast.Expr) bool {
 	return false
 }
 
-// fmtNodeSource returns a formatted representation of an AST node for error messages.
-// Used only for debugging; the test assertions themselves use the AST structure.
-func fmtNodeSource(node ast.Node, fset *token.FileSet) string {
-	if node == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("%v", fset.Position(node.Pos()))
-}
