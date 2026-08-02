@@ -53,6 +53,27 @@ test("parseDotenv: throws on line without =", () => {
   assert.throws(() => parseDotenv("A=1\nnothing\n"), GrafanaConfigError)
 })
 
+// SECURITY (issue #2532): since the bundle is loaded from inside the
+// `activate_grafana` tool call, this message reaches the model's transcript.
+// A malformed bundle can put credential text on the offending line, so the
+// message must carry the line number and nothing else.
+test("parseDotenv: the malformed-line error does not echo the line", () => {
+  const secret = "glsa_TOTALLY_SECRET_TOKEN_0123456789"
+  assert.throws(
+    () => parseDotenv(`GRAFANA_URL=https://x\n${secret}\n`),
+    (err: unknown) => {
+      assert.ok(err instanceof GrafanaConfigError)
+      assert.equal(
+        err.message.includes(secret),
+        false,
+        `error message leaked bundle content: ${err.message}`,
+      )
+      assert.match(err.message, /line 2: expected KEY=VALUE/)
+      return true
+    },
+  )
+})
+
 test("parseDotenv: throws on empty key", () => {
   assert.throws(() => parseDotenv("=value\n"), GrafanaConfigError)
 })

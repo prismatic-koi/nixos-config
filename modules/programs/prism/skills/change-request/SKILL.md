@@ -237,6 +237,10 @@ The ticket description itself takes Markdown via `contentFormat: markdown`
 on the createJiraIssue / updateJiraIssue tools. Only the custom fields
 need ADF.
 
+If `createJiraIssue` is not in your tool list, the Atlassian family is
+deferred behind `activate_atlassian` (issue #2532) — call it once, with no
+arguments, before drafting.
+
 ## Worked example
 
 CH-5 is the canonical example as of this skill's first draft. Read it

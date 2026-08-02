@@ -459,13 +459,38 @@ describe("captureRateLimitSnapshot", () => {
     assert.equal(sender.calls[0].snapshot.windows?.five_hour?.utilization, 0.94)
   })
 
-  it("makes no call for a non-200 status", () => {
+  it("POSTs the parsed fields for a non-200 status carrying usable headers (#2571)", () => {
+    // A quota-exhaustion 429 (or any other non-200) carries the same
+    // unified rate-limit header set as a 200 — that is how a client learns
+    // when the limit resets — so it must be captured just the same. Header
+    // presence, not status, is what discriminates this from a WAF
+    // rejection, which is covered by the next test.
     for (const status of [201, 204, 301, 400, 401, 429, 500, 503]) {
       const sender = recordingSender()
       captureRateLimitSnapshot(status, makeHeaders(FULL_HEADERS), {
         apiURL: "unix:///tmp/fake.sock",
         send: sender.send,
       })
+      assert.equal(sender.calls.length, 1, `status=${status}`)
+      assert.equal(
+        sender.calls[0].snapshot.unified_status,
+        "allowed_warning",
+        `status=${status}`,
+      )
+    }
+  })
+
+  it("makes no call for a non-200 status with no usable rate-limit headers", () => {
+    // The non-vacuous counterpart to the test above: a WAF rejection or
+    // other error with no unified headers must still be dropped, on every
+    // status code, not just 200.
+    for (const status of [201, 204, 301, 400, 401, 429, 500, 503]) {
+      const sender = recordingSender()
+      captureRateLimitSnapshot(
+        status,
+        makeHeaders({ "content-type": "application/json" }),
+        { apiURL: "unix:///tmp/fake.sock", send: sender.send },
+      )
       assert.equal(sender.calls.length, 0, `status=${status}`)
     }
   })
@@ -646,6 +671,29 @@ describe("captureRateLimitSnapshot", () => {
     let bodyTouched = false
     const response = {
       status: 200,
+      headers: makeHeaders(FULL_HEADERS),
+      get body() {
+        bodyTouched = true
+        throw new Error("the capture hook must not consume the response body")
+      },
+      text() {
+        bodyTouched = true
+        throw new Error("the capture hook must not consume the response body")
+      },
+    }
+    const sender = recordingSender()
+    captureRateLimitSnapshot(response.status, response.headers, {
+      apiURL: "unix:///tmp/fake.sock",
+      send: sender.send,
+    })
+    assert.equal(bodyTouched, false)
+    assert.equal(sender.calls.length, 1)
+  })
+
+  it("never reads the response body on a non-200 status either (#2571)", () => {
+    let bodyTouched = false
+    const response = {
+      status: 429,
       headers: makeHeaders(FULL_HEADERS),
       get body() {
         bodyTouched = true

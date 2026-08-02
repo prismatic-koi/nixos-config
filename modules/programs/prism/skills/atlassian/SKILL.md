@@ -26,6 +26,23 @@ Load this skill when:
 
 Atlassian operations are performed via the **pi atlassian-mcp extension** — a TypeScript extension bundled with pi that connects to `mcp.atlassian.com` using OAuth PKCE. Use the MCP tools listed below; there is no separate command-line surface.
 
+### First: activate the tool family
+
+Most sessions start with only ONE Atlassian tool registered: `activate_atlassian`. The other 31 sit behind it, because their schemas would otherwise occupy the cached prompt prefix of every session whether or not it ever touched Jira (issue #2532).
+
+**If you can see `getJiraIssue` and its siblings in your tool list, skip this — the family is already active.** Otherwise call `activate_atlassian` once, with no arguments, before your first Atlassian operation:
+
+```
+activate_atlassian()
+# -> "Atlassian MCP activated: 32 tools are now available."
+```
+
+The tools are callable from your next tool call onward. Calling it a second time is harmless — it reports that the family is already active and registers nothing.
+
+Which sessions skip the call is set by `nx.programs.prism.pi.atlassian.eagerRoles`, which defaults to `[ "coordinator" ]`. So a **coordinator** session normally has the full surface already; a **worker**, **investigator**, or **review** agent normally has to activate first.
+
+If activation fails — no tokens, or `mcp.atlassian.com` unreachable — you get an error result naming the cause, and the session keeps running. Fix the cause and call it again; activation stays retryable.
+
 ### Authentication
 
 Authentication is via OAuth PKCE (not API tokens). Tokens are stored in
@@ -71,9 +88,12 @@ getCloudId()  # if you have a site link or only an issue key
 ```
 Then pass the UUID explicitly on each tool call.
 
-### Available tools (31 tools via OAuth)
+### Available tools (31 tools via OAuth, after `activate_atlassian`)
 
-The extension exposes the full Jira and Confluence CRUD surface:
+The extension exposes the full Jira and Confluence CRUD surface. Every tool
+below requires `activate_atlassian` to have been called first, unless your role
+is in `pi.atlassian.eagerRoles` (default: `coordinator`) — see "First: activate
+the tool family" above.
 
 **Identity / discovery**
 - `atlassianUserInfo` — who am I
@@ -233,8 +253,12 @@ compact enough to fit in context.
 
 - **"Not logged in" / auth error**: run `/login-atlassian` in your pi session
   to complete the OAuth flow.
-- **Token expired**: the extension refreshes tokens automatically on each
-  `session_start`. If refresh fails, `/login-atlassian` again.
+- **A Jira/Confluence tool is not in your tool list**: the family is not active
+  yet. Call `activate_atlassian` (no arguments), then retry.
+- **Token expired**: the extension resolves and refreshes tokens when the
+  family is activated — not at `session_start`. If refresh fails,
+  `activate_atlassian` returns an error naming it; run `/login-atlassian`, then
+  call `activate_atlassian` again.
 - **Permission error on a specific tool**: some Atlassian tools require admin
   scopes. Check whether your account has the necessary Jira/Confluence
   permissions.

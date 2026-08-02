@@ -18,6 +18,9 @@
 //     gated, so no call site can bypass the allowlist" fails.
 //   * Delete the guard in `onSessionStart` → "opens no connection at
 //     session_start outside the allowlist" fails.
+//   * Move the connect/register work back into `onSessionStart` → "session_start
+//     registers only activate_notion" and "session_start opens no connection"
+//     fail (issue #2532).
 
 import { describe, it, beforeEach, afterEach } from "node:test"
 import assert from "node:assert/strict"
@@ -25,8 +28,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { invalidateCache, type NotionTokens } from "./auth.ts"
+import { invalidateCache, NotionAuthTerminalError, type NotionTokens } from "./auth.ts"
 import {
+  ACTIVATE_NOTION_DESCRIPTION,
   createNotionExtension,
   OUT_OF_SCOPE_MESSAGE,
   type ExtensionDeps,
@@ -100,6 +104,17 @@ function makeHost(): Recorder {
       },
     },
   }
+}
+
+/**
+ * Drive the deferred registration the way the model does: call the
+ * `activate_notion` gateway tool. Fails loudly when it was never registered,
+ * because that is a different bug from a failed activation.
+ */
+async function activateVia(rec: Recorder) {
+  const gateway = rec.registered.find((t) => t.name === "activate_notion")
+  assert.ok(gateway, "activate_notion must be registered before it can be called")
+  return gateway.execute("activate-call", {}, undefined)
 }
 
 interface CtxRecorder {
@@ -221,11 +236,51 @@ describe("login command respects the repo-scoping gate", () => {
 
     assert.equal(rec.connectCalls, 1)
     assert.deepEqual(host.registered.map((t) => t.name), [
+      "activate_notion",
       "notion-search",
       "notion-update-page",
       "notion-move-pages",
     ])
-    assert.ok(ctx.notices.some((n) => /registered 3 tools/.test(n.msg)))
+    assert.ok(ctx.notices.some((n) => /3 tools are now available/.test(n.msg)))
+  })
+
+  it("a repeat login re-registers nothing", async () => {
+    // The login path now goes through the same gateway as the activate tool,
+    // so it cannot trip pi's duplicate-tool-name guard. Historically this was
+    // the bug: /login-notion after a successful startup re-registered the
+    // whole surface.
+    const rec = makeDeps({ isEnabledForCwd: () => true })
+    const ext = createNotionExtension(rec.deps)
+    const host = makeHost()
+
+    // First login: no tokens on disk, so the OAuth flow runs and the gateway
+    // registers the family behind it.
+    await ext.onLoginCommand(host.host, makeCtx().ctx)
+    const afterFirst = host.registered.length
+    assert.equal(afterFirst, 4, "activate_notion plus the 3 sample tools")
+
+    // Second login: the credential is valid now, so it short-circuits.
+    const ctx = makeCtx()
+    await ext.onLoginCommand(host.host, ctx.ctx)
+
+    assert.equal(host.registered.length, afterFirst)
+    assert.equal(rec.connectCalls, 1)
+    assert.ok(ctx.notices.some((n) => /already authenticated/.test(n.msg)))
+  })
+
+  it("a gateway call after login reports already-active, not a duplicate", async () => {
+    const rec = makeDeps({ isEnabledForCwd: () => true })
+    const ext = createNotionExtension(rec.deps)
+    const host = makeHost()
+
+    await ext.onLoginCommand(host.host, makeCtx().ctx)
+    const afterLogin = host.registered.length
+
+    const result = await activateVia(host)
+
+    assert.equal(host.registered.length, afterLogin)
+    assert.equal(rec.connectCalls, 1)
+    assert.match(result.content[0].text ?? "", /already active/)
   })
 
   it("short-circuits when already authenticated, without connecting", async () => {
@@ -262,30 +317,54 @@ describe("login command respects the repo-scoping gate", () => {
 // ---------------------------------------------------------------------------
 
 describe("registerTools is itself gated", () => {
-  it("registers nothing even when a call site forgets to check", async () => {
-    // Drive session_start with a gate that is open at entry and shut by the
-    // time registration happens. This models a call site that checked once and
-    // then reached registration anyway — the class of bug round-1 review found
-    // in /login-notion. The choke point inside registerTools must still hold.
+  it("registers no family tools even when a call site forgets to check", async () => {
+    // Drive activation with a gate that is open for the entry checks and shut
+    // by the time registration happens. This models a call site that checked
+    // once and then reached registration anyway — the class of bug round-1
+    // review found in /login-notion. The choke point inside registerTools must
+    // still hold.
     writeValidTokens()
     let calls = 0
+    let open = true
     const rec = makeDeps({
       isEnabledForCwd: () => {
         calls++
-        return calls === 1 // open for the entry check only
+        return open
       },
     })
     const ext = createNotionExtension(rec.deps)
     const host = makeHost()
 
     await ext.onSessionStart(host.host, makeCtx().ctx)
+    const callsAfterStart = calls
+    // Shut the gate from inside the activation, after `activate`'s own
+    // fail-fast check has already passed.
+    rec.deps.connect = async () => {
+      open = false
+      rec.connectCalls++
+      return {
+        updateToken() {},
+        async listTools() {
+          return SAMPLE_TOOLS
+        },
+        async callTool() {
+          return { content: [] }
+        },
+      }
+    }
 
-    assert.ok(calls >= 2, "registerTools must re-check the gate, not trust its caller")
+    const result = await activateVia(host)
+
+    assert.ok(
+      calls > callsAfterStart + 1,
+      "registerTools must re-check the gate, not trust its caller",
+    )
     assert.deepEqual(
       host.registered.map((t) => t.name),
-      [],
+      ["activate_notion"],
       "the choke point must refuse even when the caller already let it through",
     )
+    assert.equal(result.isError, true, "a refused registration is not a success")
   })
 })
 
@@ -308,7 +387,7 @@ describe("session_start respects the repo-scoping gate", () => {
     assert.deepEqual(ctx.notices, [], "a silent skip — no nagging in unrelated repos")
   })
 
-  it("registers the tool surface inside the allowlist", async () => {
+  it("registers only the gateway inside the allowlist", async () => {
     writeValidTokens()
     const rec = makeDeps()
     const ext = createNotionExtension(rec.deps)
@@ -316,8 +395,148 @@ describe("session_start respects the repo-scoping gate", () => {
 
     await ext.onSessionStart(host.host, makeCtx().ctx)
 
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Deferred registration (issue #2532)
+// ---------------------------------------------------------------------------
+
+describe("session_start defers everything behind activate_notion", () => {
+  it("registers exactly one tool, named activate_notion", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const host = makeHost()
+
+    await createNotionExtension(rec.deps).onSessionStart(host.host, makeCtx().ctx)
+
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+  })
+
+  it("opens no connection at session_start", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+
+    await createNotionExtension(rec.deps).onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(rec.connectCalls, 0)
+  })
+
+  it("names the Notion capability areas and says calling it reveals the surface", async () => {
+    writeValidTokens()
+    const host = makeHost()
+    await createNotionExtension(makeDeps().deps).onSessionStart(host.host, makeCtx().ctx)
+
+    assert.equal(host.registered[0].description, ACTIVATE_NOTION_DESCRIPTION)
+    for (const area of ["search", "page", "database", "comment"]) {
+      assert.ok(
+        ACTIVATE_NOTION_DESCRIPTION.toLowerCase().includes(area),
+        `description must name the "${area}" capability area`,
+      )
+    }
+    assert.match(ACTIVATE_NOTION_DESCRIPTION, /registers the full/i)
+    assert.ok(ACTIVATE_NOTION_DESCRIPTION.length < 900)
+  })
+
+  it("registers the full surface when the gateway is called", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const ext = createNotionExtension(rec.deps)
+    const host = makeHost()
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    const result = await activateVia(host)
+
     assert.equal(rec.connectCalls, 1)
-    assert.equal(host.registered.length, 3)
+    assert.deepEqual(host.registered.map((t) => t.name), [
+      "activate_notion",
+      "notion-search",
+      "notion-update-page",
+      "notion-move-pages",
+    ])
+    assert.equal(result.isError, undefined)
+    assert.match(result.content[0].text ?? "", /3 tools are now available/)
+    assert.equal(ext.isActive(), true)
+  })
+
+  it("a second gateway call registers no duplicates", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const ext = createNotionExtension(rec.deps)
+    const host = makeHost()
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    await activateVia(host)
+    const second = await activateVia(host)
+
+    assert.equal(host.registered.length, 4)
+    assert.equal(rec.connectCalls, 1)
+    assert.match(second.content[0].text ?? "", /already active/)
+  })
+
+  it("registers neither the family nor activate_notion outside the allowlist", async () => {
+    writeValidTokens()
+    const rec = makeDeps({ isEnabledForCwd: () => false })
+    const ext = createNotionExtension(rec.deps)
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    await ext.onBeforeAgentStart(host.host, makeCtx().ctx, "coordinator")
+
+    assert.deepEqual(host.registered, [])
+    assert.equal(rec.connectCalls, 0)
+  })
+})
+
+describe("eager roles", () => {
+  it("a listed role activates at before_agent_start with no tool call", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      env: { NOTION_MCP_EAGER_ROLES: "coordinator" },
+    })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    await ext.onBeforeAgentStart(host.host, makeCtx().ctx, "coordinator")
+
+    assert.equal(rec.connectCalls, 1)
+    assert.equal(host.registered.length, 4)
+  })
+
+  it("a non-eager role does not activate", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      env: { NOTION_MCP_EAGER_ROLES: "coordinator" },
+    })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    await ext.onBeforeAgentStart(host.host, makeCtx().ctx, "worker")
+
+    assert.equal(rec.connectCalls, 0)
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+  })
+
+  it("the eager check runs at most once per session", async () => {
+    writeValidTokens()
+    const rec = makeDeps()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      env: { NOTION_MCP_EAGER_ROLES: "coordinator" },
+    })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    await ext.onBeforeAgentStart(host.host, makeCtx().ctx, "coordinator")
+    await ext.onBeforeAgentStart(host.host, makeCtx().ctx, "coordinator")
+
+    assert.equal(rec.connectCalls, 1)
+    assert.equal(host.registered.length, 4)
   })
 })
 
@@ -325,40 +544,207 @@ describe("session_start respects the repo-scoping gate", () => {
 // Non-blocking startup  (AC: edge-case)
 // ---------------------------------------------------------------------------
 
-describe("session_start never blocks pi from starting", () => {
-  it("notifies and returns when there are no tokens", async () => {
+describe("a broken provider never blocks pi", () => {
+  it("reports the missing-token case as an error result, not an exception", async () => {
     const rec = makeDeps()
     const ext = createNotionExtension(rec.deps)
-    const ctx = makeCtx()
+    const host = makeHost()
 
-    await ext.onSessionStart(makeHost().host, ctx.ctx)
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    const result = await activateVia(host)
 
     assert.equal(rec.connectCalls, 0)
-    assert.ok(ctx.notices.some((n) => /login-notion/.test(n.msg)))
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text ?? "", /login-notion/)
   })
 
-  it("notifies and returns when the MCP connection fails", async () => {
+  it("reports a failed MCP connection as an error result", async () => {
     writeValidTokens()
     const rec = makeDeps({ connectFails: true })
     const ext = createNotionExtension(rec.deps)
     const host = makeHost()
-    const ctx = makeCtx()
 
-    await ext.onSessionStart(host.host, ctx.ctx)
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    const result = await activateVia(host)
 
-    assert.deepEqual(host.registered, [])
-    assert.ok(ctx.notices.some((n) => n.type === "error" && /unavailable/.test(n.msg)))
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text ?? "", /could not reach mcp\.notion\.com/)
   })
 
-  it("warns and registers nothing when tools/list returns empty", async () => {
+  it("reports an empty tools/list and registers nothing", async () => {
     writeValidTokens()
     const rec = makeDeps({ tools: [] })
     const ext = createNotionExtension(rec.deps)
     const host = makeHost()
 
     await ext.onSessionStart(host.host, makeCtx().ctx)
+    const result = await activateVia(host)
 
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.equal(result.isError, true)
+    assert.match(result.content[0].text ?? "", /returned no tools/)
+  })
+
+  it("notifies rather than throwing when an eager activation fails", async () => {
+    const rec = makeDeps({ connectFails: true })
+    writeValidTokens()
+    const ext = createNotionExtension({
+      ...rec.deps,
+      env: { NOTION_MCP_EAGER_ROLES: "coordinator" },
+    })
+    const host = makeHost()
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+    await ext.onBeforeAgentStart(host.host, ctx.ctx, "coordinator")
+
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.ok(ctx.notices.some((n) => n.type === "error"))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The 30-day refresh-token inactivity clock (round-3 review of PR #2568)
+//
+// Notion refresh tokens die after 30 consecutive days of inactivity. Before
+// #2532, onSessionStart called ensureTokens on every vault session, so ordinary
+// session starts kept the rotation alive. Deferring everything behind
+// activate_notion moved that clock: with eagerRoles = [ ], a refresh would only
+// happen when a Notion tool was called, and 30 quiet days would kill the grant.
+// Recovery is /login-notion — a browser flow a headless worker cannot complete.
+//
+// These tests exist because the regression is INVISIBLE FOR 30 DAYS. Nothing
+// else stands between us and a repeat.
+//
+// Revert-and-watch-fail: delete the `await keepTokensAlive(ctx)` call from
+// onSessionStart → "refreshes a stale token at session_start" and "keeps the
+// clock alive without registering the surface" both fail.
+// ---------------------------------------------------------------------------
+
+describe("session_start keeps the refresh-token clock alive", () => {
+  function makeAuthSpy(opts: { stale?: boolean; tokens?: NotionTokens | null; refreshThrows?: Error } = {}) {
+    const spy = { loadCalls: 0, refreshCalls: 0 }
+    const stored =
+      opts.tokens === undefined
+        ? makeTokens({ accessToken: "stored" })
+        : opts.tokens
+    return {
+      spy,
+      overrides: {
+        loadTokens: () => {
+          spy.loadCalls++
+          return stored
+        },
+        needsRefresh: () => opts.stale ?? false,
+        getValidAccessToken: async () => {
+          spy.refreshCalls++
+          if (opts.refreshThrows) throw opts.refreshThrows
+          const t = makeTokens({ accessToken: "refreshed" })
+          return { token: t.accessToken, tokens: t }
+        },
+      } satisfies Partial<ExtensionDeps>,
+    }
+  }
+
+  it("refreshes a stale token at session_start", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(auth.spy.refreshCalls, 1, "a stale grant must be refreshed at session_start")
+  })
+
+  it("keeps the clock alive without registering the surface or connecting", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    // The whole point: the token stays alive and the schemas stay out.
+    assert.equal(auth.spy.refreshCalls, 1)
+    assert.equal(rec.connectCalls, 0, "no MCP connection at session_start")
+    assert.deepEqual(
+      host.registered.map((t) => t.name),
+      ["activate_notion"],
+      "no tool schemas may enter the prompt prefix",
+    )
+    assert.equal(ext.isActive(), false)
+  })
+
+  it("performs no network refresh when the token is still fresh", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: false })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+
+    await ext.onSessionStart(makeHost().host, makeCtx().ctx)
+
+    assert.equal(auth.spy.loadCalls >= 1, true, "the store is still read (it is cheap)")
+    assert.equal(auth.spy.refreshCalls, 0, "most session starts must cost no network")
+  })
+
+  it("reads no token file and refreshes nothing outside the vault scope (AC 11)", async () => {
+    const rec = makeDeps({ isEnabledForCwd: () => false })
+    const auth = makeAuthSpy({ stale: true })
+    const ext = createNotionExtension({
+      ...rec.deps,
+      ...auth.overrides,
+      isEnabledForCwd: () => false,
+    })
+    const host = makeHost()
+
+    await ext.onSessionStart(host.host, makeCtx().ctx)
+
+    assert.equal(auth.spy.loadCalls, 0, "an out-of-scope session must touch nothing")
+    assert.equal(auth.spy.refreshCalls, 0)
     assert.deepEqual(host.registered, [])
+  })
+
+  it("a terminal auth failure notifies and does not throw", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({
+      stale: true,
+      refreshThrows: new NotionAuthTerminalError(
+        "Notion MCP: the grant was revoked. Run /login-notion.",
+      ),
+    })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(host.host, ctx.ctx)
+
+    assert.ok(ctx.notices.some((n) => /login-notion/.test(n.msg)))
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+  })
+
+  it("a transient refresh failure does not stop the session or nag", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ stale: true, refreshThrows: new Error("fetch failed") })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const host = makeHost()
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(host.host, ctx.ctx)
+
+    assert.deepEqual(host.registered.map((t) => t.name), ["activate_notion"])
+    assert.deepEqual(ctx.notices, [], "a transient fault is logged, not surfaced")
+  })
+
+  it("notifies when there are no tokens at all", async () => {
+    const rec = makeDeps()
+    const auth = makeAuthSpy({ tokens: null })
+    const ext = createNotionExtension({ ...rec.deps, ...auth.overrides })
+    const ctx = makeCtx()
+
+    await ext.onSessionStart(makeHost().host, ctx.ctx)
+
+    assert.equal(auth.spy.refreshCalls, 0)
+    assert.ok(ctx.notices.some((n) => /login-notion/.test(n.msg)))
   })
 })
 
@@ -373,6 +759,7 @@ describe("registered tool execution", () => {
     const ext = createNotionExtension(rec.deps)
     const host = makeHost()
     await ext.onSessionStart(host.host, makeCtx().ctx)
+    await activateVia(host)
 
     const search = host.registered.find((t) => t.name === "notion-search")
     assert.ok(search)
@@ -402,6 +789,7 @@ describe("registered tool execution", () => {
     })
     const host = makeHost()
     await ext.onSessionStart(host.host, makeCtx().ctx)
+    await activateVia(host)
 
     const search = host.registered.find((t) => t.name === "notion-search")
     assert.ok(search)
@@ -413,16 +801,18 @@ describe("registered tool execution", () => {
     assert.match(result.content[0].text ?? "", /500/)
   })
 
-  it("does not re-register tools on a second pass", async () => {
+  it("does not re-register on a second session_start", async () => {
+    // /reload re-emits session_start with reason: "reload".
     writeValidTokens()
     const rec = makeDeps()
     const ext = createNotionExtension(rec.deps)
     const host = makeHost()
 
     await ext.onSessionStart(host.host, makeCtx().ctx)
+    await activateVia(host)
     await ext.onSessionStart(host.host, makeCtx().ctx)
 
-    assert.equal(host.registered.length, 3, "pi rejects duplicate tool registration")
+    assert.equal(host.registered.length, 4, "pi rejects duplicate tool registration")
   })
 })
 
@@ -440,8 +830,15 @@ describe("createNotionExtension", () => {
 
     await a.onSessionStart(hostA.host, makeCtx().ctx)
     await b.onSessionStart(hostB.host, makeCtx().ctx)
+    await activateVia(hostA)
 
-    assert.equal(hostA.registered.length, 3)
-    assert.equal(hostB.registered.length, 3)
+    assert.equal(hostA.registered.length, 4, "A activated: gateway plus 3 tools")
+    assert.deepEqual(
+      hostB.registered.map((t) => t.name),
+      ["activate_notion"],
+      "B must not inherit A's activation",
+    )
+    assert.equal(a.isActive(), true)
+    assert.equal(b.isActive(), false)
   })
 })
