@@ -262,12 +262,14 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 
 	// Load profiles.json for agent env vars (e.g. GIT_EDITOR, KUBECONFIG,
-	// AWS_CONFIG_FILE). Non-fatal if missing — agent env vars are injected on
-	// a best-effort basis.
-	var agentEnvVars map[string]string
-	if pf, pfErr := config.LoadProfiles(); pfErr == nil && pf != nil {
-		agentEnvVars = pf.AgentEnvVars
-	}
+	// AWS_CONFIG_FILE), filtered for the session role. Non-fatal if missing —
+	// agent env vars are injected on a best-effort basis.
+	//
+	// The role filter runs here, upstream of the isolator (issue #2533): the
+	// map handed to container.Config already has the keys this role must not
+	// receive removed, so the isolator stays role-agnostic and keeps emitting
+	// every key it is given (the #2235 invariant).
+	agentEnvVars := config.AgentEnvVarsForRole(agentRole)
 
 	// Resolve the harness name from the DB status. Fall back to "pi"
 	// for pre-registry rows that have a NULL harness column.

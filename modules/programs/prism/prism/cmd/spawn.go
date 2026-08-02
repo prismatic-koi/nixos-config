@@ -937,9 +937,11 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 		}
 	}
 	// AgentEnvVars only applies to host-mode sessions; sandboxed sessions
-	// receive env vars via their own injection paths.
+	// receive env vars via their own injection paths. The map is filtered by
+	// role before the SpawnOpts are constructed (issue #2533) — the same
+	// filter the sandboxed dispatch paths apply in cmd/agent_run.go.
 	if pf != nil && !isoCaps.IsContainer {
-		spawnOpts.AgentEnvVars = pf.AgentEnvVars
+		spawnOpts.AgentEnvVars = config.FilterAgentEnvVarsForRole(agentRole, pf.AgentEnvVars)
 	}
 
 	d, dbErr := openDB()
@@ -1532,8 +1534,9 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 		ContainersFlag:       a.containersFlag,
 		// ────────────────────────────────────────────────────────
 	}
+	// Role-filtered before the SpawnOpts are constructed (issue #2533).
 	if a.pf != nil && !a.isoCaps.IsContainer {
-		spawnOpts.AgentEnvVars = a.pf.AgentEnvVars
+		spawnOpts.AgentEnvVars = config.FilterAgentEnvVarsForRole(agentRole, a.pf.AgentEnvVars)
 	}
 	if hShape, hShapeOK := harness.ShapeOf(a.harnessFlag); hShapeOK && hShape == harness.TransportSocketPipe && string(a.isolationMode) == "host" {
 		if pipePath, pipeErr := session.SidecarHarnessPipePath(sessionName); pipeErr == nil {

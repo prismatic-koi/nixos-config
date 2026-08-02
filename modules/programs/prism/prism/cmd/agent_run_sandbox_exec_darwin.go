@@ -201,10 +201,10 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		podmanProxySockPath = proxyPath
 	}
 
-	var agentEnvVars map[string]string
-	if pf, pfErr := config.LoadProfiles(); pfErr == nil && pf != nil {
-		agentEnvVars = pf.AgentEnvVars
-	}
+	// Profile-level agent env vars, filtered for the session role upstream of
+	// the isolator (issue #2533) — same resolver as the bwrap dispatch in
+	// agent_run.go, so both sandboxed modes deliver the same map for a role.
+	agentEnvVars := config.AgentEnvVarsForRole(agentRole)
 
 	// Resolve the harness name from the DB status. Fall back to "pi"
 	// for pre-registry rows that have a NULL harness column.
