@@ -107,7 +107,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 - A **coordinator** is identified by `root_agent_name = 'coordinator'`, with a fallback name heuristic of `<repo>@main` for pre-migration rows. Coordinators receive `has finished`/`has errored` notifications from workers in the same repo and own the merge-queue watcher for their session lifetime.
 - A coordinator does **not** receive a `has finished` notification for its own session ending — the self-notification guard suppresses it. A coordinator cannot run `prism review` directly; the review verb is for worker / spawned sessions.
 - Cleaning up a coordinator session takes the soft-close path: kills the tmux session, ends the DB row, and writes the archive, but **keeps the worktree, branch, and pi transcript intact** (#2371) so a reopened coordinator can `/resume` the prior conversation.
-- A **worker** is any non-coordinator session created by `prism spawn` (typically with `root_agent_name = 'worker'`). Workers may run `prism review` and `prism escalate`; `prism investigate` and `prism merge` are both denied in their bash deny list.
+- A **worker** is any non-coordinator session created by `prism spawn` (typically with `root_agent_name = 'worker'`). Workers may run `prism review` and `prism escalate`; `prism investigate` and `prism merge` are both refused by the host-API role gate (`requireCoordinator` in `internal/sidecar/host_api.go`, HTTP 403), not by a bash deny list.
 - A worker's terminal `finished` / `error` transition delivers a body-bearing notification to the same-repo coordinator with text `Agent <name> has finished its current task` or `Agent <name> has errored its current task`, using delivery mode `followUp`. This notification is suppressed while the worker is in `escalated` or `reviewing`.
 - An **investigator** is a session created by `prism investigate`, named `<invoker>~investigate-<slug>`, spawned with `WorktreeReadOnly: true` on the 2-window `LayoutAgentOnly` layout.
 - An investigator does **not** emit the `has finished` notification to the coordinator; on terminal state (`finished`, `interrupted`, `error`) it delivers a body-bearing notification to its invoker carrying the last completed turn's text, prefixed with `From investigator session: <name>` and suffixed with `Reply with: prism prompt <name> --prompt '...'`. The notification is dropped silently if the invoker has ended.
@@ -119,7 +119,7 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 
 ## Merge queue
 
-- `prism merge <pr>` is denied in the bash deny list for every non-coordinator role; only coordinators may enqueue.
+- `prism merge <pr>` is refused with HTTP 403 by the host-API role gate for every non-coordinator role; only coordinators may enqueue.
 - The merge-queue watcher is a goroutine started by the coordinator's sidecar at init; its lifetime equals the coordinator session's lifetime — there is no persistent daemon across coordinator sessions. It polls the queue head every 30 seconds (#2420, down from 45s) and processes one PR at a time.
 - Enqueued merge-queue rows carry the coordinator's `instance_id`. On coordinator-session shutdown, every `watching` row for that `instance_id` is transitioned to `abandoned` with `error = 'coordinator session ended'`. `abandoned` rows do not produce a live notification and surface only via `prism merges list --abandoned`.
 - A new coordinator incarnation for the same session name starts with an empty `watching` view and can re-enqueue any abandoned PR with `prism merge <pr>`.

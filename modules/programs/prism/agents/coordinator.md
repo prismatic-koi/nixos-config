@@ -129,7 +129,7 @@ Do not leave finished investigator sessions running. They accumulate worktrees a
 
 ### Workers cannot use `prism investigate`
 
-`prism investigate` is denied in the worker deny list. A worker that needs additional research context must escalate to the coordinator via `prism escalate`. The coordinator then decides whether to spawn an investigator or answer the question directly.
+`prism investigate` is refused for workers by the host-API role gate: the `/investigate` endpoint calls `requireCoordinator` and returns HTTP 403 to any caller that is not a coordinator session. The check is in `internal/sidecar/host_api.go`; it is not a bash deny list, so do not look for one in `pi/extensions/prism.ts`. A worker that needs additional research context must escalate to the coordinator via `prism escalate`. The coordinator then decides whether to spawn an investigator or answer the question directly.
 
 ---
 

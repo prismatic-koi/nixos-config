@@ -677,6 +677,15 @@ function segmentIsGitPush(segment: string): boolean {
 // ---------------------------------------------------------------------------
 // Pre-tool-call bash deny list (#1528)
 // ---------------------------------------------------------------------------
+//
+// Scope note (#2588): this list holds shell commands whose hazard is local to
+// the sandbox — worktree surgery, a nix store bootstrap, the shared stash
+// stack. It does NOT hold the role restrictions on prism verbs. `prism merge`
+// and `prism investigate` are coordinator-only, and that is enforced at the
+// host API by `requireCoordinator` (internal/sidecar/host_api.go), which
+// answers a worker with HTTP 403. Do not audit the worker permission boundary
+// from this file, and do not add a prism verb here expecting it to be the
+// enforcement point.
 
 /**
  * One entry in the bash deny list. Each entry is matched against an

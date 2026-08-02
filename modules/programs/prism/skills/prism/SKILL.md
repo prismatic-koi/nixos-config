@@ -507,7 +507,7 @@ prism checkin <session>~review-<N>-review-goal
 
 ## Investigator agents
 
-Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. They are denied in the worker deny list — only coordinators can use them.
+Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. Only coordinators can spawn them: the host-API `/investigate` endpoint calls `requireCoordinator` and returns HTTP 403 to every other caller.
 
 ### Spawning
 
@@ -549,13 +549,13 @@ prism cleanup --yes --session <inv-session>
 
 ### Constraint
 
-`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Workers have `prism investigate` in their deny list; only coordinators can use it.
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. The enforcement point is the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. It is not a bash deny list: `BLOCKED_BASH_PATTERNS` in `pi/extensions/prism.ts` covers a different, small set of shell commands and does not mention `prism investigate`.
 
 ---
 
 ## Merge queue (coordinators only)
 
-> **Coordinators only.** Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` denied in their bash deny lists. If you are not a coordinator agent, skip this section.
+> **Coordinators only.** The host-API `/merge` endpoint calls `requireCoordinator`, so `prism merge` returns HTTP 403 for worker agents, container worker agents, bwrap worker agents, and review agents alike. If you are not a coordinator agent, skip this section.
 
 The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
@@ -674,7 +674,9 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 
 ### Why workers cannot invoke it
 
-Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` in their bash deny lists. Only coordinator agents have it allowed. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around the deny list.
+Every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents — is refused by the host-API role gate. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around the gate.
+
+The gate — not a bash deny list — is the enforcement point. `BLOCKED_BASH_PATTERNS` in `pi/extensions/prism.ts` blocks an unrelated set of shell commands (`git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash`) and has no entry for any `prism` verb. Audit the boundary in `host_api.go`.
 
 ## Example: reviewing a PR (manual spawn)
 

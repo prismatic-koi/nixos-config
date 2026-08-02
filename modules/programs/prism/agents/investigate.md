@@ -68,8 +68,13 @@ Via the `bash` tool you can run:
 
 ## Denied actions
 
-The following are denied at the bash denylist level. Attempting them will be
-rejected:
+Do not attempt the following. Some are refused mechanically: `prism spawn`,
+`prism merge`, `prism merges`, and `prism investigate` are coordinator-only at
+the host API (`requireCoordinator` in `internal/sidecar/host_api.go`), which
+returns HTTP 403 to an investigator session, and every write to your worktree
+fails at the OS level (EROFS) because an investigator worktree is mounted
+read-only. The rest are hard rules on your remit, not mechanical blocks —
+keep to them:
 
 - `gh issue create / edit / close / comment` — no issue mutations.
 - `gh pr create / edit / merge / close / review / comment` — no PR mutations.
@@ -81,9 +86,11 @@ rejected:
 - `git add` — no staging.
 - `git rebase`, `git reset` — no history mutation.
 
-The `edit` and `write` tools are also unavailable in this session. Any attempt
-to write to a tracked file in the worktree will fail at the OS level (EROFS)
-as a defence-in-depth measure.
+The `edit` and `write` tools are registered in this session — unlike the review
+roles, the investigate role is not in the tool-exclusion map
+(`internal/config/agent_tool_roles.go`). Do not call them. Any attempt to write
+to a tracked file in the worktree fails at the OS level (EROFS), which is the
+mechanical backstop, not a substitute for the rule.
 
 ## Working style
 

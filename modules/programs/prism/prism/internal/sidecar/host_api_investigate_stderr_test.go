@@ -43,8 +43,14 @@ import (
 
 // newInvestigateStubSidecar builds an isolated Sidecar whose PrismBinaryPath
 // points at a shell stub with the caller-supplied body. The session name is
-// "prism-test@investigate-stderr-<sanitisedTestName>" so each subtest has its
-// own row in the isolated DB and cannot collide with sibling tests.
+// "prism-test-investigate-stderr-<sanitisedTestName>@main" so each subtest has
+// its own row in the isolated DB and cannot collide with sibling tests.
+//
+// The session is a coordinator: /investigate is gated on requireCoordinator
+// (issue #2588), so a worker session would be refused with 403 before the
+// handler reached the stream-capture code these tests cover. The row is
+// seeded with root_agent_name='coordinator' so the gate resolves from the DB
+// rather than from the name heuristic alone.
 //
 // The returned buffer captures everything the sidecar logs during the request,
 // so the success-path assertion "stderr warnings are logged" can be verified
@@ -59,9 +65,15 @@ func newInvestigateStubSidecar(t *testing.T, stubBody string) (*Sidecar, *bytes.
 	}
 
 	bus := sidecartest.NewIsolated(t, "")
-	sessionName := "prism-test@investigate-stderr-" + sanitiseTestName(t.Name())
+	sessionName := "prism-test-investigate-stderr-" + sanitiseTestName(t.Name()) + "@main"
 	repo := "prism-test"
 	worktree := t.TempDir()
+
+	if err := bus.DB.UpsertStatusSeedRootAgentName(
+		sessionName, repo, worktree, "active", nil, nil, "coordinator", "", "",
+	); err != nil {
+		t.Fatalf("seed coordinator status: %v", err)
+	}
 
 	logBuf := &bytes.Buffer{}
 	logger := log.New(logBuf, "", 0)
@@ -74,7 +86,7 @@ func newInvestigateStubSidecar(t *testing.T, stubBody string) (*Sidecar, *bytes.
 		HarnessURL:      "http://localhost:14000",
 		DB:              bus.DB,
 		Clock:           clk,
-		AgentRole:       "worker",
+		AgentRole:       "coordinator",
 		PrismBinaryPath: stubPath,
 		Harness:         newSSEHarness(),
 		Logger:          logger,
