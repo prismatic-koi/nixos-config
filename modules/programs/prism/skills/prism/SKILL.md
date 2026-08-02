@@ -222,9 +222,10 @@ The review-complete prompt includes a one-line summary header followed by a
 `<summary>` content, and extracted `<blocking_issues>` content. No file is
 written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
 the full agent reasoning if needed. All 5 agents must pass. On FAIL, fix every
-blocking issue, commit, push, and re-run the full set — a fix in one area can
-create issues in another. After 3 full review cycles without convergence, stop
-and escalate to the coordinator via `prism escalate`; do not run a 4th cycle.
+blocking issue, commit, push, and re-run per the targeted-rerun condition in
+`worker.md` — a fix in one area can create issues in another. After 3 full
+review cycles without convergence, stop and escalate to the coordinator via
+`prism escalate`; do not run a 4th cycle.
 
 For a synchronous flow (one-shot script, no other work to do meanwhile) pass
 `--wait`:
