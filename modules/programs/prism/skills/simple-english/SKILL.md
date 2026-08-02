@@ -34,6 +34,27 @@ This skill adapts the rule catalogue from
 licence) for this repository. See "Attribution and disclaimer" at the end of
 this file.
 
+## Condensed rule set (quick reference)
+
+The global agent instructions point here for the working rules of class A and
+class B output. Apply every rule below. The full treatment of each is in the
+rule catalogue further down.
+
+- Keep sentences short. 20 words for an instruction, 25 words for an
+  explanation.
+- Write instructions in the imperative: "Run the migration."
+- Put the condition before the command: "If the build fails, read the log."
+- Use simple tenses: simple present, simple past, simple future. Avoid
+  constructions like "has been configured" or "is to be installed".
+- Use active voice.
+- Give one item one name. Do not call the same thing "config" in one place
+  and "settings" in another.
+- Do not use contractions.
+- Delete filler: "it is worth noting that", "simply", "just", "in order to".
+  State the fact instead.
+
+The filler ban and the hedge ban never relax, in any class.
+
 ## Your task
 
 When you write or rewrite technical text:
