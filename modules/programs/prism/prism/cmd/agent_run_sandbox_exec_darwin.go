@@ -17,6 +17,7 @@ package cmd
 // non-Darwin via a runtime.GOOS check, so the stub is unreachable in practice.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -167,8 +168,16 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	}
 	bareRoot := git.BareRoot(worktree)
 	worktreeGitDir, err := git.ResolveWorktreeGitDir(worktree)
-	if err != nil {
+	if err != nil && !errors.Is(err, git.ErrNotAWorktree) {
 		return fmt.Errorf("agent-run: session %q: resolve worktree git dir: %w", sessionName, err)
+	}
+	if errors.Is(err, git.ErrNotAWorktree) {
+		// Not a prism bare+worktree layout (e.g. a normal git clone) —
+		// leave worktreeGitDir empty. The sandbox-exec bind logic already
+		// guards on BareRoot/WorktreeGitDir being non-empty, mirroring the
+		// bwrap path (internal/container/bwrap.go), so this is a no-op
+		// there rather than a broken bind.
+		worktreeGitDir = ""
 	}
 
 	port := 0

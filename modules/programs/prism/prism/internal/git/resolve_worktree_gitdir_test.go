@@ -1,6 +1,7 @@
 package git
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,5 +128,66 @@ func TestResolveWorktreeGitDir_MalformedGitFile(t *testing.T) {
 	}
 	if _, err := ResolveWorktreeGitDir(dir); err == nil {
 		t.Fatal("expected an error for a malformed .git file, got nil")
+	}
+}
+
+// TestResolveWorktreeGitDir_CorruptWorktreePointer asserts that a worktree
+// whose .git pointer FILE exists but is corrupt (no "gitdir: " line) still
+// fails loudly, even though the directory otherwise looks like a real
+// worktree (this pins the AC that distinguishes "not a worktree" from "a
+// broken worktree" — only the former is tolerated by ErrNotAWorktree).
+func TestResolveWorktreeGitDir_CorruptWorktreePointer(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".git"), []byte("garbage\n"), 0o644); err != nil {
+		t.Fatalf("write .git: %v", err)
+	}
+	_, err := ResolveWorktreeGitDir(dir)
+	if err == nil {
+		t.Fatal("expected an error for a corrupt .git pointer file, got nil")
+	}
+	if errors.Is(err, ErrNotAWorktree) {
+		t.Fatalf("corrupt pointer file must not be classified as ErrNotAWorktree, got: %v", err)
+	}
+}
+
+// TestResolveWorktreeGitDir_NormalClone is the regression test for the live
+// bug: opening a NORMAL git clone (not a prism bare+worktree layout) in
+// prism must not hard-fail agent-run. Here .git is a DIRECTORY (the normal
+// clone layout), not a "gitdir: " pointer file. ResolveWorktreeGitDir must
+// return ErrNotAWorktree, a distinguishable non-fatal condition, rather than
+// a generic error.
+//
+// This test must FAIL against the pre-fix code (unconditional
+// os.ReadFile(".git") with no directory check), because ReadFile on a
+// directory returns "is a directory", a generic *PathError that is
+// indistinguishable from other read failures — not ErrNotAWorktree.
+func TestResolveWorktreeGitDir_NormalClone(t *testing.T) {
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "init", dir).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	gotDir, err := ResolveWorktreeGitDir(dir)
+	if !errors.Is(err, ErrNotAWorktree) {
+		t.Fatalf("ResolveWorktreeGitDir(normal clone) = (%q, %v), want ErrNotAWorktree", gotDir, err)
+	}
+	if gotDir != "" {
+		t.Errorf("ResolveWorktreeGitDir(normal clone) returned non-empty dir %q alongside ErrNotAWorktree", gotDir)
+	}
+}
+
+// TestResolveWorktreeGitDir_NotAGitRepoAtAll covers a directory that is not
+// a git repository at all (no .git entry of any kind). This must still be a
+// reported error — not silently treated as a normal clone — so that callers
+// distinguish "no git here" (a real problem) from "normal clone, nothing to
+// resolve" (ErrNotAWorktree).
+func TestResolveWorktreeGitDir_NotAGitRepoAtAll(t *testing.T) {
+	dir := t.TempDir()
+	_, err := ResolveWorktreeGitDir(dir)
+	if err == nil {
+		t.Fatal("expected an error for a non-git directory, got nil")
+	}
+	if errors.Is(err, ErrNotAWorktree) {
+		t.Fatalf("a non-git directory must not be classified as ErrNotAWorktree, got: %v", err)
 	}
 }

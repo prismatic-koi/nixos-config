@@ -2,6 +2,7 @@
 package git
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,14 @@ import (
 	"strconv"
 	"strings"
 )
+
+// ErrNotAWorktree is returned by ResolveWorktreeGitDir when worktreePath's
+// .git entry is a directory rather than a "gitdir: " pointer file — i.e. the
+// path is a normal git clone, not a prism bare+worktree checkout. Callers
+// must treat this as a distinguishable non-error condition (there is no
+// private git-state dir to resolve), not the same as a malformed or missing
+// pointer file, which remains a hard error.
+var ErrNotAWorktree = errors.New("not a git worktree: .git is a directory")
 
 // DiffStat holds a summary of uncommitted changes in a worktree.
 type DiffStat struct {
@@ -883,8 +892,21 @@ func PRBranch(projectPath, prNumber string) (string, error) {
 // not silently skip the resolution (see bwrap.go's os.Stat guard, which used
 // to mask exactly this class of bug when combined with a derived-and-wrong
 // path).
+//
+// If worktreePath is not a git worktree at all — i.e. its .git entry is a
+// directory, as in a normal (non-bare+worktree) clone — this returns
+// ErrNotAWorktree, a distinguishable sentinel that callers can check with
+// errors.Is. That case is not an error condition for the caller: it means
+// "there is no private git-state dir to resolve", not "resolution failed".
+// A .git pointer FILE that is missing, unreadable, or malformed (no
+// "gitdir: " line) is still a hard error — see the doc comment above.
 func ResolveWorktreeGitDir(worktreePath string) (string, error) {
 	gitFile := filepath.Join(worktreePath, ".git")
+
+	if info, statErr := os.Lstat(gitFile); statErr == nil && info.IsDir() {
+		return "", ErrNotAWorktree
+	}
+
 	data, err := os.ReadFile(gitFile)
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", gitFile, err)
