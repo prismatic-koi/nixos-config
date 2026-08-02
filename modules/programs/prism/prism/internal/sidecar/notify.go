@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -256,9 +257,28 @@ func extractFollowUps(finalText string) (content string, truncated bool, found b
 		return "", false, false
 	}
 	if len(raw) > followUpsByteCap {
-		return truncateBytes([]byte(raw), followUpsByteCap), true, true
+		return truncateUTF8Safe(raw, followUpsByteCap), true, true
 	}
 	return raw, false, true
+}
+
+// truncateUTF8Safe truncates s to at most maxLen bytes without splitting a
+// multi-byte UTF-8 rune. Plain byte truncation (as done by the sidecar's
+// truncateBytes, used elsewhere for raw diagnostic log lines) is unsafe here
+// because this is the first caller to apply a byte cap to worker-authored
+// free text: a multi-byte character straddling the cap boundary would
+// otherwise leave an invalid UTF-8 tail in the coordinator notification
+// body. Backtracks byte-by-byte (at most 3 bytes, the longest possible
+// partial UTF-8 sequence) until the result is valid.
+func truncateUTF8Safe(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	b := s[:maxLen]
+	for len(b) > 0 && !utf8.ValidString(b) {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 // buildWorkerNotifyText composes the coordinator-facing notification body for

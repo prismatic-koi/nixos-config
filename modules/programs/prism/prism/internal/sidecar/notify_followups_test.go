@@ -16,6 +16,7 @@ package sidecar
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
@@ -101,6 +102,42 @@ func TestExtractFollowUps_TruncatesOverCap(t *testing.T) {
 	}
 	if len(content) != followUpsByteCap {
 		t.Errorf("len(content) = %d, want %d (followUpsByteCap)", len(content), followUpsByteCap)
+	}
+}
+
+// TestExtractFollowUps_TruncationIsUTF8Safe proves the fix for review-code's
+// round-2 finding: naive byte truncation at followUpsByteCap can split a
+// multi-byte rune and leave an invalid UTF-8 tail. Construct a section whose
+// followUpsByteCap-th byte lands mid-rune (a run of 3-byte characters, sized
+// so the cap boundary is not rune-aligned) and assert the truncated content
+// is both shorter than the naive cut and valid UTF-8.
+func TestExtractFollowUps_TruncationIsUTF8Safe(t *testing.T) {
+	// "中" is a 3-byte UTF-8 rune. followUpsByteCap (4096) is not a multiple
+	// of 3, so repeating it until we are just past the cap guarantees the
+	// naive byte-offset cut lands inside a rune.
+	rune3 := "中"
+	count := followUpsByteCap/len(rune3) + 2
+	huge := strings.Repeat(rune3, count)
+	text := "<follow_ups>" + huge + "</follow_ups>"
+
+	content, truncated, found := extractFollowUps(text)
+	if !found {
+		t.Fatal("found = false, want true")
+	}
+	if !truncated {
+		t.Fatal("truncated = false, want true")
+	}
+	if !utf8.ValidString(content) {
+		t.Fatalf("content is not valid UTF-8 after truncation: %q", content)
+	}
+	if len(content) > followUpsByteCap {
+		t.Errorf("len(content) = %d, want <= %d (followUpsByteCap)", len(content), followUpsByteCap)
+	}
+	// The naive (rune-unsafe) cut would be exactly followUpsByteCap bytes,
+	// which is not rune-aligned here, so the safe cut must be strictly
+	// shorter to prove backtracking actually ran.
+	if len(content) == followUpsByteCap {
+		t.Errorf("len(content) = %d equals the naive byte cap exactly — rune-boundary backtracking did not run for this input", len(content))
 	}
 }
 
