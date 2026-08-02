@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/branchprotect"
+	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
@@ -599,6 +600,16 @@ const (
 	// worker must rebase; command exits non-zero, no poller starts.
 	initialOutcomeConflict
 
+	// initialOutcomeCIFailed — a required check has COMPLETED with a
+	// failure conclusion while mergeStateStatus is BLOCKED (#2527, mirrors
+	// #2525's poll-time discrimination at the invocation surface). The
+	// poller can never resolve this without a new push, so it is treated as
+	// terminal in the same shape as initialOutcomeConflict: report it, do
+	// not enqueue, exit non-zero. Unlike initialOutcomeAlreadyMerged /
+	// initialOutcomeClosedNotMerged, the branch is still needed, so the
+	// message must not say "Please clean up the branch and worktree".
+	initialOutcomeCIFailed
+
 	// initialOutcomeEnqueueReady — branch protected, all gates green.
 	// Watcher will merge on the next tick.
 	initialOutcomeEnqueueReady
@@ -642,15 +653,12 @@ type probeInitialStatePRView struct {
 	StatusCheckRollup []checkEntry `json:"statusCheckRollup"`
 }
 
-// checkEntry mirrors the mergequeue package's rollup entry shape locally so
-// probeInitialState can parse gh pr view output without an import cycle.
-type checkEntry struct {
-	Name       string `json:"name"`
-	Context    string `json:"context"`
-	Conclusion string `json:"conclusion"`
-	Status     string `json:"status"`
-	State      string `json:"state"`
-}
+// checkEntry is an alias for the shared checkstate.CheckEntry shape (#2527).
+// It used to be a locally-duplicated copy of the mergequeue package's rollup
+// entry shape; both call sites now share one classification implementation
+// via internal/checkstate, which fixed the invocation-time defect where a
+// COMPLETED-with-FAILURE required check was misreported as merely pending.
+type checkEntry = checkstate.CheckEntry
 
 // probeInitialState is the #2420 synchronous initial-state probe. It queries
 // `gh pr view` for the PR's current shape, and — for non-terminal cases —
@@ -718,6 +726,20 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 			pr,
 		)
 		return dec, nil
+	}
+
+	// Terminal: a required check has already COMPLETED with a failure
+	// conclusion while mergeStateStatus is BLOCKED (#2527, mirrors #2525's
+	// poll-time discrimination). checkstate.FailedRequiredChecks only
+	// returns names when the whole required set is accounted for, so this
+	// never fires on a still-running or absent check — the conservative
+	// bias documented there is preserved exactly.
+	if strings.EqualFold(view.MergeStateStatus, "BLOCKED") {
+		if failed := checkstate.FailedRequiredChecks(view.StatusCheckRollup, requiredNames); len(failed) > 0 {
+			dec.Outcome = initialOutcomeCIFailed
+			dec.Message = fmt.Sprintf("PR #%d CI failed: %s. Worker needs to fix and push. No merge will happen until then.", pr, strings.Join(failed, ", "))
+			return dec, nil
+		}
 	}
 
 	// Protected. CLEAN = ready to merge immediately (watcher will merge on next tick).
@@ -857,6 +879,19 @@ func emitInitialStateMessage(dec initialStateDecision, pr int, quietStdout bool)
 		fmt.Println(dec.Message)
 		// Non-zero exit distinguishes this from the successful terminal
 		// short-circuits above. Coordinator prompts worker to rebase.
+		return true, newExitErr(waitExitTerminalFail, "")
+	case initialOutcomeCIFailed:
+		// Same shape as initialOutcomeConflict (#2527): terminal, non-zero
+		// exit, no row enqueued. dec.Message already names the failed checks
+		// and deliberately omits "Please clean up the branch and worktree" —
+		// the branch is still needed for the worker's fix.
+		if quietStdout {
+			if err := emitInitialStateJSON(pr, dec, "failed", "CI failed"); err != nil {
+				return true, err
+			}
+			return true, newExitErr(waitExitTerminalFail, "")
+		}
+		fmt.Println(dec.Message)
 		return true, newExitErr(waitExitTerminalFail, "")
 	default:
 		if !quietStdout {

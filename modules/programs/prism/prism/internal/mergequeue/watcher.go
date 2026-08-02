@@ -39,6 +39,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/branchprotect"
+	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
@@ -851,19 +852,11 @@ func (p *prInfo) isMerged() bool {
 	return p.MergedAt != nil && *p.MergedAt != ""
 }
 
-type checkEntry struct {
-	// Name is the check-run name (e.g. "pr-gate") or the commit-status context.
-	// GitHub's statusCheckRollup uses "name" for check-runs and "context" for
-	// legacy commit statuses; we populate both via the Name field and fall back
-	// to Context when Name is empty.
-	Name       string `json:"name"`
-	Context    string `json:"context"`
-	Conclusion string `json:"conclusion"`
-	Status     string `json:"status"`
-	// State is the legacy commit-status field (e.g. "SUCCESS", "FAILURE").
-	// Modern check-runs use Conclusion instead.
-	State string `json:"state"`
-}
+// checkEntry is an alias for the shared checkstate.CheckEntry shape (#2527).
+// The alias keeps every existing reference and test fixture in this package
+// compiling unchanged while the classification logic itself lives in
+// internal/checkstate, shared with cmd/merge.go's invocation-time probe.
+type checkEntry = checkstate.CheckEntry
 
 // fetchPRInfo calls `gh pr view <pr> --json` and returns the parsed result.
 func (w *Watcher) fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
@@ -879,222 +872,17 @@ func (w *Watcher) fetchPRInfo(ctx context.Context, pr int) (*prInfo, error) {
 	return &info, nil
 }
 
-// checkState is the aggregate verdict for one required check name, derived
-// from every rollup entry carrying that name (#2525).
-type checkState int
-
-const (
-	// checkStatePending — the check has not reached a verdict we can read:
-	// queued, in progress, or an entry shape we do not recognise. A required
-	// check in this state means the required set is NOT fully accounted for,
-	// so no failure transition may fire.
-	checkStatePending checkState = iota
-
-	// checkStateConcluded — the check finished and did not conclude in a
-	// recognised failure state. This covers SUCCESS and the neutral-ish
-	// conclusions (NEUTRAL, SKIPPED, and any conclusion GitHub adds later).
-	// It accounts for the check without failing it.
-	checkStateConcluded
-
-	// checkStateFailed — the check finished and concluded in a failure state.
-	checkStateFailed
-)
-
-// requiredCheckFailureConclusions is the check-run `conclusion` allowlist that
-// counts as a real failure for the #2525 terminal transition.
-//
-// The set is deliberately closed and deliberately small. Widening it risks the
-// expensive direction of the trade-off: declaring a good PR dead. Conclusions
-// NOT in this set (SUCCESS, NEUTRAL, SKIPPED, STALE, STARTUP_FAILURE, and
-// anything GitHub adds later) classify as checkStateConcluded — they account
-// for the check so a sibling check's genuine failure can still fire, but they
-// never trigger the transition on their own. Add to this set only with a
-// dedicated audit.
-var requiredCheckFailureConclusions = []string{
-	"FAILURE",
-	"TIMED_OUT",
-	"CANCELLED",
-	"ACTION_REQUIRED",
-}
-
-// legacyStatusFailureStates is the commit-status `state` equivalent of
-// requiredCheckFailureConclusions. Legacy contexts use a separate, smaller
-// enum (EXPECTED, PENDING, SUCCESS, FAILURE, ERROR) with no `status` field, so
-// they need their own mapping. Without it a required legacy context that fails
-// would classify as pending and reproduce the exact silent hang #2525 fixes.
-var legacyStatusFailureStates = []string{
-	"FAILURE",
-	"ERROR",
-}
-
-// classifyCheckEntry maps one rollup entry to a checkState.
-//
-// The rollup mixes two entry shapes. A modern check-run carries `status` plus
-// `conclusion`; a legacy commit status carries only `state`. The ordering of
-// the cases below matters:
-//
-//   - A check-run whose `status` is anything other than COMPLETED is pending,
-//     even when a `conclusion` is also present. A stale conclusion alongside a
-//     re-running check must never count as a failure.
-//   - Only then does a non-empty `conclusion` decide the verdict.
-//   - `state` is consulted last, for legacy contexts.
-//   - An entry with none of the three populated is pending, not concluded. An
-//     unreadable entry is not evidence that a check finished.
-func classifyCheckEntry(c checkEntry) checkState {
-	switch {
-	case c.Status != "" && !strings.EqualFold(c.Status, "COMPLETED"):
-		return checkStatePending
-	case c.Conclusion != "":
-		if matchesAnyFold(c.Conclusion, requiredCheckFailureConclusions) {
-			return checkStateFailed
-		}
-		return checkStateConcluded
-	case c.State != "":
-		if matchesAnyFold(c.State, legacyStatusFailureStates) {
-			return checkStateFailed
-		}
-		if strings.EqualFold(c.State, "SUCCESS") {
-			return checkStateConcluded
-		}
-		// PENDING, EXPECTED, or anything unrecognised: not a verdict.
-		return checkStatePending
-	default:
-		return checkStatePending
-	}
-}
-
-// matchesAnyFold reports whether s case-insensitively equals any candidate.
-func matchesAnyFold(s string, candidates []string) bool {
-	for _, c := range candidates {
-		if strings.EqualFold(s, c) {
-			return true
-		}
-	}
-	return false
-}
-
-// combineCheckStates folds two verdicts for the same check name into one.
-//
-// GitHub can return more than one rollup entry per name — a re-run, or a
-// check-run name that collides with a legacy status context. The precedence is
-// pending > failed > concluded, which is the conservative order: a re-run in
-// flight masks an older failure, so a worker who has already pushed a fix does
-// not get their PR declared dead.
-func combineCheckStates(a, b checkState) checkState {
-	if a == checkStatePending || b == checkStatePending {
-		return checkStatePending
-	}
-	if a == checkStateFailed || b == checkStateFailed {
-		return checkStateFailed
-	}
-	return checkStateConcluded
-}
-
-// failedRequiredChecks returns the names of required checks that concluded in
-// a failure state, but ONLY when the whole required set is accounted for
-// (#2525). It returns nil in every other case, which the caller reads as
-// "keep watching".
-//
-// nil is returned when:
-//
-//   - required is empty. No configured gate means no evidence of a dead end.
-//   - Any required name is absent from the rollup. GitHub populates the rollup
-//     for the PR's current head commit, so an absent name usually means the
-//     check has not registered yet after a push.
-//   - Any required name is still pending (queued, in progress, or re-running).
-//   - Every required name concluded without a recognised failure.
-//
-// This ordering is what makes the helper safe inside the documented
-// BLOCKED-to-CLEAN drift window between mergeStateStatus and
-// statusCheckRollup: a stale BLOCKED reading paired with a green or
-// still-filling rollup yields nil, never a failure.
-//
-// A residual window remains. A worker can push a fix in the gap between
-// GitHub computing the rollup we read and our poll, in which case we report a
-// failure that the new push has already superseded. The row terminates and the
-// coordinator re-runs `prism merge`. That is the accepted cost: a redundant
-// but true report beats the silent hang.
-//
-// Returned names are deduplicated and follow the order of the required list,
-// so the notification text is stable across polls.
+// failedRequiredChecks and requiredChecksAllPassed are thin wrappers over the
+// shared internal/checkstate package (#2527). The classification logic
+// itself — pending vs. concluded vs. failed, the BLOCKED-to-CLEAN drift-window
+// handling, the FAILURE/TIMED_OUT/CANCELLED/ACTION_REQUIRED allowlist — lives
+// there exactly once, shared with cmd/merge.go's invocation-time probe.
 func failedRequiredChecks(rollup []checkEntry, required []string) []string {
-	if len(required) == 0 {
-		return nil
-	}
-
-	states := make(map[string]checkState, len(rollup))
-	for _, c := range rollup {
-		name := checkName(c)
-		if name == "" {
-			continue
-		}
-		state := classifyCheckEntry(c)
-		if prev, seen := states[name]; seen {
-			state = combineCheckStates(prev, state)
-		}
-		states[name] = state
-	}
-
-	var failed []string
-	emitted := make(map[string]bool, len(required))
-	for _, req := range required {
-		state, seen := states[req]
-		if !seen || state == checkStatePending {
-			// The required set is not fully accounted for. Stay silent.
-			return nil
-		}
-		if state == checkStateFailed && !emitted[req] {
-			emitted[req] = true
-			failed = append(failed, req)
-		}
-	}
-	return failed
+	return checkstate.FailedRequiredChecks(rollup, required)
 }
 
-// checkName returns the canonical name for a rollup entry, preferring the
-// check-run Name field and falling back to the legacy commit-status Context.
-func checkName(c checkEntry) string {
-	if c.Name != "" {
-		return c.Name
-	}
-	return c.Context
-}
-
-// requiredChecksAllPassed returns true iff every name in required has a
-// corresponding entry in rollup with a successful conclusion.
-//
-// "Success" means:
-//   - modern check-run: Conclusion == "SUCCESS" (case-insensitive)
-//   - legacy commit-status: State == "SUCCESS" (case-insensitive)
-//
-// A required name that is missing from rollup entirely is treated as
-// not-yet-passed and returns false.
 func requiredChecksAllPassed(rollup []checkEntry, required []string) bool {
-	if len(required) == 0 {
-		// No required checks configured — treat as not-gated (conservative:
-		// don't block forever, but callers should detect this upstream).
-		return false
-	}
-	// Build a name→success map from the rollup.
-	passed := make(map[string]bool, len(rollup))
-	for _, c := range rollup {
-		name := checkName(c)
-		if name == "" {
-			continue
-		}
-		// A check is successful if either the modern conclusion or the
-		// legacy state field indicates SUCCESS.
-		ok := strings.EqualFold(c.Conclusion, "SUCCESS") ||
-			strings.EqualFold(c.State, "SUCCESS")
-		passed[name] = ok
-	}
-	for _, req := range required {
-		ok, found := passed[req]
-		if !found || !ok {
-			return false
-		}
-	}
-	return true
+	return checkstate.RequiredChecksAllPassed(rollup, required)
 }
 
 // fetchProtection returns the branch-protection snapshot for the protected

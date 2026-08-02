@@ -454,3 +454,56 @@ func TestRunMerge_WaitJSON_TerminalShortCircuit_Conflict(t *testing.T) {
 		t.Errorf("error: got %q, want to contain 'merge conflicts'", errField)
 	}
 }
+
+// TestRunMerge_WaitJSON_TerminalShortCircuit_CIFailed verifies the #2527
+// invocation-time CI-failure terminal path under --wait --json: JSON is
+// emitted with status=failed, exit non-zero, no row enqueued — the same
+// contract shape as the merge-conflict terminal above.
+func TestRunMerge_WaitJSON_TerminalShortCircuit_CIFailed(t *testing.T) {
+	openMergeTestDB(t)
+	const coordSession = "nixos-config@main"
+	seedCoordinatorWithInstanceID(t, coordSession, "inst-wait-json-ci-failed")
+	t.Setenv("PRISM_SESSION_NAME", coordSession)
+	t.Setenv("TMUX", "")
+
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":8004,"title":"ci failed","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"FAILURE","status":"COMPLETED"}]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+
+	out, runErr := runMergeWaitJSON(t, "8004")
+	if runErr == nil {
+		t.Fatal("runMerge --wait --json on BLOCKED PR with a FAILURE required check: got nil error, want non-zero exit (terminal-fail)")
+	}
+	if ec := exitCodeOf(runErr); ec != waitExitTerminalFail {
+		t.Errorf("exit code: got %d, want %d (waitExitTerminalFail)", ec, waitExitTerminalFail)
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		t.Fatal("stdout is empty on --wait --json terminal short-circuit for CI-failed (contract broken)")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		t.Fatalf("stdout not parseable as JSON: %v\nout: %s", err, out)
+	}
+	if payload["status"] != "failed" {
+		t.Errorf("status: got %v, want failed", payload["status"])
+	}
+	if int(payload["pr"].(float64)) != 8004 {
+		t.Errorf("pr: got %v, want 8004", payload["pr"])
+	}
+	errField, _ := payload["error"].(string)
+	if !strings.Contains(errField, "CI failed") {
+		t.Errorf("error: got %q, want to contain 'CI failed'", errField)
+	}
+
+	d, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer d.Close()
+	row, _ := d.PendingMergeByPR(8004, "nixos-config")
+	if row != nil {
+		t.Errorf("pending_merges row exists for CI-failed PR: %+v (must not enqueue)", row)
+	}
+}
