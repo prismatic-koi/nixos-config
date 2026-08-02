@@ -232,9 +232,17 @@ is written to `/tmp` — the full agent reasoning is available via
 You may use `prism review <pr> --only <failed-agents>` for the next cycle if
 and only if **both** of the following hold:
 
-1. The inter-cycle diff (from the failed round to the current commit) contains
-   **only** comment lines or documentation files. Any change to code lines —
-   including whitespace-only changes to code — re-runs the full 5-agent set.
+1. The inter-cycle diff (from the failed round to the current commit) is
+   **exactly the output of a formatter** — or contains only comment lines or
+   documentation files.
+   - To verify: run the relevant formatter (`gofmt`, `nixfmt`, `prettier`) over
+     the worktree and confirm it produces no further changes. The diff qualifies
+     only if it is reproducible by running that formatter against the previous
+     commit.
+   - Any change the formatter would not itself produce — including whitespace
+     inside string literals, heredocs, or test fixtures — means the full set
+     re-runs. This covers the case where a diff looks whitespace-only but
+     silently changes a golden fixture or generated file.
 2. The inter-cycle diff does not touch any file cited in a FAIL finding from
    the previous round, except for the specific file(s) the finding named.
 
