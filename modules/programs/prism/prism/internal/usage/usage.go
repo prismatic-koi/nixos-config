@@ -23,9 +23,18 @@
 // sandbox (see `internal/container/mounts.go`).
 //
 // The state directory, not the accounts directory, is the home for these
-// files: `~/.local/state/prism/` is already writable from inside a sandbox
-// (`prism.db` and `run/` live there) and the data is a derived cache, not a
-// credential.
+// files: the data is a derived cache, not a credential.
+//
+// Sandbox visibility
+// ------------------
+//
+// This directory — the LEAF, not any parent — is bound into agent sandboxes
+// READ-ONLY (issue #2572): `StandardSandboxMounts` emits an `--ro-bind` for
+// bwrap and `generateProfile` emits a read-only `(subpath ...)` grant for
+// sandbox-exec. Read-only is the correct level. Every writer goes through
+// the sidecar host-API endpoint `POST /usage/snapshot` (issue #2538), so
+// nothing inside a sandbox needs write access, and a compromised session
+// cannot forge usage figures.
 //
 // Absent fields
 // -------------
@@ -130,6 +139,36 @@ type Snapshot struct {
 	Overage             *Overage  `json:"overage,omitempty"`
 }
 
+// DirForHome returns the usage directory for a caller that has ALREADY
+// resolved the host home directory itself, honouring $XDG_STATE_HOME first
+// and falling back to <home>/.local/state/prism/usage. It returns "" when
+// $XDG_STATE_HOME is empty and home is empty — callers must treat that as
+// "skip".
+//
+// This is the single source of truth for the resolution order. Three readers
+// depend on it agreeing byte for byte:
+//
+//   - DefaultDir below (the prism CLI and the sidecar write path);
+//   - usageSnapshotPath() in pi/extensions/prism.ts (the bottom-bar reader,
+//     which does $XDG_STATE_HOME-else-os.homedir()/.local/state);
+//   - StandardSandboxMounts / generateProfile in internal/container, which
+//     must grant the sandbox exactly the directory those two agree on
+//     (issue #2572).
+//
+// The container callers cannot use DefaultDir: they resolve the host home
+// once at the top of the mount walk and pass it down, and their unit tests
+// drive that value from a fixture rather than from os.UserHomeDir(). Taking
+// home as a parameter keeps the XDG lookup in one place regardless.
+func DirForHome(home string) string {
+	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
+		return filepath.Join(state, "prism", "usage")
+	}
+	if home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "prism", "usage")
+}
+
 // DefaultDir returns the canonical usage directory for the current user,
 // honouring $XDG_STATE_HOME first and falling back to
 // $HOME/.local/state/prism/usage. Returns ("", error) when neither is
@@ -139,14 +178,14 @@ type Snapshot struct {
 // HOME=/homeless-shelter is intentionally unwritable; tests override
 // XDG_STATE_HOME to a writable t.TempDir() to avoid that path entirely.
 func DefaultDir() (string, error) {
-	if state := os.Getenv("XDG_STATE_HOME"); state != "" {
-		return filepath.Join(state, "prism", "usage"), nil
-	}
 	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("usage: cannot resolve state dir — neither XDG_STATE_HOME nor HOME is set")
+	if err != nil {
+		home = ""
 	}
-	return filepath.Join(home, ".local", "state", "prism", "usage"), nil
+	if dir := DirForHome(home); dir != "" {
+		return dir, nil
+	}
+	return "", fmt.Errorf("usage: cannot resolve state dir — neither XDG_STATE_HOME nor HOME is set")
 }
 
 // Store is the on-disk snapshot directory. The zero value is invalid; use

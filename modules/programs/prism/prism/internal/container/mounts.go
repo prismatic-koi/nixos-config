@@ -20,6 +20,8 @@ package container
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/prismatic-koi/prism/internal/usage"
 )
 
 // MountSpec describes one host artefact that needs to appear inside the
@@ -146,6 +148,34 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 	awsSSOReadOnly := false
 	awsCLIReadOnly := false
 	_ = mode // mode is retained for future per-mode mount tweaks
+
+	// ── prism usage snapshot dir: host source and in-sandbox destination ──
+	//
+	// Source (host). usage.DirForHome is the single source of truth for the
+	// resolution order — $XDG_STATE_HOME first, then <home>/.local/state —
+	// shared with usage.DefaultDir (the writer) and usageSnapshotPath() in
+	// pi/extensions/prism.ts (the reader). Resolving it here rather than
+	// hardcoding ~/.local/state is load-bearing: on a host that exports a
+	// non-default $XDG_STATE_HOME the snapshots live somewhere else entirely
+	// and a hardcoded source would bind an empty directory (issue #2572 AC).
+	//
+	// Destination (in-sandbox). Deliberately NOT the source path: it is
+	// $HOME-relative, because that is where the in-sandbox reader looks.
+	// bwrap starts the sandbox with --clearenv and re-adds only PATH, HOME,
+	// USER, LOGNAME, LANG, LC_ALL and SHELL (standardSandboxEnvArgs), so
+	// XDG_STATE_HOME is UNSET inside a bwrap sandbox and both readers fall
+	// back to $HOME/.local/state. Binding Src→Dst therefore also repairs the
+	// custom-$XDG_STATE_HOME host case: the interior path stays canonical
+	// whatever the host exported.
+	//
+	// If either half cannot be resolved there is nothing to mount, or nowhere
+	// to mount it, so both stay empty and resolveMountHostPath skips the entry
+	// rather than emitting a bind rooted at "/".
+	usageHostDir, usageSandboxDir := "", ""
+	if hostDir := usage.DirForHome(hostHome); hostDir != "" && sandboxHomeDir != "" {
+		usageHostDir = hostDir
+		usageSandboxDir = filepath.Join(sandboxHomeDir, ".local", "state", "prism", "usage")
+	}
 
 	specs := []MountSpec{
 		// ── ~/.config/claude (RW, conditional, Dst==Src at XDG path) ─────
@@ -390,6 +420,57 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		{
 			HostPath:          filepath.Join(hostHome, ".config", "prism", "profiles.json"),
 			SandboxPath:       filepath.Join(sandboxHomeDir, ".config", "prism", "profiles.json"),
+			ReadOnly:          true,
+			OptionalIfMissing: true,
+		},
+
+		// ── prism usage snapshot dir (RO, conditional, leaf only) ───────
+		// Host: $XDG_STATE_HOME/prism/usage (see the resolution block
+		// above). Holds <account>.json per account plus current.json, a
+		// copy of the active account's snapshot written by the sidecar
+		// endpoint POST /usage/snapshot (issue #2538).
+		//
+		// Without this mount the bottom-bar usage segment
+		// (pi/extensions/prism.ts::readUsageSnapshot) finds no file and
+		// renders nothing in EVERY sandboxed session — which is most
+		// sessions (issue #2572). The reader already degrades silently on
+		// a missing file, so the failure was invisible.
+		//
+		// READ-ONLY. The display only reads, and every write goes through
+		// the sidecar host-API endpoint, so nothing in-sandbox needs write
+		// access. RO also means a compromised session cannot forge usage
+		// figures on the host. RO must not silently become RW.
+		//
+		// LEAF ONLY. The bind is the usage directory itself, never a
+		// parent: $XDG_STATE_HOME/prism holds prism.db (the full session
+		// database) and run/ (every session's host-API socket dir), and
+		// $XDG_STATE_HOME itself holds unrelated application state. Widening
+		// this entry to a parent would be a far larger grant than the
+		// display needs and would defeat the per-session socket isolation
+		// from security fix #960.
+		//
+		// DIRECTORY, not the current.json file. A file-level bind pins the
+		// original inode, and the writer replaces the file by atomic
+		// rename — a session would be stuck with the snapshot that existed
+		// at spawn time. A directory bind is inode-transparent, so a
+		// snapshot written on the host mid-session becomes visible without
+		// a restart (same reasoning as the host-API socket dir bind in
+		// bwrap.go).
+		//
+		// OptionalIfMissing because bwrap ABORTS on a missing bind source
+		// (the #2243 lesson). prepareVolumeDirs pre-creates the directory
+		// host-side so the bind is normally always active — this guard
+		// covers the case where that creation failed (it is non-fatal by
+		// design, e.g. an unwritable HOME in the nix build sandbox). The
+		// session then starts normally, just without the mount, and the
+		// bottom bar degrades silently exactly as it does today.
+		//
+		// sandbox-exec does not walk this slice (see the package comment):
+		// there generateProfile emits an explicit RO (subpath ...) grant on
+		// the real host path in section 5j of sandbox_exec.go.
+		{
+			HostPath:          usageHostDir,
+			SandboxPath:       usageSandboxDir,
 			ReadOnly:          true,
 			OptionalIfMissing: true,
 		},

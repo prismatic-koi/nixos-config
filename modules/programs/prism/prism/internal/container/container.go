@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/usage"
 )
 
 const (
@@ -904,6 +905,30 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 	clipboardCacheDir := filepath.Join(home, ".cache", "prism", "clipboard")
 	if err := os.MkdirAll(clipboardCacheDir, 0o755); err != nil {
 		log.Printf("container: failed to create clipboard staging dir %q (optional): %v", clipboardCacheDir, err)
+	}
+
+	// prism usage snapshot directory (issue #2572): pre-create so the RO
+	// bind-mount emitted by StandardSandboxMounts is always active, even on a
+	// host that has never captured a snapshot. Without this, a session
+	// spawned before the first capture gets no mount (the entry is
+	// OptionalIfMissing because bwrap aborts on missing bind sources), and
+	// the bottom-bar usage segment would stay blank for the whole life of
+	// that session even after the host wrote a snapshot. Same reasoning as
+	// the clipboard staging dir above.
+	//
+	// Mode 0700 matches internal/usage's own dirMode: the snapshots are the
+	// user's account rate-limit figures and no other host user needs to list
+	// or read them. Resolved through usage.DirForHome so the pre-created
+	// directory is the same one the mount source, the writer
+	// (usage.DefaultDir) and the reader (prism.ts) resolve.
+	//
+	// Failure is logged, not fatal — the OptionalIfMissing guard then skips
+	// the mount and the session still starts. That is what keeps the nix
+	// build sandbox (HOME=/homeless-shelter, unwritable) working.
+	if usageDir := usage.DirForHome(home); usageDir != "" {
+		if err := os.MkdirAll(usageDir, 0o700); err != nil {
+			log.Printf("container: failed to create usage snapshot dir %q (optional): %v", usageDir, err)
+		}
 	}
 
 	return nil

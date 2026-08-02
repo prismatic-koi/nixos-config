@@ -642,6 +642,117 @@ func TestGenerateProfile_PrismProfilesJSONReadAllow(t *testing.T) {
 	}
 }
 
+// TestGenerateProfile_UsageStateDirReadAllow verifies that the profile
+// contains a read-only (subpath ...) allow for the prism usage snapshot
+// directory (issue #2572).
+//
+// The bottom-bar usage segment reads current.json out of that directory
+// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). Under
+// deny-default the open failed and the reader — which degrades silently by
+// design — rendered nothing, so the feature was invisible in every
+// sandboxed session.
+//
+// The rule must be:
+//   - a (subpath ...) on the LEAF usage directory — the writer replaces
+//     current.json by atomic rename and `prism account usage` also reads
+//     the sibling <account>.json files;
+//   - never a grant on a PARENT: $XDG_STATE_HOME/prism holds prism.db and
+//     run/ (every session's host-API socket dir, isolated per session by
+//     security fix #960);
+//   - read-only — no file-write* anywhere near it. Every writer goes
+//     through the sidecar endpoint POST /usage/snapshot (issue #2538).
+//
+// This substring assertion is necessary but not sufficient — the paired
+// Darwin integration tests in
+// internal/integration/sandbox_exec_usage_dir_darwin_test.go prove the rule
+// is load-bearing against /usr/bin/sandbox-exec per
+// docs/sandbox-exec-testing.md.
+func TestGenerateProfile_UsageStateDirReadAllow(t *testing.T) {
+	fakeHome := newFakeHome(t)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	usageDir := filepath.Join(fakeHome, ".local", "state", "prism", "usage")
+
+	wantBlock := "(allow file-read* file-test-existence file-read-metadata\n" +
+		"  (subpath \"" + usageDir + "\"))\n"
+	if !strings.Contains(profile, wantBlock) {
+		t.Errorf("profile missing the prism usage-dir read-only allow block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	}
+
+	// Exactly once — a second occurrence would mean the path leaked into
+	// another (potentially writable) clause.
+	if got := strings.Count(profile, usageDir); got != 1 {
+		t.Errorf("usage dir must appear exactly once in the profile (read-only subpath); found %d occurrences.\nfull profile:\n%s", got, profile)
+	}
+
+	// RO must not silently become RW: the subpath rule must not sit inside
+	// any allow clause carrying file-write*.
+	rule := "(subpath \"" + usageDir + "\")"
+	idx := 0
+	for {
+		rel := strings.Index(profile[idx:], rule)
+		if rel < 0 {
+			break
+		}
+		at := idx + rel
+		clauseStart := strings.LastIndex(profile[:at], "(allow ")
+		if clauseStart >= 0 && strings.Contains(profile[clauseStart:at], "file-write*") {
+			t.Errorf("usage dir subpath appears inside a file-write* allow block — RO must not become RW;\nclause: %q", profile[clauseStart:at])
+		}
+		idx = at + len(rule)
+	}
+
+	// Security AC: no path outside the usage directory becomes readable.
+	// Check the HOME-side ancestor chain — the parents the issue calls out
+	// as the dangerous widening. (Ancestors above HOME are not checked here:
+	// on a Linux test host the fake HOME sits under /tmp, which section 3
+	// grants for unrelated reasons; on Darwin, where this profile actually
+	// runs, /tmp is not an ancestor of HOME.)
+	for _, ancestor := range []string{
+		filepath.Join(fakeHome, ".local", "state", "prism"),
+		filepath.Join(fakeHome, ".local", "state"),
+		filepath.Join(fakeHome, ".local"),
+		fakeHome,
+	} {
+		for _, form := range []string{
+			"(subpath \"" + ancestor + "\")",
+			"(literal \"" + ancestor + "\")",
+		} {
+			if strings.Contains(profile, form) {
+				t.Errorf("profile grants %s — an ancestor of the usage dir. Grant the LEAF only.\nfull profile:\n%s", form, profile)
+			}
+		}
+	}
+}
+
+// TestGenerateProfile_UsageStateDirHonoursXDGStateHome is the AC that the
+// grant resolves $XDG_STATE_HOME the same way pi/extensions/prism.ts does
+// rather than assuming ~/.local/state. On a host exporting a non-default
+// $XDG_STATE_HOME the snapshots live elsewhere, and a hardcoded path would
+// grant an empty directory while the real one stayed unreadable.
+func TestGenerateProfile_UsageStateDirHonoursXDGStateHome(t *testing.T) {
+	fakeHome := newFakeHome(t)
+	stateHome := t.TempDir()
+	// newFakeHome clears XDG_STATE_HOME; this test exercises the other branch.
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@main"})
+	profile := generateProfile(m)
+
+	xdgUsageDir := filepath.Join(stateHome, "prism", "usage")
+	if !strings.Contains(profile, "(subpath \""+xdgUsageDir+"\")") {
+		t.Errorf("profile does not grant the $XDG_STATE_HOME-resolved usage dir %q.\nfull profile:\n%s", xdgUsageDir, profile)
+	}
+
+	homeUsageDir := filepath.Join(fakeHome, ".local", "state", "prism", "usage")
+	if strings.Contains(profile, homeUsageDir) {
+		t.Errorf("profile grants the hardcoded %q even though $XDG_STATE_HOME is set to %q.\nfull profile:\n%s",
+			homeUsageDir, stateHome, profile)
+	}
+}
+
 // ── PrepareSandboxExec ──────────────────────────────────────────────────────
 
 // TestPrepareSandboxExec_WritesProfileAndReturnsArgs verifies that

@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/usage"
 )
 
 // sandboxExecIsolator implements Isolator using Apple's sandbox-exec. It
@@ -117,6 +118,9 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - RO subpath grants for ~/.cache/prism/clipboard and
 //     ~/.config/prism/agents, plus an RO grant for the ~/.nix-profile
 //     symlink and its resolved target (Step 3f of #2132, issue #2245)
+//   - RO subpath grant for the prism usage snapshot dir
+//     ($XDG_STATE_HOME/prism/usage) — the bottom-bar usage reader
+//     (issue #2572)
 //   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
 //     the work dir (subpath <sessionDir>) is the ONLY per-session writable
 //     grant (issue #2213 / PR #2221; Step 5 of #2132 deleted the staging
@@ -597,6 +601,47 @@ func generateProfile(m *Manager) string {
 		loginKeychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 		sb.WriteString("(allow file-read* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (literal " + quoteSBPL(loginKeychain) + "))\n")
+		sb.WriteString("\n")
+	}
+
+	// ── 5j. prism usage snapshot dir RO subpath read (issue #2572) ───────
+	// The bottom-bar usage segment reads current.json out of this directory
+	// (pi/extensions/prism.ts::readUsageSnapshot, issue #2540). Under
+	// deny-default the open fails and the reader — which degrades silently
+	// by design — renders nothing, so the whole feature was invisible in
+	// every sandboxed session. `prism account usage` from inside a session
+	// reads the same directory via internal/usage.ReadAll.
+	//
+	// Path resolution: usage.DirForHome is the single source of truth for
+	// the order ($XDG_STATE_HOME first, then <home>/.local/state), shared
+	// with usage.DefaultDir (the writer) and usageSnapshotPath() in
+	// prism.ts (the reader). Grant the RESOLVED host path rather than a
+	// hardcoded ~/.local/state: on a host exporting a non-default
+	// $XDG_STATE_HOME the snapshots live elsewhere and the hardcoded path
+	// would grant an empty directory.
+	//
+	// Shape: (subpath <usageDir>) — the LEAF directory only, never a
+	// parent. The parent $XDG_STATE_HOME/prism holds prism.db and run/
+	// (every session's host-API socket dir, isolated per session by
+	// security fix #960); $XDG_STATE_HOME itself holds unrelated
+	// application state. Subpath rather than (literal <dir>/current.json)
+	// because the writer replaces the file by atomic rename and
+	// `prism account usage` also reads the sibling <account>.json files.
+	//
+	// READ-ONLY — no file-write*. The display only reads, and every writer
+	// goes through the sidecar endpoint POST /usage/snapshot (issue #2538),
+	// so nothing in-sandbox needs write access. RO also stops a compromised
+	// session forging usage figures on the host. RO must not silently
+	// become RW. Mirrors bwrap's --ro-bind of the same directory in
+	// mounts.go StandardSandboxMounts.
+	//
+	// Emitted even when the dir does not exist on the host — sandbox-exec
+	// silently ignores (subpath ...) rules for non-existent paths (same
+	// shape as the 5d/5e/5f grants), so a host that has never captured a
+	// snapshot is unaffected and the session starts normally.
+	if usageDir := usage.DirForHome(home); usageDir != "" {
+		sb.WriteString("(allow file-read* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (subpath " + quoteSBPL(usageDir) + "))\n")
 		sb.WriteString("\n")
 	}
 
