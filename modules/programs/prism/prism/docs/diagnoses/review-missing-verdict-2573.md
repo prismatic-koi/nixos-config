@@ -1,8 +1,8 @@
 # Diagnosis — a review agent that produces no verdict is counted as a full round (issue #2573)
 
-<!-- doclint-ignore: modules/programs/prism/skills/prism/SKILL.md -->
+<!-- doclint-ignore: modules/programs/prism/skills/prism/SKILL.md, modules/programs/prism/agents/worker.md -->
 <!--
-  The path above resolves against the same repo, but only in a full
+  The paths above resolve against the same repo, but only in a full
   checkout — in the nix sandbox only the prism Go subtree is present.
   Same class of cross-boundary reference as the annotations in
   review-agent-no-verdict-1993.md and doclint.md.
@@ -118,7 +118,36 @@ The delivery message gains:
   any round with a missing verdict, in place of the code-FAIL header;
 - an `Agents with no verdict` section naming each agent, its class, and the
   reason recorded for it;
-- the targeted re-run command, e.g. `prism review 2568 --only review-qa`.
+- the re-run command to use, gated as described below.
 
 A round in which all five agents produce verdicts is unchanged, and still
 consumes one cycle.
+
+## The re-run command is gated, not unconditional
+
+The targeted-rerun condition (#2530, widened by #2557) permits a `--only`
+re-run of a subset of the agents only when the inter-cycle diff is exactly
+formatter output, comments, or documentation, and touches no file cited in a
+FAIL finding. The condition is prose-only — it lives in
+`modules/programs/prism/agents/worker.md` and
+`modules/programs/prism/skills/prism/SKILL.md`, and `cmd/review.go` enforces
+nothing.
+
+A report that always printed `prism review <pr> --only <missing agents>` would
+therefore instruct the worker to break that condition: on a round that carries
+both a FAIL verdict and a missing verdict, the worker fixes the code and
+re-runs one agent, and the other verdicts stay recorded against the pre-fix
+commit.
+
+The report cannot see the inter-cycle diff, so `buildRerunAdvice` applies the
+half it can evaluate, via `RoundStatus.Fails` and
+`RoundStatus.TargetedRerunAllowed`:
+
+| Round shape | Command printed |
+|---|---|
+| An agent that ran returned FAIL | the full set, e.g. `prism review 2568`, with a note that a targeted re-run is not valid here |
+| No agent returned FAIL | the targeted command, e.g. `prism review 2568 --only review-qa`, with the push-nothing-else caveat and the full-set fallback |
+
+`FormatResultsForRound` applies the same gate to the summary `Retry:` hint, so
+the hint cannot contradict the advice below it. For a complete round the
+footer is byte-identical to the pre-#2573 output.
