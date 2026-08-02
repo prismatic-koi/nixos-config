@@ -395,9 +395,15 @@ type Refresher struct {
 // Errors:
 //
 //	ErrTokenRejected       HTTP 401 — the token is expired or revoked
-//	*StatusError           any other non-200 status
+//	*StatusError           a non-200, non-401 status with no usable
+//	                       rate-limit header (e.g. a WAF rejection)
 //	ErrNoRateLimitHeaders  HTTP 200 with no usable rate-limit header
 //	other                  the request could not be built or sent
+//
+// A non-200, non-401 status WITH a usable rate-limit header (e.g. a
+// quota-exhaustion 429) is not an error: the parsed payload is returned as
+// normal, because header presence — not status — is what tells a genuine
+// rate-limit response apart from a rejection with no usable headers.
 //
 // On every error path the stored snapshot must be left untouched by the
 // caller. This function itself never writes anything.
@@ -426,18 +432,25 @@ func (r *Refresher) Refresh(ctx context.Context, token string) (*SnapshotPayload
 		_ = resp.Body.Close()
 	}()
 
-	switch {
-	case resp.StatusCode == http.StatusUnauthorized:
+	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrTokenRejected
-	case resp.StatusCode != http.StatusOK:
-		return nil, &StatusError{StatusCode: resp.StatusCode}
 	}
 
+	// Parse headers before branching on status. A quota-exhaustion error
+	// response (e.g. 429) carries the same unified rate-limit header set as
+	// a 200 — that is how a client learns when the limit resets — while a
+	// WAF rejection or other non-200 carries none at all. Header presence,
+	// not status, is what actually discriminates the two: a payload that
+	// parses is used whatever the status; a non-200 with no parseable
+	// payload still reports as a status error.
 	payload := ParseRateLimitHeaders(resp.Header)
-	if payload == nil {
-		return nil, ErrNoRateLimitHeaders
+	if payload != nil {
+		return payload, nil
 	}
-	return payload, nil
+	if resp.StatusCode != http.StatusOK {
+		return nil, &StatusError{StatusCode: resp.StatusCode}
+	}
+	return nil, ErrNoRateLimitHeaders
 }
 
 // buildRequest assembles the request. It is separate from Refresh so the

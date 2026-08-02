@@ -418,11 +418,13 @@ export interface CaptureOptions {
  *
  * No capture happens when any of these hold:
  *
- *   - the status is not 200 (an error response carries no usable header set,
- *     and a WAF rejection carries none at all);
  *   - PRISM_HOST_API is unset or empty (no sidecar to POST to, so no network
  *     call is made at all);
- *   - the response carried no parseable unified rate-limit header.
+ *   - the response carried no parseable unified rate-limit header. This is
+ *     what actually discriminates a quota-exhaustion error response (which
+ *     carries the full unified header set) from a WAF rejection or other
+ *     non-200 with no rate-limit headers at all (which carries none). Status
+ *     alone cannot tell these apart, so it is not used as a gate here.
  *
  * The response object is never read beyond its headers, so the body stays
  * untouched for the SSE parser downstream.
@@ -433,8 +435,6 @@ export function captureRateLimitSnapshot(
   options: CaptureOptions = {},
 ): void {
   try {
-    if (status !== 200) return
-
     const apiURL = options.apiURL ?? process.env.PRISM_HOST_API ?? ""
     if (apiURL === "") return
 

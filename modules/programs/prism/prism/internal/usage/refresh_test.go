@@ -281,6 +281,45 @@ func TestRefresh_OKWithoutRateLimitHeadersIsReported(t *testing.T) {
 	}
 }
 
+// TestRefresh_TooManyRequestsWithHeadersIsUsable proves the fix for #2571:
+// a 429 carrying the full unified rate-limit header set is quota exhaustion,
+// not a WAF rejection, and must be returned as a usable payload rather than
+// discarded as a status error. Header presence discriminates the two cases,
+// not the status code.
+func TestRefresh_TooManyRequestsWithHeadersIsUsable(t *testing.T) {
+	clearRefreshEnv(t)
+	srv, _ := newFakeAnthropic(t, http.StatusTooManyRequests, fullRateLimitHeaders(), `{"error":"rate_limit_error"}`)
+
+	payload, err := refreshAgainst(t, srv)
+	if err != nil {
+		t.Fatalf("err = %v, want nil for a 429 carrying usable headers", err)
+	}
+	if payload == nil {
+		t.Fatal("payload = nil, want the parsed rate-limit snapshot")
+	}
+}
+
+// TestRefresh_TooManyRequestsWithoutHeadersIsStatusError is the other
+// direction of the #2571 fix: a 429 with NO unified rate-limit headers is
+// still a status error, not a usable payload. This is what catches an
+// over-broad fix that stops discriminating on header presence at all.
+func TestRefresh_TooManyRequestsWithoutHeadersIsStatusError(t *testing.T) {
+	clearRefreshEnv(t)
+	srv, _ := newFakeAnthropic(t, http.StatusTooManyRequests, http.Header{}, `{"error":"nope"}`)
+
+	payload, err := refreshAgainst(t, srv)
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) {
+		t.Fatalf("err = %v, want a *StatusError", err)
+	}
+	if statusErr.StatusCode != 429 {
+		t.Errorf("StatusCode = %d, want 429", statusErr.StatusCode)
+	}
+	if payload != nil {
+		t.Errorf("payload = %+v, want nil so no write can happen", payload)
+	}
+}
+
 // TestRefresh_ErrorsCarryNoTokenMaterial covers the security AC from the
 // direction that matters most: the strings a user sees.
 func TestRefresh_ErrorsCarryNoTokenMaterial(t *testing.T) {
