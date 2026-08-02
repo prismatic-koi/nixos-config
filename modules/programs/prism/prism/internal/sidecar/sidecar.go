@@ -528,9 +528,18 @@ type Sidecar struct {
 	// preserving ValidTransitions). Protected by s.mu.
 	assistantOutputSeen bool
 
-	// lastInvestigatorText holds the most recent completed turn text for an
-	// investigate-agent session. Updated on every turn_end; read at completion
-	// time by notifyInvestigatorCompletion to deliver the final report.
+	// lastInvestigatorText holds the most recent completed turn text for ANY
+	// session — the name predates issue #2528 and is investigator-specific in
+	// name only; it carries no role gate and is populated identically for
+	// investigate-agent sessions and ordinary worker sessions alike. Updated
+	// on every turn_end. Read at completion time by two consumers:
+	//   - notifyInvestigatorCompletion, to deliver the investigator's final
+	//     report to its invoker.
+	//   - the worker terminal-notification path (notifyCoordinator /
+	//     notifyCoordinatorError, via buildWorkerNotifyText in notify.go), to
+	//     extract an opt-in <follow_ups> section for the coordinator.
+	// Do not role-gate this field to investigate-agent sessions only — doing
+	// so would silently disable the worker follow-ups feature.
 	// Protected by s.mu.
 	lastInvestigatorText string
 
@@ -1175,7 +1184,10 @@ func (s *Sidecar) Run(ctx context.Context) error {
 			// of the same write-ordering invariant. notifyCoordinator() acquires no
 			// locks held by this goroutine, so running it inline is safe.
 			if !isReviewAgentSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
-				s.notifyCoordinator()
+				// No completed turn text exists on the startup-timeout path (the
+				// harness never reached the listening state, let alone produced
+				// output), so there is nothing to extract a follow-ups section from.
+				s.notifyCoordinator("")
 			}
 
 			// Emit a `[timing] harness listening` line recording the timeout
@@ -2791,7 +2803,8 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		if wasEscalated {
 			s.logger().Printf("sidecar: session_shutdown: finish notification suppressed (cause=escalated — session.escalated already informed coordinator)")
 		} else {
-			s.goNotify(s.notifyCoordinator)
+			finalText := s.lastInvestigatorText
+			s.goNotify(func() { s.notifyCoordinator(finalText) })
 		}
 		return true
 

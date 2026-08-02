@@ -129,7 +129,7 @@ func TestNotifyCoordinator_WriteBusMessageFailed_OnDeliveryError(t *testing.T) {
 	// a sane range. Allow a small slack on both sides for the millisecond
 	// rounding inside the DB write.
 	before := time.Now().Add(-1 * time.Second)
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 	after := time.Now().Add(1 * time.Second)
 
 	// The seam closure must have run with the coordinator's session name.
@@ -214,7 +214,7 @@ func TestNotifyCoordinator_NoFailedAudit_OnDeliverySuccess(t *testing.T) {
 		return nil
 	}
 
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 
 	if !delivered {
 		t.Fatal("delivery seam was not invoked; the test cannot assert success path")

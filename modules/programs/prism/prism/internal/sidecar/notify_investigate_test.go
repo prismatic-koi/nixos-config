@@ -308,7 +308,7 @@ func TestNotifyCoordinator_InvestigateAgentSuppressed(t *testing.T) {
 	s := New(cfg)
 
 	// Directly call notifyCoordinator — it should be suppressed.
-	s.notifyCoordinator()
+	s.notifyCoordinator("")
 
 	time.Sleep(100 * time.Millisecond)
 
