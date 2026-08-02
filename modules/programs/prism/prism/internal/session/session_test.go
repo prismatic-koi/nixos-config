@@ -343,6 +343,36 @@ func TestBuildDirectAgentCmd_AgentFlag(t *testing.T) {
 	}
 }
 
+// TestBuildDirectAgentCmd_ExcludeToolsForReviewRoles is the host-mode mirror
+// of container.TestPIInvocation_ExcludeToolsForReviewRoles (issue #2531):
+// review roles get --exclude-tools write,edit; non-review roles get no such
+// flag.
+func TestBuildDirectAgentCmd_ExcludeToolsForReviewRoles(t *testing.T) {
+	for _, harnessName := range []string{"pi", ""} {
+		t.Run("harness="+harnessName+"/review-code", func(t *testing.T) {
+			opts := Opts{HarnessName: harnessName, Agent: "review-code"}
+			cmd := buildDirectAgentCmd(opts)
+			if !strings.Contains(cmd, "--exclude-tools 'write,edit'") {
+				t.Errorf("expected --exclude-tools 'write,edit' in cmd; got: %q", cmd)
+			}
+		})
+		t.Run("harness="+harnessName+"/worker", func(t *testing.T) {
+			opts := Opts{HarnessName: harnessName, Agent: "worker"}
+			cmd := buildDirectAgentCmd(opts)
+			if strings.Contains(cmd, "--exclude-tools") {
+				t.Errorf("--exclude-tools must not appear for worker; got: %q", cmd)
+			}
+		})
+	}
+	t.Run("no agent set: no flag", func(t *testing.T) {
+		opts := Opts{HarnessName: "pi"}
+		cmd := buildDirectAgentCmd(opts)
+		if strings.Contains(cmd, "--exclude-tools") {
+			t.Errorf("--exclude-tools must not appear with no agent role; got: %q", cmd)
+		}
+	})
+}
+
 // TestPIExtensionHostPath verifies the helper that buildDirectAgentCmd uses
 // to resolve the on-disk extension file path. Empty dir must return empty
 // so the caller falls back to no flag rather than emitting a stray

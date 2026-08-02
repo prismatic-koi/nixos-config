@@ -236,6 +236,26 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return gateErr
 	}
 
+	// Pre-flight formatter gate (#2556). Runs AFTER the rebase gate — it
+	// diffs against the same <remote>/<branch> ref the rebase gate just
+	// fetched and verified as an ancestor, so the file list reflects only
+	// this branch's own changes. Like the rebase gate, it runs BEFORE any
+	// review-agent session is spawned and BEFORE any DB rows are written for
+	// this round, so a refusal here cannot increment the review-cycle
+	// counter — NextRoundNumber derives the counter from per-agent session
+	// rows, and RunAsync has not been called yet on this path.
+	//
+	// Fail-open: if gofmt or nixfmt is not on PATH, that language's check is
+	// skipped with a progress warning rather than blocking the review. See
+	// internal/review/formatgate.go for the full rationale.
+	if gateErr := review.FormatGate(review.FormatGateOpts{
+		Worktree:   worktree,
+		Branch:     baseBranch,
+		OnProgress: progressLineEager,
+	}); gateErr != nil {
+		return gateErr
+	}
+
 	// Resolve the effective isolation mode for spawning review agents.
 	// Priority: parent session's DB-recorded mode > machine default.
 	// Using the machine default (cfg.DefaultIsolationMode) is wrong on hosts
