@@ -258,10 +258,15 @@ func TestProbeInitialState_ProtectedPending(t *testing.T) {
 	}
 }
 
+// TestProbeInitialState_ProtectedReviewRequired is the #2576 genuine-approval
+// path: branch protection requires an approving review
+// (required_approving_review_count > 0) and the PR does not have one yet, so
+// the human-approval message fires — on real fetched data, not by elimination.
+// The anti-reviewer-shopping guidance is preserved.
 func TestProbeInitialState_ProtectedReviewRequired(t *testing.T) {
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":105,"title":"awaiting review","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
-		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]},"required_pull_request_reviews":{"required_approving_review_count":1}}`,
 	)
 	dec, err := probeInitialState(105)
 	if err != nil {
@@ -270,17 +275,160 @@ func TestProbeInitialState_ProtectedReviewRequired(t *testing.T) {
 	if dec.Outcome != initialOutcomeEnqueueReview {
 		t.Errorf("outcome: got %v, want EnqueueReview", dec.Outcome)
 	}
-	if !strings.Contains(dec.Message, "requires human approval") {
-		t.Errorf("message %q does not contain 'requires human approval'", dec.Message)
+	if !strings.Contains(dec.Message, "needs an approving review") {
+		t.Errorf("message %q does not report that the PR needs an approving review", dec.Message)
 	}
-	if !strings.Contains(dec.Message, "No action required from you") {
-		t.Errorf("message %q does not contain 'No action required from you'", dec.Message)
+	if !strings.Contains(dec.Message, "requires 1 approving review") {
+		t.Errorf("message %q does not name the required approving-review count", dec.Message)
 	}
 	if !strings.Contains(dec.Message, "do not request reviewers, do not add approvers, just wait") {
 		t.Errorf("message %q does not contain the #2420 anti-reviewer-shopping guidance", dec.Message)
 	}
-	if !strings.Contains(dec.Message, "notify if merged out-of-band") {
+	if !strings.Contains(dec.Message, "merged out-of-band") {
 		t.Errorf("message %q does not contain the out-of-band notification promise", dec.Message)
+	}
+	// #2576: the human-approval message must not also claim the human has
+	// nothing to do — that phrase was the audience-mixing defect.
+	if strings.Contains(dec.Message, "No action required from you") {
+		t.Errorf("message %q still mixes audiences: it asks for an approval yet says 'No action required from you'", dec.Message)
+	}
+}
+
+// zeroApprovalRuleset is the on-repo reality (#2576): ruleset-protected main
+// with a required_status_checks rule and a pull_request rule that requires
+// ZERO approving reviews. No PR on such a repo may ever produce the
+// human-approval message.
+const zeroApprovalRuleset = `[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}},{"type":"pull_request","parameters":{"required_approving_review_count":0}}]`
+
+// TestProbeInitialState_UnknownMergeState_Undetermined is the #2576 core fix:
+// mergeStateStatus=UNKNOWN (GitHub still computing mergeability, the routine
+// post-enqueue case) must produce an undetermined result that names the
+// observed state and keeps polling — never the guessed human-approval message.
+func TestProbeInitialState_UnknownMergeState_Undetermined(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":2562,"title":"fresh enqueue","mergedAt":null,"mergeStateStatus":"UNKNOWN","reviewDecision":"","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
+		"", // classic 404s
+		zeroApprovalRuleset,
+	)
+	dec, err := probeInitialState(2562)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome != initialOutcomeEnqueueUndetermined {
+		t.Errorf("outcome: got %v, want EnqueueUndetermined (UNKNOWN is not a classification, #2576)", dec.Outcome)
+	}
+	if !strings.Contains(dec.Message, "UNKNOWN") {
+		t.Errorf("message %q does not name the observed mergeStateStatus", dec.Message)
+	}
+	if strings.Contains(dec.Message, "approval") || strings.Contains(dec.Message, "approve") {
+		t.Errorf("message %q must not mention approval on an UNKNOWN state (#2576)", dec.Message)
+	}
+}
+
+// TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval sweeps every
+// non-CLEAN state that used to reach the guessed human-approval fallthrough.
+// On a repo requiring zero approving reviews, none of them may produce that
+// message (#2576 AC1).
+func TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval(t *testing.T) {
+	states := []string{"UNKNOWN", "UNSTABLE", "BEHIND", "HAS_HOOKS", "SOME_FUTURE_STATE"}
+	for _, state := range states {
+		t.Run(state, func(t *testing.T) {
+			prJSON := fmt.Sprintf(
+				`{"state":"OPEN","number":2568,"title":"queued","mergedAt":null,"mergeStateStatus":%q,"reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
+				state,
+			)
+			stubGhBinRuleset(t, prJSON, "", zeroApprovalRuleset)
+			dec, err := probeInitialState(2568)
+			if err != nil {
+				t.Fatalf("probeInitialState: %v", err)
+			}
+			if dec.Outcome == initialOutcomeEnqueueReview {
+				t.Errorf("state %s: outcome is EnqueueReview on a zero-approval repo (#2576 AC1)", state)
+			}
+			if strings.Contains(dec.Message, "human approval") || strings.Contains(dec.Message, "needs an approving review") {
+				t.Errorf("state %s: message %q claims an approval requirement on a zero-approval repo", state, dec.Message)
+			}
+			if !strings.Contains(dec.Message, state) && state != "UNKNOWN" {
+				t.Errorf("state %s: message %q does not name the observed state", state, dec.Message)
+			}
+		})
+	}
+}
+
+// TestProbeInitialState_UnstableNonRequiredCheck_NotApproval is #2576 AC:
+// an UNSTABLE PR whose only failing check is non-required must be reported as
+// undetermined (naming UNSTABLE), not as requiring approval.
+func TestProbeInitialState_UnstableNonRequiredCheck_NotApproval(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":2570,"title":"optional red","mergedAt":null,"mergeStateStatus":"UNSTABLE","reviewDecision":"","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"},{"name":"slow-optional","conclusion":"FAILURE","status":"COMPLETED"}]}`,
+		"",
+		zeroApprovalRuleset,
+	)
+	dec, err := probeInitialState(2570)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome != initialOutcomeEnqueueUndetermined {
+		t.Errorf("outcome: got %v, want EnqueueUndetermined", dec.Outcome)
+	}
+	if !strings.Contains(dec.Message, "UNSTABLE") {
+		t.Errorf("message %q does not name the observed UNSTABLE state", dec.Message)
+	}
+	if strings.Contains(dec.Message, "approval") {
+		t.Errorf("message %q must not claim an approval requirement", dec.Message)
+	}
+}
+
+// TestProbeInitialState_ApprovalRequiredButApproved_NotReview covers the
+// boundary: a repo genuinely requires approvals, but the PR is already
+// APPROVED. The human-approval message must NOT fire — the PR lacks nothing.
+func TestProbeInitialState_ApprovalRequiredButApproved_NotReview(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":2571,"title":"approved but not clean","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"APPROVED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
+		"",
+		`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`,
+	)
+	dec, err := probeInitialState(2571)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome == initialOutcomeEnqueueReview {
+		t.Errorf("outcome: got EnqueueReview, but the PR is already APPROVED (#2576)")
+	}
+}
+
+// TestProbeBranchProtection_ReturnsApprovalCount is the #2576 AC that
+// probeBranchProtection surfaces the required approving-review count.
+func TestProbeBranchProtection_ReturnsApprovalCount(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]},"required_pull_request_reviews":{"required_approving_review_count":3}}`,
+	)
+	protected, _, approvals, err := probeBranchProtection("main")
+	if err != nil {
+		t.Fatalf("probeBranchProtection: %v", err)
+	}
+	if !protected {
+		t.Fatal("protected: got false, want true")
+	}
+	if approvals != 3 {
+		t.Errorf("required approvals: got %d, want 3", approvals)
+	}
+}
+
+// TestProbeBranchProtection_ZeroApprovalCount pins the on-repo zero-approval
+// reading through probeBranchProtection.
+func TestProbeBranchProtection_ZeroApprovalCount(t *testing.T) {
+	stubGhBinStates(t,
+		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+	)
+	_, _, approvals, err := probeBranchProtection("main")
+	if err != nil {
+		t.Fatalf("probeBranchProtection: %v", err)
+	}
+	if approvals != 0 {
+		t.Errorf("required approvals: got %d, want 0", approvals)
 	}
 }
 
@@ -324,7 +472,7 @@ func TestProbeBranchProtection_404NotAnError(t *testing.T) {
 		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
 		"", // 404
 	)
-	protected, required, err := probeBranchProtection("main")
+	protected, required, _, err := probeBranchProtection("main")
 	if err != nil {
 		t.Fatalf("probeBranchProtection on 404: got err %v, want nil (404 is a state, not an error)", err)
 	}
@@ -341,7 +489,7 @@ func TestProbeBranchProtection_ParsesRequiredChecks(t *testing.T) {
 		`{"state":"OPEN","number":1,"title":"","mergedAt":null,"mergeStateStatus":"","reviewDecision":"","baseRefName":"main","statusCheckRollup":[]}`,
 		`{"required_status_checks":{"contexts":["legacy-ci"],"checks":[{"context":"pr-gate"},{"context":"lint"}]}}`,
 	)
-	protected, required, err := probeBranchProtection("main")
+	protected, required, _, err := probeBranchProtection("main")
 	if err != nil {
 		t.Fatalf("probeBranchProtection: %v", err)
 	}
@@ -427,7 +575,7 @@ func TestProbeBranchProtection_RulesetFallback_Configured(t *testing.T) {
 		"", // classic 404s
 		`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate","integration_id":15368}]}},{"type":"pull_request"},{"type":"non_fast_forward"},{"type":"required_linear_history"},{"type":"deletion"}]`,
 	)
-	protected, required, err := probeBranchProtection("main")
+	protected, required, _, err := probeBranchProtection("main")
 	if err != nil {
 		t.Fatalf("probeBranchProtection: %v", err)
 	}
@@ -448,7 +596,7 @@ func TestProbeBranchProtection_NeitherClassicNorRuleset(t *testing.T) {
 		"", // classic 404s
 		"", // ruleset 404s too
 	)
-	protected, required, err := probeBranchProtection("main")
+	protected, required, _, err := probeBranchProtection("main")
 	if err != nil {
 		t.Fatalf("probeBranchProtection: %v", err)
 	}
@@ -752,7 +900,7 @@ func TestRunMerge_ProtectedReviewRequired_HasAntiReviewerShoppingGuidance(t *tes
 
 	stubGhBinStates(t,
 		`{"state":"OPEN","number":7005,"title":"awaiting","mergedAt":null,"mergeStateStatus":"BLOCKED","reviewDecision":"REVIEW_REQUIRED","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS"}]}`,
-		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`,
+		`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]},"required_pull_request_reviews":{"required_approving_review_count":2}}`,
 	)
 
 	out := captureStdout(t, func() {
@@ -764,8 +912,8 @@ func TestRunMerge_ProtectedReviewRequired_HasAntiReviewerShoppingGuidance(t *tes
 	if !strings.Contains(out, "do not request reviewers, do not add approvers, just wait") {
 		t.Errorf("stdout %q does not contain the #2420 anti-reviewer-shopping guidance", out)
 	}
-	if !strings.Contains(out, "No action required from you") {
-		t.Errorf("stdout %q does not contain 'No action required from you'", out)
+	if !strings.Contains(out, "requires 2 approving review") {
+		t.Errorf("stdout %q does not name the required approving-review count", out)
 	}
 	// Enqueue still fires so the watcher can drive the merge on approval.
 	if !strings.Contains(out, "PR #7005 enqueued") {

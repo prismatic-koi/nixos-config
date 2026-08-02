@@ -47,6 +47,14 @@ type Result struct {
 	// is true (e.g. a ruleset with only a pull_request rule and no
 	// required_status_checks rule).
 	RequiredChecks []string
+
+	// RequiredApprovingReviewCount is the number of approving reviews the
+	// branch protection requires before a PR may merge. Only meaningful when
+	// Configured is true. Zero means no approving review is required — the
+	// common case for a repo whose only gate is required status checks
+	// (#2576). Callers must not infer "a human must approve" from any signal
+	// other than this count being above zero.
+	RequiredApprovingReviewCount int
 }
 
 // classicProtectionResponse is the subset of the GitHub classic
@@ -58,6 +66,12 @@ type classicProtectionResponse struct {
 			Context string `json:"context"`
 		} `json:"checks"` // modern check-run names
 	} `json:"required_status_checks"`
+	// RequiredPullRequestReviews is absent from the classic response when the
+	// branch does not require pull-request reviews, so its zero value (count
+	// 0) is the correct "no approvals required" reading.
+	RequiredPullRequestReviews struct {
+		RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+	} `json:"required_pull_request_reviews"`
 }
 
 // rulesetRule is one entry in the array returned by
@@ -75,6 +89,9 @@ type rulesetRule struct {
 		RequiredStatusChecks []struct {
 			Context string `json:"context"`
 		} `json:"required_status_checks"`
+		// RequiredApprovingReviewCount lives on the pull_request rule's
+		// parameters. Absent (zero) for other rule types.
+		RequiredApprovingReviewCount int `json:"required_approving_review_count"`
 	} `json:"parameters"`
 }
 
@@ -155,7 +172,11 @@ func parseClassic(out []byte) (Result, error) {
 			names = append(names, c.Context)
 		}
 	}
-	return Result{Configured: true, RequiredChecks: names}, nil
+	return Result{
+		Configured:                   true,
+		RequiredChecks:               names,
+		RequiredApprovingReviewCount: resp.RequiredPullRequestReviews.RequiredApprovingReviewCount,
+	}, nil
 }
 
 // parseRuleset parses a rules/branches/{branch} effective-rules response
@@ -173,6 +194,7 @@ func parseRuleset(out []byte) (Result, error) {
 	configured := false
 	seen := make(map[string]bool)
 	var names []string
+	requiredApprovals := 0
 	for _, r := range rules {
 		// Defensive: honour an explicit non-active enforcement value if one
 		// is ever present, even though the documented API contract already
@@ -191,7 +213,18 @@ func parseRuleset(out []byte) (Result, error) {
 			}
 		case "pull_request":
 			configured = true
+			// A branch can, in principle, be covered by more than one
+			// active pull_request rule; take the strictest (highest)
+			// approving-review count so we never under-report the
+			// requirement.
+			if r.Parameters.RequiredApprovingReviewCount > requiredApprovals {
+				requiredApprovals = r.Parameters.RequiredApprovingReviewCount
+			}
 		}
 	}
-	return Result{Configured: configured, RequiredChecks: names}, nil
+	return Result{
+		Configured:                   configured,
+		RequiredChecks:               names,
+		RequiredApprovingReviewCount: requiredApprovals,
+	}, nil
 }

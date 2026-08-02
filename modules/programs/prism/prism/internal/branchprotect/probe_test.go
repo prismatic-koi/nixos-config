@@ -94,6 +94,95 @@ func TestProbe_RulesetFallback_Configured(t *testing.T) {
 	}
 }
 
+// TestProbe_ClassicApprovingReviewCount checks that Probe surfaces the
+// classic required_pull_request_reviews.required_approving_review_count so the
+// #2576 caller can discriminate a genuine approval requirement from a repo
+// that requires zero approvals.
+func TestProbe_ClassicApprovingReviewCount(t *testing.T) {
+	run := fakeRun(t, map[string]struct {
+		out []byte
+		err error
+	}{
+		classicPath: {out: []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]},"required_pull_request_reviews":{"required_approving_review_count":2}}`)},
+	})
+	res, err := Probe(context.Background(), run, classicPath, rulesetPath)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if res.RequiredApprovingReviewCount != 2 {
+		t.Errorf("RequiredApprovingReviewCount: got %d, want 2", res.RequiredApprovingReviewCount)
+	}
+}
+
+// TestProbe_ClassicNoApprovingReviews is the #2576 zero-approval case: a
+// classic response with no required_pull_request_reviews block must report a
+// count of 0 (the field's zero value), so no false approval requirement is
+// inferred.
+func TestProbe_ClassicNoApprovingReviews(t *testing.T) {
+	run := fakeRun(t, map[string]struct {
+		out []byte
+		err error
+	}{
+		classicPath: {out: []byte(`{"required_status_checks":{"contexts":[],"checks":[{"context":"pr-gate"}]}}`)},
+	})
+	res, err := Probe(context.Background(), run, classicPath, rulesetPath)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if res.RequiredApprovingReviewCount != 0 {
+		t.Errorf("RequiredApprovingReviewCount: got %d, want 0", res.RequiredApprovingReviewCount)
+	}
+}
+
+// TestProbe_RulesetApprovingReviewCount checks the count is extracted from the
+// pull_request rule's parameters on the ruleset path. This repo's main is
+// ruleset-protected with a zero count, which is the exact false-positive the
+// #2576 fix removes; a non-zero fixture proves the plumbing.
+func TestProbe_RulesetApprovingReviewCount(t *testing.T) {
+	classicOut, classicErr := notFound()
+	run := fakeRun(t, map[string]struct {
+		out []byte
+		err error
+	}{
+		classicPath: {out: classicOut, err: classicErr},
+		rulesetPath: {out: []byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-gate"}]}},{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`)},
+	})
+	res, err := Probe(context.Background(), run, classicPath, rulesetPath)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !res.Configured {
+		t.Fatal("Configured: got false, want true")
+	}
+	if res.RequiredApprovingReviewCount != 1 {
+		t.Errorf("RequiredApprovingReviewCount: got %d, want 1", res.RequiredApprovingReviewCount)
+	}
+}
+
+// TestProbe_RulesetZeroApprovingReviews pins the on-repo reality (issue
+// #2576): a pull_request rule with required_approving_review_count=0 must
+// report a count of 0, so `prism merge` never claims a human must approve.
+func TestProbe_RulesetZeroApprovingReviews(t *testing.T) {
+	classicOut, classicErr := notFound()
+	run := fakeRun(t, map[string]struct {
+		out []byte
+		err error
+	}{
+		classicPath: {out: classicOut, err: classicErr},
+		rulesetPath: {out: []byte(`[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]`)},
+	})
+	res, err := Probe(context.Background(), run, classicPath, rulesetPath)
+	if err != nil {
+		t.Fatalf("Probe: %v", err)
+	}
+	if !res.Configured {
+		t.Fatal("Configured: got false, want true (pull_request rule is still protection)")
+	}
+	if res.RequiredApprovingReviewCount != 0 {
+		t.Errorf("RequiredApprovingReviewCount: got %d, want 0", res.RequiredApprovingReviewCount)
+	}
+}
+
 // TestProbe_RulesetFallback_PullRequestOnly covers a ruleset that only has a
 // pull_request rule (no required_status_checks) — still protection, but with
 // no required check names.
