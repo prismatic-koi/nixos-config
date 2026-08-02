@@ -189,11 +189,19 @@ The full failure path that produced the symptom for PR #1992:
 
 ## Why this is not a true no-start
 
-The existing `noStartSessions` machinery at
-`internal/review/monitor.go:401-432` already distinguishes infrastructure
-failures (container never bound its port) from code-quality verdicts. It
-keys off `mr.StartupError != ""`, which is set by the sidecar's
-`writeStartupError` when `WaitHealthy` or `CreateSession` fails.
+The existing no-start machinery in `buildDeliveryMessage` already
+distinguishes infrastructure failures (container never bound its port)
+from code-quality verdicts. It keys off `mr.StartupError != ""`, which is
+set by the sidecar's `writeStartupError` when `WaitHealthy` or
+`CreateSession` fails.
+
+> **Editor's note (#2573).** This document describes the code as it stood
+> at the time of the #1993 diagnosis. The per-class session lists it names
+> (a no-start slice and friends, built inline in
+> `buildDeliveryMessage`) were later replaced by the shared classifier
+> `ClassifyRound` in `internal/review/roundstatus.go`, and
+> `currentCycleProducedVerdicts` became `cycleProducedVerdicts`. The
+> reasoning below is unchanged; only the symbol names moved.
 
 The agents in this issue never hit `writeStartupError`. They started,
 handshook, ran turns, and finished. `StartupError` is empty for them. So
@@ -211,7 +219,7 @@ these rows); only the cycle-counter predicate is missing the check.
 The minimal-risk fix is a one-line tightening of
 `currentCycleProducedVerdicts`: require the `LastMessage` to contain a
 parseable verdict tag, not just be non-empty. The same tightening applies
-to `CompletedReviewCyclesForParent`'s `producedVerdict` predicate.
+to `CompletedReviewCyclesForParent`'s per-group predicate.
 
 ```go
 // Sketch — not applied in this PR; tracked in a follow-up issue.

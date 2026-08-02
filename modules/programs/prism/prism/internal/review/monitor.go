@@ -155,12 +155,24 @@ func MonitorFunc(opts MonitorOpts) error {
 		groupData = map[string]db.GroupMemberResult{}
 	}
 
-	// Build AgentResult slice, handling "missing" sessions (row deleted mid-review).
-	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData)
+	// Read the rows db.GroupResults drops — members whose ended_at is set
+	// (#2573). Without them a reaped session is indistinguishable from a
+	// session that never existed, and the report cannot say why the agent
+	// produced no verdict.
+	endedRows := endedGroupMembers(d, opts.GroupID)
 
-	// Format the delivery message.
-	output, allPassed := FormatResults(results, opts.PRNumber, opts.Round, 0)
-	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, groupData, opts.AgentSessions)
+	// Build AgentResult slice, handling "missing" sessions (row reaped or
+	// deleted mid-review).
+	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData, endedRows)
+
+	// Classify the round once. RoundStatus is the single source of truth for
+	// both the report wording and the cycle-counter gate below (#2573).
+	status := ClassifyRound(opts.Agents, opts.AgentSessions, groupData, endedRows)
+
+	// Format the delivery message. FormatResultsForRound keeps the summary
+	// footer's retry hint consistent with the re-run advice below (#2573).
+	output, allPassed := FormatResultsForRound(results, opts.PRNumber, opts.Round, 0, status)
+	deliveryText := buildDeliveryMessage(opts.PRNumber, opts.Round, output, allPassed, status)
 
 	// Issue #2110: persist the latest-round review verdict and counts on the
 	// worker's spawn_outcome row. This is the single write site that the AC
@@ -184,11 +196,12 @@ func MonitorFunc(opts MonitorOpts) error {
 	// LOOP-LIMIT footer (#1512). Append the footer to the prompt body when
 	//   (a) the cycle has not converged (¬allPassed),
 	//   (b) THIS cycle is itself a verdict-producing cycle — i.e. every
-	//       member emitted a parseable `<verdict>` tag (#1995). When the
-	//       cycle is NOT verdict-producing, the relevant branch in
-	//       buildDeliveryMessage ("infrastructure failure" or
-	//       "ran but produced no parseable verdict") already tells the
-	//       worker to re-run — it is not yet at the limit, AND
+	//       EXPECTED member emitted a parseable `<verdict>` tag (#1995,
+	//       #2573). When the cycle is NOT verdict-producing, the relevant
+	//       branch in buildDeliveryMessage ("infrastructure failure",
+	//       "Round incomplete", or "ran but produced no parseable verdict")
+	//       already tells the worker to re-run — it is not yet at the
+	//       limit, AND
 	//   (c) the total count of verdict-producing cycles for this parent
 	//       (including this one) is ≥ REVIEW_CYCLE_THRESHOLD.
 	//
@@ -197,7 +210,7 @@ func MonitorFunc(opts MonitorOpts) error {
 	// already going to act on. This dissolves the per-turn-spam and the
 	// bash-substring false-match defects at the source (#1512).
 	if !allPassed {
-		if currentCycleProducedVerdicts(groupData) {
+		if status.CountsAsCycle() {
 			prior, ccErr := CompletedReviewCyclesForParent(d, opts.WorkerSession, opts.GroupID)
 			if ccErr != nil {
 				proglog.Warnf("[prism monitor-review] warning: cycle count failed: %v — footer suppressed\n", ccErr)
@@ -386,9 +399,14 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 }
 
 // buildMonitorResults constructs AgentResult entries from GroupResults data,
-// handling missing sessions (row deleted mid-review) as a special case.
-// Missing agents are counted as an error result with state "missing".
-func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult) []AgentResult {
+// handling missing sessions (row reaped or deleted mid-review) as a special
+// case. Missing agents are counted as an error result.
+//
+// endedRows carries the group's agent_status rows whose ended_at is set —
+// exactly the rows db.GroupResults drops. It lets the missing-session branch
+// state WHY the member vanished (#2573). Pass nil when no DB handle is
+// available; the branch then reports the absence without a cause.
+func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	for i, ag := range agents {
 		agentSession := ""
@@ -398,11 +416,13 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 
 		mr, ok := groupData[agentSession]
 		if !ok || agentSession == "" {
-			// Session was deleted mid-review or never registered — count as missing.
+			// Session was reaped mid-review (ended_at set), deleted, or never
+			// registered — count as missing and name the recorded cause.
+			class, reason := classifyAbsentMember(agentSession, endedRows)
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
-				Output:  "ERROR: agent session not found in group (possibly deleted mid-review)",
+				Output:  fmt.Sprintf("ERROR: agent produced no verdict — %s: %s", class, reason),
 				IsError: true,
 			}
 			continue
@@ -501,115 +521,50 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 
 // buildDeliveryMessage constructs the prompt text delivered to the worker when
 // the review group completes.
-func buildDeliveryMessage(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string) string {
+//
+// status is the round classification produced by ClassifyRound — the single
+// source of truth for which agents produced a verdict and why the others did
+// not (#2573). The header branch and the cycle-counter gate in MonitorFunc
+// read the same classification, so the report and the counter cannot drift.
+func buildDeliveryMessage(prNumber string, round int, formattedResults string, allPassed bool, status RoundStatus) string {
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Review complete: PR #%s (round %d)\n\n", prNumber, round))
 
-	// Count no-start failures: agents whose sidecar wrote a startup_error event
+	// No-start failures (#1222): the sidecar wrote a startup_error event
 	// (container never bound its port, or the inactivity watchdog fired with
-	// zero inbound frames). These are infrastructure failures, not
-	// code-quality signals, and must be treated differently from FAIL verdicts.
-	var noStartSessions []string
-	for _, sess := range agentSessions {
-		if mr, ok := groupData[sess]; ok && mr.StartupError != "" {
-			noStartSessions = append(noStartSessions, sess)
-		}
-	}
-
-	// Count mid-run stalls (#2239): agents whose inactivity watchdog fired
-	// after one or more inbound frames were received — the agent ran, then
-	// went silent (stream starvation, provider limit, payload wedge). Like
-	// no-starts these are infrastructure failures, but they are labelled
-	// distinctly because the operational response differs: a never-started
-	// agent suggests config/infra and is worth an immediate retry, while
-	// repeated stalls under concurrent load suggest rate/subscription limits
-	// where blind retries burn rounds. Only counted when the member's
-	// terminal state is "error" — a stale stall_error event on a member that
-	// later recovered to "finished" (#1495-style resume) must not relabel a
-	// real verdict.
-	var stalledSessions []string
-	for _, sess := range agentSessions {
-		mr, ok := groupData[sess]
-		if !ok {
-			continue
-		}
-		if mr.State == "error" && mr.StartupError == "" && mr.StallError != "" {
-			stalledSessions = append(stalledSessions, sess)
-		}
-	}
-	infraFailureCount := len(noStartSessions) + len(stalledSessions)
-
-	// Count ran-but-no-parseable-verdict failures (#1995): agents that
-	// terminated in `finished` state with no startup_error, but whose
-	// LastMessage either is empty or does not contain a parseable
-	// `<verdict>PASS</verdict>` / `<verdict>FAIL</verdict>` tag. These are
-	// distinct from no-start failures (the agent did run — the output is
-	// just unparseable) AND from FAIL verdicts (no code-quality signal was
-	// produced). The worker should re-run, not escalate, not treat as FAIL.
-	var noVerdictSessions []string
-	for _, sess := range agentSessions {
-		mr, ok := groupData[sess]
-		if !ok {
-			continue
-		}
-		if mr.StartupError != "" {
-			continue // already counted as no-start
-		}
-		if mr.State != "finished" {
-			continue // a non-finished state is surfaced via the unexpected-state branch in buildMonitorResults
-		}
-		if memberProducedParseableVerdict(mr) {
-			continue
-		}
-		noVerdictSessions = append(noVerdictSessions, sess)
-	}
+	// zero inbound frames). Mid-run stalls (#2239): the watchdog fired after
+	// one or more inbound frames — the agent ran, then went silent. Both are
+	// infrastructure failures, but they keep separate headers because the
+	// operational response differs: a never-started agent suggests config or
+	// infra and is worth an immediate retry, while repeated stalls under
+	// concurrent load suggest rate/subscription limits where blind retries
+	// burn rounds.
+	noStart := status.MissingOfClass(NoVerdictNoStart)
+	stalled := status.MissingOfClass(NoVerdictStalled)
 
 	switch {
-	case allPassed:
+	case allPassed && status.Complete():
 		sb.WriteString("**All 5 review agents passed.** You may proceed with announcing completion.\n\n")
-	case len(noStartSessions) > 0 && len(noStartSessions) == len(agentSessions):
+	case status.Complete():
+		// Every agent produced a verdict and at least one is FAIL — an
+		// ordinary failed review round. This is the only non-passing branch
+		// that consumes a review cycle.
+		sb.WriteString("**One or more review agents failed.** Fix the blocking issues and re-run `prism review`.\n\n")
+	case len(noStart) > 0 && len(noStart) == status.Expected:
 		// Every agent failed to start — pure infrastructure failure with no
 		// code-quality signal at all.
 		sb.WriteString("**All review agents failed to start (infrastructure failure).** ")
 		sb.WriteString("This is NOT a code-quality verdict — no agents ran. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
-	case len(stalledSessions) > 0 && len(stalledSessions) == len(agentSessions):
+	case len(stalled) > 0 && len(stalled) == status.Expected:
 		// Every agent stalled mid-run — infrastructure failure, but distinct
 		// from no-start: the agents DID run and then went silent (#2239).
 		sb.WriteString("**All review agents stalled mid-run (infrastructure failure).** ")
 		sb.WriteString("This is NOT a code-quality verdict — the agents ran but stopped producing frames before completing. ")
 		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL. ")
 		sb.WriteString("Repeated mid-run stalls under concurrent load may indicate provider rate/subscription limits — escalate rather than burning rounds on blind re-runs if this recurs.\n\n")
-	case infraFailureCount > 0 && infraFailureCount == len(agentSessions):
-		// Every agent infra-failed, in a mix of the two classes (#2239).
-		sb.WriteString(fmt.Sprintf("**All review agents failed before completing (infrastructure failure): %d failed to start (no frames received), %d stalled mid-run.** ",
-			len(noStartSessions), len(stalledSessions)))
-		sb.WriteString("This is NOT a code-quality verdict — no agent produced a verdict. ")
-		sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL.\n\n")
-	case infraFailureCount > 0:
-		// Mixed: some agents returned FAIL/PASS verdicts; others failed to
-		// start and/or stalled mid-run. Surface both signals so the
-		// coordinator knows to both fix code issues AND re-run for the agents
-		// that produced no verdict.
-		switch {
-		case len(stalledSessions) == 0:
-			sb.WriteString("**One or more review agents failed AND one or more failed to start.** ")
-			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
-			sb.WriteString("to cover the agents that failed to start (infrastructure failure). ")
-			sb.WriteString("Do not treat no-start errors as code-quality verdicts.\n\n")
-		case len(noStartSessions) == 0:
-			sb.WriteString("**One or more review agents failed AND one or more stalled mid-run.** ")
-			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
-			sb.WriteString("to cover the agents that stalled mid-run (infrastructure failure). ")
-			sb.WriteString("Do not treat mid-run stalls as code-quality verdicts.\n\n")
-		default:
-			sb.WriteString("**One or more review agents failed AND one or more failed to start or stalled mid-run.** ")
-			sb.WriteString("Fix any blocking issues from the agents that ran, then re-run `prism review` ")
-			sb.WriteString("to cover the agents that failed to start (no frames received) or stalled mid-run (infrastructure failure). ")
-			sb.WriteString("Do not treat no-start errors or mid-run stalls as code-quality verdicts.\n\n")
-		}
-	case len(noVerdictSessions) > 0:
+	case !status.HasInfrastructureFailure():
 		// One or more agents ran to `finished` but produced no parseable
 		// `<verdict>` tag (#1995). The signal is incomplete — not a
 		// code-quality FAIL — so the worker should re-run rather than
@@ -619,24 +574,107 @@ func buildDeliveryMessage(prNumber string, round int, formattedResults string, a
 		sb.WriteString("Re-run `prism review` to retry; this round does NOT count toward the 3-cycle limit. ")
 		sb.WriteString("If any other agent surfaced blocking issues, address those before re-running.\n\n")
 	default:
-		sb.WriteString("**One or more review agents failed.** Fix the blocking issues and re-run `prism review`.\n\n")
+		// The round is incomplete and at least one absence is an
+		// infrastructure fault: a no-start, a mid-run stall, a mid-run crash,
+		// a session reaped mid-round, or a member still non-terminal at the
+		// monitor's safety timeout (#2573). Report the shortfall first — the
+		// verdicts that did arrive are NOT the result of the round.
+		sb.WriteString(fmt.Sprintf("**Round incomplete: %d of %d review agents produced a verdict.** ",
+			status.Verdicts, status.Expected))
+		sb.WriteString(fmt.Sprintf("Agents with no verdict: %s — infrastructure failure. ",
+			status.ClassSummary()))
+		switch {
+		case status.HasFailVerdict():
+			// A FAIL means the worker must change code, and that change makes
+			// every verdict in this round stale — so the whole set has to run
+			// again. See the targeted-rerun condition (#2530 / #2557).
+			sb.WriteString("The missing dimensions were never examined; a missing verdict is NOT a pass and is NOT a code-quality verdict. ")
+			sb.WriteString(fmt.Sprintf("Fix the blocking issues from the agents that ran, then re-run the FULL set (`%s`) — your fix invalidates the verdicts this round produced. ",
+				status.FullRerunCommand(prNumber)))
+		case status.Verdicts > 0:
+			sb.WriteString("The agents that ran all passed, but the round is not a pass: the missing dimensions were never examined. ")
+			sb.WriteString("Re-run the agents named below. ")
+		default:
+			sb.WriteString("This is NOT a code-quality verdict — no agent produced a verdict. ")
+			sb.WriteString("Re-run `prism review` to retry; do not treat this as FAIL. ")
+		}
+		sb.WriteString("This round does NOT count toward the 3-cycle limit.\n\n")
 	}
 
 	sb.WriteString("### Results\n\n")
 	sb.WriteString(formattedResults)
 
-	// Note any missing/deleted sessions.
-	var missing []string
-	for _, sess := range agentSessions {
-		if _, ok := groupData[sess]; !ok {
-			missing = append(missing, sess)
-		}
-	}
-	if len(missing) > 0 {
-		sb.WriteString(fmt.Sprintf("\n**Note:** %d agent session(s) were not found in the group (possibly deleted mid-review): %s\n",
-			len(missing), strings.Join(missing, ", ")))
+	// Name every agent that produced no verdict, with the reason recorded for
+	// it, and the targeted re-run command (#2573).
+	sb.WriteString(buildNoVerdictSection(status, prNumber))
+
+	return sb.String()
+}
+
+// buildNoVerdictSection renders the per-agent "no verdict" roll-call appended
+// to the delivery message (#2573). It returns "" for a complete round, so a
+// round in which all agents produced verdicts is reported exactly as before.
+func buildNoVerdictSection(status RoundStatus, prNumber string) string {
+	if len(status.Missing) == 0 {
+		return ""
 	}
 
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("\n### Agents with no verdict (%d of %d)\n\n",
+		len(status.Missing), status.Expected))
+	sb.WriteString("These review dimensions were NOT examined this round. Read a missing verdict as unreviewed, never as a pass.\n\n")
+	for _, m := range status.Missing {
+		name := m.Agent
+		if name == "" {
+			name = "(unnamed agent)"
+		}
+		if m.Session != "" {
+			sb.WriteString(fmt.Sprintf("- **%s** (`%s`) — %s: %s\n", name, m.Session, m.Class, m.Reason))
+		} else {
+			sb.WriteString(fmt.Sprintf("- **%s** — %s: %s\n", name, m.Class, m.Reason))
+		}
+	}
+	sb.WriteString(buildRerunAdvice(status, prNumber))
+	sb.WriteString("\nThis round does NOT count toward the 3-cycle limit.\n")
+	return sb.String()
+}
+
+// buildRerunAdvice renders the re-run instruction for an incomplete round.
+//
+// The targeted-rerun condition (#2530, widened by #2557) is prose-only: a
+// worker may re-run a subset of the agents only when the inter-cycle diff is
+// exactly formatter output, comments, or documentation. The report cannot see
+// that diff, so it must not print a bare `--only` command as if the condition
+// always held — a worker that fixed a FAIL and then re-ran one agent would
+// carry four verdicts produced against the pre-fix commit.
+//
+// Two cases:
+//
+//   - An agent that ran returned FAIL — a code change is coming, so the
+//     targeted command is invalid. Print the full-set command only.
+//   - No agent returned FAIL — print the targeted command, with the
+//     push-nothing-else caveat and the full-set fallback.
+func buildRerunAdvice(status RoundStatus, prNumber string) string {
+	targeted := status.TargetedRerunCommand(prNumber)
+	if targeted == "" {
+		return ""
+	}
+	full := status.FullRerunCommand(prNumber)
+
+	var sb strings.Builder
+	if !status.TargetedRerunAllowed() {
+		sb.WriteString("\nAn agent that ran returned FAIL, so a targeted `--only` re-run is NOT valid here: ")
+		sb.WriteString("the verdicts above were produced against the pre-fix commit. ")
+		sb.WriteString("Fix the blocking issues, push, then re-run the full set:\n\n")
+		sb.WriteString("    " + full + "\n")
+		return sb.String()
+	}
+
+	sb.WriteString("\nRe-run only the agents above, provided you push nothing else first:\n\n")
+	sb.WriteString("    " + targeted + "\n")
+	sb.WriteString("\nIf you push any change other than formatter output, comments, or documentation ")
+	sb.WriteString("before re-running, the verdicts above are stale — re-run the full set instead:\n\n")
+	sb.WriteString("    " + full + "\n")
 	return sb.String()
 }
 
@@ -893,43 +931,31 @@ func isTerminalForGuard(m db.Status) bool {
 	return false
 }
 
-// currentCycleProducedVerdicts reports whether *every* member of the current
-// group produced a parseable `<verdict>` tag. Used by the monitor to decide
-// whether the in-flight cycle counts toward the LOOP-LIMIT threshold.
+// cycleProducedVerdicts reports whether every EXPECTED member of a group
+// produced a parseable `<verdict>` tag — the predicate that decides whether a
+// round counts toward the LOOP-LIMIT threshold.
 //
-// Contract (#1995): a cycle is verdict-producing iff there is at least one
-// member AND every member is finished with a non-empty assistant message that
-// AssessPassed classifies as either VerdictPass or VerdictFail. If any member
-// is in a non-finished state, missing a LastMessage, had a startup_error, or
-// terminated without emitting a parseable `<verdict>` tag, the cycle is NOT
-// counted — the worker is expected to re-run.
+// Contract (#1995, extended by #2573): a cycle is verdict-producing iff there
+// is at least one expected member AND every expected member is finished with a
+// non-empty assistant message that AssessPassed classifies as VerdictPass or
+// VerdictFail. A member that is in a non-finished state, has no LastMessage,
+// had a startup_error or stall_error, or is ABSENT from groupData altogether
+// (its row was reaped or deleted) makes the cycle non-counting — the worker is
+// expected to re-run.
 //
-// This is the same predicate `CompletedReviewCyclesForParent` applies to
-// historical groups; the two share the contract.
-func currentCycleProducedVerdicts(groupData map[string]db.GroupMemberResult) bool {
-	if len(groupData) == 0 {
-		return false
+// expectedSessions is the authoritative member list. Reading only the
+// groupData keys was the #2573 defect: db.GroupResults omits reaped rows, so a
+// four-verdict round looked like a full set and consumed a cycle.
+//
+// Both the in-flight gate (MonitorFunc, via RoundStatus.CountsAsCycle) and the
+// historical count (CompletedReviewCyclesForParent) resolve to ClassifyRound,
+// so the contract is defined exactly once.
+func cycleProducedVerdicts(expectedSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) bool {
+	agents := make([]Agent, 0, len(expectedSessions))
+	for _, sess := range expectedSessions {
+		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
 	}
-	for _, mr := range groupData {
-		if !memberProducedParseableVerdict(mr) {
-			return false
-		}
-	}
-	return true
-}
-
-// memberProducedParseableVerdict reports whether a single group member's
-// terminal state contains a parseable `<verdict>PASS</verdict>` or
-// `<verdict>FAIL</verdict>` marker. Shared by both the in-flight predicate
-// (currentCycleProducedVerdicts) and the historical predicate inside
-// CompletedReviewCyclesForParent so the contract is defined exactly once.
-func memberProducedParseableVerdict(mr db.GroupMemberResult) bool {
-	if mr.State != "finished" || mr.LastMessage == "" || mr.StartupError != "" {
-		return false
-	}
-	text := ExtractAssistantText(mr.LastMessage)
-	_, kind := AssessPassed(text)
-	return kind != VerdictNone
+	return ClassifyRound(agents, expectedSessions, groupData, endedRows).CountsAsCycle()
 }
 
 // REVIEW_CYCLE_THRESHOLD is the number of completed verdict-producing review
@@ -972,14 +998,16 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //  2. Every member finished with a parseable `<verdict>PASS</verdict>` /
 //     `<verdict>FAIL</verdict>` tag — i.e. the group produced a full set
 //     of real per-agent verdicts (#1995). The per-member check is shared
-//     with the in-flight predicate via memberProducedParseableVerdict so
-//     the two callsites cannot drift.
+//     with the in-flight predicate via ClassifyRound so the two callsites
+//     cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
 // firing logic. Pure-infrastructure failures (every member never bound its
-// port) AND ran-but-no-parseable-verdict rounds (any member terminated in
-// `finished` state without emitting a `<verdict>` tag — the #1993 shape)
-// are both excluded by condition 2 — mirroring the documented contract in
+// port), ran-but-no-parseable-verdict rounds (any member terminated in
+// `finished` state without emitting a `<verdict>` tag — the #1993 shape),
+// AND rounds where a member's row was reaped mid-review (the #2573 shape,
+// where db.GroupResults drops the closed row) are all excluded by condition
+// 2 — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //	"Count re-run cycles from the first round that had a full set of agent
@@ -1030,8 +1058,14 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		// startup_error, and state, and require AssessPassed to return
 		// VerdictPass or VerdictFail for every member (#1995). A group where
 		// any member terminated without a parseable verdict — empty
-		// LastMessage, startup_error, or mid-analysis truncation — is NOT
-		// counted: the worker is expected to re-run.
+		// LastMessage, startup_error, mid-analysis truncation, or a row that
+		// GroupResults dropped because it was closed mid-review (#2573) — is
+		// NOT counted: the worker is expected to re-run.
+		//
+		// The expected member list comes from gMembers (agent_status rows,
+		// including closed ones), NOT from the groupData keys. That is the
+		// #2573 fix: counting the keys that came back cannot detect a member
+		// that never came back.
 		//
 		// Rationale: the lenient predicate ("at least one finished member
 		// with non-empty LastMessage") tripped the LOOP-LIMIT at cycle 3 in
@@ -1051,14 +1085,11 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		if len(groupData) == 0 {
 			continue
 		}
-		producedVerdict := true
-		for _, mr := range groupData {
-			if !memberProducedParseableVerdict(mr) {
-				producedVerdict = false
-				break
-			}
+		expected := make([]string, 0, len(gMembers))
+		for _, m := range gMembers {
+			expected = append(expected, m.SessionName)
 		}
-		if producedVerdict {
+		if cycleProducedVerdicts(expected, groupData, endedRowsFrom(gMembers)) {
 			count++
 		}
 	}
@@ -1130,7 +1161,15 @@ func fallbackFilePath(prNumber string, round int) string {
 }
 
 // BuildMonitorResultsForTest is an exported wrapper around buildMonitorResults
-// for use in external test packages.
+// for use in external test packages. It passes no ended-row detail, which is
+// the degraded shape a caller without a DB handle sees (#2573).
 func BuildMonitorResultsForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult) []AgentResult {
-	return buildMonitorResults(agents, agentSessions, groupData)
+	return buildMonitorResults(agents, agentSessions, groupData, nil)
+}
+
+// BuildMonitorResultsWithEndedForTest is the #2573 variant: it also supplies
+// the group's closed (ended_at set) agent_status rows so tests can assert the
+// reaped-session reason text.
+func BuildMonitorResultsWithEndedForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) []AgentResult {
+	return buildMonitorResults(agents, agentSessions, groupData, endedRows)
 }

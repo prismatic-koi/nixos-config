@@ -255,12 +255,18 @@ and only if **both** of the following hold:
 If either condition is false, re-run the full 5-agent set. A targeted round
 still counts as one cycle against your 3-cycle limit.
 
-**On ERROR (one or more agents failed to start or stalled mid-run):**
+**On ERROR / an incomplete round (one or more agents produced no verdict):**
 
-The review-complete header will say "infrastructure failure" and instruct you
-to re-run. This is **not** a code-quality verdict — the affected agents
-produced no verdict — so there are no blocking issues to fix from them.
-The report distinguishes two infrastructure classes (#2239):
+The review-complete header will say "Round incomplete: N of M review agents
+produced a verdict" or "infrastructure failure", and instruct you to re-run.
+This is **not** a code-quality verdict — the affected agents produced no
+verdict — so there are no blocking issues to fix from them. Four PASS plus
+one blank is an incomplete round, not four passes: the missing agent's
+dimension was never examined (#2573).
+
+The report carries an **"Agents with no verdict"** section that names each
+affected agent, its class, the reason recorded for it, and the re-run command
+to use. The classes are:
 
 - **failed to start (no frames received)** — the agent never ran
   (spawn/handshake/auth failure). Worth an immediate re-run.
@@ -271,13 +277,27 @@ The report distinguishes two infrastructure classes (#2239):
   coordinator instead of burning further rounds on blind re-runs —
   repeated stalls under concurrent load suggest rate/subscription limits
   that a retry will not fix.
+- **session ended mid-review** — the agent's DB row was closed while the
+  round was running, so no verdict was recorded. Re-run once; if the same
+  agent is reaped in two consecutive rounds, escalate — a repeatable reap
+  is a platform fault, not a flake.
+- **ended in error state** / **ended in an unexpected state** — the agent
+  crashed mid-run, or was still running when the monitor gave up.
+- **finished with no output** / **finished with no parseable verdict** — the
+  agent ran to completion but emitted no `<verdict>` tag (#1995).
 
 If the prompt is mixed — some agents returned FAIL verdicts **and** some
-failed to start or stalled mid-run — fix the blocking issues from the agents
-that ran, then re-run `prism review <pr>` to cover the agents that produced
-no verdict. Count re-run cycles from the first round that had a full set of
-agent results; do not count infrastructure-failure rounds toward your
-3-cycle limit.
+produced no verdict — fix the blocking issues from the agents that ran, then
+re-run the **full** set. Your fix changes the code the other agents reviewed,
+so their verdicts are stale and the targeted-rerun condition below is not met.
+The report applies this rule for you: it prints the full-set command and
+refuses the targeted form whenever an agent that ran returned FAIL, and prints
+the targeted command only when no agent did. A targeted command in the report
+still assumes you push nothing else — the report cannot see your inter-cycle
+diff, so that half of the condition stays yours to check.
+
+Count re-run cycles from the first round that had a full set of agent results;
+an incomplete round does not count toward your 3-cycle limit.
 
 **On PASS:**
 

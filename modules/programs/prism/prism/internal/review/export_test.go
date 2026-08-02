@@ -11,6 +11,7 @@ package review
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -96,8 +97,33 @@ func PollAgentsForTest(ctx context.Context, d *db.DB, agents []Agent, agentSessi
 // BuildDeliveryMessageForTest is an exported wrapper around buildDeliveryMessage
 // for use in external test packages. Allows tests to verify the header text and
 // no-start error signalling without spinning up a real monitor loop (#1222).
+// The round is classified from groupData with no ended-row detail, which is
+// the degraded shape a caller without a DB handle sees (#2573).
 func BuildDeliveryMessageForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string) string {
-	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, groupData, agentSessions)
+	return BuildDeliveryMessageWithEndedForTest(prNumber, round, formattedResults, allPassed, groupData, agentSessions, nil)
+}
+
+// BuildDeliveryMessageWithEndedForTest is the #2573 variant: it also supplies
+// the group's closed (ended_at set) agent_status rows, so tests can assert the
+// reaped-session reason text.
+func BuildDeliveryMessageWithEndedForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string, endedRows map[string]db.Status) string {
+	status := ClassifyRound(AgentsFromSessionsForTest(agentSessions), agentSessions, groupData, endedRows)
+	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, status)
+}
+
+// AgentsFromSessionsForTest builds the parallel Agent slice ClassifyRound
+// expects from a list of review-agent session names.
+func AgentsFromSessionsForTest(agentSessions []string) []Agent {
+	agents := make([]Agent, 0, len(agentSessions))
+	for _, sess := range agentSessions {
+		agents = append(agents, Agent{Name: agentNameFromSession(sess)})
+	}
+	return agents
+}
+
+// EndedRowsFromForTest is an exported wrapper around endedRowsFrom (#2573).
+func EndedRowsFromForTest(members []db.Status) map[string]db.Status {
+	return endedRowsFrom(members)
 }
 
 // SanitizeSpawnErrorForTest is an exported wrapper around sanitizeSpawnError
@@ -176,9 +202,23 @@ func NewReviewerSpawnOptsForTest(in ReviewerSpawnInputForTest) session.SpawnOpts
 }
 
 // CurrentCycleProducedVerdictsForTest is an exported wrapper around
-// currentCycleProducedVerdicts for use in external test packages (#1512).
+// cycleProducedVerdicts for use in external test packages (#1512). The
+// expected member list degrades to the groupData keys, which is the
+// pre-#2573 shape: it can only see the members that came back.
 func CurrentCycleProducedVerdictsForTest(groupData map[string]db.GroupMemberResult) bool {
-	return currentCycleProducedVerdicts(groupData)
+	names := make([]string, 0, len(groupData))
+	for name := range groupData {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return cycleProducedVerdicts(names, groupData, nil)
+}
+
+// CycleProducedVerdictsForTest is the #2573 variant: the caller supplies the
+// authoritative expected-member list, so a member absent from groupData is
+// visible to the predicate.
+func CycleProducedVerdictsForTest(expectedSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) bool {
+	return cycleProducedVerdicts(expectedSessions, groupData, endedRows)
 }
 
 // ForceTerminateStuckMembersForTest is an exported wrapper around

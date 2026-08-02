@@ -222,7 +222,28 @@ func extractTag(s, tag string) (string, bool) {
 	return strings.TrimSpace(s[inner : inner+end]), true
 }
 
-// FormatResults formats the aggregated results as a human-readable report.
+// FormatResults formats the aggregated results with no round classification,
+// so the summary footer always offers the targeted `--only` retry. Production
+// delivery paths call FormatResultsForRound instead; this entry point remains
+// for callers (and tests) that have no RoundStatus to hand.
+func FormatResults(results []AgentResult, prNumber string, round int, sizeBudget int) (string, bool) {
+	return formatResults(results, prNumber, round, sizeBudget, nil)
+}
+
+// FormatResultsForRound is the classification-aware variant used by the review
+// delivery paths. When the round is incomplete AND an agent that ran returned
+// FAIL, the summary footer offers the full re-run rather than the targeted
+// one: the fix the worker is about to push makes this round's verdicts stale,
+// so re-running a subset would carry them forward against a commit they never
+// saw (the targeted-rerun condition, #2530 / #2557).
+//
+// For a complete round the footer is byte-identical to FormatResults, so an
+// ordinary PASS or FAIL round reads exactly as it did before #2573.
+func FormatResultsForRound(results []AgentResult, prNumber string, round int, sizeBudget int, status RoundStatus) (string, bool) {
+	return formatResults(results, prNumber, round, sizeBudget, &status)
+}
+
+// formatResults formats the aggregated results as a human-readable report.
 // It always includes a one-line-per-agent summary header, followed by a
 // structured per-agent section containing only: verdict, <summary> content,
 // and <blocking_issues> content extracted from the agent's raw output.
@@ -233,7 +254,7 @@ func extractTag(s, tag string) (string, bool) {
 // call-site compatibility but are no longer used.
 //
 // Returns the formatted string and a boolean indicating whether all passed.
-func FormatResults(results []AgentResult, prNumber string, round int, sizeBudget int) (string, bool) {
+func formatResults(results []AgentResult, prNumber string, round int, sizeBudget int, status *RoundStatus) (string, bool) {
 	var header strings.Builder
 	var findings strings.Builder
 	allPassed := true
@@ -300,8 +321,13 @@ func FormatResults(results []AgentResult, prNumber string, round int, sizeBudget
 	}
 
 	if !allPassed {
-		header.WriteString(fmt.Sprintf("\n%d agent(s) failed. Retry: prism review %s --only %s\n",
-			len(failed), prNumber, strings.Join(failed, ",")))
+		if status != nil && !status.Complete() && !status.TargetedRerunAllowed() {
+			header.WriteString(fmt.Sprintf("\n%d agent(s) did not pass. This round is incomplete AND carries a FAIL verdict, so a targeted retry is not valid. Retry: %s\n",
+				len(failed), status.FullRerunCommand(prNumber)))
+		} else {
+			header.WriteString(fmt.Sprintf("\n%d agent(s) failed. Retry: prism review %s --only %s\n",
+				len(failed), prNumber, strings.Join(failed, ",")))
+		}
 	}
 
 	var result strings.Builder
