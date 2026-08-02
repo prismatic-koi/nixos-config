@@ -14,14 +14,23 @@
 
 import { describe, it } from "node:test"
 import assert from "node:assert/strict"
+import { execFileSync, spawnSync } from "node:child_process"
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import {
   createActivationGateway,
   isEagerRole,
   parseEagerRoles,
+  readAgentRoleFromArgv,
   type GatewayHost,
   type GatewayToolSpec,
 } from "./activation.ts"
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const EXTENSIONS_DIR = join(HERE, "..")
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -73,6 +82,154 @@ describe("parseEagerRoles", () => {
 
   it("drops empty segments from a trailing or doubled separator", () => {
     assert.deepEqual(parseEagerRoles("coordinator::"), ["coordinator"])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Reading the agent role
+//
+// REGRESSION GUARD (round-1 review of PR #2568). An earlier revision read the
+// role via pi.registerFlag("agent") + pi.getFlag("agent"). pi scopes getFlag to
+// the registering extension, so each MCP extension had to register the flag —
+// and pi treats the same flag name owned by two different extension PATHS as a
+// FATAL conflict, exiting 1 before the session starts. prism always loads
+// prism.ts, which owns --agent, so that revision stopped every session on every
+// machine from starting. Reading argv has no such coupling.
+// ---------------------------------------------------------------------------
+
+describe("readAgentRoleFromArgv", () => {
+  const base = ["/usr/bin/node", "/nix/store/x/pi"]
+
+  it("reads the space-separated form prism emits", () => {
+    // internal/container/pi_invocation.go appends: "--agent", cfg.AgentRole
+    assert.equal(readAgentRoleFromArgv([...base, "--agent", "coordinator"]), "coordinator")
+  })
+
+  it("reads the --agent=<role> form too", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--agent=review-goal"]), "review-goal")
+  })
+
+  it("finds the flag among other arguments", () => {
+    const argv = [...base, "--extension", "/x/prism.ts", "--agent", "worker", "--print", "hi"]
+    assert.equal(readAgentRoleFromArgv(argv), "worker")
+  })
+
+  it("returns undefined when the flag is absent", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--print", "hi"]), undefined)
+  })
+
+  it("does not read the next flag as a role", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--agent", "--print"]), undefined)
+  })
+
+  it("returns undefined for a bare trailing --agent", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--agent"]), undefined)
+  })
+
+  it("returns undefined for an empty value", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--agent", "   "]), undefined)
+    assert.equal(readAgentRoleFromArgv([...base, "--agent="]), undefined)
+  })
+
+  it("trims surrounding whitespace", () => {
+    assert.equal(readAgentRoleFromArgv([...base, "--agent", " worker "]), "worker")
+  })
+})
+
+/**
+ * Strip `//` line comments and block comments so the source guard below tests
+ * CODE, not prose. Each shell carries a comment explaining why it must not
+ * call registerFlag, and that comment necessarily names the function.
+ */
+function stripComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "")
+}
+
+describe("no MCP extension registers the --agent flag", () => {
+  // A source-level guard. The failure it prevents is fatal but invisible to
+  // ordinary unit tests: pi only detects the conflict when two extension paths
+  // are loaded together, which no unit test does. Grepping the shells is cheap
+  // and pins the exact line that can regress.
+  for (const provider of ["grafana", "notion", "atlassian"]) {
+    it(`${provider}/index.ts does not call registerFlag`, () => {
+      const path = join(EXTENSIONS_DIR, provider, "index.ts")
+      if (!existsSync(path)) return // provider dir absent (nix store layout)
+      const src = stripComments(readFileSync(path, "utf8"))
+      assert.equal(
+        /\bregisterFlag\s*\(/.test(src),
+        false,
+        `${provider}/index.ts calls registerFlag — prism.ts already owns --agent, ` +
+          `and pi exits 1 when two extension paths register the same flag name`,
+      )
+    })
+  }
+
+  it("prism.ts is still the sole owner of --agent", () => {
+    // If prism.ts ever stops registering it, readAgentRoleFromArgv keeps
+    // working (argv is unchanged) — but this documents the assumption.
+    const path = join(EXTENSIONS_DIR, "prism.ts")
+    if (!existsSync(path)) return
+    const src = stripComments(readFileSync(path, "utf8"))
+    assert.match(src, /registerFlag\("agent"/)
+  })
+})
+
+// The test round-1 review asked for by name: load prism.ts together with one
+// MCP extension and assert pi starts. It needs the real pi binary, so it
+// self-skips when pi is not on PATH rather than failing a runner without pi.
+describe("pi starts with prism.ts and an MCP extension loaded together", () => {
+  const piPath = (() => {
+    try {
+      return execFileSync("sh", ["-c", "command -v pi"], { encoding: "utf8" }).trim()
+    } catch {
+      return ""
+    }
+  })()
+
+  it("reports no extension flag conflict", { skip: piPath === "" }, () => {
+    const prismTs = join(EXTENSIONS_DIR, "prism.ts")
+    const grafanaTs = join(EXTENSIONS_DIR, "grafana", "index.ts")
+    if (!existsSync(prismTs) || !existsSync(grafanaTs)) return
+
+    const dir = mkdtempSync(join(tmpdir(), "pi-flag-conflict-"))
+    try {
+      writeFileSync(
+        join(dir, "settings.json"),
+        JSON.stringify({
+          defaultProjectTrust: "always",
+          quietStartup: true,
+          extensions: [prismTs, grafanaTs],
+        }),
+      )
+
+      // pi evaluates extension-conflict diagnostics and exits 1 BEFORE it
+      // creates an agent session, so this never reaches the network. A later
+      // failure (no auth, offline) is irrelevant: the assertion is only about
+      // the conflict diagnostic.
+      const res = spawnSync(piPath, ["--print", "ok"], {
+        encoding: "utf8",
+        timeout: 90_000,
+        env: {
+          ...process.env,
+          PI_CODING_AGENT_DIR: dir,
+          PI_OFFLINE: "1",
+          PI_SKIP_VERSION_CHECK: "1",
+        },
+      })
+      const output = `${res.stdout ?? ""}${res.stderr ?? ""}`
+      assert.equal(
+        /conflicts with/.test(output),
+        false,
+        `pi reported an extension conflict:\n${output.slice(0, 600)}`,
+      )
+      assert.equal(
+        /Failed to load extension/.test(output),
+        false,
+        `pi failed to load an extension:\n${output.slice(0, 600)}`,
+      )
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

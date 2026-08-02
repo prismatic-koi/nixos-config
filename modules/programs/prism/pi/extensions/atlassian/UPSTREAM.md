@@ -106,10 +106,29 @@ tool call and activate from their first `before_agent_start`. It defaults to
 would pay the activation cost nearly every time. Workers and review agents get
 one tool schema instead.
 
-The role is read with `pi.getFlag("agent")`, which pi binds AFTER every
-extension factory has returned, so it is not readable in a factory prologue.
-This extension calls `pi.registerFlag("agent", ...)` itself, because pi scopes
-`getFlag` to the registering extension.
+The role is read from `process.argv` by `readAgentRoleFromArgv`
+(`../mcp-activation/activation.ts`), NOT from `pi.getFlag("agent")` — using
+the flag would force a second `registerFlag("agent")`, which pi treats as a
+fatal extension conflict and exits 1 on. See `../grafana/UPSTREAM.md`
+"Deferred registration" for the reproduction and the #2068 history.
+
+## File layout: why `index.ts` is a shell
+
+`index.ts` imports `typebox`, which only resolves inside pi's own runtime, so
+anything reachable *only* through `index.ts` cannot be unit tested. All the
+behaviour therefore lives in `extension.ts` behind an injected-dependency
+surface (`wrapSchema`, `connect`, `login`, `loadTokens`,
+`getValidAccessToken`, `invalidateCache`, `getDefaultCloudId`), mirroring
+`../notion/extension.ts`.
+
+This split was forced by round-1 review of PR #2568. Atlassian is the ONE
+provider whose `eagerRoles` default is non-empty, so its eager path is the one
+that actually runs in production — and while the logic sat in `index.ts` it had
+no unit test at all. `extension.test.ts` now covers the deferral, both eager
+and non-eager roles, the failure paths, and the login re-entry.
+
+Keep logic out of `index.ts`. Anything added there is, by construction,
+untestable.
 
 `/login-atlassian` now registers through the SAME gateway. Before #2532 a login
 after a successful startup re-registered every tool. pi tolerates that —

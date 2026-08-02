@@ -136,12 +136,36 @@ by all three MCP extensions. `nx.programs.prism.pi.grafana.eagerRoles` names
 the agent roles that skip the tool call and activate from their first
 `before_agent_start`; it defaults to `[ ]`.
 
-The role is read with `pi.getFlag("agent")`, which pi binds AFTER every
-extension factory has returned, so it is not readable in a factory prologue.
-Each MCP extension calls `pi.registerFlag("agent", ...)` itself, because pi
-scopes `getFlag` to the registering extension. Duplicate registration across
-extensions is safe — `applyExtensionFlagValues` builds a flat name-to-flag map
-and every registration declares the same string type.
+The role is read from `process.argv` by `readAgentRoleFromArgv`
+(`../mcp-activation/activation.ts`), NOT from `pi.getFlag("agent")`.
+
+That distinction is load-bearing, and getting it wrong is fatal. pi scopes
+`getFlag` to the extension that registered the flag, so using it would force
+each MCP extension to call `pi.registerFlag("agent", ...)`. pi's
+`detectExtensionConflicts` (`dist/core/resource-loader.js`) records a conflict
+whenever two different extension PATHS own the same flag name,
+`addExtensionConflictDiagnostics` pushes it into `extensionsResult.errors`,
+`main.js` maps every such error to `{type: "error"}`, and startup then calls
+`process.exit(1)`. prism always loads `prism.ts` — which owns `--agent` — via
+`--extension`, so a second registration stops EVERY session on EVERY machine
+from starting. Reproduced against the pinned pi 0.82.1:
+
+```
+Error: Failed to load extension ".../grafana/index.ts": Flag "--agent"
+conflicts with .../prism.ts                                  (exit code 1)
+```
+
+This repo has been bitten by it before — see the #2068 post-mortem note in
+`modules/programs/prism/pi.nix`, which names `--agent` as the conflicting flag
+that "broke the entire prism↔pi integration surface on every bwrap session".
+
+argv is the better source regardless: prism emits `--agent <role>` directly
+(`internal/container/pi_invocation.go`), so the value is available with no
+cross-extension coupling and no ordering hazard. `mcp-activation/
+activation.test.ts` pins this three ways: a source guard asserting no MCP
+extension calls `registerFlag`, argv-parsing unit tests, and an integration
+test that loads `prism.ts` and `grafana/index.ts` together under the real pi
+binary and asserts no conflict diagnostic.
 
 NIX LAYOUT NOTE. `mcp-activation` is copied into each provider's derivation and
 the provider's own files move down one level, so the store tree is

@@ -362,6 +362,12 @@ lives in `../mcp-activation/activation.ts`.
 successful activation reports "already active" instead of re-registering the
 surface.
 
+The role is read from `process.argv` by `readAgentRoleFromArgv`
+(`../mcp-activation/activation.ts`), NOT from `pi.getFlag("agent")` — using the
+flag would force a second `registerFlag("agent")`, which pi treats as a fatal
+extension conflict and exits 1 on. See `../grafana/UPSTREAM.md` "Deferred
+registration" for the reproduction and the #2068 history.
+
 NIX LAYOUT NOTE. `mcp-activation` is copied into this extension's derivation
 and this extension's files move down one level, so the store tree is
 `$out/notion/index.ts` next to `$out/mcp-activation/activation.ts`. That is

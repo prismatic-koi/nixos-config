@@ -95,14 +95,56 @@ export function parseEagerRoles(raw: string | undefined): string[] {
 }
 
 /**
+ * Read the session's agent role from the process argv.
+ *
+ * WHY NOT `pi.getFlag("agent")`. pi scopes `getFlag` to the extension that
+ * registered the flag, so an MCP extension would have to call
+ * `pi.registerFlag("agent", ...)` itself. That is FATAL. pi's
+ * `detectExtensionConflicts` records a conflict whenever two different
+ * extension PATHS own the same flag name (`dist/core/resource-loader.js`),
+ * `addExtensionConflictDiagnostics` pushes it into `extensionsResult.errors`,
+ * `main.js` maps every such error to `{type: "error"}`, and startup then calls
+ * `process.exit(1)`. Since prism always loads `prism.ts` — which registers
+ * `--agent` — via `--extension`, a second registration stops every session on
+ * every machine from starting. Reproduced against the pinned pi 0.82.1:
+ *
+ *   Error: Failed to load extension "/tmp/b.ts": Flag "--agent" conflicts
+ *   with /tmp/a.ts                                            (exit code 1)
+ *
+ * This repo has been bitten by it before — see the #2068 post-mortem note in
+ * `modules/programs/prism/pi.nix`, which names `--agent` as the conflicting
+ * flag that "broke the entire prism↔pi integration surface on every bwrap
+ * session".
+ *
+ * argv is the right source anyway: prism emits `--agent <role>` directly
+ * (`internal/container/pi_invocation.go`), so the value is on argv before any
+ * extension loads, with no cross-extension coupling and no ordering hazard.
+ * `--agent=<role>` is accepted too, since pi's own CLI takes both forms.
+ *
+ * Returns undefined when the flag is absent or carries no value.
+ */
+export function readAgentRoleFromArgv(
+  argv: readonly string[] = process.argv,
+): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === "--agent") {
+      const next = argv[i + 1]
+      // A bare trailing `--agent`, or one followed by the next flag, carries
+      // no role. Treat it as absent rather than reading a flag name as a role.
+      if (next === undefined || next.startsWith("-")) return undefined
+      return next.trim() || undefined
+    }
+    if (arg.startsWith("--agent=")) {
+      return arg.slice("--agent=".length).trim() || undefined
+    }
+  }
+  return undefined
+}
+
+/**
  * True when this session's agent role should receive the provider family
  * eagerly, with no `activate_<family>` call.
- *
- * `role` comes from `pi.getFlag("agent")`, which binds during
- * `applyExtensionFlagValues` — after every extension factory has returned, and
- * before the first `before_agent_start`. It is therefore NOT readable in a
- * factory prologue; see the call sites, which all check from
- * `before_agent_start`.
  *
  * A session with no `--agent` flag (an interactive `pi` launched by hand) has
  * no role, so it is never eager. That is the intended default: the cheapest

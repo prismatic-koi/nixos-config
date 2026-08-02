@@ -33,6 +33,7 @@ import { Type } from "typebox"
 import { loginNotion } from "./auth.ts"
 import { createNotionExtension, type ToolHost, type ToolSpec } from "./extension.ts"
 import { createMcpSession } from "./mcp-client.ts"
+import { readAgentRoleFromArgv } from "../mcp-activation/activation.ts"
 
 // Type.Unsafe passes the raw JSON Schema through to the model with no TypeBox
 // validation, so arguments are forwarded to Notion unvalidated. Same accepted
@@ -64,19 +65,11 @@ export default async function notionExtension(pi: ExtensionAPI): Promise<void> {
     },
   })
 
-  // Register --agent so pi.getFlag("agent") resolves for THIS extension. pi
-  // scopes getFlag to the registering extension (dist/core/extensions/
-  // loader.js: `if (!extension.flags.has(name)) return undefined`), so the
-  // prism extension's own registration is not visible here. Duplicate
-  // registration across extensions is safe: applyExtensionFlagValues builds a
-  // flat name->flag map (dist/core/agent-session-services.js) and both
-  // registrations declare the same string type, so the flag resolves
-  // identically whichever extension is consulted.
-  pi.registerFlag("agent", {
-    description:
-      "Primary agent identity (worker, coordinator, review-*, etc.) — selects the role system prompt appended to pi's base prompt at before_agent_start.",
-    type: "string",
-  })
+  // NOTE: this extension MUST NOT call pi.registerFlag("agent", ...). prism
+  // always loads prism.ts, which owns that flag, and pi treats the same flag
+  // name owned by two different extension paths as a fatal startup conflict
+  // (process.exit(1)). The role is read from argv instead — see
+  // readAgentRoleFromArgv for the full reproduction and the #2068 history.
 
   pi.on("session_start", async (_event, ctx) => {
     // session_start (not before_agent_start): registration must happen exactly
@@ -91,12 +84,9 @@ export default async function notionExtension(pi: ExtensionAPI): Promise<void> {
   })
 
   pi.on("before_agent_start", async (_event, ctx) => {
-    // The earliest hook at which pi.getFlag("agent") is bound. The core guards
-    // itself so only the first turn does the eager check.
+    // The core guards itself so only the first turn does the eager check.
     try {
-      const flag = pi.getFlag("agent")
-      const role = typeof flag === "string" ? flag : undefined
-      await extension.onBeforeAgentStart(host, ctx, role)
+      await extension.onBeforeAgentStart(host, ctx, readAgentRoleFromArgv())
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       console.error("[notion-mcp] ERROR: eager activation failed:", msg)
