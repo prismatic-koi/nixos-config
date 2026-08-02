@@ -48,6 +48,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -235,8 +236,15 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 	}
 	bareRoot := git.BareRoot(worktree)
 	worktreeGitDir, err := git.ResolveWorktreeGitDir(worktree)
-	if err != nil {
+	if err != nil && !errors.Is(err, git.ErrNotAWorktree) {
 		return fmt.Errorf("agent-run: session %q: resolve worktree git dir: %w", sessionName, err)
+	}
+	if errors.Is(err, git.ErrNotAWorktree) {
+		// Not a prism bare+worktree layout (e.g. a normal git clone) —
+		// leave worktreeGitDir empty. The bwrap bind logic already guards
+		// on BareRoot/WorktreeGitDir being non-empty (internal/container/
+		// bwrap.go), so this is a no-op there rather than a broken bind.
+		worktreeGitDir = ""
 	}
 
 	// Resolve port from the DB status. HarnessPort is used for the harness
