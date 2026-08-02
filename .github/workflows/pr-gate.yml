@@ -23,6 +23,7 @@ jobs:
       - nix-build-prism-checked
       - go-tests-battery-monitor
       - nix-build-battery-monitor-checked
+      - pi-extension-tests
     if: always()
     steps:
       - name: Check upstream job results
@@ -31,15 +32,18 @@ jobs:
           NIX_BUILD_PRISM_CHECKED_RESULT: ${{ needs.nix-build-prism-checked.result }}
           GO_TESTS_BM_RESULT: ${{ needs.go-tests-battery-monitor.result }}
           NIX_BUILD_BM_CHECKED_RESULT: ${{ needs.nix-build-battery-monitor-checked.result }}
+          PI_EXTENSION_TESTS_RESULT: ${{ needs.pi-extension-tests.result }}
         run: |
           echo "go-tests: $GO_TESTS_RESULT"
           echo "nix-build-prism-checked: $NIX_BUILD_PRISM_CHECKED_RESULT"
           echo "go-tests-battery-monitor: $GO_TESTS_BM_RESULT"
           echo "nix-build-battery-monitor-checked: $NIX_BUILD_BM_CHECKED_RESULT"
+          echo "pi-extension-tests: $PI_EXTENSION_TESTS_RESULT"
           if [ "$GO_TESTS_RESULT" != "success" ] \
              || [ "$NIX_BUILD_PRISM_CHECKED_RESULT" != "success" ] \
              || [ "$GO_TESTS_BM_RESULT" != "success" ] \
-             || [ "$NIX_BUILD_BM_CHECKED_RESULT" != "success" ]; then
+             || [ "$NIX_BUILD_BM_CHECKED_RESULT" != "success" ] \
+             || [ "$PI_EXTENSION_TESTS_RESULT" != "success" ]; then
             echo "pr-gate: one or more required jobs did not succeed" >&2
             exit 1
           fi
@@ -183,6 +187,74 @@ jobs:
       - name: No prism-relevant changes
         if: steps.changes.outputs.prism != 'true'
         run: echo "no prism-relevant paths touched; skipping nix-build-prism-checked"
+
+  # Runs the pi extension TypeScript test suite (tsx --test *.test.ts,
+  # recursively under modules/programs/prism/pi/extensions/) plus the
+  # anthropic-oauth extension-load smoke test
+  # (verify-extension-loads.mjs). See issue #2561: before this job
+  # existed, no CI job ran any *.test.ts file under the extensions
+  # directory, so an extension-only PR reported a green `pr-gate`
+  # having executed zero tests.
+  #
+  # `tsx` and `pi-coding-agent` come from the repo's own devShell
+  # (flake.nix `devShells.default`), which applies the repo overlay so
+  # `pi-coding-agent` resolves to the pinned version in
+  # overlays/default.nix rather than whatever plain nixpkgs carries.
+  pi-extension-tests:
+    name: pi-extension-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detect pi-extension-relevant changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            ext:
+              - 'modules/programs/prism/pi/extensions/**'
+              - '.github/workflows/pr-gate.yml'
+      - uses: cachix/install-nix-action@v31
+        if: steps.changes.outputs.ext == 'true'
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        if: steps.changes.outputs.ext == 'true'
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
+      # Run the TypeScript test suite. Node's built-in test runner (which
+      # `tsx --test` wraps) prints a "ℹ tests <N>" summary line to
+      # stdout, which we capture and re-assert on below so a silently
+      # empty test run (e.g. the glob matching nothing) fails the job
+      # loudly instead of reporting green. See issue #2561's last AC —
+      # this is the exact defect class the job exists to catch.
+      - name: tsx --test (pi extension TypeScript tests)
+        if: steps.changes.outputs.ext == 'true'
+        working-directory: modules/programs/prism/pi/extensions
+        run: |
+          set -o pipefail
+          mapfile -d '' test_files < <(find . -name '*.test.ts' -print0)
+          nix develop --print-build-logs .#default --command \
+            tsx --test "${test_files[@]}" 2>&1 | tee /tmp/tsx-test.log
+
+          test_count=$(grep -oE '^ℹ tests [0-9]+' /tmp/tsx-test.log | grep -oE '[0-9]+' || true)
+          echo "tests executed: ${test_count:-0}"
+          if [ -z "$test_count" ] || [ "$test_count" -eq 0 ]; then
+            echo "::error::pi-extension-tests: 0 tests executed — this is treated as a failure (see issue #2561)" >&2
+            exit 1
+          fi
+      - name: verify-extension-loads.mjs (anthropic-oauth smoke test)
+        if: steps.changes.outputs.ext == 'true'
+        run: |
+          nix develop --print-build-logs .#default --command \
+            node modules/programs/prism/pi/extensions/anthropic-oauth/verify-extension-loads.mjs
+      - name: No pi-extension-relevant changes
+        if: steps.changes.outputs.ext != 'true'
+        run: echo "no pi-extension-relevant paths touched; skipping pi-extension-tests"
 
   # Full Go test suite for battery-monitor with -race. Mirrors the
   # `go-tests` job above. Path-filtered so non-battery-monitor PRs
