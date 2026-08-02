@@ -105,11 +105,11 @@ func TestPIInvocation_Resume_AppendsSessionWhenFileExists(t *testing.T) {
 	args := PIInvocation(cfg)
 
 	if !hasPair(args, "--session", harnessSessionID) {
-		t.Errorf("expected --session %s in args; got %v", harnessSessionID, args)
+		t.Errorf("expected --session %s in args; got %v", harnessSessionID, redactedArgs(args))
 	}
 	// Positional InitialPrompt must be the last arg.
 	if args[len(args)-1] != "do the thing" {
-		t.Errorf("expected initial prompt as last positional arg; got %v", args)
+		t.Errorf("expected initial prompt as last positional arg; got %v", redactedArgs(args))
 	}
 	// --session must appear immediately before the InitialPrompt positional.
 	for i := 0; i < len(args)-1; i++ {
@@ -142,11 +142,11 @@ func TestPIInvocation_Resume_AppendsSession_NoInitialPrompt(t *testing.T) {
 	args := PIInvocation(cfg)
 
 	if !hasPair(args, "--session", harnessSessionID) {
-		t.Errorf("expected --session %s in args; got %v", harnessSessionID, args)
+		t.Errorf("expected --session %s in args; got %v", harnessSessionID, redactedArgs(args))
 	}
 	// Last two args must be --session <id>; there must be no trailing positional.
 	if len(args) < 2 || args[len(args)-2] != "--session" || args[len(args)-1] != harnessSessionID {
-		t.Errorf("expected args to end with --session %s; got %v", harnessSessionID, args)
+		t.Errorf("expected args to end with --session %s; got %v", harnessSessionID, redactedArgs(args))
 	}
 }
 
@@ -172,11 +172,11 @@ func TestPIInvocation_Resume_OmitsSessionWhenFileMissing(t *testing.T) {
 	args := PIInvocation(cfg)
 
 	if hasArg(args, "--session") {
-		t.Errorf("expected --session to be absent when no session file exists; got %v", args)
+		t.Errorf("expected --session to be absent when no session file exists; got %v", redactedArgs(args))
 	}
 	// InitialPrompt must still be present as the trailing positional.
 	if args[len(args)-1] != "do the thing" {
-		t.Errorf("expected initial prompt as last positional arg; got %v", args)
+		t.Errorf("expected initial prompt as last positional arg; got %v", redactedArgs(args))
 	}
 
 	// Warning line must have been written to the agent-run log.
@@ -209,7 +209,7 @@ func TestPIInvocation_Resume_EmptyHarnessSessionIDIsSilent(t *testing.T) {
 	args := PIInvocation(cfg)
 
 	if hasArg(args, "--session") {
-		t.Errorf("expected --session to be absent when HarnessSessionID is empty; got %v", args)
+		t.Errorf("expected --session to be absent when HarnessSessionID is empty; got %v", redactedArgs(args))
 	}
 
 	// No agent-run.log should have been created.
@@ -470,7 +470,7 @@ func TestPIInvocation_Resume_SandboxExec_AppendsSessionFromHostRoot(t *testing.T
 
 	if !hasPair(args, "--session", harnessSessionID) {
 		t.Errorf("expected --session %s in args for sandbox-exec config (transcript at host root %q); got %v",
-			harnessSessionID, piDataRoot, args)
+			harnessSessionID, piDataRoot, redactedArgs(args))
 	}
 }
 
@@ -498,11 +498,11 @@ func TestPIInvocation_Resume_SandboxExec_MissingTranscriptStartsFresh(t *testing
 	args := PIInvocation(cfg)
 
 	if hasArg(args, "--session") {
-		t.Errorf("expected --session to be absent when no transcript exists at the host root; got %v", args)
+		t.Errorf("expected --session to be absent when no transcript exists at the host root; got %v", redactedArgs(args))
 	}
 	// InitialPrompt must still be present as the trailing positional.
 	if args[len(args)-1] != "do the thing" {
-		t.Errorf("expected initial prompt as last positional arg; got %v", args)
+		t.Errorf("expected initial prompt as last positional arg; got %v", redactedArgs(args))
 	}
 
 	// Warning line must have been written to the agent-run log.
@@ -550,6 +550,6 @@ func TestPIInvocation_Resume_PICodingAgentDir(t *testing.T) {
 
 	if !hasPair(args, "--session", harnessSessionID) {
 		t.Errorf("expected --session %s in args (resolver did not honour PI_CODING_AGENT_DIR=%q); got %v",
-			harnessSessionID, piDataRoot, args)
+			harnessSessionID, piDataRoot, redactedArgs(args))
 	}
 }

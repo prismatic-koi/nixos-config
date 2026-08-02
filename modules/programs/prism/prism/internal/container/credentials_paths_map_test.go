@@ -148,7 +148,7 @@ func TestCredentialEnvVars_PathsMap_MissingFileIsHardError(t *testing.T) {
 	})
 	vars, err := m.CredentialEnvVars()
 	if err == nil {
-		t.Fatalf("expected error for missing configured token file, got nil (vars=%v)", vars)
+		t.Fatalf("expected error for missing configured token file, got nil (vars=%v)", container.RedactedArgsForTest(vars))
 	}
 	if !strings.Contains(err.Error(), missing) {
 		t.Errorf("error must name the path %q, got: %v", missing, err)

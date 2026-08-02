@@ -609,7 +609,7 @@ func TestSessionWorkDirGitEnv(t *testing.T) {
 		"GIT_SSH_COMMAND=/nix/store/xyz/bin/ssh -F " + dir + "/ssh-config",
 	}
 	if len(got) != len(want) {
-		t.Fatalf("SessionWorkDirGitEnv returned %d vars, want %d: %v", len(got), len(want), got)
+		t.Fatalf("SessionWorkDirGitEnv returned %d vars, want %d: %v", len(got), len(want), redactedArgs(got))
 	}
 	for i := range want {
 		if got[i] != want[i] {
@@ -635,7 +635,7 @@ func TestSessionWorkDirKubeEnv(t *testing.T) {
 	got := SessionWorkDirKubeEnv(dir)
 	want := []string{"KUBECACHEDIR=" + dir + "/kube-cache"}
 	if len(got) != len(want) {
-		t.Fatalf("SessionWorkDirKubeEnv returned %d vars, want %d: %v", len(got), len(want), got)
+		t.Fatalf("SessionWorkDirKubeEnv returned %d vars, want %d: %v", len(got), len(want), redactedArgs(got))
 	}
 	for i := range want {
 		if got[i] != want[i] {

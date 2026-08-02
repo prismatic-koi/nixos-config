@@ -90,18 +90,18 @@ func TestBwrapBuildArgs_ReviewRoleEnvMapHasNoGrafana(t *testing.T) {
 
 		for _, k := range []string{"GRAFANA_MCP_CONFIG_PATH", "PI_GRAFANA_MCP_BIN"} {
 			if hasSetenvKey(args, k) {
-				t.Errorf("bwrap must not emit --setenv %s for a review role; args=%v", k, args)
+				t.Errorf("bwrap must not emit --setenv %s for a review role; args=%v", k, redactedArgs(args))
 			}
 		}
 		if hasROBindSrcDst(args, resolved, secret) {
-			t.Errorf("bwrap must not bind the grafana secret for a review role; args=%v", args)
+			t.Errorf("bwrap must not bind the grafana secret for a review role; args=%v", redactedArgs(args))
 		}
 		// The non-grafana keys still flow.
 		if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
-			t.Errorf("review role lost KUBECONFIG; args=%v", args)
+			t.Errorf("review role lost KUBECONFIG; args=%v", redactedArgs(args))
 		}
 		if !hasSetenv(args, "NOTION_MCP_REPOS", "nixos-config:prism") {
-			t.Errorf("review role lost NOTION_MCP_REPOS; args=%v", args)
+			t.Errorf("review role lost NOTION_MCP_REPOS; args=%v", redactedArgs(args))
 		}
 	})
 
@@ -121,13 +121,13 @@ func TestBwrapBuildArgs_ReviewRoleEnvMapHasNoGrafana(t *testing.T) {
 		args := b.BuildArgs(m)
 
 		if !hasSetenv(args, "GRAFANA_MCP_CONFIG_PATH", secret) {
-			t.Errorf("worker must keep --setenv GRAFANA_MCP_CONFIG_PATH; args=%v", args)
+			t.Errorf("worker must keep --setenv GRAFANA_MCP_CONFIG_PATH; args=%v", redactedArgs(args))
 		}
 		if !hasSetenv(args, "PI_GRAFANA_MCP_BIN", "/nix/store/abc-mcp-grafana/bin/mcp-grafana") {
-			t.Errorf("worker must keep --setenv PI_GRAFANA_MCP_BIN; args=%v", args)
+			t.Errorf("worker must keep --setenv PI_GRAFANA_MCP_BIN; args=%v", redactedArgs(args))
 		}
 		if !hasROBindSrcDst(args, resolved, secret) {
-			t.Errorf("worker must keep the grafana secret bind; args=%v", args)
+			t.Errorf("worker must keep the grafana secret bind; args=%v", redactedArgs(args))
 		}
 	})
 }
@@ -149,12 +149,12 @@ func TestAppendSandboxEnvVarsKV_ReviewRoleEnvMapHasNoGrafana(t *testing.T) {
 	} {
 		for _, kv := range review {
 			if kv == unwanted {
-				t.Errorf("sandbox-exec must not emit %q for a review role; env=%v", unwanted, review)
+				t.Errorf("sandbox-exec must not emit %q for a review role; env=%v", unwanted, redactedArgs(review))
 			}
 		}
 	}
 	if !containsKV(review, "KUBECONFIG=/home/ben/.config/kube/agents-config") {
-		t.Errorf("review role lost KUBECONFIG; env=%v", review)
+		t.Errorf("review role lost KUBECONFIG; env=%v", redactedArgs(review))
 	}
 
 	coordinator := AppendSandboxEnvVarsKV(nil, Config{
@@ -167,7 +167,7 @@ func TestAppendSandboxEnvVarsKV_ReviewRoleEnvMapHasNoGrafana(t *testing.T) {
 		"NOTION_MCP_REPOS=nixos-config:prism",
 	} {
 		if !containsKV(coordinator, want) {
-			t.Errorf("coordinator must keep %q; env=%v", want, coordinator)
+			t.Errorf("coordinator must keep %q; env=%v", want, redactedArgs(coordinator))
 		}
 	}
 }

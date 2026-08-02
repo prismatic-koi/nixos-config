@@ -232,10 +232,10 @@ func TestBwrapBuildArgs_ClearenvBeforeAllSetenv(t *testing.T) {
 	}
 
 	if clearenvIdx == -1 {
-		t.Fatalf("--clearenv missing from args: %v", args)
+		t.Fatalf("--clearenv missing from args: %v", redactedArgs(args))
 	}
 	if firstSetenvIdx == -1 {
-		t.Fatalf("expected at least one --setenv, got none: %v", args)
+		t.Fatalf("expected at least one --setenv, got none: %v", redactedArgs(args))
 	}
 	if clearenvIdx >= firstSetenvIdx {
 		t.Errorf("--clearenv at index %d must precede first --setenv at index %d (otherwise the setenv is wiped)",
@@ -292,7 +292,7 @@ func TestMinimalBwrapExecEnv_DropsSecrets(t *testing.T) {
 	}
 	for _, kv := range wantPresent {
 		if !gotSet[kv] {
-			t.Errorf("allow-listed pair %q missing from output: %v", kv, out)
+			t.Errorf("allow-listed pair %q missing from output: %v", kv, redactedArgs(out))
 		}
 	}
 
@@ -350,7 +350,7 @@ func TestMinimalBwrapExecEnv_IgnoresMalformed(t *testing.T) {
 
 	want := []string{"PATH=/usr/bin", "HOME=/home/ben"}
 	if len(out) != len(want) {
-		t.Fatalf("len(out) = %d, want %d: %v", len(out), len(want), out)
+		t.Fatalf("len(out) = %d, want %d: %v", len(out), len(want), redactedArgs(out))
 	}
 	for i, w := range want {
 		if out[i] != w {
@@ -374,7 +374,7 @@ func TestBwrapBuildArgs_WorktreeBound(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasBind(args, worktree) {
-		t.Errorf("worktree %q not found as --bind SRC SRC in args: %v", worktree, args)
+		t.Errorf("worktree %q not found as --bind SRC SRC in args: %v", worktree, redactedArgs(args))
 	}
 }
 
@@ -397,14 +397,14 @@ func TestBwrapBuildArgs_ClaudeConfigXDGDirBound(t *testing.T) {
 
 	claudeXDGDir := filepath.Join(fakeHome, ".config", "claude")
 	if !hasBind(args, claudeXDGDir) {
-		t.Errorf("~/.config/claude %q not found as --bind SRC SRC in args: %v", claudeXDGDir, args)
+		t.Errorf("~/.config/claude %q not found as --bind SRC SRC in args: %v", claudeXDGDir, redactedArgs(args))
 	}
 
 	// The canonical ~/.claude path must not appear anywhere in the args —
 	// neither as a bind source nor as a destination (env-var route, #2243).
 	canonical := filepath.Join(fakeHome, ".claude")
 	if hasArg(args, canonical) {
-		t.Errorf("canonical ~/.claude %q must not appear in args (XDG relocation, #2243): %v", canonical, args)
+		t.Errorf("canonical ~/.claude %q must not appear in args (XDG relocation, #2243): %v", canonical, redactedArgs(args))
 	}
 }
 
@@ -430,10 +430,10 @@ func TestBwrapBuildArgs_ClaudeConfigDirAbsentNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasArg(args, claudeXDGDir) {
-		t.Errorf("absent ~/.config/claude %q must not be referenced in args (OptionalIfMissing): %v", claudeXDGDir, args)
+		t.Errorf("absent ~/.config/claude %q must not be referenced in args (OptionalIfMissing): %v", claudeXDGDir, redactedArgs(args))
 	}
 	if hasArg(args, filepath.Join(fakeHome, ".claude")) {
-		t.Errorf("canonical ~/.claude must not appear in args (XDG relocation, #2243): %v", args)
+		t.Errorf("canonical ~/.claude must not appear in args (XDG relocation, #2243): %v", redactedArgs(args))
 	}
 }
 
@@ -450,7 +450,7 @@ func TestBwrapBuildArgs_McpAuthBound(t *testing.T) {
 
 	mcpAuthDir := filepath.Join(fakeHome, ".mcp-auth")
 	if !hasBind(args, mcpAuthDir) {
-		t.Errorf("~/.mcp-auth %q not found as --bind SRC SRC in args: %v", mcpAuthDir, args)
+		t.Errorf("~/.mcp-auth %q not found as --bind SRC SRC in args: %v", mcpAuthDir, redactedArgs(args))
 	}
 }
 
@@ -472,7 +472,7 @@ func TestBwrapBuildArgs_PiXDGDirNotBound(t *testing.T) {
 
 	xdgDir := filepath.Join(fakeHome, ".local", "share", "pi")
 	if hasBind(args, xdgDir) {
-		t.Errorf("~/.local/share/pi %q should NOT be bound in bwrap args (dead mount removed in #1622), but was: %v", xdgDir, args)
+		t.Errorf("~/.local/share/pi %q should NOT be bound in bwrap args (dead mount removed in #1622), but was: %v", xdgDir, redactedArgs(args))
 	}
 }
 
@@ -488,7 +488,7 @@ func TestBwrapBuildArgs_NixDaemonSocketDirBound(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasBind(args, "/nix/var/nix/daemon-socket") {
-		t.Errorf("/nix/var/nix/daemon-socket not found as --bind SRC SRC in args: %v", args)
+		t.Errorf("/nix/var/nix/daemon-socket not found as --bind SRC SRC in args: %v", redactedArgs(args))
 	}
 }
 
@@ -505,7 +505,7 @@ func TestBwrapBuildArgs_NixCacheDirBound(t *testing.T) {
 
 	nixCacheDir := filepath.Join(fakeHome, ".cache", "nix")
 	if !hasBind(args, nixCacheDir) {
-		t.Errorf("~/.cache/nix %q not found as --bind SRC SRC in args: %v", nixCacheDir, args)
+		t.Errorf("~/.cache/nix %q not found as --bind SRC SRC in args: %v", nixCacheDir, redactedArgs(args))
 	}
 }
 
@@ -534,7 +534,7 @@ func TestBwrapBuildArgs_NixCacheDirAbsentNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasBind(args, nixCacheDir) {
-		t.Errorf("missing ~/.cache/nix should be omitted (OptionalIfMissing, #2245) but found as --bind in args: %v", args)
+		t.Errorf("missing ~/.cache/nix should be omitted (OptionalIfMissing, #2245) but found as --bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -562,10 +562,10 @@ func TestBwrapBuildArgs_BunCacheDirBound(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasBind(args, bunCacheDir) {
-		t.Errorf("~/.cache/bun %q not found as --bind SRC SRC in args: %v", bunCacheDir, args)
+		t.Errorf("~/.cache/bun %q not found as --bind SRC SRC in args: %v", bunCacheDir, redactedArgs(args))
 	}
 	if hasROBind(args, bunCacheDir) {
-		t.Errorf("~/.cache/bun %q must be RW (--bind), not RO (--ro-bind): %v", bunCacheDir, args)
+		t.Errorf("~/.cache/bun %q must be RW (--bind), not RO (--ro-bind): %v", bunCacheDir, redactedArgs(args))
 	}
 }
 
@@ -590,10 +590,10 @@ func TestBwrapBuildArgs_BunCacheDirAbsentNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasBind(args, bunCacheDir) {
-		t.Errorf("missing ~/.cache/bun should be omitted but found as --bind in args: %v", args)
+		t.Errorf("missing ~/.cache/bun should be omitted but found as --bind in args: %v", redactedArgs(args))
 	}
 	if hasROBind(args, bunCacheDir) {
-		t.Errorf("missing ~/.cache/bun should be omitted but found as --ro-bind in args: %v", args)
+		t.Errorf("missing ~/.cache/bun should be omitted but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -628,12 +628,12 @@ func TestBwrapBuildArgs_PrismProfilesJSONROBound(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasROBind(args, profilesJSON) {
-		t.Errorf("profiles.json %q not found as --ro-bind SRC SRC in args: %v", profilesJSON, args)
+		t.Errorf("profiles.json %q not found as --ro-bind SRC SRC in args: %v", profilesJSON, redactedArgs(args))
 	}
 	// RO must not silently become RW — reject any --bind (the RW flag) of
 	// the same path.
 	if hasBind(args, profilesJSON) {
-		t.Errorf("profiles.json %q must be RO (--ro-bind), not RW (--bind): %v", profilesJSON, args)
+		t.Errorf("profiles.json %q must be RO (--ro-bind), not RW (--bind): %v", profilesJSON, redactedArgs(args))
 	}
 }
 
@@ -663,10 +663,10 @@ func TestBwrapBuildArgs_PrismProfilesJSONAbsentNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasROBind(args, profilesJSON) {
-		t.Errorf("missing profiles.json should be omitted but found as --ro-bind in args: %v", args)
+		t.Errorf("missing profiles.json should be omitted but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 	if hasBind(args, profilesJSON) {
-		t.Errorf("missing profiles.json should be omitted but found as --bind in args: %v", args)
+		t.Errorf("missing profiles.json should be omitted but found as --bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -696,18 +696,18 @@ func TestBwrapBuildArgs_BareRepoBoundAtHostPath(t *testing.T) {
 
 	// Bare dir is bound at its actual host path (Dst == Src).
 	if !hasBind(args, bareDir) {
-		t.Errorf("bare dir %q not found as --bind SRC SRC in args: %v", bareDir, args)
+		t.Errorf("bare dir %q not found as --bind SRC SRC in args: %v", bareDir, redactedArgs(args))
 	}
 
 	// Worktree private git state is also bound at its host path (Dst == Src).
 	if !hasBind(args, worktreeGitDir) {
-		t.Errorf("worktree git dir %q not found as --bind SRC SRC in args: %v", worktreeGitDir, args)
+		t.Errorf("worktree git dir %q not found as --bind SRC SRC in args: %v", worktreeGitDir, redactedArgs(args))
 	}
 
 	// Confirm /prism-git is NOT a destination (no remapping).
 	for _, tri := range findTriples(args, "--bind") {
 		if tri[1] == "/prism-git" {
-			t.Errorf("unexpected --bind _ /prism-git found (bwrap must use Dst==Src): %v", args)
+			t.Errorf("unexpected --bind _ /prism-git found (bwrap must use Dst==Src): %v", redactedArgs(args))
 		}
 	}
 }
@@ -741,7 +741,7 @@ func TestBwrapBuildArgs_MissingWorktreeGitDirStashesError(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasBind(args, worktreeGitDir) {
-		t.Errorf("missing worktreeGitDir %q should not be bound: %v", worktreeGitDir, args)
+		t.Errorf("missing worktreeGitDir %q should not be bound: %v", worktreeGitDir, redactedArgs(args))
 	}
 	if m.worktreeGitDirErr == nil {
 		t.Fatal("expected m.worktreeGitDirErr to be set for a missing WorktreeGitDir, got nil")
@@ -770,7 +770,7 @@ func TestBwrapBuildArgs_MissingBareRootOmitted(t *testing.T) {
 
 	bareDir := filepath.Join(bareRoot, ".bare")
 	if hasBind(args, bareDir) {
-		t.Errorf("missing bareDir %q should be omitted but found as --bind in args: %v", bareDir, args)
+		t.Errorf("missing bareDir %q should be omitted but found as --bind in args: %v", bareDir, redactedArgs(args))
 	}
 }
 
@@ -811,7 +811,7 @@ func TestBwrapBuildArgs_AWSConfigCanonicalBindsGone(t *testing.T) {
 		for _, p := range forbidden {
 			if args[i+1] == p || args[i+2] == p {
 				t.Errorf("aws config/credentials canonical-path bind found (%s %q %q) — dropped in #2234 (env-var route); args: %v",
-					arg, args[i+1], args[i+2], args)
+					arg, args[i+1], args[i+2], redactedArgs(args))
 			}
 		}
 	}
@@ -845,11 +845,11 @@ func TestBwrapBuildArgs_AWSXDGPathROBound(t *testing.T) {
 	cfgPath := filepath.Join(fakeHome, ".config", "aws", "readonly-config")
 	if !hasROBindSrcDst(args, cfgPath, cfgPath) {
 		t.Errorf("AWS readonly-config: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2234) in args: %v",
-			cfgPath, cfgPath, args)
+			cfgPath, cfgPath, redactedArgs(args))
 	}
 	if !hasROBindSrcDst(args, credsPath, credsPath) {
 		t.Errorf("AWS credentials: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2234) in args: %v",
-			credsPath, credsPath, args)
+			credsPath, credsPath, redactedArgs(args))
 	}
 }
 
@@ -875,7 +875,7 @@ func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
 	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
 	if !hasROBindSrcDst(args, kubeSrc, kubeSrc) {
 		t.Errorf("kube agents-config: want --ro-bind %q %q (Dst==Src XDG delivery for the env-var route, #2235) in args: %v",
-			kubeSrc, kubeSrc, args)
+			kubeSrc, kubeSrc, redactedArgs(args))
 	}
 
 	// The canonical-path remap must be gone (issue #2235, bwrap convergence
@@ -890,7 +890,7 @@ func TestBwrapBuildArgs_KubeAgentsConfigXDGPathROBound(t *testing.T) {
 		}
 		if args[i+1] == kubeCanonicalDst || args[i+2] == kubeCanonicalDst {
 			t.Errorf("kube canonical-path bind found (%s %q %q) — dropped in #2235 (env-var route); args: %v",
-				arg, args[i+1], args[i+2], args)
+				arg, args[i+1], args[i+2], redactedArgs(args))
 		}
 	}
 }
@@ -918,7 +918,7 @@ func TestBwrapBuildArgs_KubeCacheDirEnvInjected(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "KUBECACHEDIR", bwrapKubeCacheDir) {
-		t.Errorf("--setenv KUBECACHEDIR %s not found in args: %v", bwrapKubeCacheDir, args)
+		t.Errorf("--setenv KUBECACHEDIR %s not found in args: %v", bwrapKubeCacheDir, redactedArgs(args))
 	}
 
 	// The value must live on the per-session /tmp tmpfs — never a host path.
@@ -944,13 +944,13 @@ func TestBwrapBuildArgs_SSHAccessKeyRemapped(t *testing.T) {
 	accessKeySrc := filepath.Join(fakeHome, ".ssh", "prismatic-koi-ed25519")
 	accessKeyDst := filepath.Join(fakeHome, ".ssh", "access-key")
 	if !hasROBindSrcDst(args, accessKeySrc, accessKeyDst) {
-		t.Errorf("SSH access key: want --ro-bind %q %q in args: %v", accessKeySrc, accessKeyDst, args)
+		t.Errorf("SSH access key: want --ro-bind %q %q in args: %v", accessKeySrc, accessKeyDst, redactedArgs(args))
 	}
 	// Must NOT be bound at the host-name path (Dst==Src form was replaced
 	// by the canonical-name remap in the signing-key parity fix).
 	if hasROBindSrcDst(args, accessKeySrc, accessKeySrc) {
 		t.Errorf("SSH access key: --ro-bind %q %q (Dst==Src) should not be emitted; args: %v",
-			accessKeySrc, accessKeySrc, args)
+			accessKeySrc, accessKeySrc, redactedArgs(args))
 	}
 }
 
@@ -975,11 +975,11 @@ func TestBwrapBuildArgs_SSHSigningKeyRemapped(t *testing.T) {
 
 	if !hasROBindSrcDst(args, signingKeySrc, signingKeyDst) {
 		t.Errorf("SSH signing key (private): want --ro-bind %q %q in args: %v",
-			signingKeySrc, signingKeyDst, args)
+			signingKeySrc, signingKeyDst, redactedArgs(args))
 	}
 	if !hasROBindSrcDst(args, signingKeyPubSrc, signingKeyPubDst) {
 		t.Errorf("SSH signing key (public): want --ro-bind %q %q in args: %v",
-			signingKeyPubSrc, signingKeyPubDst, args)
+			signingKeyPubSrc, signingKeyPubDst, redactedArgs(args))
 	}
 	// Must NOT be bound at the host-name paths.
 	if hasROBindSrcDst(args, signingKeySrc, signingKeySrc) {
@@ -1024,7 +1024,7 @@ func TestBwrapBuildArgs_AllowedSignersRemapped(t *testing.T) {
 	allowedDst := filepath.Join(fakeHome, ".ssh", "allowed_signers")
 	if !hasROBindSrcDst(args, allowedSrc, allowedDst) {
 		t.Errorf("allowed_signers: want --ro-bind %q %q in args: %v",
-			allowedSrc, allowedDst, args)
+			allowedSrc, allowedDst, redactedArgs(args))
 	}
 }
 
@@ -1047,7 +1047,7 @@ func TestBwrapBuildArgs_KnownHostsRemapped(t *testing.T) {
 	knownHostsDst := filepath.Join(fakeHome, ".ssh", "known_hosts")
 	if !hasROBindSrcDst(args, knownHostsSrc, knownHostsDst) {
 		t.Errorf("known_hosts: want --ro-bind %q %q in args: %v",
-			knownHostsSrc, knownHostsDst, args)
+			knownHostsSrc, knownHostsDst, redactedArgs(args))
 	}
 }
 
@@ -1067,7 +1067,7 @@ func TestBwrapBuildArgs_GeneratedSSHConfigROBound(t *testing.T) {
 	sshSrc := m.sshConfigFilePath()
 	sshDst := filepath.Join(fakeHome, ".ssh", "config")
 	if !hasROBindSrcDst(args, sshSrc, sshDst) {
-		t.Errorf("generated SSH config: want --ro-bind %q %q in args: %v", sshSrc, sshDst, args)
+		t.Errorf("generated SSH config: want --ro-bind %q %q in args: %v", sshSrc, sshDst, redactedArgs(args))
 	}
 }
 
@@ -1087,7 +1087,7 @@ func TestBwrapBuildArgs_GeneratedGitconfigROBound(t *testing.T) {
 	gitSrc := m.gitconfigFilePath()
 	gitDst := filepath.Join(fakeHome, ".gitconfig")
 	if !hasROBindSrcDst(args, gitSrc, gitDst) {
-		t.Errorf("generated gitconfig: want --ro-bind %q %q in args: %v", gitSrc, gitDst, args)
+		t.Errorf("generated gitconfig: want --ro-bind %q %q in args: %v", gitSrc, gitDst, redactedArgs(args))
 	}
 }
 
@@ -1142,7 +1142,7 @@ func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	}
 	if !hasROBindSrcDst(args, resolved, symlink) {
 		t.Errorf("grafana secret: want --ro-bind %q %q (Src=EvalSymlinks-resolved, Dst=env-var path) in args: %v",
-			resolved, symlink, args)
+			resolved, symlink, redactedArgs(args))
 	}
 	// Defence against a regression to the earlier Dst==Src shape, which
 	// would pass the invariant check above but leave the env-var path
@@ -1152,7 +1152,7 @@ func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	// /path/to/symlink.
 	if hasROBindSrcDst(args, resolved, resolved) {
 		t.Errorf("grafana secret: unexpected --ro-bind %q %q (Dst==Src) — the extension reads process.env.GRAFANA_MCP_CONFIG_PATH which points at the symlink %q, so Dst must equal that env-var path, not the resolved concrete path; args=%v",
-			resolved, resolved, symlink, args)
+			resolved, resolved, symlink, redactedArgs(args))
 	}
 }
 
@@ -1181,7 +1181,7 @@ func TestBwrapBuildArgs_GrafanaSecretBind_UnsetIsNoBind(t *testing.T) {
 
 	if hasROBindSrcDst(args, phantom, phantom) {
 		t.Errorf("grafana secret: unexpected --ro-bind %q %q when GRAFANA_MCP_CONFIG_PATH is unset; args=%v",
-			phantom, phantom, args)
+			phantom, phantom, redactedArgs(args))
 	}
 }
 
@@ -1204,7 +1204,7 @@ func TestBwrapBuildArgs_GrafanaSecretBind_UnresolvableIsNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasROBindSrcDst(args, "/nonexistent/does/not/exist", "/nonexistent/does/not/exist") {
-		t.Errorf("grafana secret: unresolvable path should NOT be bound; args=%v", args)
+		t.Errorf("grafana secret: unresolvable path should NOT be bound; args=%v", redactedArgs(args))
 	}
 }
 
@@ -1223,7 +1223,7 @@ func TestBwrapBuildArgs_EnvVarsTranslated(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "ANTHROPIC_API_KEY", "test-anthropic-key") {
-		t.Errorf("--setenv ANTHROPIC_API_KEY test-anthropic-key not found in args: %v", args)
+		t.Errorf("--setenv ANTHROPIC_API_KEY test-anthropic-key not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1239,7 +1239,7 @@ func TestBwrapBuildArgs_NixConfigSetenv(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "NIX_CONFIG", "store = daemon") {
-		t.Errorf("--setenv NIX_CONFIG 'store = daemon' not found in args: %v", args)
+		t.Errorf("--setenv NIX_CONFIG 'store = daemon' not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1261,7 +1261,7 @@ func TestBwrapBuildArgs_TermPassthrough(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TERM", "tmux-256color") {
-		t.Errorf("--setenv TERM tmux-256color not found in args: %v", args)
+		t.Errorf("--setenv TERM tmux-256color not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1281,7 +1281,7 @@ func TestBwrapBuildArgs_TermFallbackWhenUnset(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TERM", "xterm-256color") {
-		t.Errorf("--setenv TERM xterm-256color (fallback) not found when TERM is empty, args: %v", args)
+		t.Errorf("--setenv TERM xterm-256color (fallback) not found when TERM is empty, args: %v", redactedArgs(args))
 	}
 }
 
@@ -1303,7 +1303,7 @@ func TestBwrapBuildArgs_TermUnusualValue(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TERM", "alacritty-direct") {
-		t.Errorf("--setenv TERM alacritty-direct not found in args: %v", args)
+		t.Errorf("--setenv TERM alacritty-direct not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1317,7 +1317,7 @@ func TestStandardSandboxEnvArgs_PathFallbackWhenUnset(t *testing.T) {
 	args := standardSandboxEnvArgs()
 	fp := fallbackPATH()
 	if !hasSetenv(args, "PATH", fp) {
-		t.Errorf("expected --setenv PATH %q when PATH is empty, got args: %v", fp, args)
+		t.Errorf("expected --setenv PATH %q when PATH is empty, got args: %v", fp, redactedArgs(args))
 	}
 }
 
@@ -1328,7 +1328,7 @@ func TestStandardSandboxEnvArgs_PathFromHostWhenSet(t *testing.T) {
 	t.Setenv("PATH", hostPath)
 	args := standardSandboxEnvArgs()
 	if !hasSetenv(args, "PATH", hostPath) {
-		t.Errorf("expected --setenv PATH %q, got args: %v", hostPath, args)
+		t.Errorf("expected --setenv PATH %q, got args: %v", hostPath, redactedArgs(args))
 	}
 }
 
@@ -1352,7 +1352,7 @@ func TestStandardSandboxEnvArgs_OptionalVarsPresentWhenSet(t *testing.T) {
 	}
 	for _, c := range cases {
 		if !hasSetenv(args, c[0], c[1]) {
-			t.Errorf("expected --setenv %s %q in args: %v", c[0], c[1], args)
+			t.Errorf("expected --setenv %s %q in args: %v", c[0], c[1], redactedArgs(args))
 		}
 	}
 }
@@ -1370,7 +1370,7 @@ func TestStandardSandboxEnvArgs_OptionalVarsOmittedWhenUnset(t *testing.T) {
 	for _, key := range []string{"HOME", "USER", "LOGNAME", "LANG", "LC_ALL"} {
 		for i := 0; i+2 < len(args); i++ {
 			if args[i] == "--setenv" && args[i+1] == key {
-				t.Errorf("optional var %s should be omitted when unset but found in args: %v", key, args)
+				t.Errorf("optional var %s should be omitted when unset but found in args: %v", key, redactedArgs(args))
 			}
 		}
 	}
@@ -1397,7 +1397,7 @@ func TestStandardSandboxEnvArgs_ShellPinnedToBinSh(t *testing.T) {
 			args := standardSandboxEnvArgs()
 			if !hasSetenv(args, "SHELL", "/bin/sh") {
 				t.Errorf("expected --setenv SHELL /bin/sh regardless of host value %q; got args: %v",
-					hostShell, args)
+					hostShell, redactedArgs(args))
 			}
 		})
 	}
@@ -1411,7 +1411,7 @@ func TestStandardSandboxEnvArgs_PathFallbackExactNoUser(t *testing.T) {
 	args := standardSandboxEnvArgs()
 	want := "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/usr/bin:/bin"
 	if !hasSetenv(args, "PATH", want) {
-		t.Errorf("fallback PATH (no USER) = unexpected value; want exactly %q, got args: %v", want, args)
+		t.Errorf("fallback PATH (no USER) = unexpected value; want exactly %q, got args: %v", want, redactedArgs(args))
 	}
 }
 
@@ -1440,12 +1440,12 @@ func TestBwrapBuildArgs_PathSetenvPresentInBuildArgs(t *testing.T) {
 		}
 	}
 	if sepIdx < 0 {
-		t.Fatalf("-- separator not found in args: %v", args)
+		t.Fatalf("-- separator not found in args: %v", redactedArgs(args))
 	}
 
 	pre := args[:sepIdx]
 	if !hasSetenv(pre, "PATH", hostPath) {
-		t.Errorf("--setenv PATH %q not found before -- in args: %v", hostPath, args)
+		t.Errorf("--setenv PATH %q not found before -- in args: %v", hostPath, redactedArgs(args))
 	}
 }
 
@@ -1467,7 +1467,7 @@ func TestBwrapBuildArgs_PathFallbackInBuildArgs(t *testing.T) {
 
 	fp := fallbackPATH()
 	if !hasSetenv(args, "PATH", fp) {
-		t.Errorf("expected fallback --setenv PATH %q when PATH empty, got args: %v", fp, args)
+		t.Errorf("expected fallback --setenv PATH %q when PATH empty, got args: %v", fp, redactedArgs(args))
 	}
 }
 
@@ -1490,7 +1490,7 @@ func TestBwrapBuildArgs_TermRegression(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TERM", "tmux-256color") {
-		t.Errorf("regression: --setenv TERM tmux-256color missing from args: %v", args)
+		t.Errorf("regression: --setenv TERM tmux-256color missing from args: %v", redactedArgs(args))
 	}
 }
 
@@ -1506,7 +1506,7 @@ func TestBwrapBuildArgs_PrismSessionNameSetenv(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "PRISM_SESSION_NAME", "myrepo@feat") {
-		t.Errorf("--setenv PRISM_SESSION_NAME myrepo@feat not found in args: %v", args)
+		t.Errorf("--setenv PRISM_SESSION_NAME myrepo@feat not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1529,7 +1529,7 @@ func TestBwrapBuildArgs_ColortermPassthrough(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "COLORTERM", "truecolor") {
-		t.Errorf("--setenv COLORTERM truecolor not found in args: %v", args)
+		t.Errorf("--setenv COLORTERM truecolor not found in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1551,7 +1551,7 @@ func TestBwrapBuildArgs_ColortermOmittedWhenUnset(t *testing.T) {
 
 	for i := 0; i+2 < len(args); i++ {
 		if args[i] == "--setenv" && args[i+1] == "COLORTERM" {
-			t.Errorf("COLORTERM should be omitted when unset but found --setenv COLORTERM %q in args: %v", args[i+2], args)
+			t.Errorf("COLORTERM should be omitted when unset but found --setenv COLORTERM %q in args: %v", args[i+2], redactedArgs(args))
 		}
 	}
 }
@@ -1585,31 +1585,31 @@ func TestBwrapBuildArgs_AgentEnvVarsInjected(t *testing.T) {
 
 	// GIT_EDITOR must be injected.
 	if !hasSetenv(args, "GIT_EDITOR", "true") {
-		t.Errorf("--setenv GIT_EDITOR true not found in args: %v", args)
+		t.Errorf("--setenv GIT_EDITOR true not found in args: %v", redactedArgs(args))
 	}
 
 	// AWS_CONFIG_FILE and AWS_SHARED_CREDENTIALS_FILE MUST be injected
 	// (issue #2234) — the canonical-path bind-mounts are gone and the aws
 	// CLI resolves the files via these env vars at the host XDG paths.
 	if !hasSetenv(args, "AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config") {
-		t.Errorf("--setenv AWS_CONFIG_FILE not found in args (must flow since #2234): %v", args)
+		t.Errorf("--setenv AWS_CONFIG_FILE not found in args (must flow since #2234): %v", redactedArgs(args))
 	}
 	if !hasSetenv(args, "AWS_SHARED_CREDENTIALS_FILE", "/home/ben/.config/aws/credentials") {
-		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE not found in args (must flow since #2234): %v", args)
+		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE not found in args (must flow since #2234): %v", redactedArgs(args))
 	}
 
 	// KUBECONFIG MUST be injected (issue #2235) — the canonical-path kube
 	// bind is gone and kubectl resolves the config via this env var at the
 	// host XDG path.
 	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
-		t.Errorf("--setenv KUBECONFIG not found in args (must flow since #2235): %v", args)
+		t.Errorf("--setenv KUBECONFIG not found in args (must flow since #2235): %v", redactedArgs(args))
 	}
 
 	// CLAUDE_CONFIG_DIR MUST be injected (issue #2243) — the canonical-path
 	// ~/.claude bind is gone and claude-code resolves its config dir via
 	// this env var at the host XDG path.
 	if !hasSetenv(args, "CLAUDE_CONFIG_DIR", "/home/ben/.config/claude") {
-		t.Errorf("--setenv CLAUDE_CONFIG_DIR not found in args (must flow since #2243): %v", args)
+		t.Errorf("--setenv CLAUDE_CONFIG_DIR not found in args (must flow since #2243): %v", redactedArgs(args))
 	}
 }
 
@@ -1671,13 +1671,13 @@ func TestBwrapBuildArgs_KubeconfigInjectedEvenWhenFileAbsent(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "KUBECONFIG", "/home/ben/.config/kube/agents-config") {
-		t.Errorf("--setenv KUBECONFIG must be injected even when the host file is absent (#2235); args: %v", args)
+		t.Errorf("--setenv KUBECONFIG must be injected even when the host file is absent (#2235); args: %v", redactedArgs(args))
 	}
 
 	// Absent file → no XDG bind emitted (EvalSymlinks silent skip).
 	kubeSrc := filepath.Join(fakeHome, ".config", "kube", "agents-config")
 	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
-		t.Errorf("absent kube file %q must not produce a bind; args: %v", kubeSrc, args)
+		t.Errorf("absent kube file %q must not produce a bind; args: %v", kubeSrc, redactedArgs(args))
 	}
 }
 
@@ -1743,10 +1743,10 @@ func TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "AWS_CONFIG_FILE", "/home/ben/.config/aws/readonly-config") {
-		t.Errorf("--setenv AWS_CONFIG_FILE must be injected even when the host file is absent (#2234); args: %v", args)
+		t.Errorf("--setenv AWS_CONFIG_FILE must be injected even when the host file is absent (#2234); args: %v", redactedArgs(args))
 	}
 	if !hasSetenv(args, "AWS_SHARED_CREDENTIALS_FILE", "/home/ben/.config/aws/credentials") {
-		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE must be injected even when the host file is absent (#2234); args: %v", args)
+		t.Errorf("--setenv AWS_SHARED_CREDENTIALS_FILE must be injected even when the host file is absent (#2234); args: %v", redactedArgs(args))
 	}
 
 	// Absent files → no XDG bind emitted (EvalSymlinks silent skip).
@@ -1755,7 +1755,7 @@ func TestBwrapBuildArgs_AwsEnvVarsInjectedEvenWhenFilesAbsent(t *testing.T) {
 		filepath.Join(fakeHome, ".config", "aws", "credentials"),
 	} {
 		if hasROBindSrcDst(args, p, p) {
-			t.Errorf("absent aws file %q must not produce a bind; args: %v", p, args)
+			t.Errorf("absent aws file %q must not produce a bind; args: %v", p, redactedArgs(args))
 		}
 	}
 }
@@ -1808,7 +1808,7 @@ func TestBwrapBuildArgs_AgentEnvVarsSpecialChars(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasSetenv(args, "TRICKY_VAR", "value with spaces and 'quotes'") {
-		t.Errorf("--setenv TRICKY_VAR with special chars not found verbatim in args: %v", args)
+		t.Errorf("--setenv TRICKY_VAR with special chars not found verbatim in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1838,7 +1838,7 @@ func TestBwrapBuildArgs_ChdirIsWorktree(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("--chdir %q not found in args: %v", worktree, args)
+		t.Errorf("--chdir %q not found in args: %v", worktree, redactedArgs(args))
 	}
 }
 
@@ -1893,11 +1893,11 @@ func TestBwrapBuildArgs_MissingMountOmitted(t *testing.T) {
 	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
 	// should appear.
 	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, args)
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, redactedArgs(args))
 	}
 	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
 	if hasROBindSrcDst(args, kubeSrc, kubeCanonicalDst) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, args)
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, redactedArgs(args))
 	}
 }
 
@@ -1918,7 +1918,7 @@ func TestBwrapBuildArgs_MissingMcpAuthOmitted(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasBind(args, mcpAuthDir) {
-		t.Errorf("missing ~/.mcp-auth should be omitted but found as --bind in args: %v", args)
+		t.Errorf("missing ~/.mcp-auth should be omitted but found as --bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1941,11 +1941,11 @@ func TestBwrapBuildArgs_NpmCacheBound(t *testing.T) {
 
 	npmDir := filepath.Join(fakeHome, ".npm")
 	if !hasBind(args, npmDir) {
-		t.Errorf("~/.npm %q not found as --bind SRC SRC in args: %v", npmDir, args)
+		t.Errorf("~/.npm %q not found as --bind SRC SRC in args: %v", npmDir, redactedArgs(args))
 	}
 	// And it must NOT be read-only — npx writes to its cache on first use.
 	if hasROBind(args, npmDir) {
-		t.Errorf("~/.npm %q must be RW (--bind), not RO (--ro-bind): %v", npmDir, args)
+		t.Errorf("~/.npm %q must be RW (--bind), not RO (--ro-bind): %v", npmDir, redactedArgs(args))
 	}
 }
 
@@ -1970,10 +1970,10 @@ func TestBwrapBuildArgs_MissingNpmCacheOmitted(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasBind(args, npmDir) {
-		t.Errorf("missing ~/.npm should be omitted but found as --bind in args: %v", args)
+		t.Errorf("missing ~/.npm should be omitted but found as --bind in args: %v", redactedArgs(args))
 	}
 	if hasROBind(args, npmDir) {
-		t.Errorf("missing ~/.npm should be omitted but found as --ro-bind in args: %v", args)
+		t.Errorf("missing ~/.npm should be omitted but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -1996,11 +1996,11 @@ func TestBwrapBuildArgs_MissingKubeConfigOmitted(t *testing.T) {
 	// Neither the Dst==Src XDG form (#2235) nor the old canonical remap
 	// should appear.
 	if hasROBindSrcDst(args, kubeSrc, kubeSrc) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, args)
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeSrc, redactedArgs(args))
 	}
 	kubeCanonicalDst := filepath.Join(fakeHome, ".kube", "config")
 	if hasROBindSrcDst(args, kubeSrc, kubeCanonicalDst) {
-		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, args)
+		t.Errorf("missing kube agents-config should be omitted but found as --ro-bind %q %q in args: %v", kubeSrc, kubeCanonicalDst, redactedArgs(args))
 	}
 }
 
@@ -2033,7 +2033,7 @@ func TestBwrapBuildArgs_AWSCredentialsNotRemapped(t *testing.T) {
 	credsDst := filepath.Join(fakeHome, ".aws", "credentials")
 	if hasROBindSrcDst(args, credsSrc, credsDst) {
 		t.Errorf("AWS credentials: --ro-bind %q %q must NOT be emitted (env-var route since #2234); args: %v",
-			credsSrc, credsDst, args)
+			credsSrc, credsDst, redactedArgs(args))
 	}
 }
 
@@ -2085,7 +2085,7 @@ func TestBwrapBuildArgs_AllRemapsHaveCorrectDestinations(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			if !hasROBindSrcDst(args, tc.src, tc.dst) {
-				t.Errorf("remap %q: want --ro-bind %q %q in args: %v", tc.name, tc.src, tc.dst, args)
+				t.Errorf("remap %q: want --ro-bind %q %q in args: %v", tc.name, tc.src, tc.dst, redactedArgs(args))
 			}
 		})
 	}
@@ -2102,7 +2102,7 @@ func TestBwrapIsolator_BuildRunArgsReturnsNil(t *testing.T) {
 	// BuildRunArgs() is a stub on bwrapIsolator — it returns nil.
 	b := &bwrapIsolator{name: "test"}
 	if got := b.BuildRunArgs(); got != nil {
-		t.Errorf("BuildRunArgs() = %v, want nil", got)
+		t.Errorf("BuildRunArgs() = %v, want nil", redactedArgs(got))
 	}
 }
 
@@ -2203,7 +2203,7 @@ func TestBwrapBuildArgs_FullFixture(t *testing.T) {
 	b := &bwrapIsolator{name: m.name}
 	args := b.BuildArgs(m)
 
-	t.Logf("full bwrap args (%d): %v", len(args), args)
+	t.Logf("full bwrap args (%d): %v", len(args), redactedArgs(args))
 
 	// Baseline flags present. Note: --unshare-ipc is intentionally absent (see
 	// issue #906 — it breaks SQLite WAL mmap coherency between concurrent sessions).
@@ -2344,7 +2344,7 @@ func TestBwrapBuildArgs_SystemRootsPresent(t *testing.T) {
 		"/run/wrappers",
 	} {
 		if !hasROBind(args, root) {
-			t.Errorf("system root %q not found as --ro-bind SRC SRC in args: %v", root, args)
+			t.Errorf("system root %q not found as --ro-bind SRC SRC in args: %v", root, redactedArgs(args))
 		}
 	}
 }
@@ -2376,10 +2376,10 @@ func TestBwrapBuildArgs_SystemRootsBeforeWorktree(t *testing.T) {
 		}
 	}
 	if nixIdx < 0 {
-		t.Fatalf("--ro-bind /nix /nix not found in args: %v", args)
+		t.Fatalf("--ro-bind /nix /nix not found in args: %v", redactedArgs(args))
 	}
 	if worktreeIdx < 0 {
-		t.Fatalf("--bind %q %q not found in args: %v", worktree, worktree, args)
+		t.Fatalf("--bind %q %q not found in args: %v", worktree, worktree, redactedArgs(args))
 	}
 	if nixIdx >= worktreeIdx {
 		t.Errorf("system root /nix (idx %d) should appear before worktree bind (idx %d)", nixIdx, worktreeIdx)
@@ -2443,7 +2443,7 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
 		}
 	}
 	if etcROBindIdx < 0 {
-		t.Fatalf("--ro-bind /etc /etc not found in args: %v", args)
+		t.Fatalf("--ro-bind /etc /etc not found in args: %v", redactedArgs(args))
 	}
 
 	// Assert each sensitive directory is shadowed by --tmpfs AFTER the
@@ -2457,7 +2457,7 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesShadowed(t *testing.T) {
 			}
 		}
 		if tmpfsIdx < 0 {
-			t.Errorf("--tmpfs %s not found in args — sensitive subtree is not shadowed: %v", d.path, args)
+			t.Errorf("--tmpfs %s not found in args — sensitive subtree is not shadowed: %v", d.path, redactedArgs(args))
 			continue
 		}
 		if tmpfsIdx <= etcROBindIdx {
@@ -2497,7 +2497,7 @@ func TestBwrapBuildArgs_SensitiveEtcSubtreesAbsentWhenMissing(t *testing.T) {
 	for _, p := range []string{"/etc/wireguard", "/etc/wpa_supplicant", "/etc/ssh"} {
 		for i := 0; i+1 < len(args); i++ {
 			if args[i] == "--tmpfs" && args[i+1] == p {
-				t.Errorf("--tmpfs %s should NOT appear in args when the directory does not exist on the host, but it does: %v", p, args)
+				t.Errorf("--tmpfs %s should NOT appear in args when the directory does not exist on the host, but it does: %v", p, redactedArgs(args))
 			}
 		}
 	}
@@ -2525,7 +2525,7 @@ func TestBwrapBuildArgs_NixProfilePresentWhenExists(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasROBind(args, nixProfile) {
-		t.Errorf("~/.nix-profile %q not found as --ro-bind SRC SRC when it exists: %v", nixProfile, args)
+		t.Errorf("~/.nix-profile %q not found as --ro-bind SRC SRC when it exists: %v", nixProfile, redactedArgs(args))
 	}
 }
 
@@ -2546,7 +2546,7 @@ func TestBwrapBuildArgs_NixProfileAbsentWhenMissing(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasROBind(args, nixProfile) {
-		t.Errorf("~/.nix-profile should be omitted when absent, but found as --ro-bind in args: %v", args)
+		t.Errorf("~/.nix-profile should be omitted when absent, but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -2569,7 +2569,7 @@ func TestBwrapBuildArgs_LocalStateNixProfilePresentWhenExists(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasROBind(args, localStateProfile) {
-		t.Errorf("~/.local/state/nix/profile %q not found as --ro-bind SRC SRC when it exists: %v", localStateProfile, args)
+		t.Errorf("~/.local/state/nix/profile %q not found as --ro-bind SRC SRC when it exists: %v", localStateProfile, redactedArgs(args))
 	}
 }
 
@@ -2591,7 +2591,7 @@ func TestBwrapBuildArgs_LocalStateNixProfileAbsentWhenMissing(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasROBind(args, localStateProfile) {
-		t.Errorf("~/.local/state/nix/profile should be omitted when absent, but found as --ro-bind in args: %v", args)
+		t.Errorf("~/.local/state/nix/profile should be omitted when absent, but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -2655,7 +2655,7 @@ func TestStandardSandboxEnvArgs_FallbackPathWithUser(t *testing.T) {
 	args := standardSandboxEnvArgs()
 	fp := fallbackPATH()
 	if !hasSetenv(args, "PATH", fp) {
-		t.Errorf("expected --setenv PATH %q (with per-user entry) when USER=alice and PATH empty, got args: %v", fp, args)
+		t.Errorf("expected --setenv PATH %q (with per-user entry) when USER=alice and PATH empty, got args: %v", fp, redactedArgs(args))
 	}
 	if !strings.HasPrefix(fp, "/etc/profiles/per-user/alice/bin") {
 		t.Errorf("fallbackPATH with USER=alice should begin with per-user entry, got %q", fp)
@@ -2696,19 +2696,19 @@ func TestBwrapBuildArgs_HostAPISockPerSessionDirBindNotSharedDir(t *testing.T) {
 
 	// The per-session socket DIRECTORY must be bind-mounted at its own path (SRC == DST).
 	if !hasBind(args, sockDir) {
-		t.Errorf("per-session socket dir %q not found as --bind SRC SRC in args: %v", sockDir, args)
+		t.Errorf("per-session socket dir %q not found as --bind SRC SRC in args: %v", sockDir, redactedArgs(args))
 	}
 
 	// The socket FILE must NOT be bind-mounted directly (we bind the directory).
 	for _, tri := range findTriples(args, "--bind") {
 		if tri[0] == sockPath && tri[1] == sockPath {
-			t.Errorf("socket FILE %q must not be --bind SRC SRC (bind the directory instead); args: %v", sockPath, args)
+			t.Errorf("socket FILE %q must not be --bind SRC SRC (bind the directory instead); args: %v", sockPath, redactedArgs(args))
 		}
 	}
 
 	// The shared run/ directory must NOT be bind-mounted (security fix #960).
 	if hasBind(args, sharedRunDir) {
-		t.Errorf("shared run/ DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sharedRunDir, args)
+		t.Errorf("shared run/ DIRECTORY %q must not be mounted (security fix #960); found as --bind in args: %v", sharedRunDir, redactedArgs(args))
 	}
 }
 
@@ -2737,7 +2737,7 @@ func TestBwrapBuildArgs_HostAPISockEnvVarSet(t *testing.T) {
 
 	wantVal := "unix://" + sockPath
 	if !hasSetenv(args, "PRISM_HOST_API", wantVal) {
-		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, args)
+		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, redactedArgs(args))
 	}
 }
 
@@ -2762,7 +2762,7 @@ func TestBwrapBuildArgs_HostAPITCPPortUsesHTTPNotSocket(t *testing.T) {
 	// Must have TCP-based PRISM_HOST_API.
 	wantVal := "http://host.containers.internal:51234"
 	if !hasSetenv(args, "PRISM_HOST_API", wantVal) {
-		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, args)
+		t.Errorf("--setenv PRISM_HOST_API %q not found in args: %v", wantVal, redactedArgs(args))
 	}
 
 	// Must NOT have unix:// PRISM_HOST_API.
@@ -2778,10 +2778,10 @@ func TestBwrapBuildArgs_HostAPITCPPortUsesHTTPNotSocket(t *testing.T) {
 	sockPath := "/home/user/.local/state/prism/run/repo@feat-hostapi.sock"
 	sockDir := filepath.Dir(sockPath)
 	if hasBind(args, sockPath) {
-		t.Errorf("socket file %q must not be mounted when HostAPITCPPort is set: %v", sockPath, args)
+		t.Errorf("socket file %q must not be mounted when HostAPITCPPort is set: %v", sockPath, redactedArgs(args))
 	}
 	if hasBind(args, sockDir) {
-		t.Errorf("socket dir %q must not be mounted when HostAPITCPPort is set: %v", sockDir, args)
+		t.Errorf("socket dir %q must not be mounted when HostAPITCPPort is set: %v", sockDir, redactedArgs(args))
 	}
 }
 
@@ -2923,7 +2923,7 @@ func TestBwrapBuildArgs_PISessions_ReachableViaSharedMount(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected --bind %q %q (RW shared mount of host ~/.pi/agent); args=%v",
-			piAgentDir, sandboxAgentDir, args)
+			piAgentDir, sandboxAgentDir, redactedArgs(args))
 	}
 
 	// The host sessions dir must exist after BuildArgs (created as a
@@ -2943,7 +2943,7 @@ func TestBwrapBuildArgs_PISessions_ReachableViaSharedMount(t *testing.T) {
 		if p[0] == hostSessionsDir && p[1] == sandboxSessionsDir {
 			t.Errorf("unexpected dedicated sessions overlay --bind %q %q — "+
 				"the shared parent mount of ~/.pi/agent covers sessions/ directly (post #2034); got args=%v",
-				p[0], p[1], args)
+				p[0], p[1], redactedArgs(args))
 		}
 	}
 }
@@ -2994,7 +2994,7 @@ func TestBwrapBuildArgs_PISharedMount_BeforeTerminator(t *testing.T) {
 		}
 	}
 	if sepIdx < 0 {
-		t.Fatalf("-- separator not found in args: %v", args)
+		t.Fatalf("-- separator not found in args: %v", redactedArgs(args))
 	}
 
 	wantSrc := filepath.Join(fakeHome, ".pi", "agent")
@@ -3008,7 +3008,7 @@ func TestBwrapBuildArgs_PISharedMount_BeforeTerminator(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("shared --bind %q %q not found before -- terminator in args: %v",
-			wantSrc, wantDst, args)
+			wantSrc, wantDst, redactedArgs(args))
 	}
 }
 
@@ -3038,7 +3038,7 @@ func TestBwrapBuildArgs_PISharedMount_OmittedForNonPI(t *testing.T) {
 	for _, p := range findBindPairs(args) {
 		if p[0] == piAgentDir || p[0] == hostSessionsDir {
 			t.Errorf("non-pi harness must not --bind %q; got pair %v in args=%v",
-				p[0], p, args)
+				p[0], p, redactedArgs(args))
 		}
 	}
 }
@@ -3151,13 +3151,13 @@ func TestBwrapBuildArgs_ContainersEnabled_EmitsAllThreeSubstrings(t *testing.T) 
 
 	wantContainerHost := "unix://" + proxySockPath
 	if !hasSetenv(args, "CONTAINER_HOST", wantContainerHost) {
-		t.Errorf("missing --setenv CONTAINER_HOST %q in args:\n  %v", wantContainerHost, args)
+		t.Errorf("missing --setenv CONTAINER_HOST %q in args:\n  %v", wantContainerHost, redactedArgs(args))
 	}
 	if !hasSetenv(args, "DOCKER_HOST", wantContainerHost) {
-		t.Errorf("missing --setenv DOCKER_HOST %q in args:\n  %v", wantContainerHost, args)
+		t.Errorf("missing --setenv DOCKER_HOST %q in args:\n  %v", wantContainerHost, redactedArgs(args))
 	}
 	if !hasBind(args, scratchDir) {
-		t.Errorf("missing --bind %s %s (container-scratch) in args:\n  %v", scratchDir, scratchDir, args)
+		t.Errorf("missing --bind %s %s (container-scratch) in args:\n  %v", scratchDir, scratchDir, redactedArgs(args))
 	}
 }
 
@@ -3186,7 +3186,7 @@ func TestBwrapBuildArgs_ContainersDisabled_NoContainerSurface(t *testing.T) {
 		}
 	}
 	if hasBind(args, scratchDir) {
-		t.Errorf("unexpected --bind %s when ContainersEnabled=false: %v", scratchDir, args)
+		t.Errorf("unexpected --bind %s when ContainersEnabled=false: %v", scratchDir, redactedArgs(args))
 	}
 }
 

@@ -373,7 +373,7 @@ func TestSandboxExecPrepare_NoErrorWhenRunDirExists(t *testing.T) {
 		t.Fatalf("Prepare returned error on existing run dir: %v", err)
 	}
 	if len(args) < 3 || args[1] != "-f" {
-		t.Fatalf("unexpected args shape: %v", args)
+		t.Fatalf("unexpected args shape: %v", redactedArgs(args))
 	}
 
 	// Verify the rendered profile contains the literal allow for the

@@ -34,22 +34,6 @@ func usageDirUnderHome(home string) string {
 	return filepath.Join(home, ".local", "state", "prism", "usage")
 }
 
-// bindArgsForTest renders ONLY the bind triples of a bwrap argv, one per
-// element. Failure messages in this file must never dump the whole argv: it
-// carries --setenv pairs holding real host credentials (GITHUB_TOKEN,
-// OPENROUTER_API_KEY, ...), which a `go test` failure would then print to
-// the terminal or a CI log. The bind list is the only part these tests
-// diagnose against anyway.
-func bindArgsForTest(args []string) []string {
-	var out []string
-	for i := 0; i+2 < len(args); i++ {
-		if args[i] == "--bind" || args[i] == "--ro-bind" {
-			out = append(out, args[i]+" "+args[i+1]+" "+args[i+2])
-		}
-	}
-	return out
-}
-
 // TestBwrapBuildArgs_UsageStateDirROBound is the functional AC: with the
 // usage directory present on the host it is bound into the sandbox, and it
 // is bound READ-ONLY.
@@ -71,13 +55,13 @@ func TestBwrapBuildArgs_UsageStateDirROBound(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasROBind(args, usageDir) {
-		t.Errorf("usage dir %q not found as --ro-bind SRC SRC in binds: %v", usageDir, bindArgsForTest(args))
+		t.Errorf("usage dir %q not found as --ro-bind SRC SRC in args: %v", usageDir, redactedArgs(args))
 	}
 	// RO must not silently become RW: every writer goes through the sidecar
 	// endpoint POST /usage/snapshot, and a writable mount would let a
 	// compromised session forge usage figures on the host.
 	if hasBind(args, usageDir) {
-		t.Errorf("usage dir %q must be RO (--ro-bind), not RW (--bind): %v", usageDir, bindArgsForTest(args))
+		t.Errorf("usage dir %q must be RO (--ro-bind), not RW (--bind): %v", usageDir, redactedArgs(args))
 	}
 }
 
@@ -107,10 +91,10 @@ func TestBwrapBuildArgs_UsageStateDirAbsentNoBind(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if hasROBind(args, usageDir) {
-		t.Errorf("missing usage dir should be omitted but found as --ro-bind in binds: %v", bindArgsForTest(args))
+		t.Errorf("missing usage dir should be omitted but found as --ro-bind in args: %v", redactedArgs(args))
 	}
 	if hasBind(args, usageDir) {
-		t.Errorf("missing usage dir should be omitted but found as --bind in binds: %v", bindArgsForTest(args))
+		t.Errorf("missing usage dir should be omitted but found as --bind in args: %v", redactedArgs(args))
 	}
 }
 
@@ -153,15 +137,15 @@ func TestBwrapBuildArgs_UsageStateDirHonoursXDGStateHome(t *testing.T) {
 	args := b.BuildArgs(m)
 
 	if !hasROBindSrcDst(args, xdgUsageDir, homeUsageDir) {
-		t.Errorf("want --ro-bind %q %q (XDG source remapped to the canonical in-sandbox path); binds: %v",
-			xdgUsageDir, homeUsageDir, bindArgsForTest(args))
+		t.Errorf("want --ro-bind %q %q (XDG source remapped to the canonical in-sandbox path); args: %v",
+			xdgUsageDir, homeUsageDir, redactedArgs(args))
 	}
 	if hasROBind(args, homeUsageDir) {
-		t.Errorf("with $XDG_STATE_HOME set the SOURCE must be %q, not the hardcoded %q; binds: %v",
-			xdgUsageDir, homeUsageDir, bindArgsForTest(args))
+		t.Errorf("with $XDG_STATE_HOME set the SOURCE must be %q, not the hardcoded %q; args: %v",
+			xdgUsageDir, homeUsageDir, redactedArgs(args))
 	}
 	if hasBind(args, xdgUsageDir) || hasBindSrcDstForTest(args, xdgUsageDir, homeUsageDir) {
-		t.Errorf("usage dir must be RO (--ro-bind), not RW (--bind): %v", bindArgsForTest(args))
+		t.Errorf("usage dir must be RO (--ro-bind), not RW (--bind): %v", redactedArgs(args))
 	}
 }
 
@@ -228,8 +212,8 @@ func TestBwrapBuildArgs_UsageStateDirNoAncestorExposed(t *testing.T) {
 		for _, triple := range findTriples(args, flag) {
 			for _, p := range []string{triple[0], triple[1]} {
 				if forbidden[p] {
-					t.Errorf("%s exposes %q, an ancestor of the usage dir — bind the LEAF only; binds: %v",
-						flag, p, bindArgsForTest(args))
+					t.Errorf("%s exposes %q, an ancestor of the usage dir — bind the LEAF only; args: %v",
+						flag, p, redactedArgs(args))
 				}
 			}
 		}

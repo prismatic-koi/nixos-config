@@ -108,6 +108,14 @@ Any change to `internal/container/sandbox_exec.go::generateProfile`, `Manager.Pr
 
 Any test helper that redirects `os.Stdout` or `os.Stderr` through an `os.Pipe` must drain the read end concurrently with the function under test — otherwise a single write larger than the kernel pipe buffer (16 pages ≈ 64 KiB on Linux) deadlocks the writer until `go test`'s timeout fires. The `agent-context` JSON output (~69 KiB) is the current worst offender and the reason this gap surfaced. See `modules/programs/prism/prism/docs/stdout-capture-testing.md` for the full convention and the canonical `captureStdout` helper (issue #1798).
 
+## argv-dump redaction convention (`internal/container`)
+
+`bwrapIsolator.BuildArgs` embeds the output of `credentialEnvVars` in the bwrap argv, so a built argv carries live host secrets: `--setenv ANTHROPIC_API_KEY <key>`, `--setenv OPENROUTER_API_KEY <key>`, and `--setenv GITHUB_TOKEN <PAT>`. A test that formats the raw argv with `%v` writes those values to the developer terminal and to the CI log on every failure (issue #2581; observed live on the #2572 worker).
+
+The rule for `internal/container`: no test formats a whole argv or env slice directly. Route every dump through `redactedArgs` (`argv_redact_test.go`), or `container.RedactedArgsForTest` from an external `package container_test` file. The helper masks the VALUE and keeps the NAME (`--setenv GITHUB_TOKEN <redacted>`), leaves every other element — bind triples included — byte-identical, and preserves the length and order of the slice.
+
+The redaction set is derived from the production names (`credentialForwardEnvKeys`, `githubTokenEnvKey`, `prismGitHubTokenEnvPrefix` in `credentials.go`), so a credential added to `credentialEnvVars` is redacted without a second edit. `TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry` pins that link. When you add a credential, add it to the production list — do not hard-code a second copy in the test helper.
+
 ## The git stash incident (#2202)
 
 The repo `AGENTS.md` states the rule: worker-class sessions never use `git stash`; use a temp commit or a patch file instead. This is why.

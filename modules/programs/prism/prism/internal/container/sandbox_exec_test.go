@@ -789,7 +789,7 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	}
 
 	if len(args) < 4 {
-		t.Fatalf("args too short (%d); want at least 4 elements: %v", len(args), args)
+		t.Fatalf("args too short (%d); want at least 4 elements: %v", len(args), redactedArgs(args))
 	}
 	if args[0] != "sandbox-exec" {
 		t.Errorf("args[0] = %q, want %q", args[0], "sandbox-exec")
@@ -799,14 +799,14 @@ func TestPrepareSandboxExec_WritesProfileAndReturnsArgs(t *testing.T) {
 	}
 	profilePath := args[2]
 	if profilePath == "" {
-		t.Errorf("args[2] (profile path) is empty: %v", args)
+		t.Errorf("args[2] (profile path) is empty: %v", redactedArgs(args))
 	}
 
 	// The harness binary follows the profile path. We don't pin the exact
 	// string so future PRs can swap "pi" for an absolute path without
 	// breaking this assertion, but it must be non-empty.
 	if args[3] == "" {
-		t.Errorf("args[3] (harness binary) is empty: %v", args)
+		t.Errorf("args[3] (harness binary) is empty: %v", redactedArgs(args))
 	}
 
 	// The profile file must exist on disk after PrepareSandboxExec returns.
@@ -888,7 +888,7 @@ func TestSandboxExecPrepare_WorkDirFailurePropagated(t *testing.T) {
 	iso := &sandboxExecIsolator{name: m.name}
 	args, prepErr := iso.Prepare(context.Background(), m)
 	if prepErr == nil {
-		t.Fatalf("Prepare: expected non-nil error when the work dir cannot be created, got nil (args=%v)", args)
+		t.Fatalf("Prepare: expected non-nil error when the work dir cannot be created, got nil (args=%v)", redactedArgs(args))
 	}
 
 	// The error message must name the work-dir failure so the operator knows
@@ -940,10 +940,10 @@ func TestSandboxExecPrepare_WorkDirFailurePropagated_NilArgs(t *testing.T) {
 	iso := &sandboxExecIsolator{name: m.name}
 	args, prepErr := iso.Prepare(context.Background(), m)
 	if prepErr == nil {
-		t.Fatalf("expected error, got nil (args=%v)", args)
+		t.Fatalf("expected error, got nil (args=%v)", redactedArgs(args))
 	}
 	if args != nil {
-		t.Errorf("args must be nil on error; got %v", args)
+		t.Errorf("args must be nil on error; got %v", redactedArgs(args))
 	}
 }
 
@@ -958,14 +958,14 @@ func TestSandboxExecBuildArgs_HarnessImmediatelyAfterProfile(t *testing.T) {
 	s := &sandboxExecIsolator{name: m.name}
 	args := s.BuildArgs(m)
 	if len(args) < 4 {
-		t.Fatalf("args too short (%d): %v", len(args), args)
+		t.Fatalf("args too short (%d): %v", len(args), redactedArgs(args))
 	}
 	if args[0] != "sandbox-exec" || args[1] != "-f" {
-		t.Fatalf("expected leading sandbox-exec -f; got: %v", args)
+		t.Fatalf("expected leading sandbox-exec -f; got: %v", redactedArgs(args))
 	}
 	// args[2] is the profile path; args[3] must be the harness binary.
 	if args[3] != "pi" {
-		t.Errorf("expected args[3] to be the harness binary 'pi'; got %q in %v", args[3], args)
+		t.Errorf("expected args[3] to be the harness binary 'pi'; got %q in %v", args[3], redactedArgs(args))
 	}
 }
 
@@ -1458,7 +1458,7 @@ func TestPrepareSandboxExec_MinimalHomeNoOptionalDirs(t *testing.T) {
 		t.Fatalf("PrepareSandboxExec on a minimal home must succeed: %v", err)
 	}
 	if len(args) < 3 {
-		t.Fatalf("unexpected args shape: %v", args)
+		t.Fatalf("unexpected args shape: %v", redactedArgs(args))
 	}
 	profileBytes, readErr := os.ReadFile(args[2])
 	if readErr != nil {
@@ -1534,7 +1534,7 @@ func TestMinimalIsolatedExecEnv_AllowsExpectedKeys(t *testing.T) {
 		"LANG=en_NZ.UTF-8", "LC_ALL=en_NZ.UTF-8",
 	} {
 		if !gotSet[want] {
-			t.Errorf("expected %q to be passed through; got %v", want, out)
+			t.Errorf("expected %q to be passed through; got %v", want, redactedArgs(out))
 		}
 	}
 	for _, kv := range out {
