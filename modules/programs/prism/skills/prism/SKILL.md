@@ -341,6 +341,60 @@ not to escalate.
   side, and the refusal streams back to the container worker as a non-zero
   review exit — same UX as a host-direct refusal.
 
+### Pre-flight formatter gate (`prism review` refuses on unformatted Go/Nix files)
+
+After the rebase gate passes, `prism review` runs a second one-shot pre-flight
+check, in the same shape: it diffs the touched files against the resolved base
+ref (the same `<remote>/<branch>` the rebase gate just fetched and verified),
+and runs the relevant formatter against any touched Go or Nix files:
+
+1. Touched `.go` files → `gofmt -l <files>`.
+2. Touched `.nix` files → `nixfmt --check <files>`.
+3. If everything checked is clean (or no Go/Nix files were touched): proceed
+   unchanged.
+4. If not: refuse, exit non-zero, **no agents spawn**, and **no cycle counter
+   increment**. The error names the offending files and the exact fix command:
+
+   ```
+   prism review: formatting check failed — refusing to spawn review agents
+
+   Go files not gofmt-clean:
+     internal/foo/bar.go
+
+   Fix with:
+
+       gofmt -w internal/foo/bar.go
+
+   Then commit, push, and re-run 'prism review <pr>'.
+   ```
+
+**Why this gate exists (#2556).** PR #2552 burned a review cycle when a
+five-agent round discovered a missing newline at end of file — a `gofmt`
+violation `gofmt -l .` reports for free in about a second, and one `pr-gate`
+CI would have blocked anyway. Using an LLM review round to discover a
+deterministic, CI-checkable defect wastes cycles against the 3-cycle limit
+for no reliability gain — one agent out of five caught it; had none caught
+it, CI would have blocked the merge regardless.
+
+**Cycle-counter contract.** Same as the rebase gate: the formatter gate runs
+before any review-agent session is spawned and before any DB rows are
+written for the round, so a refusal here is structurally incapable of
+incrementing the review-cycle counter (`NextRoundNumber` counts per-agent
+session rows the gate never creates). Add formatter-gate refusals to the
+"rounds that do not count" list above — the correct action is to run the
+printed fix command, commit, push, and re-run `prism review`, not to
+escalate.
+
+**Fail-open on a missing formatter binary.** If `gofmt` or `nixfmt` is not on
+`PATH`, that language's check is skipped with a progress warning rather than
+blocking the review. A review that cannot run because a tool is absent is
+worse than a review that runs without the gate — this is deliberate, not a
+gap to harden.
+
+**Same gate in host-direct and container-routed paths.** Like the rebase
+gate, this runs inside the host-side `prism review` subprocess regardless of
+which path invoked it, so a container worker sees the identical refusal.
+
 ### Handling no-start errors in review-complete prompts
 
 When a review-complete prompt says **"One or more review agents failed to start
