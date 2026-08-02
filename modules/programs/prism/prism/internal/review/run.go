@@ -140,6 +140,14 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 		}
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
 
+		// The role rubric arrives via the agent's system prompt (prism.ts,
+		// before_agent_start), not this Go-built prompt (issue #2534). Surface
+		// a missing/empty role file so the degraded (rubric-less) prompt is
+		// visible rather than silent — the agent still starts.
+		if roleDefinitionMissing(ag.Name) && opts.OnProgress != nil {
+			opts.OnProgress(fmt.Sprintf("%s: role definition missing or empty at %s — starting with a degraded system prompt", FormatAgentDisplayName(ag.Name), roleDefinitionPath(ag.Name)))
+		}
+
 		// Resolve the per-agent config blob. Each agent gets its own hardened
 		// opencode.json that declares only that one review agent.
 		//
@@ -467,6 +475,10 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 			prCtxWithWorktree = &ctxCopy
 		}
 		prompt := buildReviewPrompt(opts.PRNumber, prCtxWithWorktree, ag.Name)
+
+		if roleDefinitionMissing(ag.Name) && opts.OnProgress != nil {
+			opts.OnProgress(fmt.Sprintf("%s: role definition missing or empty at %s — starting with a degraded system prompt", FormatAgentDisplayName(ag.Name), roleDefinitionPath(ag.Name)))
+		}
 
 		agentConfigContent, configErr := ResolveAgentConfigContent(opts.IsolationMode, opts.ProfilesFile, ag.Name, activeProfile)
 		if configErr != nil {
