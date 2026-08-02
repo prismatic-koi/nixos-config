@@ -75,13 +75,72 @@ The file contains:
 }
 ```
 
-The extension reads this file on every `session_start`. If the token is expired, it
-attempts a refresh using `refreshToken` before falling back to a fresh OAuth login.
+The extension reads this file when the family is activated (see "Deferred
+registration" below), not at `session_start`. If the token is expired, it
+attempts a refresh using `refreshToken` before reporting that a fresh OAuth
+login is needed.
 
 A fresh login requires interactive user action (browser-based PKCE flow). The local
 callback server listens on `localhost:3737/oauth/callback`.
 
 To trigger a fresh login, run `/login-atlassian` from within a pi session.
+
+## Deferred registration (issue #2532)
+
+The extension registers exactly ONE tool at `session_start`:
+`activate_atlassian`. It reads no token file and opens no connection.
+Everything else — token resolution, the connection to `mcp.atlassian.com`,
+`tools/list`, and the registration of all ~31 tools plus the synthetic
+`transitionJiraIssueByName` — happens on the first call to
+`activate_atlassian`.
+
+Why: tool schemas sit in the Anthropic `tools` array, the first segment of the
+cached prompt prefix, so every session on this machine paid for the Atlassian
+surface whether or not it ever touched Jira. See issue #2531 for the
+measurement and `../grafana/UPSTREAM.md` for the full mechanism note; the
+shared state machine lives in `../mcp-activation/activation.ts`.
+
+`nx.programs.prism.pi.atlassian.eagerRoles` names the agent roles that skip the
+tool call and activate from their first `before_agent_start`. It defaults to
+`[ "coordinator" ]`: the coordinator files Jira tickets in most sessions, so it
+would pay the activation cost nearly every time. Workers and review agents get
+one tool schema instead.
+
+The role is read from `process.argv` by `readAgentRoleFromArgv`
+(`../mcp-activation/activation.ts`), NOT from `pi.getFlag("agent")` — using
+the flag would force a second `registerFlag("agent")`, which pi treats as a
+fatal extension conflict and exits 1 on. See `../grafana/UPSTREAM.md`
+"Deferred registration" for the reproduction and the #2068 history.
+
+## File layout: why `index.ts` is a shell
+
+`index.ts` imports `typebox`, which only resolves inside pi's own runtime, so
+anything reachable *only* through `index.ts` cannot be unit tested. All the
+behaviour therefore lives in `extension.ts` behind an injected-dependency
+surface (`wrapSchema`, `connect`, `login`, `loadTokens`,
+`getValidAccessToken`, `invalidateCache`, `getDefaultCloudId`), mirroring
+`../notion/extension.ts`.
+
+This split was forced by round-1 review of PR #2568. Atlassian is the ONE
+provider whose `eagerRoles` default is non-empty, so its eager path is the one
+that actually runs in production — and while the logic sat in `index.ts` it had
+no unit test at all. `extension.test.ts` now covers the deferral, both eager
+and non-eager roles, the failure paths, and the login re-entry.
+
+Keep logic out of `index.ts`. Anything added there is, by construction,
+untestable.
+
+`/login-atlassian` now registers through the SAME gateway. Before #2532 a login
+after a successful startup re-registered every tool. pi tolerates that —
+`registerTool` overwrites by name — but each re-registration calls
+`refreshTools()` and so costs a full prompt-cache write. The gateway reports
+"already active" instead.
+
+NIX LAYOUT NOTE. `mcp-activation` is copied into this extension's derivation
+and this extension's files move down one level, so the store tree is
+`$out/atlassian/index.ts` next to `$out/mcp-activation/activation.ts`. That is
+what makes the relative import `../mcp-activation/activation.ts` resolve
+identically in the source tree and in the nix store.
 
 ## Slim field-drop provenance
 

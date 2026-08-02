@@ -643,7 +643,7 @@ When the user asks you to create a ticket (e.g. Jira) and then spawn an agent to
 
 1. Create the ticket using the appropriate MCP tool and capture the ticket ID (e.g. `PROJ-123`)
 2. Derive a short, descriptive kebab-case branch name from the ticket title — not the ticket ID
-3. Spawn the agent — pass the ticket ID in the prompt so the agent can look it up; the Atlassian MCP is available in the spawned session
+3. Spawn the agent — pass the ticket ID in the prompt so the agent can look it up. The Atlassian MCP is reachable in the spawned session, but a worker registers only `activate_atlassian` and must call it before its first Jira operation (issue #2532); `agents/worker.md` and the `atlassian` skill both spell this out, so no extra prompt wording is needed.
 
 ```bash
 # After creating ticket PROJ-123 ("Update plex image to latest tag"):

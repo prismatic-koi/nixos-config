@@ -66,6 +66,52 @@
                 # unexpanded; notion/scope.ts::expandPath handles both forms.
                 NOTION_MCP_REPOS = lib.concatStringsSep ":" config.nx.programs.prism.pi.notion.repos;
               }
+          //
+            # Eager-activation role lists for the deferred MCP tool families
+            # (issue #2532). Each extension registers one activate_<family>
+            # tool at session_start and does the expensive work only when that
+            # tool is called. A role named here skips the call and activates at
+            # its first before_agent_start instead.
+            #
+            # These live in agent.envVars, not the zsh alias, for the same
+            # reason NOTION_MCP_REPOS does: only agent.envVars is serialised as
+            # agent_env_vars in profiles.json and applied by all three
+            # isolators, so only agent.envVars reaches prism-spawned agents —
+            # and roles only exist for prism-spawned agents.
+            #
+            # A colon-separated list matches NOTION_MCP_REPOS. Values are
+            # injected verbatim (internal/container/env.go — no shell in the
+            # loop), so the extension trims each entry itself.
+            #
+            # An empty list emits no variable at all, which the extensions read
+            # as "nobody is eager" — the cheap default.
+            lib.optionalAttrs
+              (
+                config.nx.programs.prism.pi.atlassian.enable
+                && config.nx.programs.prism.pi.atlassian.eagerRoles != [ ]
+              )
+              {
+                ATLASSIAN_MCP_EAGER_ROLES = lib.concatStringsSep ":" config.nx.programs.prism.pi.atlassian.eagerRoles;
+              }
+          //
+            lib.optionalAttrs
+              (config.nx.programs.prism.pi.notion.enable && config.nx.programs.prism.pi.notion.eagerRoles != [ ])
+              {
+                NOTION_MCP_EAGER_ROLES = lib.concatStringsSep ":" config.nx.programs.prism.pi.notion.eagerRoles;
+              }
+          //
+            # NOTE: GRAFANA_MCP_EAGER_ROLES is inert on its own. The grafana
+            # extension self-gates on GRAFANA_MCP_CONFIG_PATH and
+            # PI_GRAFANA_MCP_BIN, which internal/config/agent_env_roles.go
+            # already strips for review roles (#2533), so a review agent that
+            # somehow appeared in this list would still register nothing.
+            lib.optionalAttrs
+              (
+                config.nx.programs.prism.pi.grafana.enable && config.nx.programs.prism.pi.grafana.eagerRoles != [ ]
+              )
+              {
+                GRAFANA_MCP_EAGER_ROLES = lib.concatStringsSep ":" config.nx.programs.prism.pi.grafana.eagerRoles;
+              }
           // lib.optionalAttrs config.nx.programs.prism.pi.grafana.enable (
             let
               secretName = "grafana_config_${config.nx.programs.prism.pi.grafana.config}";

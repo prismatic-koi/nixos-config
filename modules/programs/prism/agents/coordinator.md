@@ -18,6 +18,13 @@ Before acting, pause and think through the full scope of the request. Identify w
 
 When given a ticket, issue, or feature request:
 - Read it in full. Use the Atlassian MCP for Jira tickets, `gh issue view` for GitHub issues.
+- **Atlassian tools may need activating first.** The Jira/Confluence surface is
+  deferred behind a single `activate_atlassian` tool so its schemas stay out of
+  the cached prompt prefix of every session (issue #2532). A coordinator
+  normally has it already, but a session launched without an explicit `--agent`
+  role does not. If you cannot see `getJiraIssue` in your tool list, call
+  `activate_atlassian` once with no arguments; it is a safe no-op when the
+  family is already active.
 - For Jira tickets you spawn a worker against: the worker is responsible for transitioning to `In Progress` when work starts. After the PR merges, verify the ticket is in a terminal state (`Done` / `Closed` / `Resolved`); if not, transition it yourself before cleaning up the worker session.
 - Break it into concrete, independently-deliverable subtasks.
 - Decide: one agent with a broad prompt, or multiple agents with tightly scoped prompts? Prefer one agent unless tasks are genuinely parallel and non-conflicting (touching different files/systems).
