@@ -79,9 +79,12 @@ func newFakeAnthropic(t *testing.T, status int, headers http.Header, body string
 
 // clearRefreshEnv neutralises every environment variable the request shape
 // reads, so a developer's shell cannot change what a test asserts.
+//
+// ANTHROPIC_BASE_URL is deliberately absent: the destination is a constant and
+// no environment variable may reach it. TestBaseURL_IsNotEnvironmentControlled
+// pins that.
 func clearRefreshEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("ANTHROPIC_BASE_URL", "")
 	t.Setenv("ANTHROPIC_USER_AGENT", "")
 	t.Setenv("ANTHROPIC_BETA_FLAGS", "")
 }
@@ -575,14 +578,42 @@ func TestUserAgent_EnvOverride(t *testing.T) {
 	}
 }
 
-func TestBaseURLFromEnv(t *testing.T) {
+// TestBaseURL_IsNotEnvironmentControlled is a security regression test.
+//
+// The refresh request carries `Authorization: Bearer <subscription token>`.
+// An environment-controlled destination would let a `.envrc` or a stray
+// export send that credential to a host of its choosing, in cleartext if it
+// chose `http://`. The mirrored pi extension hardcodes the host and honours no
+// such variable; so does this. Round 1 of the #2569 review caught an earlier
+// version of this file that did honour $ANTHROPIC_BASE_URL.
+func TestBaseURL_IsNotEnvironmentControlled(t *testing.T) {
 	clearRefreshEnv(t)
-	if got := BaseURLFromEnv(); got != DefaultBaseURL {
-		t.Errorf("BaseURLFromEnv() = %q, want %q", got, DefaultBaseURL)
+	t.Setenv("ANTHROPIC_BASE_URL", "http://attacker.example")
+
+	r := &Refresher{}
+	got, err := r.requestURL()
+	if err != nil {
+		t.Fatalf("requestURL: %v", err)
 	}
-	t.Setenv("ANTHROPIC_BASE_URL", "https://proxy.example/")
-	if got := BaseURLFromEnv(); got != "https://proxy.example" {
-		t.Errorf("BaseURLFromEnv() = %q, want the trailing slash trimmed", got)
+	if !strings.HasPrefix(got, DefaultBaseURL) {
+		t.Fatalf("requestURL() = %q, want the hardcoded %q — no env var may redirect a bearer token",
+			got, DefaultBaseURL)
+	}
+	if !strings.HasPrefix(DefaultBaseURL, "https://") {
+		t.Errorf("DefaultBaseURL = %q, want https so the token never travels in cleartext", DefaultBaseURL)
+	}
+}
+
+// The in-process field remains the only seam, and it is what the tests use.
+func TestBaseURL_FieldIsTheOnlySeam(t *testing.T) {
+	clearRefreshEnv(t)
+	r := &Refresher{BaseURL: "https://in-process.example"}
+	got, err := r.requestURL()
+	if err != nil {
+		t.Fatalf("requestURL: %v", err)
+	}
+	if got != "https://in-process.example/v1/messages?beta=true" {
+		t.Errorf("requestURL() = %q", got)
 	}
 }
 

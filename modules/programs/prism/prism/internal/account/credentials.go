@@ -5,12 +5,34 @@
 // ----------
 //
 // `prism account usage` refreshes a missing or stale rate-limit snapshot with
-// one live `/v1/messages` request. That request needs a bearer token, and the
-// token lives in the account blob this package already owns
-// (`~/.config/prism/accounts/<name>.json`).
+// one live `/v1/messages` request. That request needs a bearer token.
 //
-// This file adds the one read the refresh path needs. It adds no writer and
+// This file adds the two reads the refresh path needs. It adds no writer and
 // no new on-disk format.
+//
+// Which file holds the LIVE token
+// -------------------------------
+//
+// There are two copies of the Anthropic OAuth blob and they do NOT stay in
+// step:
+//
+//	~/.pi/agent/auth.json          the LIVE blob. The pi extension rotates the
+//	                               access token here on every refresh
+//	                               (`anthropic-oauth/credentials.ts`,
+//	                               writeCredentials). Read it with
+//	                               ReadLiveCredentials.
+//	~/.config/prism/accounts/…     a point-in-time COPY. Written only by Init,
+//	                               Save, Use, and Login. Nothing rotates it.
+//	                               Read it with ReadCredentials.
+//
+// An Anthropic access token lives 36000 seconds (credentials.ts), so the
+// stored copy is expired about ten hours after the snapshot that produced it.
+// A refresh path that reads the stored copy therefore works once and then
+// reports "expired" forever, while pi holds a perfectly good token.
+//
+// Issue #2537 states the token "lives in the accounts directory". That premise
+// is wrong for the ACTIVE account and this file does not follow it: prefer the
+// live blob, and fall back to the stored copy.
 //
 // Security
 // --------
@@ -91,8 +113,43 @@ func (c Credentials) Expired(now time.Time) bool {
 	return !now.Before(c.ExpiresAt)
 }
 
+// ReadLiveCredentials reads the "anthropic" blob out of the live auth.json and
+// returns its access token and expiry.
+//
+// This is the token pi itself is using RIGHT NOW. The pi extension rotates it
+// in place, so it is the only copy that stays valid — see the package comment
+// above for why the stored copy does not.
+//
+// The blob belongs to whichever account is active, because `prism account use`
+// writes accounts/<name>.json into auth.json and updates accounts/current in
+// the same operation. That also makes it the right token for a usage refresh:
+// the passive capture path (#2538) records whatever token pi used and files
+// the result under accounts/current, so reading the live blob here attributes
+// the refreshed numbers exactly as the passive path does.
+//
+// Errors:
+//
+//	ErrNoCredentials  auth.json is absent, or carries no "anthropic" key
+//	ErrNoAccessToken  the blob parses but has no non-empty "access"
+//	other             an I/O or parse failure
+func ReadLiveCredentials(p Paths) (Credentials, error) {
+	raw, err := readAnthropicBlob(p.AuthJSON)
+	if err != nil {
+		if errors.Is(err, errNoAnthropicKey) || errors.Is(err, os.ErrNotExist) {
+			return Credentials{}, fmt.Errorf("%w in %s", ErrNoCredentials, p.AuthJSON)
+		}
+		// readAnthropicBlob's parse error names the path, never the contents.
+		return Credentials{}, fmt.Errorf("read live credentials: %w", err)
+	}
+	return parseCredentialBlob(raw, p.AuthJSON)
+}
+
 // ReadCredentials reads accounts/<name>.json and returns its access token and
 // expiry.
+//
+// This is the STORED copy, not the live one. Nothing rotates it, so a caller
+// that needs a usable token must prefer ReadLiveCredentials and fall back to
+// this only when auth.json holds nothing. See the package comment above.
 //
 // It never creates the accounts directory and never runs the first-run
 // migration, so it is safe on a host that has never used `prism account`.
@@ -119,7 +176,16 @@ func ReadCredentials(p Paths, name string) (Credentials, error) {
 		// never file contents.
 		return Credentials{}, fmt.Errorf("account %s: read credentials: %w", name, err)
 	}
+	creds, err := parseCredentialBlob(raw, path)
+	if err != nil {
+		return Credentials{}, fmt.Errorf("account %s: %w", name, err)
+	}
+	return creds, nil
+}
 
+// parseCredentialBlob decodes one Anthropic OAuth blob. path is used for the
+// error text only; the blob itself is never echoed.
+func parseCredentialBlob(raw []byte, path string) (Credentials, error) {
 	var blob struct {
 		Access string `json:"access"`
 		// Milliseconds since the unix epoch — the unit `prism account login`
@@ -132,10 +198,10 @@ func ReadCredentials(p Paths, name string) (Credentials, error) {
 		// name the struct field they choked on, and a future field could be
 		// secret-adjacent. A fixed string keeps this path leak-proof by
 		// construction.
-		return Credentials{}, fmt.Errorf("account %s: %s is not valid credential JSON", name, path)
+		return Credentials{}, fmt.Errorf("%s is not valid credential JSON", path)
 	}
 	if blob.Access == "" {
-		return Credentials{}, fmt.Errorf("account %s: %w", name, ErrNoAccessToken)
+		return Credentials{}, ErrNoAccessToken
 	}
 
 	creds := Credentials{Access: blob.Access}

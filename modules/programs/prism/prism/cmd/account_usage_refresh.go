@@ -12,13 +12,19 @@ package cmd
 //
 // # 1. The refresh can only run host-side
 //
-// The request needs a bearer token, and the token lives in
-// ~/.config/prism/accounts/. That directory is deliberately NOT bound into an
-// agent sandbox (internal/container/mounts.go scopes the neighbouring
+// The refresh must know WHICH account it is refreshing, and that fact lives in
+// ~/.config/prism/accounts/current. That directory is deliberately NOT bound
+// into an agent sandbox (internal/container/mounts.go scopes the neighbouring
 // profiles.json mount to a single file precisely to keep it out), so a
 // sandboxed invocation cannot read it. Most sessions are sandboxed, so this
 // is the common path, not the exotic one — refreshUnavailable reports it and
 // the command falls back to stored data.
+//
+// The TOKEN comes from a different file: the live ~/.pi/agent/auth.json, which
+// the pi extension rotates in place. The stored accounts/<name>.json copy is
+// frozen at the moment it was written and expires about ten hours later, so a
+// refresh that read it would work once and then report "expired" forever. See
+// internal/account/credentials.go for the full account of the two files.
 //
 // # 2. The sidecar owns the write
 //
@@ -57,6 +63,17 @@ const usageSnapshotEndpoint = "/usage/snapshot"
 // short — matching internal/session's own liveness probe — so a wedged socket
 // cannot stall an interactive command.
 const sidecarDialTimeout = 250 * time.Millisecond
+
+// newUsageRefresher builds the Refresher the refresh path uses.
+//
+// It is a package-level variable so tests can point the request at a local
+// server. The seam is deliberately IN-PROCESS rather than an environment
+// variable: the request carries a long-lived OAuth bearer token, and an
+// env-var destination would let a `.envrc` or a stray export redirect that
+// credential to a host of its choosing.
+var newUsageRefresher = func() *usage.Refresher {
+	return &usage.Refresher{BaseURL: usage.DefaultBaseURL}
+}
 
 // refreshOutcome is what a refresh attempt produced. Exactly one of Snapshot
 // and Warning is meaningful:
@@ -138,8 +155,7 @@ func maybeRefresh(ctx context.Context, rows []usage.AccountSnapshot, now time.Ti
 		}
 	}
 
-	refresher := &usage.Refresher{BaseURL: usage.BaseURLFromEnv()}
-	payload, err := refresher.Refresh(ctx, creds.Access)
+	payload, err := newUsageRefresher().Refresh(ctx, creds.Access)
 	if err != nil {
 		return refreshOutcome{
 			Account: name,
@@ -215,7 +231,8 @@ func describeRefreshError(accountName string, err error) string {
 //
 //  1. Inside a sandbox. PRISM_HOST_API is the sentinel, and it is set only by
 //     the sidecar when it launches a sandboxed session. The accounts
-//     directory is not bound into that sandbox, so the token is out of reach
+//     directory is not bound into that sandbox, so accounts/current — and
+//     with it the identity of the account being refreshed — is out of reach
 //     by construction.
 //  2. The accounts directory is not readable for any other reason — it does
 //     not exist yet, or the permissions deny it.
@@ -264,24 +281,45 @@ func activeAccountName() (string, error) {
 	return name, nil
 }
 
-// readActiveCredentials loads the stored access token for accountName.
+// readActiveCredentials loads the access token for accountName.
 //
-// The returned error never carries token material: account.ReadCredentials
+// The LIVE blob in auth.json wins. The pi extension rotates the access token
+// there and never writes it back to accounts/<name>.json, so the stored copy
+// goes stale about ten hours after it was written. Reading the stored copy
+// first would make the refresh work once and then report "expired" on every
+// later invocation, while pi held a perfectly good token.
+//
+// The stored copy is the fallback, for the case where auth.json is absent or
+// carries no anthropic key — for example a host that ran `prism account login`
+// without `--use`.
+//
+// The returned error never carries token material: internal/account
 // guarantees that, and the wrapping here adds only the account name.
 func readActiveCredentials(accountName string) (account.Credentials, error) {
 	paths, err := account.ResolvePaths()
 	if err != nil {
 		return account.Credentials{}, errors.New("the accounts directory could not be resolved")
 	}
-	creds, err := account.ReadCredentials(paths, accountName)
+
+	live, liveErr := account.ReadLiveCredentials(paths)
+	if liveErr == nil {
+		return live, nil
+	}
+	if !errors.Is(liveErr, account.ErrNoCredentials) && !errors.Is(liveErr, account.ErrNoAccessToken) {
+		// A malformed auth.json is a real problem worth naming, and falling
+		// back to a stale copy would hide it.
+		return account.Credentials{}, fmt.Errorf("live credentials: %v", liveErr)
+	}
+
+	stored, err := account.ReadCredentials(paths, accountName)
 	if err != nil {
 		if errors.Is(err, account.ErrNoCredentials) || errors.Is(err, account.ErrNoAccessToken) {
 			return account.Credentials{}, fmt.Errorf(
-				"account %q has no stored access token — run `prism account login %s`", accountName, accountName)
+				"account %q has no access token — run `prism account login %s`", accountName, accountName)
 		}
 		return account.Credentials{}, fmt.Errorf("account %q: %v", accountName, err)
 	}
-	return creds, nil
+	return stored, nil
 }
 
 // needsRefresh reports whether accountName's snapshot is missing or stale.
@@ -393,15 +431,24 @@ func sidecarRunDir() (string, error) {
 // disk. Two reasons: the content is identical to what the sidecar persists,
 // and re-reading would show nothing at all on the branch where the POST could
 // not be delivered.
+//
+// Exactly one row ends up marked active. The incoming rows take their Active
+// flag from usage/current.json, while the refresh target comes from
+// accounts/current, and the two disagree between a `prism account use` and the
+// next capture — which is precisely the mid-session switch this feature exists
+// to serve. Without the clearing loop the text output would print the `*`
+// marker on two rows and `--json` would emit two entries with "active": true.
 func mergeRefreshed(rows []usage.AccountSnapshot, snap *usage.Snapshot, accountName string) []usage.AccountSnapshot {
 	if snap == nil || accountName == "" {
 		return rows
 	}
 	for i := range rows {
+		rows[i].Active = rows[i].Name == accountName
+	}
+	for i := range rows {
 		if rows[i].Name == accountName {
 			rows[i].Snapshot = snap
 			rows[i].ReadErr = nil
-			rows[i].Active = true
 			return rows
 		}
 	}

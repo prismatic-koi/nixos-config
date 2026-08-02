@@ -165,3 +165,110 @@ func TestReadCredentials_RejectsAPathTraversingName(t *testing.T) {
 		}
 	}
 }
+
+// ── ReadLiveCredentials (#2541, corrected in #2569 review round 1) ───────────
+
+func writeLiveAuthJSON(t *testing.T, p Paths, anthropicBlob string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p.AuthJSON), 0o700); err != nil {
+		t.Fatalf("mkdir auth dir: %v", err)
+	}
+	body := `{"github-copilot":{"type":"oauth","access":"other"},"anthropic":` + anthropicBlob + `}`
+	if err := os.WriteFile(p.AuthJSON, []byte(body), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+}
+
+func TestReadLiveCredentials_ReadsTheAnthropicBlob(t *testing.T) {
+	p := credentialsFixture(t)
+	expires := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
+	writeLiveAuthJSON(t, p, fmt.Sprintf(
+		`{"type":"oauth","access":%q,"refresh":"r","expires":%d}`,
+		secretToken, expires.UnixMilli()))
+
+	creds, err := ReadLiveCredentials(p)
+	if err != nil {
+		t.Fatalf("ReadLiveCredentials: %v", err)
+	}
+	if creds.Access != secretToken {
+		t.Errorf("Access = %q, want the live token", creds.Access)
+	}
+	if !creds.ExpiresAt.Equal(expires) {
+		t.Errorf("ExpiresAt = %s, want %s", creds.ExpiresAt.UTC(), expires)
+	}
+}
+
+// The live blob and the stored copy diverge in practice: the pi extension
+// rotates the live one and never writes back to the accounts directory. The
+// two readers must therefore return different values, not agree by accident.
+func TestReadLiveCredentials_IsIndependentOfTheStoredCopy(t *testing.T) {
+	p := credentialsFixture(t)
+	writeAccountBlob(t, p, "work", `{"type":"oauth","access":"stored-and-stale","expires":1}`)
+	writeLiveAuthJSON(t, p, fmt.Sprintf(`{"type":"oauth","access":%q,"expires":99999999999999}`, secretToken))
+
+	live, err := ReadLiveCredentials(p)
+	if err != nil {
+		t.Fatalf("ReadLiveCredentials: %v", err)
+	}
+	stored, err := ReadCredentials(p, "work")
+	if err != nil {
+		t.Fatalf("ReadCredentials: %v", err)
+	}
+	if live.Access == stored.Access {
+		t.Fatal("the two readers returned the same token; the fixture is not exercising the divergence")
+	}
+	if live.Expired(time.Now()) {
+		t.Error("the live token must not read as expired")
+	}
+	if !stored.Expired(time.Now()) {
+		t.Error("the stored copy must read as expired; that is the bug the live reader avoids")
+	}
+}
+
+func TestReadLiveCredentials_MissingFileOrKey(t *testing.T) {
+	t.Run("auth.json absent", func(t *testing.T) {
+		p := credentialsFixture(t)
+		if _, err := ReadLiveCredentials(p); !errors.Is(err, ErrNoCredentials) {
+			t.Fatalf("err = %v, want ErrNoCredentials", err)
+		}
+	})
+
+	t.Run("no anthropic key", func(t *testing.T) {
+		p := credentialsFixture(t)
+		if err := os.MkdirAll(filepath.Dir(p.AuthJSON), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(p.AuthJSON, []byte(`{"github-copilot":{}}`), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		if _, err := ReadLiveCredentials(p); !errors.Is(err, ErrNoCredentials) {
+			t.Fatalf("err = %v, want ErrNoCredentials", err)
+		}
+	})
+
+	t.Run("anthropic key without access", func(t *testing.T) {
+		p := credentialsFixture(t)
+		writeLiveAuthJSON(t, p, `{"type":"oauth","refresh":"r"}`)
+		if _, err := ReadLiveCredentials(p); !errors.Is(err, ErrNoAccessToken) {
+			t.Fatalf("err = %v, want ErrNoAccessToken", err)
+		}
+	})
+}
+
+func TestReadLiveCredentials_MalformedAuthJSONCarriesNoFileContents(t *testing.T) {
+	p := credentialsFixture(t)
+	if err := os.MkdirAll(filepath.Dir(p.AuthJSON), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p.AuthJSON, []byte(`{"anthropic": `+secretToken), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := ReadLiveCredentials(p)
+	if err == nil {
+		t.Fatal("expected an error for malformed auth.json")
+	}
+	if strings.Contains(err.Error(), secretToken) {
+		t.Fatalf("error leaks file contents: %q", err.Error())
+	}
+}

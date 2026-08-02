@@ -44,6 +44,7 @@ const refreshTestToken = "sk-ant-oat01-TEST-TOKEN-MUST-NOT-APPEAR"
 type refreshFixture struct {
 	usageDir    string
 	accountsDir string
+	authJSON    string
 	stateHome   string
 
 	anthropic     *httptest.Server
@@ -71,9 +72,10 @@ func newRefreshFixture(t *testing.T, status int, headers http.Header) *refreshFi
 	t.Cleanup(func() { _ = os.RemoveAll(stateHome) })
 
 	configHome := t.TempDir()
+	authJSON := filepath.Join(t.TempDir(), "auth.json")
 	t.Setenv("XDG_STATE_HOME", stateHome)
 	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("PI_AUTH_JSON", filepath.Join(t.TempDir(), "auth.json"))
+	t.Setenv("PI_AUTH_JSON", authJSON)
 	// Host-side by definition: PRISM_HOST_API is the sandbox sentinel and the
 	// sidecar sets it only inside a sandbox.
 	t.Setenv("PRISM_HOST_API", "")
@@ -83,6 +85,7 @@ func newRefreshFixture(t *testing.T, status int, headers http.Header) *refreshFi
 	f := &refreshFixture{
 		usageDir:      filepath.Join(stateHome, "prism", "usage"),
 		accountsDir:   filepath.Join(configHome, "prism", "accounts"),
+		authJSON:      authJSON,
 		stateHome:     stateHome,
 		anthropicHits: &atomic.Int64{},
 		sidecarPosts:  &atomic.Int64{},
@@ -100,7 +103,16 @@ func newRefreshFixture(t *testing.T, status int, headers http.Header) *refreshFi
 		_, _ = w.Write([]byte(`{"type":"message"}`))
 	}))
 	t.Cleanup(f.anthropic.Close)
-	t.Setenv("ANTHROPIC_BASE_URL", f.anthropic.URL)
+
+	// In-process seam. There is deliberately NO environment variable that can
+	// redirect the refresh: the request carries an OAuth bearer token, and an
+	// env-var destination would be an exfiltration lever on a real host
+	// (round-1 review-security finding).
+	prev := newUsageRefresher
+	t.Cleanup(func() { newUsageRefresher = prev })
+	newUsageRefresher = func() *usage.Refresher {
+		return &usage.Refresher{BaseURL: f.anthropic.URL, HTTPClient: f.anthropic.Client()}
+	}
 
 	f.startSidecar(t)
 	return f
@@ -168,23 +180,58 @@ func (f *refreshFixture) stopSidecar(t *testing.T) {
 	}
 }
 
-// seedAccount writes accounts/<name>.json plus the `current` pointer.
-// expiresAt of the zero time omits the expiry field entirely.
+// oauthBlob renders one Anthropic OAuth blob. A zero expiresAt omits the
+// expiry field entirely.
+func oauthBlob(token string, expiresAt time.Time) string {
+	if expiresAt.IsZero() {
+		return fmt.Sprintf(`{"type":"oauth","access":%q,"refresh":"r"}`, token)
+	}
+	return fmt.Sprintf(`{"type":"oauth","access":%q,"refresh":"r","expires":%d}`,
+		token, expiresAt.UnixMilli())
+}
+
+// seedAccount writes the `current` pointer, the stored accounts/<name>.json
+// copy, and the LIVE auth.json blob — mirroring the state `prism account use`
+// leaves behind.
+//
+// The live blob carries the same expiry as the stored copy here. Tests that
+// need them to diverge (the real-world case, where pi has rotated the live
+// token and the stored copy has gone stale) call seedStaleStoredCopy or
+// writeLiveBlob directly.
 func (f *refreshFixture) seedAccount(t *testing.T, name string, expiresAt time.Time) {
 	t.Helper()
 	if err := os.MkdirAll(f.accountsDir, 0o700); err != nil {
 		t.Fatalf("mkdir accounts: %v", err)
 	}
-	blob := fmt.Sprintf(`{"type":"oauth","access":%q,"refresh":"r"}`, refreshTestToken)
-	if !expiresAt.IsZero() {
-		blob = fmt.Sprintf(`{"type":"oauth","access":%q,"refresh":"r","expires":%d}`,
-			refreshTestToken, expiresAt.UnixMilli())
-	}
+	blob := oauthBlob(refreshTestToken, expiresAt)
 	if err := os.WriteFile(filepath.Join(f.accountsDir, name+".json"), []byte(blob), 0o600); err != nil {
 		t.Fatalf("write account blob: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(f.accountsDir, "current"), []byte(name+"\n"), 0o600); err != nil {
 		t.Fatalf("write accounts/current: %v", err)
+	}
+	f.writeLiveBlob(t, blob)
+}
+
+// writeLiveBlob writes auth.json with the given anthropic blob, alongside an
+// unrelated sibling key so the reader cannot accidentally depend on the file
+// holding nothing else.
+func (f *refreshFixture) writeLiveBlob(t *testing.T, blob string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(f.authJSON), 0o700); err != nil {
+		t.Fatalf("mkdir pi agent dir: %v", err)
+	}
+	body := `{"github-copilot":{"type":"oauth"},"anthropic":` + blob + `}`
+	if err := os.WriteFile(f.authJSON, []byte(body), 0o600); err != nil {
+		t.Fatalf("write auth.json: %v", err)
+	}
+}
+
+// removeLiveBlob deletes auth.json, forcing the fallback to the stored copy.
+func (f *refreshFixture) removeLiveBlob(t *testing.T) {
+	t.Helper()
+	if err := os.Remove(f.authJSON); err != nil && !os.IsNotExist(err) {
+		t.Fatalf("remove auth.json: %v", err)
 	}
 }
 
@@ -413,6 +460,92 @@ func TestAccountUsageRefresh_AtMostOneRequestPerInvocation(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected %q in output, got:\n%s", want, out)
 		}
+	}
+}
+
+// ── Token source (#2569 review round 1: review-context) ─────────────────────
+
+// The refresh must read the LIVE token from auth.json, not the frozen copy in
+// accounts/<name>.json.
+//
+// The pi extension rotates the access token in auth.json and never writes it
+// back to the accounts directory (anthropic-oauth/credentials.ts,
+// writeCredentials). An Anthropic token lives 36000 s, so the stored copy is
+// expired roughly ten hours after the snapshot that produced it. A refresh
+// that read the stored copy would work once and then report "expired" on
+// every later invocation, while pi held a perfectly good token — AC 1 and AC 2
+// would stop holding on any real host after about ten hours.
+func TestAccountUsageRefresh_PrefersTheLiveTokenOverTheStoredCopy(t *testing.T) {
+	f := newRefreshFixture(t, http.StatusOK, refreshHeaders())
+	f.seedAccount(t, "work", time.Now().Add(time.Hour))
+	f.seedSnapshot(t, "work", 30*time.Minute, 0.10)
+
+	// The real-world divergence: the stored copy expired hours ago, and pi has
+	// since rotated the live token.
+	staleCopy := oauthBlob("stale-stored-token", time.Now().Add(-11*time.Hour))
+	if err := os.WriteFile(filepath.Join(f.accountsDir, "work.json"), []byte(staleCopy), 0o600); err != nil {
+		t.Fatalf("write stale stored copy: %v", err)
+	}
+	f.writeLiveBlob(t, oauthBlob(refreshTestToken, time.Now().Add(9*time.Hour)))
+
+	out, errOut, err := runAccountUsageWithRefresh(t)
+	if err != nil {
+		t.Fatalf("account usage: %v (stderr: %s)", err, errOut)
+	}
+	if n := f.anthropicHits.Load(); n != 1 {
+		t.Fatalf("Anthropic request count = %d, want 1 — the expired STORED copy must "+
+			"not gate a refresh when the LIVE token is good (stderr: %s)", n, errOut)
+	}
+	if strings.Contains(errOut, "expired") {
+		t.Errorf("the stale stored copy must not produce an expiry warning, got: %s", errOut)
+	}
+	if !strings.Contains(out, "77%") {
+		t.Errorf("expected the refreshed numbers, got:\n%s", out)
+	}
+}
+
+// The stored copy is the fallback, for a host where auth.json holds no
+// anthropic key — for example after `prism account login` without --use.
+func TestAccountUsageRefresh_FallsBackToTheStoredCopyWhenAuthJSONHasNoBlob(t *testing.T) {
+	f := newRefreshFixture(t, http.StatusOK, refreshHeaders())
+	f.seedAccount(t, "work", time.Now().Add(time.Hour))
+	f.seedSnapshot(t, "work", 30*time.Minute, 0.10)
+	f.removeLiveBlob(t)
+
+	out, errOut, err := runAccountUsageWithRefresh(t)
+	if err != nil {
+		t.Fatalf("account usage: %v (stderr: %s)", err, errOut)
+	}
+	if n := f.anthropicHits.Load(); n != 1 {
+		t.Fatalf("Anthropic request count = %d, want 1 from the stored fallback (stderr: %s)", n, errOut)
+	}
+	if !strings.Contains(out, "77%") {
+		t.Errorf("expected the refreshed numbers, got:\n%s", out)
+	}
+}
+
+// An expired LIVE token is the case that genuinely needs a re-login, and it
+// must still produce the AC-mandated instruction.
+func TestAccountUsageRefresh_ExpiredLiveTokenTellsUserToLogIn(t *testing.T) {
+	f := newRefreshFixture(t, http.StatusOK, refreshHeaders())
+	f.seedAccount(t, "work", time.Now().Add(time.Hour))
+	f.seedSnapshot(t, "work", 30*time.Minute, 0.10)
+	// Live blob expired; the stored copy is still nominally good. The live
+	// blob wins, so the command must report the expiry.
+	f.writeLiveBlob(t, oauthBlob(refreshTestToken, time.Now().Add(-time.Minute)))
+
+	out, errOut, err := runAccountUsageWithRefresh(t)
+	if err != nil {
+		t.Fatalf("must exit 0, got: %v", err)
+	}
+	if !strings.Contains(errOut, "prism account login work") {
+		t.Errorf("expected the login instruction, got: %s", errOut)
+	}
+	if n := f.anthropicHits.Load(); n != 0 {
+		t.Errorf("Anthropic request count = %d, want 0 for a known-expired token", n)
+	}
+	if !strings.Contains(out, "10%") {
+		t.Errorf("expected the stored data still printed, got:\n%s", out)
 	}
 }
 
@@ -820,6 +953,75 @@ func TestMergeRefreshed(t *testing.T) {
 			t.Errorf("rows = %+v, want the input unchanged", got)
 		}
 	})
+
+	// Round-1 review-context finding. rows[].Active comes from
+	// usage/current.json while the refresh target comes from
+	// accounts/current. The two disagree between a `prism account use` and
+	// the next capture, which is exactly the mid-session switch #2537 exists
+	// to serve. Without the clearing loop the text output prints `*` on two
+	// rows and --json emits two entries with "active": true.
+	t.Run("exactly one row stays active after a switch", func(t *testing.T) {
+		rows := []usage.AccountSnapshot{
+			{Name: "personal", Active: true, Snapshot: &usage.Snapshot{Account: "personal"}},
+			{Name: "work", Active: false, Snapshot: &usage.Snapshot{Account: "work"}},
+		}
+		got := mergeRefreshed(rows, snap, "work")
+
+		active := make([]string, 0, len(got))
+		for _, row := range got {
+			if row.Active {
+				active = append(active, row.Name)
+			}
+		}
+		if len(active) != 1 || active[0] != "work" {
+			t.Errorf("active rows = %v, want exactly [work]", active)
+		}
+	})
+
+	t.Run("appending clears a previously active row", func(t *testing.T) {
+		rows := []usage.AccountSnapshot{
+			{Name: "personal", Active: true, Snapshot: &usage.Snapshot{Account: "personal"}},
+		}
+		got := mergeRefreshed(rows, snap, "work")
+
+		active := make([]string, 0, len(got))
+		for _, row := range got {
+			if row.Active {
+				active = append(active, row.Name)
+			}
+		}
+		if len(active) != 1 || active[0] != "work" {
+			t.Errorf("active rows = %v, want exactly [work]", active)
+		}
+	})
+}
+
+// End-to-end form of the same finding: after a `prism account use work` that
+// has not yet been followed by a capture, current.json still names personal.
+// The rendered output must carry one active marker, not two.
+func TestAccountUsageRefresh_OnlyOneRowIsMarkedActiveAfterASwitch(t *testing.T) {
+	f := newRefreshFixture(t, http.StatusOK, refreshHeaders())
+	// personal was captured most recently, so usage/current.json names it.
+	f.seedSnapshot(t, "personal", 30*time.Minute, 0.20)
+	f.seedSnapshot(t, "work", 30*time.Minute, 0.10)
+	if err := os.WriteFile(
+		filepath.Join(f.usageDir, usage.CurrentFileName),
+		f.readSnapshotBytes(t, "personal"), 0o600); err != nil {
+		t.Fatalf("point current.json at personal: %v", err)
+	}
+	// The user has since switched to work.
+	f.seedAccount(t, "work", time.Now().Add(time.Hour))
+
+	out, errOut, err := runAccountUsageWithRefresh(t)
+	if err != nil {
+		t.Fatalf("account usage: %v (stderr: %s)", err, errOut)
+	}
+	if n := strings.Count(out, "* "); n != 1 {
+		t.Errorf("active markers = %d, want exactly 1, got:\n%s", n, out)
+	}
+	if !strings.Contains(out, "* work") {
+		t.Errorf("the refreshed account must carry the marker, got:\n%s", out)
+	}
 }
 
 func TestDiscoverSidecarAPI_PrefersTheEnvironmentValue(t *testing.T) {

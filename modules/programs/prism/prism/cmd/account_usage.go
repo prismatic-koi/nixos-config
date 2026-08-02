@@ -40,8 +40,10 @@ headers and written by the prism sidecar to
 
 When the active account's snapshot is missing or more than 15 minutes old,
 one live request is made to refresh it, and the result is persisted by the
-sidecar. Pass --no-refresh to read stored data only. The refresh needs the
-account's access token, which is not visible inside an agent sandbox, so a
+sidecar. Pass --no-refresh to read stored data only.
+
+The refresh must read ~/.config/prism/accounts/ to learn which account it is
+refreshing. That directory is not visible inside an agent sandbox, so a
 sandboxed invocation always reads stored data and says so.`,
 	Args: cobra.NoArgs,
 	RunE: runAccountUsage,
@@ -89,7 +91,17 @@ func runAccountUsage(cmd *cobra.Command, args []string) error {
 	}
 
 	jsonMode, _ := cmd.Flags().GetBool("json")
-	noRefresh, _ := cmd.Flags().GetBool("no-refresh")
+
+	// Fail CLOSED on the refresh flag. pflag returns (false, err) when the
+	// flag is not registered, and false means "refresh", so discarding the
+	// error would make an unregistered flag spend real quota with a real
+	// credential. Production always registers it via addAccountUsageFlags, so
+	// the error branch only fires for a caller that built the command by hand
+	// — which is exactly the case that must not reach the network.
+	noRefresh, flagErr := cmd.Flags().GetBool("no-refresh")
+	if flagErr != nil {
+		noRefresh = true
+	}
 
 	rows, err := usage.ReadAll(dir)
 	missingDir := ""

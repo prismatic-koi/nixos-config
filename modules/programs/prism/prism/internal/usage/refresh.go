@@ -72,8 +72,19 @@ import (
 // ── Mirrored constants ───────────────────────────────────────────────────────
 
 const (
-	// DefaultBaseURL is the Anthropic API root. Overridable with
-	// $ANTHROPIC_BASE_URL, matching the Anthropic SDK convention.
+	// DefaultBaseURL is the Anthropic API root.
+	//
+	// It is a CONSTANT, not an environment override. The value mirrors the
+	// hardcoded `baseUrl` the pi extension registers
+	// (anthropic-oauth/index.ts, pi.registerProvider), which honours no such
+	// variable either.
+	//
+	// An environment-controlled destination here would be a token-exfiltration
+	// lever: this request carries `Authorization: Bearer <subscription token>`,
+	// so anything that sets the variable — a `.envrc`, a stray export — could
+	// send a long-lived credential to a host of its choosing, in cleartext if
+	// it chose `http://`. Refresher.BaseURL is the seam for tests; nothing
+	// reads an env var to reach it.
 	DefaultBaseURL = "https://api.anthropic.com"
 
 	// messagesPath and betaQuery together form element 1 of the request
@@ -359,28 +370,19 @@ func headerUnixSeconds(h http.Header, name string) *int64 {
 
 // Refresher performs the single live request that refreshes a snapshot.
 //
-// The zero value is usable: BaseURL falls back to $ANTHROPIC_BASE_URL and then
-// to DefaultBaseURL, HTTPClient falls back to a client with DefaultTimeout,
-// and ModelID falls back to refreshModelID.
+// The zero value is usable: BaseURL falls back to DefaultBaseURL, HTTPClient
+// falls back to a client with DefaultTimeout, and ModelID falls back to
+// refreshModelID.
 type Refresher struct {
-	// BaseURL is the API root, without a trailing slash.
+	// BaseURL is the API root, without a trailing slash. Empty means
+	// DefaultBaseURL. This field is the ONLY way to point the refresh at a
+	// different host, and only in-process code can set it — see the
+	// DefaultBaseURL comment for why no environment variable may.
 	BaseURL string
 	// HTTPClient performs the request.
 	HTTPClient *http.Client
 	// ModelID names the model in the request body.
 	ModelID string
-}
-
-// BaseURLFromEnv returns $ANTHROPIC_BASE_URL when set, else DefaultBaseURL.
-//
-// Honouring the variable matters for anyone behind an Anthropic-compatible
-// proxy: sending the refresh to api.anthropic.com when every other request
-// goes through a proxy would report a different account's quota, or none.
-func BaseURLFromEnv() string {
-	if v := strings.TrimSpace(os.Getenv("ANTHROPIC_BASE_URL")); v != "" {
-		return strings.TrimSuffix(v, "/")
-	}
-	return DefaultBaseURL
 }
 
 // Refresh makes ONE request to `/v1/messages?beta=true` with the supplied
@@ -473,7 +475,7 @@ func (r *Refresher) buildRequest(ctx context.Context, token string) (*http.Reque
 func (r *Refresher) requestURL() (string, error) {
 	base := r.BaseURL
 	if base == "" {
-		base = BaseURLFromEnv()
+		base = DefaultBaseURL
 	}
 	u, err := url.Parse(strings.TrimSuffix(base, "/") + messagesPath)
 	if err != nil {
