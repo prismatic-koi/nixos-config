@@ -204,17 +204,28 @@ func TestFormatGate_MissingNixfmtSkipsFailOpen(t *testing.T) {
 		})
 	fc := newFakeFormatCmd()
 
+	var progressLines []string
 	err := FormatGate(FormatGateOpts{
-		Worktree:  "/fake/worktree",
-		gitRunner: fg,
-		cmdRunner: fc,
-		lookPath:  fakeLookPath(),
+		Worktree:   "/fake/worktree",
+		gitRunner:  fg,
+		cmdRunner:  fc,
+		lookPath:   fakeLookPath(), // nothing present
+		OnProgress: func(l string) { progressLines = append(progressLines, l) },
 	})
 	if err != nil {
 		t.Fatalf("FormatGate: expected fail-open (nil error) when nixfmt missing; got %v", err)
 	}
 	if len(fc.calls) != 0 {
 		t.Errorf("FormatGate: nixfmt must not be invoked when missing from PATH; calls=%v", fc.calls)
+	}
+	found := false
+	for _, l := range progressLines {
+		if strings.Contains(l, "nixfmt not found") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("FormatGate: expected a progress warning about missing nixfmt; got %v", progressLines)
 	}
 }
 
