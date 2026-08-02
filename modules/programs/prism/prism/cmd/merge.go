@@ -618,11 +618,23 @@ const (
 	// still running. Watcher polls until they finish (or the PR closes).
 	initialOutcomeEnqueuePending
 
-	// initialOutcomeEnqueueReview — branch protected, awaiting human
-	// approval. Watcher polls silently until reviewDecision transitions
-	// to APPROVED (and checks are green), or the PR is closed or merged
-	// out-of-band.
+	// initialOutcomeEnqueueReview — branch protection genuinely requires an
+	// approving review (required_approving_review_count > 0) and the PR does
+	// not yet have it. Only reached when that count is fetched and found to be
+	// above zero (#2576) — never by elimination. Watcher polls silently until
+	// reviewDecision transitions to APPROVED (and checks are green), or the PR
+	// is closed or merged out-of-band.
 	initialOutcomeEnqueueReview
+
+	// initialOutcomeEnqueueUndetermined — the PR is not CLEAN and no positive
+	// cause was identified: mergeStateStatus is UNKNOWN (GitHub has not
+	// finished computing mergeability — the routine post-enqueue case), or an
+	// unmatched/future state (UNSTABLE with only optional checks failing,
+	// BEHIND, HAS_HOOKS, a merge-queue transient). The message names the
+	// observed state and asserts no cause; the watcher polls until the state
+	// resolves. This replaces the pre-#2576 fallthrough that guessed "requires
+	// human approval" for this whole set.
+	initialOutcomeEnqueueUndetermined
 
 	// initialOutcomeEnqueueUnprotected — no branch protection at all.
 	// Watcher polls silently and NEVER auto-merges; a human must merge
@@ -714,7 +726,7 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	if baseRef == "" {
 		baseRef = "main"
 	}
-	protected, requiredNames, protectErr := probeBranchProtection(baseRef)
+	protected, requiredNames, requiredApprovals, protectErr := probeBranchProtection(baseRef)
 	if protectErr != nil {
 		return initialStateDecision{}, fmt.Errorf("probe branch protection: %w", protectErr)
 	}
@@ -760,31 +772,75 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 		return dec, nil
 	}
 
-	// Protected, no pending required checks, not CLEAN — human review
-	// required. Include the anti-reviewer-shopping guidance verbatim.
-	dec.Outcome = initialOutcomeEnqueueReview
+	// Not CLEAN, no pending required checks. Do NOT guess "requires human
+	// approval" by elimination (#2576). Discriminate on real data.
+
+	// UNKNOWN is not a classification: GitHub computes mergeability
+	// asynchronously, and a probe right after enqueue routinely lands here
+	// with every check green. Report it as undetermined and poll again — never
+	// emit a terminal-sounding message for it.
+	if strings.EqualFold(view.MergeStateStatus, "UNKNOWN") {
+		dec.Outcome = initialOutcomeEnqueueUndetermined
+		dec.Message = fmt.Sprintf(
+			"PR #%d: GitHub has not finished computing mergeability yet (mergeStateStatus=UNKNOWN). No cause to report; standing by and will re-check. Worker: nothing to do — the merge watcher will proceed when the state settles, or report otherwise.",
+			pr,
+		)
+		return dec, nil
+	}
+
+	// Genuine human-approval requirement: the branch protection requires one
+	// or more approving reviews AND the PR does not yet have them
+	// (reviewDecision is anything other than APPROVED). This is the ONLY path
+	// that emits the human-approval message, and it fires only on fetched
+	// data — never on a repo whose required_approving_review_count is 0.
+	if requiredApprovals > 0 && !strings.EqualFold(view.ReviewDecision, "APPROVED") {
+		dec.Outcome = initialOutcomeEnqueueReview
+		dec.Message = fmt.Sprintf(
+			"PR #%d needs an approving review before it can merge: branch protection requires %d approving review(s) and this PR does not have them yet (reviewDecision=%s). Worker instruction: do not request reviewers, do not add approvers, just wait — the merge watcher will merge automatically once the PR is approved and checks pass, or report if it is merged out-of-band.",
+			pr, requiredApprovals, mergeStateDisplay(view.ReviewDecision),
+		)
+		return dec, nil
+	}
+
+	// Any other non-CLEAN state — UNSTABLE (only optional checks failing),
+	// BEHIND, HAS_HOOKS, a merge-queue transient, or a future GitHub status.
+	// Name the observed state and assert no cause rather than inventing one.
+	dec.Outcome = initialOutcomeEnqueueUndetermined
 	dec.Message = fmt.Sprintf(
-		"PR #%d requires human approval. No action required from you — do not request reviewers, do not add approvers, just wait. Will merge automatically when approved and checks pass, or notify if merged out-of-band.",
-		pr,
+		"PR #%d is not yet mergeable (mergeStateStatus=%s); no blocking cause identified. Standing by and will re-check. Worker: nothing to do — the merge watcher will proceed when the PR becomes mergeable, or report otherwise.",
+		pr, mergeStateDisplay(view.MergeStateStatus),
 	)
 	return dec, nil
 }
 
+// mergeStateDisplay renders a mergeStateStatus / reviewDecision value for a
+// human-readable message, substituting a visible placeholder when GitHub
+// returned an empty string so the message never reads "state=" with nothing
+// after it.
+func mergeStateDisplay(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "(empty)"
+	}
+	return s
+}
+
 // probeBranchProtection queries GitHub for whether the given base branch is
 // protected — via classic branch protection or, when that 404s, via an
-// actively-enforced ruleset (#2436) — and returns (protected, requiredCheckNames, err):
+// actively-enforced ruleset (#2436) — and returns (protected, requiredCheckNames, requiredApprovals, err):
 //
 //   - protected=false, err=nil — neither the classic endpoint nor the
 //     rulesets effective-rules endpoint found any protection. #2420 treats
 //     this as a state, not a failure.
 //   - protected=true, err=nil — protection is configured (classic or
-//     ruleset); requiredCheckNames enumerates the required status checks.
+//     ruleset); requiredCheckNames enumerates the required status checks and
+//     requiredApprovals is the required approving-review count (0 when the
+//     branch requires no approving review — the common case, #2576).
 //   - err != nil — an API call failed in a way we cannot classify (network,
 //     permissions). Callers surface the error to the coordinator.
 //
 // The gh CLI resolves the current repo from git config for the {owner}/{repo}
 // placeholders — this mirrors the invocation shape used elsewhere in cmd/merge.go.
-func probeBranchProtection(baseRef string) (bool, []string, error) {
+func probeBranchProtection(baseRef string) (bool, []string, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if baseRef == "" {
@@ -798,9 +854,9 @@ func probeBranchProtection(baseRef string) (bool, []string, error) {
 		fmt.Sprintf("repos/{owner}/{repo}/rules/branches/%s", baseRef),
 	)
 	if err != nil {
-		return false, nil, err
+		return false, nil, 0, err
 	}
-	return res.Configured, res.RequiredChecks, nil
+	return res.Configured, res.RequiredChecks, res.RequiredApprovingReviewCount, nil
 }
 
 // pendingRequiredCheckNames returns required check names that are not yet
