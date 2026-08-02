@@ -226,4 +226,3 @@ func isEmptyString(expr ast.Expr) bool {
 	}
 	return false
 }
-
