@@ -114,7 +114,26 @@ Any test helper that redirects `os.Stdout` or `os.Stderr` through an `os.Pipe` m
 
 The rule for `internal/container`: no test formats a whole argv or env slice directly. Route every dump through `redactedArgs` (`argv_redact_test.go`), or `container.RedactedArgsForTest` from an external `package container_test` file. This covers sub-slices too — redact first, then slice (`redactedArgs(args)[i:]`), because slicing first can cut a `--setenv NAME VALUE` triple in half and leave the value with no flag in front of it for the helper to key on. The helper masks the VALUE and keeps the NAME (`--setenv GITHUB_TOKEN <redacted>`), leaves every other element — bind triples included — byte-identical, and preserves the length and order of the slice.
 
-The redaction set is derived from the production names (`credentialForwardEnvKeys`, `githubTokenEnvKey`, `prismGitHubTokenEnvPrefix` in `credentials.go`), so a credential added to `credentialEnvVars` is redacted without a second edit. `TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry` pins that link. When you add a credential, add it to the production list — do not hard-code a second copy in the test helper.
+The redaction set is derived from the production names, so a credential added once is redacted everywhere without a second edit. `TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry` pins that link. Do not hard-code a second copy in the test helper.
+
+### Where the credential-name list lives (changed in #2589)
+
+The source of truth is **`payload.ForwardedCredentialEnvNames`** in `modules/programs/prism/prism/internal/payload/redact.go`, alongside `payload.GitHubTokenEnvName` and `payload.PrismGitHubTokenEnvPrefix`.
+
+It moved there because `internal/payload` is a stdlib-only leaf package, which is what lets three consumers share one list without an import cycle:
+
+- credential injection — `credentialEnvVars` in `internal/container/credentials.go`;
+- the argv redaction that keeps VALUES out of a test failure message (#2581);
+- the capture-path redactor that keeps VALUES out of `prism.db` (`payload.Redactor`, #2589).
+
+`credentialForwardEnvKeys`, `githubTokenEnvKey`, and `prismGitHubTokenEnvPrefix` still exist in `credentials.go`, but they are now **derived copies** of the payload names, not lists you edit. Do not convert them back into literals: that breaks the derivation, and a credential added to the literal is still injected into every sandbox while never entering the redaction registry — its value is then captured verbatim into `prism.db`, which is exactly the #2589 leak.
+
+**When you add a credential, edit two places in the same change:**
+
+1. `payload.ForwardedCredentialEnvNames` (or `otherCredentialEnvNames`, for a name prism does not forward but that can still be present in a host-mode agent's environment) in `internal/payload/redact.go`.
+2. `CREDENTIAL_ENV_NAMES` in `modules/programs/prism/pi/extensions/prism.ts`, so the pi extension redacts it before the frame reaches the socket.
+
+`TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one of the two. See `modules/programs/prism/prism/docs/secret-redaction.md` for the full control.
 
 ## The git stash incident (#2202)
 
