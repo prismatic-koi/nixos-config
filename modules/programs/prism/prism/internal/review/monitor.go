@@ -1062,6 +1062,17 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		// GroupResults dropped because it was closed mid-review (#2573) — is
 		// NOT counted: the worker is expected to re-run.
 		//
+		// #2594 sub-case: a row that closed AFTER it delivered a full verdict
+		// also drops out of GroupResults, so an ordinary, complete round can
+		// read as non-counting here too. The failure direction stays safe:
+		// the LOOP-LIMIT footer fires late, never early, because a round
+		// that should count is only skipped, never wrongly counted. Decision
+		// recorded in #2594: this read site keeps its current, narrower
+		// contract on purpose, so it does not touch the #1495 cleanup escape
+		// hatch. A consumer that needs an accurate historical count — for
+		// example a retro over past rounds — must read `agent_events`
+		// directly, not GroupResults.
+		//
 		// The expected member list comes from gMembers (agent_status rows,
 		// including closed ones), NOT from the groupData keys. That is the
 		// #2573 fix: counting the keys that came back cannot detect a member
