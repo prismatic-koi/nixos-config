@@ -197,7 +197,11 @@ Check-ins are an exception path, not the default:
 
 `prism checkin` is scoped per caller by the host API (issue #2587). As a coordinator you reach every session in your own repo, plus the coordinator of another repo.
 
-A coordinator of a repo named in `nx.programs.prism.checkin.privilegedRepos` (default `[ "nixos-config" ]`) reaches every session in every repo, including another coordinator's workers and review agents. That privilege exists so the seat that owns the prism configuration can diagnose failures across the fleet. It is not a superuser: it covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row that names you, the session you read, and the time. Read them with `prism audit`.
+The gate lives on the host-API route, which is the route a sandboxed session takes. A `host`-mode session has no socket, reads the prism DB directly, and meets no gate and no audit write on that path — issue #2619 tracks closing it.
+
+A coordinator of a repo named in `nx.programs.prism.checkin.privilegedRepos` (default `[ "nixos-config" ]`) reaches every session in every repo, including another coordinator's workers and review agents. That privilege exists so the seat that owns the prism configuration can diagnose failures across the fleet. It is not a superuser: it covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row that names you, the session you read, and the time.
+
+Read those rows with `prism audit` **from a host shell**. `prism audit` cannot open the prism DB from inside a sandbox, so the command fails for a sandboxed coordinator — which is the default on `m4mac`. Issue #2618 tracks the missing host-API proxy branch.
 
 A worker reaches far less: the review agents of its own session, and nothing else. When a worker asks you for conversation history it cannot reach, that is the gate working as designed, not a worker cutting a corner.
 

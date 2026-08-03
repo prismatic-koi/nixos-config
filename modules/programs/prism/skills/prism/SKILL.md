@@ -948,8 +948,9 @@ Notes that matter in practice:
 - **A worker cannot check in on itself.** `prism checkin <self>` returns 403. The grant covers the review agents of your session, and you are not one of them.
 - **The worker scope is DB-backed.** `/checkin` resolves the target through `session_groups.parent_session` and admits it only when that parent is the caller's session name. A name that merely looks like `<your-session>~review-1-review-code` is not enough: a review agent whose group row was deleted is refused with 403.
 - **Earlier rounds stay in scope.** Each round registers its own group row against the same parent, so round 1 is as readable as round 3.
-- **Tier 3 is a coordinator with a troubleshooting privilege, not a superuser.** The privileged repos are declared in the prism NixOS module (`nx.programs.prism.checkin.privilegedRepos`, default `[ "nixos-config" ]`) and rendered to a file no sandbox can read or write. The privilege covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row. Read them with `prism audit`.
-- **A `host`-mode session has no socket** and reads the DB directly, so the host API never sees the call.
+- **Tier 3 is a coordinator with a troubleshooting privilege, not a superuser.** The privileged repos are declared in the prism NixOS module (`nx.programs.prism.checkin.privilegedRepos`, default `[ "nixos-config" ]`) and rendered to a file no sandbox can read or write. The privilege covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row.
+- **Read the audit rows with `prism audit` from a host shell.** `prism audit` cannot open the prism DB from inside a sandbox: `$XDG_STATE_HOME/prism` is deliberately never bound in, and the command has no host-API proxy branch. It therefore fails for a sandboxed coordinator, which is the default on `m4mac`. Issue #2618 tracks the fix.
+- **A `host`-mode session has no socket** and reads the DB directly, so the host API never sees the call — no tier check and no audit write happen on that route. Issue #2619 tracks gating it.
 
 If you need conversation history outside your tier, ask the coordinator with `prism escalate`. Do not attempt to work around the gate.
 

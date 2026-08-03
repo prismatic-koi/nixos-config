@@ -30,7 +30,14 @@
           The grant covers `prism checkin` only. It does not extend to
           `prism db query`, `prism spawn`, `prism merge`, or any other verb.
           Every access the privilege admits writes an audit event that records
-          the caller, the target, and the time; read them with `prism audit`.
+          the caller, the target, and the time. Read those events with
+          `prism audit` from a host shell: `prism audit` cannot open the prism
+          DB from inside a sandbox, so it fails for a sandboxed coordinator
+          (issue #2618).
+
+          The gate applies to the host-API route, which is the route a
+          sandboxed session takes. A host-mode session reads the DB directly
+          and meets no gate on that path (issue #2619).
 
           An empty list grants the privilege to nobody, which is the behaviour
           prism had before the option existed.

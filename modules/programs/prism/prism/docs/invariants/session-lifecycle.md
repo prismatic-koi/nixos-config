@@ -119,14 +119,16 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 
 ## Checkin scope
 
-- `/checkin` applies three permission tiers (issue #2587). The predicate is `authorizeCheckin` in `internal/sidecar/checkin_permission.go`. A `host`-mode session has no socket and reads the DB directly, so the host API never sees the call.
+- `/checkin` applies three permission tiers (issue #2587). The predicate is `authorizeCheckin` in `internal/sidecar/checkin_permission.go`.
+- The tiers gate the host-API route only. A `host`-mode session has no socket, so `runCheckinSession` in `cmd/checkin.go` reads the DB directly through `QueryEvents`, which scopes on `session_name` alone and takes no caller identity. That route has no tier check and writes no audit event. The gap predates #2587, which changed the host-API rule alone. Issue #2619 tracks closing it, and is the `checkin` member of the both-routes-gated set that #2604 and #2608 belong to.
 - **Tier 1 — non-coordinator.** A worker, a review agent, an investigator, or any caller whose role cannot be determined reads the review agents of its OWN session, and nothing else. Membership resolves through `GroupParentForMember`, which joins `agent_status.group_id` to `session_groups.parent_session` and applies no name heuristic. Every other target answers HTTP 403: the caller's own session, another worker, a coordinator, and any session in another repo.
 - A review agent from an earlier round stays in scope, because each round registers its own `session_groups` row against the same `parent_session`. A review agent whose `session_groups` row was deleted falls out of scope and answers 403, not 500 — the row, not the `<parent>~review-<round>-<role>` name, is the evidence.
 - **Tier 2 — coordinator.** Every session in the caller's own repo, plus a cross-repo target that is itself a coordinator. This tier did not change in #2587.
 - **Tier 3 — coordinator of a privileged repo.** Every session in every repo. The repo list is `Config.CheckinPrivilegedRepos`, read once at sidecar start from `~/.config/prism/checkin-privileged-repos.json`, which the prism NixOS module renders from `privilegedRepos`. An empty or absent list grants the privilege to nobody.
 - The tier-3 check requires a DB-backed `root_agent_name` of `coordinator` for the caller. It does not accept the `<repo>@main` name heuristic that `isCoordinatorSession` ORs in, so a caller with no row, a NULL column, or a `worker` value is refused.
 - The tier-3 privilege covers `/checkin` alone. `/db/query`, `/db/schema`, `/db/tables`, `/spawn`, `/merge`, and every other endpoint keep the gate they had.
-- Tier 3 is consulted only where tier 2 refuses. Each access it admits writes one `audit` event against the caller's session with the target in `payload.Audit.Target` and the grant name in `payload.Audit.Grant`. `prism audit` reads them.
+- Tier 3 is consulted only where tier 2 refuses. Each access it admits writes one `audit` event against the caller's session with the target in `payload.Audit.Target` and the grant name in `payload.Audit.Grant`.
+- `prism audit` reads those events from a host shell only. `runAudit` in `cmd/audit.go` calls `openDB` with no host-API proxy branch, and `$XDG_STATE_HOME/prism` is never bound into a sandbox, so the command fails inside one. The default privileged seat is a sandboxed coordinator, so the trail is unreadable by the seat that writes it. Issue #2618 tracks the fix.
 - The rendered `checkin-privileged-repos.json` is not bound into any sandbox. `StandardSandboxMounts` exposes only `~/.config/prism/agents` and `~/.config/prism/profiles.json` out of that directory, both read-only, and `generateProfile` names only the same two paths.
 
 ## Merge queue

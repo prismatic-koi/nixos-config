@@ -227,6 +227,12 @@ target through `session_groups.parent_session` and admits it only when that
 parent is your session name. To read anything outside that scope, ask the
 coordinator with `prism escalate`.
 
+One caveat, so you do not mistake a gap for a grant: the gate sits on the
+host-API route, which is the route your sandbox takes. A `host`-mode session
+has no socket and reads the prism DB directly, so it meets no gate there
+(issue #2619). Treat the scope above as a hard rule in every isolation mode.
+An absent mechanism is not permission.
+
 ### Handling review results
 
 `prism review` returns structured output for each agent: verdict, extracted
