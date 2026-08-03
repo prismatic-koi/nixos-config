@@ -507,7 +507,7 @@ prism checkin <session>~review-<N>-review-goal
 
 ## Investigator agents
 
-Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. Only coordinators can spawn them: the host-API `/investigate` endpoint calls `requireCoordinator` and returns HTTP 403 to every other caller.
+Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. Only coordinators can spawn them. A sandboxed caller meets the host-API `/investigate` endpoint, which calls `requireCoordinator` and returns HTTP 403 to every other caller. A `host`-mode caller has no socket and takes the direct CLI path, where `requireInvestigateCoordinator` in `cmd/investigate.go` refuses it with a non-zero exit.
 
 ### Spawning
 
@@ -549,7 +549,7 @@ prism cleanup --yes --session <inv-session>
 
 ### Constraint
 
-`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. The enforcement point is the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. It is not a bash deny list: no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb.
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. There are two enforcement points, one per route. A sandboxed caller meets the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. A `host`-mode caller has no socket, so it meets the direct-CLI guard — `requireInvestigateCoordinator` in `cmd/investigate.go` — which refuses with a non-zero exit. Neither is a bash deny list: no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb.
 
 ---
 
