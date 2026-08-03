@@ -156,6 +156,35 @@ This wastes cycles and interrupts nothing useful. Spawn the agent, then wait for
 
 Use `prism sessions list` at any time for a lightweight overview of all active sessions and their state. This is not a check-in and does not involve reading agent output — it is safe to run freely.
 
+### Worktree tracking and the health check
+
+Do not use `git worktree list` to check whether a sibling worktree is live.
+Your sandbox mounts only `.bare` and your own worktree — sibling worktrees
+belonging to workers and review agents are not bind-mounted in. When `git`
+looks for a sibling's gitdir, it finds nothing at that path and reports the
+worktree as `prunable`. That report is correct for what `git` can see inside
+your sandbox. It is not correct for the host: the worktree can be live and in
+active use by its own session at that exact moment.
+
+**A `prunable` result inside your sandbox means "not mounted here", not
+"missing". Do not read it as data loss, and do not act on it with `git
+worktree prune` or `git worktree remove`** — both commands are blocked for
+every role, but the false read can still lead you to escalate a non-existent
+incident, or to instruct a worker to redo work that was never lost.
+
+The authoritative check is `prism sessions list`. It reports the true status
+of every session in the repo, not the sandbox's limited filesystem view. Use
+it whenever you need to confirm a sibling worktree is live.
+
+A worktree that is genuinely stale is still distinguishable from one that is
+merely unmounted: `prism sessions list` shows no live session for a stale
+worktree, where a merely-unmounted worktree still has a live session entry.
+Use that distinction to decide whether a worktree actually needs cleanup.
+
+See also the `prism` skill, section "`git worktree list` reports live
+sibling worktrees as `prunable`" — the same guidance, for the general prism
+surface. Do not add a contradictory rule here.
+
 ### When check-ins ARE appropriate
 
 Check-ins are an exception path, not the default:
