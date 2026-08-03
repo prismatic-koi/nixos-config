@@ -329,9 +329,12 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 				if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 					proglog.Errorf("[prism] doCleanup: update session ended: %v\n", updErr)
 				}
-				if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-					proglog.Errorf("[prism] doCleanup: write spawn outcome: %v\n", outcomeErr)
-				}
+			}
+			// Write spawn_outcome for m.session and cascade to every
+			// <m.session>~review-% child (issue #2591) — mirrors the SetEnded
+			// cascade above.
+			if outcomeErr := d.WriteSpawnOutcomeCascade(m.session); outcomeErr != nil {
+				proglog.Errorf("[prism] doCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 			}
 			// Archive the session storage, then sever the pi resume linkage
 			// (issue #2219): the archive copies the same transcript JSONL the
@@ -866,9 +869,12 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCleanup: update session ended: %v\n", updErr)
 			}
-			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				proglog.Errorf("[prism] headlessCleanup: write spawn outcome: %v\n", outcomeErr)
-			}
+		}
+		// Write spawn_outcome for session and cascade to every
+		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
+		// applied inside applyDBLifecycleClears above.
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+			proglog.Errorf("[prism] headlessCleanup: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage
 		// (issue #2219): the archive copies the same transcript JSONL the
@@ -986,9 +992,12 @@ func closeSession(session string) error {
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] closeSession: update session ended: %v\n", updErr)
 			}
-			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				proglog.Errorf("[prism] closeSession: write spawn outcome: %v\n", outcomeErr)
-			}
+		}
+		// Write spawn_outcome for session and cascade to every
+		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
+		// above.
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+			proglog.Errorf("[prism] closeSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage
 		// (issue #2219): the archive runs first so the transcript is
@@ -1113,9 +1122,12 @@ func headlessCloseSessionWithJSONTo(session string, jsonMode bool, stdout io.Wri
 			if updErr := d.UpdateSessionEnded(instanceIDForSessions, "finished"); updErr != nil {
 				proglog.Errorf("[prism] headlessCloseSession: update session ended: %v\n", updErr)
 			}
-			if outcomeErr := d.WriteSpawnOutcome(instanceIDForSessions); outcomeErr != nil {
-				proglog.Errorf("[prism] headlessCloseSession: write spawn outcome: %v\n", outcomeErr)
-			}
+		}
+		// Write spawn_outcome for session and cascade to every
+		// <session>~review-% child (issue #2591) — mirrors the SetEnded cascade
+		// applied inside applyDBLifecycleClears above.
+		if outcomeErr := d.WriteSpawnOutcomeCascade(session); outcomeErr != nil {
+			proglog.Errorf("[prism] headlessCloseSession: write spawn outcome cascade: %v\n", outcomeErr)
 		}
 		// Archive the session storage, then sever the pi resume linkage
 		// (issue #2219): the archive runs first so the transcript is
