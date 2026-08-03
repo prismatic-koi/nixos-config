@@ -555,7 +555,7 @@ prism cleanup --yes --session <inv-session>
 
 ## Merge queue (coordinators only)
 
-> **Coordinators only.** The host-API `/merge` endpoint calls `requireCoordinator`, so `prism merge` returns HTTP 403 for worker agents, container worker agents, bwrap worker agents, and review agents alike. If you are not a coordinator agent, skip this section.
+> **Coordinators only.** The whole verb family is coordinator-only: the host-API `/merge`, `/merges`, and `/merges/cancel` endpoints each call `requireCoordinator`, so `prism merge`, `prism merges list`, and `prism merges cancel` return HTTP 403 for worker agents, container worker agents, bwrap worker agents, and review agents alike. If you are not a coordinator agent, skip this section.
 
 The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
@@ -576,6 +576,8 @@ A queued PR moves through states keyed off GitHub's `mergeStateStatus`: `watchin
 | `prism merges list --abandoned` | Show entries left behind by a previous coordinator incarnation. |
 | `prism merges list --all` | Include terminal-state history (last 7 days). |
 | `prism merges cancel <pr>` | Remove a `watching` entry from the queue. |
+
+Every command in this table is coordinator-only on both routes — see [Why workers cannot invoke it](#why-workers-cannot-invoke-it) for the two enforcement points.
 
 Add `--json` to any `prism merges` / `prism merges list` invocation (including with `--failed`, `--abandoned`, or `--all`) to get a JSON array of merge-queue entries instead of the table — use this when scripting or polling.
 
@@ -674,7 +676,7 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 
 ### Why workers cannot invoke it
 
-The host-API role gate refuses every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. A session that runs outside a sandbox has no socket to route through, so `prism merge` carries a second coordinator guard on its direct CLI path (`cmd/merge.go`). This is by security design: only coordinators arbitrate merge order. Do not attempt to work around either check.
+The host-API role gate refuses every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. A session that runs outside a sandbox has no socket to route through, so each verb carries a second coordinator guard on its direct CLI path: the coordinator-only branch in `cmd/merge.go` for `prism merge`, and `requireMergesCoordinator` in `cmd/merges.go` for both `prism merges list` and `prism merges cancel` (issue #2608). The read-only list verb is guarded as well, so the role boundary does not change with the caller's isolation mode. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around either check.
 
 The `prism merge` verb is gated at the host API, not by a bash deny list — no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb. Audit that half of the boundary in `host_api.go`.
 
