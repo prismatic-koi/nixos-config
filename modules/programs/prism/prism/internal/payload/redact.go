@@ -366,10 +366,10 @@ func shapeNameFor(match string) string {
 
 // Redactor rewrites credential values found in captured text.
 //
-// The zero value is not usable; build one with NewRedactor,
-// NewRedactorFromEnviron, or NewEnvRedactor. A nil *Redactor is safe: its
-// Redact returns the input unchanged, which lets a caller treat "no redactor
-// configured" as a no-op without a nil check at every call site.
+// Build one with NewRedactor, NewRedactorFromEnviron, or NewEnvRedactor. The
+// zero value redacts nothing, and a nil *Redactor is safe: its Redact returns
+// the input unchanged, which lets a caller treat "no redactor configured" as a
+// no-op without a nil check at every call site.
 //
 // A Redactor is immutable after construction and safe for concurrent use.
 type Redactor struct {
@@ -398,7 +398,7 @@ type Redactor struct {
 // When two names carry the same value, the marker names the
 // lexicographically first of them, so the output is deterministic.
 func NewRedactor(secrets map[string]string) *Redactor {
-	return newRedactor(secrets, true)
+	return newRedactor(secrets)
 }
 
 // NewRedactorFromEnviron builds a Redactor from an `os.Environ`-shaped slice
@@ -425,14 +425,15 @@ func NewEnvRedactor() *Redactor {
 // for tests and for callers that must prove the shape layer stands on its own;
 // production callers use NewEnvRedactor so the value layer runs first.
 func NewShapeOnlyRedactor() *Redactor {
-	return newRedactor(nil, true)
+	return newRedactor(nil)
 }
 
-func newRedactor(secrets map[string]string, shapes bool) *Redactor {
-	r := &Redactor{}
-	if shapes {
-		r.shapes = combinedShapeRE
-	}
+// newRedactor builds a Redactor with the shape layer always enabled and the
+// value layer populated from secrets. The shape layer is not optional: it is
+// the floor the whole control rests on when the process holds no credential
+// values.
+func newRedactor(secrets map[string]string) *Redactor {
+	r := &Redactor{shapes: combinedShapeRE}
 
 	names := make([]string, 0, len(secrets))
 	for name := range secrets {
