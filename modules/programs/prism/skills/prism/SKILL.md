@@ -678,7 +678,11 @@ Every non-coordinator session — worker agents, container worker agents, bwrap 
 
 The `prism merge` verb is gated at the host API, not by a bash deny list — no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb. Audit that half of the boundary in `host_api.go`.
 
-The worker→merge boundary has a second enforcement point. `gh pr merge` and `gh pr review --approve` / `-a` / `--request-changes` / `-r` are blocked in `BLOCKED_BASH_PATTERNS` for worker-class roles (`gh-pr-merge` and `gh-pr-review-approve`, issue #2410), which closes the `gh` bypass of the same separation. Plain `gh pr review` and `gh pr review --comment` stay allowed. So: the deny list holds no prism verb, but it does hold the two `gh` complements to this boundary. The other four entries in that list — `git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash` — are unrelated sandbox-local hazards.
+The worker→merge boundary has a second enforcement point. `gh pr merge` and `gh pr review --approve` / `-a` / `--request-changes` / `-r` are blocked in `BLOCKED_BASH_PATTERNS` for worker-class roles (`gh-pr-merge` and `gh-pr-review-approve`, issue #2410), which closes the `gh` bypass of the same separation. Plain `gh pr review` and `gh pr review --comment` stay allowed. So: the deny list holds no prism verb, but it does hold the two `gh` complements to this boundary.
+
+The other four entries — `git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash` — guard a different class of hazard: damage that reaches past the caller's own view. Sibling sessions' worktrees are not bind-mounted into your sandbox, the FD pool is host-wide, and the stash stack lives in the shared bare repo, so it is repo-wide rather than per-worktree (#2202). None of the four is about the coordinator/worker role boundary.
+
+Role scoping is a separate axis from that split: **three** of the six entries carry `appliesToRole: isWorkerClassRole` — the two `gh` entries and `git-stash`. The coordinator is exempt from the stash block because, with every worker-class session denied, it is then the only prism writer to the shared stack. The `git worktree` and `nix build` entries are unscoped: their hazards apply to the coordinator too.
 
 ## Example: reviewing a PR (manual spawn)
 

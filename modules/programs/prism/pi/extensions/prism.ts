@@ -686,13 +686,26 @@ function segmentIsGitPush(segment: string): boolean {
 // here expecting it to be the enforcement point.
 //
 // Two entries below DO guard the worker permission boundary: `gh-pr-merge`
-// and `gh-pr-review-approve` (#2410) are role-scoped to worker-class agents
-// and close the `gh` bypass of the same coordinator/worker separation the
-// host-API gate enforces for `prism merge`. They are defence in depth on that
-// boundary, alongside the host-API gate — not a substitute for it, and not
-// the enforcement point for any prism verb. The other four entries guard
-// hazards local to the sandbox: worktree surgery, a nix store bootstrap, the
-// shared stash stack.
+// and `gh-pr-review-approve` (#2410) close the `gh` bypass of the same
+// coordinator/worker separation the host-API gate enforces for `prism merge`.
+// They are defence in depth on that boundary, alongside the host-API gate —
+// not a substitute for it, and not the enforcement point for any prism verb.
+//
+// The other four entries guard a different class of hazard: damage whose
+// blast radius reaches past the caller's own view. Sibling worktrees are not
+// bind-mounted into the sandbox (`git-worktree-prune`, `git-worktree-remove`),
+// the FD pool is host-wide (`nix-build-with-env-override`), and the stash
+// stack lives in the shared bare repo, so it is repo-wide rather than
+// per-worktree (`git-stash`, #2202). None of the four is about the role
+// boundary.
+//
+// Role scoping is a separate axis from that split. THREE entries carry
+// `appliesToRole: isWorkerClassRole` — `git-stash`, `gh-pr-merge`, and
+// `gh-pr-review-approve`. `git-stash` is scoped because the coordinator is
+// the deliberate exemption (it is then the sole prism writer to the shared
+// stack); the two `gh` entries are scoped because the coordinator's manual
+// merge and review paths must keep working. The `git-worktree-*` and
+// `nix-build-*` entries are unscoped: those hazards apply to coordinators too.
 
 /**
  * One entry in the bash deny list. Each entry is matched against an
