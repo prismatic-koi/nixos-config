@@ -66,6 +66,14 @@ The test suite under `modules/programs/prism/prism/internal/sidecar/` is fully i
 
 If you add a new test that exercises notification delivery, use `sidecartest.NewIsolated` — do not construct a `sidecar.Config` that touches the host environment.
 
+## test-database convention — open with `sidecartest.OpenDB` (issue #2598)
+
+Open a test database with `sidecartest.OpenDB(t, path)`. Do not call `db.Open` directly from a test.
+
+`db.Open` costs 73 fsyncs: it applies the schema, seeds `schema_version`, and runs all 39 migrations, each committing in autocommit mode against a WAL with `synchronous=FULL`. `internal/sidecar` opens one database per test, so the package paid ~51,000 fsyncs per run before its first assertion. That cost is invisible on a developer host, where the test tempdir is a tmpfs and fsync is a no-op. It is not invisible in CI: it is what pushed the package past the 10-minute `go test` timeout in #2598, and the panic then named an unrelated 2-second test that happened to be in flight.
+
+`OpenDB` stamps a pre-migrated template, so every open after the first costs zero fsyncs. `TestSidecarTests_UseSidecartestOpenDB` enforces this for `internal/sidecar`. Two exceptions take a direct `db.Open`, both via the test's exempt list: a test that drives the migrations, and a test that asserts on `db.Open` itself. See `modules/programs/prism/prism/docs/test-database-fsync.md` for the full convention, the measurement method, and the packages that still carry the cost (`cmd` and `internal/db`, tracked in #2611; the production CLI cost in #2612).
+
 ## Why the gate exists — the homeless-shelter failure class
 
 The Nix build runs the test suite inside a sandbox where `$HOME=/homeless-shelter`, an intentionally unwritable path. This catches tests that touch the user's actual home directory and pass in a normal dev shell but fail in the sandbox:
