@@ -194,6 +194,36 @@ export function tokenizeBashCommand(cmd: string): string[] {
  * Ported from the prism-hooks.ts plugin — see that file for the full
  * commentary on similarity rules per tool.
  */
+/**
+ * Compute a short, stable, deterministic hex digest of a string.
+ *
+ * Not cryptographic — this exists only to keep similarity keys short while
+ * still distinguishing distinct content. It never depends on JS object key
+ * ordering because callers build the input string themselves from a fixed
+ * field order (see the `edit`/`write` case in `similarityKey`) rather than
+ * passing a JSON-serialised object through.
+ *
+ * This is the well-known cyrb53-family 64-bit string hash (two 32-bit
+ * lanes combined), included inline rather than pulled in as a dependency
+ * so the extension has no runtime deps beyond Node built-ins.
+ *
+ * Exported for unit testing.
+ */
+export function stableHash(input: string): string {
+  let h1 = 0xdeadbeef ^ input.length
+  let h2 = 0x41c6ce57 ^ input.length
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  h1 =
+    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
+  h2 =
+    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
+  return (h1 >>> 0).toString(16).padStart(8, "0") + (h2 >>> 0).toString(16).padStart(8, "0")
+}
+
 export function similarityKey(tool: string, args: unknown): string | null {
   if (EXCLUDED_TOOLS.has(tool)) {
     return null
@@ -241,13 +271,41 @@ export function similarityKey(tool: string, args: unknown): string | null {
 
     case "edit":
     case "write": {
+      const isObj = typeof args === "object" && args !== null
+      const a: Record<string, unknown> = isObj ? (args as Record<string, unknown>) : {}
       const filePath: string =
-        typeof args === "object" && args !== null
-          ? ((args as Record<string, unknown>).filePath as string)
-            ?? ((args as Record<string, unknown>).path as string)
-            ?? ""
-          : String(args ?? "")
-      return `${tool}:${filePath}`
+        (a.filePath as string) ?? (a.path as string) ?? (isObj ? "" : String(args ?? ""))
+
+      // Content is part of the identity key (#2599) — without it, five
+      // *distinct* edits to one file collapse onto a single key and
+      // false-positive the detector. Only truly identical calls (same
+      // path AND same content) should accumulate toward a run.
+      //
+      // The `edit` tool's real schema is `{ path, edits: [{ oldText,
+      // newText }] }` — hash the whole ordered set of pairs, not just the
+      // first one, so changing any single pair in a multi-edit call
+      // breaks the run (#2599 edge case). `write`'s real schema is
+      // `{ path, content }`. A couple of legacy/alternate field-name
+      // fallbacks are tolerated defensively.
+      let contentKey: string
+      if (Array.isArray(a.edits)) {
+        contentKey = (a.edits as unknown[])
+          .map((e) => {
+            const pair = typeof e === "object" && e !== null ? (e as Record<string, unknown>) : {}
+            const oldText = pair.oldText ?? pair.oldString ?? ""
+            const newText = pair.newText ?? pair.newString ?? ""
+            return `${String(oldText)}\u0000${String(newText)}`
+          })
+          .join("\u0001")
+      } else if (typeof a.content === "string") {
+        contentKey = a.content
+      } else {
+        const oldText = a.oldText ?? a.oldString ?? ""
+        const newText = a.newText ?? a.newString ?? ""
+        contentKey = `${String(oldText)}\u0000${String(newText)}`
+      }
+
+      return `${tool}:${filePath}:${stableHash(contentKey)}`
     }
 
     case "webfetch": {
@@ -316,7 +374,7 @@ export function processDoomLoop(
       if (state.consecutiveCount >= DOOM_LOOP_THRESHOLD) {
         state.fired = true
         return (
-          `[PRISM DOOM-LOOP DETECTION] You've called \`${toolName}\` with the same arguments ` +
+          `[PRISM DOOM-LOOP DETECTION] You've called \`${toolName}\` with the same target ` +
           `${state.consecutiveCount} times in a row. ` +
           `This usually means the current approach isn't working — stop and rethink. ` +
           `Consider: is there a different tool that would help? Is there a misunderstanding about the task? Should you escalate to the user?`

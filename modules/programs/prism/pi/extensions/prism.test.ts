@@ -29,6 +29,7 @@ import {
   type InboundDispatchAPI,
   // Behavioural guards
   similarityKey,
+  stableHash,
   tokenizeBashCommand,
   processDoomLoop,
   isGitPush,
@@ -849,6 +850,32 @@ describe("dispatchInboundFrame: forward-compat", () => {
 // similarityKey
 // ---------------------------------------------------------------------------
 
+describe("stableHash — determinism", () => {
+  it("is stable across repeated calls for the same input", () => {
+    const input = "path:oldText\u0000newText\u0001oldText2\u0000newText2"
+    assert.equal(stableHash(input), stableHash(input))
+  })
+
+  it("differs for different inputs", () => {
+    assert.notEqual(stableHash("a\u0000b"), stableHash("a\u0000c"))
+  })
+
+  it("does not depend on JS object key ordering (built from a fixed-order string, not JSON.stringify)", () => {
+    // similarityKey builds its content string from a["edits"] in array order,
+    // not from JSON.stringify(args) — so key order on the source object is
+    // irrelevant. This test locks that property in at the similarityKey level.
+    const a = similarityKey("edit", {
+      path: "/foo.go",
+      edits: [{ oldText: "x", newText: "y" }],
+    })
+    const b = similarityKey("edit", {
+      edits: [{ newText: "y", oldText: "x" }],
+      path: "/foo.go",
+    })
+    assert.equal(a, b)
+  })
+})
+
 describe("similarityKey — excluded tools", () => {
   it("returns null for read", () => {
     assert.equal(similarityKey("read", { filePath: "/foo.go" }), null)
@@ -1129,15 +1156,54 @@ describe("similarityKey — EXCLUDED_BASH_BASES", () => {
 })
 
 describe("similarityKey — edit/write/webfetch", () => {
-  it("edit same file produces the same key", () => {
-    const a = similarityKey("edit", { filePath: "/foo.go", newString: "a" })
-    const b = similarityKey("edit", { filePath: "/foo.go", newString: "b" })
+  it("edit same file and same edits[] produces the same key", () => {
+    const args = { path: "/foo.go", edits: [{ oldText: "a", newText: "b" }] }
+    const a = similarityKey("edit", args)
+    const b = similarityKey("edit", { path: "/foo.go", edits: [{ oldText: "a", newText: "b" }] })
     assert.equal(a, b)
   })
 
+  it("edit same file with different edits[] content produces different keys (#2599)", () => {
+    const a = similarityKey("edit", { path: "/foo.go", edits: [{ oldText: "a", newText: "1" }] })
+    const b = similarityKey("edit", { path: "/foo.go", edits: [{ oldText: "a", newText: "2" }] })
+    assert.notEqual(a, b)
+  })
+
   it("edit different files produces different keys", () => {
-    const a = similarityKey("edit", { filePath: "/foo.go" })
-    const b = similarityKey("edit", { filePath: "/bar.go" })
+    const a = similarityKey("edit", { path: "/foo.go", edits: [{ oldText: "a", newText: "b" }] })
+    const b = similarityKey("edit", { path: "/bar.go", edits: [{ oldText: "a", newText: "b" }] })
+    assert.notEqual(a, b)
+  })
+
+  it("edit with multiple edits[] entries: changing any one pair breaks the key (#2599 edge case)", () => {
+    const base = {
+      path: "/foo.go",
+      edits: [
+        { oldText: "a", newText: "1" },
+        { oldText: "c", newText: "3" },
+      ],
+    }
+    const changedSecondPair = {
+      path: "/foo.go",
+      edits: [
+        { oldText: "a", newText: "1" },
+        { oldText: "c", newText: "4" },
+      ],
+    }
+    const a = similarityKey("edit", base)
+    const b = similarityKey("edit", changedSecondPair)
+    assert.notEqual(a, b)
+  })
+
+  it("write same file and same content produces the same key", () => {
+    const a = similarityKey("write", { path: "/foo.go", content: "hello" })
+    const b = similarityKey("write", { path: "/foo.go", content: "hello" })
+    assert.equal(a, b)
+  })
+
+  it("write same file with different content produces different keys (#2599)", () => {
+    const a = similarityKey("write", { path: "/foo.go", content: "hello" })
+    const b = similarityKey("write", { path: "/foo.go", content: "goodbye" })
     assert.notEqual(a, b)
   })
 
@@ -1295,6 +1361,110 @@ describe("processDoomLoop — EXCLUDED_BASH_BASES exclusion", () => {
     }
     assert.ok(msg !== null, "expected doom-loop to fire for git push")
     assert.ok(msg.includes("PRISM DOOM-LOOP"))
+  })
+})
+
+describe("processDoomLoop — edit/write content-aware keying (#2599)", () => {
+  it("5 distinct edit calls to the same file (different oldText/newText each time) do NOT fire", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "edit", {
+        path: "/foo.go",
+        edits: [{ oldText: `old-${i}`, newText: `new-${i}` }],
+      })
+    }
+    assert.equal(msg, null)
+  })
+
+  it("5 identical edit calls (same path, same oldText/newText) DO fire", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "edit", {
+        path: "/foo.go",
+        edits: [{ oldText: "same-old", newText: "same-new" }],
+      })
+    }
+    assert.ok(msg !== null)
+    assert.ok(msg.includes("PRISM DOOM-LOOP"))
+  })
+
+  it("5 distinct write calls to the same file (different content each time) do NOT fire", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "write", { path: "/foo.go", content: `content-${i}` })
+    }
+    assert.equal(msg, null)
+  })
+
+  it("5 identical write calls (same path, same content) DO fire", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "write", { path: "/foo.go", content: "same content" })
+    }
+    assert.ok(msg !== null)
+    assert.ok(msg.includes("PRISM DOOM-LOOP"))
+  })
+
+  it("fired message does not claim 'the same arguments' for edit", () => {
+    const state = newDoomLoopState()
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD; i++) {
+      msg = processDoomLoop(state, "edit", {
+        path: "/foo.go",
+        edits: [{ oldText: "same-old", newText: "same-new" }],
+      })
+    }
+    assert.ok(msg !== null)
+    assert.ok(!msg.includes("the same arguments"))
+  })
+
+  it("an edit call with multiple edits[] entries is keyed on the full set — changing one pair between calls breaks the run", () => {
+    const state = newDoomLoopState()
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      processDoomLoop(state, "edit", {
+        path: "/foo.go",
+        edits: [
+          { oldText: "a", newText: "1" },
+          { oldText: "c", newText: "3" },
+        ],
+      })
+    }
+    assert.equal(state.consecutiveCount, DOOM_LOOP_THRESHOLD - 1)
+    // Change only the second pair — must break the run.
+    const result = processDoomLoop(state, "edit", {
+      path: "/foo.go",
+      edits: [
+        { oldText: "a", newText: "1" },
+        { oldText: "c", newText: "4" },
+      ],
+    })
+    assert.equal(result, null)
+    assert.equal(state.consecutiveCount, 1)
+  })
+
+  it("a differently-keyed tool call between two identical edit calls resets the run counter", () => {
+    const state = newDoomLoopState()
+    const editArgs = { path: "/foo.go", edits: [{ oldText: "same-old", newText: "same-new" }] }
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      processDoomLoop(state, "edit", editArgs)
+    }
+    assert.equal(state.consecutiveCount, DOOM_LOOP_THRESHOLD - 1)
+    processDoomLoop(state, "bash", { command: "git status" })
+    // A differently-keyed call still breaks the run (count resets to 1 for
+    // its own key, rather than staying accumulated on the edit key) — only
+    // EXCLUDED_TOOLS/EXCLUDED_BASH_BASES calls reset currentKey to null.
+    assert.notEqual(state.currentKey, similarityKey("edit", editArgs))
+    assert.equal(state.consecutiveCount, 1)
+    // Now 4 more identical edits should not fire (fresh run).
+    let msg: string | null = null
+    for (let i = 0; i < DOOM_LOOP_THRESHOLD - 1; i++) {
+      msg = processDoomLoop(state, "edit", editArgs)
+    }
+    assert.equal(msg, null)
   })
 })
 
