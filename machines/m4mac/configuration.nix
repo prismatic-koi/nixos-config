@@ -27,6 +27,7 @@ in
       prism = {
         profile.default = "standard";
         agent.isolation.default = "sandbox-exec";
+        sandboxExecConcurrencyCap = 80;
         pi.atlassian = {
           enable = true;
           defaultCloudId = "08986a80-a6ed-4480-ae2d-4a439d50d71b";
