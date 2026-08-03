@@ -684,6 +684,41 @@ The other four entries — `git worktree prune`, `git worktree remove`, `nix bui
 
 Role scoping is a separate axis from that split: **three** of the six entries carry `appliesToRole: isWorkerClassRole` — the two `gh` entries and `git-stash`. The coordinator is exempt from the stash block because, with every worker-class session denied, it is then the only prism writer to the shared stack. The `git worktree` and `nix build` entries are unscoped: their hazards apply to the coordinator too.
 
+### `git worktree list` reports live sibling worktrees as `prunable` — this is not data loss
+
+A coordinator's sandbox mounts only `.bare` and the coordinator's own
+worktree. Sibling worktrees — the worktrees of workers and review agents
+running in the same repo — are not bind-mounted in. When you run `git
+worktree list` inside the sandbox, `git` resolves each sibling's gitdir
+pointer, finds nothing at that path, and reports it as `prunable` (or, in
+`--porcelain` output, `prunable gitdir file points to non-existent
+location`).
+
+That report describes what `git` can see inside the sandbox. It does not
+describe the host. The worktree can be live, mounted, and in active use by
+its own session at that exact moment.
+
+**Do not treat a `prunable` sibling worktree as evidence of data loss, and do
+not run `git worktree prune` or `git worktree remove` in response.** Both
+commands are already blocked for every role by `BLOCKED_BASH_PATTERNS` (see
+above), so the command itself will fail — but do not let the false read lead
+you to escalate a non-existent incident or instruct a worker to redo work
+that was never lost.
+
+To check whether a sibling worktree is live, use `prism sessions list`
+instead of `git worktree list`. `prism sessions list` reads prism's own
+session state, not the sandbox's filesystem view, so it reports the true
+status of every session in the repo, mounted or not.
+
+A worktree that is genuinely stale — its session closed or cleaned up — is
+still distinguishable: `prism sessions list` will not show a live session for
+it at all, where a merely-unmounted worktree still has a live session entry.
+`prunable` from `git` answers only "is this mounted here"; `prism sessions
+list` answers "is this session alive". Use the second question to decide
+whether a worktree needs cleanup.
+
+See also the "Worktree tracking and the health check" section in `coordinator.md` (`modules/programs/prism/agents/coordinator.md`) — the same guidance is stated there for the coordinator's monitoring flow, and the two must not contradict each other.
+
 ## Example: reviewing a PR (manual spawn)
 
 ```bash
