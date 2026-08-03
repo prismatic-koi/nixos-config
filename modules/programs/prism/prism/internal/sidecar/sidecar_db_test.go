@@ -10,11 +10,12 @@ package sidecar
 // rather than sharing the writable handle.
 //
 // All three endpoints are coordinator-only (#1467 round-3 review): /db/query
-// exposes a strict superset of /checkin's data, so it inherits /checkin's
-// gating. Tests that exercise post-auth happy / error paths use a coordinator
-// sidecar; the *_WorkerForbidden tests at the bottom verify the role gate
-// itself (matching the TestHostAPI_Checkin_WorkerForbidden precedent in
-// sidecar_test.go).
+// exposes a strict superset of /checkin's data. That gate did not move when
+// #2587 made /checkin role-scoped — /checkin scopes its answer per caller,
+// /db/query does not, and the tier-3 troubleshooting privilege covers
+// /checkin alone. Tests that exercise post-auth happy / error paths use a
+// coordinator sidecar; the *_WorkerForbidden tests at the bottom verify the
+// role gate itself.
 
 import (
 	"encoding/json"
@@ -243,9 +244,11 @@ func TestHostAPI_DBQuery_MissingSQL(t *testing.T) {
 // ── GET /db/* — role gating (#1467 round-3 review) ──────────────────────
 //
 // All three endpoints are coordinator-only because /db/query exposes a strict
-// superset of /checkin's data. These mirror TestHostAPI_Checkin_WorkerForbidden
-// in sidecar_test.go: a worker-role sidecar must receive 403, with a non-empty
-// error message.
+// superset of /checkin's data, and unlike /checkin it cannot scope its answer
+// to the caller. A worker-role sidecar must receive 403, with a non-empty
+// error message. TestCheckin_PrivilegeIsCheckinOnly
+// (checkin_permission_test.go) pins the other half: the #2587 privilege does
+// not reach these endpoints.
 
 func TestHostAPI_DBQuery_WorkerForbidden(t *testing.T) {
 	d := openTestDB(t)

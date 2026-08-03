@@ -170,6 +170,22 @@ type Config struct {
 	// root_agent_name in the DB so that `prism prompt` can target the correct
 	// agent for follow-up messages (#557).
 	AgentRole string
+	// CheckinPrivilegedRepos is the tier-3 `/checkin` troubleshooting
+	// privilege list (issue #2587): the repos whose coordinator may check in
+	// on ANY session in ANY repo, including another coordinator's workers and
+	// review agents. Every access the privilege admits writes an audit event,
+	// and the grant covers /checkin alone.
+	//
+	// Populated once, host-side, at sidecar start from
+	// config.LoadCheckinPrivilegedRepos, which reads the file the prism NixOS
+	// module renders to ~/.config/prism/checkin-privileged-repos.json. That
+	// file is not bound into any sandbox, so no agent can edit its own
+	// privilege.
+	//
+	// An empty or nil slice grants the privilege to nobody and reproduces the
+	// pre-#2587 behaviour. Tests leave it at the zero value unless the tier-3
+	// path is the subject under test.
+	CheckinPrivilegedRepos []string
 	// AgentModel is the model identifier for the agent role (e.g.
 	// "anthropic/claude-sonnet-4-6"), read from the harness config at startup.
 	// When non-empty it is seeded into root_model_id in the DB so that

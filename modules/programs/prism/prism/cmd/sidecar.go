@@ -367,6 +367,22 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// allowlist just gains one fewer entry in that case.
 	bareRoot := git.BareRoot(worktree)
 
+	// Tier-3 /checkin troubleshooting privilege (#2587). The list is read
+	// host-side, once, at sidecar start: the rendered file lives under
+	// ~/.config/prism/ and is deliberately not bound into any sandbox, so no
+	// agent can read or edit its own privilege.
+	//
+	// A missing file returns an empty list with no error, which grants the
+	// privilege to nobody. A malformed file fails closed the same way: the
+	// sidecar warns and starts with an empty list rather than refusing to
+	// start or, worse, widening the grant.
+	checkinPrivilegedRepos, checkinPrivErr := config.LoadCheckinPrivilegedRepos()
+	if checkinPrivErr != nil {
+		proglog.Warnf("[prism sidecar] read %s: %v (no repo carries the checkin troubleshooting privilege)\n",
+			config.CheckinPrivilegedReposFileName, checkinPrivErr)
+		checkinPrivilegedRepos = nil
+	}
+
 	cfg := sidecar.Config{
 		SessionName:             sessionName,
 		Repo:                    repo,
@@ -388,6 +404,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		HarnessPipeSockPath:     harnessPipeSockPath,
 		HarnessPipeTCPPort:      harnessPipeTCPPort,
 		PodmanProxyListenerPath: podmanProxyListenerPath,
+		CheckinPrivilegedRepos:  checkinPrivilegedRepos,
 		OnReady:                 onReady,
 		InitialPrompt:           initialPrompt,
 		Harness:                 h,

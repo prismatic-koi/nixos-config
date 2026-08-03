@@ -5107,6 +5107,10 @@ func TestHostAPI_ListSessions_PreMigrationCoordinator(t *testing.T) {
 
 // ── /checkin ──────────────────────────────────────────────────────────────────
 
+// TestHostAPI_Checkin_WorkerForbidden covers the coordinator target: a worker
+// cannot read its own coordinator's session. Since #2587 a worker CAN read the
+// review agents of its own session, and only those; the full tier-1 scope,
+// including this case, is pinned in checkin_permission_test.go.
 func TestHostAPI_Checkin_WorkerForbidden(t *testing.T) {
 	d := openTestDB(t)
 	sc := newSidecarWithRole(t, "myrepo@feature", "myrepo", "worker", d)

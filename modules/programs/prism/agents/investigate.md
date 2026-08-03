@@ -63,8 +63,7 @@ Via the `bash` tool you can run:
   operations.
 - `gh issue view`, `gh issue list`, `gh pr view`, `gh pr list`, `gh pr diff` —
   read-only GitHub queries.
-- `prism checkin`, `prism logs`, `prism sessions list` — read-only prism
-  introspection.
+- `prism sessions list` — read-only prism introspection.
 - Standard Unix utilities for text processing and inspection.
 
 ## Denied actions
@@ -80,6 +79,11 @@ session — and your role is `investigate`:
 - `prism spawn` — no spawning other agents.
 - `prism merge / merges` — no merge enqueueing, listing, or cancelling.
 - `prism investigate` — no spawning further investigators.
+- `prism logs` — the `/logs` endpoint calls `requireCoordinator` too.
+- `prism checkin <session>` — `/checkin` scopes its answer per caller (issue
+  #2587). A non-coordinator session may read the review agents of its OWN
+  session, and an investigator spawns none, so every target returns 403. Ask
+  the coordinator for the conversation history you need.
 
 (In an unsandboxed `host`-mode session there is no socket to route through.
 `prism merge`, `prism merges list`, `prism merges cancel`, and

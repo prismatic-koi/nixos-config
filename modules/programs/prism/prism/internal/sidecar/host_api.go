@@ -202,7 +202,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /close         — smart-decide close (soft if open PR; hard otherwise) (coordinator only)
 //	POST /switch        — switch the tmux client to a session (all roles)
 //	GET  /list-sessions — list active sessions (role-scoped: all=true is coordinator only)
-//	GET  /checkin       — return conversation history for a session (coordinator only)
+//	GET  /checkin       — return conversation history for a session (role-scoped)
 //	GET  /logs          — return the log file for a session (coordinator only)
 //	GET  /stats         — return stats/events for rendering (all roles)
 //	GET  /db/query      — run a single read-only SQL statement (coordinator only)
@@ -239,10 +239,12 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // /db/query, /db/schema, /db/tables are coordinator-only because /db/query
 // exposes a strict superset of /checkin: raw cross-session payloads (e.g.
 // SELECT * FROM harness_frames) versus /checkin's single-session rendered
-// view. Gating these at the same level as /checkin preserves the
-// cross-session privilege isolation /checkin already enforces. The /stats
-// analogue does not apply — /stats is aggregate counts, /db/query is
-// row-level conversation content (#1467 round-3 review).
+// view. That reasoning survives #2587, which made /checkin role-scoped: the
+// three-tier model scopes /checkin per caller, and /db/query has no such
+// scoping — one statement reads every session in the DB. The tier-3
+// troubleshooting privilege covers /checkin ALONE and must not be extended
+// here. The /stats analogue does not apply — /stats is aggregate counts,
+// /db/query is row-level conversation content (#1467 round-3 review).
 //
 // Role-based permissions are enforced based on s.cfg.AgentRole and
 // s.cfg.SessionName. Workers have restricted access; coordinators have broader
@@ -598,15 +600,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// GET /checkin
 	// Query params: session (required), last (default 10), types (optional),
 	//               from (optional cursor), before (optional cursor)
-	// Permission: coordinator only; own repo sessions or cross-repo @main sessions.
+	// Permission: three tiers (issue #2587) — see checkin_permission.go.
+	//   tier 1 (worker)                 the review agents of its own session only
+	//   tier 2 (coordinator)            own-repo sessions plus cross-repo coordinators
+	//   tier 3 (privileged coordinator) any session in any repo, audited
 	mux.HandleFunc("/checkin", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
 		}
-		if !requireCoordinator(w, "checkin") {
-			return
-		}
 
+		// The target is read BEFORE the permission gate, because every tier
+		// scopes on the target: tier 1 asks whether it is a review agent of the
+		// caller, tiers 2 and 3 ask which repo it belongs to. A request with no
+		// target therefore gets 400 for every role rather than 403 for a
+		// worker. Nothing is read and nothing is disclosed on that path.
 		q := r.URL.Query()
 		targetSession := q.Get("session")
 		if targetSession == "" {
@@ -614,26 +621,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 
-		// Permission check: coordinator can access own-repo sessions and
-		// any cross-repo coordinator (@main) session.
-		ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
-		if repoErr != nil {
-			writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
+		decision := s.authorizeCheckin(targetSession)
+		if !decision.Allow {
+			writeError(w, decision.Status, decision.Message)
 			return
 		}
-		targetRepo, targetRepoErr := repoFromSession(targetSession, s.cfg.DB)
-		if targetRepoErr != nil {
-			// Both DB lookup and name-parse fallback failed — the target
-			// session is unknown. Return 404 so the CLI can surface a clear
-			// "session not found" rather than a parse error (issue #2112).
-			writeError(w, http.StatusNotFound, "target "+targetRepoErr.Error())
-			return
-		}
-		crossRepo := targetRepo != ownRepo
-		if crossRepo && !isCoordinatorSession(targetSession, s.cfg.DB, s.logger()) {
-			writeError(w, http.StatusForbidden,
-				fmt.Sprintf("cross-repo checkin can only target coordinators (<repo>@main), got %q", targetSession))
-			return
+		if decision.Tier == checkinTierPrivilegedCoordinator {
+			s.writeCheckinPrivilegeAudit(targetSession)
 		}
 
 		// Parse limit (default 10).

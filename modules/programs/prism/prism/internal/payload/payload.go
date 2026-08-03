@@ -263,6 +263,17 @@ type Audit struct {
 	SessionName      string `json:"sessionName"`
 	HarnessSessionID string `json:"harnessSessionID,omitempty"`
 	MessageID        string `json:"messageId,omitempty"`
+	// Target names the session that a privileged read acted upon. It is
+	// written by the tier-3 /checkin grant (issue #2587), where SessionName
+	// is the caller and Target is the session whose history was returned.
+	// Empty on the bash-promotion rows, where the command names its own
+	// object.
+	Target string `json:"target,omitempty"`
+	// Grant names the privilege that admitted the action, for example
+	// "checkin-privileged-repo". Empty on the bash-promotion rows, which are
+	// recorded because the command is high-impact rather than because a
+	// privilege admitted it.
+	Grant string `json:"grant,omitempty"`
 }
 
 // TurnStart is the payload for turn_start events (P2.WIRE §5.7).

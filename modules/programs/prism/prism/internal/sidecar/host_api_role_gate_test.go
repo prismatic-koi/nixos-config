@@ -205,10 +205,10 @@ func TestHostAPI_Investigate_DeniesUndeterminableRole(t *testing.T) {
 // that way must refuse a worker with 403. An endpoint added to the list
 // without a requireCoordinator call fails here.
 //
-// /checkin is deliberately absent. It is coordinator-only today and its
-// documented line matches its handler, but issue #2587 replaces that single
-// rule with a three-tier model; asserting the current rule here would put a
-// stale expectation in #2587's path.
+// /checkin is deliberately absent. Issue #2587 replaced its single
+// coordinator-only rule with a three-tier model, so it is documented
+// "role-scoped" rather than "coordinator only" and does not belong in this
+// list. Its gate is pinned in checkin_permission_test.go.
 func TestHostAPI_CoordinatorOnly_DeniesWorker(t *testing.T) {
 	cases := []struct {
 		method string
