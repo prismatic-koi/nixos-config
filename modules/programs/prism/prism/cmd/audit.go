@@ -20,17 +20,49 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
+
+// ── audit writers ────────────────────────────────────────────────────────────
+//
+// Two code paths write `audit` events, and the help text and table footer
+// below must name both. Neither is restated by hand:
+//
+//  1. Bash promotion — internal/sidecar/events.go promotes a bash tool call
+//     whose command matches sidecar.HighImpactCommandPrefixes().
+//  2. The tier-3 `prism checkin` troubleshooting privilege (issue #2587) —
+//     internal/sidecar/checkin_permission.go records every cross-repo read
+//     that the privileged-repo grant admits.
+//
+// The bash list is derived from the sidecar package rather than copied,
+// because the copy drifted: it still named the pre-#2364 set after four
+// prefixes were added, and no test noticed. Writer 2 was missed by the same
+// mechanism on the PR that introduced it. audit_writers_test.go now pins
+// both halves.
+
+// privilegedCheckinWriterClause names writer 2 in prose. It is a separate
+// clause because that writer is not a bash command and has no prefix to list.
+const privilegedCheckinWriterClause = "each `prism checkin` that the tier-3 privileged-repo grant admits"
+
+// auditWritersSentence renders the full "what gets recorded" sentence from
+// both writers.
+func auditWritersSentence() string {
+	return "Audit events are written for: " +
+		strings.Join(sidecar.HighImpactCommandPrefixes(), ", ") +
+		"; and for " + privilegedCheckinWriterClause + "."
+}
 
 var auditCmd = &cobra.Command{
 	Use:   "audit [session]",
 	Short: "Query the audit trail of high-impact tool calls",
-	Long: `Query the persistent audit trail of high-impact bash tool calls.
+	Long: `Query the persistent audit trail of high-impact tool calls.
 
-High-impact commands (gh pr merge, git push, gh pr create, gh issue close,
-prism spawn, prism cleanup, prism prompt) are promoted from the ephemeral
-harness DB to the persistent prism DB as 'audit' events, so they survive
-worktree cleanup and remain attributable to a specific prism session.
+` + auditWritersSentence() + `
+
+The command rows are promoted from the ephemeral harness DB to the persistent
+prism DB, so they survive worktree cleanup. The privileged-checkin rows are
+written directly by the host API. Both remain attributable to a specific
+prism session.
 
 With no arguments, shows the last 20 audit events across all sessions.
 
@@ -229,5 +261,5 @@ func renderAuditEvents(events []db.Event) {
 	}
 
 	fmt.Println()
-	fmt.Println(styleDim.Render("Audit events are written for: gh pr merge/create, gh issue close, git push, prism spawn/cleanup/prompt"))
+	fmt.Println(styleDim.Render(auditWritersSentence()))
 }

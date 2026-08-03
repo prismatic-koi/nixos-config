@@ -117,6 +117,21 @@ var highImpactPrefixes = []string{
 	"prism review",
 }
 
+// HighImpactCommandPrefixes returns the command prefixes that promote a bash
+// tool call to an audit event, as a copy so a caller cannot mutate the
+// package's own list.
+//
+// It exists so the `prism audit` help text and table footer can enumerate the
+// audit writers from this list instead of restating it. A hand-maintained
+// second copy drifts: the footer still named the pre-#2364 set long after
+// `prism merge`, `prism investigate`, `prism pr`, and `prism review` joined
+// the list, and nothing failed. See cmd/audit.go and its tests.
+func HighImpactCommandPrefixes() []string {
+	out := make([]string, len(highImpactPrefixes))
+	copy(out, highImpactPrefixes)
+	return out
+}
+
 // isHighImpactCommand reports whether cmd matches any high-impact prefix.
 // Matching is case-insensitive and ignores leading whitespace.
 //
