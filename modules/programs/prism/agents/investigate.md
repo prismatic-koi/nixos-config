@@ -78,14 +78,15 @@ so these verbs route through the host API, where `requireCoordinator`
 session — and your role is `investigate`:
 
 - `prism spawn` — no spawning other agents.
-- `prism merge / merges` — no merge enqueueing.
+- `prism merge / merges` — no merge enqueueing, listing, or cancelling.
 - `prism investigate` — no spawning further investigators.
 
 (In an unsandboxed `host`-mode session there is no socket to route through.
-Only `prism merge` and `prism investigate` are refused there. Each carries a
-second, CLI-side coordinator guard, in `cmd/merge.go` and `cmd/investigate.go`.
-`prism spawn` has no CLI-side guard (issue #2604). Treat the whole list as a
-hard rule either way.)
+`prism merge`, `prism merges list`, `prism merges cancel`, and
+`prism investigate` are refused there too. Each carries a second, CLI-side
+coordinator guard, in `cmd/merge.go`, `cmd/merges.go` (issue #2608), and
+`cmd/investigate.go`. `prism spawn` has no CLI-side guard (issue #2604). Treat
+the whole list as a hard rule either way.)
 
 **Refused mechanically — the bash deny list.** `BLOCKED_BASH_PATTERNS` in
 `pi/extensions/prism.ts` blocks these for every worker-class role, which
