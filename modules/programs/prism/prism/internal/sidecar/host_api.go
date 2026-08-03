@@ -197,12 +197,13 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 // to agents running inside the container via a Unix socket. Routes:
 //
 //	POST /spawn         — spawn a new worktree session (coordinator only)
-//	POST /review        — run review agents against a PR (workers and coordinators)
+//	POST /review        — run review agents against a PR (all roles)
 //	POST /cleanup       — clean up an existing session (coordinator only)
 //	POST /close         — smart-decide close (soft if open PR; hard otherwise) (coordinator only)
-//	POST /switch        — switch the tmux client to a session
-//	GET  /list-sessions — list active sessions (role-scoped)
+//	POST /switch        — switch the tmux client to a session (all roles)
+//	GET  /list-sessions — list active sessions (role-scoped: all=true is coordinator only)
 //	GET  /checkin       — return conversation history for a session (coordinator only)
+//	GET  /logs          — return the log file for a session (coordinator only)
 //	GET  /stats         — return stats/events for rendering (all roles)
 //	GET  /db/query      — run a single read-only SQL statement (coordinator only)
 //	GET  /db/schema     — return CREATE TABLE / CREATE INDEX DDL (coordinator only)
@@ -211,11 +212,29 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	POST /merge         — enqueue a PR for the merge queue (coordinator only)
 //	GET  /merges        — list merge queue entries (coordinator only)
 //	POST /merges/cancel — cancel a watching merge queue entry (coordinator only)
+//	GET  /merges/by-pr  — look up one merge queue row by PR (all roles)
+//	GET  /sessions/status — look up one session status row (all roles)
+//	GET  /groups/list   — list review groups (all roles)
+//	GET  /groups/poll   — poll one review group for completion (all roles)
 //	POST /event         — write a lifecycle event to the host DB (all roles)
 //	POST /usage/snapshot — persist a rate-limit snapshot for the active account (all roles)
-//	POST /escalate      — escalate to coordinator (worker sessions)
-//	POST /investigate   — spawn an investigate-agent session (worker sessions)
+//	POST /escalate      — escalate to coordinator (all roles; cross-session from= is coordinator only)
+//	POST /investigate   — spawn an investigate-agent session (coordinator only)
 //	POST /feedback      — append a feedback entry to the host feedback.jsonl (all roles)
+//	POST /set-model     — swap the model on one live PI session (role-scoped)
+//	POST /apply-profile — apply a profile to sessions in scope (role-scoped: coordinator and global scopes are coordinator only)
+//	POST /register-provider — push a provider config to sessions in scope (role-scoped: coordinator and global scopes are coordinator only)
+//	POST /register-provider-direct — sidecar-to-sidecar provider push (all roles)
+//	POST /set-active-tools — set the active tool list on one session (role-scoped)
+//	POST /abort         — abort the current turn on one session (role-scoped)
+//
+// The permission label on each line above is the contract, not a comment:
+// "coordinator only" means the handler calls requireCoordinator, "role-scoped"
+// means the handler applies its own narrower rule (usually: a worker may act
+// on its own session only), and "all roles" means the handler applies no role
+// check. When you add, remove, or re-gate an endpoint, update the matching
+// line in the same change. TestHostAPI_CoordinatorOnly_DeniesWorker pins the
+// "coordinator only" half of this list (issue #2588).
 //
 // /db/query, /db/schema, /db/tables are coordinator-only because /db/query
 // exposes a strict superset of /checkin: raw cross-session payloads (e.g.
@@ -269,9 +288,30 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	}
 
 	// requireCoordinator checks that the calling sidecar is a coordinator
-	// session. Uses the DB-backed isCoordinatorSession check (same helper as
-	// isCoordinator) which reads root_agent_name and falls back to AgentRole
-	// for pre-migration rows. Returns false and writes HTTP 403 if not.
+	// session. Returns false and writes HTTP 403 if not. It delegates to
+	// isCoordinatorSession (helpers.go), which admits the caller when EITHER
+	// of these holds:
+	//
+	//   - the agent_status row says root_agent_name = 'coordinator'; or
+	//   - the session name ends in @main.
+	//
+	// The name heuristic is OR-ed in, not a fallback: it is evaluated on the
+	// primary path too, and it wins on disagreement, so a row that says
+	// 'worker' on a session named <repo>@main is still admitted. That OR was
+	// added deliberately (#944) to survive a stale or racing DB value.
+	//
+	// Undeterminable role — no DB handle, no agent_status row, a DB read
+	// error, or a NULL root_agent_name — falls through to the name heuristic
+	// ALONE. For every session name that does not end in @main that is false,
+	// so the caller is denied. A session named <repo>@main is admitted on the
+	// heuristic alone, with no DB evidence; #2587 records the caution that a
+	// privilege check must not rest on that heuristic alone, and is the issue
+	// that revisits it.
+	//
+	// This is the enforcement point for the worker restriction on
+	// coordinator-only verbs (`prism merge`, `prism investigate`, …). No
+	// entry in the pi extension's bash deny list matches a prism verb; agent
+	// prose must name this gate (issue #2588).
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
 		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,
@@ -2814,8 +2854,18 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// and returns the session name immediately. Shells out to `prism investigate`
 	// on the host with PRISM_SESSION_NAME set to the invoker session so the
 	// host-side CWD walk is bypassed.
+	//
+	// Coordinator-only: a worker that needs research context escalates to its
+	// coordinator, and the coordinator decides whether to spawn an
+	// investigator. Before #2588 this rule was documented in the agent prose
+	// but had no enforcement point here, so any worker could spawn an
+	// investigator. The gate matches /merge — requireCoordinator immediately
+	// after requirePost, ahead of the body decode.
 	mux.HandleFunc("/investigate", func(w http.ResponseWriter, r *http.Request) {
 		if !requirePost(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "investigate") {
 			return
 		}
 		var req struct {

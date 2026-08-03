@@ -217,11 +217,14 @@ func TestHostAPI_ExecContext_KillsChildOnCancel(t *testing.T) {
 			body:        `{"prompt":"halp"}`,
 		},
 		{
+			// Coordinator: /investigate is gated on requireCoordinator
+			// (issue #2588), so a worker session is refused with 403
+			// before the handler ever execs the child.
 			name:        "investigate",
 			path:        "/investigate",
 			method:      http.MethodPost,
-			role:        "worker",
-			sessionName: "myrepo@feature-x",
+			role:        "coordinator",
+			sessionName: "myrepo@main",
 			repo:        "myrepo",
 			body:        `{"prompt":"look into this"}`,
 		},

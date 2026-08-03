@@ -677,6 +677,35 @@ function segmentIsGitPush(segment: string): boolean {
 // ---------------------------------------------------------------------------
 // Pre-tool-call bash deny list (#1528)
 // ---------------------------------------------------------------------------
+//
+// Scope note (#2588): no entry in this list matches a prism verb.
+// `prism merge` and `prism investigate` are coordinator-only, and that is
+// enforced at the host API by `requireCoordinator`
+// (internal/sidecar/host_api.go), which answers a worker with HTTP 403. Do not
+// audit a prism verb restriction from this file, and do not add a prism verb
+// here expecting it to be the enforcement point.
+//
+// Two entries below DO guard the worker permission boundary: `gh-pr-merge`
+// and `gh-pr-review-approve` (#2410) close the `gh` bypass of the same
+// coordinator/worker separation the host-API gate enforces for `prism merge`.
+// They are defence in depth on that boundary, alongside the host-API gate —
+// not a substitute for it, and not the enforcement point for any prism verb.
+//
+// The other four entries guard a different class of hazard: damage whose
+// blast radius reaches past the caller's own view. Sibling worktrees are not
+// bind-mounted into the sandbox (`git-worktree-prune`, `git-worktree-remove`),
+// the FD pool is host-wide (`nix-build-with-env-override`), and the stash
+// stack lives in the shared bare repo, so it is repo-wide rather than
+// per-worktree (`git-stash`, #2202). None of the four is about the role
+// boundary.
+//
+// Role scoping is a separate axis from that split. THREE entries carry
+// `appliesToRole: isWorkerClassRole` — `git-stash`, `gh-pr-merge`, and
+// `gh-pr-review-approve`. `git-stash` is scoped because the coordinator is
+// the deliberate exemption (it is then the sole prism writer to the shared
+// stack); the two `gh` entries are scoped because the coordinator's manual
+// merge and review paths must keep working. The `git-worktree-*` and
+// `nix-build-*` entries are unscoped: those hazards apply to coordinators too.
 
 /**
  * One entry in the bash deny list. Each entry is matched against an
@@ -826,8 +855,10 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     // #2410 — `gh pr merge` from a worker-class agent bypasses the
     // coordinator/worker separation. Only the coordinator (via the merge
     // queue or the manual `gh pr merge --squash` fallback) is supposed to
-    // land PRs. `prism merge` is already denied to workers via its bash
-    // deny list, but `gh pr merge` was not — the guard was bypassable.
+    // land PRs. `prism merge` is already denied to workers by the host-API
+    // role gate (`requireCoordinator` on /merge returns HTTP 403 — NOT this
+    // deny list; see #2588), but `gh pr merge` had no equivalent block — the
+    // guard was bypassable.
     // During the A/B calibration for #2406, the light-tier worker on
     // branch `align-workflow-matrix-keys-light` finished, ran
     // `prism review` (all 5 PASS), then ran `gh pr merge 2408 --squash`

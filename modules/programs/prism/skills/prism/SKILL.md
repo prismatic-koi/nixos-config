@@ -507,7 +507,7 @@ prism checkin <session>~review-<N>-review-goal
 
 ## Investigator agents
 
-Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. They are denied in the worker deny list — only coordinators can use them.
+Use `prism investigate` to spawn a read-only research session from within a prism session. Investigators are well-suited to tasks like tracing call chains, mapping symptoms to a file:line, or surveying scope before spawning a worker. Only coordinators can spawn them: the host-API `/investigate` endpoint calls `requireCoordinator` and returns HTTP 403 to every other caller.
 
 ### Spawning
 
@@ -549,13 +549,13 @@ prism cleanup --yes --session <inv-session>
 
 ### Constraint
 
-`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Workers have `prism investigate` in their deny list; only coordinators can use it.
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. The enforcement point is the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. It is not a bash deny list: no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb.
 
 ---
 
 ## Merge queue (coordinators only)
 
-> **Coordinators only.** Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` denied in their bash deny lists. If you are not a coordinator agent, skip this section.
+> **Coordinators only.** The host-API `/merge` endpoint calls `requireCoordinator`, so `prism merge` returns HTTP 403 for worker agents, container worker agents, bwrap worker agents, and review agents alike. If you are not a coordinator agent, skip this section.
 
 The merge queue is a local serial FIFO queue running in the coordinator's sidecar process. The sidecar polls the head of the queue every 30 seconds; only one PR is in flight at a time. The watcher's lifetime equals the coordinator session's lifetime — there is no persistent daemon.
 
@@ -674,7 +674,15 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 
 ### Why workers cannot invoke it
 
-Worker agents, container worker agents, bwrap worker agents, and review agents all have `prism merge` and `prism merge *` in their bash deny lists. Only coordinator agents have it allowed. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around the deny list.
+The host-API role gate refuses every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. A session that runs outside a sandbox has no socket to route through, so `prism merge` carries a second coordinator guard on its direct CLI path (`cmd/merge.go`). This is by security design: only coordinators arbitrate merge order. Do not attempt to work around either check.
+
+The `prism merge` verb is gated at the host API, not by a bash deny list — no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb. Audit that half of the boundary in `host_api.go`.
+
+The worker→merge boundary has a second enforcement point. `BLOCKED_BASH_PATTERNS` blocks `gh pr merge` and `gh pr review --approve` / `-a` / `--request-changes` / `-r` for worker-class roles (entries `gh-pr-merge` and `gh-pr-review-approve`, issue #2410), which closes the `gh` bypass of the same separation. Plain `gh pr review` and `gh pr review --comment` stay allowed. So: the deny list holds no prism verb, but it does hold the two `gh` complements to this boundary.
+
+The other four entries — `git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash` — guard a different class of hazard: damage that reaches past the caller's own view. Sibling sessions' worktrees are not bind-mounted into your sandbox, the FD pool is host-wide, and the stash stack lives in the shared bare repo, so it is repo-wide rather than per-worktree (#2202). None of the four is about the coordinator/worker role boundary.
+
+Role scoping is a separate axis from that split: **three** of the six entries carry `appliesToRole: isWorkerClassRole` — the two `gh` entries and `git-stash`. The coordinator is exempt from the stash block because, with every worker-class session denied, it is then the only prism writer to the shared stack. The `git worktree` and `nix build` entries are unscoped: their hazards apply to the coordinator too.
 
 ## Example: reviewing a PR (manual spawn)
 
