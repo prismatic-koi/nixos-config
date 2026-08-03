@@ -56,7 +56,18 @@ The implementation is
 `TestSidecarTests_UseSidecartestOpenDB` in `internal/sidecar` enforces the
 convention for that package. It parses every Go file under `internal/sidecar`
 and `internal/sidecar/sidecartest` and fails on a direct `db.Open` call
-outside the helper itself.
+outside an exempt list.
+
+The matcher resolves the import path, not the identifier text, so an aliased
+import (`prismdb "…/internal/db"`) and a dot import are both detected.
+`db.OpenReadOnly` is not a hit: it does no writes and costs no fsync. The
+matcher works on one file at a time and does not resolve types, so a local
+variable that shadows the package name produces a false hit. A false hit is a
+visible failure, not a silent hole.
+
+`TestDirectDBOpens_Matcher` calls the same matcher function the guard runs,
+over a table of samples that includes the aliased and dot-import forms. A
+break in the matcher fails that test, so the guard cannot go silently blind.
 
 ## The two exceptions
 

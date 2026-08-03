@@ -24,9 +24,13 @@ import (
 	"go/parser"
 	"go/token"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+// dbImportPath is the package whose Open function the convention governs.
+const dbImportPath = "github.com/prismatic-koi/prism/internal/db"
 
 // openDBExemptFiles lists the files that may call db.Open directly, by path
 // relative to this package's directory.
@@ -37,6 +41,79 @@ import (
 var openDBExemptFiles = map[string]string{
 	filepath.Join("sidecartest", "templatedb.go"):      "the helper itself: it builds the template and opens the seeded copy",
 	filepath.Join("sidecartest", "templatedb_test.go"): "asserts on db.Open itself: it compares a seeded database against one db.Open built from nothing",
+}
+
+// directDBOpens returns the position of every call to the Open function of
+// dbImportPath in file.
+//
+// It resolves the import path rather than matching the identifier text, so an
+// aliased import (prismdb "…/internal/db"; prismdb.Open) and a dot import
+// (Open) are both detected. A file that does not import the package at all
+// yields nothing, so a same-named Open on any other package is not a hit.
+// db.OpenReadOnly is not a hit either: it does no writes and costs no fsync.
+//
+// Known limit, stated rather than implied: the matcher works on one file at a
+// time and does not resolve types, so a local variable that shadows the
+// package name would produce a false hit. Nothing in this package does that,
+// and a false hit is a visible failure rather than a silent hole.
+//
+// Every caller in this file uses this one function. That is deliberate: a
+// meta-test that carried its own copy of the matcher could not detect a break
+// in the matcher the guard actually runs.
+func directDBOpens(fset *token.FileSet, file *ast.File) []token.Position {
+	// Resolve the local name the file uses for the package.
+	var (
+		localName string
+		dotImport bool
+		imported  bool
+	)
+	for _, imp := range file.Imports {
+		path, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || path != dbImportPath {
+			continue
+		}
+		imported = true
+		switch {
+		case imp.Name == nil:
+			localName = filepath.Base(path) // "db"
+		case imp.Name.Name == ".":
+			dotImport = true
+		case imp.Name.Name == "_":
+			return nil // imported for side effects only; cannot be called
+		default:
+			localName = imp.Name.Name
+		}
+		break
+	}
+	if !imported {
+		return nil
+	}
+
+	var out []token.Position
+	ast.Inspect(file, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+
+		var hit bool
+		if dotImport {
+			ident, ok := call.Fun.(*ast.Ident)
+			hit = ok && ident.Name == "Open"
+		} else {
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "Open" {
+				base, ok := sel.X.(*ast.Ident)
+				hit = ok && base.Name == localName
+			}
+		}
+
+		if hit {
+			out = append(out, fset.Position(call.Pos()))
+		}
+		return true
+	})
+	return out
 }
 
 // TestSidecarTests_UseSidecartestOpenDB fails when a file in this package or
@@ -54,32 +131,17 @@ func TestSidecarTests_UseSidecartestOpenDB(t *testing.T) {
 
 		for _, pkg := range pkgs {
 			for path, file := range pkg.Files {
-				rel := path
+				rel := filepath.Base(path)
 				if dir != "." {
 					rel = filepath.Join(dir, filepath.Base(path))
-				} else {
-					rel = filepath.Base(path)
 				}
 				if reason, exempt := openDBExemptFiles[rel]; exempt {
 					t.Logf("exempt: %s (%s)", rel, reason)
 					continue
 				}
 
-				ast.Inspect(file, func(n ast.Node) bool {
-					call, ok := n.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					sel, ok := call.Fun.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "Open" {
-						return true
-					}
-					ident, ok := sel.X.(*ast.Ident)
-					if !ok || ident.Name != "db" {
-						return true
-					}
+				for _, pos := range directDBOpens(fset, file) {
 					found++
-					pos := fset.Position(call.Pos())
 					t.Errorf(
 						"%s:%d calls db.Open directly. Use sidecartest.OpenDB(t, path) — a direct "+
 							"open costs 73 fsyncs and this package opens one database per test (#2598). "+
@@ -87,8 +149,7 @@ func TestSidecarTests_UseSidecartestOpenDB(t *testing.T) {
 							"asserts on db.Open itself, add it to openDBExemptFiles with a reason.",
 						rel, pos.Line,
 					)
-					return true
-				})
+				}
 			}
 		}
 	}
@@ -98,47 +159,79 @@ func TestSidecarTests_UseSidecartestOpenDB(t *testing.T) {
 	}
 }
 
-// TestOpenDBConventionGuard_FindsADirectCall proves the guard above is not
-// vacuous. It runs the same detection over a source file that does call
-// db.Open, and requires a hit. Without this, a broken matcher (a renamed
-// helper, an import alias, a parser change) would report a clean package
-// forever.
-func TestOpenDBConventionGuard_FindsADirectCall(t *testing.T) {
-	const src = `package sample
+// TestDirectDBOpens_Matcher proves the matcher the guard runs is not blind.
+// It calls directDBOpens — the same function TestSidecarTests_UseSidecartestOpenDB
+// uses — so a break in the matcher fails this test too. A meta-test with its
+// own copy of the matcher would report a clean package forever after a break,
+// which is the exact vacuity this test exists to prevent.
+func TestDirectDBOpens_Matcher(t *testing.T) {
+	const dbImport = `"github.com/prismatic-koi/prism/internal/db"`
 
-import "github.com/prismatic-koi/prism/internal/db"
-
-func openIt(path string) {
-	d, _ := db.Open(path)
-	_ = d
-}
-`
-	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "sample.go", src, 0)
-	if err != nil {
-		t.Fatalf("parse sample: %v", err)
+	cases := []struct {
+		name string
+		src  string
+		want int
+	}{
+		{
+			name: "plain import",
+			src:  "package s\nimport " + dbImport + "\nfunc f(p string) { d, _ := db.Open(p); _ = d }\n",
+			want: 1,
+		},
+		{
+			name: "aliased import",
+			src:  "package s\nimport prismdb " + dbImport + "\nfunc f(p string) { d, _ := prismdb.Open(p); _ = d }\n",
+			want: 1,
+		},
+		{
+			name: "dot import",
+			src:  "package s\nimport . " + dbImport + "\nfunc f(p string) { d, _ := Open(p); _ = d }\n",
+			want: 1,
+		},
+		{
+			name: "two calls in one file",
+			src:  "package s\nimport " + dbImport + "\nfunc f(p string) { db.Open(p); db.Open(p + \"2\") }\n",
+			want: 2,
+		},
+		{
+			name: "OpenReadOnly is not a hit",
+			src:  "package s\nimport " + dbImport + "\nfunc f(p string) { db.OpenReadOnly(p) }\n",
+			want: 0,
+		},
+		{
+			name: "same-named Open on another package",
+			src:  "package s\nimport \"database/sql\"\nfunc f(p string) { sql.Open(\"sqlite\", p) }\n",
+			want: 0,
+		},
+		{
+			name: "package not imported",
+			src:  "package s\nfunc f(p string) { _ = p }\n",
+			want: 0,
+		},
+		{
+			name: "blank import cannot be called",
+			src:  "package s\nimport _ " + dbImport + "\nfunc f(p string) { _ = p }\n",
+			want: 0,
+		},
+		{
+			name: "sidecartest.OpenDB is the compliant form",
+			src: "package s\nimport \"github.com/prismatic-koi/prism/internal/sidecar/sidecartest\"\n" +
+				"func f(p string) { sidecartest.OpenDB(nil, p) }\n",
+			want: 0,
+		},
 	}
 
-	var hits int
-	ast.Inspect(file, func(n ast.Node) bool {
-		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Open" {
-			return true
-		}
-		ident, ok := sel.X.(*ast.Ident)
-		if !ok || ident.Name != "db" {
-			return true
-		}
-		hits++
-		return true
-	})
-
-	if hits != 1 {
-		t.Errorf("detection found %d db.Open calls in the sample, want 1 — the guard matcher is broken", hits)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "sample.go", tc.src, 0)
+			if err != nil {
+				t.Fatalf("parse sample: %v", err)
+			}
+			got := directDBOpens(fset, file)
+			if len(got) != tc.want {
+				t.Errorf("directDBOpens found %d call(s), want %d — the guard matcher is broken", len(got), tc.want)
+			}
+		})
 	}
 }
 
@@ -158,25 +251,7 @@ func TestOpenDBConventionGuard_ExemptListIsAccurate(t *testing.T) {
 			continue
 		}
 
-		var hits int
-		ast.Inspect(file, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Open" {
-				return true
-			}
-			ident, ok := sel.X.(*ast.Ident)
-			if !ok || ident.Name != "db" {
-				return true
-			}
-			hits++
-			return true
-		})
-
-		if hits == 0 {
+		if len(directDBOpens(fset, file)) == 0 {
 			t.Errorf("exempt entry %s no longer calls db.Open — remove the exemption", rel)
 		}
 	}
