@@ -15,6 +15,19 @@ package cmd
 //
 // This command is inherently async: the invoker receives per-turn
 // notifications via the sidecar. There is no --wait flag.
+//
+// The command is coordinator-only. That restriction has two enforcement
+// points, one per route out of this file:
+//
+//   - Proxy route (PRISM_HOST_API set — a sandboxed caller):
+//     requireCoordinator on the host-API /investigate endpoint, which
+//     answers HTTP 403 (issue #2588, PR #2596).
+//   - Direct route (PRISM_HOST_API unset — a host-isolation caller):
+//     requireInvestigateCoordinator below, which returns a non-zero exit
+//     (issue #2597).
+//
+// Both routes must stay gated. When you change either one, change the other
+// in the same edit.
 
 import (
 	"fmt"
@@ -92,7 +105,9 @@ func runInvestigate(cmd *cobra.Command, args []string) error {
 
 	// Container path: when running inside a sandboxed session, proxy to the
 	// host sidecar's /spawn endpoint with agent set to "investigate" and the
-	// session name pre-computed.
+	// session name pre-computed. The role check for this route lives on the
+	// host-API endpoint (requireCoordinator), not here — the direct route
+	// below carries its own (requireInvestigateCoordinator).
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
 		return proxyInvestigate(apiURL, promptText, suppliedName)
 	}
@@ -128,11 +143,57 @@ func spawnInvestigateSession(invokerSession, promptText, suppliedName string) er
 	return spawnInvestigateSessionWithDB(database, invokerSession, promptText, suppliedName)
 }
 
+// requireInvestigateCoordinator is the direct-CLI half of the
+// coordinator-only gate on `prism investigate` (issue #2597).
+//
+// PR #2596 gated the host-API `/investigate` endpoint with
+// requireCoordinator, so a sandboxed caller (bwrap, sandbox-exec) is refused
+// with HTTP 403 — every sandboxed session carries PRISM_HOST_API, so every
+// call from one routes through that endpoint. A session in `host` isolation
+// mode has no host-API socket, so PRISM_HOST_API is unset, runInvestigate
+// skips proxyInvestigate, and the call reaches this code path instead. With
+// no check here, any host-mode worker, review agent, or investigator can
+// spawn an investigator. This function closes that path, and mirrors the
+// `// Guard: coordinator-only` branch in cmd/merge.go — the same
+// session.IsCoordinatorSession call, keyed on the resolved invoker session.
+//
+// Keying on the resolved invoker (not on, say, the presence of
+// PRISM_HOST_API) is what admits the host-side child that the `/investigate`
+// handler itself spawns: that child runs `prism investigate` with
+// PRISM_SESSION_NAME set to the invoking session and PRISM_HOST_API cleared
+// (internal/sidecar/host_api.go), so it takes this direct path — and its
+// invoker is a coordinator, because requireCoordinator already admitted it.
+//
+// IsCoordinatorSession fails closed: an unknown role — no row, a DB error, or
+// a NULL root_agent_name — falls through to the "name ends in @main"
+// heuristic alone, which is false for every worker, review-agent, and
+// investigator name.
+func requireInvestigateCoordinator(invokerSession string, database *db.DB) error {
+	if session.IsCoordinatorSession(invokerSession, database) {
+		return nil
+	}
+	return fmt.Errorf(`prism investigate: this command is for coordinator sessions only (invoker: %s).
+
+Workers, review agents, and investigators must not spawn investigators. Ask
+your coordinator to run:
+
+  prism investigate --prompt "..."
+
+See: modules/programs/prism/agents/coordinator.md`, invokerSession)
+}
+
 // spawnInvestigateSessionWithDB is the DB-injected core of
 // spawnInvestigateSession, extracted in #2113 so tests can drive the
 // SpawnOpts construction against an isolated DB (sidecartest.NewIsolated)
 // without going through openDB() / a real prism.db.
 func spawnInvestigateSessionWithDB(database *db.DB, invokerSession, promptText, suppliedName string) error {
+	// Guard: coordinator-only. This is the sole chokepoint on the direct CLI
+	// path — runInvestigate returns early when PRISM_HOST_API is set, so the
+	// proxy path is untouched and keeps its own HTTP 403 gate (#2597).
+	if err := requireInvestigateCoordinator(invokerSession, database); err != nil {
+		return err
+	}
+
 	spawnOpts, isoMode, harnessName, err := buildInvestigateSpawnOpts(database, invokerSession, promptText, suppliedName)
 	if err != nil {
 		return err
