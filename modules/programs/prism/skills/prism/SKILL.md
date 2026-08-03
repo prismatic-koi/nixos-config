@@ -549,7 +549,7 @@ prism cleanup --yes --session <inv-session>
 
 ### Constraint
 
-`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. The enforcement point is the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. It is not a bash deny list: `BLOCKED_BASH_PATTERNS` in `pi/extensions/prism.ts` covers a different, small set of shell commands and does not mention `prism investigate`.
+`prism investigate` must be run from within a prism session (errors if no invoker is detectable). Only coordinators can use it. The enforcement point is the host-API role gate — `requireCoordinator` on `/investigate` in `internal/sidecar/host_api.go` — which answers a worker with HTTP 403. It is not a bash deny list: no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb.
 
 ---
 
@@ -674,9 +674,11 @@ When a merge-queue notification arrives, treat it as high-priority (same as a wo
 
 ### Why workers cannot invoke it
 
-Every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents — is refused by the host-API role gate. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. This is by security design: only coordinators arbitrate merge order. Do not attempt to work around the gate.
+Every non-coordinator session — worker agents, container worker agents, bwrap worker agents, and review agents — is refused by the host-API role gate. `/merge`, `/merges`, and `/merges/cancel` each call `requireCoordinator` (`internal/sidecar/host_api.go`), which answers HTTP 403 with `workers cannot perform merge`. A session that runs outside a sandbox has no socket to route through, so `prism merge` carries a second coordinator guard on its direct CLI path (`cmd/merge.go`). This is by security design: only coordinators arbitrate merge order. Do not attempt to work around either check.
 
-The gate — not a bash deny list — is the enforcement point. `BLOCKED_BASH_PATTERNS` in `pi/extensions/prism.ts` blocks an unrelated set of shell commands (`git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash`) and has no entry for any `prism` verb. Audit the boundary in `host_api.go`.
+The `prism merge` verb is gated at the host API, not by a bash deny list — no entry in `BLOCKED_BASH_PATTERNS` (`pi/extensions/prism.ts`) matches any prism verb. Audit that half of the boundary in `host_api.go`.
+
+The worker→merge boundary has a second enforcement point. `gh pr merge` and `gh pr review --approve` / `-a` / `--request-changes` / `-r` are blocked in `BLOCKED_BASH_PATTERNS` for worker-class roles (`gh-pr-merge` and `gh-pr-review-approve`, issue #2410), which closes the `gh` bypass of the same separation. Plain `gh pr review` and `gh pr review --comment` stay allowed. So: the deny list holds no prism verb, but it does hold the two `gh` complements to this boundary. The other four entries in that list — `git worktree prune`, `git worktree remove`, `nix build` with an env override, `git stash` — are unrelated sandbox-local hazards.
 
 ## Example: reviewing a PR (manual spawn)
 

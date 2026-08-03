@@ -288,20 +288,30 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	}
 
 	// requireCoordinator checks that the calling sidecar is a coordinator
-	// session. Uses the DB-backed isCoordinatorSession check (same helper as
-	// isCoordinator) which reads root_agent_name and falls back to the
-	// <repo>@main name heuristic when the row is missing, pre-migration, or
-	// unreadable. Returns false and writes HTTP 403 if not.
+	// session. Returns false and writes HTTP 403 if not. It delegates to
+	// isCoordinatorSession (helpers.go), which admits the caller when EITHER
+	// of these holds:
 	//
-	// Fail-closed: every path that cannot establish the caller as a
-	// coordinator — no DB handle, no agent_status row, a DB read error, or a
-	// NULL root_agent_name on a session whose name does not end in @main —
-	// resolves to false, so an undeterminable role is denied.
+	//   - the agent_status row says root_agent_name = 'coordinator'; or
+	//   - the session name ends in @main.
+	//
+	// The name heuristic is OR-ed in, not a fallback: it is evaluated on the
+	// primary path too, and it wins on disagreement, so a row that says
+	// 'worker' on a session named <repo>@main is still admitted. That OR was
+	// added deliberately (#944) to survive a stale or racing DB value.
+	//
+	// Undeterminable role — no DB handle, no agent_status row, a DB read
+	// error, or a NULL root_agent_name — falls through to the name heuristic
+	// ALONE. For every session name that does not end in @main that is false,
+	// so the caller is denied. A session named <repo>@main is admitted on the
+	// heuristic alone, with no DB evidence; #2587 records the caution that a
+	// privilege check must not rest on that heuristic alone, and is the issue
+	// that revisits it.
 	//
 	// This is the enforcement point for the worker restriction on
-	// coordinator-only verbs (`prism merge`, `prism investigate`, …). There
-	// is no bash-level deny list for those verbs; agent prose must name this
-	// gate (issue #2588).
+	// coordinator-only verbs (`prism merge`, `prism investigate`, …). No
+	// entry in the pi extension's bash deny list matches a prism verb; agent
+	// prose must name this gate (issue #2588).
 	requireCoordinator := func(w http.ResponseWriter, operation string) bool {
 		if !isCoordinatorSession(s.cfg.SessionName, s.cfg.DB, s.logger()) {
 			writeError(w, http.StatusForbidden,

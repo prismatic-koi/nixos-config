@@ -678,14 +678,21 @@ function segmentIsGitPush(segment: string): boolean {
 // Pre-tool-call bash deny list (#1528)
 // ---------------------------------------------------------------------------
 //
-// Scope note (#2588): this list holds shell commands whose hazard is local to
-// the sandbox — worktree surgery, a nix store bootstrap, the shared stash
-// stack. It does NOT hold the role restrictions on prism verbs. `prism merge`
-// and `prism investigate` are coordinator-only, and that is enforced at the
-// host API by `requireCoordinator` (internal/sidecar/host_api.go), which
-// answers a worker with HTTP 403. Do not audit the worker permission boundary
-// from this file, and do not add a prism verb here expecting it to be the
-// enforcement point.
+// Scope note (#2588): no entry in this list matches a prism verb.
+// `prism merge` and `prism investigate` are coordinator-only, and that is
+// enforced at the host API by `requireCoordinator`
+// (internal/sidecar/host_api.go), which answers a worker with HTTP 403. Do not
+// audit a prism verb restriction from this file, and do not add a prism verb
+// here expecting it to be the enforcement point.
+//
+// Two entries below DO guard the worker permission boundary: `gh-pr-merge`
+// and `gh-pr-review-approve` (#2410) are role-scoped to worker-class agents
+// and close the `gh` bypass of the same coordinator/worker separation the
+// host-API gate enforces for `prism merge`. They are defence in depth on that
+// boundary, alongside the host-API gate — not a substitute for it, and not
+// the enforcement point for any prism verb. The other four entries guard
+// hazards local to the sandbox: worktree surgery, a nix store bootstrap, the
+// shared stash stack.
 
 /**
  * One entry in the bash deny list. Each entry is matched against an
@@ -835,8 +842,10 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     // #2410 — `gh pr merge` from a worker-class agent bypasses the
     // coordinator/worker separation. Only the coordinator (via the merge
     // queue or the manual `gh pr merge --squash` fallback) is supposed to
-    // land PRs. `prism merge` is already denied to workers via its bash
-    // deny list, but `gh pr merge` was not — the guard was bypassable.
+    // land PRs. `prism merge` is already denied to workers by the host-API
+    // role gate (`requireCoordinator` on /merge returns HTTP 403 — NOT this
+    // deny list; see #2588), but `gh pr merge` had no equivalent block — the
+    // guard was bypassable.
     // During the A/B calibration for #2406, the light-tier worker on
     // branch `align-workflow-matrix-keys-light` finished, ran
     // `prism review` (all 5 PASS), then ran `gh pr merge 2408 --squash`
