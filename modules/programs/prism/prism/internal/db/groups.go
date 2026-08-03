@@ -447,6 +447,39 @@ func (d *DB) IsGroupMember(sessionName string) (bool, error) {
 	return groupID.Valid && groupID.String != "", nil
 }
 
+// GroupParentForMember returns the session_groups.parent_session of the group
+// that sessionName belongs to.
+//
+// The answer is strictly DB-backed: it comes from the
+// agent_status.group_id → session_groups.parent_session join and from nothing
+// else. Unlike ParentSessionFor, this helper has NO name-heuristic fallback.
+// The /checkin worker-scope check (issue #2587) is the caller that needs that
+// property. A review agent whose session_groups row was deleted must fail the
+// scope check, and a name heuristic would admit it on the strength of its
+// name alone.
+//
+// Returns:
+//
+//   - (parent, true, nil)  — the join produced a row.
+//   - ("", false, nil)     — no agent_status row, a NULL group_id, or a
+//     group_id whose session_groups row no longer exists.
+//   - ("", false, err)     — the query failed.
+func (d *DB) GroupParentForMember(sessionName string) (string, bool, error) {
+	const q = `
+SELECT sg.parent_session
+FROM agent_status AS a
+JOIN session_groups AS sg ON a.group_id = sg.group_id
+WHERE a.session_name = ?`
+	var parent string
+	if err := d.conn.QueryRow(q, sessionName).Scan(&parent); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("db: group parent for member %q: %w", sessionName, err)
+	}
+	return parent, true, nil
+}
+
 // HasReviewGroup returns true when sessionName is the parent_session of at
 // least one row in session_groups. This is the DB-backed way to detect whether
 // a session has spawned a review group (replacing the "~review" name heuristic).

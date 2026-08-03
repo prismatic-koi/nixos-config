@@ -297,6 +297,7 @@
   };
 
   imports = [
+    ./checkin.nix
     ./container-tokens.nix
     ./neovim
     ./pi.nix

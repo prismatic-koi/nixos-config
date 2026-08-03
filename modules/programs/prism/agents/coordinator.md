@@ -193,6 +193,14 @@ Check-ins are an exception path, not the default:
 - **Diagnosing a stuck or confused agent** — after a finish signal that looks wrong (e.g. a PR was not opened, the summary is incoherent, or the scope looks wrong), use `prism checkin <session>` to read the agent's current screen before deciding how to respond.
 - **After an escalation trigger fires** — if an escalation trigger (e.g. build failure after merge, repeated review-cycle divergence) points to a confused or misdirected agent, use a check-in to diagnose the state before deciding whether to redirect or escalate to the user.
 
+### What your check-ins can reach
+
+`prism checkin` is scoped per caller by the host API (issue #2587). As a coordinator you reach every session in your own repo, plus the coordinator of another repo.
+
+A coordinator of a repo named in `nx.programs.prism.checkin.privilegedRepos` (default `[ "nixos-config" ]`) reaches every session in every repo, including another coordinator's workers and review agents. That privilege exists so the seat that owns the prism configuration can diagnose failures across the fleet. It is not a superuser: it covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row that names you, the session you read, and the time. Read them with `prism audit`.
+
+A worker reaches far less: the review agents of its own session, and nothing else. When a worker asks you for conversation history it cannot reach, that is the gate working as designed, not a worker cutting a corner.
+
 ### Redirecting an agent
 
 Use `prism prompt <session> --prompt "..."` to send a targeted correction without switching sessions.

@@ -186,7 +186,7 @@ tag pair:
   pointer to the full turn.
 - **Length** — the section is capped; content past the cap is truncated and
   the notification says so. Keep it to the findings that matter, not a
-  transcript — use `prism checkin` for that.
+  transcript — the coordinator reads the full turn with `prism checkin`.
 - This is a separate channel from `prism escalate`. Use `prism escalate` when
   you need a decision from the coordinator before you can continue (see
   above). Use a follow-ups section when you have information to hand off
@@ -211,7 +211,21 @@ delivered to you via a follow-up `prism prompt` when all agents complete.
   below.
 - If no review-complete prompt arrives within 30 minutes of running
   `prism review`, investigate with `prism checkin <session>~review-<N>-review-goal`
-  to see per-agent progress.
+  to see per-agent progress. `<session>` is YOUR session name — see
+  "What `prism checkin` can reach" below for the enforced scope.
+
+### What `prism checkin` can reach
+
+You can check in on the review agents of your own session, and on nothing
+else. A review agent of your session is named `<your-session>~review-<N>-<agent>`,
+for every round `<N>` you have run. Every other target returns HTTP 403:
+your own session, another worker, your coordinator, and any session in
+another repo.
+
+The rule is enforced by the host API, not by prose. `/checkin` resolves the
+target through `session_groups.parent_session` and admits it only when that
+parent is your session name. To read anything outside that scope, ask the
+coordinator with `prism escalate`.
 
 ### Handling review results
 
@@ -220,7 +234,10 @@ delivered to you via a follow-up `prism prompt` when all agents complete.
 review-complete prompt includes a one-line summary header followed by a
 `## Per-agent findings` section with these structured fields inline. No file
 is written to `/tmp` — the full agent reasoning is available via
-`prism checkin <session>~review-<N>-<agent>` if needed.
+`prism checkin <session>~review-<N>-<agent>` if needed, where `<session>` is
+your own session name. Read this when a reviewer reports a non-blocking
+observation with no detail: the summary line carries the verdict, and the
+reviewer's own session carries the reasoning behind it.
 
 **ALL 5 must pass** for the review to pass.
 
@@ -361,7 +378,10 @@ If auto-discovery finds multiple coordinator candidates in your repo (rare
 but possible during transitions), the command exits non-zero and lists them
 — re-run with `--to <session>` to choose. If no coordinator is running, the
 command still transitions you into `escalated` and writes a "please wait for
-a human" marker into your own log (visible via `prism checkin <self>`).
+a human" marker into your own log. You cannot read that marker yourself:
+`prism checkin <self>` returns 403, because the grant covers the review
+agents of your session only. The marker is there for the coordinator and for
+the user.
 
 **What your escalation message must include:**
 

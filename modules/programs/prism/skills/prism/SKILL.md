@@ -221,7 +221,10 @@ The review-complete prompt includes a one-line summary header followed by a
 `## Per-agent findings` section with structured fields: verdict, extracted
 `<summary>` content, and extracted `<blocking_issues>` content. No file is
 written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
-the full agent reasoning if needed. All 5 agents must pass. On FAIL, fix every
+the full agent reasoning if needed, where `<session>` is your own session
+name. That read is in scope for a worker; every other target is not — see
+[Who can check in on what](#who-can-check-in-on-what). All 5 agents must
+pass. On FAIL, fix every
 blocking issue, commit, push, and re-run per the targeted-rerun condition in
 `worker.md` — a fix in one area can create issues in another. After 3 full
 review cycles without convergence, stop and escalate to the coordinator via
@@ -504,6 +507,8 @@ If no review-complete prompt arrives within 30 minutes, check progress with:
 ```bash
 prism checkin <session>~review-<N>-review-goal
 ```
+
+`<session>` is the session that ran `prism review`. A worker may read the review agents of its own session and nothing else — see [Who can check in on what](#who-can-check-in-on-what).
 
 ## Investigator agents
 
@@ -883,7 +888,7 @@ prism sessions list          # human-readable table
 prism sessions list --json   # JSON array (use this when scripting)
 ```
 
-Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically.
+Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically. Which sessions you can read depends on your role — see [Who can check in on what](#who-can-check-in-on-what) below.
 
 ```bash
 prism checkin nixos-config@update-plex
@@ -927,6 +932,26 @@ Tests pass. Committing and pushing.
 With no argument, `prism checkin` lists available sessions and exits with a hint.
 
 See [Debugging a running or stuck session](#debugging-a-running-or-stuck-session) for `prism checkin` flag reference and a full decision tree for diagnosing issues.
+
+### Who can check in on what
+
+`prism checkin` is scoped per caller. A sandboxed session reaches the host-API `/checkin` endpoint, which applies three tiers (issue #2587). Everything outside your tier returns HTTP 403.
+
+| Your role | You can check in on |
+|---|---|
+| Worker, review agent, investigator, or any session whose role is not a coordinator | The review agents of your OWN session only — `<your-session>~review-<N>-<agent>`, for every round `<N>` |
+| Coordinator | Every session in your own repo, plus the coordinator of another repo |
+| Coordinator of a privileged repo | Every session in every repo, including another coordinator's workers and review agents |
+
+Notes that matter in practice:
+
+- **A worker cannot check in on itself.** `prism checkin <self>` returns 403. The grant covers the review agents of your session, and you are not one of them.
+- **The worker scope is DB-backed.** `/checkin` resolves the target through `session_groups.parent_session` and admits it only when that parent is the caller's session name. A name that merely looks like `<your-session>~review-1-review-code` is not enough: a review agent whose group row was deleted is refused with 403.
+- **Earlier rounds stay in scope.** Each round registers its own group row against the same parent, so round 1 is as readable as round 3.
+- **Tier 3 is a coordinator with a troubleshooting privilege, not a superuser.** The privileged repos are declared in the prism NixOS module (`nx.programs.prism.checkin.privilegedRepos`, default `[ "nixos-config" ]`) and rendered to a file no sandbox can read or write. The privilege covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row. Read them with `prism audit`.
+- **A `host`-mode session has no socket** and reads the DB directly, so the host API never sees the call.
+
+If you need conversation history outside your tier, ask the coordinator with `prism escalate`. Do not attempt to work around the gate.
 
 ## Sending a follow-up prompt to a running session
 
@@ -1037,7 +1062,7 @@ A same-repo coordinator candidate is any active (ended_at IS NULL) row in the sa
 
 - New event type `session.escalated`, distinct from `session.finished`. Existing handlers that subscribe only to `session.finished` continue to receive nothing for escalations.
 - Payload carries: `source` (calling worker), `target` (coordinator session, empty when none), `prompt` (body), `pr_numbers` (open PRs whose head matches the worker's branch), `branch`, `head_sha`, `verdicts` (last review-cycle verdicts when discoverable), `occurred_at` (RFC3339).
-- The same payload is also written into the calling session's own event log as type `escalation` so `prism checkin <self>` shows the escalation context inline.
+- The same payload is also written into the calling session's own event log as type `escalation`, so a `prism checkin` of the escalating session shows the escalation context inline. The escalating worker cannot read it that way — `prism checkin <self>` returns 403 (see [Who can check in on what](#who-can-check-in-on-what)) — the row is there for the coordinator and for the user.
 
 ### Success signal — the `OK` line is the verification
 
@@ -1140,7 +1165,7 @@ Examine the `state` column (`active`, `waiting`, `idle`, `finished`, `error`), t
 prism checkin <session>
 ```
 
-Reads the last 10 turns from the prism DB as a rich narrative view. Use `--verbose` for full tool args/results when something looks off. See [`prism checkin` flags](#prism-checkin-flags) below for all options.
+Reads the last 10 turns from the prism DB as a rich narrative view. Use `--verbose` for full tool args/results when something looks off. See [`prism checkin` flags](#prism-checkin-flags) below for all options, and [Who can check in on what](#who-can-check-in-on-what) for which sessions your role can reach.
 
 **Step 3 — Sidecar logs:**
 
