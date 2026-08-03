@@ -60,7 +60,7 @@ go test ./...
 
 This is faster than a full nix build and must be the first check for any prism code change.
 
-**Building, testing, and CI: load the `prism-testing` skill.** The homeless-shelter CI gate, the pipeline split, test-suite isolation, the pre-PR self-check, the `sandbox-exec` and stdout-capture testing conventions, and the Darwin FD-exhaustion defences all live there. Load it before you change prism Go source or its build.
+**Building, testing, and CI: load the `prism-testing` skill.** The homeless-shelter CI gate, the pipeline split, test-suite isolation, the pre-PR self-check, the `sandbox-exec`, stdout-capture, and test-database testing conventions, and the Darwin FD-exhaustion defences all live there. Load it before you change prism Go source or its build.
 
 ### In-sandbox nix validation (flake CLI and trusted-settings)
 
