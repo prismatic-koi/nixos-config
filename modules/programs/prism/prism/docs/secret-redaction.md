@@ -1,5 +1,16 @@
 # Secret redaction in the capture path
 
+<!-- doclint-ignore: prism.ts, makeFrameWriter, truncateString -->
+<!--
+  The three tokens above are cross-boundary references to the pi extension
+  at modules/programs/prism/pi/extensions/prism.ts. The doclint source index
+  covers TypeScript only when the repo root is available; inside the nix
+  build sandbox (runChecks = true) only the prism subtree is copied in, so
+  they do not resolve there. Same situation as the AGENTS.md annotation in
+  podman-proxy.md. They are load-bearing references, not drift: this doc
+  specifies a control whose primary half lives in that file.
+-->
+
 Issue #2589.
 
 Prism stores every frame an agent harness emits. A command an agent runs can
