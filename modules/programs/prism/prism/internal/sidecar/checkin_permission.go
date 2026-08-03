@@ -236,10 +236,28 @@ func (s *Sidecar) checkinPrivilegeGranted() bool {
 // carries the equivalent CLI invocation so the row renders in the `prism
 // audit` table and matches `prism audit --pattern "prism checkin"` alongside
 // the bash-promoted rows.
+//
+// # Locking
+//
+// s.mu MUST be held across the writeEvent call, and this function takes it.
+// writeEvent reads s.harnessSessionID and takes its ADDRESS, which is
+// dereferenced later inside DB.WriteEvent. That field lives inside the s.mu
+// block and is written by handleSessionCreated / handleSessionUpdated under
+// the lock HandleEvent holds for the whole SSE dispatch. This function runs on
+// a host-API handler goroutine, which is concurrent with the SSE loop, so
+// without the lock an unsynchronised read races a write on a string header —
+// two words, so a torn read can produce a mismatched pointer and length, and
+// the later dereference can crash the sidecar. The shape mirrors
+// writeStartupErrorImpl, which locks solely to make its writeEvent call.
+//
+// Taking the lock here is safe: no caller on the /checkin path holds s.mu.
+// The handler reaches this function straight after authorizeCheckin, and
+// neither that predicate nor any helper it calls touches s.mu.
 func (s *Sidecar) writeCheckinPrivilegeAudit(target string) {
 	if s.cfg.DB == nil {
 		return
 	}
+	s.mu.Lock()
 	s.writeEvent("audit", payload.Audit{
 		Tool:        "prism-host-api",
 		Command:     "prism checkin " + target,
@@ -247,5 +265,6 @@ func (s *Sidecar) writeCheckinPrivilegeAudit(target string) {
 		Target:      target,
 		Grant:       checkinPrivilegeGrantName,
 	}, nil)
+	s.mu.Unlock()
 	s.logger().Printf("sidecar: audit: privileged checkin recorded: %s read %s", s.cfg.SessionName, target)
 }

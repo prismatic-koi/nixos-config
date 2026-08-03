@@ -28,10 +28,13 @@ package sidecar
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
@@ -668,6 +671,121 @@ func TestCheckin_MissingSessionParamIsBadRequest(t *testing.T) {
 				t.Fatalf("status = %d, body = %q, want 400", rr.Code, rr.Body.String())
 			}
 		})
+	}
+}
+
+// ── the audit write is concurrent with the SSE loop ──────────────────────────
+
+// TestCheckin_PrivilegedAudit_ConcurrentWithSSESessionUpdate is the regression
+// guard for the round-3 review-code finding on PR #2617.
+//
+// writeCheckinPrivilegeAudit runs on a host-API handler goroutine, which is
+// concurrent with the SSE loop. It reaches writeEvent, which reads
+// s.harnessSessionID and takes its ADDRESS; that pointer is dereferenced later
+// inside DB.WriteEvent. The field lives inside the s.mu block and is written by
+// handleSessionUpdated under the lock HandleEvent holds for the whole dispatch.
+// The first version of the audit write did not take s.mu, so the read raced the
+// write on a two-word string header — a torn read yields a mismatched pointer
+// and length, and the later dereference can crash the sidecar.
+//
+// Every other checkin test drives the handler on the test goroutine alone, so
+// none of them can observe this. That is precisely why review-code passed the
+// defect in rounds 1 and 2 and `go test -race` stayed green: no test drove SSE
+// events concurrently with a /checkin request. This test drives that exact
+// interleaving, so the lock cannot be removed again without a failure.
+//
+// Run under -race for the assertion that matters. Without -race the test still
+// checks that every concurrent request is served and every audit row lands.
+func TestCheckin_PrivilegedAudit_ConcurrentWithSSESessionUpdate(t *testing.T) {
+	f := newCheckinFixture(t)
+	f.seedSession(ckCoordinator, ckRepo, "coordinator")
+	f.seedSession(ckAltWorker, ckAltRepo, "worker")
+
+	// Built inline rather than through f.sidecarFor so the dashboard sink can be
+	// the noop: handleSessionUpdated reaches writeStateChange, and the
+	// production sink would dispatch fire-and-forget socket goroutines that
+	// outlive the test body (#1851).
+	sc := New(Config{
+		SessionName:            ckCoordinator,
+		Repo:                   ckRepo,
+		Worktree:               t.TempDir(),
+		HarnessURL:             "http://localhost:14000",
+		DB:                     f.DB,
+		Clock:                  newTestClock(),
+		AgentRole:              "coordinator",
+		CheckinPrivilegedRepos: []string{ckRepo},
+		Harness:                newSSEHarness(),
+		Logger:                 log.New(os.Stderr, "", 0),
+		DashboardSink:          NoopDashboardSink(),
+	})
+	handler := sc.hostAPIHandler()
+
+	// ckAltWorker is a cross-repo non-coordinator, so tier 2 refuses it and only
+	// the tier-3 privilege admits it. Every iteration therefore takes the audit
+	// path under test.
+	const iterations = 40
+
+	statuses := make([]int, iterations)
+	reqErrs := make([]error, iterations)
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Writer: handleSessionUpdated assigns s.harnessSessionID under s.mu.
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			sc.HandleEvent(makeSSE("session.updated", map[string]any{
+				"info": map[string]any{
+					"id":    fmt.Sprintf("oc-concurrent-%d", i),
+					"title": "concurrent session update",
+				},
+			}))
+		}
+	}()
+
+	// Reader: the tier-3 audit write reads s.harnessSessionID.
+	//
+	// No t.Fatalf / t.Errorf in here — t.Fatalf from a non-test goroutine calls
+	// runtime.Goexit on the wrong goroutine. Results are recorded and asserted
+	// after the join.
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := 0; i < iterations; i++ {
+			req, err := http.NewRequest(http.MethodGet,
+				"http://prism-hostapi/checkin?session="+ckAltWorker, nil)
+			if err != nil {
+				reqErrs[i] = err
+				continue
+			}
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+			statuses[i] = rr.Code
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+
+	for i, err := range reqErrs {
+		if err != nil {
+			t.Fatalf("iteration %d: build request: %v", i, err)
+		}
+	}
+	for i, code := range statuses {
+		if code != http.StatusOK {
+			t.Fatalf("iteration %d: status = %d, want 200 — the tier-3 grant must hold under concurrency", i, code)
+		}
+	}
+
+	// Every admitted access must have produced its audit row. A dropped row
+	// would mean the lock changed the write path rather than only serialising
+	// it.
+	if got := len(auditEventsFor(t, f.DB, ckCoordinator)); got != iterations {
+		t.Errorf("audit events = %d, want %d — one row per tier-3 access", got, iterations)
 	}
 }
 
