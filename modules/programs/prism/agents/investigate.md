@@ -81,9 +81,11 @@ session — and your role is `investigate`:
 - `prism merge / merges` — no merge enqueueing.
 - `prism investigate` — no spawning further investigators.
 
-(In an unsandboxed `host`-mode session there is no socket to route through, so
-only `prism merge` is refused — it carries a second, CLI-side coordinator
-guard in `cmd/merge.go`. Treat the whole list as a hard rule either way.)
+(In an unsandboxed `host`-mode session there is no socket to route through.
+Only `prism merge` and `prism investigate` are refused there. Each carries a
+second, CLI-side coordinator guard, in `cmd/merge.go` and `cmd/investigate.go`.
+`prism spawn` has no CLI-side guard (issue #2604). Treat the whole list as a
+hard rule either way.)
 
 **Refused mechanically — the bash deny list.** `BLOCKED_BASH_PATTERNS` in
 `pi/extensions/prism.ts` blocks these for every worker-class role, which
