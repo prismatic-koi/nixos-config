@@ -119,7 +119,7 @@ Scope:
 
 Why: The prose tells agents what they can do. Stale prose — especially false statements like "this tool is available" when it is not — directly governs behaviour.
 
-This rule widened in PR #2605 and #2596 after workers missed `prism/docs/invariants/` entries that stated false prose on tool availability. The rule scope must cover the whole prism tree, not just an enumerated subset, and must name `prism/docs/invariants/` explicitly because that directory holds agent-facing invariants that do not live elsewhere.
+Workers missed `prism/docs/invariants/` entries in PR #2596 and again in PR #2605, costing a review cycle each time. The scope must cover the whole prism tree, not an enumerated subset, and must name `prism/docs/invariants/` explicitly because that directory holds agent-facing invariants that do not live elsewhere.
 
 ### Podman support for workers
 
