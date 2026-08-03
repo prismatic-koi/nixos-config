@@ -717,7 +717,7 @@ it at all, where a merely-unmounted worktree still has a live session entry.
 list` answers "is this session alive". Use the second question to decide
 whether a worktree needs cleanup.
 
-See also [Worktree tracking and the health check](#worktree-tracking-and-the-health-check) in `coordinator.md` — the same guidance is stated there for the coordinator's monitoring flow, and the two must not contradict each other.
+See also the "Worktree tracking and the health check" section in `coordinator.md` (`modules/programs/prism/agents/coordinator.md`) — the same guidance is stated there for the coordinator's monitoring flow, and the two must not contradict each other.
 
 ## Example: reviewing a PR (manual spawn)
 
