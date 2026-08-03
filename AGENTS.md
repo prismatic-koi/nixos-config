@@ -110,14 +110,16 @@ Sanctioned WIP-set-aside patterns — both are worktree-local:
 
 When making a change to a tool surface — adding, removing, renaming, or gating a tool family — grep for the CONCEPT, not the tool name. Concept grep finds the prose that governs agent behaviour; name grep finds only call sites.
 
-Example of the difference: `coordinator.md` says "Use the Atlassian MCP for Jira tickets", naming no tool at all. A name grep for `atlassian` or `transitionJiraIssueByName` would miss it. A concept grep for the tool family (case-insensitive, across `agents/`, `skills/`, and `*.nix`) finds it immediately.
+Example of the difference: `coordinator.md` says "Use the Atlassian MCP for Jira tickets", naming no tool at all. A name grep for `atlassian` or `transitionJiraIssueByName` would miss it. A concept grep for the tool family (case-insensitive, across `agents/`, `skills/`, `prism/docs/invariants/`, and `*.nix`) finds it immediately.
 
 Scope:
-- All files in `modules/programs/prism/agents/` and `modules/programs/prism/skills/`
+- All files under `modules/programs/prism/` — including `agents/`, `skills/`, and `prism/docs/` (notably `prism/docs/invariants/`)
 - All `*.nix` files that mention the tool or its family
 - Concept terms: tool names, family names, and the primary problem the tool solves
 
 Why: The prose tells agents what they can do. Stale prose — especially false statements like "this tool is available" when it is not — directly governs behaviour.
+
+Workers missed `prism/docs/invariants/` entries in PR #2596 and again in PR #2605, costing a review cycle each time. The scope must cover the whole prism tree, not an enumerated subset, and must name `prism/docs/invariants/` explicitly because that directory holds agent-facing invariants that do not live elsewhere.
 
 ### Podman support for workers
 
