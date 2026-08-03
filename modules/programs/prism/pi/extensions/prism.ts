@@ -1486,6 +1486,11 @@ export function truncateString(s: string): {
   text: string
   truncated: boolean
 } {
+  // Redact BEFORE the byte cut (issue #2589). Redacting only at the frame
+  // writer would leave a secret that straddles the 8 KiB boundary split in
+  // half, and the surviving half would be written to the database as a
+  // partial credential that no literal match can find later.
+  s = defaultSecretRedactor().redact(s)
   const encoded = Buffer.from(s, "utf8")
   if (encoded.length <= TRUNCATION_LIMIT_BYTES) {
     return { text: s, truncated: false }
@@ -1738,6 +1743,317 @@ export function redactLine(line: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Secret redaction — issue #2589.
+//
+// Why
+// ---
+// Every frame this extension writes to the socket is stored verbatim in
+// prism.db. A command an agent runs can print a credential to stdout — `env`,
+// `gh auth token`, `curl -v` with an Authorization header, a test that dumps
+// an argv — and the value then lands in agent_events.payload and stays there
+// until the prune job removes it. Nothing removed it before this block.
+//
+// Two layers
+// ----------
+//   1. VALUE matching (primary). This process holds the literal value of
+//      every credential environment variable, so an exact match knows what a
+//      regex could only guess. Near-zero false positives.
+//   2. SHAPE matching (secondary). Well-known credential shapes, for a secret
+//      that is not in this process's environment. Defence in depth; it never
+//      replaces layer 1.
+//
+// Parity with Go
+// --------------
+// internal/payload/redact.go carries the same name registry, the same shape
+// rules, the same minimum value length, and the same marker format, and runs
+// as a second control at DB-write time. TestRedactorParityWithExtension in
+// internal/payload keeps the two in step.
+//
+// Cost
+// ----
+// Two linear passes: one alternation of literal values, one alternation of
+// shapes. Neither is quadratic in the size of a tool_result payload.
+//
+// SECURITY: nothing in this block logs, echoes, or returns a credential
+// value. Every test value is synthetic.
+// ---------------------------------------------------------------------------
+
+/**
+ * The shortest environment-variable value the value layer treats as a secret.
+ *
+ * The guard exists because an empty, whitespace-only, or one-character value
+ * would otherwise match at nearly every position of ordinary output and shred
+ * it. Every real credential is far longer: the shortest token prism forwards
+ * is a GitHub PAT at 40 characters. A shorter value is left to the shape
+ * layer.
+ */
+export const REDACTION_MIN_VALUE_LENGTH = 8
+
+export const REDACTION_MARKER_PREFIX = "[redacted:"
+export const REDACTION_MARKER_SUFFIX = "]"
+
+/** The replacement text for a match attributed to `name`. */
+export function redactionMarker(name: string): string {
+  return REDACTION_MARKER_PREFIX + name + REDACTION_MARKER_SUFFIX
+}
+
+/**
+ * Exact environment-variable names that carry a credential value.
+ * Mirrors payload.CredentialEnvNames() in the Go tree.
+ */
+export const CREDENTIAL_ENV_NAMES: readonly string[] = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ATLASSIAN_API_TOKEN",
+  "AWS_SECRET_ACCESS_KEY",
+  "AWS_SESSION_TOKEN",
+  "CACHIX_AUTH_TOKEN",
+  "DEEPSEEK_API_KEY",
+  "GEMINI_API_KEY",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+  "GOOGLE_API_KEY",
+  "GRAFANA_API_KEY",
+  "NOTION_API_KEY",
+  "NPM_TOKEN",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "SLACK_TOKEN",
+]
+
+/**
+ * Name prefixes that mark a whole family as credential-carrying.
+ * Mirrors payload.CredentialEnvPrefixes().
+ */
+export const CREDENTIAL_ENV_PREFIXES: readonly string[] = [
+  "PRISM_GITHUB_TOKEN_",
+]
+
+/**
+ * Name-shape heuristic, so a credential nobody listed is still caught.
+ * Every entry ends the name, so `GITHUB_TOKEN_PATH` and `SOPS_AGE_KEY_FILE`
+ * do NOT match — they name a file, not a secret.
+ * Mirrors payload.CredentialEnvNameSuffixes().
+ */
+export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
+  "_ACCESS_KEY",
+  "_APIKEY",
+  "_API_KEY",
+  "_CREDENTIALS",
+  "_PASSWD",
+  "_PASSWORD",
+  "_PRIVATE_KEY",
+  "_SECRET",
+  "_SECRET_KEY",
+  "_TOKEN",
+]
+
+/**
+ * Known credential shapes, in match order. Each is anchored on a distinctive
+ * issuer prefix so ordinary output does not match. A shape with a generic
+ * body (a bare base64 run, a JWT) is deliberately absent: the false-positive
+ * rate would corrupt more output than the rule protects.
+ *
+ * The pattern strings are byte-identical to the Go rules in
+ * internal/payload/redact.go so the parity test can compare them directly.
+ */
+export const CREDENTIAL_SHAPES: ReadonlyArray<{
+  readonly name: string
+  readonly pattern: string
+}> = [
+  {
+    name: "private-key-block",
+    pattern: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`,
+  },
+  {
+    name: "github-fine-grained-pat",
+    pattern: String.raw`github_pat_[A-Za-z0-9_]{40,255}`,
+  },
+  { name: "github-token", pattern: String.raw`gh[pousr]_[A-Za-z0-9]{36,255}` },
+  {
+    name: "anthropic-api-key",
+    pattern: String.raw`sk-ant-[A-Za-z0-9_-]{24,512}`,
+  },
+  {
+    name: "openrouter-api-key",
+    pattern: String.raw`sk-or-v1-[A-Za-z0-9]{32,512}`,
+  },
+  { name: "openai-api-key", pattern: String.raw`sk-proj-[A-Za-z0-9_-]{24,512}` },
+  { name: "slack-token", pattern: String.raw`xox[abprs]-[A-Za-z0-9-]{12,255}` },
+  {
+    name: "aws-access-key-id",
+    pattern: String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`,
+  },
+  { name: "google-api-key", pattern: String.raw`\bAIza[0-9A-Za-z_-]{35}\b` },
+  {
+    name: "atlassian-api-token",
+    pattern: String.raw`ATATT3[A-Za-z0-9_=.-]{50,512}`,
+  },
+]
+
+/** Reports whether an environment-variable name is expected to hold a secret. */
+export function isCredentialEnvName(name: string): boolean {
+  if (!name) return false
+  if (CREDENTIAL_ENV_NAMES.includes(name)) return true
+  for (const p of CREDENTIAL_ENV_PREFIXES) {
+    if (name.startsWith(p) && name.length > p.length) return true
+  }
+  for (const s of CREDENTIAL_ENV_NAME_SUFFIXES) {
+    if (name.endsWith(s) && name.length > s.length) return true
+  }
+  return false
+}
+
+/** Escape a literal so it can be embedded in a RegExp source. */
+function escapeRegExpLiteral(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Reports whether a value is safe to feed to the value layer.
+ *
+ * An unexpanded `$(cat …)` value is a propagation bug, not a secret
+ * (issue #2348); redacting it would hide the bug.
+ */
+function usableSecretValue(v: string): boolean {
+  if (v.length < REDACTION_MIN_VALUE_LENGTH) return false
+  if (v.trim().length < REDACTION_MIN_VALUE_LENGTH) return false
+  if (v.includes("$(")) return false
+  return true
+}
+
+const SHAPE_ATTRIBUTION: ReadonlyArray<{ name: string; anchored: RegExp }> =
+  CREDENTIAL_SHAPES.map((s) => ({
+    name: s.name,
+    anchored: new RegExp("^(?:" + s.pattern + ")$"),
+  }))
+
+const COMBINED_SHAPE_SOURCE = CREDENTIAL_SHAPES.map(
+  (s) => "(?:" + s.pattern + ")",
+).join("|")
+
+/** Attribute a combined-regexp match back to the shape rule that produced it. */
+function shapeNameFor(match: string): string {
+  for (const s of SHAPE_ATTRIBUTION) {
+    if (s.anchored.test(match)) return s.name
+  }
+  return "credential"
+}
+
+/**
+ * Maximum object depth redactFrame walks. Beyond it the value is passed
+ * through unchanged, which bounds the walk on a pathological or cyclic frame.
+ */
+const REDACT_MAX_DEPTH = 64
+
+export interface SecretRedactor {
+  /** Replace every credential value and known shape in `text`. */
+  redact(text: string): string
+  /**
+   * Return a copy of `frame` with every string value and every key redacted.
+   *
+   * Redacting the object, not the serialised line, is what makes the control
+   * correct: a secret containing a quote or a backslash appears in escaped
+   * form once JSON.stringify has run, and a literal match would miss it.
+   */
+  redactFrame(frame: Record<string, unknown>): Record<string, unknown>
+  /** Distinct credential values the value layer covers. Never the values. */
+  readonly valueCount: number
+}
+
+/**
+ * Build a redactor from an environment map.
+ *
+ * Values are filtered before they reach the value layer: see
+ * usableSecretValue. When two names carry the same value, the marker names
+ * the lexicographically first of them, so output is deterministic.
+ */
+export function makeSecretRedactor(
+  env: NodeJS.ProcessEnv = process.env,
+): SecretRedactor {
+  const markerByValue = new Map<string, string>()
+  const seenValue = new Set<string>()
+
+  for (const name of Object.keys(env).sort()) {
+    if (!isCredentialEnvName(name)) continue
+    const value = env[name]
+    if (typeof value !== "string" || !usableSecretValue(value)) continue
+    if (seenValue.has(value)) continue
+    seenValue.add(value)
+    markerByValue.set(value, redactionMarker(name))
+  }
+
+  // Longest first, so a secret that is a prefix of another secret never wins
+  // the match. RegExp alternation is leftmost-first in JS.
+  const literals = [...markerByValue.keys()].sort((a, b) =>
+    a.length !== b.length ? b.length - a.length : a < b ? -1 : 1,
+  )
+  const valueRe =
+    literals.length > 0
+      ? new RegExp(literals.map(escapeRegExpLiteral).join("|"), "g")
+      : undefined
+  const shapeRe = new RegExp(COMBINED_SHAPE_SOURCE, "g")
+
+  const redact = (text: string): string => {
+    if (!text) return text
+    let out = text
+    if (valueRe) {
+      valueRe.lastIndex = 0
+      out = out.replace(valueRe, (m) => markerByValue.get(m) ?? m)
+    }
+    shapeRe.lastIndex = 0
+    out = out.replace(shapeRe, (m) => redactionMarker(shapeNameFor(m)))
+    return out
+  }
+
+  const walk = (v: unknown, depth: number): unknown => {
+    if (typeof v === "string") return redact(v)
+    if (depth >= REDACT_MAX_DEPTH) return v
+    if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1))
+    if (v !== null && typeof v === "object") {
+      // Only plain objects are rebuilt. A Buffer, Date, or class instance
+      // is passed through untouched so the walk cannot change its
+      // serialisation; the belt-and-braces pass over the serialised line
+      // in makeFrameWriter covers anything hidden inside one.
+      const proto = Object.getPrototypeOf(v)
+      if (proto !== Object.prototype && proto !== null) return v
+      const out: Record<string, unknown> = {}
+      for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+        out[redact(k)] = walk(val, depth + 1)
+      }
+      return out
+    }
+    return v
+  }
+
+  return {
+    redact,
+    redactFrame(frame) {
+      return walk(frame, 0) as Record<string, unknown>
+    },
+    valueCount: markerByValue.size,
+  }
+}
+
+let cachedDefaultRedactor: SecretRedactor | undefined
+
+/**
+ * The process-wide redactor, built from process.env on first use. The
+ * environment does not change under a running extension, so it is built once.
+ */
+export function defaultSecretRedactor(): SecretRedactor {
+  if (!cachedDefaultRedactor) {
+    cachedDefaultRedactor = makeSecretRedactor(process.env)
+  }
+  return cachedDefaultRedactor
+}
+
+/** Test-only: drop the cached default so the next call re-reads process.env. */
+export function resetDefaultSecretRedactor(): void {
+  cachedDefaultRedactor = undefined
+}
+
+// ---------------------------------------------------------------------------
 // Frame writer — synchronous (per wire spec §7.5).
 // ---------------------------------------------------------------------------
 
@@ -1746,14 +2062,44 @@ export interface FrameWriter {
   close(): void
 }
 
-export function makeFrameWriter(socket: net.Socket): FrameWriter {
+/**
+ * Build the outbound frame writer.
+ *
+ * Every frame is redacted before it reaches the socket (issue #2589), so a
+ * credential never gets as far as the sidecar or the database. `redactor`
+ * defaults to the process-wide redactor; tests pass their own, built from
+ * synthetic values.
+ */
+export function makeFrameWriter(
+  socket: net.Socket,
+  redactor: SecretRedactor = defaultSecretRedactor(),
+): FrameWriter {
   let closed = false
   return {
     write(frame) {
       if (closed) return
       let line: string
       try {
-        line = JSON.stringify(frame) + "\n"
+        // Redact the object first: a secret containing a quote or a
+        // backslash is JSON-escaped by stringify, and a literal match on
+        // the serialised line would then miss it.
+        const walked = JSON.stringify(redactor.redactFrame(frame))
+        // Belt and braces: a secret hidden inside a non-plain object
+        // (a class instance with a toJSON) never reached the walk above,
+        // but it is in the serialised line now.
+        let body = redactor.redact(walked)
+        if (body !== walked) {
+          // The second pass matches serialised text, so a multi-line
+          // shape could in principle span a JSON delimiter and leave the
+          // line unparseable. Keep its result only when the line still
+          // parses; the first pass already covered every plain field.
+          try {
+            JSON.parse(body)
+          } catch {
+            body = walked
+          }
+        }
+        line = body + "\n"
       } catch (err) {
         // Should be unreachable for our own frames, but never throw out of a
         // hook callback — log and skip.

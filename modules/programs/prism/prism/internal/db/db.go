@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"github.com/prismatic-koi/prism/internal/payload"
 	"github.com/prismatic-koi/prism/internal/proglog"
 
 	_ "modernc.org/sqlite" // register sqlite3 driver
@@ -36,6 +38,13 @@ const (
 type DB struct {
 	conn *sql.DB
 	path string
+
+	// redactor is the write-time credential redactor for this handle
+	// (issue #2589). nil means "use the process default" — see
+	// redact.go. Guarded by redactorMu because a handle is shared
+	// across goroutines and a test may install its own.
+	redactorMu sync.RWMutex
+	redactor   *payload.Redactor
 }
 
 // Path returns the filesystem path of the database file.
