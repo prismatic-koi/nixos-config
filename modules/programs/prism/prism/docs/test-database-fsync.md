@@ -1,7 +1,16 @@
 # test-database convention: open test databases with `sidecartest.OpenDB`
 
-<!-- doclint-ignore: database/sql -->
-<!-- `database/sql` is a Go standard-library package, not a path inside this repo. -->
+<!-- doclint-ignore: .github/workflows/pr-gate.yml -->
+<!--
+  The CI workflow file sits at the repository root, four levels above the
+  prism source root. The nix sandbox build (runChecks = true) copies only the
+  prism subtree, so LocateRoots returns an empty repoRoot there and the path
+  has no fallback to resolve against. The reference is correct in the
+  repository and resolves in the go-tests job, which has a full checkout. It
+  is unresolvable only inside the sandbox. This is the same cross-boundary
+  reason as the AGENTS.md annotations in docs/doclint.md and
+  docs/podman-proxy.md.
+-->
 
 This document states the convention for opening a SQLite database in a test.
 It exists because `db.Open` costs 73 `fsync` calls, that cost is invisible on
