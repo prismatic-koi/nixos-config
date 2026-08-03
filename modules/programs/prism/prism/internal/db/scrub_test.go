@@ -12,6 +12,7 @@ package db
 // SECURITY: every credential value here is synthetic.
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -289,5 +290,74 @@ func TestScrubSecrets_NilRedactorFallsBackToTheProcessDefault(t *testing.T) {
 	}
 	if got := allEventPayloads(t, d); strings.Contains(got[0], shaped) {
 		t.Errorf("nil redactor did not fall back to the process default: %s", got[0])
+	}
+}
+
+// TestScrubSecrets_ShapeCannotSpanAJSONDelimiter is the bulk-rewrite half of
+// the round-1 review finding on PR #2606. The scrub rewrites historical rows
+// in place, so a spanning match here corrupts data that has no other copy.
+func TestScrubSecrets_ShapeCannotSpanAJSONDelimiter(t *testing.T) {
+	d := openScrubTestDB(t)
+
+	spanning := []string{
+		`{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}`,
+		`{"tool":"edit","args":{"a_old":"x -----BEGIN RSA PRIVATE KEY-----","z_new":"-----END RSA PRIVATE KEY-----"},"n":[1,2]}`,
+	}
+	for _, raw := range spanning {
+		insertRawEvent(t, d, "tool_result", raw)
+		insertRawHarnessFrame(t, d, "tool_result", raw)
+	}
+
+	report, err := d.ScrubSecrets(payload.NewShapeOnlyRedactor(), false)
+	if err != nil {
+		t.Fatalf("ScrubSecrets: %v", err)
+	}
+	if report.Changed() != 0 {
+		t.Errorf("scrub rewrote %d rows; no field holds a complete block so nothing should change", report.Changed())
+	}
+
+	for i, got := range allEventPayloads(t, d) {
+		if !json.Valid([]byte(got)) {
+			t.Errorf("event row %d is not valid JSON after the scrub: %s", i, got)
+		}
+		if got != spanning[i] {
+			t.Errorf("event row %d was rewritten:\n  got:  %s\n  want: %s", i, got, spanning[i])
+		}
+	}
+	for i, got := range allFramePayloads(t, d) {
+		if !json.Valid([]byte(got)) {
+			t.Errorf("frame row %d is not valid JSON after the scrub: %s", i, got)
+		}
+		if got != spanning[i] {
+			t.Errorf("frame row %d was rewritten:\n  got:  %s\n  want: %s", i, got, spanning[i])
+		}
+	}
+}
+
+// TestScrubSecrets_CompleteBlockInOneFieldIsStillScrubbed pins that refusing
+// to span did not switch the shape layer off in the bulk path.
+func TestScrubSecrets_CompleteBlockInOneFieldIsStillScrubbed(t *testing.T) {
+	d := openScrubTestDB(t)
+
+	pem := "-----BEGIN OPENSSH PRIVATE KEY-----\\nc3ludGhldGlj\\n-----END OPENSSH PRIVATE KEY-----"
+	insertRawEvent(t, d, "tool_result", `{"output":"`+pem+`","keep":"untouched"}`)
+
+	report, err := d.ScrubSecrets(payload.NewShapeOnlyRedactor(), false)
+	if err != nil {
+		t.Fatalf("ScrubSecrets: %v", err)
+	}
+	if report.EventsRewritten != 1 {
+		t.Fatalf("EventsRewritten = %d, want 1", report.EventsRewritten)
+	}
+
+	got := allEventPayloads(t, d)[0]
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("scrubbed row is not valid JSON: %s", got)
+	}
+	if strings.Contains(got, "PRIVATE KEY") {
+		t.Errorf("a complete block inside one field was not scrubbed: %s", got)
+	}
+	if !strings.Contains(got, "untouched") {
+		t.Errorf("a neighbouring field was damaged: %s", got)
 	}
 }

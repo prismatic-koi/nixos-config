@@ -12,9 +12,12 @@
 //   - harness_frames.payload — the raw wire archive.
 //
 // NOT covered: on-disk session archives. `prism cleanup` copies a session's
-// harness transcript out of the worktree and into the archive directory named
-// by sessions.archive_path. Those files are outside the database and are not
-// touched here. See docs/secret-redaction.md.
+// harness transcript out of the pi sessions root
+// ($PI_CODING_AGENT_DIR/sessions/, else ~/.pi/agent/sessions/) and into the
+// archive directory named by sessions.archive_path. Pi writes that transcript
+// itself; no prism redaction has ever run over it, before or after this
+// change. Those files are outside the database and are not touched here. See
+// docs/secret-redaction.md.
 package db
 
 import (
@@ -135,7 +138,11 @@ func (d *DB) scrubTable(table string, r *payload.Redactor, dryRun bool) (scanned
 
 		var changed []row
 		for _, rec := range page {
-			cleaned := r.Redact(rec.payload)
+			// RedactJSON, not Redact — a flat pass over a stored JSON
+			// document lets the private-key shape span a delimiter and
+			// corrupt the row. The scrub rewrites in place, so there is
+			// no way back. See payload.Redactor.RedactJSON.
+			cleaned := r.RedactJSON(rec.payload)
 			if cleaned != rec.payload {
 				changed = append(changed, row{rowID: rec.rowID, payload: cleaned})
 			}

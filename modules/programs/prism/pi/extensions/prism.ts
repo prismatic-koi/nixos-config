@@ -2000,9 +2000,16 @@ export interface SecretRedactor {
   /**
    * Return a copy of `frame` with every string value and every key redacted.
    *
-   * Redacting the object, not the serialised line, is what makes the control
-   * correct: a secret containing a quote or a backslash appears in escaped
-   * form once JSON.stringify has run, and a literal match would miss it.
+   * Redacting the object, NOT the serialised line, is what makes the control
+   * correct, for two independent reasons:
+   *
+   *   1. A secret containing a quote or a backslash appears in escaped form
+   *      once JSON.stringify has run, and a literal match would miss it.
+   *   2. The private-key-block shape has a `[\s\S]*?` body. Run over a
+   *      serialised line, one match can start in one field and end in a
+   *      later one, consuming the JSON structure between them — which either
+   *      emits invalid JSON or silently deletes whole fields. Redacting each
+   *      scalar on its own makes that structurally impossible.
    */
   redactFrame(frame: Record<string, unknown>): Record<string, unknown>
   /** Distinct credential values the value layer covers. Never the values. */
@@ -2061,12 +2068,23 @@ export function makeSecretRedactor(
     if (depth >= REDACT_MAX_DEPTH) return v
     if (Array.isArray(v)) return v.map((x) => walk(x, depth + 1))
     if (v !== null && typeof v === "object") {
-      // Only plain objects are rebuilt. A Buffer, Date, or class instance
-      // is passed through untouched so the walk cannot change its
-      // serialisation; the belt-and-braces pass over the serialised line
-      // in makeFrameWriter covers anything hidden inside one.
       const proto = Object.getPrototypeOf(v)
-      if (proto !== Object.prototype && proto !== null) return v
+      if (proto !== Object.prototype && proto !== null) {
+        // A Buffer, Date, or class instance with a toJSON. Normalise it
+        // through JSON first, so the walk covers exactly the strings
+        // JSON.stringify is about to emit, then walk the plain result.
+        // This is what makes the walk TOTAL, and it is why the writer does
+        // not need a second pass over the serialised line — a second pass
+        // would be able to span a JSON delimiter, which this cannot.
+        try {
+          return walk(JSON.parse(JSON.stringify(v)) as unknown, depth + 1)
+        } catch {
+          // Not serialisable (a cycle, a bigint). JSON.stringify in the
+          // writer will throw on it too, so the frame is dropped there
+          // rather than written unredacted.
+          return v
+        }
+      }
       const out: Record<string, unknown> = {}
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
         out[redact(k)] = walk(val, depth + 1)
@@ -2119,6 +2137,13 @@ export interface FrameWriter {
  * credential never gets as far as the sidecar or the database. `redactor`
  * defaults to the process-wide redactor; tests pass their own, built from
  * synthetic values.
+ *
+ * Redaction is applied to the frame OBJECT only. There is deliberately no
+ * second pass over the serialised line: the private-key-block shape can span
+ * a JSON delimiter, so a line-level pass can emit invalid JSON or silently
+ * delete fields. redactFrame's walk is total over everything JSON.stringify
+ * emits — non-plain objects included — so a line-level pass would add no
+ * coverage and only that hazard.
  */
 export function makeFrameWriter(
   socket: net.Socket,
@@ -2130,26 +2155,7 @@ export function makeFrameWriter(
       if (closed) return
       let line: string
       try {
-        // Redact the object first: a secret containing a quote or a
-        // backslash is JSON-escaped by stringify, and a literal match on
-        // the serialised line would then miss it.
-        const walked = JSON.stringify(redactor.redactFrame(frame))
-        // Belt and braces: a secret hidden inside a non-plain object
-        // (a class instance with a toJSON) never reached the walk above,
-        // but it is in the serialised line now.
-        let body = redactor.redact(walked)
-        if (body !== walked) {
-          // The second pass matches serialised text, so a multi-line
-          // shape could in principle span a JSON delimiter and leave the
-          // line unparseable. Keep its result only when the line still
-          // parses; the first pass already covered every plain field.
-          try {
-            JSON.parse(body)
-          } catch {
-            body = walked
-          }
-        }
-        line = body + "\n"
+        line = JSON.stringify(redactor.redactFrame(frame)) + "\n"
       } catch (err) {
         // Should be unreachable for our own frames, but never throw out of a
         // hook callback — log and skip.

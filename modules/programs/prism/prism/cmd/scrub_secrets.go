@@ -40,9 +40,12 @@ Tables covered:
   agent_events.payload     every captured event, every type
   harness_frames.payload   the raw wire archive
 
-On-disk session archives are NOT covered. "prism cleanup" copies a session's
-harness transcript into the directory named by sessions.archive_path; those
-files sit outside the database. Delete or rotate them separately.
+On-disk session archives are NOT covered, and no other prism control covers
+them either. Pi writes its own transcript JSONL and the prism extension is not
+in that write path; "prism cleanup" only byte-copies the file into the
+directory named by sessions.archive_path. Treat every archive as carrying
+whatever the session printed: delete or rotate it separately, and rotate any
+credential you believe reached it.
 
 Matching has two layers. The value layer replaces the exact value of every
 credential environment variable in this process's environment, so run the

@@ -31,6 +31,38 @@ a producer the other cannot see.
 | 1 — pre-socket | `prism.ts`, in `makeFrameWriter` and `truncateString` | Every frame the pi extension emits. The secret never leaves the agent process. |
 | 2 — pre-INSERT | `internal/db`, in `WriteEvent`, `WriteEventReturningRowID`, and `WriteHarnessFrame` | Every row written by any producer: a harness with no redactor of its own, a hook event, an audit row, a backfill. |
 
+## Redact one scalar at a time, never a serialised document
+
+Both controls redact each string scalar and each object key ON ITS OWN. Neither
+ever runs a pattern over a serialised JSON document. This is a correctness
+rule, not a style preference.
+
+The `private-key-block` shape has a `[\s\S]*?` body. Run over a serialised
+document, one match can start in one field and end in a later one, consuming
+the JSON structure between them. Two failure modes follow, both silent:
+
+```
+{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}
+  ->  {"a":"[redacted:private-key-block]"]}            invalid JSON
+
+{"args":{"a":"-----BEGIN K PRIVATE KEY-----","z":"-----END K PRIVATE KEY-----"}}
+  ->  {"args":{"a":"[redacted:private-key-block]"}}     field z silently gone
+```
+
+Redaction runs at INSERT, so the intact original is never stored; and
+`prism scrub-secrets` rewrites historical rows in place. The corruption would
+be permanent in both paths.
+
+`RedactJSON` is the entry point on the Go side; `redactFrame` is its
+equivalent in the extension. Neither field in either example above holds a
+complete PEM block, so the correct answer for both is to leave the document
+exactly as written — and that is what they do. A complete block inside one
+field is still redacted.
+
+Use `Redact` (the flat pass) only for text that is not a structured document:
+a single decoded string value, or a payload that does not parse as JSON. There
+are no delimiters to protect in either case.
+
 Control 1 is the primary one. It is the only one that stops the secret from
 crossing a process boundary. Control 2 is defence in depth: it is the last line
 before the row exists, and it is harness-agnostic.
@@ -140,11 +172,11 @@ Neither pass is quadratic in the size of a `tool_result` payload.
 call on 8 MiB, which separates a linear implementation from a quadratic one
 without depending on the speed of the machine.
 
-The TypeScript side runs the equivalent two passes. Its regular-expression
-engine backtracks, so the multi-line private-key shape is not linear in the
-strict sense; it needs a literal `-----BEGIN … PRIVATE KEY-----` to start
-scanning, and the wire budget caps a frame at 8 KiB, so the practical bound
-holds.
+The TypeScript side runs the equivalent two passes per scalar. Its
+regular-expression engine backtracks, so the multi-line private-key shape is
+not linear in the strict sense; it needs a literal `-----BEGIN … PRIVATE KEY-----`
+to start scanning, and the wire budget caps a frame at 8 KiB, so the practical
+bound holds.
 
 ## Frame boundaries and truncation
 
@@ -191,18 +223,24 @@ safe: redaction is idempotent, so a second pass reports zero rewrites.
 |---|---|
 | `agent_events` payload column | Yes — every event, every type. |
 | `harness_frames` payload column | Yes — the raw wire archive. |
-| On-disk session archives | **No.** |
+| On-disk session archives | **No — and no other control covers them either.** |
 
-`prism cleanup` copies a session's harness transcript out of the worktree and
-into the directory named by `sessions.archive_path`. Those files sit outside
-the database and this command does not touch them. Treat an archive taken
-before this control shipped as carrying whatever the session printed: delete
-or rotate it separately, and rotate any credential you believe reached it.
+`prism cleanup` copies a session's harness transcript out of the pi sessions
+root — `$PI_CODING_AGENT_DIR/sessions/`, or `~/.pi/agent/sessions/` when that
+variable is unset — into the directory named by `sessions.archive_path`. Those
+files sit outside the database and `prism scrub-secrets` does not touch them.
 
-Archives taken after this control shipped inherit the protection indirectly for
-the pi harness, because the extension redacts before the value reaches the
-transcript writer. That is a consequence of control 1, not a guarantee this
-command provides.
+**Neither control protects an archive, before or after this change.** Pi's own
+`SessionManager` writes the transcript JSONL; the prism extension is not in
+that write path. `Archive` in `internal/harness/pi/archive.go` is a byte-copy
+of the file pi wrote. Control 1 redacts a COPY of the tool result on its way to
+the prism socket — it never mutates pi's message store, so the transcript still
+holds the raw value.
+
+Treat every archive, old or new, as carrying whatever the session printed:
+delete or rotate it separately, and rotate any credential you believe reached
+it. Closing this gap means redacting at the pi transcript writer, which is
+outside prism's code.
 
 ## Rules for changing this code
 
@@ -216,3 +254,6 @@ command provides.
   dialect, which is what lets the parity test compare them directly.
 - Do not add a shape with a generic body. Precision beats recall here: a
   control that mangles ordinary output gets switched off.
+- Never apply a shape to a serialised JSON document. Use `RedactJSON` on the
+  Go side and `redactFrame` in the extension. See the scalar-at-a-time section
+  above for what goes wrong.

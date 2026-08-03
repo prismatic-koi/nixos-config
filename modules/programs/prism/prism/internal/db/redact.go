@@ -65,7 +65,17 @@ func (d *DB) redactorFor() *payload.Redactor {
 	return ProcessRedactor()
 }
 
-// redactPayload applies the write-time redaction to a raw payload string.
+// redactPayload applies the write-time redaction to a raw payload column.
+//
+// It uses RedactJSON, not Redact: both payload columns hold a JSON document,
+// and a flat text pass lets the multi-line private-key shape span a JSON
+// delimiter — which either stores invalid JSON or silently deletes the fields
+// between the two halves of the match. Redaction runs at INSERT, so the
+// intact original is never stored and the damage is permanent. See
+// payload.Redactor.RedactJSON for the reproducer.
+//
+// A payload that is not a single JSON value falls back to the flat pass
+// inside RedactJSON, which is correct: there are no delimiters to protect.
 func (d *DB) redactPayload(s string) string {
-	return d.redactorFor().Redact(s)
+	return d.redactorFor().RedactJSON(s)
 }

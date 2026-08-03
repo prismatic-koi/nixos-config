@@ -8,7 +8,9 @@ package payload_test
 // is specifically exercising the shape layer.
 
 import (
+	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -553,4 +555,243 @@ func FuzzRedactShapePrefilter(f *testing.F) {
 			t.Errorf("prefilter changed the result for %q: got %q, want %q", in, got, want)
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// RedactJSON — the flat pass must never span a JSON delimiter.
+//
+// Regression tests for the round-1 review finding on PR #2606. The
+// private-key-block shape has a `[\s\S]*?` body, so on a serialised JSON
+// document a BEGIN in one field and an END in a later field make one match
+// consume the structure between them. Two failure modes, both silent and both
+// permanent once the row is written: invalid JSON, and silent field loss.
+// ---------------------------------------------------------------------------
+
+func TestRedactJSON_DoesNotProduceInvalidJSON(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+
+	// Verbatim reproducer from the review. The flat pass turns this into
+	// `{"a":"[redacted:private-key-block]"]}` — a dangling bracket.
+	in := `{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}`
+
+	if json.Valid([]byte(r.Redact(in))) {
+		t.Fatal("test setup is wrong: the flat pass no longer corrupts this input, so the guard below proves nothing")
+	}
+
+	got := r.RedactJSON(in)
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("RedactJSON produced invalid JSON: %s", got)
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal([]byte(got), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := out["b"]; !ok {
+		t.Errorf("field b was deleted: %s", got)
+	}
+	// No single field holds a complete PEM block, so the correct answer is to
+	// leave the document alone. "Redact the halves anyway" is exactly the
+	// spanning behaviour that corrupts the row.
+	if got != in {
+		t.Errorf("document changed although no field holds a complete block:\n  got:  %s\n  want: %s", got, in)
+	}
+}
+
+func TestRedactJSON_DoesNotSilentlyDeleteFields(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+
+	cases := []struct {
+		name      string
+		in        string
+		wantKeys  []string
+		wantGoneQ string
+	}{
+		{
+			name:     "sibling object fields",
+			in:       `{"tool":"edit","args":{"a_old":"x -----BEGIN RSA PRIVATE KEY-----","z_new":"-----END RSA PRIVATE KEY-----"},"n":[1,2]}`,
+			wantKeys: []string{"tool", "args", "n"},
+		},
+		{
+			name:     "sibling array elements",
+			in:       `{"content":[{"text":"a -----BEGIN RSA PRIVATE KEY-----"},{"text":"-----END RSA PRIVATE KEY-----"}],"truncated":false}`,
+			wantKeys: []string{"content", "truncated"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.RedactJSON(tc.in)
+			if !json.Valid([]byte(got)) {
+				t.Fatalf("invalid JSON: %s", got)
+			}
+
+			var before, after any
+			if err := json.Unmarshal([]byte(tc.in), &before); err != nil {
+				t.Fatalf("unmarshal input: %v", err)
+			}
+			if err := json.Unmarshal([]byte(got), &after); err != nil {
+				t.Fatalf("unmarshal output: %v", err)
+			}
+			if b, a := jsonShape(before), jsonShape(after); b != a {
+				t.Errorf("document shape changed \u2014 a field was deleted:\n  before: %s\n  after:  %s\n  output: %s", b, a, got)
+			}
+			// Same reasoning as the test above: neither field holds a
+			// complete block, so nothing should change.
+			if got != tc.in {
+				t.Errorf("document changed although no field holds a complete block:\n  got:  %s\n  want: %s", got, tc.in)
+			}
+		})
+	}
+}
+
+// TestRedactJSON_StillRedactsACompleteBlockInsideOneField is the other half of
+// the pair above: declining to span a delimiter must not turn the shape layer
+// off. A PEM block that lives entirely inside one string value is still
+// removed.
+func TestRedactJSON_StillRedactsACompleteBlockInsideOneField(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+
+	pem := "-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----"
+	body, err := json.Marshal(map[string]any{
+		"output": "cat id_ed25519\n" + pem + "\n",
+		"keep":   "untouched",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	got := r.RedactJSON(string(body))
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("invalid JSON: %s", got)
+	}
+	if strings.Contains(got, "PRIVATE KEY") {
+		t.Errorf("a complete block inside one field was not redacted: %s", got)
+	}
+	if !strings.Contains(got, "[redacted:private-key-block]") {
+		t.Errorf("output does not name the redacted shape: %s", got)
+	}
+	if !strings.Contains(got, "untouched") {
+		t.Errorf("a neighbouring field was damaged: %s", got)
+	}
+}
+
+// jsonShape renders the structure of a decoded JSON value with every string
+// scalar replaced by a placeholder. Two documents with the same shape have the
+// same keys, the same nesting, and the same array lengths.
+func jsonShape(v any) string {
+	switch t := v.(type) {
+	case string:
+		return "s"
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, e := range t {
+			parts = append(parts, jsonShape(e))
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+":"+jsonShape(t[k]))
+		}
+		return "{" + strings.Join(parts, ",") + "}"
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func TestRedactJSON_DocumentWithoutCredentialIsReturnedByteForByte(t *testing.T) {
+	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
+
+	// Ordering, spacing, HTML-significant characters, and a large integer
+	// must all survive untouched when nothing is redacted.
+	cases := []string{
+		`{"z":1,"a":"ok","nested":{"b":[1,2,3]}}`,
+		`{"output":"a < b && c > d"}`,
+		`{"timestampMs":1780000000123456789}`,
+		`{"output":"PASS\nok\tgithub.com/prismatic-koi/prism/internal/db\t0.412s\n"}`,
+		`[]`,
+		`{}`,
+		`"a bare string"`,
+		`123`,
+		`null`,
+	}
+	for _, in := range cases {
+		if got := r.RedactJSON(in); got != in {
+			t.Errorf("RedactJSON(%s) = %s; want the input unchanged", in, got)
+		}
+	}
+}
+
+func TestRedactJSON_PreservesNumbersAndHTMLCharactersOnARewrite(t *testing.T) {
+	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
+
+	in := `{"timestampMs":1780000000123456789,"note":"a < b && c > d","tok":"` + syntheticGitHubToken + `"}`
+	got := r.RedactJSON(in)
+
+	if strings.Contains(got, syntheticGitHubToken) {
+		t.Fatalf("credential survived: %s", got)
+	}
+	// A large int must not round-trip through float64, and encoding/json's
+	// default HTML escaping must be off.
+	if !strings.Contains(got, "1780000000123456789") {
+		t.Errorf("large integer lost precision: %s", got)
+	}
+	if !strings.Contains(got, "a < b && c > d") {
+		t.Errorf("HTML-significant characters were escaped: %s", got)
+	}
+}
+
+func TestRedactJSON_RedactsObjectKeys(t *testing.T) {
+	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
+
+	in := `{"` + syntheticGitHubToken + `":"value"}`
+	got := r.RedactJSON(in)
+	if strings.Contains(got, syntheticGitHubToken) {
+		t.Fatalf("credential survived in a key position: %s", got)
+	}
+	if !json.Valid([]byte(got)) {
+		t.Fatalf("invalid JSON: %s", got)
+	}
+}
+
+func TestRedactJSON_NonJSONFallsBackToTheFlatPass(t *testing.T) {
+	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
+
+	// A payload that is not a single JSON value has no delimiters to protect,
+	// so a spanning match is the correct behaviour there.
+	for _, in := range []string{
+		"plain text with " + syntheticGitHubToken + " in it",
+		`{"a":1} trailing garbage ` + syntheticGitHubToken,
+		`{"unterminated": "` + syntheticGitHubToken,
+	} {
+		got := r.RedactJSON(in)
+		if strings.Contains(got, syntheticGitHubToken) {
+			t.Errorf("credential survived the non-JSON fallback for %q: %s", in, got)
+		}
+	}
+}
+
+func TestRedactJSON_NilReceiverIsANoOp(t *testing.T) {
+	var r *payload.Redactor
+	in := `{"a":"b"}`
+	if got := r.RedactJSON(in); got != in {
+		t.Errorf("nil receiver changed the input: %s", got)
+	}
+}
+
+func TestRedactJSON_IsIdempotent(t *testing.T) {
+	r := payload.NewRedactor(map[string]string{"GITHUB_TOKEN": syntheticGitHubToken})
+	in := `{"output":"tok=` + syntheticGitHubToken + `"}`
+	once := r.RedactJSON(in)
+	if twice := r.RedactJSON(once); twice != once {
+		t.Errorf("second pass changed the output:\n  once:  %s\n  twice: %s", once, twice)
+	}
 }

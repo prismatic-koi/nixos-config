@@ -43,6 +43,7 @@
 package payload
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -544,6 +545,126 @@ func (r *Redactor) Redact(s string) string {
 		})
 	}
 	return s
+}
+
+// RedactJSON redacts a JSON document, one scalar at a time.
+//
+// Use this, NOT Redact, for anything that is stored as JSON.
+//
+// Why it exists
+// -------------
+//
+// Redact matches over flat text. The private-key-block shape has a
+// `[\s\S]*?` body, so on a serialised JSON document a dangling
+// `-----BEGIN … PRIVATE KEY-----` in one field and an `-----END …-----` in a
+// later field make one match consume the JSON structure between them. Two
+// failure modes follow, both silent and both permanent once the row is
+// written:
+//
+//	{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}
+//	  -> {"a":"[redacted:private-key-block]"]}          invalid JSON
+//
+//	{"args":{"a":"-----BEGIN K PRIVATE KEY-----","z":"-----END K PRIVATE KEY-----"}}
+//	  -> {"args":{"a":"[redacted:private-key-block]"}}   field z silently gone
+//
+// RedactJSON parses the document and redacts each string scalar and each
+// object key on its own, so no pattern can reach past the value it matched
+// in. The pi extension's redactFrame does the same thing for the same
+// reason.
+//
+// Guarantees
+// ----------
+//
+//   - A document with no credential in it is returned BYTE FOR BYTE. Nothing
+//     is re-encoded unless a redaction actually fired.
+//   - A document that is not a single JSON value is treated as free text and
+//     passed to Redact. There are no JSON delimiters to protect in that case,
+//     and a spanning match is then the correct behaviour.
+//   - Re-encoding preserves numbers exactly (json.Number, so a large int64
+//     does not round-trip through float64) and does not escape `<`, `>`, or
+//     `&`, so the output differs from the input only where a credential was.
+//     Object key ORDER is not preserved on a re-encode, because Go marshals a
+//     map with sorted keys. That is a cosmetic change to a document that was
+//     going to change anyway.
+//
+// Recursion is bounded by encoding/json, which refuses a document nested
+// deeper than its own limit before this function ever sees the value.
+func (r *Redactor) RedactJSON(doc string) string {
+	if r == nil || doc == "" {
+		return doc
+	}
+
+	dec := json.NewDecoder(strings.NewReader(doc))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil || dec.More() {
+		return r.Redact(doc)
+	}
+
+	redacted, changed := r.redactJSONValue(v)
+	if !changed {
+		return doc
+	}
+
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(redacted); err != nil {
+		// Unreachable for a value that came out of Decode. Fall back to the
+		// flat pass rather than store the document with the credential in it.
+		return r.Redact(doc)
+	}
+	return strings.TrimSuffix(buf.String(), "\n")
+}
+
+// redactJSONValue walks a decoded JSON value, redacting every string scalar
+// and every object key. It reports whether anything changed so the caller can
+// skip the re-encode and return the input unchanged.
+func (r *Redactor) redactJSONValue(v any) (any, bool) {
+	switch t := v.(type) {
+	case string:
+		s := r.Redact(t)
+		return s, s != t
+
+	case []any:
+		changed := false
+		for i, e := range t {
+			ne, c := r.redactJSONValue(e)
+			if c {
+				t[i] = ne
+				changed = true
+			}
+		}
+		return t, changed
+
+	case map[string]any:
+		changed := false
+		var renamedFrom, renamedTo []string
+		for k, e := range t {
+			if ne, c := r.redactJSONValue(e); c {
+				t[k] = ne
+				changed = true
+			}
+			if nk := r.Redact(k); nk != k {
+				renamedFrom = append(renamedFrom, k)
+				renamedTo = append(renamedTo, nk)
+			}
+		}
+		// Apply key renames after the range: adding a key to a map that is
+		// being ranged over is unspecified in Go. Two keys that redact to the
+		// same marker collapse into one — a key that IS a credential is
+		// pathological, and losing one is better than storing it.
+		for i, from := range renamedFrom {
+			t[renamedTo[i]] = t[from]
+			delete(t, from)
+			changed = true
+		}
+		return t, changed
+
+	default:
+		// json.Number, bool, nil — no free text to redact.
+		return v, false
+	}
 }
 
 // ValueCount reports how many distinct credential values the value layer

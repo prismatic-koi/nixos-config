@@ -11,6 +11,7 @@ package db_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -293,5 +294,123 @@ func TestSetRedactor_NilRestoresTheProcessDefault(t *testing.T) {
 
 	if stored := storedPayload(t, d, fakeSessionName); strings.Contains(stored, shaped) {
 		t.Error("process-default redactor did not apply the shape layer")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// JSON-structure safety at write time.
+//
+// Regression tests for the round-1 review finding on PR #2606: the write-time
+// control applied the shape regexp to the serialised payload with no
+// structural awareness, so the private-key-block shape could span a JSON
+// delimiter and either store invalid JSON or silently delete fields. The
+// intact original is never stored, so the damage was permanent.
+// ---------------------------------------------------------------------------
+
+// spanningPayloads are the reproducers from the review. None of them holds a
+// complete PEM block inside any single field, so a structurally-aware
+// redactor must leave every one of them exactly as written.
+func spanningPayloads() []string {
+	return []string{
+		`{"a":"-----BEGIN A PRIVATE KEY-----","b":[1,"-----END A PRIVATE KEY-----"]}`,
+		`{"tool":"edit","args":{"a_old":"x -----BEGIN RSA PRIVATE KEY-----","z_new":"-----END RSA PRIVATE KEY-----"},"n":[1,2]}`,
+		`{"content":[{"text":"a -----BEGIN RSA PRIVATE KEY-----"},{"text":"-----END RSA PRIVATE KEY-----"}],"truncated":false}`,
+	}
+}
+
+func TestWriteEvent_ShapeCannotSpanAJSONDelimiter(t *testing.T) {
+	for i, raw := range spanningPayloads() {
+		t.Run(fmt.Sprintf("case-%d", i), func(t *testing.T) {
+			d := openTestDB(t)
+			d.SetRedactor(payload.NewShapeOnlyRedactor())
+			writeEventWithPayload(t, d, "tool_result", raw)
+
+			stored := storedPayload(t, d, fakeSessionName)
+			if !json.Valid([]byte(stored)) {
+				t.Fatalf("stored payload is not valid JSON: %s", stored)
+			}
+			if stored != raw {
+				t.Errorf("payload was rewritten although no field holds a complete block:\n  got:  %s\n  want: %s", stored, raw)
+			}
+		})
+	}
+}
+
+func TestWriteEventReturningRowID_ShapeCannotSpanAJSONDelimiter(t *testing.T) {
+	raw := spanningPayloads()[0]
+	d := openTestDB(t)
+	d.SetRedactor(payload.NewShapeOnlyRedactor())
+
+	if _, err := d.WriteEventReturningRowID(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: fakeSessionName,
+		Repo:        syntheticEventRepo,
+		Type:        "tool_result",
+		Payload:     raw,
+	}); err != nil {
+		t.Fatalf("WriteEventReturningRowID: %v", err)
+	}
+
+	stored := storedPayload(t, d, fakeSessionName)
+	if !json.Valid([]byte(stored)) {
+		t.Fatalf("stored payload is not valid JSON: %s", stored)
+	}
+	if stored != raw {
+		t.Errorf("payload was rewritten:\n  got:  %s\n  want: %s", stored, raw)
+	}
+}
+
+func TestWriteHarnessFrame_ShapeCannotSpanAJSONDelimiter(t *testing.T) {
+	raw := spanningPayloads()[0]
+	d := openTestDB(t)
+	d.SetRedactor(payload.NewShapeOnlyRedactor())
+
+	if err := d.WriteHarnessFrame(db.HarnessFrame{
+		ID:          uuid.New().String(),
+		SessionName: fakeSessionName,
+		Direction:   db.HarnessFrameDirectionIn,
+		Type:        "tool_result",
+		Payload:     raw,
+	}); err != nil {
+		t.Fatalf("WriteHarnessFrame: %v", err)
+	}
+
+	frames, err := d.QueryHarnessFrames(fakeSessionName, "", nil, "")
+	if err != nil {
+		t.Fatalf("QueryHarnessFrames: %v", err)
+	}
+	if len(frames) != 1 {
+		t.Fatalf("expected 1 frame, got %d", len(frames))
+	}
+	if !json.Valid([]byte(frames[0].Payload)) {
+		t.Fatalf("stored frame is not valid JSON: %s", frames[0].Payload)
+	}
+	if frames[0].Payload != raw {
+		t.Errorf("frame was rewritten:\n  got:  %s\n  want: %s", frames[0].Payload, raw)
+	}
+}
+
+// TestWriteEvent_CompleteBlockInOneFieldIsStillRedacted pins the other half:
+// refusing to span must not switch the shape layer off.
+func TestWriteEvent_CompleteBlockInOneFieldIsStillRedacted(t *testing.T) {
+	d := openTestDB(t)
+	d.SetRedactor(payload.NewShapeOnlyRedactor())
+
+	pem := "-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----"
+	body, err := json.Marshal(payload.ToolResult{ID: "call_1", Success: true, Output: pem})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	writeEventWithPayload(t, d, "tool_result", string(body))
+
+	stored := storedPayload(t, d, fakeSessionName)
+	if !json.Valid([]byte(stored)) {
+		t.Fatalf("stored payload is not valid JSON: %s", stored)
+	}
+	if strings.Contains(stored, "PRIVATE KEY") {
+		t.Errorf("a complete block inside one field was not redacted: %s", stored)
+	}
+	if !strings.Contains(stored, "[redacted:private-key-block]") {
+		t.Errorf("stored payload does not name the redacted shape: %s", stored)
 	}
 }

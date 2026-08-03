@@ -6474,19 +6474,84 @@ describe("#2589: makeFrameWriter redacts before the socket", () => {
     assert.equal(written.join(""), JSON.stringify(frame) + "\n")
   })
 
-  it("still emits parseable JSON when the shape layer matches across the whole line", () => {
-    // The belt-and-braces pass runs over serialised text. A multi-line shape
-    // could in principle span a JSON delimiter; the writer must fall back to
-    // the object-level result rather than emit an unparseable line.
+  it("a shape cannot span a JSON delimiter — no invalid JSON, no lost fields", () => {
+    // Round-1 review finding on PR #2606. The private-key-block shape has a
+    // `[\s\S]*?` body. Applied to a serialised line, one match can start in
+    // one field and end in a later one, consuming the JSON structure between
+    // them: either invalid JSON, or valid JSON with whole fields silently
+    // deleted. Redacting each scalar on its own makes that impossible.
+    const cases: Array<Record<string, unknown>> = [
+      {
+        type: "tool_result",
+        a: "-----BEGIN A PRIVATE KEY-----",
+        b: [1, "-----END A PRIVATE KEY-----"],
+      },
+      {
+        type: "tool_call",
+        args: {
+          a_old: "x -----BEGIN RSA PRIVATE KEY-----",
+          z_new: "-----END RSA PRIVATE KEY-----",
+        },
+        n: [1, 2],
+      },
+      {
+        type: "tool_result",
+        content: [
+          { text: "a -----BEGIN RSA PRIVATE KEY-----" },
+          { text: "-----END RSA PRIVATE KEY-----" },
+        ],
+        truncated: false,
+      },
+    ]
+
+    for (const frame of cases) {
+      const written: string[] = []
+      const writer = makeFrameWriter(captureSocket(written), makeSecretRedactor({}))
+      writer.write(frame)
+      const line = written.join("").trimEnd()
+
+      let parsed: unknown
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(line)
+      }, `unparseable line: ${line}`)
+      // No field holds a complete block, so the frame must round-trip
+      // unchanged — key set, nesting, and array lengths all intact.
+      assert.deepEqual(parsed, frame, `frame was altered: ${line}`)
+    }
+  })
+
+  it("still redacts a complete PEM block that lives inside one field", () => {
+    // Refusing to span must not switch the shape layer off.
+    const pem =
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----"
     const written: string[] = []
     const writer = makeFrameWriter(captureSocket(written), makeSecretRedactor({}))
-    writer.write({
-      type: "tool_result",
-      a: "-----BEGIN RSA PRIVATE KEY-----",
-      b: "-----END RSA PRIVATE KEY-----",
-    })
+    writer.write({ type: "tool_result", output: pem, keep: "untouched" })
+
+    const line = written.join("").trimEnd()
+    const parsed = JSON.parse(line) as { output: string; keep: string }
+    assert.ok(!line.includes("PRIVATE KEY"), `block survived: ${line}`)
+    assert.equal(parsed.output, "[redacted:private-key-block]")
+    assert.equal(parsed.keep, "untouched")
+  })
+
+  it("redacts a secret hidden inside a non-plain object", () => {
+    // The walk normalises a non-plain object through JSON first, so it covers
+    // exactly the strings JSON.stringify is about to emit. This is what lets
+    // the writer drop the unsafe line-level pass.
+    class Wrapper {
+      constructor(private readonly value: string) {}
+      toJSON() {
+        return { inner: this.value }
+      }
+    }
+    const written: string[] = []
+    const writer = makeFrameWriter(captureSocket(written), syntheticRedactor())
+    writer.write({ type: "tool_result", wrapped: new Wrapper(SYNTHETIC_GITHUB_TOKEN) })
+
     const line = written.join("")
-    assert.doesNotThrow(() => JSON.parse(line.trimEnd()), `unparseable line: ${line}`)
+    assert.ok(!line.includes(SYNTHETIC_GITHUB_TOKEN), `credential reached the socket: ${line}`)
+    assert.equal(JSON.parse(line.trimEnd()).wrapped.inner, "[redacted:GITHUB_TOKEN]")
   })
 })
 
