@@ -246,9 +246,18 @@ outside prism's code.
 
 - Never log, echo, or write a credential value anywhere — including a test
   fixture. Every value in the tests is synthetic.
-- Add a new credential name to `payload.CredentialEnvNames` and to
-  `CREDENTIAL_ENV_NAMES` in the extension, in the same change. The parity test
-  fails if you add only one.
+- To add a credential name, edit two places in the same change:
+  1. `ForwardedCredentialEnvNames` in `internal/payload/redact.go` — or
+     `otherCredentialEnvNames`, for a name prism does not forward but that can
+     still be present in a host-mode agent's environment.
+  2. `CREDENTIAL_ENV_NAMES` in the extension.
+
+  `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one
+  of the two. Do NOT try to add to `CredentialEnvNames` — it is a read-only
+  accessor over the computed union of those lists, not a list itself. Same for
+  `credentialForwardEnvKeys` in `internal/container/credentials.go`, which is a
+  derived copy; turning it back into a literal breaks the derivation and a
+  credential added there is injected into every sandbox but never redacted.
 - Keep the shape patterns byte-identical between the two implementations. They
   are written to be valid and equivalent in both RE2 and the JavaScript
   dialect, which is what lets the parity test compare them directly.
