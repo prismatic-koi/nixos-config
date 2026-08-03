@@ -19,6 +19,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/harness"
+	"github.com/prismatic-koi/prism/internal/sidecar/sidecartest"
 )
 
 // ── test clock ──────────────────────────────────────────────────────────────
@@ -322,16 +323,18 @@ func openTestDB(t *testing.T) *db.DB {
 	if err != nil {
 		t.Fatalf("openTestDB MkdirTemp: %v", err)
 	}
-	dbPath := filepath.Join(dir, "test.db")
-	d, err2 := db.Open(dbPath)
-	if err2 != nil {
-		_ = os.RemoveAll(dir)
-		t.Fatalf("open test db: %v", err2)
-	}
+	// Registered first so it runs last: t.Cleanup is LIFO, so the database is
+	// closed before the directory is removed. Registering it here rather than
+	// after the open also covers the case where the open itself fails.
 	t.Cleanup(func() {
-		d.Close()
 		_ = os.RemoveAll(dir) // best-effort; ignore error if WAL files linger
 	})
+
+	// sidecartest.OpenDB stamps a pre-migrated template instead of re-running
+	// the schema and every migration, so the open costs no fsync. This package
+	// opens ~700 test databases per run and was paying ~73 fsyncs each (#2598).
+	d := sidecartest.OpenDB(t, filepath.Join(dir, "test.db"))
+	t.Cleanup(func() { d.Close() })
 	return d
 }
 

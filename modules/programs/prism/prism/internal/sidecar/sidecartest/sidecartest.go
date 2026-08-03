@@ -134,14 +134,13 @@ func NewIsolated(t *testing.T, invokerSession string) *Bus {
 	//    test-scoped XDG tempdir makes the isolation assertable by
 	//    construction: a test can verify Bus.DB.Path() resides under
 	//    Bus.XDGStateHome instead of probing live host state (#2227).
+	//    OpenDB stamps a pre-migrated template instead of re-running the
+	//    schema and every migration, so the open costs no fsync (#2598).
 	prismDir := filepath.Join(xdgTmp, "prism")
 	if err := os.MkdirAll(prismDir, 0o700); err != nil {
 		t.Fatalf("sidecartest: create prism state dir: %v", err)
 	}
-	d, err := db.Open(filepath.Join(prismDir, "prism.db"))
-	if err != nil {
-		t.Fatalf("sidecartest: open test DB: %v", err)
-	}
+	d := OpenDB(t, filepath.Join(prismDir, "prism.db"))
 	t.Cleanup(func() { d.Close() })
 
 	bus := &Bus{
