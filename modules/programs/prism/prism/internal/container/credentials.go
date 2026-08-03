@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/payload"
 )
 
 // gitBareRootTimeout is the per-call timeout for git subprocess invocations
@@ -26,28 +28,34 @@ var githubAccountCache sync.Map // map[string]string
 
 // Names of the host environment variables that carry a credential.
 //
-// These are declared once because two consumers must agree on them: the
-// injection path below, and the test-only argv redaction that keeps their
-// VALUES out of a test failure message (redactedArgs in
-// argv_redact_test.go, issue #2581). A credential added here is redacted
-// there without a second edit.
+// The names live in internal/payload, which is a stdlib-only leaf package, so
+// that three consumers can agree on one list without an import cycle:
+//
+//   - the injection path below;
+//   - the test-only argv redaction that keeps their VALUES out of a test
+//     failure message (redactedArgs in argv_redact_test.go, issue #2581);
+//   - the capture-path redactor that keeps their VALUES out of prism.db
+//     (payload.Redactor, issue #2589).
+//
+// A credential added to payload.ForwardedCredentialEnvNames is injected and
+// redacted by both consumers without a second edit.
 const (
 	// githubTokenEnvKey is the inherited GitHub token — the final env-var
 	// fallback in ResolveGitHubToken, and the name credentialEnvVars injects.
-	githubTokenEnvKey = "GITHUB_TOKEN"
+	githubTokenEnvKey = payload.GitHubTokenEnvName
 
 	// prismGitHubTokenEnvPrefix prefixes the per-(account, role) tokens,
 	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>.
-	prismGitHubTokenEnvPrefix = "PRISM_GITHUB_TOKEN_"
+	prismGitHubTokenEnvPrefix = payload.PrismGitHubTokenEnvPrefix
 )
 
 // credentialForwardEnvKeys are the external-tool credentials credentialEnvVars
 // forwards verbatim from the host environment to every agent role. See
 // credentialEnvVars for the keys that are intentionally NOT forwarded.
-var credentialForwardEnvKeys = []string{
-	"ANTHROPIC_API_KEY",
-	"OPENROUTER_API_KEY",
-}
+//
+// The slice is a copy so that a mutation here cannot reach the shared list in
+// internal/payload.
+var credentialForwardEnvKeys = append([]string(nil), payload.ForwardedCredentialEnvNames...)
 
 // githubAccountFromBareRoot returns the GitHub account (organisation or user)
 // for the repo by reading the origin remote URL from the bare git dir.

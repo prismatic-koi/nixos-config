@@ -82,6 +82,18 @@ import {
   USAGE_STALE_MS,
   USAGE_STATUS_REFRESH_INTERVAL_MS,
   type UsageSnapshot,
+  // Capture-path secret redaction (issue #2589)
+  CREDENTIAL_ENV_NAMES,
+  CREDENTIAL_ENV_PREFIXES,
+  CREDENTIAL_ENV_NAME_SUFFIXES,
+  CREDENTIAL_SHAPES,
+  REDACTION_MIN_VALUE_LENGTH,
+  shapeTriggerPresent,
+  isCredentialEnvName,
+  makeSecretRedactor,
+  redactionMarker,
+  resetDefaultSecretRedactor,
+  type SecretRedactor,
 } from "./prism.ts"
 import prismExtension from "./prism.ts"
 
@@ -6118,5 +6130,489 @@ describe("#2050: bash-substring set-trigger has been removed from prism.ts", () 
         )
       }
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Capture-path secret redaction — issue #2589
+//
+// SECURITY: every credential value in this block is synthetic. None is a real
+// token and none is read from the environment of the test process. The
+// synthetic values are shaped so no shape rule claims them, unless the test is
+// specifically exercising the shape layer.
+// ---------------------------------------------------------------------------
+
+const SYNTHETIC_GITHUB_TOKEN = "SYNTHETIC-GITHUB-VALUE-000000000000"
+const SYNTHETIC_ANTHROPIC_KEY = "SYNTHETIC-ANTHROPIC-VALUE-111111111"
+
+function syntheticRedactor(
+  env: NodeJS.ProcessEnv = {
+    GITHUB_TOKEN: SYNTHETIC_GITHUB_TOKEN,
+    ANTHROPIC_API_KEY: SYNTHETIC_ANTHROPIC_KEY,
+  },
+): SecretRedactor {
+  return makeSecretRedactor(env)
+}
+
+describe("#2589: isCredentialEnvName", () => {
+  it("accepts the listed names, the prefixed family, and the name-shape suffixes", () => {
+    for (const name of [
+      "GITHUB_TOKEN",
+      "ANTHROPIC_API_KEY",
+      "OPENROUTER_API_KEY",
+      "PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
+      "SOME_VENDOR_TOKEN",
+      "SOME_VENDOR_API_KEY",
+      "DB_PASSWORD",
+      "AWS_SECRET_ACCESS_KEY",
+    ]) {
+      assert.equal(isCredentialEnvName(name), true, `${name} should be credential-carrying`)
+    }
+  })
+
+  it("rejects names that point at a file or a directory rather than a secret", () => {
+    for (const name of [
+      "",
+      "PATH",
+      "HOME",
+      "GITHUB_TOKEN_PATH",
+      "SOPS_AGE_KEY_FILE",
+      "PRISM_SESSION_NAME",
+      "XDG_STATE_HOME",
+      "_TOKEN",
+      "PRISM_GITHUB_TOKEN_",
+    ]) {
+      assert.equal(isCredentialEnvName(name), false, `${name} should NOT be credential-carrying`)
+    }
+  })
+})
+
+describe("#2589: value layer", () => {
+  it("replaces the value with a marker naming the variable", () => {
+    const r = syntheticRedactor()
+    assert.equal(
+      r.redact(`gh auth token\n${SYNTHETIC_GITHUB_TOKEN}\nexit 0\n`),
+      "gh auth token\n[redacted:GITHUB_TOKEN]\nexit 0\n",
+    )
+    assert.equal(r.valueCount, 2)
+  })
+
+  it("leaves output that carries no credential unchanged, byte for byte", () => {
+    const r = syntheticRedactor()
+    for (const input of [
+      "",
+      "ok\n",
+      "PASS\nok\tgithub.com/prismatic-koi/prism/internal/db\t0.412s\n",
+      "the quick brown fox jumps over the lazy dog\n".repeat(200),
+      '{"type":"tool_result","id":"call_1","success":true,"output":"hello"}',
+      "ghp_short\n",
+      "sk-ant\n",
+      "-----BEGIN CERTIFICATE-----\nnot a private key\n-----END CERTIFICATE-----\n",
+    ]) {
+      assert.equal(r.redact(input), input, `input changed: ${JSON.stringify(input)}`)
+    }
+  })
+
+  it("gives each variable its own marker", () => {
+    const r = syntheticRedactor()
+    assert.equal(
+      r.redact(`A=${SYNTHETIC_ANTHROPIC_KEY} B=${SYNTHETIC_GITHUB_TOKEN}`),
+      "A=[redacted:ANTHROPIC_API_KEY] B=[redacted:GITHUB_TOKEN]",
+    )
+  })
+
+  it("prefers the longest value when one secret is a prefix of another", () => {
+    const short = "SYNTHETIC-PREFIX-VALUE-AAAA"
+    const long = `${short}-EXTENDED-TAIL`
+    const r = makeSecretRedactor({ SHORT_TOKEN: short, LONG_TOKEN: long })
+    assert.equal(r.redact(long), "[redacted:LONG_TOKEN]")
+    assert.equal(r.redact(short), "[redacted:SHORT_TOKEN]")
+  })
+
+  it("resolves a shared value to the lexicographically first name, deterministically", () => {
+    const shared = "SYNTHETIC-SHARED-VALUE-9999999999"
+    for (let i = 0; i < 5; i++) {
+      const r = makeSecretRedactor({ ZULU_TOKEN: shared, ALPHA_TOKEN: shared })
+      assert.equal(r.redact(shared), "[redacted:ALPHA_TOKEN]")
+    }
+  })
+
+  it("is idempotent — a marker matches no rule", () => {
+    const r = syntheticRedactor()
+    const once = r.redact(`token=${SYNTHETIC_GITHUB_TOKEN}`)
+    assert.equal(r.redact(once), once)
+  })
+
+  it("reads only credential-carrying names out of the environment", () => {
+    const r = makeSecretRedactor({
+      PATH: "/usr/bin:/bin",
+      HOME: "/home/agent",
+      GITHUB_TOKEN: SYNTHETIC_GITHUB_TOKEN,
+      GITHUB_TOKEN_PATH: "/run/secrets/github-token",
+    })
+    assert.equal(r.valueCount, 1)
+    assert.equal(
+      r.redact(`p=/run/secrets/github-token t=${SYNTHETIC_GITHUB_TOKEN}`),
+      "p=/run/secrets/github-token t=[redacted:GITHUB_TOKEN]",
+    )
+  })
+})
+
+describe("#2589: over-redaction guards", () => {
+  it("skips empty, whitespace-only, and very short credential values", () => {
+    const r = makeSecretRedactor({
+      EMPTY_TOKEN: "",
+      SPACE_TOKEN: " ",
+      TAB_TOKEN: "\t",
+      NEWLINE_TOKEN: "\n",
+      ONE_CHAR_TOKEN: "a",
+      SHORT_TOKEN: "abc",
+      BOUNDARY_TOKEN: "b".repeat(REDACTION_MIN_VALUE_LENGTH - 1),
+      PADDED_TOKEN: "   ab   ",
+      EXPANSION_SECRET: "$(cat /run/secrets/token)",
+    })
+    assert.equal(r.valueCount, 0, "a value below the guard reached the value layer")
+
+    const input = "a b c\tabc\n   ab   \nthe quick brown fox\n\n"
+    assert.equal(r.redact(input), input)
+  })
+
+  it("redacts a value exactly at the minimum length", () => {
+    const value = "z".repeat(REDACTION_MIN_VALUE_LENGTH)
+    const r = makeSecretRedactor({ EDGE_TOKEN: value })
+    assert.equal(r.valueCount, 1)
+    assert.equal(r.redact(`v=${value}`), "v=[redacted:EDGE_TOKEN]")
+  })
+
+  it("does not treat an unexpanded shell literal as a secret (#2348)", () => {
+    const r = makeSecretRedactor({ GITHUB_TOKEN: "$(cat /run/secrets/gh-token)" })
+    assert.equal(r.valueCount, 0)
+  })
+})
+
+describe("#2589: shape layer", () => {
+  const shapeOnly = () => makeSecretRedactor({})
+
+  it("matches each known credential shape and names it", () => {
+    const r = shapeOnly()
+    const cases: Array<[string, string, string]> = [
+      ["github classic", `token ghp_${"A".repeat(36)} end`, "token [redacted:github-token] end"],
+      [
+        "github fine-grained",
+        `token github_pat_${"B".repeat(40)} end`,
+        "token [redacted:github-fine-grained-pat] end",
+      ],
+      ["anthropic", `key sk-ant-${"c".repeat(24)} end`, "key [redacted:anthropic-api-key] end"],
+      ["openrouter", `key sk-or-v1-${"d".repeat(32)} end`, "key [redacted:openrouter-api-key] end"],
+      ["openai project", `key sk-proj-${"e".repeat(24)} end`, "key [redacted:openai-api-key] end"],
+      ["slack", `key xoxb-${"1".repeat(12)} end`, "key [redacted:slack-token] end"],
+      ["aws access key id", `id AKIA${"Q".repeat(16)} end`, "id [redacted:aws-access-key-id] end"],
+      ["google api key", `key AIza${"F".repeat(35)} end`, "key [redacted:google-api-key] end"],
+      ["atlassian", `key ATATT3${"G".repeat(50)} end`, "key [redacted:atlassian-api-token] end"],
+      [
+        "private key block",
+        "head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
+        "head\n[redacted:private-key-block]\ntail",
+      ],
+    ]
+    for (const [name, input, want] of cases) {
+      assert.equal(r.redact(input), want, `shape case: ${name}`)
+    }
+  })
+
+  it("is a second layer, not a replacement for value matching", () => {
+    // The synthetic value matches no shape, so only the value layer removes it.
+    assert.equal(shapeOnly().redact(SYNTHETIC_GITHUB_TOKEN), SYNTHETIC_GITHUB_TOKEN)
+    assert.equal(syntheticRedactor().redact(SYNTHETIC_GITHUB_TOKEN), "[redacted:GITHUB_TOKEN]")
+    // And the shape layer still runs when values are configured.
+    assert.equal(syntheticRedactor().redact(`ghp_${"A".repeat(36)}`), "[redacted:github-token]")
+  })
+
+  it("prefers the value layer's variable name when both layers could match", () => {
+    const value = `ghp_${"A".repeat(36)}`
+    const r = makeSecretRedactor({ GITHUB_TOKEN: value })
+    assert.equal(r.redact(`t=${value}`), "t=[redacted:GITHUB_TOKEN]")
+  })
+
+  it("declares its shape rules in a stable order", () => {
+    assert.ok(CREDENTIAL_SHAPES.length > 0)
+    assert.equal(CREDENTIAL_SHAPES[0].name, "private-key-block")
+    for (const s of CREDENTIAL_SHAPES) {
+      assert.doesNotThrow(() => new RegExp(s.pattern), `shape ${s.name} must compile`)
+      assert.ok(s.triggers.length > 0, `shape ${s.name} declares no prefilter trigger`)
+      for (const t of s.triggers) {
+        assert.ok(t.length > 0, `shape ${s.name} declares an empty trigger`)
+      }
+    }
+  })
+
+  it("the cost prefilter never changes the result", () => {
+    // The prefilter skips the shape regexp when no trigger literal is
+    // present. It is only sound while every trigger is a NECESSARY substring
+    // of its pattern. Compare against the unfiltered regexp over a corpus of
+    // positives, near-misses, and ordinary output.
+    const unfiltered = new RegExp(
+      CREDENTIAL_SHAPES.map((s) => "(?:" + s.pattern + ")").join("|"),
+      "g",
+    )
+    const r = shapeOnly()
+    const corpus = [
+      "",
+      "ok\n",
+      "PASS\nok\tgithub.com/prismatic-koi/prism/internal/db\t0.412s\n",
+      "through the night, right enough, a rough ghost",
+      "ghp_short",
+      "github_pat_tooshort",
+      "sk-ant",
+      "AKIA123",
+      "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----",
+      `token ghp_${"A".repeat(36)} end`,
+      `token github_pat_${"B".repeat(40)} end`,
+      `key sk-ant-${"c".repeat(24)} end`,
+      `key sk-or-v1-${"d".repeat(32)} end`,
+      `key sk-proj-${"e".repeat(24)} end`,
+      `key xoxb-${"1".repeat(12)} end`,
+      `id AKIA${"Q".repeat(16)} end`,
+      `key AIza${"F".repeat(35)} end`,
+      `key ATATT3${"G".repeat(50)} end`,
+      "head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
+      `two ghp_${"A".repeat(36)} and AIza${"F".repeat(35)}`,
+    ]
+    for (const input of corpus) {
+      unfiltered.lastIndex = 0
+      const matched = unfiltered.test(input)
+      assert.equal(
+        shapeTriggerPresent(input) || !matched,
+        true,
+        `a shape matched ${JSON.stringify(input)} but no trigger is present`,
+      )
+      if (!matched) {
+        assert.equal(r.redact(input), input, `unmatched input changed: ${JSON.stringify(input)}`)
+      }
+    }
+  })
+})
+
+describe("#2589: redactFrame", () => {
+  it("redacts nested string values and object keys", () => {
+    const r = syntheticRedactor()
+    const out = r.redactFrame({
+      type: "tool_result",
+      output: `token ${SYNTHETIC_GITHUB_TOKEN}`,
+      nested: { deep: [`a ${SYNTHETIC_ANTHROPIC_KEY}`, 42, null, true] },
+      [SYNTHETIC_GITHUB_TOKEN]: "key-position",
+    })
+    const json = JSON.stringify(out)
+    assert.ok(!json.includes(SYNTHETIC_GITHUB_TOKEN), `token survived: ${json}`)
+    assert.ok(!json.includes(SYNTHETIC_ANTHROPIC_KEY), `key survived: ${json}`)
+    assert.ok(json.includes("[redacted:GITHUB_TOKEN]"))
+    assert.ok(json.includes("[redacted:ANTHROPIC_API_KEY]"))
+    assert.equal((out.nested as { deep: unknown[] }).deep[1], 42)
+  })
+
+  it("does not mutate the frame it was given", () => {
+    const r = syntheticRedactor()
+    const frame = { output: `t=${SYNTHETIC_GITHUB_TOKEN}` }
+    r.redactFrame(frame)
+    assert.equal(frame.output, `t=${SYNTHETIC_GITHUB_TOKEN}`)
+  })
+
+  it("terminates on a self-referencing frame instead of recursing forever", () => {
+    const r = syntheticRedactor()
+    const frame: Record<string, unknown> = { type: "tool_result" }
+    frame.self = frame
+    assert.doesNotThrow(() => r.redactFrame(frame))
+  })
+})
+
+describe("#2589: makeFrameWriter redacts before the socket", () => {
+  const captureSocket = (written: string[]) =>
+    ({
+      write: (data: string) => {
+        written.push(data)
+        return true
+      },
+      end: () => {},
+    }) as unknown as net.Socket
+
+  it("no credential value reaches socket.write()", () => {
+    const written: string[] = []
+    const writer = makeFrameWriter(captureSocket(written), syntheticRedactor())
+    writer.write({
+      type: "tool_result",
+      id: "call_1",
+      success: true,
+      output: `GITHUB_TOKEN=${SYNTHETIC_GITHUB_TOKEN}\n`,
+    })
+
+    const line = written.join("")
+    assert.ok(!line.includes(SYNTHETIC_GITHUB_TOKEN), `credential reached the socket: ${line}`)
+    assert.ok(line.includes("[redacted:GITHUB_TOKEN]"), `marker missing: ${line}`)
+
+    const frame = JSON.parse(line.trimEnd())
+    assert.equal(frame.type, "tool_result")
+    assert.equal(frame.id, "call_1")
+    assert.equal(frame.output, "GITHUB_TOKEN=[redacted:GITHUB_TOKEN]\n")
+  })
+
+  it("catches a secret whose JSON-escaped form differs from its literal form", () => {
+    const value = 'SYNTHETIC"BACK\\SLASH-VALUE-123456'
+    const written: string[] = []
+    const writer = makeFrameWriter(captureSocket(written), makeSecretRedactor({ WEIRD_TOKEN: value }))
+    writer.write({ type: "tool_result", output: `v=${value}` })
+
+    const line = written.join("")
+    assert.ok(!line.includes("BACK"), `escaped credential reached the socket: ${line}`)
+    assert.equal(JSON.parse(line.trimEnd()).output, "v=[redacted:WEIRD_TOKEN]")
+  })
+
+  it("writes a frame with no credential byte for byte", () => {
+    const written: string[] = []
+    const frame = { type: "state_change", state: "active" }
+    const writer = makeFrameWriter(captureSocket(written), syntheticRedactor())
+    writer.write(frame)
+    assert.equal(written.join(""), JSON.stringify(frame) + "\n")
+  })
+
+  it("a shape cannot span a JSON delimiter — no invalid JSON, no lost fields", () => {
+    // Round-1 review finding on PR #2606. The private-key-block shape has a
+    // `[\s\S]*?` body. Applied to a serialised line, one match can start in
+    // one field and end in a later one, consuming the JSON structure between
+    // them: either invalid JSON, or valid JSON with whole fields silently
+    // deleted. Redacting each scalar on its own makes that impossible.
+    const cases: Array<Record<string, unknown>> = [
+      {
+        type: "tool_result",
+        a: "-----BEGIN A PRIVATE KEY-----",
+        b: [1, "-----END A PRIVATE KEY-----"],
+      },
+      {
+        type: "tool_call",
+        args: {
+          a_old: "x -----BEGIN RSA PRIVATE KEY-----",
+          z_new: "-----END RSA PRIVATE KEY-----",
+        },
+        n: [1, 2],
+      },
+      {
+        type: "tool_result",
+        content: [
+          { text: "a -----BEGIN RSA PRIVATE KEY-----" },
+          { text: "-----END RSA PRIVATE KEY-----" },
+        ],
+        truncated: false,
+      },
+    ]
+
+    for (const frame of cases) {
+      const written: string[] = []
+      const writer = makeFrameWriter(captureSocket(written), makeSecretRedactor({}))
+      writer.write(frame)
+      const line = written.join("").trimEnd()
+
+      let parsed: unknown
+      assert.doesNotThrow(() => {
+        parsed = JSON.parse(line)
+      }, `unparseable line: ${line}`)
+      // No field holds a complete block, so the frame must round-trip
+      // unchanged — key set, nesting, and array lengths all intact.
+      assert.deepEqual(parsed, frame, `frame was altered: ${line}`)
+    }
+  })
+
+  it("still redacts a complete PEM block that lives inside one field", () => {
+    // Refusing to span must not switch the shape layer off.
+    const pem =
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----"
+    const written: string[] = []
+    const writer = makeFrameWriter(captureSocket(written), makeSecretRedactor({}))
+    writer.write({ type: "tool_result", output: pem, keep: "untouched" })
+
+    const line = written.join("").trimEnd()
+    const parsed = JSON.parse(line) as { output: string; keep: string }
+    assert.ok(!line.includes("PRIVATE KEY"), `block survived: ${line}`)
+    assert.equal(parsed.output, "[redacted:private-key-block]")
+    assert.equal(parsed.keep, "untouched")
+  })
+
+  it("redacts a secret hidden inside a non-plain object", () => {
+    // The walk normalises a non-plain object through JSON first, so it covers
+    // exactly the strings JSON.stringify is about to emit. This is what lets
+    // the writer drop the unsafe line-level pass.
+    class Wrapper {
+      constructor(private readonly value: string) {}
+      toJSON() {
+        return { inner: this.value }
+      }
+    }
+    const written: string[] = []
+    const writer = makeFrameWriter(captureSocket(written), syntheticRedactor())
+    writer.write({ type: "tool_result", wrapped: new Wrapper(SYNTHETIC_GITHUB_TOKEN) })
+
+    const line = written.join("")
+    assert.ok(!line.includes(SYNTHETIC_GITHUB_TOKEN), `credential reached the socket: ${line}`)
+    assert.equal(JSON.parse(line.trimEnd()).wrapped.inner, "[redacted:GITHUB_TOKEN]")
+  })
+})
+
+describe("#2589: truncateString redacts before the byte cut", () => {
+  after(() => {
+    delete process.env.GITHUB_TOKEN
+    resetDefaultSecretRedactor()
+  })
+
+  it("a secret straddling the 8 KiB boundary is removed, not cut in half", () => {
+    process.env.GITHUB_TOKEN = SYNTHETIC_GITHUB_TOKEN
+    resetDefaultSecretRedactor()
+
+    // Place the secret so the truncation point falls inside it.
+    const head = "x".repeat(TRUNCATION_LIMIT_BYTES - 10)
+    const input = head + SYNTHETIC_GITHUB_TOKEN + "y".repeat(100)
+    const { text } = truncateString(input)
+
+    assert.ok(!text.includes(SYNTHETIC_GITHUB_TOKEN), "the whole secret survived")
+    // No partial secret either: nothing longer than the guard length of the
+    // secret's prefix may remain.
+    assert.ok(
+      !text.includes(SYNTHETIC_GITHUB_TOKEN.slice(0, 12)),
+      `a partial secret survived the cut: ${text.slice(-40)}`,
+    )
+    // The marker replaced the secret before the cut. The marker itself can
+    // then be cut, because it now sits astride the boundary — that is fine,
+    // it carries no secret.
+    assert.ok(text.includes("[redacted:"), `marker missing: ${text.slice(-40)}`)
+  })
+
+  it("names the variable when the marker fits inside the budget", () => {
+    process.env.GITHUB_TOKEN = SYNTHETIC_GITHUB_TOKEN
+    resetDefaultSecretRedactor()
+    const { text, truncated } = truncateString(`token=${SYNTHETIC_GITHUB_TOKEN}\n`)
+    assert.equal(text, "token=[redacted:GITHUB_TOKEN]\n")
+    assert.equal(truncated, false)
+  })
+
+  it("leaves a string with no credential untouched", () => {
+    process.env.GITHUB_TOKEN = SYNTHETIC_GITHUB_TOKEN
+    resetDefaultSecretRedactor()
+    const input = "hello world"
+    assert.deepEqual(truncateString(input), { text: input, truncated: false })
+  })
+})
+
+describe("#2589: registry accessors", () => {
+  it("exposes non-empty, sorted, de-duplicated name lists", () => {
+    for (const [label, list] of [
+      ["CREDENTIAL_ENV_NAMES", CREDENTIAL_ENV_NAMES],
+      ["CREDENTIAL_ENV_PREFIXES", CREDENTIAL_ENV_PREFIXES],
+      ["CREDENTIAL_ENV_NAME_SUFFIXES", CREDENTIAL_ENV_NAME_SUFFIXES],
+    ] as const) {
+      assert.ok(list.length > 0, `${label} is empty`)
+      assert.equal(new Set(list).size, list.length, `${label} has duplicates`)
+      assert.deepEqual([...list].sort(), [...list], `${label} is not sorted`)
+    }
+  })
+
+  it("builds the marker in the documented form", () => {
+    assert.equal(redactionMarker("GITHUB_TOKEN"), "[redacted:GITHUB_TOKEN]")
   })
 })

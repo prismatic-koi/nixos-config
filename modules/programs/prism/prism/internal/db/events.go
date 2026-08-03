@@ -19,6 +19,11 @@ func (d *DB) WriteEvent(e Event) error {
 	}
 	createdAt := e.CreatedAt.UnixMilli()
 
+	// Second redaction control (issue #2589). The harness redacts before it
+	// writes to the socket; this covers every other producer, including a
+	// harness with no redactor of its own. See redact.go.
+	e.Payload = d.redactPayload(e.Payload)
+
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("db: write event: begin tx: %w", err)
@@ -576,6 +581,9 @@ func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
 		e.CreatedAt = time.Now()
 	}
 	createdAt := e.CreatedAt.UnixMilli()
+
+	// Second redaction control (issue #2589) — see WriteEvent.
+	e.Payload = d.redactPayload(e.Payload)
 
 	tx, err := d.conn.Begin()
 	if err != nil {

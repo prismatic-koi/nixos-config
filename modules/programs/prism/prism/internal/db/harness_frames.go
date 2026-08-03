@@ -44,6 +44,10 @@ func (d *DB) WriteHarnessFrame(f HarnessFrame) error {
 	if f.CreatedAt.IsZero() {
 		f.CreatedAt = time.Now()
 	}
+	// Second redaction control (issue #2589). harness_frames stores the raw
+	// wire bytes, so it carries the same credential exposure as
+	// agent_events. See redact.go.
+	f.Payload = d.redactPayload(f.Payload)
 	const q = `
 INSERT INTO harness_frames (id, session_name, instance_id, direction, type, payload, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)`
