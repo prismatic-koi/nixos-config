@@ -88,6 +88,7 @@ import {
   CREDENTIAL_ENV_NAME_SUFFIXES,
   CREDENTIAL_SHAPES,
   REDACTION_MIN_VALUE_LENGTH,
+  shapeTriggerPresent,
   isCredentialEnvName,
   makeSecretRedactor,
   redactionMarker,
@@ -6338,6 +6339,56 @@ describe("#2589: shape layer", () => {
     assert.equal(CREDENTIAL_SHAPES[0].name, "private-key-block")
     for (const s of CREDENTIAL_SHAPES) {
       assert.doesNotThrow(() => new RegExp(s.pattern), `shape ${s.name} must compile`)
+      assert.ok(s.triggers.length > 0, `shape ${s.name} declares no prefilter trigger`)
+      for (const t of s.triggers) {
+        assert.ok(t.length > 0, `shape ${s.name} declares an empty trigger`)
+      }
+    }
+  })
+
+  it("the cost prefilter never changes the result", () => {
+    // The prefilter skips the shape regexp when no trigger literal is
+    // present. It is only sound while every trigger is a NECESSARY substring
+    // of its pattern. Compare against the unfiltered regexp over a corpus of
+    // positives, near-misses, and ordinary output.
+    const unfiltered = new RegExp(
+      CREDENTIAL_SHAPES.map((s) => "(?:" + s.pattern + ")").join("|"),
+      "g",
+    )
+    const r = shapeOnly()
+    const corpus = [
+      "",
+      "ok\n",
+      "PASS\nok\tgithub.com/prismatic-koi/prism/internal/db\t0.412s\n",
+      "through the night, right enough, a rough ghost",
+      "ghp_short",
+      "github_pat_tooshort",
+      "sk-ant",
+      "AKIA123",
+      "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----",
+      `token ghp_${"A".repeat(36)} end`,
+      `token github_pat_${"B".repeat(40)} end`,
+      `key sk-ant-${"c".repeat(24)} end`,
+      `key sk-or-v1-${"d".repeat(32)} end`,
+      `key sk-proj-${"e".repeat(24)} end`,
+      `key xoxb-${"1".repeat(12)} end`,
+      `id AKIA${"Q".repeat(16)} end`,
+      `key AIza${"F".repeat(35)} end`,
+      `key ATATT3${"G".repeat(50)} end`,
+      "head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
+      `two ghp_${"A".repeat(36)} and AIza${"F".repeat(35)}`,
+    ]
+    for (const input of corpus) {
+      unfiltered.lastIndex = 0
+      const matched = unfiltered.test(input)
+      assert.equal(
+        shapeTriggerPresent(input) || !matched,
+        true,
+        `a shape matched ${JSON.stringify(input)} but no trigger is present`,
+      )
+      if (!matched) {
+        assert.equal(r.redact(input), input, `unmatched input changed: ${JSON.stringify(input)}`)
+      }
     }
   })
 })

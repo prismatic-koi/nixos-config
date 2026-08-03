@@ -219,42 +219,92 @@ func IsCredentialEnvName(name string) bool {
 type credentialShape struct {
 	name    string
 	pattern string
+	// triggers are literal substrings of which at least one MUST be
+	// present for the pattern to have any chance of matching. They drive
+	// the prefilter — see shapeTriggerPresent.
+	triggers []string
 	// anchored matches the whole of a candidate string. It is used to
 	// attribute a combined-regexp match back to the shape that produced it.
 	anchored *regexp.Regexp
 }
 
 var credentialShapes = func() []credentialShape {
-	raw := []struct{ name, pattern string }{
+	raw := []struct {
+		name, pattern string
+		triggers      []string
+	}{
 		// A PEM private-key block. First, because its body can contain
 		// text that a later shape would otherwise match piecemeal.
 		//
 		// `[\s\S]` rather than `(?s).` so the pattern string is byte-
 		// identical to the JavaScript one in the pi extension.
-		{"private-key-block", `-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`},
+		{
+			"private-key-block",
+			`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`,
+			[]string{"-----BEGIN "},
+		},
 		// GitHub fine-grained PAT. Before the classic prefixes because
 		// `github_pat_` shares no prefix with them but is the longer name.
-		{"github-fine-grained-pat", `github_pat_[A-Za-z0-9_]{40,255}`},
+		{
+			"github-fine-grained-pat",
+			`github_pat_[A-Za-z0-9_]{40,255}`,
+			[]string{"github_pat_"},
+		},
 		// GitHub classic PAT / OAuth / user / server / refresh token.
-		{"github-token", `gh[pousr]_[A-Za-z0-9]{36,255}`},
-		{"anthropic-api-key", `sk-ant-[A-Za-z0-9_-]{24,512}`},
-		{"openrouter-api-key", `sk-or-v1-[A-Za-z0-9]{32,512}`},
-		{"openai-api-key", `sk-proj-[A-Za-z0-9_-]{24,512}`},
-		{"slack-token", `xox[abprs]-[A-Za-z0-9-]{12,255}`},
-		{"aws-access-key-id", `\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`},
-		{"google-api-key", `\bAIza[0-9A-Za-z_-]{35}\b`},
-		{"atlassian-api-token", `ATATT3[A-Za-z0-9_=.-]{50,512}`},
+		{
+			"github-token",
+			`gh[pousr]_[A-Za-z0-9]{36,255}`,
+			[]string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"},
+		},
+		{"anthropic-api-key", `sk-ant-[A-Za-z0-9_-]{24,512}`, []string{"sk-ant-"}},
+		{"openrouter-api-key", `sk-or-v1-[A-Za-z0-9]{32,512}`, []string{"sk-or-v1-"}},
+		{"openai-api-key", `sk-proj-[A-Za-z0-9_-]{24,512}`, []string{"sk-proj-"}},
+		{
+			"slack-token",
+			`xox[abprs]-[A-Za-z0-9-]{12,255}`,
+			[]string{"xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"},
+		},
+		{"aws-access-key-id", `\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`, []string{"AKIA", "ASIA"}},
+		{"google-api-key", `\bAIza[0-9A-Za-z_-]{35}\b`, []string{"AIza"}},
+		{"atlassian-api-token", `ATATT3[A-Za-z0-9_=.-]{50,512}`, []string{"ATATT3"}},
 	}
 	out := make([]credentialShape, 0, len(raw))
 	for _, r := range raw {
 		out = append(out, credentialShape{
 			name:     r.name,
 			pattern:  r.pattern,
+			triggers: r.triggers,
 			anchored: regexp.MustCompile(`\A(?:` + r.pattern + `)\z`),
 		})
 	}
 	return out
 }()
+
+// shapeTriggers is the flattened trigger set, computed once.
+var shapeTriggers = func() []string {
+	var out []string
+	for _, s := range credentialShapes {
+		out = append(out, s.triggers...)
+	}
+	return out
+}()
+
+// shapeTriggerPresent reports whether any shape could possibly match s.
+//
+// It exists for cost, not correctness. Running the combined regexp over a
+// large payload costs roughly ten times as much as the literal substring
+// scans below, and the overwhelmingly common case is a payload with no
+// credential shape in it at all. Every trigger is a NECESSARY substring of
+// its pattern, so a false negative here is impossible;
+// TestCredentialShapes_EveryPatternRequiresOneOfItsTriggers pins that.
+func shapeTriggerPresent(s string) bool {
+	for _, t := range shapeTriggers {
+		if strings.Contains(s, t) {
+			return true
+		}
+	}
+	return false
+}
 
 // combinedShapeRE matches any credential shape in a single linear pass.
 // Go's regexp uses leftmost-first alternation, so the order of
@@ -266,6 +316,17 @@ var combinedShapeRE = func() *regexp.Regexp {
 	}
 	return regexp.MustCompile(strings.Join(parts, "|"))
 }()
+
+// CredentialShapeTriggers returns the literal prefilter substrings keyed by
+// shape name. At least one entry must be present in the input for the shape
+// to match.
+func CredentialShapeTriggers() map[string][]string {
+	out := make(map[string][]string, len(credentialShapes))
+	for _, s := range credentialShapes {
+		out[s.name] = slices.Clone(s.triggers)
+	}
+	return out
+}
 
 // CredentialShapeNames returns the names of the shape rules, in match order.
 // The order is load-bearing: alternation is leftmost-first, so it decides
@@ -476,7 +537,7 @@ func (r *Redactor) Redact(s string) string {
 	if r.values != nil {
 		s = r.values.Replace(s)
 	}
-	if r.shapes != nil {
+	if r.shapes != nil && shapeTriggerPresent(s) {
 		s = r.shapes.ReplaceAllStringFunc(s, func(m string) string {
 			return RedactionMarker(shapeNameFor(m))
 		})

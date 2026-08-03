@@ -1856,38 +1856,67 @@ export const CREDENTIAL_ENV_NAME_SUFFIXES: readonly string[] = [
  *
  * The pattern strings are byte-identical to the Go rules in
  * internal/payload/redact.go so the parity test can compare them directly.
+ *
+ * `triggers` are literal substrings of which at least one MUST be present for
+ * the pattern to have any chance of matching. They drive the prefilter, which
+ * exists for cost, not correctness: running the combined regexp over a large
+ * payload costs roughly ten times as much as the literal scans, and the
+ * overwhelmingly common case is a payload with no credential shape at all.
  */
 export const CREDENTIAL_SHAPES: ReadonlyArray<{
   readonly name: string
   readonly pattern: string
+  readonly triggers: readonly string[]
 }> = [
   {
     name: "private-key-block",
     pattern: String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`,
+    triggers: ["-----BEGIN "],
   },
   {
     name: "github-fine-grained-pat",
     pattern: String.raw`github_pat_[A-Za-z0-9_]{40,255}`,
+    triggers: ["github_pat_"],
   },
-  { name: "github-token", pattern: String.raw`gh[pousr]_[A-Za-z0-9]{36,255}` },
+  {
+    name: "github-token",
+    pattern: String.raw`gh[pousr]_[A-Za-z0-9]{36,255}`,
+    triggers: ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"],
+  },
   {
     name: "anthropic-api-key",
     pattern: String.raw`sk-ant-[A-Za-z0-9_-]{24,512}`,
+    triggers: ["sk-ant-"],
   },
   {
     name: "openrouter-api-key",
     pattern: String.raw`sk-or-v1-[A-Za-z0-9]{32,512}`,
+    triggers: ["sk-or-v1-"],
   },
-  { name: "openai-api-key", pattern: String.raw`sk-proj-[A-Za-z0-9_-]{24,512}` },
-  { name: "slack-token", pattern: String.raw`xox[abprs]-[A-Za-z0-9-]{12,255}` },
+  {
+    name: "openai-api-key",
+    pattern: String.raw`sk-proj-[A-Za-z0-9_-]{24,512}`,
+    triggers: ["sk-proj-"],
+  },
+  {
+    name: "slack-token",
+    pattern: String.raw`xox[abprs]-[A-Za-z0-9-]{12,255}`,
+    triggers: ["xoxa-", "xoxb-", "xoxp-", "xoxr-", "xoxs-"],
+  },
   {
     name: "aws-access-key-id",
     pattern: String.raw`\b(?:AKIA|ASIA)[0-9A-Z]{16}\b`,
+    triggers: ["AKIA", "ASIA"],
   },
-  { name: "google-api-key", pattern: String.raw`\bAIza[0-9A-Za-z_-]{35}\b` },
+  {
+    name: "google-api-key",
+    pattern: String.raw`\bAIza[0-9A-Za-z_-]{35}\b`,
+    triggers: ["AIza"],
+  },
   {
     name: "atlassian-api-token",
     pattern: String.raw`ATATT3[A-Za-z0-9_=.-]{50,512}`,
+    triggers: ["ATATT3"],
   },
 ]
 
@@ -1931,6 +1960,25 @@ const SHAPE_ATTRIBUTION: ReadonlyArray<{ name: string; anchored: RegExp }> =
 const COMBINED_SHAPE_SOURCE = CREDENTIAL_SHAPES.map(
   (s) => "(?:" + s.pattern + ")",
 ).join("|")
+
+/** Flattened trigger set for the shape prefilter. */
+const SHAPE_TRIGGERS: readonly string[] = CREDENTIAL_SHAPES.flatMap(
+  (s) => s.triggers as string[],
+)
+
+/**
+ * Reports whether any shape could possibly match `s`.
+ *
+ * Every trigger is a NECESSARY substring of its pattern, so a false negative
+ * is impossible. The Go side pins that property with a fuzz target
+ * (FuzzRedactShapePrefilter).
+ */
+export function shapeTriggerPresent(s: string): boolean {
+  for (const t of SHAPE_TRIGGERS) {
+    if (s.includes(t)) return true
+  }
+  return false
+}
 
 /** Attribute a combined-regexp match back to the shape rule that produced it. */
 function shapeNameFor(match: string): string {
@@ -2001,8 +2049,10 @@ export function makeSecretRedactor(
       valueRe.lastIndex = 0
       out = out.replace(valueRe, (m) => markerByValue.get(m) ?? m)
     }
-    shapeRe.lastIndex = 0
-    out = out.replace(shapeRe, (m) => redactionMarker(shapeNameFor(m)))
+    if (shapeTriggerPresent(out)) {
+      shapeRe.lastIndex = 0
+      out = out.replace(shapeRe, (m) => redactionMarker(shapeNameFor(m)))
+    }
     return out
   }
 

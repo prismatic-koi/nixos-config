@@ -468,3 +468,89 @@ func BenchmarkRedact_WithMatches(b *testing.B) {
 		_ = r.Redact(in)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Shape prefilter — the cost optimisation must never change the result.
+// ---------------------------------------------------------------------------
+
+// shapeCorpus is the input set the prefilter is checked against: one positive
+// sample per shape, plus near-misses and ordinary output.
+func shapeCorpus() []string {
+	return []string{
+		"",
+		"ok\n",
+		"PASS\nok\tgithub.com/prismatic-koi/prism/internal/db\t0.412s\n",
+		"through the night, right enough, a rough ghost",
+		"ghp_short",
+		"github_pat_tooshort",
+		"sk-ant",
+		"AKIA123",
+		"-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----",
+		"token ghp_" + strings.Repeat("A", 36) + " end",
+		"token github_pat_" + strings.Repeat("B", 40) + " end",
+		"key sk-ant-" + strings.Repeat("c", 24) + " end",
+		"key sk-or-v1-" + strings.Repeat("d", 32) + " end",
+		"key sk-proj-" + strings.Repeat("e", 24) + " end",
+		"key xoxb-" + strings.Repeat("1", 12) + " end",
+		"id AKIA" + strings.Repeat("Q", 16) + " end",
+		"key AIza" + strings.Repeat("F", 35) + " end",
+		"key ATATT3" + strings.Repeat("G", 50) + " end",
+		"head\n-----BEGIN OPENSSH PRIVATE KEY-----\nc3ludGhldGlj\n-----END OPENSSH PRIVATE KEY-----\ntail",
+		"two ghp_" + strings.Repeat("A", 36) + " and AIza" + strings.Repeat("F", 35),
+	}
+}
+
+// TestCredentialShapes_PrefilterNeverChangesTheResult falsifies the prefilter:
+// every trigger must be a NECESSARY substring of its pattern, so skipping the
+// regexp when no trigger is present must produce exactly the same output as
+// running it unconditionally.
+func TestCredentialShapes_PrefilterNeverChangesTheResult(t *testing.T) {
+	r := payload.NewShapeOnlyRedactor()
+	for _, in := range shapeCorpus() {
+		withPrefilter := r.Redact(in)
+		withoutPrefilter := payload.RedactShapesNoPrefilterForTest(in)
+		if withPrefilter != withoutPrefilter {
+			t.Errorf("prefilter changed the result for %q:\n  with:    %q\n  without: %q",
+				in, withPrefilter, withoutPrefilter)
+		}
+	}
+}
+
+// TestCredentialShapes_EveryPatternRequiresOneOfItsTriggers checks the other
+// direction: a payload the shape layer rewrites must have fired the prefilter.
+func TestCredentialShapes_EveryPatternRequiresOneOfItsTriggers(t *testing.T) {
+	for _, in := range shapeCorpus() {
+		if payload.RedactShapesNoPrefilterForTest(in) != in && !payload.ShapeTriggerPresentForTest(in) {
+			t.Errorf("a shape matched %q but no trigger is present — the prefilter would skip it", in)
+		}
+	}
+}
+
+func TestCredentialShapeTriggers_EveryShapeDeclaresAtLeastOne(t *testing.T) {
+	triggers := payload.CredentialShapeTriggers()
+	for _, name := range payload.CredentialShapeNames() {
+		if len(triggers[name]) == 0 {
+			t.Errorf("shape %q declares no prefilter trigger", name)
+		}
+		for _, trig := range triggers[name] {
+			if trig == "" {
+				t.Errorf("shape %q declares an empty trigger", name)
+			}
+		}
+	}
+}
+
+// FuzzRedactShapePrefilter is the generalised form of the two tests above: for
+// any input at all, the prefiltered shape layer and the unfiltered one must
+// agree. The seed corpus runs on every `go test`.
+func FuzzRedactShapePrefilter(f *testing.F) {
+	for _, s := range shapeCorpus() {
+		f.Add(s)
+	}
+	r := payload.NewShapeOnlyRedactor()
+	f.Fuzz(func(t *testing.T, in string) {
+		if got, want := r.Redact(in), payload.RedactShapesNoPrefilterForTest(in); got != want {
+			t.Errorf("prefilter changed the result for %q: got %q, want %q", in, got, want)
+		}
+	})
+}

@@ -113,17 +113,26 @@ func TestRedactorParityWithExtension_ShapeRules(t *testing.T) {
 	if block == nil {
 		t.Fatal("could not find CREDENTIAL_SHAPES in the extension source")
 	}
-	ruleRe := regexp.MustCompile(`(?s)name:\s*"([^"]+)",\s*pattern:\s*String\.raw` + "`" + `([^` + "`" + `]*)` + "`")
+	ruleRe := regexp.MustCompile(`(?s)name:\s*"([^"]+)",\s*pattern:\s*String\.raw` + "`" + `([^` + "`" + `]*)` + "`" + `,\s*triggers:\s*\[([^\]]*)\]`)
 	matches := ruleRe.FindAllStringSubmatch(block[1], -1)
 	if len(matches) == 0 {
 		t.Fatal("CREDENTIAL_SHAPES parsed to zero rules")
 	}
 
+	entryRe := regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
 	tsNames := make([]string, 0, len(matches))
 	tsPatterns := make(map[string]string, len(matches))
+	tsTriggers := make(map[string][]string, len(matches))
 	for _, m := range matches {
 		tsNames = append(tsNames, m[1])
 		tsPatterns[m[1]] = m[2]
+		for _, e := range entryRe.FindAllStringSubmatch(m[3], -1) {
+			unquoted, err := strconv.Unquote(`"` + e[1] + `"`)
+			if err != nil {
+				t.Fatalf("shape %q: cannot unquote trigger %q: %v", m[1], e[1], err)
+			}
+			tsTriggers[m[1]] = append(tsTriggers[m[1]], unquoted)
+		}
 	}
 
 	goNames := payload.CredentialShapeNames()
@@ -135,9 +144,16 @@ func TestRedactorParityWithExtension_ShapeRules(t *testing.T) {
 	}
 
 	goPatterns := payload.CredentialShapePatterns()
+	goTriggers := payload.CredentialShapeTriggers()
 	for _, name := range goNames {
 		if goPatterns[name] != tsPatterns[name] {
 			t.Errorf("shape %q pattern drifted:\n  Go: %s\n  TS: %s", name, goPatterns[name], tsPatterns[name])
+		}
+		// The prefilter is only sound while every trigger is a necessary
+		// substring of the pattern. Both sides must use the same set, or
+		// one of them silently skips a shape the other applies.
+		if !slices.Equal(goTriggers[name], tsTriggers[name]) {
+			t.Errorf("shape %q triggers drifted:\n  Go: %v\n  TS: %v", name, goTriggers[name], tsTriggers[name])
 		}
 	}
 }

@@ -111,6 +111,19 @@ Output that carries no credential value is written unchanged, byte for byte.
 - the shape layer is one combined RE2 regular expression. RE2 is linear in the
   input and does not backtrack.
 
+The shape layer runs behind a literal prefilter. Every shape declares a set of
+trigger substrings — `ghp_`, `sk-ant-`, `-----BEGIN `, and so on — of which at
+least one must be present for the pattern to match at all. When none is
+present, which is the overwhelmingly common case, the regular expression is
+skipped and only the literal scans run. Measured on this repo, that takes the
+throughput from about 8 MB/s to about 365 MB/s.
+
+The prefilter is a cost optimisation, never a correctness one. It is sound
+only while every trigger is a NECESSARY substring of its pattern.
+`FuzzRedactShapePrefilter` pins that property: for any input, the prefiltered
+shape layer and the unfiltered one must produce the same output. Add a shape
+and you must add its triggers, on both sides.
+
 Neither pass is quadratic in the size of a `tool_result` payload.
 `TestRedact_LargePayloadCostIsNotQuadratic` bounds the wall-clock cost of one
 call on 8 MiB, which separates a linear implementation from a quadratic one
