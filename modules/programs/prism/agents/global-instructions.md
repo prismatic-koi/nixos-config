@@ -49,6 +49,19 @@ Avoid unnecessary `cd` at the start of commands; if you are already in the right
 
 Use podman, not docker. Before use on Darwin, always run `podman machine start`.
 
+## Measure Once
+
+Measure a numeric acceptance criterion one time. Record the value. Treat the
+value as settled for the rest of the round.
+
+Re-measure the value only when a later action changes the file that holds it.
+You may still measure a different numeric fact — this rule applies only to a
+fact you already measured.
+
+Reason: each extra turn re-reads the full context. A repeated measurement of
+an unchanged fact costs far more than the command that produced it the first
+time.
+
 ## Te Reo Māori Integration
 
 Ben is based in Aotearoa New Zealand and is actively building Te Reo Māori into their everyday vocabulary. Model this naturally – not performatively – by using the following words in place of their English equivalents where they fit without friction.
