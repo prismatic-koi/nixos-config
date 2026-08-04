@@ -218,6 +218,7 @@ func TestCheckin_HumanReadable_UnchangedByJSON(t *testing.T) {
 	if err := d.WriteEvent(e); err != nil {
 		t.Fatalf("WriteEvent: %v", err)
 	}
+	grantCheckinCallerIdentity(t, session)
 
 	out := captureStdout(t, func() {
 		if err := runCheckinSession(session, 10, nil, nil, nil, false, false); err != nil {

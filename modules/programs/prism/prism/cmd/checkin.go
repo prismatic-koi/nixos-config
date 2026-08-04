@@ -139,7 +139,13 @@ func runCheckin(cmd *cobra.Command, args []string) error {
 }
 
 // runCheckinSession is the DB-backed path. Falls back to legacy screen-scrape
-// if the DB is unavailable or has no rows for this session.
+// if the DB has no rows for this session.
+//
+// Permission: the caller's role and repo scope are checked on BOTH routes out
+// of this function (issue #2619). A sandboxed caller proxies to the host-API
+// `/checkin` endpoint, which applies the tiers server-side. A `host`-mode
+// caller takes the direct route below, where authorizeDirectCheckin applies
+// the same predicate — see cmd/checkin_permission.go.
 //
 // When no explicit types are requested, this uses the assistant-turn-centric
 // rendering mode: --last N means N assistant turns, not N raw events.
@@ -159,6 +165,14 @@ func runCheckinSession(session string, limit int, before, after *string, types [
 		}
 		return renderProxiedCheckin(raw, verbose)
 	}
+
+	// Direct route: the host-API handler never ran, so apply its permission
+	// predicate here. Fails closed — an unresolvable caller, an unreadable DB,
+	// or a refusal all return a non-zero exit before any history is read.
+	if permErr := authorizeDirectCheckin(session); permErr != nil {
+		return permErr
+	}
+
 	// When --json is requested on the direct-DB path, query events and emit
 	// the same JSON shape as the host-API /checkin endpoint.
 	if jsonMode {

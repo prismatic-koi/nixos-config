@@ -5711,6 +5711,119 @@ echo "session \"test-repo@keybind-branch\" created"
 	}
 }
 
+// TestHostAPI_Spawn_SetsInvokerSessionName verifies the fix for issue #2622:
+// the /spawn handler must set PRISM_SESSION_NAME on the host-side child to
+// the requesting session (this sidecar's own session, since the client
+// posts to its own local sidecar), not whatever value the sidecar process
+// itself inherited from its launch environment. Without this, the child
+// inherits an ancestor session name (or nothing), and
+// session.SpawnOpts.InvokerSession — and in turn the from_session field on
+// the durable session.spawn_intent / session.spawn_failed events — records
+// the wrong requester.
+func TestHostAPI_Spawn_SetsInvokerSessionName(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+{
+  echo "PRISM_SESSION_NAME=${PRISM_SESSION_NAME}"
+} > ` + envFile + `
+echo "session \"test-repo@some-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"some-branch","prompt":"hello"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	want := "PRISM_SESSION_NAME=" + cfg.SessionName
+	if got != want {
+		t.Errorf("captured env %q, want %q: the host-side spawn child must see PRISM_SESSION_NAME set to the requesting session, not an inherited value",
+			got, want)
+	}
+}
+
+// TestHostAPI_Spawn_InheritedSessionNameDoesNotLeak verifies the edge-case
+// AC for issue #2622: filterEnv must strip whatever PRISM_SESSION_NAME the
+// sidecar process itself inherited before appending the correct value, so
+// a spurious ancestor value in the sidecar's own environment cannot survive
+// onto the host-side child.
+func TestHostAPI_Spawn_InheritedSessionNameDoesNotLeak(t *testing.T) {
+	d := openTestDB(t)
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+{
+  echo "PRISM_SESSION_NAME=${PRISM_SESSION_NAME}"
+} > ` + envFile + `
+echo "session \"test-repo@some-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+
+	// Simulate the sidecar process itself having inherited a stray
+	// PRISM_SESSION_NAME from an ancestor process — e.g. an operator
+	// launching the sidecar manually from a shell where the var was
+	// already set to some other session.
+	t.Setenv("PRISM_SESSION_NAME", "some-ancestor@stale")
+
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "test-repo@main",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo@main",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"some-branch","prompt":"hello"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	want := "PRISM_SESSION_NAME=" + cfg.SessionName
+	if got != want {
+		t.Errorf("captured env %q, want %q: the sidecar's own inherited PRISM_SESSION_NAME must not leak onto the host-side child",
+			got, want)
+	}
+}
+
 // TestHostAPI_Spawn_FromKeybind_NonEmptyPrompt_DoesNotSetEnv verifies the
 // narrowing fix surfaced by review-context on the first review round of
 // #2063, preserved post-#2073: when from_keybind:true arrives alongside
@@ -5802,6 +5915,67 @@ func TestHostAPI_Spawn_NoFromKeybind_EmptyPromptStillRejected(t *testing.T) {
 		if !strings.Contains(errResp["error"], "prompt is required") {
 			t.Errorf("body %q: error %q should mention 'prompt is required'", body, errResp["error"])
 		}
+	}
+}
+
+// TestHostAPI_Spawn_UnresolvableInvokerSession_SetsEmptyEnv verifies the
+// edge-case AC for issue #2622: when the requesting session has no
+// resolvable name (empty string, admitted here via a DB row that marks it
+// coordinator so requireCoordinator passes), the handler still sets
+// PRISM_SESSION_NAME on the host-side child — to the empty string — rather
+// than leaving it unset (which would let the sidecar's own inherited value
+// leak through).
+func TestHostAPI_Spawn_UnresolvableInvokerSession_SetsEmptyEnv(t *testing.T) {
+	d := openTestDB(t)
+	if err := d.UpsertStatusSeedRootAgentName("", "test-repo", "/tmp/test-repo", "active", nil, nil, "coordinator", "", ""); err != nil {
+		t.Fatalf("seed DB: %v", err)
+	}
+
+	// Simulate the sidecar process itself having inherited a stray
+	// PRISM_SESSION_NAME — must not leak through when the requester's own
+	// session name is unresolvable (empty).
+	t.Setenv("PRISM_SESSION_NAME", "some-ancestor@stale")
+
+	envFile := filepath.Join(t.TempDir(), "captured-env")
+	stubPath := filepath.Join(t.TempDir(), "prism-stub")
+	stubScript := `#!/bin/sh
+{
+  echo "PRISM_SESSION_NAME=${PRISM_SESSION_NAME}"
+} > ` + envFile + `
+echo "session \"test-repo@some-branch\" created"
+`
+	if err := os.WriteFile(stubPath, []byte(stubScript), 0o755); err != nil {
+		t.Fatalf("write stub: %v", err)
+	}
+	clk := newTestClock()
+	cfg := Config{
+		SessionName:     "",
+		Repo:            "test-repo",
+		Worktree:        "/tmp/test-repo",
+		HarnessURL:      "http://localhost:14000",
+		DB:              d,
+		Clock:           clk,
+		AgentRole:       "coordinator",
+		PrismBinaryPath: stubPath,
+		Harness:         newSSEHarness(),
+	}
+	sc := New(cfg)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/spawn",
+		`{"branch":"some-branch","prompt":"hello"}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+
+	capturedEnv, err := os.ReadFile(envFile)
+	if err != nil {
+		t.Fatalf("read captured env: %v", err)
+	}
+	got := strings.TrimSpace(string(capturedEnv))
+	want := "PRISM_SESSION_NAME="
+	if got != want {
+		t.Errorf("captured env %q, want %q: an unresolvable requesting session must produce an explicit empty PRISM_SESSION_NAME, never a leaked inherited value",
+			got, want)
 	}
 }
 

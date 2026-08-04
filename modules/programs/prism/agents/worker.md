@@ -222,16 +222,16 @@ for every round `<N>` you have run. Every other target returns HTTP 403:
 your own session, another worker, your coordinator, and any session in
 another repo.
 
-The rule is enforced by the host API, not by prose. `/checkin` resolves the
+The rule is enforced in code, not by prose. `prism checkin` resolves the
 target through `session_groups.parent_session` and admits it only when that
 parent is your session name. To read anything outside that scope, ask the
 coordinator with `prism escalate`.
 
-One caveat, so you do not mistake a gap for a grant: the gate sits on the
-host-API route, which is the route your sandbox takes. A `host`-mode session
-has no socket and reads the prism DB directly, so it meets no gate there
-(issue #2619). Treat the scope above as a hard rule in every isolation mode.
-An absent mechanism is not permission.
+The rule holds in every isolation mode (issue #2619). A sandboxed session
+meets it on the host-API route and gets HTTP 403. A `host`-mode session has no
+socket and reads the prism DB directly, so it meets the same predicate on the
+direct CLI route and gets a non-zero exit. There is no isolation mode in which
+the scope is wider.
 
 ### Handling review results
 
@@ -385,7 +385,7 @@ but possible during transitions), the command exits non-zero and lists them
 — re-run with `--to <session>` to choose. If no coordinator is running, the
 command still transitions you into `escalated` and writes a "please wait for
 a human" marker into your own log. You cannot read that marker yourself:
-`prism checkin <self>` returns 403, because the grant covers the review
+`prism checkin <self>` is refused, because the grant covers the review
 agents of your session only. The marker is there for the coordinator and for
 the user.
 

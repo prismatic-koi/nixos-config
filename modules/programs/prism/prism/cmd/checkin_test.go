@@ -310,6 +310,7 @@ func TestRenderCheckinTurns_LastN(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, session)
 
 	out := captureStdout(t, func() {
 		if err := runCheckinSession(session, 3, nil, nil, nil, false, false); err != nil {
@@ -353,6 +354,7 @@ func TestRenderCheckinTurns_DefaultLast10(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, session)
 
 	// Default limit is 10: last 10 of 15 are indices 5-14.
 	out := captureStdout(t, func() {
@@ -637,6 +639,7 @@ func TestRunCheckinSession_NoAssistantEventsButHasUserEvents(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, session)
 
 	out := captureStdout(t, func() {
 		if err := runCheckinSession(session, 10, nil, nil, nil, false, false); err != nil {
@@ -672,6 +675,7 @@ func TestRunCheckinSession_TypesRoutesToRaw(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, session)
 
 	// --types msg_assistant,tool_call routes to raw path.
 	out := captureStdout(t, func() {
@@ -1015,6 +1019,7 @@ func TestRunCheckinSession_LegacyFallbackNoRows(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	SetTestDBPath(dbPath)
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, "repo@ghost")
 
 	// Session "repo@ghost" has no DB rows — should fall through to legacy.
 	err := runCheckinSession("repo@ghost", 10, nil, nil, nil, false, false)
@@ -1416,6 +1421,7 @@ func TestRunCheckin_NoReviewDivertWithoutSuffix(t *testing.T) {
 
 	SetTestDBPath(d.Path())
 	t.Cleanup(func() { SetTestDBPath("") })
+	grantCheckinCallerIdentity(t, parentSession)
 
 	// Build a minimal cobra.Command with the flags that runCheckin reads.
 	cmd := &cobra.Command{}

@@ -935,7 +935,7 @@ See [Debugging a running or stuck session](#debugging-a-running-or-stuck-session
 
 ### Who can check in on what
 
-`prism checkin` is scoped per caller. A sandboxed session reaches the host-API `/checkin` endpoint, which applies three tiers (issue #2587). Everything outside your tier returns HTTP 403.
+`prism checkin` is scoped per caller. Three tiers apply (issue #2587), and both routes out of the verb are gated (issue #2619). A sandboxed session reaches the host-API `/checkin` endpoint and gets HTTP 403 for anything outside its tier. A `host`-mode session has no socket, so the CLI applies the same predicate against the DB directly and exits non-zero. The predicate is one shared copy, `authz.AuthorizeCheckin`, with the caller passed in.
 
 | Your role | You can check in on |
 |---|---|
@@ -945,12 +945,13 @@ See [Debugging a running or stuck session](#debugging-a-running-or-stuck-session
 
 Notes that matter in practice:
 
-- **A worker cannot check in on itself.** `prism checkin <self>` returns 403. The grant covers the review agents of your session, and you are not one of them.
-- **The worker scope is DB-backed.** `/checkin` resolves the target through `session_groups.parent_session` and admits it only when that parent is the caller's session name. A name that merely looks like `<your-session>~review-1-review-code` is not enough: a review agent whose group row was deleted is refused with 403.
+- **A worker cannot check in on itself.** `prism checkin <self>` is refused. The grant covers the review agents of your session, and you are not one of them.
+- **The worker scope is DB-backed.** The predicate resolves the target through `session_groups.parent_session` and admits it only when that parent is the caller's session name. A name that merely looks like `<your-session>~review-1-review-code` is not enough: a review agent whose group row was deleted is refused.
 - **Earlier rounds stay in scope.** Each round registers its own group row against the same parent, so round 1 is as readable as round 3.
 - **Tier 3 is a coordinator with a troubleshooting privilege, not a superuser.** The privileged repos are declared in the prism NixOS module (`nx.programs.prism.checkin.privilegedRepos`, default `[ "nixos-config" ]`) and rendered to a file no sandbox can read or write. The privilege covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row.
-- **Read the audit rows with `prism audit` from a host shell.** `prism audit` cannot open the prism DB from inside a sandbox: `$XDG_STATE_HOME/prism` is deliberately never bound in, and the command has no host-API proxy branch. It therefore fails for a sandboxed coordinator, which is the default on `m4mac`. Issue #2618 tracks the fix.
-- **A `host`-mode session has no socket** and reads the DB directly, so the host API never sees the call — no tier check and no audit write happen on that route. Issue #2619 tracks gating it.
+- **Read the audit rows with `prism audit`.** The command works from a host shell and from inside a sandbox. `$XDG_STATE_HOME/prism` is deliberately never bound into a sandbox, so a sandboxed caller cannot open the prism DB. When `PRISM_HOST_API` is set, `prism audit` proxies the read to the host API's `GET /audit` instead (issue #2618). That endpoint is coordinator-only, and it applies the `type = 'audit'` filter server-side, so it returns no `agent_events` row of any other type. A worker that runs `prism audit` inside a sandbox gets HTTP 403. That gate sits on the host-API route alone: a `host`-mode session has no socket, reads the DB directly, and meets no role check on that path. Issue #2627 tracks gating it, in the same set as #2619.
+- **A `host`-mode session gets the same answer by a different path.** It has no socket, so the host API never sees the call; `authorizeDirectCheckin` in `cmd/checkin_permission.go` applies the same tiers and a refusal is a non-zero exit rather than an HTTP 403. A tier-3 read writes the same audit row, tagged `prism-cli` instead of `prism-host-api` (issue #2619). The gate is not a containment boundary — a host-mode session can read `prism.db` with `sqlite3` and bypass the verb — it exists for audit completeness and route consistency.
+- **The caller must have a session identity.** On the direct route the caller comes from `PRISM_SESSION_NAME`, else the current tmux session. `prism checkin` from a plain terminal outside tmux is refused with an error naming `PRISM_SESSION_NAME`, the same way `prism merges` refuses one.
 
 If you need conversation history outside your tier, ask the coordinator with `prism escalate`. Do not attempt to work around the gate.
 
@@ -1063,7 +1064,7 @@ A same-repo coordinator candidate is any active (ended_at IS NULL) row in the sa
 
 - New event type `session.escalated`, distinct from `session.finished`. Existing handlers that subscribe only to `session.finished` continue to receive nothing for escalations.
 - Payload carries: `source` (calling worker), `target` (coordinator session, empty when none), `prompt` (body), `pr_numbers` (open PRs whose head matches the worker's branch), `branch`, `head_sha`, `verdicts` (last review-cycle verdicts when discoverable), `occurred_at` (RFC3339).
-- The same payload is also written into the calling session's own event log as type `escalation`, so a `prism checkin` of the escalating session shows the escalation context inline. The escalating worker cannot read it that way — `prism checkin <self>` returns 403 (see [Who can check in on what](#who-can-check-in-on-what)) — the row is there for the coordinator and for the user.
+- The same payload is also written into the calling session's own event log as type `escalation`, so a `prism checkin` of the escalating session shows the escalation context inline. The escalating worker cannot read it that way — `prism checkin <self>` is refused (see [Who can check in on what](#who-can-check-in-on-what)) — the row is there for the coordinator and for the user.
 
 ### Success signal — the `OK` line is the verification
 

@@ -205,6 +205,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /checkin       — return conversation history for a session (role-scoped)
 //	GET  /logs          — return the log file for a session (coordinator only)
 //	GET  /stats         — return stats/events for rendering (all roles)
+//	GET  /audit         — return audit-trail events (coordinator only)
 //	GET  /db/query      — run a single read-only SQL statement (coordinator only)
 //	GET  /db/schema     — return CREATE TABLE / CREATE INDEX DDL (coordinator only)
 //	GET  /db/tables     — return user table names (coordinator only)
@@ -1496,8 +1497,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			spawnPathEnv = "PRISM_SPAWN_PATH=" + spawnPath
 			keybindEnv = "PRISM_KEYBIND_SPAWN=1"
 		}
-		cleanedEnv := filterEnv(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), "PRISM_KEYBIND_SPAWN")
-		cmd.Env = append(cleanedEnv, spawnPathEnv, keybindEnv)
+		// PRISM_SESSION_NAME tells the host-side `prism spawn` which session
+		// made the request, so session.SpawnOpts.InvokerSession — and in turn
+		// the from_session field on the durable session.spawn_intent /
+		// session.spawn_failed events — records the true requester rather
+		// than whatever value the sidecar process itself inherited (issue
+		// #2622). s.cfg.SessionName is this sidecar's own session — the
+		// session that made this HTTP request through its local sidecar
+		// socket. Filter any inherited PRISM_SESSION_NAME out before setting
+		// the correct value so the inherited value cannot survive, including
+		// when s.cfg.SessionName is empty (defence in depth; unresolvable
+		// requester falls through to an explicit empty string rather than a
+		// leaked ancestor value).
+		cleanedEnv := filterEnv(filterEnv(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), "PRISM_KEYBIND_SPAWN"), "PRISM_SESSION_NAME")
+		cmd.Env = append(cleanedEnv, spawnPathEnv, keybindEnv, "PRISM_SESSION_NAME="+s.cfg.SessionName)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
@@ -3417,6 +3430,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		s.hostAPIDBTables(w, r)
+	})
+
+	// GET /audit — the audit-trail read surface behind `prism audit` (#2618).
+	// The handler lives in host_api_audit.go, which also carries the security
+	// rationale in full.
+	//
+	// Coordinator-only, matching /db/query. Audit rows are agent_events rows
+	// with type = 'audit', and /db/query already reads every agent_events row
+	// for any coordinator, so this gate copies an existing decision rather
+	// than making a new one. The tier-3 `prism checkin` privilege (#2587) is
+	// not consulted here and must not be: it covers /checkin ALONE.
+	//
+	// The type = 'audit' filter is applied inside db.QueryAuditEvents, not by
+	// a request parameter, so no caller can widen this route into a general
+	// agent_events reader.
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "audit") {
+			return
+		}
+		s.hostAPIAudit(w, r)
 	})
 
 	return mux

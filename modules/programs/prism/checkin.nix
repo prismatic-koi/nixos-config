@@ -31,22 +31,25 @@
           `prism db query`, `prism spawn`, `prism merge`, or any other verb.
           Every access the privilege admits writes an audit event that records
           the caller, the target, and the time. Read those events with
-          `prism audit` from a host shell: `prism audit` cannot open the prism
-          DB from inside a sandbox, so it fails for a sandboxed coordinator
-          (issue #2618).
+          `prism audit`, from a host shell or from inside a sandbox. A
+          sandboxed caller reads them through the coordinator-only `/audit`
+          host-API endpoint (issue #2618).
 
-          The gate applies to the host-API route, which is the route a
-          sandboxed session takes. A host-mode session reads the DB directly
-          and meets no gate on that path (issue #2619).
+          The tiers apply on both routes of the verb (issue #2619). A
+          sandboxed session meets them on the host-API route; a host-mode
+          session has no socket and meets the same predicate on the direct
+          CLI route. A privileged read writes an audit event either way.
 
           An empty list grants the privilege to nobody, which is the behaviour
           prism had before the option existed.
 
           Rendered to ~/.config/prism/checkin-privileged-repos.json in the same
-          manner as profiles.json. The sidecar reads that file host-side at
-          start. The file is deliberately absent from every sandbox: the bwrap
-          and sandbox-exec isolators bind only agents/ and profiles.json out of
-          ~/.config/prism/, so no agent can read or edit its own privilege.
+          manner as profiles.json. Two host-side readers consume it: the
+          sidecar at start, for the host-API route, and the prism CLI per
+          invocation, for the direct route. The file is deliberately absent
+          from every sandbox: the bwrap and sandbox-exec isolators bind only
+          agents/ and profiles.json out of ~/.config/prism/, so no agent can
+          read or edit its own privilege.
         '';
       };
     };
