@@ -13,23 +13,32 @@
 -->
 
 This document states the convention for opening a SQLite database in a test.
-It exists because `db.Open` costs 73 `fsync` calls, that cost is invisible on
+It exists because `db.Open` cost 73 `fsync` calls, that cost is invisible on
 a developer host, and it grew large enough in `internal/sidecar` to fail CI
 on a 10-minute timeout. The fix shipped in #2610. The paper trail is #2598.
+
+#2612 then cut the cost of one open from 73 fsyncs to 7. The convention below
+still stands: a template open costs zero, which is still less than 7.
 
 ## The fsync-per-open cost class
 
 `db.Open` applies the declarative schema, seeds `schema_version`, and then
-runs all 39 migrations. Each statement commits in autocommit mode. The DSN
-sets `journal_mode=WAL`, and SQLite keeps its default `synchronous=FULL`, so
-each commit fsyncs the WAL.
+runs all 38 migrations. The DSN sets `journal_mode=WAL`, and SQLite keeps its
+default `synchronous=FULL`, so each commit fsyncs the WAL.
 
-One `db.Open` on a fresh file costs **73 fsyncs**. Measure it yourself:
+Before #2612 each of those statements committed in autocommit mode, and one
+`db.Open` on a fresh file cost **73 fsyncs**. Since #2612 the sequence runs
+inside one transaction and the same open costs **7**. Measure it yourself:
 
 ```
-go test -c -o /tmp/pkg.test ./internal/sidecar/
-strace -f -c -e trace=fsync /tmp/pkg.test -test.run '^TestSomething$'
+go test -c -o /tmp/pkg.test ./internal/db/
+TMPDIR=<a directory on a disk-backed filesystem> \
+  strace -f -c -e trace=fsync /tmp/pkg.test -test.run '^TestProbeFreshOpen$'
 ```
+
+`TestProbeFreshOpen` in `internal/db` does one `db.Open` and nothing else, so
+it is the probe to use for this number. Set `TMPDIR` to a disk-backed
+filesystem. On tmpfs fsync is a no-op and the count is zero.
 
 A package that opens one database per test multiplies that number by its test
 count. `internal/sidecar` opened about 700 test databases per run and paid
@@ -51,9 +60,9 @@ named an unrelated 2-second test that happened to be in flight.
 
 `OpenDB` builds one fully-migrated database per test binary, holds its bytes
 in memory, and stamps a copy at the caller's path before it calls `db.Open`.
-The first call pays 73 fsyncs. Every later call pays none, because every
-statement `db.Open` runs against a migrated database is idempotent, so SQLite
-starts no write transaction and writes no WAL frame.
+The first call pays the cost of one fresh open. Every later call pays none,
+because every statement `db.Open` runs against a migrated database is
+idempotent, so SQLite starts no write transaction and writes no WAL frame.
 
 The database the caller receives is equivalent to one from a plain `db.Open`:
 same schema, same `schema_version`, same file mode. The caller owns the handle
@@ -97,10 +106,10 @@ relax durability in production to make a test suite faster.
 
 ## Known remaining exposure
 
-Two packages still carry the cost and are the next to hit the timeout. Neither
-is fixed by #2610. Both are tracked in #2611:
+Two packages carried the cost and were the next to hit the timeout. Neither was
+fixed by #2610. Both are tracked in #2611:
 
-| package | fsyncs / run | wall time on a degraded runner |
+| package | fsyncs / run before #2610 | wall time on a degraded runner |
 |---|---:|---:|
 | `internal/db` | 41,224 | 491s against a 600s limit |
 | `cmd` | 37,157 | 494s against a 600s limit |
@@ -108,10 +117,43 @@ is fixed by #2610. Both are tracked in #2611:
 `.github/workflows/pr-gate.yml` runs `go test -v ./... -race` with no explicit
 `-timeout`, so the Go default of 10 minutes applies per package binary.
 
-Production pays the same 73 fsyncs on every `prism` CLI invocation, because the
-schema and all 39 migrations run in autocommit mode at each start. One
-transaction around the open sequence cuts that to about 2. That is tracked in
-#2612 and is not a correctness problem.
+#2612 reduced both, measured on one developer host with `TMPDIR` on btrfs:
+
+| package | before #2612 | after #2612 |
+|---|---:|---:|
+| `internal/db` | 44,730 | 27,902 |
+| `cmd` | 37,670 | 4,540 |
+
+`cmd` drops by a factor of 8, because almost all of its cost was `db.Open`.
+`internal/db` drops by less than half, because most of its remaining cost is
+not `db.Open` at all: its tests write rows directly, and each of those writes
+is its own commit. Its migration tests also seed databases at old schema
+versions on purpose, and those take the autocommit open path by design. Re-scope
+#2611 against these numbers rather than the pre-#2612 ones.
+
+## Why one open still costs 7 fsyncs and not 2
+
+Of the 7, about 3 belong to the DSN and not to the open sequence: SQLite
+creates a new file in rollback-journal mode and the `journal_mode=WAL` pragma
+then converts it, which commits through the rollback journal. The rest is the
+single WAL commit of the batched sequence. A second open of the same file
+costs zero, as it did before #2612.
+
+## What #2612 did not batch
+
+Four migrations rebuild a table (`DROP TABLE` plus `ALTER TABLE ... RENAME
+TO`) and toggle `PRAGMA foreign_keys` around the rebuild: v8→v9, v23→v24,
+v25→v26 and v37→v38. `PRAGMA foreign_keys` is a silent no-op inside a
+transaction, so a rebuild batched into the open transaction would run with
+foreign-key enforcement still on. That raises no error on an empty database,
+so a suite built from fresh files would stay green and the break would appear
+only on a populated database.
+
+`batchableOpen` in `internal/db/db.go` therefore probes the database before it
+opens the transaction. When one of those four still has work to do, the whole
+open falls back to autocommit and behaves exactly as it did before #2612.
+`TestRebuildMigrationSet_MatchesProbe` fails if a new migration rebuilds a
+table without being added to that probe.
 
 ## References
 
