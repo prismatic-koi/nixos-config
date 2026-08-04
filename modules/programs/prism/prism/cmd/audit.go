@@ -31,8 +31,10 @@ import (
 //  1. Bash promotion — internal/sidecar/events.go promotes a bash tool call
 //     whose command matches sidecar.HighImpactCommandPrefixes().
 //  2. The tier-3 `prism checkin` troubleshooting privilege (issue #2587) —
-//     internal/sidecar/checkin_permission.go records every cross-repo read
-//     that the privileged-repo grant admits.
+//     every cross-repo read that the privileged-repo grant admits is
+//     recorded, on either route of the verb: by
+//     internal/sidecar/checkin_permission.go for a sandboxed caller, and by
+//     cmd/checkin_permission.go for a `host`-mode caller (issue #2619).
 //
 // The bash list is derived from the sidecar package rather than copied,
 // because the copy drifted: it still named the pre-#2364 set after four
