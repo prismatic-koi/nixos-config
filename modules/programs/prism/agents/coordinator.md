@@ -201,7 +201,7 @@ The same scope applies in every isolation mode (issue #2619). A sandboxed sessio
 
 A coordinator of a repo named in `nx.programs.prism.checkin.privilegedRepos` (default `[ "nixos-config" ]`) reaches every session in every repo, including another coordinator's workers and review agents. That privilege exists so the seat that owns the prism configuration can diagnose failures across the fleet. It is not a superuser: it covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row that names you, the session you read, and the time.
 
-Read those rows with `prism audit` **from a host shell**. `prism audit` cannot open the prism DB from inside a sandbox, so the command fails for a sandboxed coordinator — which is the default on `m4mac`. Issue #2618 tracks the missing host-API proxy branch.
+Read those rows with `prism audit`. The command works from a host shell and from inside a sandbox: when `PRISM_HOST_API` is set it proxies the read through the host API rather than opening the prism DB, which no sandbox binds in (issue #2618). The endpoint it calls is coordinator-only, so a worker that runs `prism audit` inside a sandbox gets HTTP 403.
 
 A worker reaches far less: the review agents of its own session, and nothing else. When a worker asks you for conversation history it cannot reach, that is the gate working as designed, not a worker cutting a corner.
 

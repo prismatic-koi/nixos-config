@@ -205,6 +205,7 @@ func hostAPIServeLogsFollow(w http.ResponseWriter, r *http.Request, targetSessio
 //	GET  /checkin       — return conversation history for a session (role-scoped)
 //	GET  /logs          — return the log file for a session (coordinator only)
 //	GET  /stats         — return stats/events for rendering (all roles)
+//	GET  /audit         — return audit-trail events (coordinator only)
 //	GET  /db/query      — run a single read-only SQL statement (coordinator only)
 //	GET  /db/schema     — return CREATE TABLE / CREATE INDEX DDL (coordinator only)
 //	GET  /db/tables     — return user table names (coordinator only)
@@ -3429,6 +3430,29 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return
 		}
 		s.hostAPIDBTables(w, r)
+	})
+
+	// GET /audit — the audit-trail read surface behind `prism audit` (#2618).
+	// The handler lives in host_api_audit.go, which also carries the security
+	// rationale in full.
+	//
+	// Coordinator-only, matching /db/query. Audit rows are agent_events rows
+	// with type = 'audit', and /db/query already reads every agent_events row
+	// for any coordinator, so this gate copies an existing decision rather
+	// than making a new one. The tier-3 `prism checkin` privilege (#2587) is
+	// not consulted here and must not be: it covers /checkin ALONE.
+	//
+	// The type = 'audit' filter is applied inside db.QueryAuditEvents, not by
+	// a request parameter, so no caller can widen this route into a general
+	// agent_events reader.
+	mux.HandleFunc("/audit", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		if !requireCoordinator(w, "audit") {
+			return
+		}
+		s.hostAPIAudit(w, r)
 	})
 
 	return mux
