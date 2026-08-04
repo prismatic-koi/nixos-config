@@ -5,10 +5,14 @@ package sidecartest
 // # Why this exists
 //
 // db.Open applies the declarative schema, seeds schema_version, and then runs
-// every migration in order. Each of those statements commits in autocommit
-// mode, and the connection DSN sets journal_mode=WAL while SQLite's default
-// synchronous=FULL stays in force, so every commit costs one fsync of the
-// WAL. A single db.Open on a fresh file costs 73 fsyncs.
+// every migration in order. The connection DSN sets journal_mode=WAL while
+// SQLite's default synchronous=FULL stays in force, so every commit costs one
+// fsync of the WAL.
+//
+// Before #2612 each of those statements committed in autocommit mode, and a
+// single db.Open on a fresh file cost 73 fsyncs. Since #2612 the sequence runs
+// in one transaction and the same open costs 7. The numbers below describe the
+// pre-#2612 cost, which is the cost this helper was built to remove.
 //
 // That is irrelevant on a developer host where the test tempdir is a tmpfs
 // (fsync is a no-op) but it is not irrelevant on a CI runner, where the
@@ -32,7 +36,8 @@ package sidecartest
 //
 // OpenDB therefore builds one fully-migrated database per test binary, keeps
 // its bytes in memory, and stamps a copy at the caller's path before calling
-// db.Open. The first call pays the 73 fsyncs; every later call pays none.
+// db.Open. The first call pays the cost of one fresh open; every later call
+// pays none.
 // The database the caller receives is byte-for-byte equivalent to one from a
 // plain db.Open — same schema, same schema_version, same sqlite_master —
 // which templatedb_test.go pins.
