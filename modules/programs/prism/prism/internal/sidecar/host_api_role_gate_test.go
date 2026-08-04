@@ -226,6 +226,7 @@ func TestHostAPI_CoordinatorOnly_DeniesWorker(t *testing.T) {
 		{http.MethodGet, "/db/query?sql=SELECT+1", ""},
 		{http.MethodGet, "/db/schema", ""},
 		{http.MethodGet, "/db/tables", ""},
+		{http.MethodGet, "/audit", ""},
 	}
 
 	for _, tc := range cases {

@@ -31,9 +31,9 @@
           `prism db query`, `prism spawn`, `prism merge`, or any other verb.
           Every access the privilege admits writes an audit event that records
           the caller, the target, and the time. Read those events with
-          `prism audit` from a host shell: `prism audit` cannot open the prism
-          DB from inside a sandbox, so it fails for a sandboxed coordinator
-          (issue #2618).
+          `prism audit`, from a host shell or from inside a sandbox. A
+          sandboxed caller reads them through the coordinator-only `/audit`
+          host-API endpoint (issue #2618).
 
           The tiers apply on both routes of the verb (issue #2619). A
           sandboxed session meets them on the host-API route; a host-mode

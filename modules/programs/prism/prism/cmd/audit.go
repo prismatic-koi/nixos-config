@@ -8,10 +8,16 @@ package cmd
 //	prism audit <session>                audit events for a specific session
 //	prism audit --days N                 events from the last N days
 //	prism audit --pattern "gh pr merge"  filter by command substring
+//
+// When PRISM_HOST_API is set the read is proxied to the host sidecar's
+// GET /audit endpoint. Otherwise the local prism DB is opened directly.
+// Rendering happens identically on both paths.
 
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,18 +107,12 @@ func runAudit(cmd *cobra.Command, args []string) error {
 		sessionName = args[0]
 	}
 
-	d, err := openDB()
-	if err != nil {
-		return fmt.Errorf("audit: %w", err)
-	}
-	defer d.Close()
-
 	var sinceMs int64
 	if days > 0 {
 		sinceMs = time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
 	}
 
-	events, err := d.QueryAuditEvents(sessionName, sinceMs, pattern, limit)
+	events, err := fetchAuditEvents(sessionName, sinceMs, pattern, limit)
 	if err != nil {
 		return fmt.Errorf("audit: %w", err)
 	}
@@ -135,6 +135,70 @@ func runAudit(cmd *cobra.Command, args []string) error {
 
 	renderAuditEvents(events)
 	return nil
+}
+
+// fetchAuditEvents returns the audit rows matching the given filters.
+//
+// Inside a sandbox the prism DB is unreachable: $XDG_STATE_HOME/prism is
+// deliberately never bound in, so openDB fails with "operation not permitted"
+// (issue #2618). When PRISM_HOST_API is set we therefore proxy the read to the
+// host sidecar instead of opening the local file. Both branches return the
+// same []db.Event, so every caller downstream — table rendering, --json, and
+// the no-results message — is identical on both routes.
+func fetchAuditEvents(sessionName string, sinceMs int64, pattern string, limit int) ([]db.Event, error) {
+	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+		return fetchAuditEventsProxy(apiURL, sessionName, sinceMs, pattern, limit)
+	}
+	return fetchAuditEventsLocal(sessionName, sinceMs, pattern, limit)
+}
+
+// fetchAuditEventsLocal opens the local prism DB and runs the query directly.
+// Used when PRISM_HOST_API is unset (i.e. we're on the host).
+func fetchAuditEventsLocal(sessionName string, sinceMs int64, pattern string, limit int) ([]db.Event, error) {
+	d, err := openDB()
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	return d.QueryAuditEvents(sessionName, sinceMs, pattern, limit)
+}
+
+// fetchAuditEventsProxy proxies the read to the host sidecar's GET /audit.
+//
+// Each filter is sent only when it is active, so the host-side handler applies
+// exactly the filters the direct path would apply. A zero or negative value is
+// omitted rather than sent, which matches db.QueryAuditEvents treating those as
+// "no filter" — the two routes therefore return the same rows for the same
+// flags.
+//
+// The endpoint is coordinator-only. A worker gets HTTP 403, which surfaces
+// here as the server's error message rather than an empty result.
+func fetchAuditEventsProxy(apiURL, sessionName string, sinceMs int64, pattern string, limit int) ([]db.Event, error) {
+	params := map[string]string{}
+	if sessionName != "" {
+		params["session"] = sessionName
+	}
+	if sinceMs > 0 {
+		params["since"] = strconv.FormatInt(sinceMs, 10)
+	}
+	if pattern != "" {
+		params["pattern"] = pattern
+	}
+	if limit > 0 {
+		params["limit"] = strconv.Itoa(limit)
+	}
+
+	raw, err := proxyReadToHostAPI(apiURL, "/audit", params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Events []db.Event `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal proxy response: %w", err)
+	}
+	return resp.Events, nil
 }
 
 // auditEventJSON is the snake_case JSON shape for a single audit event.
