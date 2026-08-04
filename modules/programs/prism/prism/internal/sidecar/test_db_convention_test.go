@@ -5,14 +5,14 @@ package sidecar
 // db.Open applies the schema, seeds schema_version, and runs all 38
 // migrations against a WAL with synchronous=FULL. Before #2612 each statement
 // committed in autocommit mode and one open cost 73 fsyncs. Since #2612 the
-// sequence runs in one transaction and one open costs 7. This package opens a
-// database per test, so a direct db.Open call in one test file adds 7 fsyncs
-// to every run of the package, where sidecartest.OpenDB adds none.
+// sequence runs in one transaction and one open costs 7 fsyncs. This package
+// opens a database per test, so a direct db.Open call in one test file adds 7
+// fsyncs to every run of the package, where sidecartest.OpenDB adds none.
 //
 // That cost is invisible on a developer host, where the test tempdir is a
-// tmpfs and fsync is a no-op. It is not invisible on a CI runner, where the
-// pre-#2612 figure is what pushed this package past the 10-minute go test
-// timeout (#2598).
+// tmpfs and fsync latency is near zero. It is not invisible on a CI runner,
+// where the fsync latency from disk I/O is what pushed this package past the
+// 10-minute go test timeout (#2598).
 //
 // The guard tests in sidecartest/templatedb_test.go pin that the template is
 // healthy. This test pins the other half: that call sites reach for it. Both

@@ -2,16 +2,16 @@ package db
 
 // open_batching_test.go — tests for the batched open sequence (issue #2612).
 //
-// db.Open used to run the declarative schema, the schema_version seed, all 38
-// migrations, and the post-migration index block statement by statement in
-// autocommit. Under journal_mode=WAL with synchronous=FULL every one of those
+// Before #2612, db.Open ran the declarative schema, the schema_version seed,
+// all 38 migrations, and the post-migration index block statement by statement
+// in autocommit. Under journal_mode=WAL with synchronous=FULL every one of those
 // commits fsyncs the WAL, which cost 73 fsyncs on a fresh file.
 //
-// The open sequence now runs inside one transaction when batchableOpen says
-// that is safe. It is not safe when a table-rebuild migration still has work
-// to do: those four toggle PRAGMA foreign_keys, which SQLite silently ignores
-// inside a transaction, and they open their own transaction, which cannot
-// nest. The tests below pin three things:
+// Since #2612 the open sequence runs inside one transaction when batchableOpen
+// says that is safe. It is not safe when a table-rebuild migration still has
+// work to do: those four toggle PRAGMA foreign_keys, which SQLite silently
+// ignores inside a transaction, and they open their own transaction, which
+// cannot nest. The tests below pin three things:
 //
 //  1. batchableOpen classifies each database shape correctly.
 //  2. A rebuild migration handed a transaction fails loudly instead of
@@ -266,8 +266,13 @@ func TestRebuildMigrations_RefuseTransaction(t *testing.T) {
 // migration whose body rebuilds a table, toggles PRAGMA foreign_keys, or opens
 // its own transaction. That set must equal rebuildMigrations.
 //
-// This is the guard that keeps the probe honest. A new migration that rebuilds
-// a table would otherwise run inside the batched transaction with foreign-key
+// This test is a heuristic: it detects rebuilds only in string literals inside
+// the function body, not migrations that assemble their SQL from package-level
+// constants, fmt.Sprintf calls, or concatenated literals. The real backstop is
+// the errRebuildNeedsAutocommit executor assertion, which fails the open loudly
+// if a rebuild runs inside a transaction rather than corrupting the database.
+// This guard keeps the probe honest. A new migration that rebuilds a table
+// would otherwise run inside the batched transaction with foreign-key
 // enforcement silently still on, and no fresh-file test would notice.
 func TestRebuildMigrationSet_MatchesProbe(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)

@@ -13,11 +13,11 @@
 -->
 
 This document states the convention for opening a SQLite database in a test.
-It exists because `db.Open` cost 73 `fsync` calls, that cost is invisible on
+Before #2612, `db.Open` cost 73 `fsync` calls. That cost is invisible on
 a developer host, and it grew large enough in `internal/sidecar` to fail CI
 on a 10-minute timeout. The fix shipped in #2610. The paper trail is #2598.
 
-#2612 then cut the cost of one open from 73 fsyncs to 7. The convention below
+#2612 reduced the cost of one open from 73 fsyncs to 7. The convention below
 still stands: a template open costs zero, which is still less than 7.
 
 ## The fsync-per-open cost class
@@ -28,7 +28,7 @@ default `synchronous=FULL`, so each commit fsyncs the WAL.
 
 Before #2612 each of those statements committed in autocommit mode, and one
 `db.Open` on a fresh file cost **73 fsyncs**. Since #2612 the sequence runs
-inside one transaction and the same open costs **7**. Measure it yourself:
+inside one transaction and the same open costs **7** fsyncs. Measure it yourself:
 
 ```
 go test -c -o /tmp/pkg.test ./internal/db/
@@ -38,20 +38,22 @@ TMPDIR=<a directory on a disk-backed filesystem> \
 
 `TestProbeFreshOpen` in `internal/db` does one `db.Open` and nothing else, so
 it is the probe to use for this number. Set `TMPDIR` to a disk-backed
-filesystem. On tmpfs fsync is a no-op and the count is zero.
+filesystem. `strace` counts the fsync syscall regardless of the filesystem.
+fsync latency is near zero on tmpfs, which is why the cost is invisible on a
+developer host and visible on a CI runner.
 
 A package that opens one database per test multiplies that number by its test
 count. `internal/sidecar` opened about 700 test databases per run and paid
 about 51,000 fsyncs before it ran a single assertion.
 
 This cost is invisible on a developer host, because the test tempdir is a
-tmpfs and fsync is a no-op there. It is not invisible on a CI runner. Package
-wall time is CPU work plus fsync count times per-fsync latency, and the second
-term is set by runner IO health, not by the code under test. When one hosted
-runner degraded, each SQLite-backed package inflated 2.4x to 4.6x and each
-package with no database stayed flat. `internal/sidecar` was the longest of
-them, so it crossed the 600s default `go test` timeout first, and the panic
-named an unrelated 2-second test that happened to be in flight.
+tmpfs and fsync latency is near zero. It is not invisible on a CI runner.
+Package wall time is CPU work plus fsync count times per-fsync latency, and
+the second term is set by runner IO health, not by the code under test. When
+one hosted runner degraded, each SQLite-backed package inflated 2.4x to 4.6x
+and each package with no database stayed flat. `internal/sidecar` was the
+longest of them, so it crossed the 600s default `go test` timeout first, and
+the panic named an unrelated 2-second test that happened to be in flight.
 
 ## The convention
 
@@ -107,17 +109,19 @@ relax durability in production to make a test suite faster.
 ## Known remaining exposure
 
 Two packages carried the cost and were the next to hit the timeout. Neither was
-fixed by #2610. Both are tracked in #2611:
+fixed by #2610. Both are tracked in #2611. The first table shows the cost
+before #2612:
 
 | package | fsyncs / run before #2610 | wall time on a degraded runner |
-|---|---:|---:|
+|---|---:|---:|−
 | `internal/db` | 41,224 | 491s against a 600s limit |
 | `cmd` | 37,157 | 494s against a 600s limit |
 
 `.github/workflows/pr-gate.yml` runs `go test -v ./... -race` with no explicit
 `-timeout`, so the Go default of 10 minutes applies per package binary.
 
-#2612 reduced both, measured on one developer host with `TMPDIR` on btrfs:
+#2612 reduced both. The second table is measured on one developer host with
+`TMPDIR` on btrfs:
 
 | package | before #2612 | after #2612 |
 |---|---:|---:|
@@ -131,7 +135,7 @@ is its own commit. Its migration tests also seed databases at old schema
 versions on purpose, and those take the autocommit open path by design. Re-scope
 #2611 against these numbers rather than the pre-#2612 ones.
 
-## Why one open still costs 7 fsyncs and not 2
+## Why one open still costs 7 fsyncs, not 2
 
 Of the 7, about 3 belong to the DSN and not to the open sequence: SQLite
 creates a new file in rollback-journal mode and the `journal_mode=WAL` pragma

@@ -10,9 +10,10 @@ package db_test
 //	TMPDIR=<dir on a real filesystem> \
 //	  strace -f -c -e trace=fsync /tmp/db.test -test.run '^TestProbeFreshOpen$'
 //
-// Measure on a real filesystem. On tmpfs fsync is a no-op, so the count is
-// zero and the measurement is meaningless. Set TMPDIR to a directory on a
-// disk-backed filesystem before you run the probe.
+// Set TMPDIR to a directory on a disk-backed filesystem before you run the
+// probe. strace counts the fsync syscall regardless of the filesystem.
+// fsync latency is near zero on tmpfs, which is why the measurement is
+// meaningful only on a real disk.
 //
 // The test itself asserts only that the open works; its value is the syscall
 // count an external tracer observes, not an in-process assertion.
