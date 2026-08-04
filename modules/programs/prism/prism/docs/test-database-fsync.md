@@ -32,15 +32,16 @@ inside one transaction and the same open costs **7** fsyncs. Measure it yourself
 
 ```
 go test -c -o /tmp/pkg.test ./internal/db/
-TMPDIR=<a directory on a disk-backed filesystem> \
-  strace -f -c -e trace=fsync /tmp/pkg.test -test.run '^TestProbeFreshOpen$'
+strace -f -c -e trace=fsync /tmp/pkg.test -test.run '^TestProbeFreshOpen$'
 ```
 
 `TestProbeFreshOpen` in `internal/db` does one `db.Open` and nothing else, so
-it is the probe to use for this number. Set `TMPDIR` to a disk-backed
-filesystem. `strace` counts the fsync syscall regardless of the filesystem.
-fsync latency is near zero on tmpfs, which is why the cost is invisible on a
-developer host and visible on a CI runner.
+it is the probe to use for this number. `strace` counts the fsync syscall on
+any filesystem, so the count is identical on tmpfs and on a real disk.
+
+fsync latency is different. Latency is near zero on tmpfs, which is why the
+cost is invisible on a developer host. On a CI runner, fsync latency is real
+and set by disk I/O health, which is why the cost is visible.
 
 A package that opens one database per test multiplies that number by its test
 count. `internal/sidecar` opened about 700 test databases per run and paid
@@ -109,8 +110,8 @@ relax durability in production to make a test suite faster.
 ## Known remaining exposure
 
 Two packages carried the cost and were the next to hit the timeout. Neither was
-fixed by #2610. Both are tracked in #2611. The first table shows the cost
-before #2612:
+fixed by #2610. Both are tracked in #2611. The two tables show different
+measurements because the second one includes the tests that PR #2629 adds:
 
 | package | fsyncs / run before #2610 | wall time on a degraded runner |
 |---|---:|---:|
@@ -120,8 +121,8 @@ before #2612:
 `.github/workflows/pr-gate.yml` runs `go test -v ./... -race` with no explicit
 `-timeout`, so the Go default of 10 minutes applies per package binary.
 
-#2612 reduced both. The second table is measured on one developer host with
-`TMPDIR` on btrfs:
+#2612 reduced both. The second table is measured on one developer host with a
+real disk (for fsync latency measurement):
 
 | package | before #2612 | after #2612 |
 |---|---:|---:|
