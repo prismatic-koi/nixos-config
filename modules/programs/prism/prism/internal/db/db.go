@@ -535,27 +535,83 @@ func Open(path string) (*DB, error) {
 	return &DB{conn: conn, path: path}, nil
 }
 
+// sqlExecutor is the statement surface shared by *sql.DB and *sql.Tx. The
+// whole open sequence (schema, schema_version seed, migrations, post-migration
+// index block) runs against it, so the same code can execute either in
+// autocommit against the raw connection or inside one transaction (#2612).
+//
+// It deliberately omits Begin. A migration that needs its own transaction
+// cannot take one from inside the outer transaction, and the type assertion in
+// the four table-rebuild migrations turns that case into a loud error instead
+// of a silent nested-transaction failure.
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// errRebuildNeedsAutocommit reports that a table-rebuild migration was handed
+// a transaction instead of the raw connection.
+//
+// Four migrations rebuild a table (DROP TABLE / RENAME TO) and toggle
+// PRAGMA foreign_keys around the rebuild. PRAGMA foreign_keys is a silent
+// no-op while a transaction is active, so a rebuild inside the batched open
+// transaction would run with foreign-key enforcement still on. That raises no
+// error on an empty database and fails only on a populated one, so it cannot
+// be left to a fresh-file test suite to catch. batchableOpen keeps those
+// migrations out of the batched path; this error is the enforcement behind
+// that promise, and it fails the open rather than corrupting the database.
+func errRebuildNeedsAutocommit(migration string) error {
+	return fmt.Errorf(
+		"db: migration %s rebuilds a table and must run in autocommit, "+
+			"not inside the batched open transaction (issue #2612)",
+		migration,
+	)
+}
+
 // openAndConfigure applies the schema, seeds the schema version, and runs
 // pending migrations on an already-opened connection. Connection-level settings
 // (busy_timeout, journal_mode, foreign_keys) are embedded in the DSN by Open
 // so they apply to every connection in the pool. It closes conn on any error
 // and returns the same conn on success.
+//
+// The sequence runs inside one transaction when batchableOpen says every
+// migration this database still needs is safe to batch. That is the common
+// case — a fresh file, or a database already at the current version — and it
+// takes a fresh open from 73 fsyncs to 7 (#2612). Otherwise the sequence runs
+// statement by statement in autocommit, exactly as it did before #2612.
 func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
+	var err error
+	if batchableOpen(conn) {
+		err = runOpenSequenceBatched(conn)
+	} else {
+		err = runOpenSequence(conn)
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return conn, nil
+}
+
+// runOpenSequence applies the declarative schema, seeds schema_version, runs
+// pending migrations, and applies the post-migration index block against e.
+//
+// Both the batched and the autocommit path call this one body, so the two
+// paths cannot drift.
+func runOpenSequence(e sqlExecutor) error {
 	// Create all tables and the indexes that reference columns guaranteed
 	// to be present in every historical table shape.
-	if _, err := conn.Exec(schema); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("db: apply schema: %w", err)
+	if _, err := e.Exec(schema); err != nil {
+		return fmt.Errorf("db: apply schema: %w", err)
 	}
 
-	if err := seedSchemaVersionIfEmpty(conn); err != nil {
-		conn.Close()
-		return nil, err
+	if err := seedSchemaVersionIfEmpty(e); err != nil {
+		return err
 	}
 
-	if err := runMigrations(conn); err != nil {
-		conn.Close()
-		return nil, err
+	if err := runMigrations(e); err != nil {
+		return err
 	}
 
 	// Apply the post-migration declarative index block. These indexes
@@ -567,12 +623,153 @@ func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 	// migrated DBs from drifting if the v31→v32 migration is ever pruned
 	// (the DB-F16 drift class). CREATE INDEX IF NOT EXISTS makes the
 	// double-execution (declarative + migration) idempotent. (#1864)
-	if _, err := conn.Exec(postMigrationIndexes); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("db: apply post-migration indexes: %w", err)
+	if _, err := e.Exec(postMigrationIndexes); err != nil {
+		return fmt.Errorf("db: apply post-migration indexes: %w", err)
 	}
 
-	return conn, nil
+	return nil
+}
+
+// runOpenSequenceBatched runs the open sequence inside one transaction.
+//
+// Every statement of the sequence is DDL or DML, and SQLite makes both
+// transactional, so one commit replaces the many autocommit commits the
+// sequence used to pay under journal_mode=WAL with synchronous=FULL.
+// Durability is unchanged: the DSN still leaves synchronous at FULL, so the
+// single commit is still fsynced.
+//
+// The deferred Rollback is the answer to "a failure part-way through the open
+// sequence leaves no partially migrated database": on any error the whole
+// sequence is discarded and the file keeps the exact schema and schema_version
+// it had before the open.
+//
+// On an already-migrated database every statement is a no-op, so the
+// transaction dirties no page, stays a read transaction, takes no write lock
+// and costs no fsync.
+func runOpenSequenceBatched(conn *sql.DB) error {
+	tx, err := conn.Begin()
+	if err != nil {
+		return fmt.Errorf("db: begin open transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if err := runOpenSequence(tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("db: commit open transaction: %w", err)
+	}
+	return nil
+}
+
+// batchableOpen reports whether the open sequence for the database currently
+// on conn can run inside one transaction.
+//
+// It answers one question: will any of the four table-rebuild migrations take
+// its rebuild branch during this open? Those four toggle PRAGMA foreign_keys
+// and open their own transaction around a DROP TABLE / RENAME TO, and neither
+// works inside an outer transaction. When one of them has real work to do,
+// the whole open falls back to autocommit, which is exactly the pre-#2612
+// behaviour.
+//
+// The probe is read-only: it reads schema_version and pragma_table_info and
+// writes nothing, so it costs no fsync.
+//
+// The probe runs before the declarative schema block, so "table absent" has to
+// be read as "the schema block is about to create it in the current shape",
+// which is always the safe shape. Each check below states why probing early
+// still gives the same answer the migration will compute later.
+func batchableOpen(conn *sql.DB) bool {
+	version, ok := probeSchemaVersion(conn)
+	if !ok {
+		// No schema_version table, or no row in it: a brand-new or empty
+		// database file. seedSchemaVersionIfEmpty sets version 11 and every
+		// table the rebuilds inspect is created by the declarative schema
+		// block in its current, post-rebuild shape.
+		return true
+	}
+
+	// v8→v9 rebuilds agent_status to attach the group_id foreign key. It acts
+	// only when the chain reaches version 8, so any database at v9 or above
+	// skips it outright.
+	if version <= 8 {
+		return false
+	}
+
+	// v23→v24 rebuilds sessions to drop outcome_summary. No migration adds
+	// that column and the declarative schema block creates sessions without
+	// it, so whether the column is present now is whether it is present when
+	// the migration runs.
+	if version <= 23 && probeColumnExists(conn, "sessions", "outcome_summary") {
+		return false
+	}
+
+	// v25→v26 rebuilds agent_status to drop host_mode. host_mode is added by
+	// v4→v5, which would make an early probe wrong — but the version <= 8
+	// check above has already rejected every start version that reaches
+	// v4→v5, so at this point the column can only shrink out of the schema,
+	// never appear.
+	if version <= 25 && probeColumnExists(conn, "agent_status", "host_mode") {
+		return false
+	}
+
+	// v37→v38 rebuilds pending_merges to add repo and re-key on (repo, pr).
+	// If the table is absent the declarative schema block creates it in the
+	// repo-bearing shape before any migration runs, and v18→v19's
+	// CREATE TABLE IF NOT EXISTS then leaves it alone, so absent means safe.
+	if version <= 37 &&
+		probeTableExists(conn, "pending_merges") &&
+		!probeColumnExists(conn, "pending_merges", "repo") {
+		return false
+	}
+
+	return true
+}
+
+// probeSchemaVersion reads the current schema_version. ok is false when the
+// table does not exist yet, when it holds no row, or when the read fails —
+// all cases in which the caller must not assume anything about the database.
+//
+// The table-existence test goes through sqlite_master rather than catching the
+// error from a SELECT, so a missing table is a value the probe can read and
+// not an error it has to classify.
+func probeSchemaVersion(conn *sql.DB) (int, bool) {
+	if !probeTableExists(conn, "schema_version") {
+		return 0, false
+	}
+	var version int
+	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
+		return 0, false
+	}
+	return version, true
+}
+
+// probeTableExists reports whether a table of this name exists. A read failure
+// reports true so that the caller takes the conservative autocommit path and
+// the real error surfaces from the statement that actually needs the table.
+func probeTableExists(conn *sql.DB, table string) bool {
+	var count int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table,
+	).Scan(&count); err != nil {
+		return true
+	}
+	return count > 0
+}
+
+// probeColumnExists reports whether table has this column. It returns false
+// for a table that does not exist, because pragma_table_info yields no rows
+// for it. A read failure reports true, which makes every caller below fall
+// back to the autocommit path.
+func probeColumnExists(conn *sql.DB, table, column string) bool {
+	var count int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?`, table, column,
+	).Scan(&count); err != nil {
+		return true
+	}
+	return count > 0
 }
 
 // postMigrationIndexes contains CREATE INDEX statements that reference
@@ -624,7 +821,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_status_harness_port ON agent_status(
 // seedSchemaVersionIfEmpty inserts schema_version=11 when the table is empty.
 // Fresh databases have all current columns so starting at 11 is safe — the
 // v11→v24 migrations are all no-ops on a fresh DB.
-func seedSchemaVersionIfEmpty(conn *sql.DB) error {
+func seedSchemaVersionIfEmpty(conn sqlExecutor) error {
 	var count int
 	if err := conn.QueryRow("SELECT COUNT(*) FROM schema_version").Scan(&count); err != nil {
 		return fmt.Errorf("db: check schema_version: %w", err)
@@ -639,7 +836,7 @@ func seedSchemaVersionIfEmpty(conn *sql.DB) error {
 
 // runMigrations reads the current schema_version and applies all pending
 // migrations in order from v1 to v37.
-func runMigrations(conn *sql.DB) error {
+func runMigrations(conn sqlExecutor) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
 		return fmt.Errorf("db: read schema_version: %w", err)
@@ -854,7 +1051,7 @@ func runMigrations(conn *sql.DB) error {
 // migration is idempotent on fresh databases where the declarative
 // schema block above already includes both columns. Existing rows take
 // the column DEFAULT of 0 (both columns are NOT NULL).
-func migrateV36ToV37(conn *sql.DB, version *int) error {
+func migrateV36ToV37(conn sqlExecutor, version *int) error {
 	if *version >= 37 {
 		return nil
 	}
@@ -917,7 +1114,7 @@ func migrateV36ToV37(conn *sql.DB, version *int) error {
 // The migration is guarded by a pragma_table_info check on the `repo`
 // column so it is idempotent on fresh databases where the declarative
 // schema block above already contains the new shape.
-func migrateV37ToV38(conn *sql.DB, version *int) error {
+func migrateV37ToV38(conn sqlExecutor, version *int) error {
 	if *version >= 38 {
 		return nil
 	}
@@ -944,7 +1141,16 @@ func migrateV37ToV38(conn *sql.DB, version *int) error {
 	// violations. pending_merges is not itself a FK target today, but the
 	// pattern is what the SQLite docs recommend for any table rebuild:
 	// https://www.sqlite.org/lang_altertable.html#otheralter
+	//
+	// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+	// transaction and conn.Begin below would nest. batchableOpen keeps this
+	// branch out of the batched open path; the assertion enforces it.
+	autocommitConn, ok := conn.(*sql.DB)
+	if !ok {
+		return errRebuildNeedsAutocommit("v37\u2192v38")
+	}
 	if err := func() error {
+		conn := autocommitConn
 		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("disable FK: %w", err)
 		}
@@ -1025,7 +1231,7 @@ func migrateV37ToV38(conn *sql.DB, version *int) error {
 // The migration is idempotent: CREATE TABLE IF NOT EXISTS and CREATE
 // INDEX IF NOT EXISTS make it safe to run on a fresh database whose
 // declarative schema already contains the new table.
-func migrateV38ToV39(conn *sql.DB, version *int) error {
+func migrateV38ToV39(conn sqlExecutor, version *int) error {
 	if *version >= 39 {
 		return nil
 	}
@@ -1054,7 +1260,7 @@ func migrateV38ToV39(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV35ToV36(conn *sql.DB, version *int) error {
+func migrateV35ToV36(conn sqlExecutor, version *int) error {
 	if *version >= 36 {
 		return nil
 	}
@@ -1092,7 +1298,7 @@ func migrateV35ToV36(conn *sql.DB, version *int) error {
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
 // is idempotent on fresh databases where the base schema already includes
 // the column.
-func migrateV34ToV35(conn *sql.DB, version *int) error {
+func migrateV34ToV35(conn sqlExecutor, version *int) error {
 	if *version >= 35 {
 		return nil
 	}
@@ -1121,7 +1327,7 @@ func migrateV34ToV35(conn *sql.DB, version *int) error {
 // initialised as unmuted (false). The ALTER TABLE is guarded by a
 // pragma_table_info check so the migration is idempotent on fresh databases
 // where the declarative schema block above already includes the column.
-func migrateV33ToV34(conn *sql.DB, version *int) error {
+func migrateV33ToV34(conn sqlExecutor, version *int) error {
 	if *version >= 34 {
 		return nil
 	}
@@ -1145,7 +1351,7 @@ func migrateV33ToV34(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV32ToV33(conn *sql.DB, version *int) error {
+func migrateV32ToV33(conn sqlExecutor, version *int) error {
 	if *version >= 33 {
 		return nil
 	}
@@ -1163,7 +1369,7 @@ func migrateV32ToV33(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV31ToV32(conn *sql.DB, version *int) error {
+func migrateV31ToV32(conn sqlExecutor, version *int) error {
 	if *version >= 32 {
 		return nil
 	}
@@ -1203,7 +1409,7 @@ func migrateV31ToV32(conn *sql.DB, version *int) error {
 //
 // The ALTER TABLE statements are guarded by pragma_table_info so the migration
 // is idempotent on fresh databases.
-func migrateV30ToV31(conn *sql.DB, version *int) error {
+func migrateV30ToV31(conn sqlExecutor, version *int) error {
 	if *version >= 31 {
 		return nil
 	}
@@ -1236,7 +1442,7 @@ func migrateV30ToV31(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV1toV2(conn *sql.DB, version *int) error {
+func migrateV1toV2(conn sqlExecutor, version *int) error {
 	if *version != 1 {
 		return nil
 	}
@@ -1255,7 +1461,7 @@ func migrateV1toV2(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV2toV3(conn *sql.DB, version *int) error {
+func migrateV2toV3(conn sqlExecutor, version *int) error {
 	if *version != 2 {
 		return nil
 	}
@@ -1274,7 +1480,7 @@ func migrateV2toV3(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV3toV4(conn *sql.DB, version *int) error {
+func migrateV3toV4(conn sqlExecutor, version *int) error {
 	if *version != 3 {
 		return nil
 	}
@@ -1292,7 +1498,7 @@ func migrateV3toV4(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV4toV5(conn *sql.DB, version *int) error {
+func migrateV4toV5(conn sqlExecutor, version *int) error {
 	if *version != 4 {
 		return nil
 	}
@@ -1310,7 +1516,7 @@ func migrateV4toV5(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV5toV6(conn *sql.DB, version *int) error {
+func migrateV5toV6(conn sqlExecutor, version *int) error {
 	if *version != 5 {
 		return nil
 	}
@@ -1331,7 +1537,7 @@ func migrateV5toV6(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV6toV7(conn *sql.DB, version *int) error {
+func migrateV6toV7(conn sqlExecutor, version *int) error {
 	if *version != 6 {
 		return nil
 	}
@@ -1352,7 +1558,7 @@ func migrateV6toV7(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV7toV8(conn *sql.DB, version *int) error {
+func migrateV7toV8(conn sqlExecutor, version *int) error {
 	if *version != 7 {
 		return nil
 	}
@@ -1378,7 +1584,7 @@ func migrateV7toV8(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV8toV9(conn *sql.DB, version *int) error {
+func migrateV8toV9(conn sqlExecutor, version *int) error {
 	if *version != 8 {
 		return nil
 	}
@@ -1399,7 +1605,16 @@ func migrateV8toV9(conn *sql.DB, version *int) error {
 	// violations. foreign_keys is re-enabled immediately after.
 	//
 	// See https://www.sqlite.org/lang_altertable.html#otheralter
+	//
+	// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+	// transaction and conn.Begin below would nest. batchableOpen keeps this
+	// branch out of the batched open path; the assertion enforces it.
+	autocommitConn, ok := conn.(*sql.DB)
+	if !ok {
+		return errRebuildNeedsAutocommit("v8\u2192v9")
+	}
 	if err := func() error {
+		conn := autocommitConn
 		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("disable FK: %w", err)
 		}
@@ -1469,7 +1684,7 @@ func migrateV8toV9(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV9toV10(conn *sql.DB, version *int) error {
+func migrateV9toV10(conn sqlExecutor, version *int) error {
 	if *version != 9 {
 		return nil
 	}
@@ -1489,7 +1704,7 @@ func migrateV9toV10(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV10toV11(conn *sql.DB, version *int) error {
+func migrateV10toV11(conn sqlExecutor, version *int) error {
 	if *version != 10 {
 		return nil
 	}
@@ -1520,7 +1735,7 @@ func migrateV10toV11(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV11toV12(conn *sql.DB, version *int) error {
+func migrateV11toV12(conn sqlExecutor, version *int) error {
 	if *version != 11 {
 		return nil
 	}
@@ -1546,7 +1761,7 @@ func migrateV11toV12(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV12toV13(conn *sql.DB, version *int) error {
+func migrateV12toV13(conn sqlExecutor, version *int) error {
 	if *version != 12 {
 		return nil
 	}
@@ -1598,7 +1813,7 @@ func migrateV12toV13(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV13toV14(conn *sql.DB, version *int) error {
+func migrateV13toV14(conn sqlExecutor, version *int) error {
 	if *version != 13 {
 		return nil
 	}
@@ -1628,7 +1843,7 @@ func migrateV13toV14(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV14toV15(conn *sql.DB, version *int) error {
+func migrateV14toV15(conn sqlExecutor, version *int) error {
 	if *version != 14 {
 		return nil
 	}
@@ -1661,7 +1876,7 @@ func migrateV14toV15(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV15toV16(conn *sql.DB, version *int) error {
+func migrateV15toV16(conn sqlExecutor, version *int) error {
 	if *version != 15 {
 		return nil
 	}
@@ -1781,7 +1996,7 @@ func migrateV15toV16(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV16toV17(conn *sql.DB, version *int) error {
+func migrateV16toV17(conn sqlExecutor, version *int) error {
 	if *version != 16 {
 		return nil
 	}
@@ -1798,7 +2013,7 @@ func migrateV16toV17(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV17toV18(conn *sql.DB, version *int) error {
+func migrateV17toV18(conn sqlExecutor, version *int) error {
 	if *version != 17 {
 		return nil
 	}
@@ -1857,7 +2072,7 @@ func migrateV17toV18(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV18toV19(conn *sql.DB, version *int) error {
+func migrateV18toV19(conn sqlExecutor, version *int) error {
 	if *version != 18 {
 		return nil
 	}
@@ -1892,7 +2107,7 @@ func migrateV18toV19(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV19toV20(conn *sql.DB, version *int) error {
+func migrateV19toV20(conn sqlExecutor, version *int) error {
 	if *version != 19 {
 		return nil
 	}
@@ -1915,7 +2130,7 @@ func migrateV19toV20(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV20toV21(conn *sql.DB, version *int) error {
+func migrateV20toV21(conn sqlExecutor, version *int) error {
 	if *version != 20 {
 		return nil
 	}
@@ -1955,7 +2170,7 @@ func migrateV20toV21(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV21toV22(conn *sql.DB, version *int) error {
+func migrateV21toV22(conn sqlExecutor, version *int) error {
 	if *version != 21 {
 		return nil
 	}
@@ -2014,7 +2229,7 @@ func migrateV21toV22(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV22toV23(conn *sql.DB, version *int) error {
+func migrateV22toV23(conn sqlExecutor, version *int) error {
 	if *version != 22 {
 		return nil
 	}
@@ -2050,7 +2265,7 @@ func migrateV22toV23(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV23toV24(conn *sql.DB, version *int) error {
+func migrateV23toV24(conn sqlExecutor, version *int) error {
 	if *version != 23 {
 		return nil
 	}
@@ -2087,10 +2302,19 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 		// matches the pattern used by the v8→v9 and v25→v26 migrations.
 		//
 		// See https://www.sqlite.org/lang_altertable.html#otheralter
-		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		//
+		// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+		// transaction and conn.Begin below would nest. batchableOpen keeps
+		// this branch out of the batched open path; the assertion enforces it.
+		autocommitConn, ok := conn.(*sql.DB)
+		if !ok {
+			return errRebuildNeedsAutocommit("v23\u2192v24")
+		}
+		if _, err := autocommitConn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("db: migration v23→v24: disable FK: %w", err)
 		}
 		if err := func() error {
+			conn := autocommitConn
 			tx, err := conn.Begin()
 			if err != nil {
 				return fmt.Errorf("begin tx: %w", err)
@@ -2131,7 +2355,7 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 		}(); err != nil {
 			return fmt.Errorf("db: migration v23→v24: rebuild sessions: %w", err)
 		}
-		if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		if _, err := autocommitConn.Exec("PRAGMA foreign_keys = ON"); err != nil {
 			return fmt.Errorf("db: migration v23→v24: re-enable FK: %w", err)
 		}
 	}
@@ -2186,7 +2410,7 @@ func migrateV23toV24(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV24toV25(conn *sql.DB, version *int) error {
+func migrateV24toV25(conn sqlExecutor, version *int) error {
 	if *version != 24 {
 		return nil
 	}
@@ -2233,7 +2457,7 @@ func migrateV24toV25(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV25toV26(conn *sql.DB, version *int) error {
+func migrateV25toV26(conn sqlExecutor, version *int) error {
 	if *version != 25 {
 		return nil
 	}
@@ -2253,10 +2477,19 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 		// Wrap the rename-copy-drop in a transaction so the intermediate
 		// state is never visible to concurrent readers. PRAGMA foreign_keys
 		// must be set outside the transaction (SQLite requirement).
-		if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		//
+		// Autocommit-only (#2612): PRAGMA foreign_keys is a no-op inside a
+		// transaction and conn.Begin below would nest. batchableOpen keeps
+		// this branch out of the batched open path; the assertion enforces it.
+		autocommitConn, ok := conn.(*sql.DB)
+		if !ok {
+			return errRebuildNeedsAutocommit("v25\u2192v26")
+		}
+		if _, err := autocommitConn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
 			return fmt.Errorf("db: migration v25→v26: disable FK: %w", err)
 		}
 		if err := func() error {
+			conn := autocommitConn
 			tx, err := conn.Begin()
 			if err != nil {
 				return fmt.Errorf("begin tx: %w", err)
@@ -2304,7 +2537,7 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 		}(); err != nil {
 			return fmt.Errorf("db: migration v25→v26: rebuild agent_status: %w", err)
 		}
-		if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		if _, err := autocommitConn.Exec("PRAGMA foreign_keys = ON"); err != nil {
 			return fmt.Errorf("db: migration v25→v26: re-enable FK: %w", err)
 		}
 	}
@@ -2315,7 +2548,7 @@ func migrateV25toV26(conn *sql.DB, version *int) error {
 	return nil
 }
 
-func migrateV26toV27(conn *sql.DB, version *int) error {
+func migrateV26toV27(conn sqlExecutor, version *int) error {
 	if *version != 26 {
 		return nil
 	}
@@ -2371,7 +2604,7 @@ func migrateV26toV27(conn *sql.DB, version *int) error {
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
 // is idempotent on fresh databases where the base schema already includes the
 // column.
-func migrateV27ToV28(conn *sql.DB, version *int) error {
+func migrateV27ToV28(conn sqlExecutor, version *int) error {
 	if *version >= 28 {
 		return nil
 	}
@@ -2405,7 +2638,7 @@ func migrateV27ToV28(conn *sql.DB, version *int) error {
 // declarative schema and the ALTER TABLE has been removed so that fresh
 // databases do not acquire it. Deployed databases that already ran this
 // migration keep the dead column harmlessly — no prism code path reads it.
-func migrateV28ToV29(conn *sql.DB, version *int) error {
+func migrateV28ToV29(conn sqlExecutor, version *int) error {
 	if *version >= 29 {
 		return nil
 	}
@@ -2428,7 +2661,7 @@ func migrateV28ToV29(conn *sql.DB, version *int) error {
 // The ALTER TABLE is guarded by a pragma_table_info check so the migration
 // is idempotent on fresh databases where the base schema already includes
 // the column.
-func migrateV29ToV30(conn *sql.DB, version *int) error {
+func migrateV29ToV30(conn sqlExecutor, version *int) error {
 	if *version >= 30 {
 		return nil
 	}
