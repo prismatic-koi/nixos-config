@@ -113,7 +113,7 @@ fixed by #2610. Both are tracked in #2611. The first table shows the cost
 before #2612:
 
 | package | fsyncs / run before #2610 | wall time on a degraded runner |
-|---|---:|---:|−
+|---|---:|---:|
 | `internal/db` | 41,224 | 491s against a 600s limit |
 | `cmd` | 37,157 | 494s against a 600s limit |
 
