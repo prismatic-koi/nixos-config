@@ -1496,8 +1496,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			spawnPathEnv = "PRISM_SPAWN_PATH=" + spawnPath
 			keybindEnv = "PRISM_KEYBIND_SPAWN=1"
 		}
-		cleanedEnv := filterEnv(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), "PRISM_KEYBIND_SPAWN")
-		cmd.Env = append(cleanedEnv, spawnPathEnv, keybindEnv)
+		// PRISM_SESSION_NAME tells the host-side `prism spawn` which session
+		// made the request, so session.SpawnOpts.InvokerSession — and in turn
+		// the from_session field on the durable session.spawn_intent /
+		// session.spawn_failed events — records the true requester rather
+		// than whatever value the sidecar process itself inherited (issue
+		// #2622). s.cfg.SessionName is this sidecar's own session — the
+		// session that made this HTTP request through its local sidecar
+		// socket. Filter any inherited PRISM_SESSION_NAME out before setting
+		// the correct value so the inherited value cannot survive, including
+		// when s.cfg.SessionName is empty (defence in depth; unresolvable
+		// requester falls through to an explicit empty string rather than a
+		// leaked ancestor value).
+		cleanedEnv := filterEnv(filterEnv(filterEnv(os.Environ(), "PRISM_SPAWN_PATH"), "PRISM_KEYBIND_SPAWN"), "PRISM_SESSION_NAME")
+		cmd.Env = append(cleanedEnv, spawnPathEnv, keybindEnv, "PRISM_SESSION_NAME="+s.cfg.SessionName)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			if status, ok := contextErrStatus(ctx); ok {
