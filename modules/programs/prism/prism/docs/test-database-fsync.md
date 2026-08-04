@@ -121,8 +121,7 @@ measurements because the second one includes the tests that PR #2629 adds:
 `.github/workflows/pr-gate.yml` runs `go test -v ./... -race` with no explicit
 `-timeout`, so the Go default of 10 minutes applies per package binary.
 
-#2612 reduced both. The second table is measured on one developer host with a
-real disk (for fsync latency measurement):
+#2612 reduced both, measured on one developer host:
 
 | package | before #2612 | after #2612 |
 |---|---:|---:|
