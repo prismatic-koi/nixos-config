@@ -195,9 +195,9 @@ Check-ins are an exception path, not the default:
 
 ### What your check-ins can reach
 
-`prism checkin` is scoped per caller by the host API (issue #2587). As a coordinator you reach every session in your own repo, plus the coordinator of another repo.
+`prism checkin` is scoped per caller (issue #2587). As a coordinator you reach every session in your own repo, plus the coordinator of another repo.
 
-The gate lives on the host-API route, which is the route a sandboxed session takes. A `host`-mode session has no socket, reads the prism DB directly, and meets no gate and no audit write on that path — issue #2619 tracks closing it.
+The same scope applies in every isolation mode (issue #2619). A sandboxed session meets the gate on the host-API route. A `host`-mode session has no socket and reads the prism DB directly, so it meets the same predicate on the direct CLI route instead, and a privileged read writes the same audit row. One consequence to expect: `prism checkin` from a plain terminal outside tmux is refused, because it carries no session identity — set `PRISM_SESSION_NAME` or run it from inside your session.
 
 A coordinator of a repo named in `nx.programs.prism.checkin.privilegedRepos` (default `[ "nixos-config" ]`) reaches every session in every repo, including another coordinator's workers and review agents. That privilege exists so the seat that owns the prism configuration can diagnose failures across the fleet. It is not a superuser: it covers `prism checkin` alone — not `prism db query`, not `prism spawn`, not `prism merge` — and every access it admits writes an audit row that names you, the session you read, and the time.
 

@@ -20,8 +20,14 @@
 // Deployment through Nix is a security property, not a convenience.
 // internal/container/mounts.go binds only agents/ and profiles.json out of
 // ~/.config/prism/, and both read-only, so this file is invisible and
-// unwritable from inside every sandbox. The sidecar reads it host-side, once,
-// at start. A hand-edited runtime file would not carry those properties.
+// unwritable from inside every sandbox. A hand-edited runtime file would not
+// carry those properties.
+//
+// Two host-side readers exist, one per route of the verb (issue #2619). The
+// sidecar reads the file once at start, for the host-API route. The direct
+// CLI route reads it per invocation in cmd/checkin_permission.go, because a
+// `host`-mode caller has no sidecar of its own to read it. Both readers treat
+// an unreadable file as an empty list.
 //
 // A missing file is not an error: it yields an empty list, which grants the
 // privilege to nobody and reproduces the pre-#2587 behaviour exactly.

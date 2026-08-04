@@ -21,7 +21,7 @@ Load this skill when the user asks you to:
 
 Run these commands to collect the data for analysis. Work through them in order.
 
-> **Run this from a coordinator session.** `prism checkin` is scoped per caller: a worker reads the review agents of its own session and nothing else, so the reads below return HTTP 403 from a worker. See "Who can check in on what" in the `prism` skill.
+> **Run this from a coordinator session.** `prism checkin` is scoped per caller: a worker reads the review agents of its own session and nothing else, so the reads below are refused for a worker in every isolation mode — HTTP 403 through the host-API route, a non-zero exit through the direct CLI route. See "Who can check in on what" in the `prism` skill.
 
 ### 1. Confirm the session exists and discover subsessions
 
