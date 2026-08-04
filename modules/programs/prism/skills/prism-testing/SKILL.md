@@ -76,7 +76,7 @@ Open a test database with `sidecartest.OpenDB(t, path)`. Do not call `db.Open` d
 
 Four migrations rebuild a table and toggle `PRAGMA foreign_keys`, which is a silent no-op inside a transaction, so they are excluded from the batch: when one of them still has work to do, `batchableOpen` sends the whole open down the old autocommit path. Do not add a table-rebuild migration without adding it to that probe — `TestRebuildMigrationSet_MatchesProbe` fails if you do.
 
-See `modules/programs/prism/prism/docs/test-database-fsync.md` for the full convention, the measurement method (`TestProbeFreshOpen`, and why `TMPDIR` must not be tmpfs), and the current per-package numbers (`cmd` and `internal/db`, tracked in #2611).
+See `modules/programs/prism/prism/docs/test-database-fsync.md` for the full convention, the measurement method (`TestProbeFreshOpen` and the fsync count vs latency distinction), and the current per-package numbers (`cmd` and `internal/db`, tracked in #2611).
 
 ## Why the gate exists — the homeless-shelter failure class
 

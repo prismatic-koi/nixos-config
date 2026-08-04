@@ -577,8 +577,8 @@ func errRebuildNeedsAutocommit(migration string) error {
 //
 // The sequence runs inside one transaction when batchableOpen says every
 // migration this database still needs is safe to batch. That is the common
-// case — a fresh file, or a database already at the current version — and it
-// takes a fresh open from 73 fsyncs to 7 (#2612). Otherwise the sequence runs
+// case — a fresh file, or a database already at the current version — and since
+// #2612 it takes a fresh open from 73 fsyncs to 7. Otherwise the sequence runs
 // statement by statement in autocommit, exactly as it did before #2612.
 func openAndConfigure(conn *sql.DB) (*sql.DB, error) {
 	var err error

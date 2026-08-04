@@ -7,12 +7,11 @@ package db_test
 // docs/test-database-fsync.md and issue #2612 refer to:
 //
 //	go test -c -o /tmp/db.test ./internal/db/
-//	TMPDIR=<dir on a real filesystem> \
-//	  strace -f -c -e trace=fsync /tmp/db.test -test.run '^TestProbeFreshOpen$'
+//	strace -f -c -e trace=fsync /tmp/db.test -test.run '^TestProbeFreshOpen$'
 //
-// Measure on a real filesystem. On tmpfs fsync is a no-op, so the count is
-// zero and the measurement is meaningless. Set TMPDIR to a directory on a
-// disk-backed filesystem before you run the probe.
+// strace counts the fsync syscall on any filesystem, so the count is identical
+// on tmpfs and on a real disk. fsync latency is near zero on tmpfs but real on
+// a CI runner; the latency is what makes the cost visible in wall time.
 //
 // The test itself asserts only that the open works; its value is the syscall
 // count an external tracer observes, not an in-process assertion.

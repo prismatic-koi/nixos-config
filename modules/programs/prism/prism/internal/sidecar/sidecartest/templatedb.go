@@ -11,12 +11,13 @@ package sidecartest
 //
 // Before #2612 each of those statements committed in autocommit mode, and a
 // single db.Open on a fresh file cost 73 fsyncs. Since #2612 the sequence runs
-// in one transaction and the same open costs 7. The numbers below describe the
-// pre-#2612 cost, which is the cost this helper was built to remove.
+// in one transaction and the same open costs 7 fsyncs. The numbers in the
+// paragraph below describe the pre-#2612 cost, which is the cost this helper
+// was built to remove.
 //
-// That is irrelevant on a developer host where the test tempdir is a tmpfs
-// (fsync is a no-op) but it is not irrelevant on a CI runner, where the
-// tempdir is on a real disk. internal/sidecar alone opened ~700 test
+// That cost was irrelevant on a developer host where the test tempdir is a
+// tmpfs (fsync latency is near zero) but not irrelevant on a CI runner, where
+// the tempdir is on a real disk. internal/sidecar alone opened ~700 test
 // databases per run, so the package paid ~51,000 fsyncs before it ran a
 // single assertion. Package wall time was therefore
 // (CPU work) + (fsync count x per-fsync latency), and the second term is set
@@ -29,7 +30,7 @@ package sidecartest
 //
 // # What this does
 //
-// A database that is already at the current schema version costs ZERO fsyncs
+// A database that is already at the current schema version costs zero fsyncs
 // to open: every statement db.Open runs is idempotent (CREATE ... IF NOT
 // EXISTS, guarded ALTER TABLE, no-op migrations), so SQLite starts no write
 // transaction and writes no WAL frame.

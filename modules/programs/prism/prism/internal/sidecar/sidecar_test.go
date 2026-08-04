@@ -331,8 +331,9 @@ func openTestDB(t *testing.T) *db.DB {
 	})
 
 	// sidecartest.OpenDB stamps a pre-migrated template instead of re-running
-	// the schema and every migration, so the open costs no fsync. This package
-	// opens ~700 test databases per run and was paying ~73 fsyncs each (#2598).
+	// the schema and every migration, so the open costs no fsync. Before #2612,
+	// this package opened ~700 test databases per run and paid ~73 fsyncs each
+	// (#2598).
 	d := sidecartest.OpenDB(t, filepath.Join(dir, "test.db"))
 	t.Cleanup(func() { d.Close() })
 	return d
