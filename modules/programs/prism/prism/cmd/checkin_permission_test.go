@@ -27,6 +27,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -400,6 +401,111 @@ func TestDirectCheckin_ResolvesCallerFromEnvironment(t *testing.T) {
 	}
 	if err := authorizeDirectCheckin(cliOtherWorker); err == nil {
 		t.Error("worker reading another worker was permitted — want a refusal")
+	}
+}
+
+// ── the ~review aggregate, verbose mode ────────────────────────────────────────
+//
+// `prism checkin <parent>~review --verbose` renders each group member through
+// runCheckinSession (cmd/checkin_review.go), so the gate applies once per
+// member. The non-verbose summary branch reads d.QueryEvents inline and never
+// reaches the gate.
+//
+// Round 1 of the review of PR #2625 caught this: the original scope claim said
+// the aggregate was ungated, and no test covered verbose=true. These tests
+// exist so the claim in prism/docs/invariants/session-lifecycle.md is
+// falsifiable rather than asserted.
+
+// TestCheckinReviewAggregate_VerboseIsGatedPerMember covers both directions of
+// the per-member gate, including the degradation contract: a refused member
+// does not abort the command, it prints an error line and the loop continues.
+func TestCheckinReviewAggregate_VerboseIsGatedPerMember(t *testing.T) {
+	f := newDirectCheckinFixture(t)
+	f.seedSession(cliWorker, cliRepo, "worker")
+	f.seedSession(cliOtherWorker, cliRepo, "worker")
+	f.seedReviewGroup(cliWorker, cliRepo, 1, cliWorkerReview)
+	// The member needs an assistant turn, or the allowed path falls through to
+	// the tmux screen-scrape and prints the same error line as a refusal.
+	writeEvent(t, f.DB, "agg-evt-1", cliWorkerReview, "msg_assistant",
+		`{"messageId":"agg-m1","text":"review agent verdict text"}`, time.Now().Add(-time.Minute))
+
+	t.Run("the owning worker is admitted for each member", func(t *testing.T) {
+		t.Setenv("PRISM_SESSION_NAME", cliWorker)
+		stdout, stderr := captureStdoutStderr(t, func() {
+			if err := runCheckinReviewRoundsByGroup(cliWorker, true); err != nil {
+				t.Errorf("runCheckinReviewRoundsByGroup: %v", err)
+			}
+		})
+		if !strings.Contains(stdout, "review agent verdict text") {
+			t.Errorf("the owning worker did not get its own review agent's conversation:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+		}
+		if strings.Contains(stderr, "error reading session") {
+			t.Errorf("a member the worker owns was refused:\n%s", stderr)
+		}
+	})
+
+	t.Run("a caller outside its tier is refused for each member", func(t *testing.T) {
+		t.Setenv("PRISM_SESSION_NAME", cliOtherWorker)
+		var returned error
+		stdout, stderr := captureStdoutStderr(t, func() {
+			returned = runCheckinReviewRoundsByGroup(cliWorker, true)
+		})
+		if strings.Contains(stdout, "review agent verdict text") {
+			t.Errorf("a worker read another session's review agent through the aggregate:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "error reading session") {
+			t.Errorf("the refusal was not reported on stderr:\n%s", stderr)
+		}
+		// The degradation contract: one refused member must not abort the run.
+		if returned != nil {
+			t.Errorf("a refused member aborted the command with %v; it must print the error line and continue", returned)
+		}
+	})
+}
+
+// TestCheckinReviewAggregate_VerboseAuditsEachMember pins the audit
+// consequence stated in the invariant: a tier-3 read through the aggregate
+// writes one event per member, not one per command, because the audit write
+// lives inside runCheckinSession.
+func TestCheckinReviewAggregate_VerboseAuditsEachMember(t *testing.T) {
+	f := newDirectCheckinFixture(t)
+	f.privilege(cliRepo)
+	f.seedSession(cliCoordinator, cliRepo, "coordinator")
+	f.seedSession(cliAltWorker, cliAltRepo, "worker")
+
+	// Two members in another repo, so every read is a tier-3 cross-repo grant.
+	const (
+		altReviewA = "prism-test-checkin-cli-other@feature~review-1-review-code"
+		altReviewB = "prism-test-checkin-cli-other@feature~review-1-review-qa"
+	)
+	f.seedReviewGroup(cliAltWorker, cliAltRepo, 1, altReviewA, altReviewB)
+	for i, m := range []string{altReviewA, altReviewB} {
+		writeEvent(t, f.DB, fmt.Sprintf("agg-audit-evt-%d", i), m, "msg_assistant",
+			`{"messageId":"agg-audit-m","text":"member output"}`, time.Now().Add(-time.Minute))
+	}
+
+	t.Setenv("PRISM_SESSION_NAME", cliCoordinator)
+	captureStdoutStderr(t, func() {
+		if err := runCheckinReviewRoundsByGroup(cliAltWorker, true); err != nil {
+			t.Errorf("runCheckinReviewRoundsByGroup: %v", err)
+		}
+	})
+
+	events := f.auditEvents(cliCoordinator)
+	if len(events) != 2 {
+		t.Fatalf("tier-3 aggregate read wrote %d audit event(s), want one per member (2): %+v", len(events), events)
+	}
+	got := map[string]bool{}
+	for _, a := range events {
+		if a.Grant != authz.CheckinPrivilegeGrantName {
+			t.Errorf("audit Grant = %q, want %q", a.Grant, authz.CheckinPrivilegeGrantName)
+		}
+		got[a.Target] = true
+	}
+	for _, want := range []string{altReviewA, altReviewB} {
+		if !got[want] {
+			t.Errorf("no audit event names member %q as its target: %+v", want, events)
+		}
 	}
 }
 

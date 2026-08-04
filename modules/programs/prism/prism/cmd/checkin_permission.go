@@ -32,12 +32,44 @@ package cmd
 //
 // # Scope
 //
-// The gate sits on runCheckinSession, which is the path that renders one
-// session's conversation history — the default view, `--json`, and `--types`.
-// `prism checkin` with no argument lists sessions and reads no history;
-// `--compare` and the `<session>~review` aggregate take their own paths and
-// are ungated on BOTH routes today, so they stay route-symmetric and out of
-// scope for #2619.
+// The gate sits on runCheckinSession. Every caller of that function inherits
+// it, and there are two:
+//
+//  1. `prism checkin <session>` — the default view, `--json`, and `--types`.
+//  2. `prism checkin <parent>~review --verbose` — runCheckinReviewRoundsByGroup
+//     and runCheckinReviewRounds (cmd/checkin_review.go) render each group
+//     member THROUGH runCheckinSession, so the gate applies once per member.
+//     A refused member prints `[error reading session ...]` on stderr and the
+//     loop continues to the next one; the command does not abort. On the
+//     host-API route each of those per-member calls already proxied to
+//     `/checkin` and met the tiers there, so this closes the direct-route half
+//     of a path that was half-gated, rather than gating something new.
+//
+// Not gated, on either route:
+//
+//   - `prism checkin` with no argument — lists sessions, reads no history.
+//   - `prism checkin <parent>~review` WITHOUT `--verbose` — the summary branch
+//     reads d.QueryEvents inline and never reaches runCheckinSession.
+//   - `--compare`.
+//
+// The aggregate's own entry point in runCheckin has no gate and no
+// PRISM_HOST_API branch: it calls openDB() directly. Inside a sandbox that
+// open fails, so the aggregate is reachable only from a host-mode session in
+// practice. Widening the gate to the aggregate's entry point is NOT a
+// wiring change — the target there is a set of sessions, and tier 1 would
+// have to ask "may the caller read the review agents OF parent X", which is a
+// different question from the one AuthorizeCheckin answers (passing the parent
+// as Target hits the tier-1 self-checkin denial). That belongs in its own
+// issue, not here.
+//
+// # Audit consequence of the per-member path
+//
+// A tier-3 caller running `prism checkin <parent>~review --verbose` writes one
+// audit event PER MEMBER, not one per command, because
+// writeDirectCheckinPrivilegeAudit fires inside each runCheckinSession call.
+// That is deliberate and route-consistent: the host-API route issues one
+// `/checkin` per member and audits each one, and each member's history is a
+// distinct privileged read.
 
 import (
 	"encoding/json"

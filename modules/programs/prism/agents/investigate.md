@@ -89,8 +89,11 @@ session — and your role is `investigate`:
 `prism merge`, `prism merges list`, `prism merges cancel`, and
 `prism investigate` are refused there too. Each carries a second, CLI-side
 coordinator guard, in `cmd/merge.go`, `cmd/merges.go` (issue #2608), and
-`cmd/investigate.go`. `prism spawn` has no CLI-side guard (issue #2604). Treat
-the whole list as a hard rule either way.)
+`cmd/investigate.go`. `prism checkin` carries one as well —
+`authorizeDirectCheckin` in `cmd/checkin_permission.go` (issue #2619) — with
+the three permission tiers rather than a plain coordinator check, so the scope
+above holds in `host` mode too. `prism spawn` has no CLI-side guard
+(issue #2604). Treat the whole list as a hard rule either way.)
 
 **Refused mechanically — the bash deny list.** `BLOCKED_BASH_PATTERNS` in
 `pi/extensions/prism.ts` blocks these for every worker-class role, which
