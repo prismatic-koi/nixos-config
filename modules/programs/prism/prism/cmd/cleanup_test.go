@@ -1650,3 +1650,220 @@ func TestCleanupCmd_NoKeepWorktreeFlag_HardCleansWorker(t *testing.T) {
 		t.Errorf("branch %q still exists after default cleanup — expected force-delete", branchName)
 	}
 }
+
+// TestHeadlessCleanup_DescendantSessionOfSoftClosedParentPreservesBranch is
+// the regression test for issue #2638's data-loss path: cleaning up a
+// descendant (review/investigator) session whose parent was soft-closed with
+// `prism close --keep-worktree` must not touch the parent's worktree or
+// branch.
+//
+// Before the fix, headlessCleanupWithJSONTo resolved branchName from the
+// descendant's (i.e. the parent's) worktree HEAD with no ownership check.
+// Because the parent's row has ended_at set (soft close), isSafeToRemoveWorktree's
+// guard 2 does not fire, so the worktree is removed first — which then lifts
+// git's "branch used by worktree" refusal and lets the subsequent force-delete
+// succeed, destroying the parent's parked WIP branch.
+func TestHeadlessCleanup_DescendantSessionOfSoftClosedParentPreservesBranch(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping git-dependent test")
+	}
+	withNoopTmux(t)
+
+	bareRoot, worktreePath, branchName := setupMinimalBareRepo(t)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	// Parent worker session, soft-closed: ended_at is set but the worktree
+	// and branch are preserved (the --keep-worktree contract).
+	parentSession := "myrepo@" + branchName
+	if err := d.UpsertStatus(parentSession, "myrepo", worktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+	if err := d.SetEnded(parentSession); err != nil {
+		t.Fatalf("SetEnded parent: %v", err)
+	}
+
+	// Review-child descendant session: name contains "~review-", inherits the
+	// parent's worktree path.
+	descendantSession := parentSession + "~review-1-review-code"
+	if err := d.UpsertStatus(descendantSession, "myrepo", worktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus descendant: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	var buf bytes.Buffer
+	worktreeName := branchName + "~review-1-review-code"
+	err = headlessCleanupWithJSONTo(descendantSession, worktreeName, worktreePath, bareRoot, false, &buf)
+	if err != nil {
+		t.Fatalf("headlessCleanupWithJSONTo returned error %v, want nil", err)
+	}
+
+	// The parent's worktree must still exist on disk.
+	if _, statErr := os.Stat(worktreePath); statErr != nil {
+		t.Errorf("parent worktree %q was removed by descendant cleanup: %v", worktreePath, statErr)
+	}
+
+	// The parent's branch must still exist in the bare repo.
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run(); err != nil {
+		t.Errorf("parent branch %q deleted by descendant cleanup: %v", branchName, err)
+	}
+
+	// The output must state that the session owns no branch or worktree, and
+	// must not name any branch as deleted.
+	out := buf.String()
+	if !strings.Contains(out, "owns no worktree or branch") {
+		t.Errorf("output does not state that the descendant session owns no worktree or branch: %q", out)
+	}
+	if strings.Contains(out, "deleting branch") {
+		t.Errorf("output names a branch as deleted for a descendant session: %q", out)
+	}
+
+	// The descendant session itself must still be marked ended.
+	d2, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("re-open db: %v", err)
+	}
+	defer d2.Close()
+	status, err := d2.CurrentStatus(descendantSession)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("CurrentStatus returned nil — row missing")
+	}
+	if status.EndedAt == nil {
+		t.Errorf("ended_at is nil — descendant session was not marked as ended")
+	}
+}
+
+// TestCleanupCmd_DescendantSession_JSONOmitsBranchDeleted verifies the --json
+// envelope contract for a descendant session (issue #2638 AC): branch_deleted
+// must be absent (null) because no branch-deletion attempt is made at all,
+// not merely because the attempt failed.
+func TestCleanupCmd_DescendantSession_JSONOmitsBranchDeleted(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping git-dependent test")
+	}
+	withNoopTmux(t)
+
+	bareRoot, worktreePath, branchName := setupMinimalBareRepo(t)
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	parentSession := "myrepo@" + branchName
+	if err := d.UpsertStatus(parentSession, "myrepo", worktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus parent: %v", err)
+	}
+	if err := d.SetEnded(parentSession); err != nil {
+		t.Fatalf("SetEnded parent: %v", err)
+	}
+	descendantSession := parentSession + "~investigate-some-query"
+	if err := d.UpsertStatus(descendantSession, "myrepo", worktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus descendant: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	var buf bytes.Buffer
+	worktreeName := branchName + "~investigate-some-query"
+	err = headlessCleanupWithJSONTo(descendantSession, worktreeName, worktreePath, bareRoot, true, &buf)
+	if err != nil {
+		t.Fatalf("headlessCleanupWithJSONTo returned error %v, want nil", err)
+	}
+
+	line := strings.TrimSpace(buf.String())
+	if line == "" {
+		t.Fatal("no JSON output produced")
+	}
+	if !strings.Contains(line, `"branch_deleted":null`) {
+		t.Errorf("expected branch_deleted:null in JSON envelope, got: %s", line)
+	}
+	if !strings.Contains(line, `"worktree_removed":null`) {
+		t.Errorf("expected worktree_removed:null in JSON envelope, got: %s", line)
+	}
+
+	// The parent's worktree and branch must be untouched.
+	if _, statErr := os.Stat(worktreePath); statErr != nil {
+		t.Errorf("parent worktree %q was removed by descendant cleanup: %v", worktreePath, statErr)
+	}
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/"+branchName).Run(); err != nil {
+		t.Errorf("parent branch %q deleted by descendant cleanup: %v", branchName, err)
+	}
+}
+
+// TestHeadlessCleanup_DescendantOfDefaultBranchSession is the edge-case AC:
+// cleaning up a descendant whose parent is the default-branch (coordinator)
+// session must leave the default branch intact and report no attempted
+// delete.
+func TestHeadlessCleanup_DescendantOfDefaultBranchSession(t *testing.T) {
+	t.Setenv("PRISM_HOST_API", "")
+	t.Setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+	t.Setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not found in PATH — skipping git-dependent test")
+	}
+	withNoopTmux(t)
+
+	bareRoot, _, _ := setupMinimalBareRepo(t)
+	mainWorktreePath := filepath.Join(bareRoot, "main")
+
+	dbFile := filepath.Join(t.TempDir(), "prism.db")
+	d, err := db.Open(dbFile)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	coordinatorSession := "myrepo@main"
+	if err := d.UpsertStatus(coordinatorSession, "myrepo", mainWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus coordinator: %v", err)
+	}
+	descendantSession := coordinatorSession + "~review-1-review-goal"
+	if err := d.UpsertStatus(descendantSession, "myrepo", mainWorktreePath, "running", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus descendant: %v", err)
+	}
+	d.Close()
+
+	SetTestDBPath(dbFile)
+	t.Cleanup(func() { SetTestDBPath("") })
+
+	var buf bytes.Buffer
+	worktreeName := "main~review-1-review-goal"
+	err = headlessCleanupWithJSONTo(descendantSession, worktreeName, mainWorktreePath, bareRoot, false, &buf)
+	if err != nil {
+		t.Fatalf("headlessCleanupWithJSONTo returned error %v, want nil", err)
+	}
+
+	if _, statErr := os.Stat(mainWorktreePath); statErr != nil {
+		t.Errorf("main worktree %q was removed by descendant cleanup: %v", mainWorktreePath, statErr)
+	}
+	bareDir := filepath.Join(bareRoot, ".bare")
+	if err := exec.Command("git", "--git-dir", bareDir, "rev-parse", "--verify",
+		"refs/heads/main").Run(); err != nil {
+		t.Errorf("default branch main deleted by descendant cleanup: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "deleting branch") {
+		t.Errorf("output names a branch as deleted for a descendant of the default-branch session: %q", out)
+	}
+}
