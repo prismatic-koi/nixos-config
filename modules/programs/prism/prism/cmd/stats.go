@@ -336,7 +336,8 @@ func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, d
 			return err
 		}
 		var resp struct {
-			Session *db.Session `json:"session"`
+			Session *db.Session      `json:"session"`
+			Outcome *db.SpawnOutcome `json:"outcome"`
 		}
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return fmt.Errorf("stats proxy: unmarshal detail response: %w", err)
@@ -347,10 +348,12 @@ func runStatsProxy(cmd *cobra.Command, args []string, apiURL string, days int, d
 		if resp.Session == nil {
 			return fmt.Errorf("stats: %q not found", sessionFilter)
 		}
-		// Render the session detail using the incarnation renderer.
-		// We need a DB handle for token lookup on the direct path, but for the
-		// proxy path we render the sessions fields only (token data not proxied).
-		renderIncarnationDetailFromSession(resp.Session)
+		// Render the session detail using the incarnation renderer. The
+		// host-API view=detail response now proxies the spawn_outcome
+		// token/cost fields alongside the session (issue #2582), so the
+		// sandbox path renders identical Token Usage output to the
+		// host-direct path instead of the old fixed stub line.
+		renderIncarnationDetailFromSession(resp.Session, resp.Outcome)
 		return nil
 	}
 

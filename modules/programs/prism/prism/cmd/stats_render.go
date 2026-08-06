@@ -91,8 +91,11 @@ func spawnInputsJSON(si *db.SpawnInputs) map[string]any {
 }
 
 // renderIncarnationDetailFromSession renders the session detail for the proxy
-// path, where no DB is available for token/cost lookup.
-func renderIncarnationDetailFromSession(sess *db.Session) {
+// path. outcome is the spawn_outcome row proxied alongside the session by
+// the host-API view=detail response (issue #2582) — nil means the session
+// has not yet computed one (still live), which the renderer surfaces as
+// "not yet available", not as zero.
+func renderIncarnationDetailFromSession(sess *db.Session, outcome *db.SpawnOutcome) {
 	if sess == nil {
 		return
 	}
@@ -137,8 +140,51 @@ func renderIncarnationDetailFromSession(sess *db.Session) {
 		fmt.Printf("%s %s\n", styleLabel.Render("archive:"), styleDim.Render("(not yet archived)"))
 	}
 	fmt.Println()
+	renderTokenUsageBlock(styleHeader, styleLabel, styleDim, outcome)
+}
+
+// renderTokenUsageBlock renders the "Token Usage" block shared by the
+// host-direct and sandbox-proxy detail renderers, from a *db.SpawnOutcome
+// (issue #2582). outcome nil means the session has not yet had a
+// spawn_outcome row computed — typically because the session is still
+// active — and is rendered as an explicit "not yet available" message
+// rather than as zero values presented as real data. A cost of exactly 0 is
+// expected under subscription profiles (e.g. anthropic-pi) and is not
+// treated as missing data.
+func renderTokenUsageBlock(styleHeader, styleLabel, styleDim lipgloss.Style, outcome *db.SpawnOutcome) {
 	fmt.Println(styleHeader.Render("Token Usage"))
-	fmt.Println(styleDim.Render("  token data requires host DB access (use prism stats on host for full detail)"))
+	if outcome == nil {
+		fmt.Println(styleDim.Render("  not yet available (session still active; spawn_outcome not yet computed)"))
+		return
+	}
+	totalInput := outcome.TokensInputTotal
+	totalOutput := outcome.TokensOutputTotal
+	totalCacheRead := outcome.TokensCacheReadTotal
+	totalCacheWrite := outcome.TokensCacheWriteTotal
+	totalCost := outcome.CostUSDTotal
+	if totalInput+totalOutput > 0 {
+		fmt.Printf("  %s %s\n", styleLabel.Render("input:"), formatTokenCount(int(totalInput)))
+		fmt.Printf("  %s %s\n", styleLabel.Render("output:"), formatTokenCount(int(totalOutput)))
+		if totalCacheRead > 0 {
+			fmt.Printf("  %s %s\n", styleLabel.Render("cache read:"), formatTokenCount(int(totalCacheRead)))
+		}
+		if totalCacheWrite > 0 {
+			fmt.Printf("  %s %s\n", styleLabel.Render("cache write:"), formatTokenCount(int(totalCacheWrite)))
+		}
+		// Cost is legitimately 0 under subscription profiles (no per-token
+		// billing) — render it whenever token usage is present so a $0 run
+		// is visibly distinct from "no data", rather than silently omitted.
+		// formatCost renders anything under a cent as "<$0.01", which would
+		// misrepresent an exact $0 subscription run, so that case is spelled
+		// out explicitly instead.
+		costStr := "$0.00"
+		if totalCost > 0 {
+			costStr = formatCost(totalCost)
+		}
+		fmt.Printf("  %s %s\n", styleLabel.Render("est. cost:"), costStr)
+	} else {
+		fmt.Println(styleDim.Render("  no token data"))
+	}
 }
 
 // resolveSessionArg resolves an argument to a single sessions row.
@@ -233,37 +279,11 @@ func renderIncarnationDetail(d *db.DB, sess *db.Session) {
 		fmt.Println()
 	}
 
-	// Token/cost totals from agent_events.
-	fmt.Println(styleHeader.Render("Token Usage"))
-	turns, err := d.SessionTurnTokens(sess.InstanceID)
-	if err != nil || len(turns) == 0 {
-		fmt.Println(styleDim.Render("  no token data (pre-migration events excluded)"))
-	} else {
-		var totalInput, totalOutput, totalCacheRead, totalCacheWrite int
-		var totalCost float64
-		for _, t := range turns {
-			totalInput += t.Input
-			totalOutput += t.Output
-			totalCacheRead += t.CacheRead
-			totalCacheWrite += t.CacheWrite
-			totalCost += computeTurnCost(t)
-		}
-		if totalInput+totalOutput > 0 {
-			fmt.Printf("  %s %s\n", styleLabel.Render("input:"), formatTokenCount(totalInput))
-			fmt.Printf("  %s %s\n", styleLabel.Render("output:"), formatTokenCount(totalOutput))
-			if totalCacheRead > 0 {
-				fmt.Printf("  %s %s\n", styleLabel.Render("cache read:"), formatTokenCount(totalCacheRead))
-			}
-			if totalCacheWrite > 0 {
-				fmt.Printf("  %s %s\n", styleLabel.Render("cache write:"), formatTokenCount(totalCacheWrite))
-			}
-			if totalCost > 0 {
-				fmt.Printf("  %s %s\n", styleLabel.Render("est. cost:"), formatCost(totalCost))
-			}
-		} else {
-			fmt.Println(styleDim.Render("  no token data"))
-		}
-	}
+	// Token/cost totals: the persisted-or-computed spawn_outcome row, the
+	// same source used by the sandbox proxy path (issue #2582) so the two
+	// paths render byte-identical output.
+	outcome := d.CompareRunOutcome(sess)
+	renderTokenUsageBlock(styleHeader, styleLabel, styleDim, outcome)
 }
 
 // renderSessionDetail renders the detailed block format for a single harness session.

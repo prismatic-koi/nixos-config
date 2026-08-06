@@ -278,6 +278,81 @@ func TestRunStatsProxy_SummaryJSON(t *testing.T) {
 	}
 }
 
+// TestRunStatsProxy_Detail_RendersOutcome verifies that a `prism stats
+// <session>` detail lookup via the proxy path renders the token/cost fields
+// from the outcome the host-API view=detail response now carries, instead of
+// the old fixed "token data requires host DB access" stub line (issue #2582).
+func TestRunStatsProxy_Detail_RendersOutcome(t *testing.T) {
+	sess := db.Session{
+		InstanceID:  "cccc1111-2222-3333-4444-555555555555",
+		SessionName: "nixos-config@detail",
+		Repo:        "nixos-config",
+		Worktree:    "/tmp/w",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-1 * time.Hour),
+	}
+	outcome := &db.SpawnOutcome{
+		InstanceID:            sess.InstanceID,
+		TokensInputTotal:      12345,
+		TokensOutputTotal:     6789,
+		TokensCacheReadTotal:  1000,
+		TokensCacheWriteTotal: 500,
+		CostUSDTotal:          0,
+	}
+	respBody, _ := json.Marshal(map[string]any{"session": sess, "outcome": outcome})
+
+	_, apiURL := startFakeStatsServer(t, respBody)
+	t.Setenv("PRISM_HOST_API", apiURL)
+
+	out := captureStdout(t, func() {
+		if err := runStats(statsCmd, []string{"nixos-config@detail"}); err != nil {
+			t.Errorf("runStats (detail proxy): %v", err)
+		}
+	})
+
+	if strings.Contains(out, "requires host DB access") {
+		t.Errorf("output still contains the old stub line:\n%s", out)
+	}
+	if !strings.Contains(out, "12K") {
+		t.Errorf("output missing rendered input token count\ngot:\n%s", out)
+	}
+	if !strings.Contains(out, "$0.00") {
+		t.Errorf("output should render an explicit $0.00 cost for a zero-cost subscription run, not omit it\ngot:\n%s", out)
+	}
+}
+
+// TestRunStatsProxy_Detail_OutcomeNotYetAvailable verifies that a detail
+// lookup for a session with no spawn_outcome row yet (still active) renders
+// an explicit "not yet available" message rather than presenting zero values
+// as real data (issue #2582 edge case).
+func TestRunStatsProxy_Detail_OutcomeNotYetAvailable(t *testing.T) {
+	sess := db.Session{
+		InstanceID:  "dddd1111-2222-3333-4444-555555555555",
+		SessionName: "nixos-config@active",
+		Repo:        "nixos-config",
+		Worktree:    "/tmp/w",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-1 * time.Minute),
+	}
+	respBody, _ := json.Marshal(map[string]any{"session": sess, "outcome": nil})
+
+	_, apiURL := startFakeStatsServer(t, respBody)
+	t.Setenv("PRISM_HOST_API", apiURL)
+
+	out := captureStdout(t, func() {
+		if err := runStats(statsCmd, []string{"nixos-config@active"}); err != nil {
+			t.Errorf("runStats (detail proxy, no outcome): %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "not yet available") {
+		t.Errorf("output missing 'not yet available' message for a session with no spawn_outcome row\ngot:\n%s", out)
+	}
+	if strings.Contains(out, "requires host DB access") {
+		t.Errorf("output still contains the old stub line:\n%s", out)
+	}
+}
+
 // TestRunStatsProxy_GroupByFallsThrough verifies that --group-by skips the
 // proxy and uses the local DB path even when PRISM_HOST_API is set.
 // This guards against the regression where --group-by was silently dropped.

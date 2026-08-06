@@ -260,7 +260,8 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 	}
 
 	var resp struct {
-		Session *db.Session `json:"session"`
+		Session *db.Session      `json:"session"`
+		Outcome *db.SpawnOutcome `json:"outcome"`
 	}
 	decodeJSONBody(t, rr, &resp)
 	if resp.Session == nil {
@@ -268,6 +269,59 @@ func TestHostAPI_Stats_Detail_HappyPath(t *testing.T) {
 	}
 	if resp.Session.SessionName != "test-repo@main" {
 		t.Errorf("session name = %q, want test-repo@main", resp.Session.SessionName)
+	}
+	// The session has no agent_status row and is not terminal, so no
+	// spawn_outcome exists yet — the response must say so explicitly (nil),
+	// never fabricate zero values (issue #2582).
+	if resp.Outcome != nil {
+		t.Errorf("outcome = %+v, want nil for a non-terminal session with no spawn_outcome row", resp.Outcome)
+	}
+}
+
+// TestHostAPI_Stats_Detail_IncludesOutcome verifies that GET
+// /stats?view=detail&session=<name> proxies the spawn_outcome token/cost
+// fields for a terminal session, so the sandbox proxy path
+// (renderIncarnationDetailFromSession) can render the same Token Usage block
+// as the host-direct path (issue #2582).
+func TestHostAPI_Stats_Detail_IncludesOutcome(t *testing.T) {
+	d := openTestDB(t)
+
+	instanceID := "bbbb2222-2222-3333-4444-555555555555"
+	sess := db.Session{
+		InstanceID:  instanceID,
+		SessionName: "test-repo@outcome",
+		Repo:        "test-repo",
+		Worktree:    "/tmp/w",
+		Harness:     "pi",
+		StartedAt:   time.Now().Add(-time.Minute),
+	}
+	if err := d.InsertSession(sess); err != nil {
+		t.Fatalf("InsertSession: %v", err)
+	}
+	if err := d.UpdateSessionEnded(instanceID, "finished"); err != nil {
+		t.Fatalf("UpdateSessionEnded: %v", err)
+	}
+	if err := d.WriteSpawnOutcome(instanceID); err != nil {
+		t.Fatalf("WriteSpawnOutcome: %v", err)
+	}
+
+	sc := newSidecarWithRole(t, "test-repo@outcome", "test-repo", "coordinator", d)
+
+	rr := doHostAPI(t, sc, http.MethodGet, "/stats?view=detail&session=test-repo%40outcome", "")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+
+	var resp struct {
+		Session *db.Session      `json:"session"`
+		Outcome *db.SpawnOutcome `json:"outcome"`
+	}
+	decodeJSONBody(t, rr, &resp)
+	if resp.Outcome == nil {
+		t.Fatal("outcome field is nil, want the persisted spawn_outcome row")
+	}
+	if resp.Outcome.InstanceID != instanceID {
+		t.Errorf("outcome.instance_id = %q, want %q", resp.Outcome.InstanceID, instanceID)
 	}
 }
 
