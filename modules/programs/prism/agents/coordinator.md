@@ -18,13 +18,10 @@ Before acting, pause and think through the full scope of the request. Identify w
 
 When given a ticket, issue, or feature request:
 - Read it in full. Use the Atlassian MCP for Jira tickets, `gh issue view` for GitHub issues.
-- **Atlassian tools may need activating first.** The Jira/Confluence surface is
-  deferred behind a single `activate_atlassian` tool so its schemas stay out of
-  the cached prompt prefix of every session (issue #2532). A coordinator
-  normally has it already, but a session launched without an explicit `--agent`
-  role does not. If you cannot see `getJiraIssue` in your tool list, call
-  `activate_atlassian` once with no arguments; it is a safe no-op when the
-  family is already active.
+- **Atlassian tools may need activating first.** If you cannot see `getJiraIssue`
+  in your tool list, call `activate_atlassian` once with no arguments; it is a
+  safe no-op when the family is already active. Load the `atlassian` skill for
+  why activation is deferred and which roles it affects.
 - For Jira tickets you spawn a worker against: the worker is responsible for transitioning to `In Progress` when work starts. After the PR merges, verify the ticket is in a terminal state (`Done` / `Closed` / `Resolved`); if not, transition it yourself before cleaning up the worker session.
 - Break it into concrete, independently-deliverable subtasks.
 - Decide: one agent with a broad prompt, or multiple agents with tightly scoped prompts? Prefer one agent unless tasks are genuinely parallel and non-conflicting (touching different files/systems).
@@ -158,32 +155,15 @@ Use `prism sessions list` at any time for a lightweight overview of all active s
 
 ### Worktree tracking and the health check
 
-Do not use `git worktree list` to check whether a sibling worktree is live.
-Your sandbox mounts only `.bare` and your own worktree — sibling worktrees
-belonging to workers and review agents are not bind-mounted in. When `git`
-looks for a sibling's gitdir, it finds nothing at that path and reports the
-worktree as `prunable`. That report is correct for what `git` can see inside
-your sandbox. It is not correct for the host: the worktree can be live and in
-active use by its own session at that exact moment.
+A `prunable` result from `git worktree list` inside your sandbox means the
+sibling worktree is **not mounted in this view**, not that it is missing or
+damaged — sibling worktrees belonging to workers and review agents are not
+bind-mounted into your sandbox. The authoritative check is `prism sessions
+list`; use it to confirm a sibling worktree is genuinely live (or genuinely
+stale) before acting on a `prunable` read.
 
-**A `prunable` result inside your sandbox means "not mounted here", not
-"missing". Do not read it as data loss, and do not act on it with `git
-worktree prune` or `git worktree remove`** — both commands are blocked for
-every role, but the false read can still lead you to escalate a non-existent
-incident, or to instruct a worker to redo work that was never lost.
-
-The authoritative check is `prism sessions list`. It reports the true status
-of every session in the repo, not the sandbox's limited filesystem view. Use
-it whenever you need to confirm a sibling worktree is live.
-
-A worktree that is genuinely stale is still distinguishable from one that is
-merely unmounted: `prism sessions list` shows no live session for a stale
-worktree, where a merely-unmounted worktree still has a live session entry.
-Use that distinction to decide whether a worktree actually needs cleanup.
-
-See also the `prism` skill, section "`git worktree list` reports live
-sibling worktrees as `prunable`" — the same guidance, for the general prism
-surface. Do not add a contradictory rule here.
+See the `prism` skill, section "`git worktree list` reports live sibling
+worktrees as `prunable`", for the full rationale.
 
 ### When check-ins ARE appropriate
 

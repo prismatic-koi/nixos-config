@@ -836,9 +836,12 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     reason:
       "blocked by prism extension: `git worktree prune` from inside a " +
       "sandboxed agent will sever sibling sessions' git trees because " +
-      "their worktrees are not bind-mounted into your view. Use " +
-      "`prism cleanup --yes --session <name>` instead, or escalate " +
-      "to the user if the residual state is from a partial spawn.",
+      "their worktrees are not bind-mounted into your view. A `prunable` " +
+      "result here means the worktree is not mounted in this sandbox, not " +
+      "that it is missing or damaged \u2014 check `prism sessions list` before " +
+      "treating it as data loss. Use `prism cleanup --yes --session <name>` " +
+      "instead, or escalate to the user if the residual state is from a " +
+      "partial spawn.",
   },
   {
     id: "git-worktree-remove",
@@ -849,8 +852,11 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
     reason:
       "blocked by prism extension: `git worktree remove` from inside " +
       "a sandboxed agent risks removing sibling sessions' worktrees " +
-      "(they are not bind-mounted into your view). Use " +
-      "`prism cleanup --yes --session <name>` instead.",
+      "(they are not bind-mounted into your view). A `prunable` result " +
+      "here means the worktree is not mounted in this sandbox, not that " +
+      "it is missing or damaged \u2014 check `prism sessions list` before " +
+      "treating it as data loss. Use `prism cleanup --yes --session <name>` " +
+      "instead.",
   },
   {
     // #2180 — `nix build` with an inline override of any of XDG_DATA_HOME,

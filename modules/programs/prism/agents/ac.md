@@ -83,7 +83,7 @@ Output your critique, then a revised checklist incorporating your suggestions. B
 
 The calling agent specifies where ACs must be written — a Jira ticket, GitHub issue, a file in the repo, or elsewhere. Write them there. If no location is specified, output the checklist directly.
 
-Writing to a Jira ticket needs the Atlassian tools, which are deferred behind a single `activate_atlassian` tool (issue #2532). If you cannot see `updateJiraIssue` in your tool list, call `activate_atlassian` once with no arguments first.
+Writing to a Jira ticket needs the Atlassian tools. If you cannot see `updateJiraIssue` in your tool list, call `activate_atlassian` once with no arguments first — load the `atlassian` skill for why activation is deferred.
 
 Do not store ACs in a location that is not specified or obviously implied by the context.
 
