@@ -107,8 +107,28 @@ func BuildDeliveryMessageForTest(prNumber string, round int, formattedResults st
 // the group's closed (ended_at set) agent_status rows, so tests can assert the
 // reaped-session reason text.
 func BuildDeliveryMessageWithEndedForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string, endedRows map[string]db.Status) string {
-	status := ClassifyRound(AgentsFromSessionsForTest(agentSessions), agentSessions, groupData, endedRows)
+	return BuildDeliveryMessageWithCausesForTest(prNumber, round, formattedResults, allPassed, groupData, agentSessions, endedRows, nil)
+}
+
+// BuildDeliveryMessageWithCausesForTest is the #2613 variant: it also supplies
+// the close cause recorded for each closed row, so tests can assert that the
+// rendered report names one cause rather than a disjunction.
+func BuildDeliveryMessageWithCausesForTest(prNumber string, round int, formattedResults string, allPassed bool, groupData map[string]db.GroupMemberResult, agentSessions []string, endedRows map[string]db.Status, causes map[string]db.SessionEndCause) string {
+	status := ClassifyRoundWithCauses(AgentsFromSessionsForTest(agentSessions), agentSessions, groupData, endedRows, causes)
 	return buildDeliveryMessage(prNumber, round, formattedResults, allPassed, status)
+}
+
+// CleanupAgentSessionForTest is an exported wrapper around cleanupAgentSession
+// so tests can pin that the reap record is guarded on ended_at (#2613).
+func CleanupAgentSessionForTest(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
+	cleanupAgentSession(d, agentSession, cause, detail...)
+}
+
+// ExpectedRoundSetForTest is an exported wrapper around expectedRoundSet so
+// tests can pin that a round's expected set is never filtered by spawn
+// failures (#2613).
+func ExpectedRoundSetForTest(agents []Agent, agentSessions []string, spawnErr []error) ([]Agent, []string) {
+	return expectedRoundSet(agents, agentSessions, spawnErr)
 }
 
 // AgentsFromSessionsForTest builds the parallel Agent slice ClassifyRound

@@ -479,13 +479,22 @@ What to do:
 3. The round does **not** count toward the 3-cycle limit — the report says
    so explicitly.
 
-One class needs a different response: **"session ended mid-review"** means
-the agent's `agent_status` row was closed while the round was running (the
-tmux session ended, the harness deleted the session, or a cleanup path ran).
-The report names the state the row was left in and the time it closed. If
-the same agent is reaped in two consecutive rounds, escalate to the
+Three classes cover a row that was closed while the round was running. The
+report names one cause per row, never a list of candidates (#2613):
+
+- **"failed its readiness gate"** — the agent was spawned but never
+  signalled that it was up. Re-run.
+- **"force-terminated"** — a prism lifecycle path stopped a running agent.
+  The report names which: the review monitor's safety deadline, a cleanup of
+  the parent worker session, or an operator `prism cleanup`.
+- **"session ended mid-review"** — the row was closed and no path recorded
+  why. The report names the state the row was left in and the time it
+  closed.
+
+If the same agent is reaped in two consecutive rounds, escalate to the
 coordinator rather than re-running a third time — a repeatable reap is a
-platform fault, not a flake.
+platform fault, not a flake. `modules/programs/prism/prism/docs/diagnoses/review-agent-reap-2613.md`
+carries the diagnosis behind these classes.
 
 ### Handling ran-but-no-parseable-verdict in review-complete prompts
 

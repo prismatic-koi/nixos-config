@@ -115,9 +115,13 @@ func DeliverGroupResults(d *db.DB, groupID, deliveryID string) (*RecoveryDeliver
 	// rows so a member reaped mid-review is reported with its recorded cause
 	// rather than as an unexplained absence (#2573).
 	endedRows := endedRowsFrom(members)
+	// The close cause each lifecycle path recorded for those rows (#2613), so
+	// a recovery-path delivery names the same single cause the happy path
+	// names rather than a disjunction.
+	endedCauses := endedMemberCauses(d, endedRows)
 
-	results := buildMonitorResults(agents, agentSessions, groupData, endedRows)
-	status := ClassifyRound(agents, agentSessions, groupData, endedRows)
+	results := buildMonitorResults(agents, agentSessions, groupData, endedRows, endedCauses)
+	status := ClassifyRoundWithCauses(agents, agentSessions, groupData, endedRows, endedCauses)
 	output, allPassed := FormatResultsForRound(results, info.PRNumber, info.Round, 0, status)
 	deliveryText := buildDeliveryMessage(info.PRNumber, info.Round, output, allPassed, status)
 

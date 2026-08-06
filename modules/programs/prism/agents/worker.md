@@ -291,10 +291,18 @@ to use. The classes are:
   coordinator instead of burning further rounds on blind re-runs —
   repeated stalls under concurrent load suggest rate/subscription limits
   that a retry will not fix.
+- **failed its readiness gate (no readiness signal)** — the agent was
+  spawned but never signalled that it was up, so the round closed its
+  session before the round began. Worth an immediate re-run.
+- **force-terminated by a prism lifecycle path** — a prism path stopped a
+  running agent: the monitor's safety deadline, a cleanup of your own
+  session that cascaded, or an operator `prism cleanup`. The report names
+  which one. If it names the monitor's safety deadline twice in a row, the
+  agent is exceeding the round timeout — escalate rather than re-running.
 - **session ended mid-review** — the agent's DB row was closed while the
-  round was running, so no verdict was recorded. Re-run once; if the same
-  agent is reaped in two consecutive rounds, escalate — a repeatable reap
-  is a platform fault, not a flake.
+  round was running and no path recorded why, so no verdict was recorded.
+  Re-run once; if the same agent is reaped in two consecutive rounds,
+  escalate — a repeatable reap is a platform fault, not a flake.
 - **ended in error state** / **ended in an unexpected state** — the agent
   crashed mid-run, or was still running when the monitor gave up.
 - **finished with no output** / **finished with no parseable verdict** — the

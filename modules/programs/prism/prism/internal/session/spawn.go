@@ -853,7 +853,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 		//   - removeInitialPrompt:      drops the per-session prompt file so a
 		//                               retry with the same name starts fresh.
 		KillSidecar(opts.SessionName)
-		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
+		cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, db.ReapCauseSpawnFailure)
 		_ = tmux.KillSession(opts.SessionName)
 		removeInitialPrompt(opts.SessionName)
 		// Durable failure event + best-effort bus-message notification to
@@ -932,7 +932,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			// releases the port and marks the row ended, and tmux.KillSession
 			// releases the pane. All three are best-effort and idempotent.
 			KillSidecar(opts.SessionName)
-			cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID)
+			cleanupHalfAliveSession(d, opts.SessionName, opts.InstanceID, db.ReapCauseReadinessGate, readyErr.Error())
 			_ = tmux.KillSession(opts.SessionName)
 			// Drop the per-session prompt file so a retry starts fresh.
 			removeInitialPrompt(opts.SessionName)
@@ -1027,8 +1027,24 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 // SpawnSession (#1507). When non-empty, cleanupHalfAliveSession also writes
 // sessions.ended_at and sessions.end_state so the two tables stay in lock-step
 // (fixing the zombie-incarnation drift class described in #1881).
-func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string) {
+//
+// cause names the path that is closing the row, recorded as a session_reaped
+// event (#2613). This helper is on the review-agent lifecycle:
+// internal/review's spawn loop calls SpawnSession, so a review agent that
+// fails its layout step or SpawnSession's own inline readiness gate is closed
+// here, in state "error". Without the record, that row is indistinguishable in
+// the round report from a force-terminate. detail is optional free text.
+//
+// The record is guarded on ended_at so this helper never claims a close it did
+// not perform — db.SetEnded below carries the same `AND ended_at IS NULL`
+// guard, and SessionEndCauses returns the LATEST recorded cause, so an
+// unguarded record on an already-closed row would overwrite the true cause
+// with a false one.
+func cleanupHalfAliveSession(d *db.DB, sessionName, instanceID string, cause db.SessionReapCause, detail ...string) {
 	st, lookupErr := d.CurrentStatus(sessionName)
+	if lookupErr == nil && st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(sessionName, cause, detail...)
+	}
 	if lookupErr == nil && st != nil {
 		// UpsertStatus is idempotent and validates the transition (idle →
 		// error is allowed; error → error is a no-op-shaped repeat). We
