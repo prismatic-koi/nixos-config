@@ -145,9 +145,17 @@ func startAuditProxyServer(t *testing.T, d *db.DB) (*auditProxyServer, string) {
 }
 
 // renderAuditDirect runs `prism audit` against the direct-DB path.
+//
+// The direct route is now gated coordinator-only (#2627), so the caller
+// session must resolve to a coordinator. auditProxyDirectCaller is seeded as
+// one on first use, and PRISM_SESSION_NAME points every direct-route test in
+// this file at it.
 func renderAuditDirect(t *testing.T, flags map[string]string, args ...string) string {
 	t.Helper()
 	t.Setenv("PRISM_HOST_API", "")
+	seedAuditProxyDirectCaller(t)
+	t.Setenv("PRISM_SESSION_NAME", auditProxyDirectCaller)
+	t.Setenv("TMUX", "")
 	c := newAuditFlagsCmd(t)
 	setAuditFlags(t, c, flags)
 	return captureStdout(t, func() {
@@ -155,6 +163,29 @@ func renderAuditDirect(t *testing.T, flags map[string]string, args ...string) st
 			t.Fatalf("runAudit (direct): %v", err)
 		}
 	})
+}
+
+// auditProxyDirectCaller is the coordinator session the direct-route tests in
+// this file authenticate as.
+const auditProxyDirectCaller = "prism-test-audit-proxy@main"
+
+// seedAuditProxyDirectCaller inserts a coordinator agent_status row for
+// auditProxyDirectCaller against the DB the test's openDB() call resolves to
+// (set by openStatsTestDB via SetTestDBPath). Idempotent: an upsert, so
+// calling it more than once across sub-tests sharing one DB is safe.
+func seedAuditProxyDirectCaller(t *testing.T) {
+	t.Helper()
+	d, err := openDB()
+	if err != nil {
+		t.Fatalf("seedAuditProxyDirectCaller: openDB: %v", err)
+	}
+	defer d.Close()
+	if err := d.UpsertStatusSeedRootAgentName(
+		auditProxyDirectCaller, "prism-test-audit-proxy", "/worktree/main", "idle",
+		nil, nil, "coordinator", "", "host",
+	); err != nil {
+		t.Fatalf("seedAuditProxyDirectCaller: UpsertStatusSeedRootAgentName: %v", err)
+	}
 }
 
 // renderAuditProxy runs `prism audit` against the proxy path.
