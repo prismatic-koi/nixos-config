@@ -563,6 +563,40 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 	})
 
+	// GET /retro — the retrospective read surface behind `prism retro`
+	// (issue #2583). All-roles read, matching /stats: the data it returns —
+	// per-session token/cost/waste aggregates rolled up into trains — is the
+	// same class of aggregate the /stats summary and detail views already
+	// expose to every role. It carries no row-level conversation content, so it
+	// adds no privilege boundary and is not gated behind requireCoordinator.
+	//
+	// Query params:
+	//   repo  — repo scope (optional; empty = all repos)
+	//   since — window cut-off as a Unix-millisecond timestamp string (optional)
+	//
+	// Response: the db.RetroReport JSON, assembled by db.AssembleRetro — the
+	// same assembly the direct CLI path calls, so the CLI renders byte-identical
+	// output on the host and sandbox paths.
+	mux.HandleFunc("/retro", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+		q := r.URL.Query()
+		repoFilter := q.Get("repo")
+		var sinceMs int64
+		if sinceStr := q.Get("since"); sinceStr != "" {
+			if ms, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
+				sinceMs = ms
+			}
+		}
+		report, err := s.cfg.DB.AssembleRetro(repoFilter, sinceMs)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	})
+
 	// GET /list-sessions
 	// Query param: all=true (optional, coordinator only)
 	// Response: JSON array of session status objects
