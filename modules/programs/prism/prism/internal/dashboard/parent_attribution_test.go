@@ -249,7 +249,7 @@ func TestBothViews_ParentChildAgreement(t *testing.T) {
 
 	var agentSessions []dashboard.AgentSession
 	for _, s := range allStatuses {
-		agentSessions = append(agentSessions, dashboard.StatusToAgentSession(s, nil, groupParents))
+		agentSessions = append(agentSessions, dashboard.StatusToAgentSession(s, nil, groupParents, nil))
 	}
 
 	// Verify that each review session's ParentSession field is correctly set.
@@ -379,7 +379,7 @@ func TestBothViews_WorkerSpawnedReview(t *testing.T) {
 	}
 	var agentSessions []dashboard.AgentSession
 	for _, s := range allStatuses {
-		agentSessions = append(agentSessions, dashboard.StatusToAgentSession(s, nil, groupParents))
+		agentSessions = append(agentSessions, dashboard.StatusToAgentSession(s, nil, groupParents, nil))
 	}
 
 	// Verify ParentSession field.
@@ -483,7 +483,7 @@ func TestStatusToAgentSession_PopulatesParentSession(t *testing.T) {
 		groupID: parentSession,
 	}
 
-	as := dashboard.StatusToAgentSession(status, nil, groupParents)
+	as := dashboard.StatusToAgentSession(status, nil, groupParents, nil)
 	if as.ParentSession != parentSession {
 		t.Errorf("ParentSession = %q, want %q", as.ParentSession, parentSession)
 	}
@@ -500,7 +500,7 @@ func TestStatusToAgentSession_FallsBackToNameHeuristic(t *testing.T) {
 		GroupID:     nil, // pre-migration: no group_id
 	}
 
-	as := dashboard.StatusToAgentSession(status, nil, nil)
+	as := dashboard.StatusToAgentSession(status, nil, nil, nil)
 	want := "nixos-config@feature"
 	if as.ParentSession != want {
 		t.Errorf("ParentSession = %q, want %q (name heuristic fallback)", as.ParentSession, want)
