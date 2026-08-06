@@ -66,11 +66,23 @@ review-only flow this session should follow.`
 // prompt (preserving it, per issue #2633 AC2) or returns the guidance alone
 // when the caller passed neither --prompt nor --prompt-file.
 //
-// Idempotent: `prism pr <number>` and `prism spawn --pr <number>` both funnel
-// through this helper, and a container-routed call passes through it twice
-// (once client-side in cmd/pr.go, once host-side in cmd/spawn.go's runSpawn
-// — see the call site there for why). If the guidance is already present,
-// the prompt is returned unchanged rather than wrapped a second time.
+// Idempotent: there are exactly two call sites, this one and the one in
+// cmd/spawn.go's runSpawn. A container-routed `prism pr <number>` hits both
+// — once here (client-side, before the request is proxied), then again
+// host-side when the host-API /spawn handler shells out to
+// `prism spawn --pr <n>` (a second, separate process invocation of this
+// binary). That double-application is the common case for every sandboxed
+// coordinator, not an edge case — see TestPrCmd_ContainerMode_
+// InjectsReadOnlyGuidance's count assertion, which simulates it. If the
+// guidance is already present, the prompt is returned unchanged rather than
+// wrapped a second time.
+//
+// Every other path applies this helper exactly once and cannot double-apply:
+// a direct (non-proxied) `prism pr <number>` never calls runSpawn (this
+// file's RunE drives its own worktree creation via ensureAndSwitch), and a
+// direct `prism spawn --pr <number>` only ever reaches the spawn.go call
+// site. This holds structurally — grep `withPRReadOnlyGuidance` and there
+// are no other call sites to re-derive this from.
 func withPRReadOnlyGuidance(callerPrompt string) string {
 	if strings.Contains(callerPrompt, prReadOnlyGuidance) {
 		return callerPrompt

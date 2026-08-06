@@ -106,6 +106,28 @@ func TestPrCmd_ContainerMode_InjectsReadOnlyGuidance(t *testing.T) {
 				if tc.callerPrompt != "" && !strings.Contains(req.Prompt, tc.callerPrompt) {
 					t.Errorf("prompt sent to host API dropped the caller-supplied prompt: %q", req.Prompt)
 				}
+				// Simulate the host-side second application: the host-API
+				// /spawn handler shells `prism spawn --pr <n> --prompt
+				// <req.Prompt>`, and that subprocess's runSpawn calls
+				// withPRReadOnlyGuidance again (see the call site in
+				// spawn.go). This is the common case for every sandboxed
+				// coordinator running `prism pr`, not an edge case — assert
+				// on an exact count, not mere presence, so a future change
+				// that breaks the Contains-based idempotency guard (e.g. the
+				// constant becomes a template, or is reworded on one call
+				// site but not the other) fails loudly here instead of
+				// silently doubling the guidance in a live worker's prompt.
+				//
+				// Marker choice: prReadOnlyGuidance itself, not a substring
+				// of it. The production idempotency guard is
+				// `strings.Contains(callerPrompt, prReadOnlyGuidance)` —
+				// counting the exact same string this test exercises the
+				// exact predicate the guard evaluates, so the test and the
+				// guard can never drift out of sync with each other.
+				hostSideResult := withPRReadOnlyGuidance(req.Prompt)
+				if got := strings.Count(hostSideResult, prReadOnlyGuidance); got != 1 {
+					t.Errorf("guidance appears %d times after simulated host-side re-injection, want exactly 1: %q", got, hostSideResult)
+				}
 			case <-time.After(3 * time.Second):
 				t.Fatal("timed out waiting for request")
 			}
