@@ -761,6 +761,93 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		})
 	})
 
+	// GET /checkin/review-summary
+	// Query params: parent (required)
+	// Permission: the aggregate form of the /checkin three tiers (issue #2628)
+	//   — see authz.AuthorizeCheckinReviewAggregate. This is the host-API half
+	//   of the gate that closes the non-verbose `prism checkin <parent>~review`
+	//   gap left open by #2619/#2625: that form reads d.QueryEvents inline for
+	//   every review-group member and never reaches the per-session /checkin
+	//   gate.
+	//
+	// Returns one summary entry per review-group member: session name, role
+	// label, state, and (when present) the last msg_assistant event. This
+	// mirrors the rendering the direct CLI route builds locally in
+	// cmd/checkin_review.go so the two routes produce the same summary.
+	mux.HandleFunc("/checkin/review-summary", func(w http.ResponseWriter, r *http.Request) {
+		if !requireGet(w, r) {
+			return
+		}
+
+		parentSession := r.URL.Query().Get("parent")
+		if parentSession == "" {
+			writeError(w, http.StatusBadRequest, "parent is required")
+			return
+		}
+
+		decision := s.authorizeCheckinReviewAggregate(parentSession)
+		if !decision.Allow {
+			writeError(w, decision.Status, decision.Message)
+			return
+		}
+		if decision.Tier == checkinTierPrivilegedCoordinator {
+			s.writeCheckinPrivilegeAudit(parentSession)
+		}
+
+		if s.cfg.DB == nil {
+			writeError(w, http.StatusInternalServerError, "db unavailable")
+			return
+		}
+
+		members, err := s.cfg.DB.GroupMembersForParent(parentSession)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
+			return
+		}
+
+		type reviewSummaryMember struct {
+			Session   string `json:"session"`
+			Label     string `json:"label"`
+			State     string `json:"state"`
+			HasOutput bool   `json:"has_output"`
+			Timestamp string `json:"timestamp,omitempty"`
+			Text      string `json:"text,omitempty"`
+		}
+
+		out := make([]reviewSummaryMember, 0, len(members))
+		for _, m := range members {
+			label := m.SessionName
+			if m.RootAgentName != nil && *m.RootAgentName != "" {
+				label = *m.RootAgentName
+			}
+			entry := reviewSummaryMember{
+				Session: m.SessionName,
+				Label:   label,
+				State:   m.State,
+			}
+			events, qerr := s.cfg.DB.QueryEvents(m.SessionName, 1, nil, nil, []string{"msg_assistant"})
+			if qerr == nil && len(events) > 0 {
+				e := events[len(events)-1]
+				var ap struct {
+					Text string `json:"text"`
+				}
+				text := e.Payload
+				if jerr := json.Unmarshal([]byte(e.Payload), &ap); jerr == nil && ap.Text != "" {
+					text = ap.Text
+				}
+				entry.HasOutput = true
+				entry.Timestamp = e.CreatedAt.Local().Format("15:04:05")
+				entry.Text = text
+			}
+			out = append(out, entry)
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"parent":  parentSession,
+			"members": out,
+		})
+	})
+
 	// GET /logs
 	// Query params: session (required), tail (optional int ≥ 0), follow (optional bool),
 	//               source (optional: "sidecar" [default] or "agent-run")

@@ -1366,6 +1366,8 @@ func TestRunCheckinReviewRoundsByGroup(t *testing.T) {
 	writeEvent(t, d, "evt-1", reviewerSession, "msg_assistant",
 		assistantPayload("msg-1", "reviewing now"), base)
 
+	grantCheckinCallerIdentity(t, parentSession)
+
 	// Point openDB() at the test DB.
 	SetTestDBPath(d.Path())
 	t.Cleanup(func() { SetTestDBPath("") })
@@ -1478,6 +1480,7 @@ func TestRunCheckin_ReviewSuffixRoutesToReviewSummary(t *testing.T) {
 	writeEvent(t, d, "evt-rev-1", reviewerSession, "msg_assistant",
 		assistantPayload("msg-rev-1", "review summary content"), base)
 
+	grantCheckinCallerIdentity(t, parentSession)
 	SetTestDBPath(d.Path())
 	t.Cleanup(func() { SetTestDBPath("") })
 
