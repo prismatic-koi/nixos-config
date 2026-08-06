@@ -40,6 +40,59 @@ import (
 	"github.com/prismatic-koi/prism/internal/skills"
 )
 
+// prReadOnlyGuidance is injected into every `prism pr <number>` session's
+// prompt, regardless of whether the caller supplied --prompt / --prompt-file.
+// `prism pr` always targets a pre-existing PR (Case 1 in agents/coordinator.md),
+// so the session never authored the PR and must default to review-only. The
+// command cannot establish who authored the PR branch, so this guidance is
+// injected unconditionally (issue #2633) — fail safe toward read-only rather
+// than attempt to infer authorship from the branch or PR metadata. Only an
+// explicit operator instruction given during the session lifts this.
+const prReadOnlyGuidance = `IMPORTANT — this session was started with ` + "`prism pr <number>`" + `, which always
+targets a pre-existing PR that this session did not author. Treat this PR as
+read-only:
+
+- Review the PR and report findings only.
+- Do NOT commit, push, or otherwise mutate this PR.
+- Do NOT run ` + "`prism merge`" + ` on it — you do not decide when it lands.
+- The only thing that lifts this constraint is an explicit instruction from
+  the operator, given during this session. Do not infer authorship from the
+  branch name or PR author and treat that as permission to edit.
+
+See "Case 1" in agents/coordinator.md and agents/worker.md for the full
+review-only flow this session should follow.`
+
+// withPRReadOnlyGuidance prepends the read-only guidance to a caller-supplied
+// prompt (preserving it, per issue #2633 AC2) or returns the guidance alone
+// when the caller passed neither --prompt nor --prompt-file.
+//
+// Idempotent: there are exactly two call sites, this one and the one in
+// cmd/spawn.go's runSpawn. A container-routed `prism pr <number>` hits both
+// — once here (client-side, before the request is proxied), then again
+// host-side when the host-API /spawn handler shells out to
+// `prism spawn --pr <n>` (a second, separate process invocation of this
+// binary). That double-application is the common case for every sandboxed
+// coordinator, not an edge case — see TestPrCmd_ContainerMode_
+// InjectsReadOnlyGuidance's count assertion, which simulates it. If the
+// guidance is already present, the prompt is returned unchanged rather than
+// wrapped a second time.
+//
+// Every other path applies this helper exactly once and cannot double-apply:
+// a direct (non-proxied) `prism pr <number>` never calls runSpawn (this
+// file's RunE drives its own worktree creation via ensureAndSwitch), and a
+// direct `prism spawn --pr <number>` only ever reaches the spawn.go call
+// site. This holds structurally — grep `withPRReadOnlyGuidance` and there
+// are no other call sites to re-derive this from.
+func withPRReadOnlyGuidance(callerPrompt string) string {
+	if strings.Contains(callerPrompt, prReadOnlyGuidance) {
+		return callerPrompt
+	}
+	if callerPrompt == "" {
+		return prReadOnlyGuidance
+	}
+	return prReadOnlyGuidance + "\n\n---\n\n" + callerPrompt
+}
+
 var prCmd = &cobra.Command{
 	Use:   "pr <number>",
 	Short: "Check out a PR branch as a new worktree and switch to it",
@@ -61,6 +114,10 @@ var prCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// prism pr always targets a pre-existing PR (Case 1), so the session
+		// is review-only by default regardless of --prompt / --prompt-file.
+		// See prReadOnlyGuidance above for the rationale (issue #2633).
+		promptFlag = withPRReadOnlyGuidance(promptFlag)
 
 		bareRoot, err := resolveBareRoot(repoFlag)
 		if err != nil {

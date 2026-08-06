@@ -1362,7 +1362,13 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		// from_keybind=true the empty prompt is intentional and the spawn
 		// proceeds. The carve-out fires only on this explicit discriminator,
 		// so arbitrary HTTP callers that omit the field still hit this guard.
-		if req.Prompt == "" && !req.FromKeybind {
+		//
+		// PR carve-out (issue #2633): when req.PR is set, an empty prompt is
+		// also legitimate — the host-side `prism spawn --pr` subprocess
+		// injects read-only guidance into the prompt itself (see
+		// withPRReadOnlyGuidance in cmd/spawn.go), so a caller does not have
+		// to supply one.
+		if req.Prompt == "" && !req.FromKeybind && req.PR == "" {
 			writeError(w, http.StatusBadRequest, "prompt is required — the request body must include a non-empty \"prompt\" field")
 			return
 		}
