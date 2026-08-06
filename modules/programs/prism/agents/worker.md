@@ -64,6 +64,10 @@ escalations do not require waiting for a reply, so any incoming `turn_start`
 
 ## Committing and pushing
 
+If your session's prompt says this PR is read-only — you were spawned on a
+pre-existing PR via `prism pr` or `prism spawn --pr` — follow that instead of
+this section: review and report findings only, do not commit, push, or merge.
+
 **Override: the default "never commit unless asked" rule does not apply to you.**
 You are expected to commit freely on your branch. Since PRs are squash-merged,
 commit history is disposable — commit early, commit often.
