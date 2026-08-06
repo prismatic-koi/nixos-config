@@ -65,7 +65,16 @@ review-only flow this session should follow.`
 // withPRReadOnlyGuidance prepends the read-only guidance to a caller-supplied
 // prompt (preserving it, per issue #2633 AC2) or returns the guidance alone
 // when the caller passed neither --prompt nor --prompt-file.
+//
+// Idempotent: `prism pr <number>` and `prism spawn --pr <number>` both funnel
+// through this helper, and a container-routed call passes through it twice
+// (once client-side in cmd/pr.go, once host-side in cmd/spawn.go's runSpawn
+// — see the call site there for why). If the guidance is already present,
+// the prompt is returned unchanged rather than wrapped a second time.
 func withPRReadOnlyGuidance(callerPrompt string) string {
+	if strings.Contains(callerPrompt, prReadOnlyGuidance) {
+		return callerPrompt
+	}
 	if callerPrompt == "" {
 		return prReadOnlyGuidance
 	}

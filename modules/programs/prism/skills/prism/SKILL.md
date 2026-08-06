@@ -205,14 +205,10 @@ prism spawn \
 > a session on the PR branch — that spawned session then runs `prism review`
 > and reports back.
 >
-> **This PR is read-only (Case 1).** `prism pr <number>` always targets a
-> pre-existing PR, so the spawned session never authored it. The command
-> injects read-only guidance into the session's prompt automatically —
-> review and report findings only, no commit, push, or `prism merge` —
-> whether or not `--prompt` was supplied. Only an explicit operator
-> instruction given during the session lifts the constraint. Contrast with a
-> `prism spawn`-authored PR (Case 2), which the session is free to fix and
-> push.
+> **This PR is read-only (Case 1).** `prism pr <number>` (and `prism spawn
+> --pr <number>`) inject read-only guidance into the spawned session's
+> prompt automatically — see `withPRReadOnlyGuidance` in `cmd/pr.go` /
+> `cmd/spawn.go`.
 
 Code review is done with `prism review <pr>`, which is **async**: it spawns 5
 review agents, registers a group, and returns immediately with an
