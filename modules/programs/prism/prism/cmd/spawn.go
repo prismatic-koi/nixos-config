@@ -155,7 +155,12 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	// observable surface but never receives a prompt and sits idle forever.
 	// The host-API /spawn handler has a defence-in-depth check too (layer 3);
 	// this surfaces the error in the caller's stderr instead of an HTTP 400.
-	if promptFlag == "" && !fromKeybind {
+	// PR carve-out (issue #2633): an empty prompt is also legitimate when
+	// --pr is set — the host-side runSpawn injects read-only guidance into
+	// the prompt itself (see the withPRReadOnlyGuidance call site below), so
+	// this client-side check must not reject it. The host-API layer-3 check
+	// carries the matching carve-out.
+	if promptFlag == "" && !fromKeybind && prFlag == "" {
 		return emptyPromptError(cmd, "prism spawn")
 	}
 
@@ -456,6 +461,19 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 	// the auto-detected "cli-positional" (C.4.SRC, issue #1148).
 	if overrideSource, _ := cmd.Flags().GetString("prompt-source"); overrideSource != "" {
 		promptSource = overrideSource
+	}
+	// `prism spawn --pr <number>` always targets a pre-existing PR (Case 1 in
+	// agents/coordinator.md), so it never authored the PR. This is the single
+	// host-side injection point for the read-only guidance (issue #2633): the
+	// host-API /spawn handler always shells out to `prism spawn --pr <n>` for
+	// a sandboxed caller, whether the caller ran `prism pr <number>` or
+	// `prism spawn --pr <number>` — both funnel through here. A direct
+	// (non-proxied) `prism spawn --pr <number>` on the host hits this same
+	// line. withPRReadOnlyGuidance is idempotent, so a prompt that already
+	// carries the guidance (forwarded from cmd/pr.go's own client-side
+	// injection) is not wrapped twice.
+	if prFlag != "" {
+		promptText = withPRReadOnlyGuidance(promptText)
 	}
 	attachFlag, _ := cmd.Flags().GetBool("attach")
 	// headless when invoked from a shell/agent rather than the tmux keybinding.
