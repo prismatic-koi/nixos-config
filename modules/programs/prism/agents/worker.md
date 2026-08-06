@@ -36,11 +36,9 @@ predates your branch. Two failure modes to avoid:
   coordinator never learns a problem exists; no tracking issue is filed.
 
 The correct response is to **escalate the discovery** to the coordinator via
-`prism escalate --prompt "..."` (auto-discovers the same-repo coordinator and
-transitions you into the `escalated` state without a redundant `has finished`
-ping) and then **continue with your assigned work** — informational
-escalations do not require waiting for a reply, so any incoming `turn_start`
-(yours, the coordinator's, or a human's) clears the state.
+`prism escalate --prompt "..."` and then **continue with your assigned
+work** — informational escalations do not require waiting for a reply. See
+"Escalating to the coordinator" below for how `prism escalate` behaves.
 
 **What the escalation message must include:**
 
@@ -78,12 +76,10 @@ Push your branch when work is complete. Work is not done until pushed.
 
 If your spawn prompt references a Jira ticket (e.g. `PLAT-123`), keep its state in sync with your actual progress:
 
-1. **Activate the Atlassian tools first.** A worker session registers only
-   `activate_atlassian`, not the Jira surface — the family is deferred so its
-   schemas stay out of the cached prompt prefix of every session (issue #2532).
-   If you cannot see `transitionJiraIssueByName` in your tool list, call
-   `activate_atlassian` once, with no arguments. It is a no-op when the family
-   is already active, so calling it is always safe.
+1. **Activate the Atlassian tools first.** If you cannot see
+   `transitionJiraIssueByName` in your tool list, call `activate_atlassian`
+   once, with no arguments — it is a safe no-op when the family is already
+   active. Load the `atlassian` skill for why activation is deferred.
 2. **Before your first commit**, transition the ticket to `In Progress`:
    ```
    transitionJiraIssueByName(issueIdOrKey: "PLAT-123", transitionName: "In Progress")
@@ -129,9 +125,7 @@ the bug it's meant to catch. The minimal discipline:
 
 1. Revert your fix locally (e.g. `git diff > /tmp/fix.patch && git restore .`,
    restoring afterwards with `git apply /tmp/fix.patch`, or comment out the
-   change). Never use `git stash` — the stash stack is shared across all
-   prism worktrees in the repo and concurrent stash/pop silently swaps WIP
-   between sessions (issue #2202); see "Setting WIP aside" in the repo's
+   change). Never use `git stash` — see "Setting WIP aside" in the repo's
    AGENTS.md for the sanctioned patterns.
 2. Re-run only the new test. Confirm it **FAILS**.
 3. Re-apply your fix. Confirm the new test **PASSES**.
@@ -224,18 +218,11 @@ You can check in on the review agents of your own session, and on nothing
 else. A review agent of your session is named `<your-session>~review-<N>-<agent>`,
 for every round `<N>` you have run. Every other target returns HTTP 403:
 your own session, another worker, your coordinator, and any session in
-another repo.
+another repo. To read anything outside that scope, ask the coordinator with
+`prism escalate`.
 
-The rule is enforced in code, not by prose. `prism checkin` resolves the
-target through `session_groups.parent_session` and admits it only when that
-parent is your session name. To read anything outside that scope, ask the
-coordinator with `prism escalate`.
-
-The rule holds in every isolation mode (issue #2619). A sandboxed session
-meets it on the host-API route and gets HTTP 403. A `host`-mode session has no
-socket and reads the prism DB directly, so it meets the same predicate on the
-direct CLI route and gets a non-zero exit. There is no isolation mode in which
-the scope is wider.
+See the `session-lifecycle` invariant for the enforcement detail (the
+`session_groups.parent_session` resolution and the both-routes gating).
 
 ### Handling review results
 

@@ -106,6 +106,30 @@ Sanctioned WIP-set-aside patterns — both are worktree-local:
 
   If using the patch file pattern, **always** run `git apply --check` first, or test the exit status of `git apply`. Never suppress its stderr. `git apply` fails silently — it will not restore the tree if the patch does not apply cleanly. The prism-testing skill carries the full incident rationale (#2202 class incident). General rule: never run any tree-restoring command with stderr suppressed.
 
+### Placement rule for prompt content — where an instruction belongs
+
+Place an instruction on the cheapest surface that still guarantees the agent
+reads it when it is needed.
+
+1. **Deletion test first.** If a role never acts on the content, it does not
+   belong in that role's file, whatever sibling files do.
+2. **Always-on role file** (`agents/*.md`) — content needed on essentially
+   every turn in that role, where a miss causes a wrong action. The
+   *actionable* half of a rule.
+3. **On-demand skill** — reference material needed rarely, or only after the
+   agent has decided to act. The *rationale* half.
+4. **Injected-when-relevant** (Go / `prism.ts`) — content tied to a rare,
+   detectable situation. Costs nothing when the situation does not arise.
+5. **Mechanically enforced** (deny list) — for a prohibition, the block is
+   the enforcement AND the delivery vehicle. Prose restating a blocked
+   prohibition is pure standing cost. Put the explanation in the block
+   message, where it reaches exactly the agent that needs it, at the moment
+   it needs it.
+
+Corollary: splitting a rule into an always-on *action* line and an on-demand
+*rationale* block is the default shape whenever the rationale is longer than
+the instruction.
+
 ### Tool-surface changes — concept grep required
 
 When making a change to a tool surface — adding, removing, renaming, or gating a tool family — grep for the CONCEPT, not the tool name. Concept grep finds the prose that governs agent behaviour; name grep finds only call sites.
