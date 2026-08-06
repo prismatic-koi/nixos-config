@@ -26,6 +26,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
+	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
@@ -154,12 +155,24 @@ func fetchAuditEvents(sessionName string, sinceMs int64, pattern string, limit i
 
 // fetchAuditEventsLocal opens the local prism DB and runs the query directly.
 // Used when PRISM_HOST_API is unset (i.e. we're on the host).
+//
+// Guard: coordinator-only (#2627), matching the host-API route's
+// requireCoordinator. See requireAuditCoordinator in cmd/audit_permission.go
+// for the full rationale. The guard runs before openDB so an unresolvable
+// caller never reaches the database, and before QueryAuditEvents so a
+// non-coordinator caller never reaches a row.
 func fetchAuditEventsLocal(sessionName string, sinceMs int64, pattern string, limit int) ([]db.Event, error) {
 	d, err := openDB()
 	if err != nil {
 		return nil, err
 	}
 	defer d.Close()
+
+	callerSession := review.LookupParentSession()
+	if guardErr := requireAuditCoordinator(callerSession, d); guardErr != nil {
+		return nil, guardErr
+	}
+
 	return d.QueryAuditEvents(sessionName, sinceMs, pattern, limit)
 }
 
