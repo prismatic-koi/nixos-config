@@ -416,6 +416,15 @@ export interface GuardStateSnapshot {
   /** Whether a git-push reminder is pending injection. */
   pendingGitPushReminder: boolean
   /**
+   * Whether the git-push reminder has already been delivered this session
+   * (issue #2646). Once true, the reminder is never injected again,
+   * regardless of further pushes. Must be persisted alongside
+   * `pendingGitPushReminder` — an "already delivered" flag that is NOT
+   * snapshotted resets on compaction/resume and the message returns
+   * mid-session, which is the bug this field exists to prevent.
+   */
+  gitPushReminderDelivered: boolean
+  /**
    * Whether a `prism review` call is in-flight (set on detection, cleared on
    * prompt delivery). Must be persisted so that a session pause/resume during
    * the review-wait window does not reset the guard and allow turn_end to
@@ -436,6 +445,7 @@ export function snapshotGuardState(
   doomLoop: DoomLoopState,
   pendingGitPushReminder: boolean,
   pendingReviewCall: boolean,
+  gitPushReminderDelivered: boolean,
 ): GuardStateSnapshot {
   return {
     doomLoop: {
@@ -444,6 +454,7 @@ export function snapshotGuardState(
       fired: doomLoop.fired,
     },
     pendingGitPushReminder,
+    gitPushReminderDelivered,
     pendingReviewCall,
   }
 }
@@ -458,7 +469,7 @@ export function snapshotGuardState(
 export function restoreGuardState(
   snapshot: GuardStateSnapshot,
   doomLoop: DoomLoopState,
-): { pendingGitPushReminder: boolean; pendingReviewCall: boolean } {
+): { pendingGitPushReminder: boolean; pendingReviewCall: boolean; gitPushReminderDelivered: boolean } {
   doomLoop.currentKey = snapshot.doomLoop?.currentKey ?? null
   doomLoop.consecutiveCount = typeof snapshot.doomLoop?.consecutiveCount === "number"
     ? snapshot.doomLoop.consecutiveCount
@@ -467,6 +478,7 @@ export function restoreGuardState(
 
   return {
     pendingGitPushReminder: snapshot.pendingGitPushReminder === true,
+    gitPushReminderDelivered: snapshot.gitPushReminderDelivered === true,
     pendingReviewCall: snapshot.pendingReviewCall === true,
   }
 }
@@ -2824,6 +2836,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
   // reminder fires exactly once.
   let pendingGitPushReminder = false
 
+  // Flag: the git-push reminder has already been delivered this session
+  // (issue #2646). Once set, further pushes do not re-arm the reminder.
+  // Persisted via the guard-state snapshot so compaction/resume cannot
+  // reset it and cause a redelivery mid-session.
+  let gitPushReminderDelivered = false
+
   // Flag: `prism review` was called during this session. When true, the
   // turn_end idle emission is suppressed so that the `reviewing` state is
   // not clobbered while waiting for the review-complete prompt. Cleared
@@ -3270,6 +3288,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
         if (snapshot && typeof snapshot === "object") {
           const restored = restoreGuardState(snapshot, doomLoopState)
           pendingGitPushReminder = restored.pendingGitPushReminder
+          gitPushReminderDelivered = restored.gitPushReminderDelivered
           pendingReviewCall = restored.pendingReviewCall
         }
         break
@@ -3342,12 +3361,18 @@ export default function prismExtension(pi: ExtensionAPI): void {
 
     if (!isReviewSession) {
       // Inject git-push reminder if a push was detected on the previous turn.
-      if (gitPushReminderEnabled && pendingGitPushReminder) {
+      // Delivered at most once per session (issue #2646): a repeat delivery
+      // carries no new information and has been observed to prompt workers
+      // into an unnecessary extra `prism review` round.
+      if (gitPushReminderEnabled && pendingGitPushReminder && !gitPushReminderDelivered) {
         pendingGitPushReminder = false
+        gitPushReminderDelivered = true
         pi.sendUserMessage(
           GIT_PUSH_REMINDER_MESSAGE,
           { deliverAs: "steer" },
         )
+      } else if (gitPushReminderEnabled && pendingGitPushReminder) {
+        pendingGitPushReminder = false
       }
     }
   })
@@ -3549,7 +3574,7 @@ export default function prismExtension(pi: ExtensionAPI): void {
       // we do it unconditionally — the reviewer can deduplicate via the
       // "latest entry wins" pattern in session_switch above.
       pi.appendEntry(GUARD_STATE_ENTRY_TYPE,
-        snapshotGuardState(doomLoopState, pendingGitPushReminder, pendingReviewCall))
+        snapshotGuardState(doomLoopState, pendingGitPushReminder, pendingReviewCall, gitPushReminderDelivered))
     }
   })
 

@@ -30,7 +30,7 @@ Use these commands to gather context — never modify the working tree:
 ```bash
 gh pr view <number>              # PR title, description
 gh pr diff <number>              # the diff
-git show origin/<branch>:<path>  # read full files from the PR branch (not just the diff)
+git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 

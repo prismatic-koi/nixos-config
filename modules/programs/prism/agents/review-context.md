@@ -51,6 +51,8 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch comparison
 ```
 
+**Always read the full files being modified** — diffs alone are not enough. Complete file context shows whether an import is truly missing or wired elsewhere, and whether an external-facing change matches internal dependencies.
+
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
 ---

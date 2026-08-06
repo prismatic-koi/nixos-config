@@ -37,12 +37,18 @@ func FetchSessionsFromDB() tea.Msg {
 	// post-migration session without N individual DB round-trips.
 	groupParents, _ := d.AllGroupParents() // non-fatal; nil map falls back to name heuristic
 
+	// Fetch profile tiers (instance_id → spawn_inputs.profile_name) in a
+	// single batch query so the profile column doesn't cost an extra
+	// per-session round-trip. Best-effort: nil map on error just renders the
+	// NULL-profile placeholder for every row (issue #2640).
+	profileNames, _ := d.AllProfileNames()
+
 	// Get client counts from tmux for the attachment dot indicator.
 	clientCounts := TmuxClientCounts()
 
 	sessions := make([]AgentSession, 0, len(statuses))
 	for _, s := range statuses {
-		sessions = append(sessions, StatusToAgentSession(s, clientCounts, groupParents))
+		sessions = append(sessions, StatusToAgentSession(s, clientCounts, groupParents, profileNames))
 	}
 
 	// Filter out internal sessions (scratchpad, prism-dashboard).

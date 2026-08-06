@@ -1,9 +1,14 @@
 # `prism retro` — a retrospective surface for coordinators
 
 <!--
-  This document describes a surface that does not exist yet. It is the
-  design that the four child issues under #2529 implement. Read it before
-  you pick up any of those issues.
+  This document is the design that the four child issues under #2529
+  implement. It is landing incrementally: issue #2582 (part 1) fixed the
+  sandbox stats stub, and issue #2583 (part 2) added the `prism retro`
+  command itself — window totals (section 1), the trains table (section 2),
+  the waste signals (section 5), `--json`, and the FK-based train resolution.
+  The per-train review-cycle detail (section 3) and the fixed-overhead
+  accounting (section 4) are not built yet. Read this before you pick up the
+  remaining child issues.
 -->
 
 Tracking issue: [#2529](https://github.com/prismatic-koi/nixos-config/issues/2529).
@@ -199,7 +204,15 @@ stated.
 2. **`prism retro` core.** Sections 1, 2, and 5, plus `--json` and the
    empty-window edge case. Implements the FK-based train resolution and the
    investigator/A-B special cases from section 3 above. Depends on nothing
-   beyond issue 1 landing so the sandbox path works end to end.
+   beyond issue 1 landing so the sandbox path works end to end. Landed as
+   issue #2583 (this part carries `Closes #2529`, since #2585 — the original
+   part 4 — was closed as not-planned). Per-session token/cost/waste data
+   comes from `db.CompareRunOutcome`, which returns the persisted
+   `spawn_outcome` row or, for a terminal session with no row yet, an
+   on-the-fly `ComputeSpawnOutcome` aggregation over `agent_events`. That
+   fallback is what makes review-agent sessions countable regardless of
+   whether cleanup has written their rows (`WriteSpawnOutcomeCascade`, #2591)
+   or the rows predate that change.
 
 3. **Section 3, review-cycle detail.** Depends on
    [#2573](https://github.com/prismatic-koi/nixos-config/issues/2573), which
@@ -212,15 +225,16 @@ stated.
    at.
 
 4. **Section 4, fixed-overhead accounting.** The event-level query path over
-   `msg_assistant` payloads described in section 2.3. Depends on issue 2,
-   because it extends the same command surface and reuses its window and
-   train resolution.
+   `msg_assistant` payloads described in section 2.3. Depended on issue 2
+   because it extends the same command surface. Closed as not-planned
+   (#2585): its measurement premise did not reproduce.
 
 ### 6.1 Closure policy
 
-Issues 1 through 3 carry `Refs #2529`. Only issue 4 carries `Closes #2529`,
-because issue 4 is the last of the four to land and closes the tracking
-issue once all sections exist.
+The original plan had only the last part carry `Closes #2529`. That changed
+when part 4 (#2585) was closed as not-planned: it carried the closure, so
+the responsibility moved to part 2 (#2583), which now carries `Closes #2529`.
+Parts 1 and 3 carry `Refs #2529`.
 
 ## 7. Constraints carried over from the tracking issue
 

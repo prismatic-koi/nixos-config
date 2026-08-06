@@ -523,6 +523,35 @@ func (d *DB) AllGroupParents() (map[string]string, error) {
 	return result, nil
 }
 
+// AllProfileNames returns a map from instance_id to spawn_inputs.profile_name
+// for every spawn_inputs row that has a non-NULL profile_name. Instance IDs
+// with no spawn_inputs row, or a NULL profile_name (spawned without
+// --profile, or predating the spawn_inputs write path — #2092 / #2093), are
+// simply absent from the returned map; callers treat a missing key the same
+// as an explicit "no profile recorded". Used by the dashboard to batch-fetch
+// profile tiers for all displayed sessions in a single query (issue #2640).
+func (d *DB) AllProfileNames() (map[string]string, error) {
+	const q = `SELECT instance_id, profile_name FROM spawn_inputs WHERE profile_name IS NOT NULL`
+	rows, err := d.conn.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("db: all profile names: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var instanceID, profileName string
+		if err := rows.Scan(&instanceID, &profileName); err != nil {
+			return nil, fmt.Errorf("db: all profile names: scan: %w", err)
+		}
+		result[instanceID] = profileName
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: all profile names: iterate: %w", err)
+	}
+	return result, nil
+}
+
 // ParentSessionFor returns the authoritative parent session name for the given
 // session. It is the single named source of truth for parent attribution,
 // used by both the dashboard (via AllGroupParents + StatusToAgentSession) and
