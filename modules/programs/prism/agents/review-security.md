@@ -135,4 +135,4 @@ If there are no security vulnerabilities, `<blocking_issues>` must be empty.
 **PASS** = no exploitable vulnerabilities found in the 10 checklist items.
 **FAIL** = one or more exploitable vulnerabilities found.
 
-After the verdict block, include a summary of which checklist items you examined and which you marked N/A, so the worker understands the scope of the security review.
+If a checklist item does not apply to this change (e.g. no network code, no file operations), note "N/A" for that item — do not invent issues to fill the list.

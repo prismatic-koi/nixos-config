@@ -45,11 +45,7 @@ git diff origin/main...origin/<branch>  # cross-branch diff
 - **Always** use `git show origin/<branch>:<path>` to read full file contents from the PR branch
 - **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
 
-For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch.
-
-### Note on working-tree safety across review agents
-
-All five review agents ban the same set of working-tree-mutating git commands. review-qa states the rule in expanded form with guidance for hands-on validation; review-code, review-goal, review-context, and review-security use a unified shorter form. The substance is identical across all five.
+For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch. (Note: this rule is stated in expanded form here because this role runs commands; the substance matches the other four review roles.)
 
 ---
 
