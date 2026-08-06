@@ -335,6 +335,38 @@ func proxyCheckin(apiURL, session string, limit int, before, after *string, type
 	return raw, nil
 }
 
+// reviewSummaryMember mirrors the JSON shape written by the host-API
+// GET /checkin/review-summary handler (issue #2628). Field names match
+// exactly so json.Unmarshal needs no tags beyond the struct definition here.
+type reviewSummaryMember struct {
+	Session   string `json:"session"`
+	Label     string `json:"label"`
+	State     string `json:"state"`
+	HasOutput bool   `json:"has_output"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Text      string `json:"text,omitempty"`
+}
+
+// reviewSummaryResponse is the top-level JSON shape returned by
+// GET /checkin/review-summary.
+type reviewSummaryResponse struct {
+	Parent  string                `json:"parent"`
+	Members []reviewSummaryMember `json:"members"`
+}
+
+// proxyCheckinReviewSummary proxies the non-verbose `prism checkin
+// <parent>~review` aggregate to the host-API sidecar (issue #2628). apiURL is
+// the value of PRISM_HOST_API. parentSession is the review group's parent
+// session name. The sidecar applies authz.AuthorizeCheckinReviewAggregate
+// before returning any member data.
+func proxyCheckinReviewSummary(apiURL, parentSession string) (*reviewSummaryResponse, error) {
+	var resp reviewSummaryResponse
+	if err := proxyGetFromHostAPI(apiURL, "/checkin/review-summary", map[string]string{"parent": parentSession}, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // cleanupResponse is the host-API /cleanup response shape. stdout/stderr are
 // the captured byte streams of the host-side `prism cleanup` subprocess. The
 // container-side caller writes them verbatim to its own stdout/stderr so that

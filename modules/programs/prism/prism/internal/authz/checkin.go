@@ -169,6 +169,56 @@ func AuthorizeCheckin(req CheckinRequest) CheckinDecision {
 	return req.authorizeCoordinator()
 }
 
+// AuthorizeCheckinReviewAggregate decides whether req.Caller may read the
+// summary of review agents belonging to req.Target, where req.Target is the
+// PARENT session of a review group, not an individual review agent (issue
+// #2628).
+//
+// This answers a different question from AuthorizeCheckin: "may the caller
+// read the review agents OF parent X", rather than "may the caller read
+// session X". Passing the parent straight into AuthorizeCheckin as Target
+// does not work — a worker reading the review agents of its own session is
+// the documented, supported flow (agents/worker.md, the prism skill), but
+// AuthorizeCheckin's tier-1 self-checkin denial refuses req.Target ==
+// req.Caller, which is exactly the shape of that flow when the parent is
+// passed as the target.
+//
+// The tier-2/3 (coordinator) question is unchanged by that distinction — "is
+// the parent's repo the caller's own repo, or is the caller privileged" reads
+// identically whether Target names a session directly or names it as a
+// group's parent — so this function reuses req.authorizeCoordinator()
+// verbatim rather than reimplementing it. Only the tier-1 branch differs, and
+// it differs by exactly one comparison: self-target is the grant here, not
+// the refusal.
+func AuthorizeCheckinReviewAggregate(req CheckinRequest) CheckinDecision {
+	if req.Logger == nil {
+		req.Logger = log.Default()
+	}
+
+	// Same defence in depth as AuthorizeCheckin: neither route should reach
+	// here with an empty caller, but an empty name must never be admitted on
+	// the strength of matching an equally-empty target.
+	if req.Caller == "" {
+		return denyCheckin(http.StatusForbidden,
+			"cannot determine the calling session — checkin denied")
+	}
+
+	if !IsCoordinatorSession(req.Caller, req.DB, req.Logger) {
+		// Tier 1 (aggregate form): a worker may read the review-agent summary
+		// of its OWN session only. Unlike AuthorizeCheckin's tier 1, this does
+		// not consult GroupParentForMember — req.Target here is the parent
+		// session itself, not a candidate review-agent session, so the
+		// question collapses to a direct name comparison.
+		if req.Target == req.Caller {
+			return allowCheckin(CheckinTierWorker)
+		}
+		return denyCheckin(http.StatusForbidden,
+			"a worker may read the review-agent summary of its own session only (%s~review); cannot read %q's review agents",
+			req.Caller, req.Target)
+	}
+	return req.authorizeCoordinator()
+}
+
 // authorizeWorker implements tier 1: a worker may read only the review agents
 // of its own session.
 //

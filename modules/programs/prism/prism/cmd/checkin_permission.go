@@ -48,19 +48,29 @@ package cmd
 // Not gated, on either route:
 //
 //   - `prism checkin` with no argument — lists sessions, reads no history.
-//   - `prism checkin <parent>~review` WITHOUT `--verbose` — the summary branch
-//     reads d.QueryEvents inline and never reaches runCheckinSession.
 //   - `--compare`.
 //
-// The aggregate's own entry point in runCheckin has no gate and no
-// PRISM_HOST_API branch: it calls openDB() directly. Inside a sandbox that
-// open fails, so the aggregate is reachable only from a host-mode session in
-// practice. Widening the gate to the aggregate's entry point is NOT a
-// wiring change — the target there is a set of sessions, and tier 1 would
-// have to ask "may the caller read the review agents OF parent X", which is a
-// different question from the one AuthorizeCheckin answers (passing the parent
-// as Target hits the tier-1 self-checkin denial). That belongs in its own
-// issue, not here.
+// `prism checkin <parent>~review` WITHOUT `--verbose` — the aggregate summary
+// — is gated separately (issue #2628), by
+// authorizeDirectCheckinReviewAggregate below and, on the host-API route, by
+// GET /checkin/review-summary. It could not reuse authorizeDirectCheckin
+// as-is: the target there is a set of sessions ("the review agents OF parent
+// X"), not a single session, so passing the parent straight in as Target
+// would hit AuthorizeCheckin's tier-1 self-checkin denial — the exact worker
+// reading its own review group that tier 1 exists to admit. See
+// authz.AuthorizeCheckinReviewAggregate's doc comment for the full
+// reasoning. Its underlying group listing (GroupMembersForParent — session
+// names and states, no conversation content) still runs unconditionally
+// ahead of the gate on the direct route, matching the no-arg listing
+// precedent above; only the content-bearing read is gated.
+//
+// The verbose form (`--verbose`) is gated per member through
+// runCheckinSession, as documented above; its own group-listing call is
+// likewise unconditional and non-content-bearing.
+//
+// Inside a sandbox, the direct route's group-listing call (openDB()) fails,
+// so the non-verbose summary now proxies through GET /checkin/review-summary
+// when PRISM_HOST_API is set — see cmd/checkin_review.go.
 //
 // # Audit consequence of the per-member path
 //
@@ -156,6 +166,59 @@ func authorizeDirectCheckinFor(caller, target string) error {
 	}
 	if decision.Tier == authz.CheckinTierPrivilegedCoordinator {
 		writeDirectCheckinPrivilegeAudit(d, caller, target)
+	}
+	return nil
+}
+
+// authorizeDirectCheckinReviewAggregate resolves the caller session and
+// applies the shared aggregate permission predicate for the non-verbose
+// `prism checkin <parent>~review` form (issue #2628). It returns nil when the
+// read is permitted, and a non-nil error (hence a non-zero exit) otherwise.
+//
+// This is the aggregate counterpart of authorizeDirectCheckin: it answers "may
+// the caller read the review agents OF parentSession" via
+// authz.AuthorizeCheckinReviewAggregate, rather than "may the caller read
+// session parentSession" via authz.AuthorizeCheckin. See that function's doc
+// comment for why the two questions need separate predicates.
+func authorizeDirectCheckinReviewAggregate(parentSession string) error {
+	return authorizeDirectCheckinReviewAggregateFor(review.LookupParentSession(), parentSession)
+}
+
+// authorizeDirectCheckinReviewAggregateFor is
+// authorizeDirectCheckinReviewAggregate with the caller session injected, so
+// the refusal paths are testable without a live tmux server. Fail-closed
+// behaviour matches authorizeDirectCheckinFor: an unresolvable caller and an
+// unreadable DB are both refused.
+func authorizeDirectCheckinReviewAggregateFor(caller, parentSession string) error {
+	if caller == "" {
+		return fmt.Errorf("prism checkin: cannot determine caller session — run from inside a prism tmux session or set PRISM_SESSION_NAME")
+	}
+
+	d, err := openDB()
+	if err != nil {
+		return fmt.Errorf("prism checkin: cannot verify checkin permission (open db: %v) — checkin denied", err)
+	}
+	defer d.Close()
+
+	privilegedRepos, privErr := config.LoadCheckinPrivilegedRepos()
+	if privErr != nil {
+		log.Printf("prism checkin: read %s: %v (no repo carries the checkin troubleshooting privilege)",
+			config.CheckinPrivilegedReposFileName, privErr)
+		privilegedRepos = nil
+	}
+
+	decision := authz.AuthorizeCheckinReviewAggregate(authz.CheckinRequest{
+		Caller:          caller,
+		Target:          parentSession,
+		DB:              d,
+		PrivilegedRepos: privilegedRepos,
+		Logger:          log.Default(),
+	})
+	if !decision.Allow {
+		return fmt.Errorf("prism checkin: %s", decision.Message)
+	}
+	if decision.Tier == authz.CheckinTierPrivilegedCoordinator {
+		writeDirectCheckinPrivilegeAudit(d, caller, parentSession)
 	}
 	return nil
 }
