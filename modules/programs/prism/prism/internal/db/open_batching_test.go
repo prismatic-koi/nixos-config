@@ -372,6 +372,14 @@ func TestOpenSequence_BatchedAndAutocommitProduceIdenticalSchema(t *testing.T) {
 		t.Fatalf("batched open sequence: %v", err)
 	}
 
+	var batchedVersion int
+	if err := batchedConn.QueryRow("SELECT version FROM schema_version").Scan(&batchedVersion); err != nil {
+		t.Fatalf("read batched schema_version: %v", err)
+	}
+	if batchedVersion < 38 {
+		t.Errorf("batched database version %d, want >= 38", batchedVersion)
+	}
+
 	autocommitConn := openRawForTest(t, filepath.Join(dir, "autocommit.db"))
 	if err := runOpenSequence(autocommitConn); err != nil {
 		t.Fatalf("autocommit open sequence: %v", err)
