@@ -922,6 +922,68 @@ Always use `prism db query` / `prism db schema` / `prism db tables` instead
 of invoking `sqlite3` directly. They route through the host-API proxy from
 inside a sandbox and read the real database; raw `sqlite3` does not.
 
+## Retrospectives over a window of work: `prism retro`
+
+`prism retro` reports a retrospective over the **trains** of work started in a
+window (issue #2583). A train is one unit of work rolled up as a single row:
+
+- a worker session plus its `~review-N-<agent>` children;
+- a coordinator session plus the `~investigate-<slug>` sessions it spawned;
+- a solo investigator (invoked by a worker), reported on its own, never folded
+  into that worker's train;
+- one leg of an A/B pair (`prism spawn --abtest`), never merged with its
+  partner leg.
+
+Train membership resolves through `session_groups.parent_session` (the durable
+foreign key), not session-name parsing. `group_id` never surfaces — you type
+session names, never a UUID.
+
+| Flag | Effect |
+|---|---|
+| (none) | Last 24 hours, current repo, all trains. |
+| `--since <date>` | Explicit window start (ISO 8601 or `YYYY-MM-DD`). Wins over `--days`. |
+| `--days N` | Relative window: the last N days. |
+| `--repo <name>` | Scope to another repo instead of the current one. |
+| `--json` | Machine-readable form: snake_case keys, RFC 3339 timestamps, empty collections as `[]`. |
+
+```bash
+prism retro                     # last 24h, current repo
+prism retro --days 7            # last 7 days
+prism retro --since 2026-08-02  # explicit window start
+prism retro --repo obsidian     # another repo
+prism retro --json | jq .       # scriptable
+```
+
+The output has three sections:
+
+- **Window totals** — output, input, cache-read and cache-write token volumes
+  for the window, plus the **context-re-read share** (cache-read tokens as a
+  percentage of total token volume). Token volume is the primary axis; cost is
+  secondary and is `$0.00` under subscription profiles, never the only figure
+  shown.
+- **Trains** — one row per train: root session name, kind, profile tier,
+  review-cycle count, total token volume, window share, and cost.
+- **Waste signals** — `doom_loop_count`, `tool_error_count`,
+  `permission_ask_count`, `permission_denied_count`, summed over the window.
+  A window with sessions but no occurrences shows explicit zeros; a window
+  whose sessions have no recorded `spawn_outcome` data shows **unavailable**,
+  which is distinct from a recorded zero.
+
+Token counts render as plain integers with thousands separators (e.g.
+`11,297,191`), never in scientific notation. A NULL token field counts as
+zero, and the output states that. An empty window prints an explicit message
+and exits 0.
+
+**`prism retro` works correctly inside a sandbox.** Like `prism db` and
+`prism stats compare`, it proxies through the host-API socket when
+`PRISM_HOST_API` is set, so it reads the real host `prism.db` and renders
+identical output inside and outside a sandbox — never the empty shadow
+database.
+
+> Per-train review-cycle detail and fixed-overhead accounting are separate,
+> later parts of the `prism retro` work (tracking issue #2529) and are not in
+> this command yet.
+
 ## Checking in on a running session
 
 Use `prism sessions list` to see all active agent sessions with their state and current task title:
