@@ -272,6 +272,10 @@ issues, and summarise the findings. Your role is to relay the outcome.
 > is review-only because the PR existed before the session, so the session
 > did not author it. A session spawned via `prism spawn` that then opened a
 > PR is ours.
+>
+> `prism pr <number>` (and `prism spawn --pr <number>`) enforce this
+> automatically by injecting read-only guidance into the spawned session's
+> prompt — see `withPRReadOnlyGuidance` in `cmd/pr.go` / `cmd/spawn.go`.
 
 "Done" for Case 1 is: read the review outcome, summarise it back to the user,
 optionally clean up the review session, stop. Do not run `gh pr view` looking

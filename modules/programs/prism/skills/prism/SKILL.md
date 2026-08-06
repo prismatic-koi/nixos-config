@@ -204,6 +204,11 @@ prism spawn \
 > coordinator must use `prism pr <number> --prompt 'review this PR'` to spawn
 > a session on the PR branch — that spawned session then runs `prism review`
 > and reports back.
+>
+> **This PR is read-only (Case 1).** `prism pr <number>` (and `prism spawn
+> --pr <number>`) inject read-only guidance into the spawned session's
+> prompt automatically — see `withPRReadOnlyGuidance` in `cmd/pr.go` /
+> `cmd/spawn.go`.
 
 Code review is done with `prism review <pr>`, which is **async**: it spawns 5
 review agents, registers a group, and returns immediately with an
