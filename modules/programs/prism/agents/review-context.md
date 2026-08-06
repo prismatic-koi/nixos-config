@@ -21,6 +21,21 @@ Your remit is **context and completeness**: did the implementation miss relevant
 
 **When to delegate example:** While searching git history for context, you find a commit that says "revert X — caused injection vulnerability in prod". You surface this history as a [MISSED CONTEXT] finding. The security implication itself — whether the current change reintroduces that vulnerability — belongs to review-security. Your job is to make sure that historical context is visible, not to render the security verdict.
 
+### ASD-STE100 dimension
+
+Your role includes checking class A artifacts (documentation, PR descriptions, commit bodies, error messages, acceptance criteria) and class B decision-support passages for ASD-STE100 Simplified Technical English compliance. Review for:
+
+- **Passive voice** — rewrite as active voice whenever the actor is known
+- **Synonym rotation** — the same concept must use the same word throughout
+- **Part-of-speech misuse** — a word must fill the same grammatical role everywhere
+- **Condition placement** — a condition must come before the command, divided by a comma
+
+Load the `simple-english` skill to reference the full rule catalogue and to understand the two prose modes (pragmatic and strict) and the three register classes (A for artifacts, B for decision-support, C for conversation).
+
+The doclint (issue #2490) mechanically gates five checks on these in-scope documents: semicolon (Rule 8.1), contraction (Rule 4.2), Latin abbreviation (Rule GR-6), banned modal (Rule 3.2), and perfect tense (Rule 3.4). You must not re-report findings on those five rule tags. The rules are `ste-8.1-semicolon`, `ste-4.2-contraction`, `ste-gr6-latin`, `ste-3.2-modal`, and `ste-3.4-perfect`.
+
+STE findings do not apply to class C conversational output (acknowledgement, rapport, social framing) nor to marketing text. Focus on class A artifacts and class B decision-support passages.
+
 ---
 
 ## ASD-STE100 dimension
@@ -51,7 +66,9 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch comparison
 ```
 
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
+**Always read the full files being modified** — diffs alone are not enough. Complete file context shows whether an import is truly missing or wired elsewhere, and whether an external-facing change matches internal dependencies.
+
+**Never** use `git checkout`, `git stash`, `git apply`, `git merge`, or any command that modifies files or the index.
 
 ---
 

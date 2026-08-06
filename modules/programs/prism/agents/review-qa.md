@@ -36,7 +36,9 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Working-tree safety — CRITICAL:** Never modify the working tree or index.
+**Always read the full files being modified** — diffs alone are not enough. Validation that exercises real code paths requires complete context: imports, initialization, teardown, and error handling that partial diffs omit.
+
+**Working-tree safety — CRITICAL:** Never modify the working tree or index. This role has hands-on test execution, so this rule is stated in detailed form:
 
 - **Never** use `git checkout <branch> -- <path>` — this stages files into the working tree
 - **Never** use `git stash`, `git apply`, `git merge`, or any command that modifies files or the index
@@ -44,6 +46,10 @@ git diff origin/main...origin/<branch>  # cross-branch diff
 - **Always** use `git diff origin/main...origin/<branch>` for cross-branch diff comparison
 
 For validation that requires executing code: run commands against files read via `git show` (e.g. pipe to a temp file), or run against the current checked-out state if appropriate. Do not check out the PR branch.
+
+### Note on working-tree safety across review agents
+
+All five review agents ban the same set of working-tree-mutating git commands. review-qa states the rule in expanded form with guidance for hands-on validation; review-code, review-goal, review-context, and review-security use a unified shorter form. The substance is identical across all five.
 
 ---
 

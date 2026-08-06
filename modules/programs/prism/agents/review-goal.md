@@ -37,7 +37,9 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
+**Always read the full files being modified** — diffs alone are not enough. Understanding the full context prevents misreading changes that look wrong in isolation.
+
+**Never** use `git checkout`, `git stash`, `git apply`, `git merge`, or any command that modifies files or the index.
 
 ---
 

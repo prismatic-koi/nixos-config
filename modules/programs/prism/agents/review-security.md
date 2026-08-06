@@ -34,9 +34,9 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Always read the full files** for any security-sensitive code — authentication, input handling, file operations, network code, cryptography. Partial diffs are not sufficient for security review.
+**Always read the full files being modified** — diffs alone are not enough. For security-sensitive code (authentication, input handling, file operations, network code, cryptography), complete file context shows initialization, cleanup, and error handling paths that partial diffs omit.
 
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
+**Never** use `git checkout`, `git stash`, `git apply`, `git merge`, or any command that modifies files or the index.
 
 ---
 
@@ -135,4 +135,4 @@ If there are no security vulnerabilities, `<blocking_issues>` must be empty.
 **PASS** = no exploitable vulnerabilities found in the 10 checklist items.
 **FAIL** = one or more exploitable vulnerabilities found.
 
-If a checklist item does not apply to this change (e.g. no network code, no file operations), note "N/A" for that item — do not invent issues to fill the list.
+After the verdict block, include a summary of which checklist items you examined and which you marked N/A, so the worker understands the scope of the security review.

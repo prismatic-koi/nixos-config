@@ -30,13 +30,13 @@ Use these commands to gather context — never modify the working tree:
 ```bash
 gh pr view <number>              # PR title, description
 gh pr diff <number>              # the diff
-git show origin/<branch>:<path>  # read full files from the PR branch (not just the diff)
+git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
 **Always read the full files being modified** — diffs alone are not enough. Code that looks wrong in isolation can be correct given surrounding logic, and vice versa.
 
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
+**Never** use `git checkout`, `git stash`, `git apply`, `git merge`, or any command that modifies files or the index.
 
 ---
 
