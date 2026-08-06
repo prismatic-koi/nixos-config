@@ -36,7 +36,7 @@ git diff origin/main...origin/<branch>  # cross-branch diff
 
 **Always read the full files being modified** — diffs alone are not enough. Code that looks wrong in isolation can be correct given surrounding logic, and vice versa.
 
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
+**Never** use `git checkout`, `git stash`, `git apply`, `git merge`, or any command that modifies files or the index.
 
 ---
 
