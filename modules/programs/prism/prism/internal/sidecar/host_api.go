@@ -356,7 +356,10 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	//   view=doomloops → {"events":[...db.Event...]}
 	//   view=denials   → {"events":[...db.Event...]}
 	//   view=asks      → {"events":[...db.Event...]}
-	//   view=detail    → {"session":{...db.Session...}} (single-session incarnation detail)
+	//   view=detail    → {"session":{...db.Session...},"outcome":{...db.SpawnOutcome...}|null}
+	//                    (single-session incarnation detail; outcome is the
+	//                    persisted-or-computed spawn_outcome row, nil for a
+	//                    still-live session with no row yet — issue #2582)
 	//   view=compare   → {"runs":[...db.CompareRunData...]} one per id, in request order;
 	//                    404 if any id fails to resolve (atomic, mirrors the host CLI path)
 	//   view=abtest    → {"runs":[...db.CompareRunData...]} group members sorted by session_name
@@ -495,7 +498,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					return
 				}
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"session": sess})
+			// Include the spawn_outcome token/cost data alongside the session so
+			// the sandbox proxy path can render identical output to the
+			// host-direct path (issue #2582). CompareRunOutcome returns the
+			// persisted row, an on-the-fly computation for a terminal session
+			// with no row yet, or nil for a still-live session — the renderer
+			// treats nil as "not yet available", never as zero.
+			outcome := s.cfg.DB.CompareRunOutcome(sess)
+			writeJSON(w, http.StatusOK, map[string]any{"session": sess, "outcome": outcome})
 
 		case "compare":
 			// Repeated id= params, one per run arg, order-preserving. The host

@@ -879,6 +879,49 @@ Every list-style and lookup-style prism subcommand supports a `--json` flag that
 | `prism profile show [name] --json` | single profile object describing the slot table |
 | `prism archive <session> --all --json` | array of archive-entry objects (instance_id, started_at, archive_path) |
 
+## Querying the prism database directly: `prism db`
+
+`prism db` is the read-only SQL and schema-introspection surface over
+`prism.db` (issue #1467). Reach for it when the curated views (`prism
+stats`, `prism checkin`) do not answer the question and you need raw SQL.
+
+| Subcommand | Purpose |
+|---|---|
+| `prism db tables` | Print a sorted list of user table names (excludes `sqlite_*`). Use this first to discover the schema. |
+| `prism db schema [table]` | Print `CREATE TABLE` / `CREATE INDEX` statements. With no argument, every table and index; with a table name, just that table's DDL. |
+| `prism db query [SQL \| -]` | Run a single read-only SQL statement. Pass the SQL as an argument, or `-` to read it from stdin (useful for multi-line queries). Every write statement is rejected by SQLite's `?mode=ro`; only one statement per invocation is accepted. |
+
+All three accept `--json` for structured output, and `db query` additionally
+accepts `--timeout` (default 5s).
+
+```bash
+prism db tables
+prism db schema spawn_outcome
+prism db query "select session_name, tokens_input_total from spawn_outcome limit 5"
+prism db query --json - <<'EOF'
+select count(*) from sessions where repo = 'nixos-config'
+EOF
+```
+
+**`prism db` works correctly inside a sandbox.** When `PRISM_HOST_API` is
+set, every subcommand proxies through the host-API socket to the real
+`prism.db` on the host, so results are identical inside and outside a
+sandbox.
+
+### The `sqlite3` sandbox trap — do not run `sqlite3` against the DB path directly
+
+Inside a sandbox, running `sqlite3` directly against the database path
+(e.g. `sqlite3 ~/.local/state/prism/prism.db "select * from sessions"`) does
+**not** reach the host database. The sandboxed filesystem has no real data
+at that path, so SQLite silently creates an empty shadow database there and
+queries it. Every query returns **zero rows for every table** and
+**no error at all** — a wrong answer that looks exactly like a right one
+(an empty repo, or a session that does not exist).
+
+Always use `prism db query` / `prism db schema` / `prism db tables` instead
+of invoking `sqlite3` directly. They route through the host-API proxy from
+inside a sandbox and read the real database; raw `sqlite3` does not.
+
 ## Checking in on a running session
 
 Use `prism sessions list` to see all active agent sessions with their state and current task title:
