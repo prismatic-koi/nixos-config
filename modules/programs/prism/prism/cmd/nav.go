@@ -139,7 +139,7 @@ func fetchNavSessions() ([]dashboard.AgentSession, error) {
 		if session.IsMetaSession(s.SessionName) {
 			continue
 		}
-		out = append(out, dashboard.StatusToAgentSession(s, nil, groupParents))
+		out = append(out, dashboard.StatusToAgentSession(s, nil, groupParents, nil))
 	}
 	dashboard.SortDisplayed(out)
 	return out, nil

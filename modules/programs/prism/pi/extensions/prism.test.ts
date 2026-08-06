@@ -1639,7 +1639,7 @@ describe("snapshotGuardState", () => {
     dl.currentKey = "bash:git push"
     dl.consecutiveCount = 3
     dl.fired = false
-    const snap = snapshotGuardState(dl, false, false)
+    const snap = snapshotGuardState(dl, false, false, false)
     assert.equal(snap.doomLoop.currentKey, "bash:git push")
     assert.equal(snap.doomLoop.consecutiveCount, 3)
     assert.equal(snap.doomLoop.fired, false)
@@ -1647,21 +1647,30 @@ describe("snapshotGuardState", () => {
 
   it("serialises pendingGitPushReminder", () => {
     const dl = newDoomLoopState()
-    const snap = snapshotGuardState(dl, true, false)
+    const snap = snapshotGuardState(dl, true, false, false)
     assert.equal(snap.pendingGitPushReminder, true)
   })
 
   it("serialises pendingReviewCall", () => {
     const dl = newDoomLoopState()
-    const snap = snapshotGuardState(dl, false, true)
+    const snap = snapshotGuardState(dl, false, true, false)
     assert.equal(snap.pendingReviewCall, true)
+  })
+
+  it("serialises gitPushReminderDelivered", () => {
+    // #2646: the "already delivered this session" flag must be part of the
+    // persisted snapshot shape, or it resets on compaction/resume and the
+    // reminder is redelivered mid-session.
+    const dl = newDoomLoopState()
+    const snap = snapshotGuardState(dl, false, false, true)
+    assert.equal(snap.gitPushReminderDelivered, true)
   })
 
   it("produces a JSON-safe value", () => {
     const dl = newDoomLoopState()
     dl.currentKey = "bash:nix build"
     dl.consecutiveCount = 2
-    const snap = snapshotGuardState(dl, false, false)
+    const snap = snapshotGuardState(dl, false, false, false)
     const json = JSON.stringify(snap)
     const parsed = JSON.parse(json)
     assert.equal(parsed.doomLoop.currentKey, "bash:nix build")
@@ -1672,7 +1681,7 @@ describe("snapshotGuardState", () => {
     // Pin #1512: the snapshot must NOT carry reviewCycle data — cycle
     // counting moved to the Go-side monitor.
     const dl = newDoomLoopState()
-    const snap = snapshotGuardState(dl, false, false) as Record<string, unknown>
+    const snap = snapshotGuardState(dl, false, false, false) as Record<string, unknown>
     assert.ok(!("reviewCycle" in snap), "snapshotGuardState must not emit a reviewCycle field")
   })
 })
@@ -1696,11 +1705,25 @@ describe("restoreGuardState", () => {
     const snap = {
       doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
       pendingGitPushReminder: true,
+      gitPushReminderDelivered: false,
       pendingReviewCall: true,
     }
     const result = restoreGuardState(snap, dl)
     assert.equal(result.pendingGitPushReminder, true)
     assert.equal(result.pendingReviewCall, true)
+  })
+
+  it("restores gitPushReminderDelivered", () => {
+    // #2646: compaction/resume must not clear the delivered flag.
+    const dl = newDoomLoopState()
+    const snap = {
+      doomLoop: { currentKey: null, consecutiveCount: 0, fired: false },
+      pendingGitPushReminder: false,
+      gitPushReminderDelivered: true,
+      pendingReviewCall: false,
+    }
+    const result = restoreGuardState(snap, dl)
+    assert.equal(result.gitPushReminderDelivered, true)
   })
 
   it("tolerates legacy snapshots that include a reviewCycle field", () => {
@@ -1711,6 +1734,7 @@ describe("restoreGuardState", () => {
       doomLoop: { currentKey: "bash:foo", consecutiveCount: 1, fired: false },
       reviewCycle: { detectedPrNumber: "77", cycles: { "77": 3 }, frameEmitted: true },
       pendingGitPushReminder: false,
+      gitPushReminderDelivered: false,
       pendingReviewCall: false,
     } as unknown as Parameters<typeof restoreGuardState>[0]
     const result = restoreGuardState(legacySnap, dl)
@@ -1723,6 +1747,7 @@ describe("restoreGuardState", () => {
     const snap = {
       doomLoop: { currentKey: undefined, consecutiveCount: "not-a-number" as unknown as number, fired: undefined },
       pendingGitPushReminder: undefined as unknown as boolean,
+      gitPushReminderDelivered: undefined as unknown as boolean,
       pendingReviewCall: undefined as unknown as boolean,
     }
     const result = restoreGuardState(snap, dl)
@@ -1730,6 +1755,7 @@ describe("restoreGuardState", () => {
     assert.equal(dl.consecutiveCount, 0)
     assert.equal(dl.fired, false)
     assert.equal(result.pendingGitPushReminder, false)
+    assert.equal(result.gitPushReminderDelivered, false)
     assert.equal(result.pendingReviewCall, false)
   })
 })
@@ -1741,18 +1767,19 @@ describe("snapshotGuardState + restoreGuardState round-trip", () => {
     dl.consecutiveCount = 2
     dl.fired = false
 
-    const snap = snapshotGuardState(dl, true, true)
+    const snap = snapshotGuardState(dl, true, true, true)
     // Simulate writing to and reading from the session JSON file.
     const persisted = JSON.parse(JSON.stringify(snap))
 
     const dl2 = newDoomLoopState()
-    const { pendingGitPushReminder, pendingReviewCall } = restoreGuardState(persisted, dl2)
+    const { pendingGitPushReminder, pendingReviewCall, gitPushReminderDelivered } = restoreGuardState(persisted, dl2)
 
     assert.equal(dl2.currentKey, "bash:git status")
     assert.equal(dl2.consecutiveCount, 2)
     assert.equal(dl2.fired, false)
     assert.equal(pendingGitPushReminder, true)
     assert.equal(pendingReviewCall, true)
+    assert.equal(gitPushReminderDelivered, true)
   })
 })
 
@@ -3641,6 +3668,7 @@ function makeMockPI1554(
     setThinkingLevel: () => {},
     registerProvider: () => {},
     setActiveTools: () => {},
+    appendEntry: () => {},
     registerFlag: (
       _name: string,
       _opts: { description?: string; type: "boolean" | "string"; default?: boolean | string },
@@ -3691,6 +3719,99 @@ function makeSidecarResponder1554(conn: net.Socket): { frames: string[] } {
 
 // Fast retry schedule: 1+2+4+8+16 = 31ms total budget.
 const FAST_DELAYS_1554 = "1,2,4,8,16"
+
+// ---------------------------------------------------------------------------
+// #2646: git-push reminder delivered at most once per worker session
+// ---------------------------------------------------------------------------
+//
+// End-to-end test through the real handshake path: connects the extension to
+// a mock sidecar over a unix socket, detects two separate `git push` bash
+// tool calls across two turns, and asserts `sendUserMessage` (the reminder
+// delivery path) fires exactly once.
+
+describe("#2646: git-push reminder fires at most once per session", () => {
+  it("a second git push in the same session does not redeliver the reminder", () => {
+    return new Promise<void>((resolve, reject) => {
+      const sockDir = fs.mkdtempSync(path.join(os.tmpdir(), "prism-test-2646-"))
+      const sockPath = path.join(sockDir, "pipe.sock")
+      const savedName = process.env.PRISM_SESSION_NAME
+      const savedPipe = process.env.PRISM_HARNESS_PIPE
+      process.env.PRISM_SESSION_NAME = "test@main"
+      process.env.PRISM_HARNESS_PIPE = `unix://${sockPath}`
+
+      const cleanup = () => {
+        process.env.PRISM_SESSION_NAME = savedName
+        process.env.PRISM_HARNESS_PIPE = savedPipe
+        fs.rmSync(sockDir, { recursive: true, force: true })
+      }
+
+      let handshakeSeen: () => void = () => {}
+      const handshakeSeenPromise = new Promise<void>((res) => { handshakeSeen = res })
+      const server = net.createServer((conn) => {
+        makeSidecarResponder1554(conn)
+        conn.on("data", (chunk) => {
+          if (chunk.toString().includes('"type":"hello"')) handshakeSeen()
+        })
+      })
+
+      const { pi, trigger } = makeMockPI1554()
+      const sendUserMessageCalls: Array<{ content: unknown; options: unknown }> = []
+      ;(pi as unknown as { sendUserMessage: (content: unknown, options?: unknown) => void }).sendUserMessage =
+        (content, options) => {
+          sendUserMessageCalls.push({ content, options })
+        }
+      prismExtension(pi as never)
+
+      server.listen(sockPath, () => {
+        void trigger("session_start", {}, {}).then(() => {
+          // Wait for the server to have observed the client's `hello` frame
+          // (hello_ack is written synchronously in response), then give the
+          // client a short grace period to process it and set
+          // handshakeComplete=true. This avoids flakiness from a fixed
+          // timeout racing the handshake under full-suite CPU contention.
+          void handshakeSeenPromise.then(() => new Promise((r) => setTimeout(r, 50))).then(() => {
+            void (async () => {
+              try {
+                // First push, then the turn_start that delivers the reminder.
+                await trigger("tool_execution_start", {
+                  toolCallId: "1",
+                  toolName: "bash",
+                  args: { command: "git push origin main" },
+                })
+                const fakeCtx = { sessionManager: { getSessionId: () => "test-session-id" } }
+                await trigger("turn_start", {}, fakeCtx)
+
+                // Second push in the same session, then another turn_start.
+                await trigger("tool_execution_start", {
+                  toolCallId: "2",
+                  toolName: "bash",
+                  args: { command: "git push origin main" },
+                })
+                await trigger("turn_start", {}, fakeCtx)
+
+                const reminderCalls = sendUserMessageCalls.filter(
+                  (c) => c.content === GIT_PUSH_REMINDER_MESSAGE,
+                )
+                assert.equal(
+                  reminderCalls.length,
+                  1,
+                  `expected exactly 1 reminder delivery, got ${reminderCalls.length}`,
+                )
+
+                await trigger("session_shutdown", {}, {})
+                cleanup()
+                server.close(() => resolve())
+              } catch (err) {
+                cleanup()
+                server.close(() => reject(err as Error))
+              }
+            })()
+          })
+        })
+      })
+    })
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Module-level teardown (issue #2060).

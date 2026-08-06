@@ -53,13 +53,23 @@ type AgentSession struct {
 	// review.Agents(). Empty on non-group rows. See review_summary.go for
 	// the rendering helpers. See #1795.
 	ReviewChildSummaries []ReviewChildSummary
+	// ProfileName is the prism spawn profile tier (light/standard/heavy/max)
+	// this session was spawned with, read from spawn_inputs.profile_name via
+	// the instance_id join. Empty when no spawn_inputs row exists, the
+	// column is NULL (spawned without --profile, or predating the
+	// spawn_inputs write path — #2092 / #2093), or the row is a virtual
+	// review-group row. See issue #2640.
+	ProfileName string
 }
 
 // StatusToAgentSession converts a db.Status into an AgentSession.
 // clientCounts is a map from session name → client count (from tmux).
 // groupParents is a map from group_id → parent_session (from db.AllGroupParents);
 // pass nil when not available (e.g. in tests that pre-date the group wiring).
-func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents map[string]string) AgentSession {
+// profileNames is a map from instance_id → spawn_inputs.profile_name (from
+// db.AllProfileNames); pass nil when not available (e.g. in tests that
+// pre-date the profile-column wiring, or the value is not needed).
+func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents map[string]string, profileNames map[string]string) AgentSession {
 	title := ""
 	if s.Title != nil {
 		title = *s.Title
@@ -94,6 +104,11 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents
 		}
 	}
 
+	profileName := ""
+	if s.InstanceID != nil && profileNames != nil {
+		profileName = profileNames[*s.InstanceID]
+	}
+
 	return AgentSession{
 		Name:          s.SessionName,
 		AgentState:    s.State,
@@ -106,6 +121,7 @@ func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents
 		ClientCount:   clientCounts[s.SessionName],
 		GroupID:       s.GroupID,
 		ParentSession: parentSession,
+		ProfileName:   profileName,
 	}
 }
 
@@ -591,9 +607,10 @@ func TmuxClientCounts() map[string]int {
 // padded to treePrefixW+sessionW; child rows display the tree prefix plus the
 // branch name padded to the same total width.
 //
-// The row layout is exactly three columns: session, state, title — separated
-// by two-space gaps. titleW may be 0, in which case the title slot is omitted
-// entirely (state-only mode at very narrow widths).
+// The row layout is session, state, profile, title — separated by two-space
+// gaps. profileW and titleW may be 0, in which case that slot is omitted
+// entirely (profileW==0 and titleW==0 together is the narrow-terminal
+// fallback: session + state only; see DashView, issue #2640).
 func RenderSessionRow(
 	d Shared,
 	s AgentSession,
@@ -602,7 +619,7 @@ func RenderSessionRow(
 	currentSession string,
 	cursorActive bool,
 	styleDim, styleFg lipgloss.Style,
-	sessionW, stateW, titleW int,
+	sessionW, stateW, profileW, titleW int,
 ) string {
 	isHere := s.Name == currentSession
 	isSelected := cursorIdx == d.Cursor
@@ -662,6 +679,17 @@ func RenderSessionRow(
 		title = string([]rune(title)[:titleW-1]) + "…"
 	}
 
+	// Profile tier the session was spawned with. An explicit "-" placeholder
+	// stands in for a NULL profile_name (spawned without --profile, or a
+	// pre-#2092/#2093 row) so the cell never reads as an empty-string bug.
+	profile := s.ProfileName
+	if profile == "" {
+		profile = "-"
+	}
+	if profileW > 0 && utf8.RuneCountInString(profile) > profileW {
+		profile = string([]rune(profile)[:profileW-1]) + "…"
+	}
+
 	if isSelected && cursorActive {
 		// Bar colour: state colour for active states, primary for idle/finished.
 		barBg := lipgloss.Color(ColorPrimary)
@@ -674,6 +702,9 @@ func RenderSessionRow(
 
 		plain := fmt.Sprintf(" %s%s", dot, sessionArea)
 		plain += fmt.Sprintf("  %-*s", stateW, stateLabel(s.AgentState))
+		if profileW > 0 {
+			plain += fmt.Sprintf("  %-*s", profileW, profile)
+		}
 		if titleW >= 5 {
 			plain += fmt.Sprintf("  %s", title)
 		}
@@ -693,6 +724,9 @@ func RenderSessionRow(
 
 	prefix := styleFg.Render(fmt.Sprintf(" %s%s", dot, sessionArea))
 	row := prefix + styleFg.Render("  ") + stateStr
+	if profileW > 0 {
+		row += styleDim.Render(fmt.Sprintf("  %-*s", profileW, profile))
+	}
 	if titleW >= 5 && title != "" {
 		row += styleDim.Render("  " + title)
 	}

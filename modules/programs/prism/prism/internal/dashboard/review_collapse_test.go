@@ -718,7 +718,7 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 	}
 
 	// Render with collapsed indicator (▶) — non-selected, cursor NOT active.
-	row := dashboard.RenderReviewGroupRow(d, s, 0 /*cursorIdx != Cursor*/, "  ├── ", false /*expanded*/, false /*cursorActive*/, styleDim, styleFg, 10 /*sessionW*/, 10 /*stateW*/)
+	row := dashboard.RenderReviewGroupRow(d, s, 0 /*cursorIdx != Cursor*/, "  ├── ", false /*expanded*/, false /*cursorActive*/, styleDim, styleFg, 10 /*sessionW*/, 10 /*stateW*/, 0 /*profileW*/)
 
 	// The raw row must contain ANSI sequences for both colours.
 	// We search for the 24-bit RGB escape that lipgloss produces for each colour.
@@ -741,7 +741,7 @@ func TestRenderReviewGroupRow_TreeConnectorStyleSplit(t *testing.T) {
 	}
 
 	// Also verify the expanded indicator path (▼) to satisfy the edge-case AC.
-	rowExpanded := dashboard.RenderReviewGroupRow(d, s, 0, "  └── ", true /*expanded*/, false, styleDim, styleFg, 10, 10)
+	rowExpanded := dashboard.RenderReviewGroupRow(d, s, 0, "  └── ", true /*expanded*/, false, styleDim, styleFg, 10, 10, 0)
 	if fgIdx2 := strings.Index(rowExpanded, fgSeq); fgIdx2 < 0 {
 		t.Errorf("expanded: styleFg colour sequence not found; row=%q", rowExpanded)
 	}
@@ -775,7 +775,7 @@ func TestRenderReviewGroupRow_ReviewingStateNotIdle(t *testing.T) {
 		IsReviewGroup: true,
 	}
 
-	row := dashboard.RenderReviewGroupRow(d, s, 0, "  ├── ", false /*collapsed*/, false /*cursorActive*/, styleDim, styleFg, 10, 12)
+	row := dashboard.RenderReviewGroupRow(d, s, 0, "  ├── ", false /*collapsed*/, false /*cursorActive*/, styleDim, styleFg, 10, 12, 0)
 
 	if strings.Contains(row, "idle") {
 		t.Errorf("group row with AgentState=\"reviewing\" must not contain \"idle\"; got row=%q", row)

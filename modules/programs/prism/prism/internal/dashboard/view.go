@@ -17,6 +17,11 @@ import (
 // column, in alphabetical order by short label. If the available width budget
 // cannot accommodate the labels, they are suppressed entirely and the row
 // falls back to session + state only. See #1802.
+// profileW is the rendered width of the profile column (0 = hidden by the
+// narrow-terminal fallback, see DashView). Review group rows are virtual
+// (not a real spawned session), so the profile cell, when shown, is always
+// blank — the profile tier belongs to the per-agent child sessions, which
+// render via RenderSessionRow and show their own profile there (issue #2640).
 func RenderReviewGroupRow(
 	d Shared,
 	s AgentSession,
@@ -25,7 +30,7 @@ func RenderReviewGroupRow(
 	expanded bool,
 	cursorActive bool,
 	styleDim, styleFg lipgloss.Style,
-	sessionW, stateW int,
+	sessionW, stateW, profileW int,
 ) string {
 	isSelected := cursorIdx == d.Cursor
 
@@ -71,7 +76,11 @@ func RenderReviewGroupRow(
 		// Bytes consumed so far in the plain (un-styled) layout:
 		//   leading space (1) + dot (2) + sessionArea (totalSessionW) +
 		//   gap (2) + state label (stateW) + gap (2) = consumed.
-		consumed := 1 + 2 + totalSessionW + 2 + stateW + 2
+		profileGap := 0
+		if profileW > 0 {
+			profileGap = profileW + 2
+		}
+		consumed := 1 + 2 + totalSessionW + 2 + stateW + profileGap + 2
 		budget := d.Width - consumed
 		if budget < 0 {
 			budget = 0
@@ -85,6 +94,9 @@ func RenderReviewGroupRow(
 			barBg = c
 		}
 		plain := fmt.Sprintf(" %s%s  %-*s", dot, sessionArea, stateW, stateLabel(s.AgentState))
+		if profileW > 0 {
+			plain += fmt.Sprintf("  %-*s", profileW, "")
+		}
 		if labelsStr != "" {
 			// The selected-row bar uses lipgloss.Width(...).Render(plain),
 			// which would strip per-letter colours under the bar. Render the
@@ -114,6 +126,9 @@ func RenderReviewGroupRow(
 	labelPart := styleDim.Render(fmt.Sprintf("%-*s", totalSessionW-runeCount, content))
 	prefix := treePart + labelPart
 	row := prefix + styleFg.Render("  ") + stateStr
+	if profileW > 0 {
+		row += styleFg.Render(fmt.Sprintf("  %-*s", profileW, ""))
+	}
 	if labelsStr != "" {
 		row += styleFg.Render("  ") + labelsStr
 	}
@@ -181,6 +196,15 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	const stateW = 10
 	const dotW = 2
 
+	// profileW is the width of the profile-tier column, sized to the longest
+	// valid tier name ("standard", 8 runes). Unlike stateW, profileW is NOT
+	// part of fixedCore: it competes with titleW for the leftover width after
+	// session+state, and is dropped first (see showProfile below) so that a
+	// narrow terminal degrades to session+state only, same as it did before
+	// this column existed (issue #2640) — the fallback the title column
+	// already relied on. stateW stays in fixedCore and is never truncated.
+	const profileW = 8
+
 	// fixedCore is the non-negotiable fixed overhead: leading space + dot +
 	// treePrefixW + gap-before-state + stateW.
 	const fixedCore = 1 + dotW + treePrefixW + 2 + stateW
@@ -189,12 +213,26 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	// across all displayed entries, clamped to [7, 40].
 	sessionW := SessionColumnWidth(d.Displayed)
 
-	// Layout: " " + dot(2) + treePrefixW + sessionW + 2 + stateW + 2 + titleW.
-	// titleW absorbs all leftover width; below the minimum it clamps to 0,
-	// suppressing the title column.
-	titleW := d.Width - fixedCore - sessionW - 2
+	// Layout: " " + dot(2) + treePrefixW + sessionW + 2 + stateW + 2 + [profileW + 2] + titleW.
+	// available is the width left after session+state; profile takes a fixed
+	// slice of it (dropped when there isn't room), and titleW absorbs
+	// whatever remains — so the profile column takes its width from title,
+	// not from the fixed core (see the design-tension note in the PR body).
+	available := d.Width - fixedCore - sessionW - 2
+	if available < 0 {
+		available = 0
+	}
+	showProfile := available >= profileW
+	titleW := available
+	if showProfile {
+		titleW = available - profileW - 2
+	}
 	if titleW < 0 {
 		titleW = 0
+	}
+	renderedProfileW := 0
+	if showProfile {
+		renderedProfileW = profileW
 	}
 
 	var sb strings.Builder
@@ -213,6 +251,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 		treePrefixW+sessionW, "session",
 	)
 	header += fmt.Sprintf("  %-*s", stateW, "state")
+	if showProfile {
+		header += fmt.Sprintf("  %-*s", profileW, "profile")
+	}
 	if titleW >= 5 {
 		header += fmt.Sprintf("  %-*s", titleW, "title")
 	}
@@ -230,7 +271,7 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 	} else if d.FilterActive {
 		// Flat list while filter is active (no grouping — easier to scan).
 		for i, s := range sessions {
-			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, titleW))
+			sb.WriteString(RenderSessionRow(d, s, i, "" /*treePrefix*/, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, renderedProfileW, titleW))
 		}
 	} else {
 		// Flat view with inline child detection via look-ahead.
@@ -324,9 +365,9 @@ func DashView(d Shared, currentSession string, cursorActive bool) string {
 			// For review group rows, use specialised renderer.
 			if isReviewGrp {
 				expanded := d.CollapsedGroups[s.Name]
-				sb.WriteString(RenderReviewGroupRow(d, s, i, treePrefix, expanded, cursorActive, styleDim, styleFg, sessionW, stateW))
+				sb.WriteString(RenderReviewGroupRow(d, s, i, treePrefix, expanded, cursorActive, styleDim, styleFg, sessionW, stateW, renderedProfileW))
 			} else {
-				sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, titleW))
+				sb.WriteString(RenderSessionRow(d, s, i, treePrefix, currentSession, cursorActive, styleDim, styleFg, sessionW, stateW, renderedProfileW, titleW))
 			}
 		}
 	}
