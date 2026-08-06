@@ -62,9 +62,32 @@ escalations do not require waiting for a reply, so any incoming `turn_start`
   proceeding. Treat this the same as the review-deadlock path described in
   "Escalating to the coordinator — a first-class outcome" below.
 
+## Case 1: you were spawned on a pre-existing PR (read-only)
+
+If your session was created by `prism pr <number>`, the PR existed before you
+did — you did not author it. This is Case 1 in `agents/coordinator.md`, and it
+is the opposite of the rest of this document: **review and report findings
+only.**
+
+- Do NOT commit, push, or otherwise mutate the PR.
+- Do NOT run `prism review`'s fix-and-push loop against it — report blocking
+  issues instead of fixing them.
+- Do NOT run `prism merge` on it. The author and their maintainer chain
+  decide when it lands.
+- The only thing that lifts this constraint is an explicit instruction from
+  the operator, given during this session. Do not infer permission to edit
+  from the branch name, the PR author, or anything else about the PR.
+
+`prism pr <number>` injects this guidance into your prompt automatically, so
+you should see it regardless of whether the coordinator or operator supplied
+their own `--prompt`. This section exists so the constraint still reaches you
+if you skim past the injected prompt and land straight in the review flow
+below. Contrast with Case 2, below: a PR you opened yourself via `prism
+spawn` is yours to fix and push.
+
 ## Committing and pushing
 
-**Override: the default "never commit unless asked" rule does not apply to you.**
+**Override: the default "never commit unless asked" rule does not apply to you—unless you are in Case 1 above, in which case the PR is read-only.**
 You are expected to commit freely on your branch. Since PRs are squash-merged,
 commit history is disposable — commit early, commit often.
 

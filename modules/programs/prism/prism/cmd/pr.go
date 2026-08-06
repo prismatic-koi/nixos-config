@@ -40,6 +40,38 @@ import (
 	"github.com/prismatic-koi/prism/internal/skills"
 )
 
+// prReadOnlyGuidance is injected into every `prism pr <number>` session's
+// prompt, regardless of whether the caller supplied --prompt / --prompt-file.
+// `prism pr` always targets a pre-existing PR (Case 1 in agents/coordinator.md),
+// so the session never authored the PR and must default to review-only. The
+// command cannot establish who authored the PR branch, so this guidance is
+// injected unconditionally (issue #2633) — fail safe toward read-only rather
+// than attempt to infer authorship from the branch or PR metadata. Only an
+// explicit operator instruction given during the session lifts this.
+const prReadOnlyGuidance = `IMPORTANT — this session was started with ` + "`prism pr <number>`" + `, which always
+targets a pre-existing PR that this session did not author. Treat this PR as
+read-only:
+
+- Review the PR and report findings only.
+- Do NOT commit, push, or otherwise mutate this PR.
+- Do NOT run ` + "`prism merge`" + ` on it — you do not decide when it lands.
+- The only thing that lifts this constraint is an explicit instruction from
+  the operator, given during this session. Do not infer authorship from the
+  branch name or PR author and treat that as permission to edit.
+
+See "Case 1" in agents/coordinator.md and agents/worker.md for the full
+review-only flow this session should follow.`
+
+// withPRReadOnlyGuidance prepends the read-only guidance to a caller-supplied
+// prompt (preserving it, per issue #2633 AC2) or returns the guidance alone
+// when the caller passed neither --prompt nor --prompt-file.
+func withPRReadOnlyGuidance(callerPrompt string) string {
+	if callerPrompt == "" {
+		return prReadOnlyGuidance
+	}
+	return prReadOnlyGuidance + "\n\n---\n\n" + callerPrompt
+}
+
 var prCmd = &cobra.Command{
 	Use:   "pr <number>",
 	Short: "Check out a PR branch as a new worktree and switch to it",
@@ -61,6 +93,10 @@ var prCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		// prism pr always targets a pre-existing PR (Case 1), so the session
+		// is review-only by default regardless of --prompt / --prompt-file.
+		// See prReadOnlyGuidance above for the rationale (issue #2633).
+		promptFlag = withPRReadOnlyGuidance(promptFlag)
 
 		bareRoot, err := resolveBareRoot(repoFlag)
 		if err != nil {

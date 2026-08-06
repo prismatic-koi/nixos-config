@@ -272,6 +272,13 @@ issues, and summarise the findings. Your role is to relay the outcome.
 > is review-only because the PR existed before the session, so the session
 > did not author it. A session spawned via `prism spawn` that then opened a
 > PR is ours.
+>
+> `prism pr <number>` enforces this automatically: it injects read-only
+> guidance into the spawned session's prompt (review and report only, no
+> commit/push/merge) regardless of whether you passed `--prompt`, and
+> regardless of who actually authored the PR branch — the command cannot
+> establish authorship, so it fails safe toward read-only every time. Only an
+> explicit operator instruction given during that session lifts it.
 
 "Done" for Case 1 is: read the review outcome, summarise it back to the user,
 optionally clean up the review session, stop. Do not run `gh pr view` looking
