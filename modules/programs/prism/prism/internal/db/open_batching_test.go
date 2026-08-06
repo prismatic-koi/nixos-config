@@ -426,7 +426,6 @@ func dumpSchemaForTest(t *testing.T, conn *sql.DB) string {
 	return b.String()
 }
 
-
 // TestBatchableOpen_OldShapedDatabaseWithMissingSchemaVersion verifies that
 // batchableOpen correctly detects old-shaped databases when schema_version is
 // unreadable (issue #2630, edge-case AC #1).
