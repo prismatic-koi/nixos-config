@@ -136,3 +136,71 @@ func TestAuthorizeCheckin_WorkerScopeIsResolvedForTheGivenCaller(t *testing.T) {
 		t.Error("a worker that does not own the review group was admitted")
 	}
 }
+
+// TestAuthorizeCheckinReviewAggregate_SelfTargetIsGranted is the reason this
+// predicate exists (issue #2628): the aggregate form's Target IS the parent
+// session, so a worker reading the summary of its own review group has
+// Caller == Target. AuthorizeCheckin's tier 1 refuses that shape (it is the
+// self-checkin denial); AuthorizeCheckinReviewAggregate must grant it.
+func TestAuthorizeCheckinReviewAggregate_SelfTargetIsGranted(t *testing.T) {
+	got := AuthorizeCheckinReviewAggregate(CheckinRequest{
+		Caller: "demo@feature",
+		Target: "demo@feature",
+		Logger: quietLogger(),
+	})
+	if !got.Allow {
+		t.Fatalf("worker reading the summary of its own review group was refused: %s", got.Message)
+	}
+	if got.Tier != CheckinTierWorker {
+		t.Errorf("tier = %d, want %d", got.Tier, CheckinTierWorker)
+	}
+}
+
+// TestAuthorizeCheckinReviewAggregate_OtherWorkersParentIsDenied pins the
+// refusal half: a worker whose own session differs from Target is refused,
+// even though the two sessions share nothing that would otherwise
+// distinguish them from the self-target case above.
+func TestAuthorizeCheckinReviewAggregate_OtherWorkersParentIsDenied(t *testing.T) {
+	got := AuthorizeCheckinReviewAggregate(CheckinRequest{
+		Caller: "demo@feature",
+		Target: "demo@other-feature",
+		Logger: quietLogger(),
+	})
+	if got.Allow {
+		t.Fatal("worker reading another session's review-group summary was admitted")
+	}
+}
+
+// TestAuthorizeCheckinReviewAggregate_CoordinatorReusesTierTwo pins that the
+// coordinator branch is not reimplemented: an own-repo target is admitted at
+// tier 2, exactly as AuthorizeCheckin's coordinator branch would decide for
+// the same Caller/Target pair.
+func TestAuthorizeCheckinReviewAggregate_CoordinatorReusesTierTwo(t *testing.T) {
+	req := CheckinRequest{Caller: "demo@main", Target: "demo@feature", Logger: quietLogger()}
+
+	aggregate := AuthorizeCheckinReviewAggregate(req)
+	direct := AuthorizeCheckin(req)
+
+	if !aggregate.Allow || aggregate.Tier != CheckinTierCoordinator {
+		t.Fatalf("aggregate coordinator decision = %+v, want tier-2 allow", aggregate)
+	}
+	if aggregate.Allow != direct.Allow || aggregate.Tier != direct.Tier {
+		t.Errorf("aggregate decision %+v diverged from AuthorizeCheckin's %+v for an identical coordinator request", aggregate, direct)
+	}
+}
+
+// TestAuthorizeCheckinReviewAggregate_EmptyCallerIsDenied mirrors
+// TestAuthorizeCheckin_EmptyCallerIsDenied for the aggregate entry point.
+func TestAuthorizeCheckinReviewAggregate_EmptyCallerIsDenied(t *testing.T) {
+	got := AuthorizeCheckinReviewAggregate(CheckinRequest{
+		Caller: "",
+		Target: "demo@main",
+		Logger: quietLogger(),
+	})
+	if got.Allow {
+		t.Fatal("an empty caller was admitted — the predicate must fail closed")
+	}
+	if got.Status == 0 {
+		t.Error("a refusal carried Status 0; the gate never returns Allow=false with Status=0")
+	}
+}

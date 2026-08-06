@@ -22,6 +22,15 @@ import (
 // This is the authoritative path for post-migration sessions where group_id is
 // populated. Falls back to the name-prefix path when no group members are found.
 func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
+	// Non-verbose summary: gate the aggregate read (issue #2628). Inside a
+	// sandbox, the direct openDB() below fails, so proxy through the
+	// host-API sidecar, which applies the same predicate server-side.
+	if !verbose {
+		if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
+			return renderCheckinReviewSummaryProxied(apiURL, parentSession)
+		}
+	}
+
 	d, err := openDB()
 	if err != nil {
 		return fmt.Errorf("checkin review (group): open db: %w", err)
@@ -37,6 +46,16 @@ func runCheckinReviewRoundsByGroup(parentSession string, verbose bool) error {
 		// No group members — fall back to the legacy name-prefix scan.
 		fmt.Fprintf(os.Stderr, "[deprecation] checkin: no group members found for %q via DB — falling back to name-prefix scan\n", parentSession)
 		return runCheckinReviewRounds(parentSession+"~review", verbose)
+	}
+
+	// Direct route, non-verbose: apply the aggregate gate before any
+	// conversation content is read below. The group listing above (session
+	// names, states) discloses nothing and runs unconditionally, matching
+	// the no-arg `prism checkin` precedent.
+	if !verbose {
+		if permErr := authorizeDirectCheckinReviewAggregate(parentSession); permErr != nil {
+			return permErr
+		}
 	}
 
 	styleBold := lipgloss.NewStyle().Bold(true)
@@ -109,6 +128,19 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 	// reviewPrefix is e.g. "nixos-config@feature~review" — agent sessions
 	// are "nixos-config@feature~review-1-review-goal", etc.
 	roundPrefix := reviewPrefix + "-"
+
+	// Non-verbose summary: gate the aggregate read (issue #2628), same as
+	// the DB-backed path above. This is the pre-migration name-prefix
+	// fallback, reached only when the DB-backed path found no group members
+	// for the parent, so it is deliberately direct-route only — a session
+	// with no session_groups rows has nothing for the host-API endpoint to
+	// resolve either.
+	if !verbose {
+		parentSession := strings.TrimSuffix(reviewPrefix, "~review")
+		if permErr := authorizeDirectCheckinReviewAggregate(parentSession); permErr != nil {
+			return permErr
+		}
+	}
 
 	d, err := openDB()
 	if err != nil {
@@ -257,6 +289,39 @@ func runCheckinReviewRounds(reviewPrefix string, verbose bool) error {
 		}
 
 		fmt.Println(styleDim.Render("── end of round ──"))
+		fmt.Println()
+	}
+
+	return nil
+}
+
+// renderCheckinReviewSummaryProxied renders the non-verbose
+// `prism checkin <parent>~review` aggregate summary via the host-API
+// GET /checkin/review-summary endpoint (issue #2628). Used on the proxy route
+// (PRISM_HOST_API set) in place of the direct-DB rendering in
+// runCheckinReviewRoundsByGroup, since the sidecar applies
+// authz.AuthorizeCheckinReviewAggregate before returning any member data.
+func renderCheckinReviewSummaryProxied(apiURL, parentSession string) error {
+	resp, err := proxyCheckinReviewSummary(apiURL, parentSession)
+	if err != nil {
+		return err
+	}
+
+	styleBold := lipgloss.NewStyle().Bold(true)
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+
+	fmt.Printf("%s\n\n", styleBold.Render(fmt.Sprintf("review sessions for %s (%d agent(s))", parentSession, len(resp.Members))))
+
+	for _, m := range resp.Members {
+		fmt.Printf("  %s\n", styleBold.Render(m.Label))
+		stateStyled := stateStyle(m.State).Render(m.State)
+		fmt.Printf("  state: %s\n", stateStyled)
+
+		if !m.HasOutput {
+			fmt.Println(styleDim.Render("  (no output recorded)"))
+		} else {
+			fmt.Printf("  [%s]\n  %s\n", m.Timestamp, strings.ReplaceAll(m.Text, "\n", "\n  "))
+		}
 		fmt.Println()
 	}
 

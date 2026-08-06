@@ -49,6 +49,25 @@ func (s *Sidecar) authorizeCheckin(targetSession string) authz.CheckinDecision {
 	})
 }
 
+// authorizeCheckinReviewAggregate decides whether this sidecar's session may
+// read the review-agent summary of parentSession's review group (issue
+// #2628 — the aggregate `prism checkin <parent>~review` form, without
+// --verbose).
+//
+// It is a binding over authz.AuthorizeCheckinReviewAggregate, exactly as
+// authorizeCheckin is a binding over authz.AuthorizeCheckin. The equivalent
+// binding on the direct CLI route is authorizeDirectCheckinReviewAggregate in
+// cmd/checkin_permission.go.
+func (s *Sidecar) authorizeCheckinReviewAggregate(parentSession string) authz.CheckinDecision {
+	return authz.AuthorizeCheckinReviewAggregate(authz.CheckinRequest{
+		Caller:          s.cfg.SessionName,
+		Target:          parentSession,
+		DB:              s.cfg.DB,
+		PrivilegedRepos: s.cfg.CheckinPrivilegedRepos,
+		Logger:          s.logger(),
+	})
+}
+
 // writeCheckinPrivilegeAudit records one tier-3 access in the persistent audit
 // trail, so `prism audit` can answer "who read what, and when".
 //
