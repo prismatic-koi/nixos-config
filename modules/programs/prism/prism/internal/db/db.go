@@ -683,11 +683,13 @@ func runOpenSequenceBatched(conn *sql.DB) error {
 func batchableOpen(conn *sql.DB) bool {
 	version, ok := probeSchemaVersion(conn)
 	if !ok {
-		// No schema_version table, or no row in it: a brand-new or empty
-		// database file. seedSchemaVersionIfEmpty sets version 11 and every
-		// table the rebuilds inspect is created by the declarative schema
-		// block in its current, post-rebuild shape.
-		return true
+		// schema_version is unreadable: either brand-new or corrupted.
+		// Fall through to column probes to distinguish old-shaped from fresh.
+		// Set version to 11 (what seedSchemaVersionIfEmpty uses) to pass the
+		// v8 check and allow subsequent probes to run. Fresh databases have no
+		// old columns, so all probes return false and we batch. Old-shaped
+		// databases have old columns, so a probe returns true and we autocommit.
+		version = 11
 	}
 
 	// v8→v9 rebuilds agent_status to attach the group_id foreign key. It acts
