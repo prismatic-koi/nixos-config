@@ -261,13 +261,24 @@ func (m cleanupModel) doCleanup() tea.Cmd {
 			proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to %q, which is wrong for branches containing '/' (issue #2501)\n", m.worktreePath, branchName)
 		}
 
+		// Issue #2638: a descendant session (name contains '~', e.g.
+		// "<parent>~review-1-review-code" or "<parent>~investigate-<slug>")
+		// inherits the parent's worktree by design and owns neither the
+		// worktree nor the branch resolved from it. Skip both git operations
+		// unconditionally here — do not rely on m.deleteBranch/m.forceDelete
+		// reflecting this, since those are set by earlier prompts that ran
+		// before this guard existed.
+		isDescendant := strings.Contains(m.session, "~")
+
 		// Remove worktree first (while still in the session).
-		if err := git.RemoveWorktree(m.bareRoot, m.worktreePath); err != nil {
-			return cleanupDoneMsg{fmt.Errorf("worktree remove: %w", err)}
+		if !isDescendant {
+			if err := git.RemoveWorktree(m.bareRoot, m.worktreePath); err != nil {
+				return cleanupDoneMsg{fmt.Errorf("worktree remove: %w", err)}
+			}
 		}
 
 		// Delete branch if requested.
-		if m.deleteBranch {
+		if !isDescendant && m.deleteBranch {
 			var branchErr error
 			if m.forceDelete {
 				branchErr = git.ForceDeleteBranch(m.bareRoot, branchName)
@@ -759,7 +770,23 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		proglog.Warnf("[prism] warning: could not resolve actual branch name for worktree %s — falling back to session-derived name %q, which is wrong for branches containing '/' (issue #2501)\n", worktreePath, worktreeName)
 	}
 
-	if worktreePath == "" {
+	// Issue #2638: a session whose name contains '~' is a descendant
+	// (review or investigator sub-session, e.g. "<parent>~review-1-review-code"
+	// or "<parent>~investigate-<slug>"). Descendants inherit the parent's
+	// worktree path by design and own neither the worktree nor the branch
+	// resolved from it. Without this guard, branch deletion below resolves
+	// the PARENT's branch (via resolveBranchName on the shared worktree) and
+	// force-deletes it with no ownership check — see isSafeToRemoveWorktree's
+	// guard 2, which has no equivalent on the branch-deletion path. This is
+	// checked ahead of both the worktree-removal and branch-deletion blocks
+	// below, rather than relying on git's "branch used by worktree" refusal,
+	// which only holds by accident of ordering (worktree removal runs first)
+	// and silently stops protecting the branch once the worktree is gone.
+	isDescendant := strings.Contains(session, "~")
+
+	if isDescendant {
+		printLine("session %s is a descendant session — it owns no worktree or branch of its own; skipping worktree removal and branch deletion\n", session)
+	} else if worktreePath == "" {
 		// AC (#2506): name both the session and the path we tried, rather than
 		// a bare "worktree path unknown". worktreeName is the branch component
 		// of the session name — the best available stand-in for "the path it
@@ -781,7 +808,7 @@ func headlessCleanupWithJSONTo(session, worktreeName, worktreePath, bareRoot str
 		proglog.Warnf("[prism] warning: cleanup: refusing to remove worktree %s — path matches main worktree or an active session's worktree; skipping filesystem removal\n", worktreePath)
 	}
 
-	if bareRoot != "" {
+	if !isDescendant && bareRoot != "" {
 		if git.BranchExists(bareRoot, branchName) {
 			printLine("deleting branch %s...\n", branchName)
 			if err := git.ForceDeleteBranch(bareRoot, branchName); err != nil {
