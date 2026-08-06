@@ -85,7 +85,7 @@ Equivalent acceptable phrasings: "Checkpoint pushed.", "Parked at <state>.", "St
 
 ## The git-push reminder — partially obey, partially disobey
 
-After every `git push`, the pi extension at `pi/extensions/prism.ts:820` injects the canonical `GIT_PUSH_REMINDER_MESSAGE` as a steer:
+After the *first* `git push` in a session, the pi extension at `pi/extensions/prism.ts:1154` injects the canonical `GIT_PUSH_REMINDER_MESSAGE` as a steer. The reminder fires at most once per session (issue #2646) — later pushes in the same session do not trigger it again:
 
 > "You just ran git push. If this was in the context of an open PR, first load the `prism` skill via the skill tool so you have the full async review workflow context, then run `prism review <pr-number>` to kick off the parallel review. Wait for the review-complete prompt before merging."
 
@@ -94,7 +94,7 @@ This reminder fires unconditionally — it is not aware of WIP context. Handle i
 - **Partially obey**: treat the reminder as confirmation that the push registered. That is the only useful signal it carries while WIP is active.
 - **Disobey the review instruction**: do **not** load the `prism` skill in response to the reminder. Do **not** call `prism review <pr-number>`. Do **not** wait for any review-complete prompt — none is coming, because no review will be kicked off.
 
-If multiple pushes happen in a single session, ignore the reminder every time. Do not let repeated nudges erode the rule.
+The reminder arrives once, on the first push. Disobey the review instruction on that one delivery, same as above. A session that compacts or resumes does not receive a second delivery, so there is no repeated nudge to guard against.
 
 ---
 
@@ -114,4 +114,4 @@ When any of these fire:
 2. Resume **standard worker discipline** from `worker.md` — that means running `prism review <pr>` now, handling PASS/FAIL per the standard flow, and treating the PR as review-ready.
 3. Acknowledge the transition in your reply ("Exiting WIP. Marking PR #N ready and kicking off review.") so the user has confirmation the mode flipped.
 
-After that point, the default worker behaviour applies — the git-push reminder becomes a real instruction again, and the next push (or the explicit exit signal itself) is followed by a real `prism review` run.
+After that point, the default worker behaviour applies. The `prism review` run comes from the explicit exit-condition workflow above (step 2), not from a reminder redelivery — since the reminder fires at most once per session, it will not return on a later push if it already fired earlier in the session while WIP was active.
