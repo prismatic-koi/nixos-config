@@ -34,7 +34,7 @@ git show origin/<branch>:<path>  # read full files from the PR branch
 git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
-**Always read the full files** for any security-sensitive code — authentication, input handling, file operations, network code, cryptography. Partial diffs are not sufficient for security review.
+**Always read the full files being modified** — diffs alone are not enough. For security-sensitive code (authentication, input handling, file operations, network code, cryptography), complete file context shows initialization, cleanup, and error handling paths that partial diffs omit.
 
 **Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
