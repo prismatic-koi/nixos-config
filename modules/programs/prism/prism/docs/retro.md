@@ -12,9 +12,6 @@ Tracking issue: [#2529](https://github.com/prismatic-koi/nixos-config/issues/252
 
 A coordinator asked to review a morning of work has no usable path today.
 
-- `prism stats <session>` returns "token data requires host DB access" when
-  it runs inside a sandbox. Every coordinator runs sandboxed, so the token
-  view is unreachable from the one role that needs it most.
 - `prism stats --days N` can report "no events in the last N days" while
   `agent_events` holds well over 100,000 rows for that window.
 - The remaining path is raw SQL against `turn_end` payloads with a JSON
@@ -33,24 +30,31 @@ The tracking issue states some premises that this design corrects. Each
 correction is a finding, not an opinion — the file:line references let a
 reader verify each one directly.
 
-### 2.1 The sandbox failure is a rendering stub, not a data gap
+### 2.1 The sandbox failure was a rendering stub, not a data gap (fixed by #2582)
 
-`prism stats <session>` inside a sandbox does not fail because the data is
-unreachable. It fails because `renderIncarnationDetail` in
-`cmd/stats_render.go:141` prints one fixed line instead of rendering the
-token fields:
+`prism stats <session>` inside a sandbox used to fail not because the data
+was unreachable, but because `renderIncarnationDetail` in
+`cmd/stats_render.go` printed one fixed line instead of rendering the token
+fields:
 
 ```
 token data requires host DB access (use prism stats on host for full detail)
 ```
 
-The host API already serves the data this stub needs. `internal/sidecar/
+Issue #2582 (part 1/4 of this tracking issue) fixed this: both the
+host-direct and sandbox-proxy detail renderers now read token/cost data from
+the persisted-or-computed `spawn_outcome` row via `db.CompareRunOutcome`, so
+`prism stats <session>` renders identical Token Usage output inside and
+outside a sandbox. This section is kept as the finding that motivated the
+fix, and as the precedent for the pattern below.
+
+The host API already serves the data this stub needed. `internal/sidecar/
 host_api.go` exposes `/stats` (session-level and event-level views),
 `/db/query`, `/db/schema`, and `/db/tables`. Sandbox routing through this
 socket is an established pattern — `prism stats compare`, `prism stats
-abtest`, and `prism stats --abtest` already use it (issue #2098) to render
-byte-identical output on the host path and the sandbox path. `prism retro`
-must copy that pattern, not invent a new one.
+abtest`, `prism stats --abtest`, and now `prism stats <session>` itself, use
+it (issue #2098) to render byte-identical output on the host path and the
+sandbox path. `prism retro` must copy that pattern, not invent a new one.
 
 ### 2.2 Most of the data this design needs already exists
 
