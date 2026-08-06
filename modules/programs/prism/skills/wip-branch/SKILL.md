@@ -114,4 +114,4 @@ When any of these fire:
 2. Resume **standard worker discipline** from `worker.md` — that means running `prism review <pr>` now, handling PASS/FAIL per the standard flow, and treating the PR as review-ready.
 3. Acknowledge the transition in your reply ("Exiting WIP. Marking PR #N ready and kicking off review.") so the user has confirmation the mode flipped.
 
-After that point, the default worker behaviour applies — the git-push reminder becomes a real instruction again, and the next push (or the explicit exit signal itself) is followed by a real `prism review` run.
+After that point, the default worker behaviour applies. The `prism review` run comes from the explicit exit-condition workflow above (step 2), not from a reminder redelivery — since the reminder fires at most once per session, it will not return on a later push if it already fired earlier in the session while WIP was active.
