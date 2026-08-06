@@ -690,9 +690,11 @@ func batchableOpen(conn *sql.DB) bool {
 		// for a table that does not exist, so a genuinely fresh database will
 		// still take the batched path. An old-shaped database will hit one of
 		// the probes below and take the autocommit path.
-		// Set version high so the version-based checks below do not short-
-		// circuit before we reach the column probes.
-		version = currentSchemaVersion
+		// Set version to 11 so the v8 check does not trigger, and the column
+		// probes can run. Fresh databases have no old-shaped columns, so all
+		// probes return false and the function returns true (batched). Old
+		// databases with old columns trigger a probe's return false (autocommit).
+		version = 11
 	}
 
 	// v8→v9 rebuilds agent_status to attach the group_id foreign key. It acts
