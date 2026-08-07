@@ -11,6 +11,7 @@ package cmd
 // A comment listing the prose sites cannot catch that. This test can.
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestReviewHelp_StatesTheReleaseWindow(t *testing.T) {
 
 	// The constant rendered the way prose says it: "15 minutes".
 	mins := int(review.ReapGracePeriod / time.Minute)
-	want := itoaMinutes(mins) + " minutes"
+	want := strconv.Itoa(mins) + " minutes"
 	if !strings.Contains(long, want) {
 		t.Errorf("`prism review --help` does not state the release window %q.\n"+
 			"review.ReapGracePeriod is %s — update the cobra Long string in cmd/review.go to match.\n"+
@@ -61,20 +62,4 @@ func TestReviewHelp_PointsAtTheSurvivingReads(t *testing.T) {
 			t.Errorf("`prism review --help` does not mention %q — a reader must be told which reads survive the release", want)
 		}
 	}
-}
-
-// itoaMinutes renders a small positive int without importing strconv into this
-// file's narrow surface.
-func itoaMinutes(n int) string {
-	if n <= 0 {
-		return "0"
-	}
-	var buf [8]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(buf[i:])
 }

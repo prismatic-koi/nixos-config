@@ -594,10 +594,17 @@ func TestReap_HonoursGracePeriod(t *testing.T) {
 //   - modules/programs/prism/prism/docs/invariants/session-lifecycle.md
 //     ("Session kinds")
 //   - modules/programs/prism/prism/cmd/review.go — BOTH the file header and
-//     the cobra `Long` string that `prism review --help` prints. The Long
-//     string is covered mechanically by TestReviewHelp_StatesTheReleaseWindow
-//     in package cmd, because a list in a comment did not stop it going stale
-//     (round 1 of PR #2676).
+//     the cobra `Long` string that `prism review --help` prints.
+//   - modules/programs/prism/prism/internal/review/review.go (package doc)
+//   - modules/programs/prism/prism/internal/review/run.go (the Run doc
+//     comment and two inline comments inside Run)
+//
+// Do not rely on this list. It was tried on its own and it failed twice: the
+// cobra `Long` string went stale in round 1 of PR #2676, and the four
+// internal/review sites in round 2. Two mechanical guards now cover the sites
+// a list kept missing — TestReviewHelp_* in package cmd for the runtime help
+// text, and TestNoProseClaimsSessionsPersistUntilCleanup in this package for
+// Go source. The list is a pointer for the author, not the enforcement.
 func TestReapGracePeriod_MatchesDocumentedValue(t *testing.T) {
 	if review.ReapGracePeriod != 15*time.Minute {
 		t.Errorf("ReapGracePeriod = %s, want 15m — update the four prose sites listed on this test together with the constant",
@@ -989,6 +996,12 @@ func TestMonitorFunc_ReapsRoundAfterDelivery(t *testing.T) {
 		if err != nil || gi == nil {
 			t.Fatalf("GetGroup during wait: %v", err)
 		}
+		// delivered_at is the gate the reap predicate reads. If the wait were
+		// scheduled before that write, the sweep that follows it could never
+		// find a candidate.
+		if gi.DeliveredAt == nil {
+			t.Errorf("group %s has no delivered_at at the moment the wait starts — the reap is scheduled before the gate it depends on", groupID)
+		}
 		if len(probe.killed()) != 0 {
 			t.Errorf("tmux sessions %v were killed before the grace period elapsed", probe.killed())
 		}
@@ -1190,24 +1203,74 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 // contract requires: a reader that sees a closed row must also see the cause.
 // A cause written after ended_at leaves a window in which the row reads as
 // closed with nothing to explain it.
+//
+// The assertion runs INSIDE the closing write, which is the only point where
+// the ordering is falsifiable. An earlier version of this test asserted either
+// side of the sweep and passed with the two writes swapped — it pinned the end
+// state, not the order.
 func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	d := openTestDB(t)
+	installReapProbe(t)
 	parent := "nixos-config@reap-cause-order"
 	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
 	sess := sessions[0]
 
-	// The container hook is the last side effect before the DB writes, so it
-	// is the point at which the row must still be open and the cause must not
-	// yet exist. Assert the pre-state there, then re-assert after the sweep.
-	restore := review.ReapSideEffectsForTest(nil, nil, func(name, _ string) {
+	observed := false
+	t.Cleanup(review.ReapSetEndedForTest(func(handle *db.DB, name string) error {
+		if name == sess {
+			observed = true
+			// At the instant the row is about to close, the cause must
+			// already be on the trail...
+			causes, err := handle.SessionEndCauses([]string{name})
+			if err != nil {
+				t.Errorf("SessionEndCauses during close: %v", err)
+			} else if causes[name].Cause != db.ReapCauseAutoRelease {
+				t.Errorf("at the moment %q closes, Cause = %q, want %q — the cause must be recorded BEFORE ended_at is stamped",
+					name, causes[name].Cause, db.ReapCauseAutoRelease)
+			}
+			// ...and the row must not be closed yet.
+			if st := statusOf(t, handle, name); st.EndedAt != nil {
+				t.Errorf("%q was already closed when the closing write ran", name)
+			}
+		}
+		return handle.SetEnded(name)
+	}))
+
+	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+	if !observed {
+		t.Fatal("the closing write never ran for the seeded session — the assertion above never executed")
+	}
+	if st := statusOf(t, d, sess); st.EndedAt == nil {
+		t.Errorf("%q: ended_at is NULL, want the row closed", sess)
+	}
+}
+
+// TestReap_SkipsCauseWhenTheRowIsAlreadyClosed pins the ended_at guard on the
+// cause write. The candidate query filters on ended_at IS NULL at QUERY time;
+// a parent cleanup or a second concurrent sweep can close the row before this
+// sweep's write lands. SessionEndCauses returns the latest event, so an
+// unguarded write would overwrite a true parent_cleanup with a close this
+// sweep did not perform.
+func TestReap_SkipsCauseWhenTheRowIsAlreadyClosed(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@reap-cause-raced"
+	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
+	sess := sessions[0]
+
+	// Simulate the race: another path closes the row and records its own cause
+	// between the candidate query and this sweep's write. The container hook is
+	// the last step before the cause write, so it is the right injection point.
+	t.Cleanup(review.ReapSideEffectsForTest(nil, nil, func(name, _ string) {
 		if name != sess {
 			return
 		}
-		if st := statusOf(t, d, name); st.EndedAt != nil {
-			t.Errorf("%q was closed before its teardown ran", name)
+		d.RecordReapBestEffort(name, db.ReapCauseParentCleanup, "raced ahead of the release")
+		if err := d.SetEnded(name); err != nil {
+			t.Fatalf("SetEnded during simulated race: %v", err)
 		}
-	})
-	t.Cleanup(restore)
+	}))
 
 	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
@@ -1217,10 +1280,8 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SessionEndCauses: %v", err)
 	}
-	if causes[sess].Cause != db.ReapCauseAutoRelease {
-		t.Errorf("Cause = %q, want %q", causes[sess].Cause, db.ReapCauseAutoRelease)
-	}
-	if st := statusOf(t, d, sess); st.EndedAt == nil {
-		t.Errorf("%q: ended_at is NULL, want the row closed", sess)
+	if causes[sess].Cause != db.ReapCauseParentCleanup {
+		t.Errorf("Cause = %q, want %q — the release must not claim a close another path performed",
+			causes[sess].Cause, db.ReapCauseParentCleanup)
 	}
 }

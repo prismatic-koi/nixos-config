@@ -14,7 +14,12 @@
 //     <parent>~review-<N>-review-qa
 //     <parent>~review-<N>-review-context
 //   - Each session has its own port allocation, sidecar, and container.
-//   - Sessions persist until prism cleanup is invoked on the parent.
+//   - A round's sessions are released automatically 15 minutes after its
+//     review-complete prompt is delivered (reap.go, issue #2649): the tmux
+//     session and the harness port go back, and every DB row survives. A
+//     round is NOT held until prism cleanup of the parent — that was the
+//     contract before #2649, and holding it is what filled the concurrency
+//     cap.
 //   - No round-level multi-window session is created.
 //
 // The ~ separator in the session name is used by the dashboard for depth-2

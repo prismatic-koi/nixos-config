@@ -375,8 +375,8 @@ type ReapCandidate struct {
 //  1. `agent_status.ended_at IS NULL` — the row has not already been reaped,
 //     so the sweep is idempotent and does no repeat work.
 //  2. `agent_status.state IN (finished, error, deleted)` — the session itself
-//     is terminal. An `active`, `idle`, `busy`, `waiting`, `reviewing`, or
-//     `interrupted` row is never returned. `interrupted` is excluded
+//     is terminal. An `active`, `idle`, `waiting`, `compacting`, `reviewing`,
+//     `escalated`, or `interrupted` row is never returned. `interrupted` is excluded
 //     deliberately, for the same reason terminalStates excludes it: the user
 //     may still redirect an interrupted agent with `prism prompt`.
 //  3. `session_groups.delivered_at IS NOT NULL` — the round's review-complete

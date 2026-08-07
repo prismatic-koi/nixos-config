@@ -106,6 +106,10 @@ var (
 	reapKillTmuxSession = func(name string) { _ = tmux.KillSession(name) }
 	reapKillSidecar     = session.KillSidecar
 	reapRemoveContainer = removeReviewAgentContainer
+	// reapSetEnded is the closing write. It is a seam so a test can observe
+	// the DB state at the exact moment the row is about to close, which is the
+	// only place the record-before-close ordering is falsifiable.
+	reapSetEnded = (*db.DB).SetEnded
 )
 
 // reapContainerBudget bounds the per-agent container teardown. It matches the
@@ -189,18 +193,31 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	reapKillSidecar(c.SessionName)
 	reapRemoveContainer(c.SessionName, c.IsolationMode)
 
-	// Record why this row is about to close (#2613). Written BEFORE SetEnded,
+	// Record why this row is about to close (#2613). Written BEFORE the close,
 	// so a reader that sees a closed row also sees the cause. Best-effort: a
 	// lost diagnostic must never block the release.
 	//
-	// This path differs from the five #2613 causes in kind: they close a row
-	// that was still running, and this one closes a row that had already
+	// This path differs from the five other #2613 causes in kind: they close a
+	// row that was still running, and this one closes a row that had already
 	// stopped. The record matters anyway, because after #2649 this is the most
 	// common closer of review-agent rows, and without it a coordinator reading
 	// the DB is told that nothing recorded why.
-	d.RecordReapBestEffort(c.SessionName, db.ReapCauseAutoRelease,
-		fmt.Sprintf("round delivered at %s; released after the %s grace period",
-			time.UnixMilli(c.DeliveredAt).UTC().Format(time.RFC3339), ReapGracePeriod))
+	//
+	// Guarded on ended_at, the same guard cleanupAgentSession applies and the
+	// one the #2613 invariant states: a path that finds the row already closed
+	// records nothing, so it cannot claim a close it did not perform. The
+	// candidate query already filtered on ended_at IS NULL, but that was at
+	// query time — a parent cleanup or a second concurrent sweep can close the
+	// row before this write lands. SessionEndCauses returns the LATEST event,
+	// so an unguarded write here would overwrite a true parent_cleanup with a
+	// close this sweep did not perform.
+	if st, err := d.CurrentStatus(c.SessionName); err != nil {
+		proglog.Warnf("[prism reap] warning: status re-read for %q before recording cause: %v\n", c.SessionName, err)
+	} else if st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(c.SessionName, db.ReapCauseAutoRelease,
+			fmt.Sprintf("round delivered at %s; released after the %s grace period",
+				time.UnixMilli(c.DeliveredAt).UTC().Format(time.RFC3339), ReapGracePeriod))
+	}
 
 	// Release the harness port. A row whose port is already NULL is a
 	// no-op success; a missing row returns an error, which cannot happen
@@ -210,7 +227,7 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	}
 	// Stamp ended_at. This is the step that returns the concurrency slot:
 	// Isolator.Cap counts agent_status rows with ended_at IS NULL.
-	if err := d.SetEnded(c.SessionName); err != nil {
+	if err := reapSetEnded(d, c.SessionName); err != nil {
 		proglog.Warnf("[prism reap] warning: stamp ended_at for %q: %v\n", c.SessionName, err)
 	}
 	if err := d.PurgeBusMessages(c.SessionName); err != nil {
