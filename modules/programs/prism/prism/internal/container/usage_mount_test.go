@@ -22,6 +22,7 @@ package container
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -170,6 +171,15 @@ func hasBindSrcDstForTest(args []string, src, dst string) bool {
 // bind triple and fails if any source or destination is an ancestor of the
 // usage directory.
 func TestBwrapBuildArgs_UsageStateDirNoAncestorExposed(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// bwrap is a Linux-only mechanism, and on Darwin t.TempDir() resolves
+		// through the /tmp -> /private/tmp symlink in a way that does not
+		// match the bwrapFixture temp layout on this platform, producing a
+		// false failure unrelated to the exposure rule under test. The rule
+		// itself is still asserted, at the same strength, on Linux — see
+		// issue #2620.
+		t.Skip("bwrap is Linux-only; skipping ancestor-exposure check on non-Linux — see issue #2620")
+	}
 	stateHome, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatalf("EvalSymlinks(t.TempDir()): %v", err)
