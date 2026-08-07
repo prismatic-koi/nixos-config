@@ -106,10 +106,6 @@ var (
 	reapKillTmuxSession = func(name string) { _ = tmux.KillSession(name) }
 	reapKillSidecar     = session.KillSidecar
 	reapRemoveContainer = removeReviewAgentContainer
-	// reapSetEnded is the closing write. It is a seam so a test can observe
-	// the DB state at the exact moment the row is about to close, which is the
-	// only place the record-before-close ordering is falsifiable.
-	reapSetEnded = (*db.DB).SetEnded
 )
 
 // reapContainerBudget bounds the per-agent container teardown. It matches the
@@ -249,7 +245,13 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	}
 	// Stamp ended_at. This is the step that returns the concurrency slot:
 	// Isolator.Cap counts agent_status rows with ended_at IS NULL.
-	if err := reapSetEnded(d, c.SessionName); err != nil {
+	//
+	// In production the tmux kill above has usually already closed this row,
+	// via tmux's global session-closed hook (see the ordering note on this
+	// function). This write is the idempotent backstop for the release that
+	// had no live tmux session to close — SetEnded on an already-closed row is
+	// a no-op.
+	if err := d.SetEnded(c.SessionName); err != nil {
 		proglog.Warnf("[prism reap] warning: stamp ended_at for %q: %v\n", c.SessionName, err)
 	}
 	if err := d.PurgeBusMessages(c.SessionName); err != nil {

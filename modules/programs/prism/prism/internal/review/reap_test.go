@@ -71,12 +71,61 @@ func (p *reapProbe) killed() []string {
 }
 
 // installReapProbe stubs the three process-side effects for the duration of
-// the test and returns the recorder.
+// the test and returns the recorder. Its kill stub is a pure no-op: a test
+// that does not care about the tmux `session-closed` hook uses this and never
+// pays for the hook's DB writes. The tmux-kill fake is opt-in — see
+// installTmuxSessionClosedHookFake.
 func installReapProbe(t *testing.T) *reapProbe {
 	t.Helper()
 	p := &reapProbe{}
 	restore := review.ReapSideEffectsForTest(p.killTmux, p.killSidecar, p.removeContainer)
 	t.Cleanup(restore)
+	return p
+}
+
+// performTmuxSessionClosedHook reproduces the DB writes the real tmux
+// `session-closed` hook performs against the test database.
+//
+// Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
+// hook (`modules/programs/prism/tmux.nix`), which runs
+// `prism event tmux-session-end`, which calls `ReleasePort` then `SetEnded`
+// (`cmd/event.go`). This function is the verbatim shape of that handler. It
+// touches only the DB, so no real tmux binary and no running tmux server are
+// involved.
+//
+// This is the ONE side effect the reap suite otherwise never fires:
+// `reapKillTmuxSession` is stubbed to a no-op everywhere, which is precisely
+// why the suite could not see the ordering defect on PR #2676 while it was
+// live (#2680). The fake makes that side effect visible to `go test`.
+func performTmuxSessionClosedHook(t *testing.T, d *db.DB, name string) {
+	t.Helper()
+	if err := d.ReleasePort(name); err != nil {
+		t.Errorf("tmux session-closed hook fake: ReleasePort(%q): %v", name, err)
+	}
+	if err := d.SetEnded(name); err != nil {
+		t.Errorf("tmux session-closed hook fake: SetEnded(%q): %v", name, err)
+	}
+}
+
+// installTmuxSessionClosedHookFake stubs `reapKillTmuxSession` with an opt-in
+// fake that reproduces the real tmux `session-closed` hook
+// (performTmuxSessionClosedHook) for every session the reaper kills, and
+// records the kills on the returned probe. The sidecar and container side
+// effects stay no-ops.
+//
+// It is the fake the ordering tests opt into. A test that does not care about
+// the hook keeps installReapProbe, whose kill stub is a pure no-op — so the
+// fake never forces hook semantics on unrelated tests.
+func installTmuxSessionClosedHookFake(t *testing.T, d *db.DB) *reapProbe {
+	t.Helper()
+	p := &reapProbe{}
+	kill := func(name string) {
+		p.mu.Lock()
+		p.tmuxKilled = append(p.tmuxKilled, name)
+		p.mu.Unlock()
+		performTmuxSessionClosedHook(t, d, name)
+	}
+	t.Cleanup(review.ReapSideEffectsForTest(kill, nil, nil))
 	return p
 }
 
@@ -1202,51 +1251,65 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 
 // TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering the #2613
 // contract requires: a reader that sees a closed row must also see the cause.
-// A cause written after ended_at leaves a window in which the row reads as
-// closed with nothing to explain it.
+// A cause written after the row closes leaves a window in which the row reads
+// as closed with nothing to explain it.
 //
-// The assertion runs INSIDE the closing write, which is the only point where
-// the ordering is falsifiable. An earlier version of this test asserted either
-// side of the sweep and passed with the two writes swapped — it pinned the end
-// state, not the order.
+// The row closes for real when the tmux session dies: killing it fires tmux's
+// global `session-closed` hook, which stamps `ended_at` (see
+// performTmuxSessionClosedHook). This test therefore installs the tmux-kill
+// FAKE and asserts INSIDE the kill — the exact instant the row closes — that
+// the cause is already on the trail and the row is not yet closed. That is the
+// only point where the ordering is falsifiable, and it is falsifiable against
+// the REAL closer, not a stubbed final write.
 //
-// Scope: this test pins cause-before-`ended_at` ONLY. It fires no tmux hook,
-// so it cannot see the round-4 defect where the tmux kill closed the row first
-// — TestReap_CauseSurvivesTheTmuxSessionClosedHook covers that. The two catch
-// different mutations and neither supersedes the other.
+// Before #2680 this test used a no-op kill stub and observed the reaper's
+// final `SetEnded` seam. With a no-op kill the row never closed early, so
+// moving the cause record to after the kill changed nothing the test could
+// see: it passed with the ordering defect live and was vacuous with respect to
+// the property it names. Firing the fake removes that blind spot.
 func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	d := openTestDB(t)
-	installReapProbe(t)
 	parent := "nixos-config@reap-cause-order"
 	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
 	sess := sessions[0]
 
 	observed := false
-	t.Cleanup(review.ReapSetEndedForTest(func(handle *db.DB, name string) error {
-		if name == sess {
-			observed = true
-			// At the instant the row is about to close, the cause must
-			// already be on the trail...
-			causes, err := handle.SessionEndCauses([]string{name})
-			if err != nil {
-				t.Errorf("SessionEndCauses during close: %v", err)
-			} else if causes[name].Cause != db.ReapCauseAutoRelease {
-				t.Errorf("at the moment %q closes, Cause = %q, want %q — the cause must be recorded BEFORE ended_at is stamped",
-					name, causes[name].Cause, db.ReapCauseAutoRelease)
-			}
-			// ...and the row must not be closed yet.
-			if st := statusOf(t, handle, name); st.EndedAt != nil {
-				t.Errorf("%q was already closed when the closing write ran", name)
-			}
+	t.Cleanup(review.ReapSideEffectsForTest(func(name string) {
+		if name != sess {
+			return
 		}
-		return handle.SetEnded(name)
-	}))
+		observed = true
+		// The tmux kill is the instant the real session-closed hook closes
+		// the row. At this instant the cause must already be on the trail...
+		causes, err := d.SessionEndCauses([]string{name})
+		if err != nil {
+			t.Errorf("SessionEndCauses during close: %v", err)
+		} else if causes[name].Cause != db.ReapCauseAutoRelease {
+			t.Errorf("at the moment the tmux kill fires for %q, Cause = %q, want %q — the cause must be recorded BEFORE the kill closes the row",
+				name, causes[name].Cause, db.ReapCauseAutoRelease)
+		}
+		// ...and the row must not be closed yet.
+		if st := statusOf(t, d, name); st.EndedAt != nil {
+			t.Errorf("%q was already closed before the tmux kill fired", name)
+		}
+		// Now let the hook close the row, exactly as production does.
+		performTmuxSessionClosedHook(t, d, name)
+	}, nil, nil))
 
 	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
 	}
 	if !observed {
-		t.Fatal("the closing write never ran for the seeded session — the assertion above never executed")
+		t.Fatal("the tmux kill never ran for the seeded session — the assertion above never executed")
+	}
+	// End state: the row is closed (by the hook) and the cause survived.
+	causes, err := d.SessionEndCauses([]string{sess})
+	if err != nil {
+		t.Fatalf("SessionEndCauses: %v", err)
+	}
+	if causes[sess].Cause != db.ReapCauseAutoRelease {
+		t.Errorf("Cause = %q, want %q — the cause is lost when it is recorded after the tmux kill",
+			causes[sess].Cause, db.ReapCauseAutoRelease)
 	}
 	if st := statusOf(t, d, sess); st.EndedAt == nil {
 		t.Errorf("%q: ended_at is NULL, want the row closed", sess)
@@ -1254,8 +1317,8 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 }
 
 // TestReap_CauseSurvivesTheTmuxSessionClosedHook is the regression test for
-// the round-4 defect: `reapOne` killed the tmux session before it recorded the
-// `auto_release` cause.
+// the PR #2676 defect: `reapOne` killed the tmux session before it recorded
+// the `auto_release` cause.
 //
 // Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
 // hook (`modules/programs/prism/tmux.nix`), which runs
@@ -1265,35 +1328,22 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 // is lost — on most releases, because `reapOne` also killed the sidecar and
 // ran container teardown before reaching the write.
 //
-// The kill stub below does exactly what the hook does. No other test fires it:
-// `reapKillTmuxSession` is stubbed everywhere, which is precisely why the
-// suite could not see this defect while it was live.
+// This uses the opt-in tmux-kill fake (installTmuxSessionClosedHookFake).
+// Where TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering at the
+// instant of the close, this one pins the observable end state: after the
+// reap, the closed row still carries its cause.
 func TestReap_CauseSurvivesTheTmuxSessionClosedHook(t *testing.T) {
 	d := openTestDB(t)
+	probe := installTmuxSessionClosedHookFake(t, d)
 	parent := "nixos-config@reap-tmux-hook"
 	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
 	sess := sessions[0]
 
-	hookFired := false
-	t.Cleanup(review.ReapSideEffectsForTest(func(name string) {
-		if name != sess {
-			return
-		}
-		hookFired = true
-		// Verbatim shape of cmd/event.go's tmux-session-end handler.
-		if err := d.ReleasePort(name); err != nil {
-			t.Errorf("simulated session-closed hook: ReleasePort: %v", err)
-		}
-		if err := d.SetEnded(name); err != nil {
-			t.Errorf("simulated session-closed hook: SetEnded: %v", err)
-		}
-	}, nil, nil))
-
 	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
 	}
-	if !hookFired {
-		t.Fatal("the tmux kill never ran for the seeded session — the simulated hook never executed")
+	if len(probe.killed()) == 0 {
+		t.Fatal("the tmux kill never ran for the seeded session — the fake never executed")
 	}
 
 	causes, err := d.SessionEndCauses([]string{sess})
