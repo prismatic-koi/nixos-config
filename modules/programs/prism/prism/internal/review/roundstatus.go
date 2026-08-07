@@ -165,6 +165,33 @@ func (rs RoundStatus) CountsAsCycle() bool {
 	return rs.Complete()
 }
 
+// NonCountingLabel returns the short label naming why this round does not
+// count toward the 3-cycle limit, mirroring the header branch
+// buildDeliveryMessage selects for the same round (#2573). Returns "" for a
+// complete round (CountsAsCycle() true) — there is nothing to label.
+//
+// This is the single source of truth for the non-counting label text so a
+// historical consumer (`prism retro`'s review-cycle detail, issue #2584) and
+// the live delivery message cannot drift apart.
+func (rs RoundStatus) NonCountingLabel() string {
+	if rs.Complete() {
+		return ""
+	}
+	noStart := rs.MissingOfClass(NoVerdictNoStart)
+	stalled := rs.MissingOfClass(NoVerdictStalled)
+	switch {
+	case len(noStart) > 0 && len(noStart) == rs.Expected:
+		return "all agents failed to start (infrastructure failure)"
+	case len(stalled) > 0 && len(stalled) == rs.Expected:
+		return "all agents stalled mid-run (infrastructure failure)"
+	case !rs.HasInfrastructureFailure():
+		return "ran but produced no parseable verdict"
+	default:
+		return fmt.Sprintf("round incomplete: %d of %d review agents produced a verdict (%s)",
+			rs.Verdicts, rs.Expected, rs.ClassSummary())
+	}
+}
+
 // MissingOfClass returns the missing entries of one class, in spawn order.
 func (rs RoundStatus) MissingOfClass(c NoVerdictClass) []MissingVerdict {
 	var out []MissingVerdict

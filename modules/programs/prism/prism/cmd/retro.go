@@ -32,6 +32,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
 var retroCmd = &cobra.Command{
@@ -46,8 +47,15 @@ investigator; or one leg of an A/B pair. Each is one row in the trains table.
 With no arguments, reports the last 24 hours for the current repo. Use
 --since or --days to change the window, --repo to scope to another repo, and
 --json for the machine-readable form (snake_case keys, RFC 3339 timestamps,
-empty collections as []).`,
-	Args: cobra.NoArgs,
+empty collections as []).
+
+With a <train-session> argument, adds section 3 - per review cycle, per
+agent: cost, turn count, and verdict, plus a non-counting label for a round
+#2573 classifies as not counting toward the 3-cycle limit. Section 3 covers
+the train's full review history, independent of --since/--days, which still
+bound sections 1, 2, and 5. <train-session> resolves the same way prism
+checkin and prism stats resolve a session argument.`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: runRetro,
 }
 
@@ -73,11 +81,16 @@ func retroWindowStart(sinceStr string, days int) (int64, error) {
 	return time.Now().Add(-window).UnixMilli(), nil
 }
 
-func runRetro(cmd *cobra.Command, _ []string) error {
+func runRetro(cmd *cobra.Command, args []string) error {
 	sinceStr, _ := cmd.Flags().GetString("since")
 	days, _ := cmd.Flags().GetInt("days")
 	repoFilter, _ := cmd.Flags().GetString("repo")
 	jsonMode, _ := cmd.Flags().GetBool("json")
+
+	var trainArg string
+	if len(args) > 0 {
+		trainArg = args[0]
+	}
 
 	sinceMs, err := retroWindowStart(sinceStr, days)
 	if err != nil {
@@ -95,12 +108,22 @@ func runRetro(cmd *cobra.Command, _ []string) error {
 	// session reads the host DB, not the empty shadow DB (AC: no host-DB error
 	// inside a sandbox).
 	if apiURL := os.Getenv("PRISM_HOST_API"); apiURL != "" {
-		raw, perr := proxyRetro(apiURL, repoFilter, sinceMs)
+		raw, perr := proxyRetro(apiURL, repoFilter, sinceMs, trainArg)
 		if perr != nil {
 			return perr
 		}
 		if jsonMode {
 			return printJSON(raw)
+		}
+		if trainArg != "" {
+			wrapped := review.RetroReportWithCycles{RetroReport: &db.RetroReport{}}
+			if uerr := json.Unmarshal(raw, &wrapped); uerr != nil {
+				return fmt.Errorf("retro proxy: unmarshal response: %w", uerr)
+			}
+			renderRetro(wrapped.RetroReport)
+			fmt.Println()
+			renderRetroReviewCycles(wrapped.Train, wrapped.ReviewCycles)
+			return nil
 		}
 		var report db.RetroReport
 		if uerr := json.Unmarshal(raw, &report); uerr != nil {
@@ -122,8 +145,38 @@ func runRetro(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("retro: %w", err)
 	}
 
+	if trainArg == "" {
+		if jsonMode {
+			data, merr := json.Marshal(report)
+			if merr != nil {
+				return fmt.Errorf("retro --json: marshal report: %w", merr)
+			}
+			return printJSON(data)
+		}
+		renderRetro(report)
+		return nil
+	}
+
+	// Section 3: resolve the train argument the same way prism checkin and
+	// prism stats resolve a session argument (docs/retro.md section 4).
+	sess, rerr := d.ResolveSessionArg(trainArg, false)
+	if rerr != nil {
+		return fmt.Errorf("retro: %w", rerr)
+	}
+	// Section 3 covers the train's full review history, independent of
+	// --since/--days, which still bound sections 1, 2, and 5.
+	cycles, cerr := review.AssembleReviewCycles(d, sess.SessionName)
+	if cerr != nil {
+		return fmt.Errorf("retro: %w", cerr)
+	}
+
 	if jsonMode {
-		data, merr := json.Marshal(report)
+		wrapped := review.RetroReportWithCycles{
+			RetroReport:  report,
+			Train:        sess.SessionName,
+			ReviewCycles: cycles,
+		}
+		data, merr := json.Marshal(wrapped)
 		if merr != nil {
 			return fmt.Errorf("retro --json: marshal report: %w", merr)
 		}
@@ -131,5 +184,7 @@ func runRetro(cmd *cobra.Command, _ []string) error {
 	}
 
 	renderRetro(report)
+	fmt.Println()
+	renderRetroReviewCycles(sess.SessionName, cycles)
 	return nil
 }

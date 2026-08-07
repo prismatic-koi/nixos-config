@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // TestFormatTokensGrouped covers the AC: token counts render as plain integers
@@ -80,5 +81,49 @@ func TestRenderRetro_WasteUnavailable(t *testing.T) {
 	out := captureStdout(t, func() { renderRetro(r) })
 	if !strings.Contains(out, "unavailable") {
 		t.Errorf("waste section should render 'unavailable'; got:\n%s", out)
+	}
+}
+
+// TestRenderRetroReviewCycles_NoReviewCycles verifies the edge-case AC: a
+// train with no review cycles states that plainly rather than printing an
+// empty table.
+func TestRenderRetroReviewCycles_NoReviewCycles(t *testing.T) {
+	out := captureStdout(t, func() { renderRetroReviewCycles("retrorepo@solo-worker", []review.ReviewCycle{}) })
+	if !strings.Contains(out, "no review cycles ran") {
+		t.Errorf("expected 'no review cycles ran' message; got:\n%s", out)
+	}
+	if strings.Contains(out, "AGENT") {
+		t.Errorf("expected no agent table for a train with no review cycles; got:\n%s", out)
+	}
+}
+
+// TestRenderRetroReviewCycles_NonCountingRoundIsLabelled verifies a round
+// #2573 classifies as non-counting is labelled as such in the output, and
+// that a missing verdict renders distinctly from PASS/FAIL.
+func TestRenderRetroReviewCycles_NonCountingRoundIsLabelled(t *testing.T) {
+	cycles := []review.ReviewCycle{
+		{
+			Round:            2,
+			PRNumber:         "99",
+			CountsAsCycle:    false,
+			NonCountingLabel: "all agents failed to start (infrastructure failure)",
+			Agents: []review.ReviewCycleAgent{
+				{Agent: "review-goal", Session: "retrorepo@w~review-2-review-goal", NoVerdictClass: "failed to start"},
+				{Agent: "review-code", Session: "retrorepo@w~review-2-review-code", Verdict: "PASS", DataRecorded: true, Turns: 3, CostUSD: 1.2},
+			},
+		},
+	}
+	out := captureStdout(t, func() { renderRetroReviewCycles("retrorepo@w", cycles) })
+	if !strings.Contains(out, "NON-COUNTING") {
+		t.Errorf("expected a non-counting label; got:\n%s", out)
+	}
+	if !strings.Contains(out, "all agents failed to start (infrastructure failure)") {
+		t.Errorf("expected the #2573 non-counting label text; got:\n%s", out)
+	}
+	if !strings.Contains(out, "PASS") {
+		t.Errorf("expected the PASS verdict; got:\n%s", out)
+	}
+	if !strings.Contains(out, "no verdict") {
+		t.Errorf("expected a distinct 'no verdict' rendering for the missing agent; got:\n%s", out)
 	}
 }

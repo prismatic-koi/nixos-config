@@ -23,6 +23,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/feedback"
 	"github.com/prismatic-koi/prism/internal/harness"
 	investigatepkg "github.com/prismatic-koi/prism/internal/investigate"
+	"github.com/prismatic-koi/prism/internal/review"
 	prismsession "github.com/prismatic-koi/prism/internal/session"
 	"github.com/prismatic-koi/prism/internal/usage"
 )
@@ -573,16 +574,23 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Query params:
 	//   repo  — repo scope (optional; empty = all repos)
 	//   since — window cut-off as a Unix-millisecond timestamp string (optional)
+	//   train — a train session name (optional; issue #2584). When present, the
+	//           response also carries section 3, the review-cycle detail for
+	//           that train's full history (independent of since/repo, which
+	//           still bound sections 1, 2, and 5).
 	//
 	// Response: the db.RetroReport JSON, assembled by db.AssembleRetro — the
 	// same assembly the direct CLI path calls, so the CLI renders byte-identical
-	// output on the host and sandbox paths.
+	// output on the host and sandbox paths. When train is given, the response is
+	// review.RetroReportWithCycles instead — db.RetroReport's fields plus
+	// "train" and "review_cycles".
 	mux.HandleFunc("/retro", func(w http.ResponseWriter, r *http.Request) {
 		if !requireGet(w, r) {
 			return
 		}
 		q := r.URL.Query()
 		repoFilter := q.Get("repo")
+		trainArg := q.Get("train")
 		var sinceMs int64
 		if sinceStr := q.Get("since"); sinceStr != "" {
 			if ms, parseErr := strconv.ParseInt(sinceStr, 10, 64); parseErr == nil {
@@ -594,7 +602,25 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, report)
+		if trainArg == "" {
+			writeJSON(w, http.StatusOK, report)
+			return
+		}
+		sess, resolveErr := s.cfg.DB.ResolveSessionArg(trainArg, false)
+		if resolveErr != nil {
+			writeError(w, http.StatusBadRequest, "retro: "+resolveErr.Error())
+			return
+		}
+		cycles, cErr := review.AssembleReviewCycles(s.cfg.DB, sess.SessionName)
+		if cErr != nil {
+			writeError(w, http.StatusInternalServerError, "db error: "+cErr.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, review.RetroReportWithCycles{
+			RetroReport:  report,
+			Train:        sess.SessionName,
+			ReviewCycles: cycles,
+		})
 	})
 
 	// GET /list-sessions
