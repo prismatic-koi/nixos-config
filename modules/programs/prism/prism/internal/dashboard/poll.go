@@ -113,11 +113,13 @@ func FetchGitHubStats() tea.Msg {
 	// GitHub viewer, which is meaningless (and can shell gh against a repo
 	// it cannot resolve) when the current directory's origin is gitlab.com.
 	// Skip cleanly with a log line rather than surfacing a false GitHub
-	// stat or an error. Err is left false so the UI just keeps the prior
-	// count rather than rendering an error state.
+	// stat. Err:true reuses the existing "fetch failed, keep showing the
+	// previous value" contract (see GithubStatsMsg) — both dashboard
+	// consumers only overwrite GhOpenPRs when Err is false, so this leaves
+	// the prior count in place rather than resetting it to a false 0.
 	if forge.IsGitLabDir("") {
 		log.Printf("[dashboard] skipping GitHub stats poll: current directory's origin is a gitlab.com remote (#2669)")
-		return GithubStatsMsg{}
+		return GithubStatsMsg{Err: true}
 	}
 
 	const query = `{ viewer { pullRequests(states: OPEN, first: 1) { totalCount } } }`
