@@ -20,7 +20,21 @@ package integration_test
 //     and under the production profile a create→read→remove round-trip of a
 //     uniquely-named file succeeds inside each one.
 //
-//  2. Negative (whole-block strip, per the #2243 lesson): removing the
+//  2. Positive, execution: a binary placed in GOCACHE RUNS under the
+//     production profile. This is the half that actually tracks AC-1 of
+//     #2621 ("a Darwin worker can run `go build ./...` and `go test ./...`").
+//     A write round-trip cannot distinguish "the cache dirs are writable"
+//     from "the documented commands work": the build cache stores linked
+//     executables and cmd/go can serve a test binary straight out of it on a
+//     warm build, so a profile that is writable but not
+//     executable-mappable passes a write test and still fails the second
+//     `go test` run.
+//
+//  3. Negative, execution: the same binary placed in GOMODCACHE does NOT
+//     run. The module cache holds source; withholding file-map-executable
+//     there is deliberate, and this pins it.
+//
+//  4. Negative (whole-block strip, per the #2243 lesson): removing the
 //     ENTIRE section-5k allow block makes the same writes fail — proving the
 //     block is load-bearing for both paths. Stripping only one
 //     (subpath ...) line would leave the other granted and, in the
@@ -60,11 +74,15 @@ func goCacheDirs5k(t *testing.T) map[string]string {
 // goCacheGrantBlock5k returns the exact section-5k allow block emitted by
 // generateProfile, for the presence assertion in the positive test and the
 // whole-block strip in the negative.
+// The two clauses are separate because the permission sets differ: GOCACHE
+// carries file-map-executable and GOMODCACHE deliberately does not.
 func goCacheGrantBlock5k(t *testing.T) string {
 	t.Helper()
 	home := realUserHome(t)
 	return "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
-		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "go", "pkg", "mod")) + ")\n" +
+		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "go", "pkg", "mod")) + "))\n" +
+		"\n" +
+		"(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n" +
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "Library", "Caches", "go-build")) + "))\n"
 }
 
@@ -174,4 +192,147 @@ func TestSandboxExecGoCache_DeniedWithoutGrantBlock(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSandboxExecGoCache_BuildCacheExecutable is the AC-tracking positive
+// test for issue #2621: a binary that lives in GOCACHE can be EXECUTED under
+// the production profile, not merely written and read.
+//
+// This is the half a write round-trip cannot cover. The Go build cache stores
+// linked executables — `go build ./...` caches the built binary, and cmd/go
+// can serve a test binary straight out of the cache on a warm build. In a
+// (version 3) profile file-read* does not imply file-map-executable, so a
+// grant that is read-write but not executable-mappable passes a write probe
+// and still fails the second `go test` run: the cold run links into $WORK
+// under the section-3b TMPDIR grant and succeeds, the warm run maps the cache
+// entry and gets EPERM. That is AC-1 failing in the same shape as #2621.
+//
+// The probe copies the Nix-built bash into the cache dir and runs it. Nix
+// binaries are ad-hoc signed and are the sanctioned test target per
+// docs/sandbox-exec-testing.md (Apple-signed binaries SIGABRT under a
+// deny-default profile — see #1190).
+func TestSandboxExecGoCache_BuildCacheExecutable(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	buildCache := goCacheDirs5k(t)["gocache"]
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	planted := plantExecutableForTest(t, nixBash, buildCache, ".prism-2621-gocache-exec")
+
+	const sentinel = "prism-2621-gocache-exec-ok"
+	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
+		"/usr/bin/env", "HOME="+realUserHome(t), planted, "-c", "printf '%s' "+shQuote(sentinel))
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Fatalf("executing a binary from GOCACHE (%s) failed under the production profile — "+
+			"a warm-cache `go test` will fail the same way (issue #2621 AC-1).\n"+
+			"Exit: %v\nOutput: %s\nProfile: %s", buildCache, runErr, string(out), testProfilePath)
+	}
+	if !strings.Contains(string(out), sentinel) {
+		t.Errorf("binary in GOCACHE ran but did not emit the sentinel.\nGot: %s", string(out))
+	}
+}
+
+// TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock is the paired
+// negative for the exec probe: with the section-5k block stripped, the same
+// binary does not run.
+func TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	buildCache := goCacheDirs5k(t)["gocache"]
+	if _, err := os.Stat(buildCache); err != nil {
+		t.Skipf("%s does not exist on this host — nothing to probe: %v", buildCache, err)
+	}
+
+	m := newProfileManagerWithBareRoot(t)
+	block := goCacheGrantBlock5k(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		if !strings.Contains(p, block) {
+			t.Fatalf("profile does not contain the section-5k block to strip:\n%s\nProfile:\n%s", block, p)
+		}
+		return strings.Replace(p, block, "", 1)
+	})
+
+	planted := plantExecutableForTest(t, nixBash, buildCache, ".prism-2621-gocache-exec-denied")
+
+	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
+		"/usr/bin/env", "HOME="+realUserHome(t), planted, "-c", "printf denied")
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Errorf("a binary in %s executed WITHOUT the section-5k block.\n"+
+			"The 5k grant is not the load-bearing rule for execution — investigate.\n"+
+			"Output: %s\nMutated profile: %s", buildCache, string(out), mutatedPath)
+	} else {
+		t.Logf("ka pai — exec from %s correctly denied without the 5k block (exit: %v)", buildCache, runErr)
+	}
+}
+
+// TestSandboxExecGoCache_ModuleCacheExecDenied is the security-side negative
+// that pins the deliberate asymmetry in the section-5k grant (issue #2621):
+// GOCACHE carries file-map-executable, GOMODCACHE does not.
+//
+// The module cache holds module SOURCE. Nothing in the documented gate execs
+// out of it, so it stays non-executable under the production profile even
+// though it is read-write. This test is what stops a future edit from
+// levelling the two grants "for symmetry" and silently handing a sandboxed
+// process an executable staging area among the dependency sources.
+func TestSandboxExecGoCache_ModuleCacheExecDenied(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
+
+	modCache := goCacheDirs5k(t)["gomodcache"]
+
+	m := newProfileManagerWithBareRoot(t)
+	prepared, _ := preparePositiveProfile(t, m)
+	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
+
+	planted := plantExecutableForTest(t, nixBash, modCache, ".prism-2621-gomodcache-exec")
+
+	cmd := exec.Command(sandboxExecPath, "-f", testProfilePath,
+		"/usr/bin/env", "HOME="+realUserHome(t), planted, "-c", "printf executed")
+	out, runErr := cmd.CombinedOutput()
+	if runErr == nil {
+		t.Errorf("a binary in the module cache %s EXECUTED under the production profile.\n"+
+			"GOMODCACHE holds source and must not be executable-mappable — "+
+			"check whether file-map-executable leaked into its grant.\n"+
+			"Output: %s\nProfile: %s", modCache, string(out), testProfilePath)
+	} else {
+		t.Logf("ka pai — exec from the module cache %s correctly denied (exit: %v)", modCache, runErr)
+	}
+}
+
+// plantExecutableForTest copies src to <dir>/<name>, marks it executable, and
+// registers a cleanup. Returns the planted path.
+//
+// Copying rather than symlinking is deliberate: SBPL path filters evaluate the
+// RESOLVED target for open-class operations, so a symlink into /nix/store
+// would be judged against the section-2 /nix grant and the probe would prove
+// nothing about the directory under test.
+func plantExecutableForTest(t *testing.T, src, dir, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skipf("cannot read %s to plant a test binary: %v", src, err)
+	}
+	dst := filepath.Join(dir, name)
+	t.Cleanup(func() { _ = os.Remove(dst) })
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Skipf("cannot plant a test binary at %s: %v", dst, err)
+	}
+	return dst
 }

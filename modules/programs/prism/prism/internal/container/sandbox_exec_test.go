@@ -1854,11 +1854,63 @@ func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@go-cache"})
 	profile := generateProfile(m)
 
-	wantBlock := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
-		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "go", "pkg", "mod")) + ")\n" +
+	// One clause per directory: the two do not carry the same operations.
+	// GOMODCACHE holds module source and must NOT be executable; GOCACHE
+	// stores linked binaries and must be.
+	wantModCache := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "go", "pkg", "mod")) + "))\n"
+	if !strings.Contains(profile, wantModCache) {
+		t.Errorf("profile missing the section-5k GOMODCACHE grant:\n%s\nfull profile:\n%s", wantModCache, profile)
+	}
+
+	wantBuildCache := "(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n" +
 		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "Library", "Caches", "go-build")) + "))\n"
-	if !strings.Contains(profile, wantBlock) {
-		t.Errorf("profile missing the section-5k Go cache RW grant block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	if !strings.Contains(profile, wantBuildCache) {
+		t.Errorf("profile missing the section-5k GOCACHE grant (with file-map-executable):\n%s\nfull profile:\n%s", wantBuildCache, profile)
+	}
+}
+
+// TestGenerateProfile_GoCacheExecutabilityIsAsymmetric pins the deliberate
+// split in the section-5k grant (issue #2621).
+//
+// GOCACHE carries file-map-executable because the build cache stores linked
+// executables and cmd/go can serve a test binary straight out of it on a warm
+// build; in a (version 3) profile file-read* does not imply
+// file-map-executable, so without the flag a warm-cache run can fail EPERM
+// where the cold run that linked into $WORK succeeded.
+//
+// GOMODCACHE must NOT carry it: the module cache holds source, nothing execs
+// out of it, and an executable-mappable module cache would let a sandboxed
+// process run code it planted among the dependency sources.
+func TestGenerateProfile_GoCacheExecutabilityIsAsymmetric(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-exec"})
+	profile := generateProfile(m)
+
+	modCache := filepath.Join(fakeHome, "go", "pkg", "mod")
+	buildCache := filepath.Join(fakeHome, "Library", "Caches", "go-build")
+
+	// clauseFor returns the (allow ...) clause containing the given subpath.
+	clauseFor := func(path string) string {
+		rule := "(subpath " + quoteSBPL(path) + ")"
+		at := strings.Index(profile, rule)
+		if at < 0 {
+			t.Fatalf("profile has no rule for %q.\nfull profile:\n%s", path, profile)
+		}
+		start := strings.LastIndex(profile[:at], "(allow ")
+		if start < 0 {
+			t.Fatalf("rule for %q is not inside an (allow ...) clause.\nfull profile:\n%s", path, profile)
+		}
+		return profile[start : at+len(rule)]
+	}
+
+	if clause := clauseFor(buildCache); !strings.Contains(clause, "file-map-executable") {
+		t.Errorf("GOCACHE clause lacks file-map-executable — a warm-cache `go test` can fail EPERM;\nclause: %q", clause)
+	}
+	if clause := clauseFor(modCache); strings.Contains(clause, "file-map-executable") {
+		t.Errorf("GOMODCACHE clause carries file-map-executable — the module cache holds source and must not be executable;\nclause: %q", clause)
 	}
 }
 
@@ -1908,8 +1960,8 @@ func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
 	// Each granted leaf appears exactly once: a second occurrence would mean
 	// the path leaked into another clause.
 	for _, dir := range goCacheDirs(fakeHome) {
-		if got := strings.Count(profile, quoteSBPL(dir)); got != 1 {
-			t.Errorf("Go cache dir %s must appear exactly once in the profile; found %d occurrences.\nfull profile:\n%s", dir, got, profile)
+		if got := strings.Count(profile, quoteSBPL(dir.path)); got != 1 {
+			t.Errorf("Go cache dir %s must appear exactly once in the profile; found %d occurrences.\nfull profile:\n%s", dir.path, got, profile)
 		}
 	}
 }
@@ -1924,16 +1976,20 @@ func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
 // changes those defaults, this test is the tripwire.
 func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
 	got := goCacheDirs("/Users/example")
-	want := []string{
-		"/Users/example/go/pkg/mod",
-		"/Users/example/Library/Caches/go-build",
+	want := []goCacheDir{
+		{path: "/Users/example/go/pkg/mod", mapExecutable: false},
+		{path: "/Users/example/Library/Caches/go-build", mapExecutable: true},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("goCacheDirs returned %d entries (%v); want %d (%v)", len(got), got, len(want), want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("goCacheDirs[%d] = %q; want %q", i, got[i], want[i])
+		if got[i].path != want[i].path {
+			t.Errorf("goCacheDirs[%d].path = %q; want %q", i, got[i].path, want[i].path)
+		}
+		if got[i].mapExecutable != want[i].mapExecutable {
+			t.Errorf("goCacheDirs[%d].mapExecutable = %v; want %v (%s)",
+				i, got[i].mapExecutable, want[i].mapExecutable, want[i].path)
 		}
 	}
 
@@ -1978,13 +2034,13 @@ func TestEnsureGoCacheDirs_CreatesBothDirs(t *testing.T) {
 	ensureGoCacheDirs()
 
 	for _, dir := range goCacheDirs(fakeHome) {
-		info, err := os.Stat(dir)
+		info, err := os.Stat(dir.path)
 		if err != nil {
-			t.Errorf("ensureGoCacheDirs did not create %s: %v", dir, err)
+			t.Errorf("ensureGoCacheDirs did not create %s: %v", dir.path, err)
 			continue
 		}
 		if !info.IsDir() {
-			t.Errorf("%s exists but is not a directory", dir)
+			t.Errorf("%s exists but is not a directory", dir.path)
 		}
 	}
 }

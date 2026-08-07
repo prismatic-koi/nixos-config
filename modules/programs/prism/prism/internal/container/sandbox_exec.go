@@ -91,6 +91,41 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 	return nil
 }
 
+// goCacheDir describes one Go cache directory the sandbox grants read-write,
+// together with whether the sandboxed process must also be able to map code
+// out of it (issue #2621).
+type goCacheDir struct {
+	// path is the absolute host path of the cache directory.
+	path string
+
+	// mapExecutable adds file-map-executable to the grant.
+	//
+	// True for GOCACHE only. The build cache stores linked executables, not
+	// just object files — `go build ./...` caches the built binary, and
+	// cmd/go can serve a test binary straight out of the cache on a warm
+	// build (Action.BuiltTarget resolves to the cache entry on a useCache
+	// hit). In a (version 3) profile file-read* does NOT imply
+	// file-map-executable — sections 2, 3, and 3b each add it explicitly for
+	// exactly this reason — so without it a warm-cache run can fail EPERM at
+	// the point the kernel maps the image, while the cold run that linked
+	// into $WORK (under the section-3b TMPDIR grant) succeeded.
+	//
+	// False for GOMODCACHE. The module cache holds module SOURCE. Nothing
+	// execs out of it, so it stays non-executable, and
+	// TestSandboxExecGoCache_ModuleCacheExecDenied pins that.
+	//
+	// The marginal security cost of the GOCACHE flag is close to nil, and
+	// specifically it does NOT widen the host-poisoning surface: a sandboxed
+	// process can already write these files (file-write*, above), and
+	// file-map-executable governs only what the SANDBOXED process may map —
+	// a later host build is not sandboxed and is unaffected either way. Nor
+	// does it grant the agent a new capability class: sections 3 and 3b
+	// already pair file-write* with file-map-executable on /tmp and the
+	// per-user TMPDIR, so an agent that wants to run code it wrote itself
+	// can already do so.
+	mapExecutable bool
+}
+
 // goCacheDirs returns the Go cache directories the sandbox grants read-write
 // (section 5k of generateProfile, issue #2621), derived from the given home
 // directory. It returns nil when home is empty.
@@ -109,13 +144,13 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 // This is the single source of truth for the pair: generateProfile grants
 // these paths and ensureGoCacheDirs creates them, so the grant and the
 // directory cannot drift apart.
-func goCacheDirs(home string) []string {
+func goCacheDirs(home string) []goCacheDir {
 	if home == "" {
 		return nil
 	}
-	return []string{
-		filepath.Join(home, "go", "pkg", "mod"),
-		filepath.Join(home, "Library", "Caches", "go-build"),
+	return []goCacheDir{
+		{path: filepath.Join(home, "go", "pkg", "mod")},
+		{path: filepath.Join(home, "Library", "Caches", "go-build"), mapExecutable: true},
 	}
 }
 
@@ -143,8 +178,8 @@ func ensureGoCacheDirs() {
 		home = os.Getenv("HOME")
 	}
 	for _, dir := range goCacheDirs(home) {
-		if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
-			log.Printf("container: sandbox-exec: create go cache dir %s: %v", dir, mkErr)
+		if mkErr := os.MkdirAll(dir.path, 0o755); mkErr != nil {
+			log.Printf("container: sandbox-exec: create go cache dir %s: %v", dir.path, mkErr)
 		}
 	}
 }
@@ -743,6 +778,10 @@ func generateProfile(m *Manager) string {
 	// its cache/lock file under GOMODCACHE, and build/test outputs under
 	// GOCACHE. A read-only grant does not make the documented command work.
 	//
+	// GOCACHE additionally carries file-map-executable; GOMODCACHE does not.
+	// See the goCacheDir.mapExecutable godoc for why the asymmetry is
+	// deliberate and why the executable flag costs almost nothing here.
+	//
 	// Accepted risk, stated plainly: these are shared, cross-session,
 	// host-visible caches, so a compromised agent could mutate an extracted
 	// module or a build-cache entry that a later HOST build consumes (go
@@ -763,12 +802,19 @@ func generateProfile(m *Manager) string {
 	// as the 5d/5e/5f/5j grants). ensureGoCacheDirs creates them host-side at
 	// Prepare time, because a grant on a non-existent path is a no-op the
 	// sandboxed process cannot repair itself.
-	if dirs := goCacheDirs(home); len(dirs) > 0 {
-		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata")
-		for _, dir := range dirs {
-			sb.WriteString("\n  (subpath " + quoteSBPL(dir) + ")")
+	//
+	// One clause per directory, because the two do not carry the same
+	// operations: GOCACHE also needs file-map-executable (see the
+	// goCacheDir.mapExecutable godoc). Emitting them separately keeps each
+	// directory's exact permission set auditable on its own line rather than
+	// hiding an asymmetry inside a shared clause.
+	for _, dir := range goCacheDirs(home) {
+		ops := "file-read* file-write* file-test-existence file-read-metadata"
+		if dir.mapExecutable {
+			ops += " file-map-executable"
 		}
-		sb.WriteString(")\n")
+		sb.WriteString("(allow " + ops + "\n")
+		sb.WriteString("  (subpath " + quoteSBPL(dir.path) + "))\n")
 		sb.WriteString("\n")
 	}
 
