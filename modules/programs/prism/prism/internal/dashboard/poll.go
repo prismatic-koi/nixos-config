@@ -14,6 +14,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/forge"
 )
 
 // FetchSessionsFromDB queries agent_status for all active sessions. Used by
@@ -108,6 +109,17 @@ func attachReviewLastMessages(d *db.DB, sessions []AgentSession) {
 // FetchGitHubStats calls gh api via GraphQL to get the viewer's open PR count.
 // Runs as a tea.Cmd so it never blocks the render loop.
 func FetchGitHubStats() tea.Msg {
+	// GitLab guardrail (#2669): this poll queries the gh-authenticated
+	// GitHub viewer, which is meaningless (and can shell gh against a repo
+	// it cannot resolve) when the current directory's origin is gitlab.com.
+	// Skip cleanly with a log line rather than surfacing a false GitHub
+	// stat or an error. Err is left false so the UI just keeps the prior
+	// count rather than rendering an error state.
+	if forge.IsGitLabDir("") {
+		log.Printf("[dashboard] skipping GitHub stats poll: current directory's origin is a gitlab.com remote (#2669)")
+		return GithubStatsMsg{}
+	}
+
 	const query = `{ viewer { pullRequests(states: OPEN, first: 1) { totalCount } } }`
 	out, err := exec.Command("gh", "api", "graphql", "-f", "query="+query).Output()
 	if err != nil {

@@ -41,6 +41,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/branchprotect"
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/forge"
 	"github.com/prismatic-koi/prism/internal/harness"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
 )
@@ -147,6 +148,15 @@ func resolveRepo(database *db.DB, sessionName string) string {
 	worktree := strings.TrimSpace(status.Worktree)
 	if worktree == "" {
 		log.Printf("[mergequeue] cannot resolve repo for session %q: agent_status.worktree is empty — watcher will not start", sessionName)
+		return ""
+	}
+
+	// GitLab guardrail (#2669): the merge queue is GitHub-only. Detect a
+	// gitlab.com origin remote and skip cleanly — no repo resolves, so Run()
+	// logs once and returns without ever calling gh against a repo it cannot
+	// resolve. This is a silent skip, not an error: no notification is sent.
+	if forge.IsGitLabDir(worktree) {
+		log.Printf("[mergequeue] skipping watcher for session %q: origin is a gitlab.com remote — the merge queue watcher does not support GitLab (#2669)", sessionName)
 		return ""
 	}
 
