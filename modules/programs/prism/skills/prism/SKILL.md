@@ -1008,9 +1008,43 @@ and exits 0.
 identical output inside and outside a sandbox — never the empty shadow
 database.
 
-> Per-train review-cycle detail and fixed-overhead accounting are separate,
-> later parts of the `prism retro` work (tracking issue #2529) and are not in
-> this command yet.
+### Per-train review-cycle detail: `prism retro <train-session>`
+
+Pass a train's session name as a positional argument to add section 3 — the
+per-review-cycle, per-agent breakdown:
+
+```bash
+prism retro <train-session>            # human-readable
+prism retro <train-session> --json     # same data, machine-readable
+```
+
+`<train-session>` resolves the same way `prism checkin` and `prism stats`
+resolve a session argument. Section 3 covers the train's **full review
+history**, independent of `--since` / `--days` — those flags still bound
+sections 1, 2, and 5 only. A train with no review cycles at all (no
+`session_groups` rows) states that plainly instead of printing an empty
+table.
+
+For each review cycle (grouped by the native `session_groups.round` column,
+never a session-name parse), the output reports every review agent's cost,
+turn count, and verdict (`PASS` / `FAIL` / no verdict, with the reason).
+A round that issue #2573's classifier marks as **not** counting toward the
+worker's 3-cycle limit (a no-start, a mid-run stall, a session reaped
+mid-round, or a ran-but-no-parseable-verdict round) is labelled
+`NON-COUNTING` with the same reason text #2573's live review-complete
+message would have used. An agent with no verdict never renders as a silent
+pass, and a round with no review data recorded at all (`agent_status` never
+got a row) renders distinctly from a round whose agents ran and recorded a
+genuine `$0.00` cost.
+
+The data comes from `agent_events` and `agent_status` directly — not from
+`spawn_outcome` (review-agent sessions rarely have one) and not from the
+live `db.GroupResults` (which drops any row with `ended_at` set, i.e. every
+historical review row). See `docs/retro.md` in the prism source tree for the
+full rationale.
+
+Fixed-overhead accounting (the other later part of tracking issue #2529) was
+closed as not-planned (#2585) and is not part of this command.
 
 ## Checking in on a running session
 
