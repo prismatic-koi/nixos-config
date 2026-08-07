@@ -167,3 +167,15 @@ Safeguards:
 - Prefer the temp-commit pattern (`git add -A && git commit -m wip`, then `git reset --soft HEAD~1` to restore). It cannot half-apply — `git reset --soft` is atomic.
 - If using patch files, **always** run `git apply --check /tmp/wip.patch` first to verify the patch applies cleanly before running `git apply /tmp/wip.patch`. Never suppress stderr of `git apply` or any tree-restoring command.
 - General rule: never run any tree-modifying or tree-restoring command with stderr suppressed (`2>/dev/null`).
+
+## Reviewer-requested guards and side effects from surrounding calls (#2649 / PR #2676)
+
+A guard applied exactly as the reviewer asked can still be defeated by a side effect of a call that runs before it — and the reviewer cannot see the interaction either, because it lives outside the diff under review.
+
+Worked example, PR #2676 (issue #2649): round 2 of review, `review-code` raised a MINOR asking the worker to guard a reap-cause write on `ended_at IS NULL`, so a path that finds the row already closed does not claim a close it did not perform. The worker applied the guard exactly as asked. But `reapOne` kills the tmux session *before* that guard runs, and a GLOBAL hook in `modules/programs/prism/tmux.nix` (`session-closed`) runs `prism event tmux-session-end`, which stamps `ended_at` on its own, cross-process, ahead of the guarded write. So the guard almost always saw an already-closed row and silently skipped the write — disabling the diagnostic the PR existed to add. Round 4 found it, two rounds and one escalation later.
+
+The two known sources of this class of interaction, both invisible to a diff-scoped review:
+- **Global tmux hooks** in `modules/programs/prism/tmux.nix` — they fire on tmux lifecycle events (session close, pane exit, etc.) regardless of which code path triggered them, and can mutate DB state a guard elsewhere depends on.
+- **Cross-process DB writes** — another prism process (a hook, a background reaper, a sidecar) can write the same row your guard tests, between the point your call sequence starts and the point the guard runs.
+
+When you add a guard or condition in response to review feedback, trace what runs between the start of the surrounding call and the guard itself, and check both sources above for a write that changes the condition the guard tests.
