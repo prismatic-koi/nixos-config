@@ -98,32 +98,28 @@ type goCacheDir struct {
 	// path is the absolute host path of the cache directory.
 	path string
 
-	// mapExecutable adds file-map-executable to the grant.
+	// execDenied emits an explicit (deny process-exec* file-map-executable)
+	// for this directory in the final deny section.
 	//
-	// True for GOCACHE only. The build cache stores linked executables, not
-	// just object files — `go build ./...` caches the built binary, and
-	// cmd/go can serve a test binary straight out of the cache on a warm
-	// build (Action.BuiltTarget resolves to the cache entry on a useCache
-	// hit). In a (version 3) profile file-read* does NOT imply
-	// file-map-executable — sections 2, 3, and 3b each add it explicitly for
-	// exactly this reason — so without it a warm-cache run can fail EPERM at
-	// the point the kernel maps the image, while the cold run that linked
-	// into $WORK (under the section-3b TMPDIR grant) succeeded.
+	// True for GOMODCACHE. The module cache holds module SOURCE — nothing in
+	// the documented gate execs out of it, so a sandboxed process must not be
+	// able to run anything it plants among the dependency sources.
 	//
-	// False for GOMODCACHE. The module cache holds module SOURCE. Nothing
-	// execs out of it, so it stays non-executable, and
-	// TestSandboxExecGoCache_ModuleCacheExecDenied pins that.
+	// The deny is load-bearing rather than decorative, and the ABSENCE of a
+	// file-map-executable grant does NOT achieve the same thing. Section 9
+	// emits (allow process-exec* ...) with NO path filter, so execution is
+	// permitted profile-wide and no section-5k grant governs it either way.
+	// The host run of #2621 proved this empirically: a planted binary ran
+	// from BOTH cache dirs, and it ran from GOCACHE even with the whole
+	// section-5k block stripped. Withholding a flag from an allow clause
+	// cannot narrow a capability that a later unqualified allow hands out.
+	// Only an explicit deny does.
 	//
-	// The marginal security cost of the GOCACHE flag is close to nil, and
-	// specifically it does NOT widen the host-poisoning surface: a sandboxed
-	// process can already write these files (file-write*, above), and
-	// file-map-executable governs only what the SANDBOXED process may map —
-	// a later host build is not sandboxed and is unaffected either way. Nor
-	// does it grant the agent a new capability class: sections 3 and 3b
-	// already pair file-write* with file-map-executable on /tmp and the
-	// per-user TMPDIR, so an agent that wants to run code it wrote itself
-	// can already do so.
-	mapExecutable bool
+	// False for GOCACHE. cmd/go can serve a linked test binary straight out
+	// of the build cache on a warm build, so execution there must keep
+	// working — denying it risks breaking the very gate this section exists
+	// to enable.
+	execDenied bool
 }
 
 // goCacheDirs returns the Go cache directories the sandbox grants read-write
@@ -149,8 +145,8 @@ func goCacheDirs(home string) []goCacheDir {
 		return nil
 	}
 	return []goCacheDir{
-		{path: filepath.Join(home, "go", "pkg", "mod")},
-		{path: filepath.Join(home, "Library", "Caches", "go-build"), mapExecutable: true},
+		{path: filepath.Join(home, "go", "pkg", "mod"), execDenied: true},
+		{path: filepath.Join(home, "Library", "Caches", "go-build")},
 	}
 }
 
@@ -778,9 +774,12 @@ func generateProfile(m *Manager) string {
 	// its cache/lock file under GOMODCACHE, and build/test outputs under
 	// GOCACHE. A read-only grant does not make the documented command work.
 	//
-	// GOCACHE additionally carries file-map-executable; GOMODCACHE does not.
-	// See the goCacheDir.mapExecutable godoc for why the asymmetry is
-	// deliberate and why the executable flag costs almost nothing here.
+	// Neither clause carries file-map-executable. It would be pure noise
+	// here: section 9 allows process-exec* with no path filter, so execution
+	// is already permitted profile-wide and adding the flag to a section-5k
+	// clause changes nothing. The execution posture for the module cache is
+	// set by the explicit deny in the final section instead — see
+	// goCacheDir.execDenied.
 	//
 	// Accepted risk, stated plainly: these are shared, cross-session,
 	// host-visible caches, so a compromised agent could mutate an extracted
@@ -803,17 +802,12 @@ func generateProfile(m *Manager) string {
 	// Prepare time, because a grant on a non-existent path is a no-op the
 	// sandboxed process cannot repair itself.
 	//
-	// One clause per directory, because the two do not carry the same
-	// operations: GOCACHE also needs file-map-executable (see the
-	// goCacheDir.mapExecutable godoc). Emitting them separately keeps each
-	// directory's exact permission set auditable on its own line rather than
-	// hiding an asymmetry inside a shared clause.
+	// One clause per directory. The two carry identical operations today, so
+	// a shared clause would be equivalent; separate clauses keep each
+	// directory's exact permission set auditable on its own line and make the
+	// paired deny below unambiguous about which path it narrows.
 	for _, dir := range goCacheDirs(home) {
-		ops := "file-read* file-write* file-test-existence file-read-metadata"
-		if dir.mapExecutable {
-			ops += " file-map-executable"
-		}
-		sb.WriteString("(allow " + ops + "\n")
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
 		sb.WriteString("  (subpath " + quoteSBPL(dir.path) + "))\n")
 		sb.WriteString("\n")
 	}
@@ -1214,6 +1208,59 @@ func generateProfile(m *Manager) string {
 	// locale, font smoothing, and other settings. Without this the framework
 	// emits log warnings but continues; allowing it silences the denials.
 	sb.WriteString("(allow user-preference-read)\n")
+
+	// ── 22. FINAL DENIES — Go module cache is not executable (issue #2621) ─
+	// The module cache holds downloaded dependency SOURCE. Section 5k grants
+	// it read-write because the toolchain must populate it, but nothing in
+	// the documented `go build ./...` / `go test ./...` gate ever executes
+	// out of it. Without this deny, a sandboxed process could plant a binary
+	// among the dependency sources and run it.
+	//
+	// THIS SECTION MUST STAY LAST, and it must in particular stay AFTER the
+	// section-9 process operations. That is not a stylistic preference — it
+	// is the only reason the rule has any effect:
+	//
+	//   - Section 9 emits (allow process-exec* ...) with NO path filter, so
+	//     execution is permitted profile-wide.
+	//   - SBPL resolves a conflict in favour of the LATER rule. A deny placed
+	//     before section 9 is silently overridden by that allow and the
+	//     module cache becomes executable again — with every substring test
+	//     still green, because the deny text is present, just outranked.
+	//
+	// This is the same deny-after-broader-allow shape as the /private/etc/ssh
+	// denies in section 4 and the ~/.aws deny in section 5, both of which are
+	// integration-tested (sandbox_exec_denies_darwin_test.go).
+	// TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow pins the
+	// ordering so a future section inserted below cannot quietly break it.
+	//
+	// History: issue #2621 originally tried to express this as the ABSENCE of
+	// file-map-executable on the module cache's allow clause. The host run
+	// disproved that: a planted binary executed from the module cache under
+	// the production profile, and executed from the build cache even with the
+	// whole section-5k block stripped. Withholding a flag from one allow
+	// clause cannot narrow a capability that a later unqualified allow hands
+	// out. Only an explicit deny does.
+	//
+	// GOCACHE is deliberately NOT denied: cmd/go can serve a linked test
+	// binary straight out of the build cache on a warm build, so execution
+	// there must keep working.
+	var execDenied []goCacheDir
+	for _, dir := range goCacheDirs(home) {
+		if dir.execDenied {
+			execDenied = append(execDenied, dir)
+		}
+	}
+	if len(execDenied) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString("(deny process-exec* file-map-executable\n")
+		for i, dir := range execDenied {
+			sb.WriteString("  (subpath " + quoteSBPL(dir.path) + ")")
+			if i == len(execDenied)-1 {
+				sb.WriteString(")")
+			}
+			sb.WriteString("\n")
+		}
+	}
 
 	return sb.String()
 }

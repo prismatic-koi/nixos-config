@@ -22,23 +22,32 @@ package integration_test
 //
 //  2. Positive, execution: a binary placed in GOCACHE RUNS under the
 //     production profile. This is the half that actually tracks AC-1 of
-//     #2621 ("a Darwin worker can run `go build ./...` and `go test ./...`").
-//     A write round-trip cannot distinguish "the cache dirs are writable"
-//     from "the documented commands work": the build cache stores linked
-//     executables and cmd/go can serve a test binary straight out of it on a
-//     warm build, so a profile that is writable but not
-//     executable-mappable passes a write test and still fails the second
-//     `go test` run.
+//     #2621 ("a Darwin worker can run `go build ./...` and `go test ./...`"),
+//     because cmd/go can serve a linked test binary straight out of the
+//     build cache on a warm build. Note what governs it: section 9's
+//     UNQUALIFIED (allow process-exec* ...), not section 5k. Its paired
+//     negative therefore mutates the rule that genuinely governs execution.
 //
-//  3. Negative, execution: the same binary placed in GOMODCACHE does NOT
-//     run. The module cache holds source; withholding file-map-executable
-//     there is deliberate, and this pins it.
+//  3. Negative, execution: a binary placed in GOMODCACHE does NOT run,
+//     because of the explicit section-22 deny. Paired with a strip negative
+//     proving that deny is load-bearing — without it the same binary runs,
+//     since section 9 permits execution profile-wide.
 //
 //  4. Negative (whole-block strip, per the #2243 lesson): removing the
 //     ENTIRE section-5k allow block makes the same writes fail — proving the
 //     block is load-bearing for both paths. Stripping only one
 //     (subpath ...) line would leave the other granted and, in the
 //     single-filter case, risk a filter-less allow-everything clause.
+//
+// History (#2621 host run). Tests 2 and 3 originally asserted that section
+// 5k governed execution: that GOCACHE ran because it carried
+// file-map-executable, and that GOMODCACHE did not run because it lacked the
+// flag. The host run falsified both. A planted binary executed from the
+// module cache under the production profile, and from the build cache with
+// all of section 5k stripped — because section 9 allows process-exec* with
+// no path filter, so no section-5k grant ever governed execution. The
+// profile now carries an explicit deny for the module cache, and these tests
+// assert the rules that actually decide the outcome.
 //
 // The security half of the AC — that no path OUTSIDE the two cache leaves is
 // granted (notably ~/go, which contains the PATH-visible ~/go/bin) — is
@@ -74,16 +83,25 @@ func goCacheDirs5k(t *testing.T) map[string]string {
 // goCacheGrantBlock5k returns the exact section-5k allow block emitted by
 // generateProfile, for the presence assertion in the positive test and the
 // whole-block strip in the negative.
-// The two clauses are separate because the permission sets differ: GOCACHE
-// carries file-map-executable and GOMODCACHE deliberately does not.
+// The two clauses carry identical operations; neither carries
+// file-map-executable (it would be inert — see the file header).
 func goCacheGrantBlock5k(t *testing.T) string {
 	t.Helper()
 	home := realUserHome(t)
 	return "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "go", "pkg", "mod")) + "))\n" +
 		"\n" +
-		"(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n" +
+		"(allow file-read* file-write* file-test-existence file-read-metadata\n" +
 		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "Library", "Caches", "go-build")) + "))\n"
+}
+
+// goCacheExecDenyBlock returns the exact section-22 deny emitted by
+// generateProfile — the rule that stops execution out of the module cache.
+func goCacheExecDenyBlock(t *testing.T) string {
+	t.Helper()
+	home := realUserHome(t)
+	return "(deny process-exec* file-map-executable\n" +
+		"  (subpath " + sbplQuoteForTest(filepath.Join(home, "go", "pkg", "mod")) + "))\n"
 }
 
 // TestSandboxExecGoCache_RoundTrip is the positive integration test for the
@@ -194,23 +212,41 @@ func TestSandboxExecGoCache_DeniedWithoutGrantBlock(t *testing.T) {
 	}
 }
 
+// plantExecutableForTest copies src to <dir>/<name>, marks it executable, and
+// registers a cleanup. Returns the planted path.
+//
+// Copying rather than symlinking is deliberate: SBPL path filters evaluate the
+// RESOLVED target for open-class operations, so a symlink into /nix/store
+// would be judged against the section-2 /nix grant and the probe would prove
+// nothing about the directory under test.
+func plantExecutableForTest(t *testing.T, src, dir, name string) string {
+	t.Helper()
+
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Skipf("cannot read %s to plant a test binary: %v", src, err)
+	}
+	dst := filepath.Join(dir, name)
+	t.Cleanup(func() { _ = os.Remove(dst) })
+	if err := os.WriteFile(dst, data, 0o755); err != nil {
+		t.Skipf("cannot plant a test binary at %s: %v", dst, err)
+	}
+	return dst
+}
+
 // TestSandboxExecGoCache_BuildCacheExecutable is the AC-tracking positive
 // test for issue #2621: a binary that lives in GOCACHE can be EXECUTED under
 // the production profile, not merely written and read.
 //
-// This is the half a write round-trip cannot cover. The Go build cache stores
-// linked executables — `go build ./...` caches the built binary, and cmd/go
-// can serve a test binary straight out of the cache on a warm build. In a
-// (version 3) profile file-read* does not imply file-map-executable, so a
-// grant that is read-write but not executable-mappable passes a write probe
-// and still fails the second `go test` run: the cold run links into $WORK
-// under the section-3b TMPDIR grant and succeeds, the warm run maps the cache
-// entry and gets EPERM. That is AC-1 failing in the same shape as #2621.
+// This matters because cmd/go can serve a linked test binary straight out of
+// the build cache on a warm build, so `go test ./...` on its second run may
+// exec from GOCACHE rather than from $WORK.
 //
-// The probe copies the Nix-built bash into the cache dir and runs it. Nix
-// binaries are ad-hoc signed and are the sanctioned test target per
-// docs/sandbox-exec-testing.md (Apple-signed binaries SIGABRT under a
-// deny-default profile — see #1190).
+// What governs the outcome is section 9's (allow process-exec* ...), which
+// carries NO path filter and therefore permits execution profile-wide — NOT
+// the section-5k grant. The host run of #2621 established this: the same
+// probe succeeded with all of section 5k stripped. The paired negative below
+// therefore mutates section 9's effect, which is the rule under test.
 func TestSandboxExecGoCache_BuildCacheExecutable(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -240,10 +276,21 @@ func TestSandboxExecGoCache_BuildCacheExecutable(t *testing.T) {
 	}
 }
 
-// TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock is the paired
-// negative for the exec probe: with the section-5k block stripped, the same
-// binary does not run.
-func TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock(t *testing.T) {
+// TestSandboxExecGoCache_BuildCacheExecDeniedWhenProcessExecDenied is the
+// paired negative for the positive above, and it names the rule that truly
+// governs: section 9's unqualified (allow process-exec* ...).
+//
+// The mutation appends a deny for the build cache to the END of the profile.
+// Appending is what makes it effective — SBPL resolves a conflict in favour
+// of the LATER rule, so a deny placed after section 9's allow overrides it
+// for that subpath. If execution then still succeeds, the profile does not
+// govern execution the way this file claims and the positive above is
+// meaningless.
+//
+// This deliberately does NOT strip the section-5k block. The host run of
+// #2621 proved that strip does not deny execution — section 5k never
+// governed it — so asserting otherwise would be a false control.
+func TestSandboxExecGoCache_BuildCacheExecDeniedWhenProcessExecDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
 	}
@@ -256,12 +303,9 @@ func TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock(t *testing.T) 
 	}
 
 	m := newProfileManagerWithBareRoot(t)
-	block := goCacheGrantBlock5k(t)
 	mutatedPath := withMutatedProfile(t, m, func(p string) string {
-		if !strings.Contains(p, block) {
-			t.Fatalf("profile does not contain the section-5k block to strip:\n%s\nProfile:\n%s", block, p)
-		}
-		return strings.Replace(p, block, "", 1)
+		return p + "\n(deny process-exec* file-map-executable\n" +
+			"  (subpath " + sbplQuoteForTest(buildCache) + "))\n"
 	})
 
 	planted := plantExecutableForTest(t, nixBash, buildCache, ".prism-2621-gocache-exec-denied")
@@ -270,23 +314,23 @@ func TestSandboxExecGoCache_BuildCacheExecDeniedWithoutGrantBlock(t *testing.T) 
 		"/usr/bin/env", "HOME="+realUserHome(t), planted, "-c", "printf denied")
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
-		t.Errorf("a binary in %s executed WITHOUT the section-5k block.\n"+
-			"The 5k grant is not the load-bearing rule for execution — investigate.\n"+
+		t.Errorf("a binary in %s executed even WITH an explicit (deny process-exec* ...) for that subpath.\n"+
+			"Execution is not governed the way this file assumes — the positive test above proves nothing.\n"+
 			"Output: %s\nMutated profile: %s", buildCache, string(out), mutatedPath)
 	} else {
-		t.Logf("ka pai — exec from %s correctly denied without the 5k block (exit: %v)", buildCache, runErr)
+		t.Logf("ka pai — exec from %s correctly denied by an explicit deny (exit: %v)", buildCache, runErr)
 	}
 }
 
-// TestSandboxExecGoCache_ModuleCacheExecDenied is the security-side negative
-// that pins the deliberate asymmetry in the section-5k grant (issue #2621):
-// GOCACHE carries file-map-executable, GOMODCACHE does not.
+// TestSandboxExecGoCache_ModuleCacheExecDenied is the security-side positive
+// for the section-22 deny (issue #2621): a binary planted in GOMODCACHE does
+// NOT run under the production profile.
 //
-// The module cache holds module SOURCE. Nothing in the documented gate execs
-// out of it, so it stays non-executable under the production profile even
-// though it is read-write. This test is what stops a future edit from
-// levelling the two grants "for symmetry" and silently handing a sandboxed
-// process an executable staging area among the dependency sources.
+// The module cache holds dependency SOURCE, and section 5k grants it
+// read-write so the toolchain can populate it. Without the explicit deny a
+// sandboxed process could plant a binary among the dependency sources and
+// execute it — which is exactly what the #2621 host run observed before the
+// deny existed.
 func TestSandboxExecGoCache_ModuleCacheExecDenied(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is Darwin-only")
@@ -298,6 +342,11 @@ func TestSandboxExecGoCache_ModuleCacheExecDenied(t *testing.T) {
 
 	m := newProfileManagerWithBareRoot(t)
 	prepared, _ := preparePositiveProfile(t, m)
+
+	deny := goCacheExecDenyBlock(t)
+	if !strings.Contains(prepared.content, deny) {
+		t.Fatalf("generated profile does not contain the section-22 module-cache exec deny:\n%s\nProfile:\n%s", deny, prepared.content)
+	}
 	testProfilePath := writeAugmentedPositiveProfile(t, prepared)
 
 	planted := plantExecutableForTest(t, nixBash, modCache, ".prism-2621-gomodcache-exec")
@@ -307,32 +356,62 @@ func TestSandboxExecGoCache_ModuleCacheExecDenied(t *testing.T) {
 	out, runErr := cmd.CombinedOutput()
 	if runErr == nil {
 		t.Errorf("a binary in the module cache %s EXECUTED under the production profile.\n"+
-			"GOMODCACHE holds source and must not be executable-mappable — "+
-			"check whether file-map-executable leaked into its grant.\n"+
+			"GOMODCACHE holds dependency source and must not be executable. Check that the "+
+			"section-22 deny is still emitted AFTER section 9's unqualified (allow process-exec* ...) — "+
+			"SBPL takes the later rule, so a deny moved above it is silently overridden.\n"+
 			"Output: %s\nProfile: %s", modCache, string(out), testProfilePath)
 	} else {
 		t.Logf("ka pai — exec from the module cache %s correctly denied (exit: %v)", modCache, runErr)
 	}
 }
 
-// plantExecutableForTest copies src to <dir>/<name>, marks it executable, and
-// registers a cleanup. Returns the planted path.
+// TestSandboxExecGoCache_ModuleCacheExecAllowedWithoutDenyBlock is the paired
+// strip negative proving the section-22 deny is load-bearing rather than
+// decorative.
 //
-// Copying rather than symlinking is deliberate: SBPL path filters evaluate the
-// RESOLVED target for open-class operations, so a symlink into /nix/store
-// would be judged against the section-2 /nix grant and the probe would prove
-// nothing about the directory under test.
-func plantExecutableForTest(t *testing.T, src, dir, name string) string {
-	t.Helper()
+// With the deny removed, the same binary MUST run — because section 9 allows
+// process-exec* with no path filter. If it fails to run without the deny,
+// something else is blocking execution and the positive above is green for
+// the wrong reason.
+//
+// This is the test that would have caught the original #2621 mistake, where
+// the module cache's non-executability was expressed as the mere absence of
+// file-map-executable on its allow clause and enforced nothing at all.
+func TestSandboxExecGoCache_ModuleCacheExecAllowedWithoutDenyBlock(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("sandbox-exec is Darwin-only")
+	}
+	requireSandboxExec(t)
+	nixBash := requireNixBash(t)
 
-	data, err := os.ReadFile(src)
-	if err != nil {
-		t.Skipf("cannot read %s to plant a test binary: %v", src, err)
+	modCache := goCacheDirs5k(t)["gomodcache"]
+	if _, err := os.Stat(modCache); err != nil {
+		t.Skipf("%s does not exist on this host — nothing to probe: %v", modCache, err)
 	}
-	dst := filepath.Join(dir, name)
-	t.Cleanup(func() { _ = os.Remove(dst) })
-	if err := os.WriteFile(dst, data, 0o755); err != nil {
-		t.Skipf("cannot plant a test binary at %s: %v", dst, err)
+
+	m := newProfileManagerWithBareRoot(t)
+	deny := goCacheExecDenyBlock(t)
+	mutatedPath := withMutatedProfile(t, m, func(p string) string {
+		if !strings.Contains(p, deny) {
+			t.Fatalf("profile does not contain the section-22 deny to strip:\n%s\nProfile:\n%s", deny, p)
+		}
+		return strings.Replace(p, deny, "", 1)
+	})
+
+	planted := plantExecutableForTest(t, nixBash, modCache, ".prism-2621-gomodcache-exec-nodeny")
+
+	const sentinel = "prism-2621-nodeny-ran"
+	cmd := exec.Command(sandboxExecPath, "-f", mutatedPath,
+		"/usr/bin/env", "HOME="+realUserHome(t), planted, "-c", "printf '%s' "+shQuote(sentinel))
+	out, runErr := cmd.CombinedOutput()
+	if runErr != nil {
+		t.Errorf("a binary in %s did NOT run with the section-22 deny stripped.\n"+
+			"Execution there is blocked by something other than that deny, so "+
+			"TestSandboxExecGoCache_ModuleCacheExecDenied passes for the wrong reason.\n"+
+			"Exit: %v\nOutput: %s\nMutated profile: %s", modCache, runErr, string(out), mutatedPath)
+	} else if !strings.Contains(string(out), sentinel) {
+		t.Errorf("binary ran without the deny but did not emit the sentinel.\nGot: %s", string(out))
+	} else {
+		t.Logf("ka pai — the section-22 deny is load-bearing: exec succeeds without it")
 	}
-	return dst
 }

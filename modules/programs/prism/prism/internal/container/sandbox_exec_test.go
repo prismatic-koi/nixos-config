@@ -1854,35 +1854,39 @@ func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
 	m := newSandboxExecManager(Config{SessionName: "repo@go-cache"})
 	profile := generateProfile(m)
 
-	// One clause per directory: the two do not carry the same operations.
-	// GOMODCACHE holds module source and must NOT be executable; GOCACHE
-	// stores linked binaries and must be.
-	wantModCache := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
-		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "go", "pkg", "mod")) + "))\n"
-	if !strings.Contains(profile, wantModCache) {
-		t.Errorf("profile missing the section-5k GOMODCACHE grant:\n%s\nfull profile:\n%s", wantModCache, profile)
-	}
-
-	wantBuildCache := "(allow file-read* file-write* file-test-existence file-read-metadata file-map-executable\n" +
-		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "Library", "Caches", "go-build")) + "))\n"
-	if !strings.Contains(profile, wantBuildCache) {
-		t.Errorf("profile missing the section-5k GOCACHE grant (with file-map-executable):\n%s\nfull profile:\n%s", wantBuildCache, profile)
+	// One clause per directory, identical operations. file-map-executable
+	// appears on NEITHER: section 9 allows process-exec* with no path filter,
+	// so adding the flag to a section-5k clause would change nothing. The
+	// module cache's execution posture comes from the section-22 deny.
+	for _, dir := range []string{
+		filepath.Join(fakeHome, "go", "pkg", "mod"),
+		filepath.Join(fakeHome, "Library", "Caches", "go-build"),
+	} {
+		want := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
+			"  (subpath " + quoteSBPL(dir) + "))\n"
+		if !strings.Contains(profile, want) {
+			t.Errorf("profile missing the section-5k grant for %s:\n%s\nfull profile:\n%s", dir, want, profile)
+		}
 	}
 }
 
-// TestGenerateProfile_GoCacheExecutabilityIsAsymmetric pins the deliberate
-// split in the section-5k grant (issue #2621).
+// TestGenerateProfile_GoCacheModuleCacheExecDeny pins the section-22 deny
+// that stops a sandboxed process executing anything out of the Go module
+// cache (issue #2621).
 //
-// GOCACHE carries file-map-executable because the build cache stores linked
-// executables and cmd/go can serve a test binary straight out of it on a warm
-// build; in a (version 3) profile file-read* does not imply
-// file-map-executable, so without the flag a warm-cache run can fail EPERM
-// where the cold run that linked into $WORK succeeded.
+// The module cache holds dependency SOURCE. Section 5k grants it read-write
+// so the toolchain can populate it, so without an explicit deny a sandboxed
+// process could plant a binary among the sources and run it.
 //
-// GOMODCACHE must NOT carry it: the module cache holds source, nothing execs
-// out of it, and an executable-mappable module cache would let a sandboxed
-// process run code it planted among the dependency sources.
-func TestGenerateProfile_GoCacheExecutabilityIsAsymmetric(t *testing.T) {
+// The deny is required because section 9 allows process-exec* with NO path
+// filter. Expressing this as the mere ABSENCE of file-map-executable on the
+// section-5k clause does not work, and the host run of #2621 proved it: a
+// planted binary executed from the module cache under the production
+// profile, and from the build cache even with all of section 5k stripped.
+//
+// GOCACHE must NOT be denied — cmd/go can serve a linked test binary out of
+// the build cache on a warm build.
+func TestGenerateProfile_GoCacheModuleCacheExecDeny(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
@@ -1892,25 +1896,75 @@ func TestGenerateProfile_GoCacheExecutabilityIsAsymmetric(t *testing.T) {
 	modCache := filepath.Join(fakeHome, "go", "pkg", "mod")
 	buildCache := filepath.Join(fakeHome, "Library", "Caches", "go-build")
 
-	// clauseFor returns the (allow ...) clause containing the given subpath.
-	clauseFor := func(path string) string {
-		rule := "(subpath " + quoteSBPL(path) + ")"
-		at := strings.Index(profile, rule)
-		if at < 0 {
-			t.Fatalf("profile has no rule for %q.\nfull profile:\n%s", path, profile)
-		}
-		start := strings.LastIndex(profile[:at], "(allow ")
-		if start < 0 {
-			t.Fatalf("rule for %q is not inside an (allow ...) clause.\nfull profile:\n%s", path, profile)
-		}
-		return profile[start : at+len(rule)]
+	wantDeny := "(deny process-exec* file-map-executable\n" +
+		"  (subpath " + quoteSBPL(modCache) + "))\n"
+	if !strings.Contains(profile, wantDeny) {
+		t.Errorf("profile missing the section-22 module-cache exec deny:\n%s\nfull profile:\n%s", wantDeny, profile)
 	}
 
-	if clause := clauseFor(buildCache); !strings.Contains(clause, "file-map-executable") {
-		t.Errorf("GOCACHE clause lacks file-map-executable — a warm-cache `go test` can fail EPERM;\nclause: %q", clause)
+	// The build cache must not be swept into the deny — denying execution
+	// there risks breaking a warm-cache `go test`, the very gate section 5k
+	// exists to enable.
+	denyAt := strings.Index(profile, "(deny process-exec*")
+	if denyAt >= 0 && strings.Contains(profile[denyAt:], quoteSBPL(buildCache)) {
+		t.Errorf("the build cache %s appears in the exec deny — a warm-cache `go test` execs from it.\nfull profile:\n%s", buildCache, profile)
 	}
-	if clause := clauseFor(modCache); strings.Contains(clause, "file-map-executable") {
-		t.Errorf("GOMODCACHE clause carries file-map-executable — the module cache holds source and must not be executable;\nclause: %q", clause)
+
+	// file-map-executable must not appear on either section-5k allow clause:
+	// it is inert there (section 9's unqualified process-exec* already
+	// permits execution) and its presence would imply the grant governs
+	// execution, which it does not.
+	for _, dir := range []string{modCache, buildCache} {
+		rule := "(subpath " + quoteSBPL(dir) + ")"
+		at := strings.Index(profile, rule)
+		if at < 0 {
+			t.Fatalf("profile has no rule for %q.\nfull profile:\n%s", dir, profile)
+		}
+		start := strings.LastIndex(profile[:at], "(allow ")
+		if start >= 0 && strings.Contains(profile[start:at], "file-map-executable") {
+			t.Errorf("section-5k allow clause for %s carries file-map-executable — it is inert there;\nclause: %q", dir, profile[start:at])
+		}
+	}
+}
+
+// TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow is the ordering
+// guard for the section-22 deny (issue #2621).
+//
+// SBPL resolves a conflict in favour of the LATER rule. Section 9 emits
+// (allow process-exec* ...) with no path filter, so the module-cache deny is
+// effective ONLY while it is emitted after that allow. Move it above section
+// 9 and the module cache becomes executable again — with every substring
+// assertion in this file still green, because the deny text is present, just
+// outranked.
+//
+// This test is the tripwire for that silent failure, and for a future section
+// inserted below section 22 that re-allows process-exec*.
+func TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-order"})
+	profile := generateProfile(m)
+
+	allowAt := strings.Index(profile, "(allow process-exec*")
+	if allowAt < 0 {
+		t.Fatalf("profile has no (allow process-exec* ...) clause — the deny's ordering premise changed.\nfull profile:\n%s", profile)
+	}
+	denyAt := strings.Index(profile, "(deny process-exec*")
+	if denyAt < 0 {
+		t.Fatalf("profile has no (deny process-exec* ...) clause.\nfull profile:\n%s", profile)
+	}
+	if denyAt < allowAt {
+		t.Errorf("the module-cache exec deny (offset %d) is emitted BEFORE the section-9 process-exec* allow (offset %d) — "+
+			"SBPL takes the later rule, so the deny is silently overridden and the module cache is executable.\nfull profile:\n%s",
+			denyAt, allowAt, profile)
+	}
+
+	// No process-exec* allow may follow the deny — that would re-open it the
+	// same way.
+	if reAllow := strings.Index(profile[denyAt:], "(allow process-exec*"); reAllow >= 0 {
+		t.Errorf("a (allow process-exec* ...) clause is emitted AFTER the module-cache deny (offset %d) — it re-opens execution.\nfull profile:\n%s",
+			denyAt+reAllow, profile)
 	}
 }
 
@@ -1957,11 +2011,17 @@ func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
 		}
 	}
 
-	// Each granted leaf appears exactly once: a second occurrence would mean
-	// the path leaked into another clause.
+	// Occurrence counts are exact, so a path cannot leak into a third clause
+	// unnoticed. The module cache appears twice by design — the section-5k
+	// allow plus the section-22 exec deny — and the build cache once.
 	for _, dir := range goCacheDirs(fakeHome) {
-		if got := strings.Count(profile, quoteSBPL(dir.path)); got != 1 {
-			t.Errorf("Go cache dir %s must appear exactly once in the profile; found %d occurrences.\nfull profile:\n%s", dir.path, got, profile)
+		want := 1
+		if dir.execDenied {
+			want = 2 // section-5k allow + section-22 deny
+		}
+		if got := strings.Count(profile, quoteSBPL(dir.path)); got != want {
+			t.Errorf("Go cache dir %s must appear exactly %d time(s) in the profile; found %d.\nfull profile:\n%s",
+				dir.path, want, got, profile)
 		}
 	}
 }
@@ -1977,8 +2037,8 @@ func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
 func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
 	got := goCacheDirs("/Users/example")
 	want := []goCacheDir{
-		{path: "/Users/example/go/pkg/mod", mapExecutable: false},
-		{path: "/Users/example/Library/Caches/go-build", mapExecutable: true},
+		{path: "/Users/example/go/pkg/mod", execDenied: true},
+		{path: "/Users/example/Library/Caches/go-build", execDenied: false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("goCacheDirs returned %d entries (%v); want %d (%v)", len(got), got, len(want), want)
@@ -1987,9 +2047,9 @@ func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
 		if got[i].path != want[i].path {
 			t.Errorf("goCacheDirs[%d].path = %q; want %q", i, got[i].path, want[i].path)
 		}
-		if got[i].mapExecutable != want[i].mapExecutable {
-			t.Errorf("goCacheDirs[%d].mapExecutable = %v; want %v (%s)",
-				i, got[i].mapExecutable, want[i].mapExecutable, want[i].path)
+		if got[i].execDenied != want[i].execDenied {
+			t.Errorf("goCacheDirs[%d].execDenied = %v; want %v (%s)",
+				i, got[i].execDenied, want[i].execDenied, want[i].path)
 		}
 	}
 
