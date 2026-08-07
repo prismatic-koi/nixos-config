@@ -168,7 +168,7 @@ A cross-repo `prism prompt` can target a root session, and nothing else. Two nam
 | `<repo>@main` | The repo uses the bare+worktree layout. This is the coordinator. |
 | `<repo>` (a bare name, no `@`) | The project has no worktree, so it has no branch and no `@main` session. Example: `obsidian`. |
 
-A name that holds `~` — `<parent>~review-1-review-goal`, `<parent>~investigate-<slug>` — is never a root session. A cross-repo prompt to one is refused with HTTP 403.
+A name that holds `~` — `<parent>~review-1-review-goal`, `<parent>~investigate-<slug>` — is never a root session. The host API refuses a cross-repo prompt to one with HTTP 403.
 
 **Flow:**
 
@@ -1021,7 +1021,7 @@ prism sessions list          # human-readable table
 prism sessions list --json   # JSON array (use this when scripting)
 ```
 
-The default scope is: every session in your own repo, plus the **root session** of each other repo (`<repo>@main`, or a bare name for a project with no worktree). Other repos' workers, review agents and investigators are hidden as noise. Pass `--all` to see them. The scope matches the cross-repo `prism prompt` rule above, so any cross-repo target you can read from this listing is a target you can prompt.
+The default scope is: every session in your own repo, plus the **root session** of each other repo (`<repo>@main`, or a bare name for a project with no worktree). The listing hides other repos' workers, review agents and investigators as noise. Pass `--all` to see them. The scope matches the cross-repo `prism prompt` rule above, so any cross-repo target you can read from this listing is a target you can prompt.
 
 Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically. Which sessions you can read depends on your role — see [Who can check in on what](#who-can-check-in-on-what) below.
 
