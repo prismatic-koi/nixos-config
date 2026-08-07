@@ -275,19 +275,6 @@ func ReapSideEffectsForTest(killTmux func(string), killSidecar func(string), rem
 	}
 }
 
-// ReapSetEndedForTest replaces the reaper's closing write (issue #2649) and
-// returns a restore function. It is the seam that makes the
-// record-cause-before-close ordering falsifiable: a stub can read the DB at
-// the instant the row is about to close and assert what is already there.
-//
-// The stub is responsible for performing the real close if the test needs the
-// end state — call db.SetEnded from inside it.
-func ReapSetEndedForTest(fn func(*db.DB, string) error) func() {
-	prev := reapSetEnded
-	reapSetEnded = fn
-	return func() { reapSetEnded = prev }
-}
-
 // ReapClockForTest replaces the ReapGroupAfterGrace clock pair (issue #2649)
 // and returns a restore function. Without it, a test that exercises the
 // post-delivery reap would block for ReapGracePeriod.
