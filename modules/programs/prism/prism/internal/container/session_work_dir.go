@@ -16,7 +16,8 @@ package container
 // It contains no symlinks: just the generated regular files that git and
 // ssh need inside a sandbox-exec session:
 //
-//	<sessionDir>/ssh-config        — minimal ssh config for github.com
+//	<sessionDir>/ssh-config        — minimal ssh config for github.com and
+//	                                 gitlab.com
 //	<sessionDir>/gitconfig         — git identity + signing config
 //	<sessionDir>/allowed_signers   — for git verify-commit (when signing
 //	                                 is configured)
@@ -199,6 +200,46 @@ func SessionWorkDirKubeEnv(sessionDir string) []string {
 	}
 }
 
+// SessionWorkDirGlabConfigDirPath returns the glab (GitLab CLI) config
+// directory inside the given session work dir (issue #2668):
+//
+//	<sessionDir>/glab-cli
+//
+// glab reads and writes ~/.config/glab-cli/config.yml by default and aborts
+// with "failed to read configuration" on EPERM — which is what the
+// deny-default SBPL profile returns for the real host path, so every glab
+// invocation inside a sandbox fails before it does any work. GLAB_CONFIG_DIR
+// redirects the whole config dir here instead.
+//
+// The redirect is deliberate isolation, not only a fix: the real
+// ~/.config/glab-cli holds the owner's interactive glab login, which a
+// sandboxed agent has no need for. The agent authenticates with the
+// GITLAB_TOKEN value injected by credentialEnvVars.
+//
+// The directory is not pre-created — glab MkdirAll's it on first use, which
+// the SBPL profile's (subpath <sessionDir>) RW allow already covers — and it
+// is removed with the rest of the work dir by RemoveSessionWorkDir.
+func SessionWorkDirGlabConfigDirPath(sessionDir string) string {
+	return filepath.Join(sessionDir, "glab-cli")
+}
+
+// SessionWorkDirGlabEnv returns the env var pair (K=V form) that redirects
+// glab's config directory inside the sandbox at the session work dir:
+//
+//	GLAB_CONFIG_DIR=<sessionDir>/glab-cli
+//
+// Injected by the sandbox-exec dispatcher
+// (cmd/agent_run_sandbox_exec_darwin.go) alongside SessionWorkDirKubeEnv.
+// The GitLab credential itself arrives as GITLAB_TOKEN from
+// credentialEnvVars; only the config-dir redirect is session-derived and
+// therefore injected here. The bwrap equivalent lives in bwrap.go BuildArgs
+// (GLAB_CONFIG_DIR=/tmp/glab-cli — the per-session tmpfs).
+func SessionWorkDirGlabEnv(sessionDir string) []string {
+	return []string{
+		"GLAB_CONFIG_DIR=" + SessionWorkDirGlabConfigDirPath(sessionDir),
+	}
+}
+
 // SessionWorkDirChromiumDirs returns the chromium Library skeleton
 // directories inside the given session work dir (issue #2247, Step 4 of
 // #2132):
@@ -295,7 +336,12 @@ func (m *Manager) PrepareSessionWorkDir() (string, error) {
 }
 
 // writeSshConfigToDir writes the generated ssh config to
-// <sessionDir>/ssh-config. The IdentityFile is the STABLE sops symlink path
+// <sessionDir>/ssh-config. Its body comes from sandboxSshConfig — the same
+// generator the bwrap path uses (container.go writeSshConfig) — so the
+// github.com and gitlab.com stanzas cannot drift between isolation modes
+// (#2668). Only the embedded IdentityFile differs between the two callers.
+//
+// The IdentityFile is the STABLE sops symlink path
 // ~/.ssh/<SshAccessKeyName> — deliberately not resolved via
 // filepath.EvalSymlinks, so the embedded path survives sops secrets.d/<N>
 // rotation (issues #1410/#1573):
@@ -324,10 +370,7 @@ func (m *Manager) writeSshConfigToDir(sessionDir string) error {
 		accessKeyName = "prismatic-koi-ed25519"
 	}
 	identityFile := filepath.Join(home, ".ssh", accessKeyName)
-	sshConfig := "Host github.com\n" +
-		"  StrictHostKeyChecking accept-new\n" +
-		"  IdentityFile " + identityFile + "\n" +
-		"  IdentitiesOnly yes\n"
+	sshConfig := sandboxSshConfig(identityFile)
 	dst := SessionWorkDirSshConfigPath(sessionDir)
 	_ = os.Remove(dst) // idempotent: replace any prior file
 	if err := os.WriteFile(dst, []byte(sshConfig), 0o600); err != nil {

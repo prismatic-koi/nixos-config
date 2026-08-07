@@ -6474,6 +6474,7 @@ describe("#2589: isCredentialEnvName", () => {
   it("accepts the listed names, the prefixed family, and the name-shape suffixes", () => {
     for (const name of [
       "GITHUB_TOKEN",
+      "GITLAB_TOKEN",
       "ANTHROPIC_API_KEY",
       "OPENROUTER_API_KEY",
       "PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
@@ -6492,6 +6493,7 @@ describe("#2589: isCredentialEnvName", () => {
       "PATH",
       "HOME",
       "GITHUB_TOKEN_PATH",
+      "GITLAB_TOKEN_PATH",
       "SOPS_AGE_KEY_FILE",
       "PRISM_SESSION_NAME",
       "XDG_STATE_HOME",
@@ -6618,6 +6620,7 @@ describe("#2589: shape layer", () => {
         `token github_pat_${"B".repeat(40)} end`,
         "token [redacted:github-fine-grained-pat] end",
       ],
+      ["gitlab pat", `token glpat-${"H".repeat(20)} end`, "token [redacted:gitlab-pat] end"],
       ["anthropic", `key sk-ant-${"c".repeat(24)} end`, "key [redacted:anthropic-api-key] end"],
       ["openrouter", `key sk-or-v1-${"d".repeat(32)} end`, "key [redacted:openrouter-api-key] end"],
       ["openai project", `key sk-proj-${"e".repeat(24)} end`, "key [redacted:openai-api-key] end"],
@@ -6679,6 +6682,8 @@ describe("#2589: shape layer", () => {
       "through the night, right enough, a rough ghost",
       "ghp_short",
       "github_pat_tooshort",
+      "glpat-short",
+      `token glpat-${"H".repeat(20)} end`,
       "sk-ant",
       "AKIA123",
       "-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----",

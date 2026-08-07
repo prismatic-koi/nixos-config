@@ -81,6 +81,15 @@ func (b *bwrapIsolator) BuildRunArgs() []string {
 // host-visible). See the KUBECACHEDIR comment in BuildArgs (issue #2235).
 const bwrapKubeCacheDir = "/tmp/kube-cache"
 
+// bwrapGlabConfigDir is the in-sandbox glab (GitLab CLI) config directory
+// for bwrap sessions. glab defaults to $HOME/.config/glab-cli and aborts
+// with "failed to read configuration" when that path is unreadable; no such
+// path exists inside the bwrap namespace. GLAB_CONFIG_DIR points glab at the
+// per-session /tmp tmpfs instead, so its config stays ephemeral and is never
+// written through to the host — the bwrap equivalent of sandbox-exec's
+// <sessionDir>/glab-cli redirect (issue #2668).
+const bwrapGlabConfigDir = "/tmp/glab-cli"
+
 // fallbackPATH returns the PATH value used when os.Getenv("PATH") is empty.
 // It covers the per-user home-manager profile (when USER is set), the NixOS
 // system profile, and standard POSIX paths.
@@ -529,6 +538,14 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// host-side per-session state for a throwaway cache). kubectl MkdirAll's
 	// the directory on first use.
 	args = append(args, "--setenv", "KUBECACHEDIR", bwrapKubeCacheDir)
+
+	// GLAB_CONFIG_DIR: redirect glab's config dir to the sandbox's private
+	// /tmp tmpfs (issue #2668). glab reads its config on EVERY invocation and
+	// exits non-zero when the read fails, so without this redirect glab is
+	// unusable inside the sandbox. The GitLab credential itself arrives as
+	// the GITLAB_TOKEN value injected by credentialEnvVars — never from a
+	// config file. glab MkdirAll's the directory on first use.
+	args = append(args, "--setenv", "GLAB_CONFIG_DIR", bwrapGlabConfigDir)
 
 	// TERM: pass through the host's TERM so that the sandbox sees the same
 	// terminal type as the tmux pane (e.g. tmux-256color). In bwrap mode the

@@ -51,16 +51,21 @@ const redactedValuePlaceholder = "<redacted>"
 
 // credentialEnvNames is the set of env-var NAMES whose values must never
 // reach a test failure message. It is derived from the production forwarding
-// list (credentialForwardEnvKeys) and the production GitHub-token variable
-// name, so a credential added to credentialEnvVars is redacted here without
-// a second edit. TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry pins
-// that link.
+// list (credentialForwardEnvKeys) and the production token variable names, so
+// a credential added to credentialEnvVars is redacted here without a second
+// edit. TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry pins that link.
+//
+// githubTokenEnvKey and gitlabTokenEnvKey are named explicitly because
+// neither is forwarded verbatim: both are resolved host-side from a sops
+// file and injected as a value, so neither appears in
+// credentialForwardEnvKeys.
 var credentialEnvNames = func() map[string]bool {
-	m := make(map[string]bool, len(credentialForwardEnvKeys)+1)
+	m := make(map[string]bool, len(credentialForwardEnvKeys)+2)
 	for _, k := range credentialForwardEnvKeys {
 		m[k] = true
 	}
 	m[githubTokenEnvKey] = true
+	m[gitlabTokenEnvKey] = true
 	return m
 }()
 
@@ -116,6 +121,7 @@ func clearCredentialEnv(t *testing.T) {
 		t.Setenv(k, "")
 	}
 	t.Setenv(githubTokenEnvKey, "")
+	t.Setenv(gitlabTokenEnvKey, "")
 	// The PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE> set is host-specific — read it
 	// off the live environment rather than hard-coding the account list.
 	for _, kv := range os.Environ() {
@@ -131,6 +137,7 @@ const (
 	syntheticAnthropicKey  = "sk-ant-synthetic-0000000000"
 	syntheticOpenRouterKey = "sk-or-synthetic-1111111111"
 	syntheticGitHubToken   = "ghp_synthetic222222222222"
+	syntheticGitLabToken   = "glpat-synthetic33333333333"
 )
 
 // TestRedactedArgs_MasksValueKeepsName is the core unit: the bwrap triple
@@ -259,6 +266,7 @@ func TestBwrapBuildArgs_RedactedDumpHidesCredentialValues(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", syntheticAnthropicKey)
 	t.Setenv("OPENROUTER_API_KEY", syntheticOpenRouterKey)
 	t.Setenv(githubTokenEnvKey, syntheticGitHubToken)
+	t.Setenv(gitlabTokenEnvKey, syntheticGitLabToken)
 
 	worktree := t.TempDir()
 	m, _, cleanup := bwrapFixture(t, Config{
@@ -275,6 +283,7 @@ func TestBwrapBuildArgs_RedactedDumpHidesCredentialValues(t *testing.T) {
 		"ANTHROPIC_API_KEY":  syntheticAnthropicKey,
 		"OPENROUTER_API_KEY": syntheticOpenRouterKey,
 		"GITHUB_TOKEN":       syntheticGitHubToken,
+		"GITLAB_TOKEN":       syntheticGitLabToken,
 	}
 
 	// No-op guard: the raw argv must really carry each value, otherwise the
@@ -315,13 +324,16 @@ func TestRedactedArgs_RedactsEveryCredentialEnvVarsEntry(t *testing.T) {
 		t.Setenv(k, fmt.Sprintf("synthetic-forwarded-value-%d", i))
 	}
 	t.Setenv(githubTokenEnvKey, syntheticGitHubToken)
+	t.Setenv(gitlabTokenEnvKey, syntheticGitLabToken)
 
 	m := New(Config{SessionName: "repo@main", AllocatedPort: 14010, AgentRole: "worker"})
 	vars, err := m.credentialEnvVars()
 	if err != nil {
 		t.Fatalf("credentialEnvVars: %v", err)
 	}
-	if want := len(credentialForwardEnvKeys) + 1; len(vars) != want {
+	// +2: the GitHub and GitLab tokens, neither of which is in the
+	// forwarding list.
+	if want := len(credentialForwardEnvKeys) + 2; len(vars) != want {
 		t.Fatalf("credentialEnvVars returned %d entries, want %d — the drift guard below would be vacuous", len(vars), want)
 	}
 

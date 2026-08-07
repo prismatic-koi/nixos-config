@@ -357,6 +357,7 @@ func runAgentRunBwrapHandler(ctx context.Context, opts container.AgentRunOpts) e
 		SshSigningKeyName:   cfg.SshSigningKeyName,
 		GitHubTokenPath:     cfg.GitHubTokenPath,
 		GitHubTokenPaths:    cfg.GitHubTokenPaths,
+		GitLabTokenPath:     cfg.GitLabTokenPath,
 		HostAPISockPath:     hostAPISockPath,
 		HarnessPipeSockPath: harnessPipeSockPath,
 		AgentRunLogPath:     agentRunLogPath,

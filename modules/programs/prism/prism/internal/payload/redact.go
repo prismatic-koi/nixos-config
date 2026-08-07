@@ -80,9 +80,9 @@ func RedactionMarker(name string) string {
 //
 // This registry is the single source of truth for "which environment
 // variables carry a credential". internal/container derives its injection
-// list from ForwardedCredentialEnvNames, GitHubTokenEnvName, and
-// PrismGitHubTokenEnvPrefix, so a credential added here is both injected and
-// redacted without a second edit.
+// list from ForwardedCredentialEnvNames, GitHubTokenEnvName,
+// GitLabTokenEnvName, and PrismGitHubTokenEnvPrefix, so a credential added
+// here is both injected and redacted without a second edit.
 //
 // internal/payload is a leaf package (stdlib only), which is what lets both
 // internal/container and internal/db depend on it without an import cycle.
@@ -90,6 +90,15 @@ const (
 	// GitHubTokenEnvName is the inherited GitHub token — the final env-var
 	// fallback in container.ResolveGitHubToken.
 	GitHubTokenEnvName = "GITHUB_TOKEN"
+
+	// GitLabTokenEnvName is the GitLab API token (issue #2668). It is NOT
+	// forwarded verbatim from the host environment: container.
+	// ResolveGitLabToken resolves it host-side — the sops file named by
+	// Config.GitLabTokenPath first, then the inherited env var behind the
+	// $(-literal guard — and injects the resulting VALUE, the same shape as
+	// GitHubTokenEnvName. It is listed here so the value layer redacts it
+	// wherever the capturing process holds it.
+	GitLabTokenEnvName = "GITLAB_TOKEN"
 
 	// PrismGitHubTokenEnvPrefix prefixes the per-(account, role) tokens,
 	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>.
@@ -156,9 +165,9 @@ var credentialEnvNameSuffixes = []string{
 // credentialEnvNameList is the sorted, de-duplicated union of the exact
 // names, computed once at package init.
 var credentialEnvNameList = func() []string {
-	out := make([]string, 0, len(ForwardedCredentialEnvNames)+len(otherCredentialEnvNames)+1)
+	out := make([]string, 0, len(ForwardedCredentialEnvNames)+len(otherCredentialEnvNames)+2)
 	out = append(out, ForwardedCredentialEnvNames...)
-	out = append(out, GitHubTokenEnvName)
+	out = append(out, GitHubTokenEnvName, GitLabTokenEnvName)
 	out = append(out, otherCredentialEnvNames...)
 	sort.Strings(out)
 	return slices.Compact(out)
@@ -256,6 +265,16 @@ var credentialShapes = func() []credentialShape {
 			"github-token",
 			`gh[pousr]_[A-Za-z0-9]{36,255}`,
 			[]string{"ghp_", "gho_", "ghu_", "ghs_", "ghr_"},
+		},
+		// GitLab personal / project / group access token. `glpat-` is the
+		// issuer prefix GitLab puts on every PAT-class token, so the rule is
+		// anchored the same way as the GitHub ones. A GitLab OAuth or CI job
+		// token has a different prefix and is deliberately not covered here —
+		// the value layer catches whatever the capturing process holds.
+		{
+			"gitlab-pat",
+			`glpat-[A-Za-z0-9_-]{20,255}`,
+			[]string{"glpat-"},
 		},
 		{"anthropic-api-key", `sk-ant-[A-Za-z0-9_-]{24,512}`, []string{"sk-ant-"}},
 		{"openrouter-api-key", `sk-or-v1-[A-Za-z0-9]{32,512}`, []string{"sk-or-v1-"}},

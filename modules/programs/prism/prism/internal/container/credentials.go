@@ -47,6 +47,10 @@ const (
 	// prismGitHubTokenEnvPrefix prefixes the per-(account, role) tokens,
 	// PRISM_GITHUB_TOKEN_<ACCOUNT>_<ROLE>.
 	prismGitHubTokenEnvPrefix = payload.PrismGitHubTokenEnvPrefix
+
+	// gitlabTokenEnvKey is the GitLab API token credentialEnvVars injects
+	// (issue #2668). See ResolveGitLabToken for the resolution order.
+	gitlabTokenEnvKey = payload.GitLabTokenEnvName
 )
 
 // credentialForwardEnvKeys are the external-tool credentials credentialEnvVars
@@ -181,15 +185,17 @@ func IsShellExpansionLiteral(s string) bool {
 	return strings.HasPrefix(strings.TrimSpace(s), "$(")
 }
 
-// readGitHubTokenFile reads the file at path, trims surrounding whitespace,
-// and returns the token contents. Returns an error naming path (never
-// containing the file's byte contents) when the file is absent, unreadable,
-// or empty after trimming.
+// readTokenFile reads the sops-decrypted token file at path, trims
+// surrounding whitespace, and returns the token contents. Returns an error
+// naming path (never containing the file's byte contents) when the file is
+// absent, unreadable, or empty after trimming.
 //
-// The whitespace trim mirrors gh's own tolerance for a trailing newline in a
-// token file. Path is included in every error so operators can trace which
-// sops secret is broken without having to guess.
-func readGitHubTokenFile(path string) (string, error) {
+// Shared by the GitHub and GitLab resolvers — both read a one-line sops
+// secret with the same shape. The whitespace trim mirrors gh's (and glab's)
+// own tolerance for a trailing newline in a token file. Path is included in
+// every error so operators can trace which sops secret is broken without
+// having to guess.
+func readTokenFile(path string) (string, error) {
 	if path == "" {
 		return "", errors.New("empty path")
 	}
@@ -231,7 +237,7 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 	//    silent fall-through.  See ResolveGitHubToken doc.
 	if key != "" && cfg.GitHubTokenPaths != nil {
 		if path := cfg.GitHubTokenPaths[key]; path != "" {
-			tok, err := readGitHubTokenFile(path)
+			tok, err := readTokenFile(path)
 			if err != nil {
 				return "", fmt.Errorf("resolve GitHub token for %s: %w", key, err)
 			}
@@ -253,7 +259,7 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 
 	// 4. Legacy single-token file (#2029 Darwin sops-decrypt rescue).
 	if cfg.GitHubTokenPath != "" {
-		if tok, err := readGitHubTokenFile(cfg.GitHubTokenPath); err == nil {
+		if tok, err := readTokenFile(cfg.GitHubTokenPath); err == nil {
 			return tok, nil
 		}
 		// A missing file here is NOT a hard error — this is the last-resort
@@ -262,6 +268,42 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 	}
 
 	return "", nil
+}
+
+// ResolveGitLabToken returns the GitLab API token to inject into the sandbox
+// as GITLAB_TOKEN, using the resolution order:
+//
+//  1. cfg.GitLabTokenPath — read the sops-decrypted file at spawn time.
+//     PRIMARY, and the reason the value never depends on shell expansion:
+//     modules/programs/gitlab-cli.nix renders the host's GITLAB_TOKEN as the
+//     string "$(cat <path>)", which only expands when a login shell sources
+//     the home-manager session vars. That is exactly the #2348 failure mode
+//     the GitHub token paths were introduced to remove.
+//  2. env var GITLAB_TOKEN — fallback for a host with no gitlab_token_path
+//     in config.json, behind the same $(-literal guard
+//     (IsShellExpansionLiteral) the GitHub chain applies.
+//
+// Returns "" when no source yields a value — the caller then injects no
+// GITLAB_TOKEN at all, and glab inside the sandbox reports itself as
+// unauthenticated.
+//
+// Unlike ResolveGitHubToken, a configured-but-unreadable path is NOT a hard
+// error: it is logged (naming the path, never the value) and treated as
+// absent. GitLab is a secondary forge — a broken or not-yet-decrypted GitLab
+// secret must not stop a session whose mahi is on GitHub from starting. The
+// log line is what makes the misconfiguration visible.
+func ResolveGitLabToken(cfg Config) string {
+	if cfg.GitLabTokenPath != "" {
+		tok, err := readTokenFile(cfg.GitLabTokenPath)
+		if err == nil {
+			return tok
+		}
+		log.Printf("container: resolve GitLab token: %v (continuing without GITLAB_TOKEN)", err)
+	}
+	if tok := os.Getenv(gitlabTokenEnvKey); tok != "" && !IsShellExpansionLiteral(tok) {
+		return tok
+	}
+	return ""
 }
 
 // CredentialEnvVars is the exported version of credentialEnvVars. Used by
@@ -291,6 +333,9 @@ func (m *Manager) CredentialEnvVars() ([]string, error) {
 //  2. env var PRISM_GITHUB_TOKEN_<KEY> — legacy path, $(-literal guarded.
 //  3. env var GITHUB_TOKEN — final fallback, $(-literal guarded.
 //  4. cfg.GitHubTokenPath (single-token file) — #2029 Darwin rescue.
+//
+// GitLab token selection (issue #2668): cfg.GitLabTokenPath first, then the
+// inherited GITLAB_TOKEN env var — see ResolveGitLabToken.
 //
 // The $(-literal guard is defence in depth against the #2348 root cause: the
 // tmux server started from a non-shell context propagates `$(cat …)` env-var
@@ -325,6 +370,16 @@ func (m *Manager) credentialEnvVars() ([]string, error) {
 	}
 	if tok != "" {
 		vars = append(vars, githubTokenEnvKey+"="+tok)
+	}
+
+	// GitLab token — sops file first, inherited env var second, both behind
+	// the same $(-literal guard as the GitHub chain (issue #2668). Injected
+	// only when a source yields a value, so a host without
+	// nx.programs.gitlab-cli.enable gets no GITLAB_TOKEN in the sandbox and
+	// behaves exactly as it did before. A broken path is logged, not fatal —
+	// see ResolveGitLabToken.
+	if gitlabTok := ResolveGitLabToken(m.cfg); gitlabTok != "" {
+		vars = append(vars, gitlabTokenEnvKey+"="+gitlabTok)
 	}
 
 	// Note: GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME, and
@@ -379,7 +434,7 @@ func SanitizeGitHubTokenEnv(paths map[string]string, account, role string) {
 		if path == "" {
 			continue
 		}
-		tok, err := readGitHubTokenFile(path)
+		tok, err := readTokenFile(path)
 		if err != nil {
 			log.Printf("container: SanitizeGitHubTokenEnv: %s: %v", key, err)
 			continue
@@ -390,7 +445,7 @@ func SanitizeGitHubTokenEnv(paths map[string]string, account, role string) {
 	}
 	if key := GitHubTokenKey(account, role); key != "" {
 		if path, ok := paths[key]; ok && path != "" {
-			if tok, err := readGitHubTokenFile(path); err == nil {
+			if tok, err := readTokenFile(path); err == nil {
 				if setErr := os.Setenv(githubTokenEnvKey, tok); setErr != nil {
 					log.Printf("container: SanitizeGitHubTokenEnv: setenv GITHUB_TOKEN: %v", setErr)
 				}
