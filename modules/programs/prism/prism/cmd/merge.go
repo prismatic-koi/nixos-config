@@ -636,6 +636,20 @@ const (
 	// human approval" for this whole set.
 	initialOutcomeEnqueueUndetermined
 
+	// initialOutcomeEnqueueBehind — mergeStateStatus is BEHIND: the PR's
+	// branch is behind the base branch. Unlike the rest of the undetermined
+	// set, this state has a named, high-confidence cause and a documented
+	// fix already in flight: internal/mergequeue/watcher.go syncs the QUEUE
+	// HEAD with `gh pr update-branch` itself, just-in-time, once the PR
+	// reaches the front of the queue. A coordinator reasoning from first
+	// principles ('main only moves further ahead, so this can't self-
+	// resolve') is primed to run `gh pr update-branch` manually — which is
+	// redundant when the PR is already the watcher's job, and wasted work
+	// when it is not yet at the head of the queue, because every merge
+	// ahead of it invalidates the sync (#2654). The message names the
+	// forbidden action explicitly, mirroring the approval-case message.
+	initialOutcomeEnqueueBehind
+
 	// initialOutcomeEnqueueUnprotected — no branch protection at all.
 	// Watcher polls silently and NEVER auto-merges; a human must merge
 	// or close the PR.
@@ -775,6 +789,20 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	// Not CLEAN, no pending required checks. Do NOT guess "requires human
 	// approval" by elimination (#2576). Discriminate on real data.
 
+	// BEHIND: the PR's branch is behind the base branch. This has a named
+	// cause and a named fix owner — the merge watcher — so it gets its own
+	// message rather than falling into the generic undetermined case
+	// (#2654). Do NOT run `gh pr update-branch` here or tell the
+	// coordinator to.
+	if strings.EqualFold(view.MergeStateStatus, "BEHIND") {
+		dec.Outcome = initialOutcomeEnqueueBehind
+		dec.Message = fmt.Sprintf(
+			"PR #%d's branch is behind %s (mergeStateStatus=BEHIND). Standing by; will re-check. Worker/coordinator instruction: do not run `gh pr update-branch` yourself — the merge watcher already runs it, just-in-time, when this PR reaches the head of the merge queue. Syncing it now, before it is at the head, is wasted work: every merge ahead of it in the queue invalidates the sync and the CI run it triggers.",
+			pr, baseRef,
+		)
+		return dec, nil
+	}
+
 	// UNKNOWN is not a classification: GitHub computes mergeability
 	// asynchronously, and a probe right after enqueue routinely lands here
 	// with every check green. Report it as undetermined and poll again — never
@@ -803,8 +831,9 @@ func probeInitialState(pr int) (initialStateDecision, error) {
 	}
 
 	// Any other non-CLEAN state — UNSTABLE (only optional checks failing),
-	// BEHIND, HAS_HOOKS, a merge-queue transient, or a future GitHub status.
-	// Name the observed state and assert no cause rather than inventing one.
+	// HAS_HOOKS, a merge-queue transient, or a future GitHub status. BEHIND
+	// is handled above with its own message (#2654). Name the observed
+	// state and assert no cause rather than inventing one.
 	dec.Outcome = initialOutcomeEnqueueUndetermined
 	dec.Message = fmt.Sprintf(
 		"PR #%d is not yet mergeable (mergeStateStatus=%s); no blocking cause identified. Standing by and will re-check. Worker: nothing to do — the merge watcher will proceed when the PR becomes mergeable, or report otherwise.",
