@@ -62,12 +62,19 @@ func TestIsDescendant(t *testing.T) {
 		"nixos-config@feature~review-1-review-goal",
 		"nixos-config@main~investigate-flake",
 		"~leading",
+		// The tilde is in the branch part as well as the repo part, so this
+		// IS a descendant.
+		"weird~repo@main~review-1-review-goal",
 	}
 	roots := []string{
 		"obsidian",
 		"nixos-config@main",
 		"nixos-config@feature",
 		"",
+		// The tilde is in the REPO part only. Searching the whole name would
+		// wrongly demote this coordinator and take its merge queue away.
+		"weird~repo@main",
+		"weird~repo@feature",
 	}
 	for _, n := range descendants {
 		if !IsDescendant(n) {
@@ -113,6 +120,7 @@ func TestHasBranchAndCoordinatorSuffix(t *testing.T) {
 		{"nixos-config@feature", true, false},
 		{"obsidian", false, false},
 		{"obsidian~investigate-v2", false, false},
+		{"weird~repo@main", true, true},
 		{"", false, false},
 	}
 	for _, tc := range tests {

@@ -1145,7 +1145,7 @@ WHERE ended_at IS NULL AND repo = ?`
 // fails.
 //
 //	session_name NOT IN (?, ?)          not a meta-session
-//	instr(session_name, '~') = 0        not a review agent or an investigator
+//	CASE … instr(…, '~') = 0 … END      not a review agent or an investigator
 //	session_name != ''                  the repo part of the name is non-empty
 //	instr(session_name, '@') != 1       — that is, the name does not start
 //	                                    with the branch separator
@@ -1160,6 +1160,11 @@ WHERE ended_at IS NULL AND repo = ?`
 // classified one way by the SQL and the other way by Go. `substr(x, -5)` is
 // used rather than LIKE because LIKE is case-insensitive for ASCII in SQLite
 // and HasSuffix is not.
+//
+// The descendant arm searches for "~" in the BRANCH part only, mirroring
+// sessionname.IsDescendant. A repo directory may hold "~", so a whole-name
+// test would hide `weird~repo@main` — a real coordinator — from every other
+// repo's listing.
 //
 // Two changes here came from issue #2658.
 //
@@ -1189,7 +1194,11 @@ WHERE ended_at IS NULL
     OR (
       repo != ?
       AND session_name NOT IN (%s)
-      AND instr(session_name, '~') = 0
+      AND CASE
+            WHEN instr(session_name, '@') = 0
+              THEN instr(session_name, '~') = 0
+            ELSE instr(substr(session_name, instr(session_name, '@') + 1), '~') = 0
+          END
       AND session_name != ''
       AND instr(session_name, '@') != 1
       AND (

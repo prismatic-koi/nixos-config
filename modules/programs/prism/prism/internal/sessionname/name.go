@@ -55,14 +55,35 @@ func IsMeta(name string) bool {
 }
 
 // IsDescendant reports whether name is a session that another session
-// spawned — a review agent or an investigator. Such a name always carries the
-// "~" separator.
+// spawned — a review agent or an investigator.
 //
 // A descendant is never a coordinator and never a root session, whatever its
 // agent_status row says. The check is on the name alone and so cannot be
 // defeated by a wrong root_agent_name value.
+//
+// The "~" is looked for in the BRANCH part only, not over the whole name. A
+// repo directory may itself hold "~", so `weird~repo@main` is the coordinator
+// of repo `weird~repo`, not a descendant of anything. Testing the whole name
+// would demote it and take its merge queue away — a regression, not a
+// tightening. Repo makes the same distinction, and for the same reason.
+//
+// When the name has no branch, the whole name is searched, because a
+// descendant of a non-worktree parent is `<parent>~<label>` with no "@" in it.
+// One ambiguity is inherent to the grammar and is not resolvable from the name
+// alone: a bare repo directory whose own name holds "~" reads as a descendant.
+// That resolves toward refusing privilege, which is the safe direction.
 func IsDescendant(name string) bool {
-	return strings.Contains(name, DescendantSeparator)
+	return strings.Contains(branchPart(name), DescendantSeparator)
+}
+
+// branchPart returns the part of a session name in which a "~" marks a
+// descendant: everything after the first "@", or the whole name when the name
+// carries no branch.
+func branchPart(name string) string {
+	if i := strings.Index(name, BranchSeparator); i >= 0 {
+		return name[i+len(BranchSeparator):]
+	}
+	return name
 }
 
 // Repo returns the repo that a session name belongs to.

@@ -147,6 +147,30 @@ func rootFixtures() []rootFixture {
 			why: "DB-backed coordinator on a non-main branch",
 		},
 
+		// ── A repo directory whose own name holds "~" ──────────────────────
+		// The descendant guard searches the BRANCH part, not the whole name.
+		// A whole-name search would demote these two, which would take the
+		// merge queue away from a working coordinator — a regression against
+		// main, not a tightening.
+		{
+			session: "prism-test~odd@main", repo: "prism-test~odd",
+			rootAgent: "coordinator",
+			wantRoot:  true, wantCoordinator: true,
+			why: "coordinator of a repo whose directory name holds a tilde",
+		},
+		{
+			session: "prism-test~odd@feature", repo: "prism-test~odd",
+			rootAgent: "worker",
+			wantRoot:  false, wantCoordinator: false,
+			why: "worker of a repo whose directory name holds a tilde",
+		},
+		{
+			session: "prism-test~odd@feature~review-1-review-goal", repo: "prism-test~odd",
+			rootAgent: "review-goal",
+			wantRoot:  false, wantCoordinator: false,
+			why: "review agent of a repo whose directory name holds a tilde — the branch part decides",
+		},
+
 		// ── Meta-sessions ──────────────────────────────────────────────────
 		// Production never writes these rows: cmd/event.go refuses them at
 		// the write, and TestMetaSessionsAreNotWrittenToAgentStatus in
@@ -251,16 +275,18 @@ func TestIsRootSession_NilDB(t *testing.T) {
 		session string
 		want    bool
 	}{
-		{"prism-test-bare", true},                          // bare name — name alone decides
-		{"prism-test-wt@main", true},                       // @main heuristic
-		{"prism-test-wt@feature", false},                   // worktree, not main
-		{"prism-test-bare~investigate-v2", false},          // descendant
-		{"prism-test-wt@main~review-1-review-goal", false}, // descendant of a coordinator
-		{sessionname.Scratchpad, false},                    // meta
-		{sessionname.Dashboard, false},                     // meta
-		{"", false},                                        // empty
-		{"@main", false},                                   // no repo part
-		{"~investigate-x", false},                          // no repo part, descendant
+		{"prism-test-bare", true},                           // bare name — name alone decides
+		{"prism-test-wt@main", true},                        // @main heuristic
+		{"prism-test-wt@feature", false},                    // worktree, not main
+		{"prism-test-bare~investigate-v2", false},           // descendant
+		{"prism-test-wt@main~review-1-review-goal", false},  // descendant of a coordinator
+		{"prism-test~odd@main", true},                       // tilde in the REPO name, not the branch
+		{"prism-test~odd@main~review-1-review-goal", false}, // tilde in both — branch part decides
+		{sessionname.Scratchpad, false},                     // meta
+		{sessionname.Dashboard, false},                      // meta
+		{"", false},                                         // empty
+		{"@main", false},                                    // no repo part
+		{"~investigate-x", false},                           // no repo part, descendant
 	}
 	for _, tc := range tests {
 		if got := IsRootSession(tc.session, nil, quietLogger()); got != tc.want {

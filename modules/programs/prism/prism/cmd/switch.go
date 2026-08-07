@@ -20,6 +20,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -302,10 +303,11 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 	// DB row from the first moment — prism restore reads it from here.
 	repo := repoFromWorktreePath(directory)
 	if repo == "" {
-		// Not inside a project worktree — derive from session name.
-		if idx := strings.Index(sessionName, "@"); idx > 0 {
-			repo = sessionName[:idx]
-		}
+		// Not inside a project worktree — derive from the session name. The
+		// private copy that used to live here split on "@" alone, so a
+		// descendant of a non-worktree parent (`obsidian~investigate-v2`) was
+		// attributed to a repo of its own rather than to `obsidian` (#2658).
+		repo = sessionname.Repo(sessionName)
 	}
 	if err := d.UpsertStatusSeedRootAgentName(sessionName, repo, directory, "idle", nil, nil, "", harnessName, ""); err != nil {
 		return 0, fmt.Errorf("upsert status: %w", err)
