@@ -1,11 +1,13 @@
 package session
 
+import "github.com/prismatic-koi/prism/internal/titlegen"
+
 // title_fallback.go — prism-side fallback title for a newly spawned session
 // (issue #2641).
 //
 // Diagnosis (recorded here so the fix's rationale travels with the code):
 // the dashboard `title` column reads `agent_status.title`, which prism only
-// ever populates from a harness-reported value (see
+// ever populated from a harness-reported value (see
 // internal/sidecar/events.go's handleSessionCreated / handleSessionUpdated,
 // which read `properties.info.title` off pi's session.created / .updated SSE
 // events). Inspecting the pi package itself (pi-monorepo dist/core
@@ -16,14 +18,43 @@ package session
 // only writes the *host terminal's* title via an ANSI escape sequence; it
 // never touches the SSE `info.title` field prism reads. A headless
 // `prism spawn` worker never has anything call `set_session_name`, so it
-// never emits a title-bearing event — hence 4 titled rows out of 3,807 (the
-// four are sessions a human renamed interactively). The cause is in pi (no
-// auto-titling in any mode), not in prism's event handling.
+// never emits a title-bearing event. The cause is in pi (no auto-titling in
+// any mode), not in prism's event handling. That conclusion still stands.
 //
-// Fixing that is out of scope for this repo (pi's source is an external
+// CORRECTION (#2683): this file previously said the handful of titled rows
+// were "sessions a human renamed interactively". That was wrong. They are
+// opencode artifacts — titles written by the PREVIOUS harness, sitting on
+// long-lived session rows that pi later reused.
+//
+// The measured evidence, from the live DB on navi:
+//
+//	harness    rows   titled
+//	opencode      1        1  (100%)
+//	pi         3748        3  (0.08%)
+//
+// The `harness` column tracks a row's LATEST incarnation, not the harness
+// that wrote the title, which is what hid the origin. Dating settles it:
+// `home-ops@main` carried "Renovate PR #2887 app-template v5 upgrade
+// review". That PR was created 2026-05-04 and merged 2026-05-07, while the
+// earliest retained pi event is 2026-05-09 — the title described work that
+// finished two days before pi appears anywhere in the database, and it was
+// still on the dashboard months later. opencode auto-generated titles; pi
+// does not.
+//
+// Why the correction matters rather than being a footnote: "a human renamed
+// these" implies the rows are precious and must never be touched, which is
+// exactly the reasoning that let three months-stale titles sit on the
+// dashboard. Naming them as opencode artifacts is what licensed #2683 to
+// clear them (migrateV39ToV40) and to add `title_source` so provenance is
+// recorded rather than re-derived by the next reader.
+//
+// Fixing pi is out of scope for this repo (pi's source is an external
 // package — see modules/programs/prism/pi.nix). The accepted fallback is to
 // seed a sensible title at spawn time from the spawn prompt, which prism
-// already has in hand.
+// already has in hand. Since #2683 that fallback is the SECOND-best title: a
+// model-generated summary supersedes it for coordinator and worker sessions
+// (internal/titlegen), and the fallback is what stands when the model call
+// fails, is slow, or is not configured.
 //
 // The seed call (SpawnSession, internal/session/spawn.go) only derives a
 // fallback when agent_status currently has no title at all — nil on a fresh
@@ -47,79 +78,26 @@ package session
 // prompt text before it can reach agent_status.title, since the column is
 // rendered verbatim in the tmux dashboard and a spawn prompt can originate
 // from untrusted external text (an issue body, a PR description, ...) —
-// see collapseWhitespace below.
-const fallbackTitleMaxRunes = 80
+// see titlegen.Sanitise.
+
+// fallbackTitleMaxRunes is the fallback title's rune budget. It is
+// titlegen.MaxTitleRunes, not a second copy: a fallback title and a
+// generated title land in the same column and must not be allowed to drift
+// to different widths.
+const fallbackTitleMaxRunes = titlegen.MaxTitleRunes
 
 // deriveFallbackTitle returns a short, human-meaningful title derived from a
-// spawn prompt: the first non-blank line, whitespace-collapsed and truncated
-// to fallbackTitleMaxRunes runes with a trailing ellipsis. Returns "" when
-// the prompt has no non-blank line (e.g. an empty prompt), in which case the
-// caller should leave the seeded title unset (nil) rather than write an
-// empty string.
-func deriveFallbackTitle(prompt string) string {
-	line := firstNonBlankLine(prompt)
-	if line == "" {
-		return ""
-	}
-	runes := []rune(line)
-	if len(runes) > fallbackTitleMaxRunes {
-		return string(runes[:fallbackTitleMaxRunes-1]) + "…"
-	}
-	return line
-}
-
-// firstNonBlankLine returns the first line of s (after collapsing internal
-// whitespace) that is not empty once trimmed, or "" if every line is blank.
-func firstNonBlankLine(s string) string {
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == '\n' {
-			line := collapseWhitespace(s[start:i])
-			if line != "" {
-				return line
-			}
-			start = i + 1
-		}
-	}
-	return ""
-}
-
-// collapseWhitespace trims s, collapses any run of whitespace (spaces, tabs,
-// carriage returns) into a single space, and drops every other control byte
-// entirely (anything below 0x20 not already handled, plus 0x7F/DEL).
+// spawn prompt: the first non-blank line, whitespace-collapsed, stripped of
+// control bytes, and truncated to fallbackTitleMaxRunes runes with a
+// trailing ellipsis. Returns "" when the prompt has no non-blank line (e.g.
+// an empty prompt), in which case the caller should leave the seeded title
+// unset (nil) rather than write an empty string.
 //
-// The drop step matters for security, not just cosmetics: agent_status.title
-// is rendered verbatim into the tmux dashboard (internal/dashboard/sessions.go's
-// RenderSessionRow), and a spawn prompt's first line can originate from
-// untrusted external text (an issue body, a PR description, ...). Without
-// this, an ESC byte (0x1B) surviving into the title could carry an ANSI/OSC
-// escape sequence into every viewer's terminal — display spoofing at
-// minimum, and terminal-emulator-dependent worse (#2641 review). Dropping
-// the control byte (rather than treating it as a word boundary, like
-// whitespace) means an escape sequence's payload bytes are left as inert
-// printable text with no ESC prefix to interpret them.
-func collapseWhitespace(s string) string {
-	var b []byte
-	inSpace := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\r':
-			if !inSpace && len(b) > 0 {
-				b = append(b, ' ')
-			}
-			inSpace = true
-		case c < 0x20 || c == 0x7f:
-			// Drop other control bytes (ESC and friends) outright — do not
-			// let them act as a whitespace boundary either.
-		default:
-			inSpace = false
-			b = append(b, c)
-		}
-	}
-	// Trim a trailing space left by collapsing (e.g. "foo   " -> "foo ").
-	for len(b) > 0 && b[len(b)-1] == ' ' {
-		b = b[:len(b)-1]
-	}
-	return string(b)
+// The derivation itself lives in titlegen.Sanitise, which the generated-title
+// path applies to model output as well. One definition, so the two title
+// sources cannot disagree about what a title may contain — which is a
+// security property, not only a cosmetic one: the control-byte strip is what
+// keeps an ANSI escape sequence out of every viewer's terminal.
+func deriveFallbackTitle(prompt string) string {
+	return titlegen.Sanitise(prompt)
 }

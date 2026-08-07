@@ -420,6 +420,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		CheckinPrivilegedRepos:  checkinPrivilegedRepos,
 		OnReady:                 onReady,
 		InitialPrompt:           initialPrompt,
+		TitleGenerator:          newTitleGenerator(),
 		Harness:                 h,
 	}
 	sc := sidecar.New(cfg)

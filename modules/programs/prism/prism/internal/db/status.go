@@ -79,23 +79,33 @@ func (d *DB) UpsertStatus(sessionName, repo, worktree, state string, title *stri
 // modelID, which are written to agent_status.agent_name and agent_status.model_id
 // using COALESCE (only overwriting when non-nil). root_agent_name and root_model_id
 // are NOT touched by this method — use UpsertStatusWithRootAgent for session creation.
+//
+// Title provenance (#2683): a non-nil title reaching this method came from
+// the harness (`properties.info.title` on pi's session.created /
+// session.updated), and pi emits that ONLY in response to an explicit user
+// rename — it has no auto-titling in any mode (see
+// internal/session/title_fallback.go). So a non-nil title here is the
+// operator's own words and is stamped title_source='human', which is the
+// one provenance the generator will never overwrite. A nil title leaves both
+// columns untouched.
 func (d *DB) UpsertStatusWithAgent(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithAgent")
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pi', ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, title_source, agent_name, model_id, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN 'human' END, ?, ?, ?, 'pi', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
   worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
+  title_source       = CASE WHEN excluded.title IS NOT NULL THEN 'human' ELSE title_source END,
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
   last_seen          = excluded.last_seen,
   harness            = COALESCE(harness, excluded.harness),
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, now, harnessSessionID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, title, agentName, modelID, now, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status: %w", err)
 	}
@@ -182,20 +192,28 @@ func (d *DB) UpsertStatusSeedRootAgentName(sessionName, repo, worktree, state st
 	// that don't know the mode leave it unset, which is acceptable for non-spawn
 	// paths like the tmux-session-start hook).
 	insertIsolationMode := isolationModePtr
+	// Title provenance (#2683): this is the SPAWN-TIME seeding path, so a
+	// non-nil title here is deriveFallbackTitle's output over the spawn
+	// prompt — title_source='fallback'. That is the weakest provenance: the
+	// generator freely replaces it with a model summary, and a harness
+	// rename replaces it with 'human'. A nil title leaves both columns
+	// untouched, which is what preserves a better title from the row's
+	// previous life on the respawn-after-cleanup path.
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, root_agent_name, last_seen, harness, harness_session_id, isolation_mode)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, title_source, root_agent_name, last_seen, harness, harness_session_id, isolation_mode)
+VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN 'fallback' END, ?, ?, ?, ?, ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
   worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
+  title_source       = CASE WHEN excluded.title IS NOT NULL THEN 'fallback' ELSE title_source END,
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
   harness            = CASE WHEN ? IS NOT NULL THEN ? ELSE harness END,
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id),
   isolation_mode     = CASE WHEN ? IS NOT NULL THEN ? ELSE isolation_mode END`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, rootAgentNamePtr, now, insertHarness, harnessSessionID, insertIsolationMode, harnessNamePtr, harnessNamePtr, isolationModePtr, isolationModePtr)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, title, rootAgentNamePtr, now, insertHarness, harnessSessionID, insertIsolationMode, harnessNamePtr, harnessNamePtr, isolationModePtr, isolationModePtr)
 	if err != nil {
 		return fmt.Errorf("db: upsert status seed root agent name: %w", err)
 	}
@@ -213,17 +231,22 @@ ON CONFLICT(session_name) DO UPDATE SET
 // (e.g. from a legacy or race-condition write) is corrected on the very next
 // sidecar call. The TypeScript plugin (prism-hooks.ts) does not write
 // root_agent_name.
+//
+// Title provenance (#2683) is handled exactly as in UpsertStatusWithAgent: a
+// non-nil title is a harness-reported rename and is stamped
+// title_source='human'.
 func (d *DB) UpsertStatusWithRootAgent(sessionName, repo, worktree, state string, title *string, harnessSessionID *string, agentName *string, modelID *string) error {
 	d.checkTransition(sessionName, agent.AgentState(state), "UpsertStatusWithRootAgent")
 	now := time.Now().UnixMilli()
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pi', ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, title_source, agent_name, model_id, root_agent_name, root_model_id, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN 'human' END, ?, ?, ?, ?, ?, 'pi', ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
   worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
+  title_source       = CASE WHEN excluded.title IS NOT NULL THEN 'human' ELSE title_source END,
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
@@ -231,11 +254,53 @@ ON CONFLICT(session_name) DO UPDATE SET
   last_seen          = excluded.last_seen,
   harness            = COALESCE(harness, excluded.harness),
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, agentName, modelID, now, harnessSessionID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, title, agentName, modelID, agentName, modelID, now, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status with root agent: %w", err)
 	}
 	return nil
+}
+
+// SetGeneratedTitle records a machine-produced title and issue reference for
+// sessionName (issue #2683).
+//
+// title is written with title_source='generated'. issueRef is written as-is;
+// pass nil when the source text carried no reference, and the column stays
+// NULL. NULL is a real answer here — "the text names no issue" — never a
+// placeholder for one to be filled in later by guessing.
+//
+// THE HUMAN-TITLE GUARD. The UPDATE refuses any row whose title_source is
+// already 'human'. A human rename is the operator saying what this session
+// is; a generated summary must never talk over it. The guard is in the SQL,
+// not in the caller, so it holds for every call site including future ones
+// — a read-then-write check in Go would also be a race against the sidecar's
+// own state upserts.
+//
+// issue_ref is written on the same statement and therefore shares the guard.
+// That is intended: on a human-titled row the operator owns the naming, and
+// a half-applied write (reference updated, title refused) would be a
+// confusing in-between state for no gain.
+//
+// Returns (true, nil) when the row was updated, (false, nil) when it was
+// refused because the title is human-sourced or no such row exists. A
+// refusal is a normal outcome, not an error — callers log it and carry on.
+func (d *DB) SetGeneratedTitle(sessionName, title string, issueRef *string) (bool, error) {
+	const q = `
+UPDATE agent_status
+SET    title        = ?,
+       title_source = 'generated',
+       issue_ref    = ?
+WHERE  session_name = ?
+  AND  (title_source IS NULL OR title_source != 'human')`
+	res, err := d.conn.Exec(q, title, issueRef, sessionName)
+	if err != nil {
+		return false, fmt.Errorf("db: set generated title: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("db: set generated title: rows affected: %w", err)
+	}
+	return n > 0, nil
 }
 
 // UpsertStatusIfNotTerminal upserts the state for sessionName only when the
@@ -1065,7 +1130,7 @@ func (d *DB) HarnessSessionIDForInstance(instanceID string) (string, error) {
 // CurrentStatus returns the agent_status row for sessionName, or nil if not found.
 func (d *DB) CurrentStatus(sessionName string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE session_name = ?`
 	row := d.conn.QueryRow(q, sessionName)
@@ -1082,7 +1147,7 @@ WHERE session_name = ?`
 // AllActiveStatus returns all agent_status rows where ended_at IS NULL.
 func (d *DB) AllActiveStatus() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL`
 	return d.queryStatuses(q)
@@ -1113,7 +1178,7 @@ func (d *DB) ActiveSessionCountForMode(mode string) (int, error) {
 // helpers; callable for any IsolationMode value.
 func (d *DB) ActiveSessionsForMode(mode string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND isolation_mode = ?`
 	return d.queryStatuses(q, mode)
@@ -1122,7 +1187,7 @@ WHERE ended_at IS NULL AND isolation_mode = ?`
 // AllActiveStatusForRepo returns all active agent_status rows for repo.
 func (d *DB) AllActiveStatusForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
@@ -1186,7 +1251,7 @@ func (d *DB) AllActiveStatusForRepoAndOtherRootSessions(repo string) ([]Status, 
 	meta := sessionname.MetaNames()
 	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(meta)), ", ")
 	q := fmt.Sprintf(`
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL
   AND (
@@ -1232,7 +1297,7 @@ WHERE ended_at IS NULL
 // with "duplicate session".
 func (d *DB) ActiveStatusForRepoWorktree(repo, worktreePath string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND repo = ? AND worktree = ?
 LIMIT 1`
@@ -1258,7 +1323,7 @@ func (d *DB) AllStatusesWithPrefix(prefix string) ([]Status, error) {
 	// percent signs in session names are matched exactly, not as wildcards.
 	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE session_name LIKE ? ESCAPE '\'`
 	return d.queryStatuses(q, escaped+"%")
@@ -1292,7 +1357,7 @@ func (d *DB) WaitingCount() (int, error) {
 // strict per-coordinator targeting is required.
 func (d *DB) ActivePISessionsForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', 'idle', 'waiting')`
 	return d.queryStatuses(q, repo)
@@ -1303,7 +1368,7 @@ WHERE ended_at IS NULL AND harness = 'pi' AND repo = ? AND state IN ('active', '
 // by the /apply-profile and /register-provider host-API endpoints (P3.LIVE, #1214).
 func (d *DB) AllActivePISessions() ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiting')`
 	return d.queryStatuses(q)
@@ -1321,7 +1386,7 @@ WHERE ended_at IS NULL AND harness = 'pi' AND state IN ('active', 'idle', 'waiti
 // or more means the worker must specify --to explicitly.
 func (d *DB) CoordinatorCandidatesForRepo(repo string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE repo = ? AND ended_at IS NULL
   AND (root_agent_name = 'coordinator' OR (root_agent_name IS NULL AND session_name = ? || '@main'))
@@ -1336,7 +1401,7 @@ ORDER BY last_seen DESC`
 // returned and a duplicate is silently tolerated.
 func (d *DB) CoordinatorForRepo(repo string) (*Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE repo = ? AND root_agent_name = 'coordinator' AND ended_at IS NULL
 ORDER BY last_seen DESC
@@ -1414,7 +1479,7 @@ func scanStatus(s scanner) (*Status, error) {
 	var containersEnabled int64
 	err := s.Scan(
 		&st.SessionName, &st.Repo, &st.Worktree, &st.State,
-		&st.Title, &st.AgentName, &st.ModelID,
+		&st.Title, &st.TitleSource, &st.IssueRef, &st.AgentName, &st.ModelID,
 		&st.RootAgentName, &st.RootModelID, &isolationMode, &instanceID, &lastSeen, &endedAt,
 		&harness, &harnessSessionID, &harnessPort, &groupID, &muted, &containersEnabled,
 	)
@@ -1484,21 +1549,24 @@ func (d *DB) UpsertStatusFull(sessionName, repo, worktree, state string, title, 
 	if harness != nil {
 		harnessVal = *harness
 	}
+	// Title provenance (#2683): as in UpsertStatusWithAgent, a non-nil title
+	// on this path is a harness-reported rename — title_source='human'.
 	const q = `
-INSERT INTO agent_status (session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, last_seen, harness, harness_session_id)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO agent_status (session_name, repo, worktree, state, title, title_source, agent_name, model_id, root_agent_name, last_seen, harness, harness_session_id)
+VALUES (?, ?, ?, ?, ?, CASE WHEN ? IS NOT NULL THEN 'human' END, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(session_name) DO UPDATE SET
   state              = excluded.state,
   repo               = excluded.repo,
   worktree           = excluded.worktree,
   title              = COALESCE(excluded.title, title),
+  title_source       = CASE WHEN excluded.title IS NOT NULL THEN 'human' ELSE title_source END,
   agent_name         = COALESCE(excluded.agent_name, agent_name),
   model_id           = COALESCE(excluded.model_id, model_id),
   root_agent_name    = COALESCE(excluded.root_agent_name, root_agent_name),
   last_seen          = excluded.last_seen,
   harness            = excluded.harness,
   harness_session_id = COALESCE(excluded.harness_session_id, harness_session_id)`
-	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, agentName, modelID, rootAgentName, now, harnessVal, harnessSessionID)
+	_, err := d.conn.Exec(q, sessionName, repo, worktree, state, title, title, agentName, modelID, rootAgentName, now, harnessVal, harnessSessionID)
 	if err != nil {
 		return fmt.Errorf("db: upsert status full: %w", err)
 	}

@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 39
+	currentSchemaVersion = 40
 )
 
 // DB wraps a SQLite connection.
@@ -123,6 +123,28 @@ CREATE TABLE IF NOT EXISTS agent_status (
   -- strPtr, #2641) -- so readers may treat NULL and '' identically without
   -- losing information.
   title             TEXT,
+  -- title_source records who wrote the title column, so a later writer can
+  -- tell a deliberate rename from a machine-derived one (#2683). Values:
+  --   'human'      a harness-reported title -- pi only ever emits one in
+  --                response to an explicit user rename, so it is the
+  --                operator's own words and the generator must never
+  --                overwrite it.
+  --   'generated'  internal/titlegen's model summary.
+  --   'fallback'   internal/session's deriveFallbackTitle over the spawn
+  --                prompt.
+  -- NULL means the title predates provenance tracking, or there is no
+  -- title. #2666's "only seed when the title is nil" rule existed purely
+  -- because provenance could not be expressed; this column is what lets a
+  -- writer that runs more than once make the distinction properly.
+  title_source      TEXT,
+  -- issue_ref is the issue or ticket the session's work came from -- '#2683'
+  -- or 'PLAT-123'. Extracted DETERMINISTICALLY from the source text by
+  -- regex (internal/titlegen.ExtractIssueRef); never supplied by a model,
+  -- because a plausible-but-wrong number silently misattributes work. NULL
+  -- means the source text carried no reference, and never means "unknown".
+  -- The repo column disambiguates a GitHub number; Jira keys are globally
+  -- unique, so one column suffices for both forms.
+  issue_ref         TEXT,
   agent_name        TEXT,
   model_id          TEXT,
   root_agent_name   TEXT,
@@ -964,6 +986,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV38ToV39(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV39ToV40(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1266,6 +1291,94 @@ func migrateV38ToV39(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v38\u2192v39: bump version: %w", err)
 	}
 	*version = 39
+	return nil
+}
+
+// migrateV39ToV40 adds title provenance and the issue/ticket reference to
+// agent_status, and clears every title whose provenance cannot be
+// established (issue #2683).
+//
+// Two columns, both nullable TEXT, both added with a guarded ALTER TABLE in
+// the muted-column template (v33→v34):
+//
+//   - title_source — 'human' / 'generated' / 'fallback'. Without it a
+//     generator cannot tell a deliberate rename from a machine-derived
+//     title, so it would either clobber the operator's words or never run
+//     twice.
+//   - issue_ref — '#2683' or 'PLAT-123', extracted by regex from the source
+//     text, never from a model.
+//
+// Why the UPDATE clears titles
+// ----------------------------
+//
+// The dashboard was showing three-month-old work. `home-ops@main` carried
+// "Renovate PR #2887 app-template v5 upgrade review" — a PR merged
+// 2026-05-07, two days before the earliest retained pi event. Those titles
+// were written by opencode, the previous harness, and survived because
+// UpsertStatusSeedRootAgentName applies `title = COALESCE(excluded.title,
+// title)`: a title written once resurfaces on every respawn of a stable
+// session name, permanently. Adding a "do not overwrite an existing title"
+// rule on top would have preserved them for good.
+//
+// The clear is scoped to `title_source IS NULL`, which before this migration
+// is EVERY row. That is the honest scope, and it is deliberately wider than
+// "the three known-stale rows":
+//
+//   - Provenance is precisely what did not exist before this change, so no
+//     pre-migration title can be attributed to opencode, to #2641's
+//     fallback, or to a human. There is no column to sort them by and no
+//     timestamp of the title write.
+//   - The last attempt to attribute them retroactively got it wrong —
+//     internal/session/title_fallback.go called them human renames, and they
+//     were opencode artifacts. Repeating that guess to save a display string
+//     is a bad trade.
+//   - Clearing is self-healing and cheap. `title` is a display column with
+//     no referential meaning: SpawnSession re-seeds a fallback from the
+//     spawn prompt on the next spawn of the name, and the generator titles
+//     eligible sessions on their first turn. The only visible cost is that a
+//     session live at upgrade time shows no title until its next
+//     incarnation.
+//   - Keeping an unattributable title is what the issue is about. Retention
+//     is permanent under COALESCE; a blank cell lasts until the next spawn.
+//
+// After this runs, every title written carries a source, so no later
+// migration ever has to make this judgement again.
+//
+// Both ALTER TABLEs are guarded by pragma_table_info so the migration is
+// idempotent on a fresh database where the declarative schema block already
+// created the columns. The UPDATE is naturally idempotent: a second run
+// matches only rows still carrying a NULL source, and every row this
+// migration touches ends with title IS NULL, which no reader distinguishes
+// from an absent title.
+func migrateV39ToV40(conn sqlExecutor, version *int) error {
+	if *version >= 40 {
+		return nil
+	}
+	for _, col := range []struct{ name, ddl string }{
+		{"title_source", `ALTER TABLE agent_status ADD COLUMN title_source TEXT`},
+		{"issue_ref", `ALTER TABLE agent_status ADD COLUMN issue_ref TEXT`},
+	} {
+		var exists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info('agent_status') WHERE name = ?`, col.name,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("db: migration v39\u2192v40: check %s column: %w", col.name, err)
+		}
+		if exists == 0 {
+			if _, err := conn.Exec(col.ddl); err != nil {
+				return fmt.Errorf("db: migration v39\u2192v40: add %s: %w", col.name, err)
+			}
+		}
+	}
+	if _, err := conn.Exec(
+		`UPDATE agent_status SET title = NULL WHERE title IS NOT NULL AND title_source IS NULL`,
+	); err != nil {
+		return fmt.Errorf("db: migration v39\u2192v40: clear unattributable titles: %w", err)
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 40`); err != nil {
+		return fmt.Errorf("db: migration v39\u2192v40: bump version: %w", err)
+	}
+	*version = 40
 	return nil
 }
 
