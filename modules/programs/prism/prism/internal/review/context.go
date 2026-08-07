@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/gitlab"
 	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
@@ -233,6 +235,12 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 
 	prCtx := PRContext{PRNumber: opts.PRNumber, Round: opts.Round}
 
+	// GitLab remote: fetch metadata and diff via glab, parsing GitLab JSON
+	// only. The GitHub path below is left byte-for-byte unchanged.
+	if opts.Forge == forge.GitLab {
+		return fetchGitLabPRContext(opts, prCtx, maxBytes, maxLines, inlineMaxBytes, inlineMaxLines)
+	}
+
 	// Fetch PR metadata.
 	viewOut, err := runGH("pr", "view", opts.PRNumber, "--json",
 		"number,title,body,headRefName,headRefOid,baseRefName,baseRefOid,additions,deletions,changedFiles")
@@ -326,5 +334,85 @@ func FetchPRContextWithOpts(opts FetchPRContextOpts) PRContext {
 		}
 	}
 
+	return prCtx
+}
+
+// fetchGitLabPRContext is the GitLab-forge counterpart to the GitHub read
+// path in FetchPRContextWithOpts. It fetches merge-request metadata and diff
+// via glab (GitLab JSON only), then applies the identical truncation and
+// inline-vs-file placement policy used for GitHub. A glab failure is
+// non-fatal in the same way a gh failure is: it sets FetchFailed and the
+// agents fall back to git-based discovery.
+//
+// opts.Repo is the origin remote URL forwarded to glab as -R; when empty glab
+// auto-detects the repository from the worktree.
+func fetchGitLabPRContext(opts FetchPRContextOpts, prCtx PRContext, maxBytes, maxLines, inlineMaxBytes, inlineMaxLines int) PRContext {
+	mr, err := gitlab.ViewMR(opts.Repo, opts.PRNumber)
+	if err != nil {
+		proglog.Warnf("[prism review] warning: could not fetch MR metadata via glab: %v — agents will fall back to git-based discovery\n", err)
+		prCtx.FetchFailed = true
+		return prCtx
+	}
+
+	prCtx.Title = mr.Title
+	prCtx.Body = mr.Description
+	prCtx.HeadRefName = mr.SourceBranch
+	prCtx.HeadRefOid = mr.SHA
+	prCtx.BaseRefName = mr.TargetBranch
+	// GitLab's mr view JSON does not carry additions/deletions/changedFiles
+	// in the shape prism parses; they stay zero. The diff itself and the
+	// git-log commit range below give agents the substance they need.
+
+	// Gather git log — non-fatal; missing log output is noted in the prompt.
+	prCtx.RecentCommits = runGitInWorktree(opts.Worktree, "log", "--oneline", "-20")
+	if mr.TargetBranch != "" {
+		prCtx.BranchCommits = runGitInWorktree(opts.Worktree, "log", "origin/"+mr.TargetBranch+"..HEAD")
+	}
+
+	// Fetch linked issues — non-fatal; unfetchable issues get a clear marker.
+	issueNumbers := parseLinkedIssues(mr.Description)
+	if len(issueNumbers) > 0 {
+		prCtx.LinkedIssues = make(map[string]string, len(issueNumbers))
+		for _, num := range issueNumbers {
+			issueText, issueErr := gitlab.ViewIssue(opts.Repo, num)
+			if issueErr != nil {
+				prCtx.LinkedIssues[num] = fmt.Sprintf("[issue #%s could not be fetched: %v]", num, issueErr)
+			} else {
+				prCtx.LinkedIssues[num] = issueText
+			}
+		}
+	}
+
+	// Fetch diff via glab.
+	diffOut, diffErr := gitlab.DiffMR(opts.Repo, opts.PRNumber)
+	if diffErr != nil {
+		proglog.Warnf("[prism review] warning: could not fetch MR diff via glab: %v — agents will use git diff instead\n", diffErr)
+		return prCtx
+	}
+	prCtx.DiffBytes = len(diffOut)
+	prCtx.DiffLines = strings.Count(diffOut, "\n")
+
+	truncated, wasTruncated := truncateDiff(diffOut, maxBytes, maxLines)
+	prCtx.DiffTruncated = wasTruncated
+
+	if len(diffOut) <= inlineMaxBytes && strings.Count(diffOut, "\n") <= inlineMaxLines {
+		prCtx.Diff = truncated
+		return prCtx
+	}
+
+	// Large diff — write to a file reachable inside the sandbox, mirroring the
+	// GitHub path's placement policy exactly.
+	if opts.StateDir != "" {
+		if mkErr := os.MkdirAll(opts.StateDir, 0o755); mkErr != nil {
+			proglog.Warnf("[prism review] warning: could not create state dir %s: %v — using /tmp fallback\n", opts.StateDir, mkErr)
+		}
+	}
+	diffPath := diffFilePath(opts.StateDir, opts.PRNumber, opts.Round)
+	if writeErr := os.WriteFile(diffPath, []byte(diffOut), 0o644); writeErr != nil {
+		proglog.Warnf("[prism review] warning: could not write diff to %s: %v — inlining diff instead\n", diffPath, writeErr)
+		prCtx.Diff = truncated
+	} else {
+		prCtx.DiffFilePath = diffPath
+	}
 	return prCtx
 }

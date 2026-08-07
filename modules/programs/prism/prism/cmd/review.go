@@ -34,6 +34,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
+	"github.com/prismatic-koi/prism/internal/forge"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
@@ -201,6 +202,14 @@ func runReview(cmd *cobra.Command, args []string) error {
 		return wtErr
 	}
 
+	// Detect the forge from the worktree's origin remote. On a gitlab.com
+	// remote the three forge reads below (MR state, base ref, metadata+diff)
+	// resolve via glab instead of gh; on any other remote the GitHub path is
+	// used, byte-for-byte unchanged. repoURL is the origin remote URL,
+	// forwarded to glab as -R so it does not depend on the process cwd.
+	reviewForge := forge.DetectFromDir(worktree)
+	repoURL := forge.OriginRemoteURL(worktree)
+
 	// Pre-flight PR-existence/state gate (#2040). Runs FIRST — before the
 	// rebase gate — because it is cheaper (one `gh pr view`, no fetch) and
 	// more fundamental (no point rebasing onto a PR that does not exist).
@@ -211,7 +220,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// group or move the review-cycle counter. Transient gh errors are
 	// surfaced distinctly from "PR does not exist" — we never silently
 	// proceed to spawn agents against an unverified target.
-	if prStateErr := review.CheckPRState(prNumber); prStateErr != nil {
+	if prStateErr := review.CheckPRState(prNumber, reviewForge, repoURL); prStateErr != nil {
 		return prStateErr
 	}
 
@@ -234,7 +243,7 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// On --rebase, the gate also performs fetch + rebase + force-push inline;
 	// on rebase conflict it aborts the rebase and restores HEAD before
 	// returning a non-zero error. Never leaves the worktree mid-rebase.
-	baseBranch := review.ResolvePRBaseRef(prNumber) // "" on any failure → Preflight defaults to "main"
+	baseBranch := review.ResolvePRBaseRef(prNumber, reviewForge, repoURL) // "" on any failure → Preflight defaults to "main"
 	if gateErr := review.Preflight(review.PreflightOpts{
 		Worktree:   worktree,
 		Branch:     baseBranch,
@@ -400,6 +409,8 @@ func runReview(cmd *cobra.Command, args []string) error {
 		InlineMaxLines: inlineMaxLines,
 		Worktree:       worktree,
 		StateDir:       diffStateDir,
+		Forge:          reviewForge,
+		Repo:           repoURL,
 	})
 
 	// Build run options.

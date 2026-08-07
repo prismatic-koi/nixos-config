@@ -19,6 +19,9 @@ package review
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/gitlab"
 )
 
 // baseRefRunner is the test seam for invoking `gh pr view --json baseRefName`.
@@ -48,19 +51,38 @@ type baseRefJSON struct {
 	BaseRefName string `json:"baseRefName"`
 }
 
-// ResolvePRBaseRef returns the PR's base branch name (e.g. "main",
+// ResolvePRBaseRef returns the PR/MR's base branch name (e.g. "main",
 // "eks-pipeline"), or "" on any failure. The caller treats "" as
 // "fall back to the default base" — typically "main". This is the public
 // entry point used by cmd/review.go.
 //
-// Resolution is best-effort and silent: a missing gh binary, network failure,
-// unauthenticated session, non-existent PR, or an empty baseRefName all
+// On a GitHub remote (fg == forge.GitHub) the base ref comes from
+// `gh pr view --json baseRefName`. On a gitlab.com remote (fg == forge.GitLab)
+// it comes from the merge request's target_branch via glab; repo carries the
+// origin remote URL (or "" to let glab auto-detect from the worktree).
+//
+// Resolution is best-effort and silent: a missing CLI, network failure,
+// unauthenticated session, non-existent PR/MR, or an empty base branch all
 // collapse to "" without surfacing a warning. Surfacing a scary warning on
 // every invocation that isn't tied to a discoverable PR would be noise; the
 // rebase-gate guarantees its own clear messaging when the resolved base is
 // genuinely wrong.
-func ResolvePRBaseRef(prNumber string) string {
+func ResolvePRBaseRef(prNumber string, fg forge.Forge, repo string) string {
+	if fg == forge.GitLab {
+		return resolveGitLabBaseRef(gitlab.ViewMR(repo, strings.TrimSpace(prNumber)))
+	}
 	return resolvePRBaseRefWithRunner(prNumber, realGHForBaseRef{})
+}
+
+// resolveGitLabBaseRef maps a gitlab.ViewMR result to a base branch name. It
+// is the pure GitLab counterpart to resolvePRBaseRefWithRunner and is unit
+// tested directly with a canned (*MR, error). Any error collapses to "",
+// matching the GitHub best-effort contract.
+func resolveGitLabBaseRef(mr *gitlab.MR, err error) string {
+	if err != nil || mr == nil {
+		return ""
+	}
+	return strings.TrimSpace(mr.TargetBranch)
 }
 
 // resolvePRBaseRefWithRunner is the test entry point. ResolvePRBaseRef wires

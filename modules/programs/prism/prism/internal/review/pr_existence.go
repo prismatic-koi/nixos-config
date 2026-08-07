@@ -41,6 +41,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/prismatic-koi/prism/internal/forge"
+	"github.com/prismatic-koi/prism/internal/gitlab"
 )
 
 // PRStateError is returned by CheckPRState when the PR-existence/state gate
@@ -132,8 +135,76 @@ type prStateJSON struct {
 // PRStateTransient with a distinct "could not determine PR state" message —
 // the function NEVER silently passes a transient failure through to agent
 // spawn. If we cannot determine the PR's state, we refuse.
-func CheckPRState(prNumber string) error {
+// On a GitHub remote (fg == forge.GitHub) the state is resolved via
+// `gh pr view --json state,mergedAt`. On a gitlab.com remote
+// (fg == forge.GitLab) it is resolved from the merge request's state via glab;
+// repo carries the origin remote URL (or "" to let glab auto-detect from the
+// worktree). The GitLab mapping mirrors the GitHub one: an open MR passes, a
+// merged or closed/locked MR refuses with a state-specific message, a missing
+// MR is PRStateMissing, and any other glab failure is PRStateTransient.
+func CheckPRState(prNumber string, fg forge.Forge, repo string) error {
+	if fg == forge.GitLab {
+		iid := strings.TrimSpace(prNumber)
+		if iid == "" {
+			return &PRStateError{
+				Kind: PRStateTransient,
+				Msg:  "prism review: MR IID is required",
+			}
+		}
+		mr, err := gitlab.ViewMR(repo, iid)
+		return gitLabMRStateToError(iid, mr, err)
+	}
 	return checkPRStateWithRunner(prNumber, realGHForPRState{})
+}
+
+// gitLabMRStateToError maps a gitlab.ViewMR result to the same *PRStateError
+// contract CheckPRState uses for GitHub. It is a pure function so the
+// state-to-refusal mapping is unit tested without a live glab. The IID is
+// echoed into the user-facing messages so they read the same as the GitHub
+// ones ("MR !<iid>" rather than "PR #<n>" — GitLab addresses MRs with a bang).
+func gitLabMRStateToError(iid string, mr *gitlab.MR, err error) error {
+	if err != nil {
+		if errors.Is(err, gitlab.ErrMRNotFound) {
+			return &PRStateError{
+				Kind: PRStateMissing,
+				Msg:  fmt.Sprintf("prism review: MR !%s does not exist", iid),
+			}
+		}
+		return &PRStateError{
+			Kind: PRStateTransient,
+			Msg: fmt.Sprintf("prism review: could not determine MR state: %s",
+				truncateDiag(err.Error(), 2000)),
+		}
+	}
+	if mr == nil {
+		return &PRStateError{
+			Kind: PRStateTransient,
+			Msg:  "prism review: could not determine MR state: empty glab response",
+		}
+	}
+	// merged_at set, or state "merged", both mean merged. Check first so a
+	// merged MR is never reported as merely closed.
+	merged := mr.MergedAt != nil && *mr.MergedAt != ""
+	if mr.State == "merged" || merged {
+		return &PRStateError{
+			Kind: PRStateMerged,
+			Msg:  fmt.Sprintf("prism review: MR !%s is merged — nothing to review", iid),
+		}
+	}
+	if mr.State == "closed" || mr.State == "locked" {
+		return &PRStateError{
+			Kind: PRStateClosed,
+			Msg:  fmt.Sprintf("prism review: MR !%s is closed (merged: false) — nothing to review", iid),
+		}
+	}
+	if mr.State == "opened" {
+		return nil
+	}
+	return &PRStateError{
+		Kind: PRStateTransient,
+		Msg: fmt.Sprintf("prism review: MR !%s has unrecognised state %q — refusing to spawn agents",
+			iid, mr.State),
+	}
 }
 
 // checkPRStateWithRunner is the test entry point. CheckPRState wires in the

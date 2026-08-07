@@ -83,6 +83,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/config"
+	"github.com/prismatic-koi/prism/internal/forge"
 )
 
 // linkedIssueRe matches "Closes #N", "Refs #N", "Fixes #N", "References #N"
@@ -221,6 +222,14 @@ type FetchPRContextOpts struct {
 	// When empty, the diff file falls back to /tmp (host-mode and Darwin
 	// sandbox-exec agents, where the host filesystem is shared directly).
 	StateDir string
+	// Forge selects the read path used to fetch MR/PR metadata and diff. The
+	// zero value (forge.GitHub) preserves the byte-for-byte GitHub `gh` path;
+	// forge.GitLab switches to the glab-based read path.
+	Forge forge.Forge
+	// Repo is the origin remote URL (or OWNER/REPO slug), forwarded to glab as
+	// -R on the GitLab path. Ignored on the GitHub path. When empty, glab
+	// auto-detects the repository from the worktree's git remote.
+	Repo string
 }
 
 // FetchPRContext fetches PR metadata and diff from the gh CLI.

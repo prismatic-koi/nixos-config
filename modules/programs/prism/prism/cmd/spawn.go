@@ -37,7 +37,9 @@ import (
 	"github.com/prismatic-koi/prism/internal/config"
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/forge"
 	"github.com/prismatic-koi/prism/internal/git"
+	"github.com/prismatic-koi/prism/internal/gitlab"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
@@ -1149,6 +1151,25 @@ func resolveRepo(nameOrPath string) (string, error) {
 // Priority: --pr flag > --branch flag > timestamped default.
 func resolveBranch(bareRoot, branchFlag, prFlag string) (string, error) {
 	if prFlag != "" {
+		// On a gitlab.com remote, resolve and fetch the MR source branch via
+		// the GitLab head ref instead of the GitHub gh path. Detection is by
+		// origin remote URL; any non-gitlab.com remote keeps the unchanged
+		// GitHub flow below.
+		if remoteURL, _ := git.OriginRemoteURL(bareRoot); forge.IsGitLab(remoteURL) {
+			fmt.Printf("fetching gitlab.com MR !%s source branch for %s...\n", prFlag, filepath.Base(bareRoot))
+			branch, err := git.FetchGitLabMRBranch(bareRoot, prFlag, func(iid string) (string, error) {
+				mr, mrErr := gitlab.ViewMR(remoteURL, iid)
+				if mrErr != nil {
+					return "", mrErr
+				}
+				return mr.SourceBranch, nil
+			})
+			if err != nil {
+				return "", fmt.Errorf("resolve MR branch: %w", err)
+			}
+			return branch, nil
+		}
+
 		// Fetch latest remote refs so the PR branch is available.
 		fmt.Printf("fetching origin for %s...\n", filepath.Base(bareRoot))
 		if err := git.FetchRemote(bareRoot); err != nil {
