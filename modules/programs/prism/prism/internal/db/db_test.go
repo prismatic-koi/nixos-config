@@ -1667,19 +1667,39 @@ func TestAllocatePort_PartiallyUsed(t *testing.T) {
 func TestAllocatePort_Exhaustion(t *testing.T) {
 	d := openTestDB(t)
 
-	// Fill the entire range by creating sessions with every port in the range.
-	// To keep the test fast, we manually INSERT rows with ports set rather than
-	// calling AllocatePort 1000 times.
-	for port := db.PortRangeStart; port <= db.PortRangeEnd; port++ {
-		name := fmt.Sprintf("repo@s%d", port)
-		if err := d.UpsertStatus(name, "repo", "/code/repo/"+name, "active", nil, nil); err != nil {
-			t.Fatalf("UpsertStatus %s: %v", name, err)
+	// Fill the entire range by creating a session for every port in the range.
+	// Seed all rows in one transaction so the fill pays a single commit (one
+	// fsync) instead of ~2000 (#2611). AllocatePort's exhaustion check only
+	// reads harness_port for non-ended sessions
+	// (WHERE ended_at IS NULL AND harness_port IS NOT NULL), so a direct INSERT
+	// with ended_at NULL and harness_port set is equivalent to the per-row
+	// UpsertStatus + direct harness_port UPDATE it replaces.
+	// See docs/test-database-fsync.md.
+	func() {
+		raw := openRawSQLite(t, d.Path())
+		tx, err := raw.Begin()
+		if err != nil {
+			t.Fatalf("begin seed tx: %v", err)
 		}
-		// Set the port directly via raw SQL for speed.
-		if err := setPort(d, name, port); err != nil {
-			t.Fatalf("setPort %s: %v", name, err)
+		defer tx.Rollback() //nolint:errcheck
+		stmt, err := tx.Prepare(
+			`INSERT INTO agent_status (session_name, repo, worktree, state, last_seen, harness_port) VALUES (?, 'repo', ?, 'active', ?, ?)`,
+		)
+		if err != nil {
+			t.Fatalf("prepare seed insert: %v", err)
 		}
-	}
+		defer stmt.Close()
+		now := time.Now().UnixMilli()
+		for port := db.PortRangeStart; port <= db.PortRangeEnd; port++ {
+			name := fmt.Sprintf("repo@s%d", port)
+			if _, err := stmt.Exec(name, "/code/repo/"+name, now, port); err != nil {
+				t.Fatalf("seed insert %s: %v", name, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit seed tx: %v", err)
+		}
+	}()
 
 	// Now create one more session and try to allocate — should fail.
 	if err := d.UpsertStatus("repo@overflow", "repo", "/code/repo/overflow", "idle", nil, nil); err != nil {
@@ -3760,17 +3780,6 @@ func TestGroupFK_OnDeleteSetNull_MigratedDB(t *testing.T) {
 	if s.State != "active" {
 		t.Errorf("State after cascade on migrated DB: got %q, want \"active\"", s.State)
 	}
-}
-
-// setPort is a test helper that writes harness_port directly via QueryRow.
-func setPort(d *db.DB, sessionName string, port int) error {
-	// Use QueryRow with a dummy scan to execute the UPDATE.
-	var dummy int
-	err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING 1",
-		port, sessionName,
-	).Scan(&dummy)
-	return err
 }
 
 // ── QueryAuditEvents tests ────────────────────────────────────────────────────

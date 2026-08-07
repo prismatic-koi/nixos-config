@@ -54,6 +54,41 @@ VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)`
 	}
 }
 
+// insertRawEventsBatch inserts n agent_events rows in a single transaction,
+// so the whole seed costs one commit (one fsync) instead of n. It is the
+// batched form of insertRawEvent: every row is byte-identical to what
+// insertRawEvent writes, except for the per-row random id. Batching bulk
+// test-database row writes keeps internal/db off the go-test fsync-timeout
+// path (#2611); see docs/test-database-fsync.md.
+func insertRawEventsBatch(t *testing.T, d *DB, n int, eventType, rawPayload string) {
+	t.Helper()
+	tx, err := d.conn.Begin()
+	if err != nil {
+		t.Fatalf("insertRawEventsBatch: begin tx: %v", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+	const q = `
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id)
+VALUES (?, ?, ?, ?, NULL, ?, ?, ?, NULL)`
+	stmt, err := tx.Prepare(q)
+	if err != nil {
+		t.Fatalf("insertRawEventsBatch: prepare: %v", err)
+	}
+	defer stmt.Close()
+	createdAt := time.Now().UnixMilli()
+	for i := 0; i < n; i++ {
+		if _, err := stmt.Exec(
+			uuid.New().String(), scrubFakeSession, "prism-test-repo", "/tmp/prism-test",
+			eventType, rawPayload, createdAt,
+		); err != nil {
+			t.Fatalf("insertRawEventsBatch: insert row %d: %v", i, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("insertRawEventsBatch: commit: %v", err)
+	}
+}
+
 // insertRawHarnessFrame is insertRawEvent for the raw wire archive.
 func insertRawHarnessFrame(t *testing.T, d *DB, frameType, rawPayload string) {
 	t.Helper()
@@ -256,9 +291,7 @@ func TestScrubSecrets_PagesPastTheBatchSize(t *testing.T) {
 	d := openScrubTestDB(t)
 
 	const rows = scrubPageSize*2 + 7
-	for i := 0; i < rows; i++ {
-		insertRawEvent(t, d, "tool_result", `{"output":"`+scrubFakeToken+`"}`)
-	}
+	insertRawEventsBatch(t, d, rows, "tool_result", `{"output":"`+scrubFakeToken+`"}`)
 
 	report, err := d.ScrubSecrets(scrubTestRedactor(), false)
 	if err != nil {
