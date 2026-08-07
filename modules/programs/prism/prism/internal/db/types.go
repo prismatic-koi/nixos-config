@@ -72,8 +72,29 @@ type Status struct {
 // `prism sessions list`: the issue or ticket reference, then the title
 // (#2683).
 //
-// One definition, used by every renderer, so the two surfaces cannot drift
-// into showing different things for the same row.
+// One definition, used by every renderer that reads a Status row, so those
+// surfaces cannot drift into showing different things for the same row.
+// There are three, and all three call this method:
+//
+//	cmd/list_sessions.go        prism sessions list
+//	cmd/checkin_list.go         prism checkin (no argument)
+//	internal/dashboard/sessions.go  the tmux dashboard
+//
+// ONE PATH IS DELIBERATELY NOT COVERED, and the exception is named here
+// rather than left for a reader to discover. internal/dashboard's
+// applyPushEvent patches an ALREADY-RENDERED row in memory from the
+// sidecar's push event, which carries a bare title string and no Status and
+// no reference. It is not a Status renderer, so it cannot call this method.
+//
+// The consequence is bounded and self-correcting: a push event only
+// overwrites the cell when its title is non-empty, and the sidecar populates
+// that field solely from a harness-reported (human) title. So the cell can
+// briefly lose its reference prefix on a session that was renamed by hand
+// AND already carries an issue_ref, until the next poll re-reads the row and
+// restores it. Widening the dashboard socket's wire shape to carry the
+// reference was judged a worse trade than this: it is a compatibility
+// surface between a running sidecar and a running dashboard, and the defect
+// it would fix is a transient cosmetic one.
 //
 //	"#2683 · generate session titles"   both present
 //	"generate session titles"           no reference in the source text
