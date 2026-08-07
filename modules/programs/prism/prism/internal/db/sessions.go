@@ -381,7 +381,20 @@ SELECT group_id FROM session_groups
 		out.ReviewGroupID = &reviewGroupID
 
 		// Roll up verdicts from group members.
-		members, revErr := d.GroupResults(reviewGroupID)
+		//
+		// GroupResultsAll, not GroupResults (#2649): this is a historical read.
+		// It runs at parent-cleanup time and from `prism stats compare`, both
+		// after the round is over, and review agents are released 15 minutes
+		// after their round is delivered — which stamps ended_at, the column
+		// GroupResults filters on. Through the narrow read this roll-up saw an
+		// empty map and left ReviewVerdict / ReviewPassCount / ReviewFailCount
+		// nil for every round older than that window.
+		//
+		// The roll-up is a fallback — the #2110 dedicated write path persists
+		// the verdict at review-complete time and the agent-level merge below
+		// prefers it — so the loss was invisible wherever that path fired, and
+		// total for exactly the sessions the fallback exists to serve.
+		members, revErr := d.GroupResultsAll(reviewGroupID)
 		if revErr == nil && len(members) > 0 {
 			var passCount, failCount, noneCount int
 			for _, m := range members {

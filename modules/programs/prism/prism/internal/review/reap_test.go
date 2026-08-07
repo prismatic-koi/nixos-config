@@ -585,7 +585,7 @@ func TestReap_HonoursGracePeriod(t *testing.T) {
 // makes the documented post-round window a lie, which is exactly the class of
 // stale prose the tool-surface rule in AGENTS.md exists to prevent.
 //
-// Four files state the number. Update all four with the constant:
+// These prose sites state the number. Update them with the constant:
 //
 //   - modules/programs/prism/skills/prism/SKILL.md
 //     ("How long review-agent sessions stay live")
@@ -593,7 +593,11 @@ func TestReap_HonoursGracePeriod(t *testing.T) {
 //     (subsession discovery, and the "no review cycles" edge case)
 //   - modules/programs/prism/prism/docs/invariants/session-lifecycle.md
 //     ("Session kinds")
-//   - modules/programs/prism/prism/cmd/review.go (file header)
+//   - modules/programs/prism/prism/cmd/review.go — BOTH the file header and
+//     the cobra `Long` string that `prism review --help` prints. The Long
+//     string is covered mechanically by TestReviewHelp_StatesTheReleaseWindow
+//     in package cmd, because a list in a comment did not stop it going stale
+//     (round 1 of PR #2676).
 func TestReapGracePeriod_MatchesDocumentedValue(t *testing.T) {
 	if review.ReapGracePeriod != 15*time.Minute {
 		t.Errorf("ReapGracePeriod = %s, want 15m — update the four prose sites listed on this test together with the constant",

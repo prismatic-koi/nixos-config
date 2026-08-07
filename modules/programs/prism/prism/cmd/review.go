@@ -51,7 +51,11 @@ Each agent gets its own session named <parent-session>~review-N-<agent> where N
 is incremented on each invocation. A background monitor process watches for
 group completion and delivers aggregated results to this worker via prism prompt.
 
-Previous rounds' sessions persist until prism cleanup is invoked on the parent.
+Agent sessions are released 15 minutes after the review-complete prompt is
+delivered: the tmux session is killed and the harness port is returned to the
+pool. Their DB rows survive, so prism checkin <parent>~review-N-<agent> still
+reads an agent's full reasoning afterwards. Use prism reviews list to find the
+agents of a past round; prism sessions list shows live sessions only.
 
 Do NOT commit, merge, or announce completion until the review-complete prompt arrives.`,
 	Args: cobra.ExactArgs(1),

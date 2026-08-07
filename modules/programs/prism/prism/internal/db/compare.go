@@ -204,8 +204,17 @@ func (d *DB) AssembleCompareRun(sess *Session) CompareRunData {
 // recent sessions rows, sorted by session_name for deterministic output.
 // Shared by `prism stats abtest <group_id>` on both the direct and proxy
 // paths so the resolved member set and ordering are identical (issue #2098).
+//
+// GroupResultsAll, not GroupResults (#2649): this is a historical read.
+// `prism stats abtest` is retrospective by definition, and session_groups rows
+// are written only by `prism review` (RegisterGroupWithPR is its sole caller),
+// so the members resolved here are review agents. Those are released 15
+// minutes after their round is delivered, which stamps the ended_at that
+// GroupResults filters on — through the narrow read this function returned an
+// empty map and then hard-errored with "no members found" for a round that had
+// completed normally.
 func (d *DB) AbtestGroupSessions(groupID string) ([]*Session, error) {
-	members, err := d.GroupResults(groupID)
+	members, err := d.GroupResultsAll(groupID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve group members: %w", err)
 	}
