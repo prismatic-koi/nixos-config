@@ -870,6 +870,45 @@ func PRBranch(projectPath, prNumber string) (string, error) {
 	return branch, nil
 }
 
+// OriginRemoteURL returns the `origin` remote URL for the bare-layout repo at
+// projectPath. Returns "" (and a nil error is not guaranteed) when the remote
+// cannot be read; callers that only need forge classification can ignore the
+// error and treat "" as "assume GitHub".
+func OriginRemoteURL(projectPath string) (string, error) {
+	bare := gitDir(projectPath)
+	return runGit("--git-dir", bare, "remote", "get-url", "origin")
+}
+
+// FetchGitLabMRBranch fetches the source branch of gitlab.com merge request
+// <iid> into the bare-layout repo at projectPath and returns its local branch
+// name, ready to hand to CreateWorktree.
+//
+// It mirrors the GitHub `prism pr` flow (FetchRemote + PRBranch) for GitLab:
+//   - resolve the MR source branch name from glab (the target of the fetch);
+//   - fetch the MR head ref `merge-requests/<iid>/head` into a local branch of
+//     that name, force-updating it so a re-run stays idempotent.
+//
+// The `merge-requests/<iid>/head` ref is fetched (rather than the source
+// branch by name) so the flow works for fork-sourced MRs too, where the
+// source branch does not exist on origin. resolveSourceBranch is the glab
+// seam; production passes the real glab lookup.
+func FetchGitLabMRBranch(projectPath, iid string, resolveSourceBranch func(iid string) (string, error)) (string, error) {
+	sourceBranch, err := resolveSourceBranch(iid)
+	if err != nil {
+		return "", fmt.Errorf("resolve MR source branch: %w", err)
+	}
+	sourceBranch = strings.TrimSpace(sourceBranch)
+	if sourceBranch == "" {
+		return "", fmt.Errorf("could not determine source branch for MR %s", iid)
+	}
+	bare := gitDir(projectPath)
+	refspec := fmt.Sprintf("+refs/merge-requests/%s/head:refs/heads/%s", iid, sourceBranch)
+	if out, fErr := exec.Command("git", "--git-dir", bare, "fetch", "origin", refspec).CombinedOutput(); fErr != nil {
+		return "", fmt.Errorf("fetch MR %s head ref: %w: %s", iid, fErr, strings.TrimSpace(string(out)))
+	}
+	return sourceBranch, nil
+}
+
 // ResolveWorktreeGitDir returns the absolute path to worktreePath's private
 // git-state directory (the entry under <bareRoot>/.bare/worktrees/<name>),
 // by reading the authoritative pointer recorded in worktreePath's own .git
