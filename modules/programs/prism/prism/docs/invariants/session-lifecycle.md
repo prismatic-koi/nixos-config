@@ -1,6 +1,6 @@
 # Session lifecycle invariants
 
-<!-- doclint-ignore: manifest.json, raw/session.jsonl, dist/core/session-manager.js -->
+<!-- doclint-ignore: manifest.json, raw/session.jsonl, dist/core/session-manager.js, modules/programs/prism/tmux.nix -->
 <!--
   `manifest.json` and `raw/session.jsonl` are runtime-created artifacts
   inside archive directories under `~/.local/share/prism/archive/...`;
@@ -8,6 +8,18 @@
   the source tree. `dist/core/session-manager.js` is a file in the
   external pi coding-agent package (cited for the ENV_AGENT_DIR
   honouring lookup), not this repo.
+
+  `modules/programs/prism/tmux.nix` is different from those three: it is
+  a real, tracked file in this repo, and the reference is correct. It is
+  unresolvable only during the build. doclint resolves a file path under
+  the prism Go source root or the repo root, and the nix sandbox copies
+  the prism Go subtree alone — so the path resolves in a repo checkout
+  (and in `go test ./...`) and cannot resolve in
+  `nix-build-prism-checked`. The reference stays because it names the
+  exact mechanism the release ordering above depends on: that file
+  registers the global tmux `session-closed` hook. Same class as the
+  `modules/programs/prism/pi/extensions/prism.ts` entry in
+  `docs/diagnoses/review-agent-no-verdict-1993.md`.
 -->
 
 This document is a falsifiability surface for the user to mark against intent.
