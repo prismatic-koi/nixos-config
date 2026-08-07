@@ -300,7 +300,7 @@ func allocatePortForSession(sessionName, directory, harnessName string) (int, er
 	// Ensure the agent_status row exists (idempotent upsert). Use
 	// UpsertStatusSeedRootAgentName so the harness name is written to the
 	// DB row from the first moment — prism restore reads it from here.
-	repo := deriveRepo(directory)
+	repo := repoFromWorktreePath(directory)
 	if repo == "" {
 		// Not inside a project worktree — derive from session name.
 		if idx := strings.Index(sessionName, "@"); idx > 0 {

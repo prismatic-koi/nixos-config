@@ -11,6 +11,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/proglog"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 
 	sqlitelib "modernc.org/sqlite"
 )
@@ -1127,23 +1128,59 @@ WHERE ended_at IS NULL AND repo = ?`
 	return d.queryStatuses(q, repo)
 }
 
-// AllActiveStatusForRepoAndOtherCoordinators returns all active agent_status
-// rows that belong to repo, PLUS active rows from other repos that are
-// coordinator sessions. "Coordinator" is defined as:
+// AllActiveStatusForRepoAndOtherRootSessions returns all active agent_status
+// rows that belong to repo, PLUS active rows from other repos that are ROOT
+// sessions.
 //
-//	(root_agent_name = 'coordinator')
-//	OR
-//	(root_agent_name IS NULL AND session_name = '<other-repo>@main')
-//
-// The second clause handles pre-migration rows where root_agent_name has not
-// yet been written, using the same @main name-heuristic as isCoordinatorSession
-// in internal/sidecar/helpers.go.
-//
-// This is the default scope for `prism list-sessions` (no --all): own-repo
+// This is the default scope for `prism sessions list` (no --all): own-repo
 // sessions are always shown; other-repo sessions are shown only when they are
-// coordinators. Other-repo workers are hidden as noise.
-func (d *DB) AllActiveStatusForRepoAndOtherCoordinators(repo string) ([]Status, error) {
-	const q = `
+// root sessions. Other-repo workers, review agents and investigators are
+// hidden as noise.
+//
+// # The root-session rule, in SQL
+//
+// The three arms below are the SQL statement of authz.IsRootSession, and the
+// two must agree for every name. TestRootSessionParity_GoAndSQL in
+// internal/authz pins that agreement over a fixture set; change one and it
+// fails.
+//
+//	session_name NOT IN (?, ?)          not a meta-session
+//	instr(session_name, '~') = 0        not a review agent or an investigator
+//	session_name != ''                  the repo part of the name is non-empty
+//	instr(session_name, '@') != 1       — that is, the name does not start
+//	                                    with the branch separator
+//	instr(session_name, '@') = 0        a bare name: a non-worktree session,
+//	                                    which is the root of its own directory
+//	substr(session_name, -5) = '@main'  the @main name heuristic
+//	root_agent_name = 'coordinator'     the DB-backed coordinator value
+//
+// The @main arm reads the NAME, not `repo || '@main'`. The Go heuristic is
+// strings.HasSuffix(name, "@main"), which consults no repo column, so a row
+// whose repo column disagrees with its name prefix would otherwise be
+// classified one way by the SQL and the other way by Go. `substr(x, -5)` is
+// used rather than LIKE because LIKE is case-insensitive for ASCII in SQLite
+// and HasSuffix is not.
+//
+// Two changes here came from issue #2658.
+//
+// First, the bare-name arm is new. A non-worktree session such as `obsidian`
+// has no branch, so it can never equal `repo || '@main'`, and the row was
+// excluded from every cross-repo listing. `prism dashboard` uses a different
+// query and did show it, so the two surfaces disagreed.
+//
+// Second, the @main arm no longer requires `root_agent_name IS NULL`. The name
+// heuristic is the designed defence against a wrong root_agent_name value —
+// authz.IsCoordinatorSession returns dbBased || nameBased for exactly that
+// reason — but restricting it to NULL rows withheld the defence from any row
+// that had a wrong non-NULL value. A `<repo>@main` row that wrongly carries
+// root_agent_name='worker' is now listed, which is what the Go predicate has
+// always said about it.
+func (d *DB) AllActiveStatusForRepoAndOtherRootSessions(repo string) ([]Status, error) {
+	// The meta-session names are bound as parameters, not written into the
+	// SQL, so this query and sessionname.IsMeta cannot list different names.
+	meta := sessionname.MetaNames()
+	placeholders := strings.TrimSuffix(strings.Repeat("?, ", len(meta)), ", ")
+	q := fmt.Sprintf(`
 SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE ended_at IS NULL
@@ -1151,13 +1188,22 @@ WHERE ended_at IS NULL
     repo = ?
     OR (
       repo != ?
+      AND session_name NOT IN (%s)
+      AND instr(session_name, '~') = 0
+      AND session_name != ''
+      AND instr(session_name, '@') != 1
       AND (
-        root_agent_name = 'coordinator'
-        OR (root_agent_name IS NULL AND session_name = (repo || '@main'))
+        instr(session_name, '@') = 0
+        OR substr(session_name, -5) = '@main'
+        OR root_agent_name = 'coordinator'
       )
     )
-  )`
-	return d.queryStatuses(q, repo, repo)
+  )`, placeholders)
+	args := []any{repo, repo}
+	for _, name := range meta {
+		args = append(args, name)
+	}
+	return d.queryStatuses(q, args...)
 }
 
 // ActiveStatusForRepoWorktree returns the active (ended_at IS NULL)

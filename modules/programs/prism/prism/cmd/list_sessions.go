@@ -32,7 +32,7 @@ var listSessionsCmd = &cobra.Command{
 }
 
 func init() {
-	listSessionsCmd.Flags().BoolP("all", "A", false, "List ALL sessions across all repos, including other repos' workers.\nBy default the listing already includes other repos' coordinators — only their workers are hidden.")
+	listSessionsCmd.Flags().BoolP("all", "A", false, "List ALL sessions across all repos, including other repos' workers.\nBy default the listing already includes other repos' root sessions (<repo>@main, or a non-worktree session with a bare name) — only their workers are hidden.")
 	listSessionsCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
 	rootCmd.AddCommand(listSessionsCmd)
 }
@@ -55,15 +55,15 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Derive currentRepo from the working directory using the same
-	// normalisation as deriveRepo() so the filter matches the repo column
-	// written at session-start time.
+	// normalisation as repoFromWorktreePath() so the filter matches the repo
+	// column written at session-start time.
 	currentRepo := ""
 	cwd, err := os.Getwd()
 	if err != nil {
 		cwd = os.Getenv("PRISM_SPAWN_PATH")
 	}
 	if cwd != "" {
-		currentRepo = deriveRepo(cwd)
+		currentRepo = repoFromWorktreePath(cwd)
 	}
 
 	// If repo detection failed and --all was not requested, refuse to
@@ -86,10 +86,10 @@ func runListSessions(cmd *cobra.Command, _ []string) error {
 	if showAll {
 		ss, err = d.AllActiveStatus()
 	} else {
-		// Same-repo: everything. Other repos: only coordinators
-		// (root_agent_name = 'coordinator', with @main name-heuristic fallback
-		// for pre-migration rows where root_agent_name IS NULL).
-		ss, err = d.AllActiveStatusForRepoAndOtherCoordinators(currentRepo)
+		// Same-repo: everything. Other repos: only root sessions — a
+		// "<repo>@main" coordinator, or a non-worktree session with a bare
+		// name (issue #2658).
+		ss, err = d.AllActiveStatusForRepoAndOtherRootSessions(currentRepo)
 	}
 	if err != nil {
 		return fmt.Errorf("sessions list: query db: %w", err)
