@@ -241,7 +241,7 @@ reviewer's own session carries the reasoning behind it.
 **On FAIL:**
 
 1. Read each agent's `<blocking_issues>` carefully — they are mandatory.
-2. Fix every blocking issue identified.
+2. Fix every blocking issue identified. When a fix adds a guard or condition, check whether a surrounding call already changes the state the guard tests — global tmux hooks and DB writes from another process are the two known sources; see the `prism-testing` skill for the worked example.
 3. Commit and push your fixes.
 4. Re-run `prism review <pr>` according to the targeted-rerun condition below.
 5. Non-blocking observations on a failed round can also be actioned alongside
