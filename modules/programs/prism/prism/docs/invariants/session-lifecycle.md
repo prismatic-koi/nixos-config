@@ -18,7 +18,7 @@
   `nix-build-prism-checked`. The reference stays because it names the
   exact mechanism the release ordering above depends on: that file
   registers the global tmux `session-closed` hook. Same class as the
-  `modules/programs/prism/pi/extensions/prism.ts` entry in
+  out-of-subtree entries in
   `docs/diagnoses/review-agent-no-verdict-1993.md`.
 -->
 
