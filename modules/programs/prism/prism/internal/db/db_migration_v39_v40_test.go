@@ -359,15 +359,46 @@ func TestMigration_V39ToV40_ClearsUnattributableTitles(t *testing.T) {
 	}
 }
 
+// respawnLikeSpawnSession reproduces internal/session.SpawnSession's
+// spawn-time seeding decision exactly: derive a fallback title from the new
+// prompt ONLY when the row currently has no title, then upsert.
+//
+// The guard is the whole point. Passing a fresh title unconditionally would
+// make this test vacuous — a non-nil incoming title always wins the
+// COALESCE, so the assertion would hold whether or not the migration
+// cleared anything. The resurrection bug lives precisely in the nil branch:
+// with a stale title still present, SpawnSession passes nil, and
+// `title = COALESCE(excluded.title, title)` preserves the stale value
+// forever.
+func respawnLikeSpawnSession(t *testing.T, d *db.DB, sessionName, prompt string) {
+	t.Helper()
+	var seedTitle *string
+	existing, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus during respawn: %v", err)
+	}
+	if existing == nil || existing.Title == nil || *existing.Title == "" {
+		if prompt != "" {
+			seedTitle = &prompt
+		}
+	}
+	if err := d.UpsertStatusSeedRootAgentName(
+		sessionName, "home-ops", "/repo", "idle", seedTitle, nil, "coordinator", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+}
+
 // TestMigration_V39ToV40_ClearedTitleIsNotResurrectedOnRespawn is the second
 // half of that AC, and the reason clearing alone is not enough to state.
 //
 // UpsertStatusSeedRootAgentName applies `title = COALESCE(excluded.title,
 // title)`, which is exactly why the stale titles survived every respawn for
-// months. This test drives the real respawn path over a migrated row and
-// asserts the old title does not come back: it is gone from the DB, so
-// there is nothing for COALESCE to preserve, and the seeder writes a fresh
-// fallback derived from the NEW prompt instead.
+// months: SpawnSession passes nil whenever a title already exists, and
+// COALESCE then keeps the old one. This test drives that real decision (see
+// respawnLikeSpawnSession) over a migrated row and asserts the old title
+// does not come back — it is gone from the DB, so there is nothing for
+// COALESCE to preserve, and the seeder writes a fresh fallback instead.
 func TestMigration_V39ToV40_ClearedTitleIsNotResurrectedOnRespawn(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "v39_no_resurrect.db")
 	seedV39DB(t, dbPath, false, false)
@@ -380,14 +411,8 @@ func TestMigration_V39ToV40_ClearedTitleIsNotResurrectedOnRespawn(t *testing.T) 
 	}
 	defer d.Close()
 
-	// Respawn the same session name, as SpawnSession does: the row has no
-	// title now, so the caller derives a fallback from the new prompt.
 	fresh := "Upgrade the ingress controller"
-	if err := d.UpsertStatusSeedRootAgentName(
-		"home-ops@main", "home-ops", "/repo", "idle", &fresh, nil, "coordinator", "pi", "bwrap",
-	); err != nil {
-		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
-	}
+	respawnLikeSpawnSession(t, d, "home-ops@main", fresh)
 
 	st, err := d.CurrentStatus("home-ops@main")
 	if err != nil {
@@ -404,6 +429,22 @@ func TestMigration_V39ToV40_ClearedTitleIsNotResurrectedOnRespawn(t *testing.T) 
 	}
 	if st.TitleSource == nil || *st.TitleSource != "fallback" {
 		t.Errorf("title_source = %v, want \"fallback\"", st.TitleSource)
+	}
+
+	// And a SECOND respawn must not bring it back either. This is the
+	// "subsequent respawn does not resurrect" half of the AC: by now the row
+	// carries a real fallback title, so the seeder passes nil and COALESCE
+	// preserves that — the opencode title has no path back.
+	respawnLikeSpawnSession(t, d, "home-ops@main", "A different prompt entirely")
+	st, err = d.CurrentStatus("home-ops@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus after second respawn: %v", err)
+	}
+	if st.Title == nil || *st.Title == stale {
+		t.Fatalf("the stale opencode title came back on a second respawn: %v", st.Title)
+	}
+	if *st.Title != fresh {
+		t.Errorf("title = %q after a second respawn, want the existing fallback %q preserved", *st.Title, fresh)
 	}
 }
 
