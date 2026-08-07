@@ -688,13 +688,37 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// set — eliminating the NULL window between seed and SetIsolationMode
 	// (issue #1866). ActiveSessionCountForMode counts this row correctly from
 	// the moment the seed returns.
+	// Seed a fallback dashboard title from the spawn prompt (#2641). pi never
+	// auto-generates a session title in any mode (see title_fallback.go for
+	// the full diagnosis), so a headless spawned worker would otherwise never
+	// show one.
+	//
+	// UpsertStatusSeedRootAgentName is an upsert: on a fresh session name it
+	// INSERTs; on a re-spawn of a session name that was cleaned up but left
+	// its agent_status row behind (the documented respawn-after-cleanup path
+	// — internal/db/respawn_after_cleanup_test.go, #2094), it UPDATEs the
+	// existing row via ON CONFLICT, and title = COALESCE(excluded.title,
+	// title) there behaves exactly like the INSERT branch: a non-nil incoming
+	// title always wins. A fallback derived fresh from the new prompt would
+	// therefore silently clobber a real harness-reported or human-renamed
+	// title left over from the row's previous life. Guard against that by
+	// only deriving a fallback when the row currently has no title at all —
+	// covers both the fresh-INSERT case (existing == nil) and a prior
+	// incarnation that itself never got a title.
+	var seedTitle *string
+	existing, _ := d.CurrentStatus(opts.SessionName)
+	if existing == nil || existing.Title == nil || *existing.Title == "" {
+		if t := deriveFallbackTitle(opts.Prompt); t != "" {
+			seedTitle = &t
+		}
+	}
 	if err := d.UpsertStatusSeedRootAgentName(
-		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness, mode,
+		opts.SessionName, opts.Repo, opts.Worktree, "idle", seedTitle, nil, opts.AgentRole, effectiveHarness, mode,
 	); err != nil {
 		startup.log("spawn-session: seed status FAILED: %v", err)
 		return fmt.Errorf("spawn session: seed status: %w", err)
 	}
-	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q)", mode)
+	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q, title=%v)", mode, seedTitle != nil)
 
 	// Step 2: Write group_id when set (hook for Issue E — single-session
 	// spawns leave GroupID empty and this is a no-op).

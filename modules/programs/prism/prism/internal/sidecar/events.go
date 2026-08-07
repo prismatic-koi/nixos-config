@@ -481,6 +481,10 @@ func (s *Sidecar) handleSessionCreated(evt harness.HarnessEvent) {
 		}
 	}
 
+	// strPtr normalises an empty title to nil, so an empty-string title from
+	// the harness is treated identically to "no title field sent" and never
+	// clobbers an existing (real or fallback) title via upsertState's
+	// COALESCE semantics (#2641).
 	title := strPtr(info.Title)
 	sid := strPtr(info.ID)
 	s.upsertState(agent.StateActive, title, sid)
