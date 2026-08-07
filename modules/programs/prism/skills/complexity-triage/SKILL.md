@@ -86,7 +86,7 @@ Task: overhaul profiles.nix, add a new skill, wire it into the coordinator agent
 
 Total: **-3** → borderline `light` / `standard`. Because the AC count breaches the ≤ 8 threshold and the "additive" call is soft, round up to `standard`.
 
-### Example 3 — prose-only edit across five files where restraint is the task (score: -3, tier: `standard`, based on #2643)
+### Example 3 — prose-only edit across five files where restraint is the task (score: -2, tier: `standard`, based on #2643)
 
 Task: align wording across five small agent-facing prompt/skill files with a reference form already in-tree.
 
@@ -97,9 +97,9 @@ Task: align wording across five small agent-facing prompt/skill files with a ref
 - ACs are all `[functional]` + `[edge-case]`, ≤ 8 items → **yes** → **-1**
 - Failure mode is over-editing rather than under-delivering — the task edits agent-facing prose files where doing too much is the risk → **+2**
 
-Total: **-5 + 2 = -3** → `standard`.
+Total: **-4 + 2 = -2** → `standard`.
 
-On the old rubric (without the over-editing signal) this task scores -5, which
+On the old rubric (without the over-editing signal) this task scores -4, which
 reads as `light` — the most `light`-looking task imaginable: prose only, five
 small files, a reference form already in-tree. That reading is wrong. The
 actual first hand-off on #2643 deleted a safety instruction from
@@ -171,6 +171,6 @@ When overriding, note the override in the spawn prompt or a working-log entry so
 
 **Score straddles a boundary.** When the score sits exactly on a boundary (e.g. -3, 0, +3), round toward the safer (higher) tier unless a `[security]` or distributed-systems signal is already forcing the choice. The cost of one tier up is small; the cost of a doom loop is not.
 
-**No ACs available yet.** If you are scoring before ACs have been drafted (uncommon — usually the AC pass happens first), skip the AC-count signal and score on the other nine. If the resulting tier is `light`, draft the ACs first and re-score — the AC signal is often decisive at the `light` boundary.
+**No ACs available yet.** If you are scoring before ACs have been drafted (uncommon — usually the AC pass happens first), skip the AC-count signal and score on the other ten. If the resulting tier is `light`, draft the ACs first and re-score — the AC signal is often decisive at the `light` boundary.
 
 **Task obviously does not fit the rubric.** The rubric is calibrated for engineering-flavoured tasks (code, config, docs). For tasks that are fundamentally research, analysis, or communication (write a design doc, produce a retro, summarise a bus of notifications), pick the tier from the analogous role's floor — the analytical roles (`ac`, `retro`, `investigate`) have a sonnet floor in every tier, so `light` or `standard` is usually right unless the analysis itself is genuinely hard.
