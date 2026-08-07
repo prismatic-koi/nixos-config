@@ -109,26 +109,50 @@ func TestHotPathIndexes_QueryPlanUsesIndex(t *testing.T) {
 		}); err != nil {
 			t.Fatalf("InsertSession[%d]: %v", i, err)
 		}
-		for j := 0; j < nEventsPerInstance; j++ {
-			eventType := "tool_call"
-			if j%17 == 0 {
-				eventType = "msg_assistant"
-			}
-			iidCopy := iid
-			if err := d.WriteEvent(db.Event{
-				ID:          uuid.New().String(),
-				SessionName: sessionName,
-				Repo:        "repo",
-				Worktree:    "/tmp/worktree",
-				InstanceID:  &iidCopy,
-				Type:        eventType,
-				Payload:     `{"inputTokens":1,"outputTokens":1}`,
-				CreatedAt:   now.Add(-time.Hour).Add(time.Duration(j) * time.Second),
-			}); err != nil {
-				t.Fatalf("WriteEvent[%d,%d]: %v", i, j, err)
+	}
+
+	// Insert all 10k agent_events in one transaction so the seed pays a single
+	// commit (one fsync) instead of ~10k (#2611). WriteEvent's only effect
+	// beyond the agent_events INSERT is a last_seen bump on a matching
+	// agent_status row; no agent_status rows exist yet (they are seeded
+	// below), so that UPDATE is a no-op here and the batched INSERT is
+	// equivalent. The payloads carry no secrets, so WriteEvent's redaction
+	// pass is a no-op too. See docs/test-database-fsync.md.
+	func() {
+		tx, err := raw.Begin()
+		if err != nil {
+			t.Fatalf("begin events tx: %v", err)
+		}
+		defer tx.Rollback() //nolint:errcheck
+		stmt, err := tx.Prepare(`
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id)
+VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?)`)
+		if err != nil {
+			t.Fatalf("prepare events insert: %v", err)
+		}
+		defer stmt.Close()
+		base := now.Add(-time.Hour)
+		for i := 0; i < nInstances; i++ {
+			iid := fmt.Sprintf("inst-%03d", i)
+			sessionName := fmt.Sprintf("repo@s%03d", i)
+			for j := 0; j < nEventsPerInstance; j++ {
+				eventType := "tool_call"
+				if j%17 == 0 {
+					eventType = "msg_assistant"
+				}
+				createdAt := base.Add(time.Duration(j) * time.Second).UnixMilli()
+				if _, err := stmt.Exec(
+					uuid.New().String(), sessionName, "repo", "/tmp/worktree",
+					eventType, `{"inputTokens":1,"outputTokens":1}`, createdAt, iid,
+				); err != nil {
+					t.Fatalf("insert event[%d,%d]: %v", i, j, err)
+				}
 			}
 		}
-	}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit events tx: %v", err)
+		}
+	}()
 
 	// Populate agent_status. ~500 rows: half ended, half active; spread
 	// across 5 isolation modes and 20 group_ids; some carry instance_id.
