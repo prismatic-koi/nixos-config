@@ -36,6 +36,7 @@ Score the task by summing the point values of every signal that applies. Signals
 | Security-sensitive surface (auth, crypto, sandbox policy, secret handling) | +2 |
 | Performance-sensitive change (hot path, latency budget, resource limits) | +1 |
 | Distributed-systems reasoning required (concurrency, ordering, partial-failure semantics) | +2 |
+| Failure mode is over-editing rather than under-delivering — the task edits agent-facing prose, a prompt file, or a safety-bearing file, where doing too much is the risk | +2 |
 
 Read the issue body and the ACs before scoring. Score honestly — the rubric loses its calibration value the moment you thumb the scale.
 
@@ -85,7 +86,35 @@ Task: overhaul profiles.nix, add a new skill, wire it into the coordinator agent
 
 Total: **-3** → borderline `light` / `standard`. Because the AC count breaches the ≤ 8 threshold and the "additive" call is soft, round up to `standard`.
 
-### Example 3 — podman-proxy field admission (score: +4, tier: `max`)
+### Example 3 — prose-only edit across five files where restraint is the task (score: -3, tier: `standard`, based on #2643)
+
+Task: align wording across five small agent-facing prompt/skill files with a reference form already in-tree.
+
+- Touches ≤ 2 files → **no** (5 files) → 0
+- Config / YAML / docs only → **yes** → **-1**
+- A working reference / analogue file exists in-tree → **yes** → **-1**
+- Additive (add a row / entry / case) not refactor → **yes**, the change is wording alignment, not a structural rewrite → **-1**
+- ACs are all `[functional]` + `[edge-case]`, ≤ 8 items → **yes** → **-1**
+- Failure mode is over-editing rather than under-delivering — the task edits agent-facing prose files where doing too much is the risk → **+2**
+
+Total: **-5 + 2 = -3** → `standard`.
+
+On the old rubric (without the over-editing signal) this task scores -5, which
+reads as `light` — the most `light`-looking task imaginable: prose only, five
+small files, a reference form already in-tree. That reading is wrong. The
+actual first hand-off on #2643 deleted a safety instruction from
+`review-security.md` ("do not invent issues to fill the list") that nothing
+in the issue asked it to touch, while presenting the removal as an alignment
+fix. The task's difficulty was never about file count or novelty — every
+simplifying signal that made it look easy (few files, docs only, reference
+in-tree, additive, small AC set) is exactly what let an agent over-edit
+unnoticed. The correct tier is `standard`, because the risk on this task is
+doing too much, not doing too little, and a stronger model reins that in. Do
+not revert this example's tier back to `light` on the reasoning that the
+signals "obviously" describe an easy task — that reasoning is the failure
+mode the new signal exists to catch.
+
+### Example 4 — podman-proxy field admission (score: +4, tier: `max`)
 
 Task: audit and admit a new `HostConfig.Foo` field to the podman-proxy policy.
 
