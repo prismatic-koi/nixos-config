@@ -464,9 +464,10 @@ SELECT group_id FROM session_groups
 // The function does not return an error when the sessions row does not exist
 // (e.g. for pre-migration instances). In that case it is a silent no-op.
 //
-// Review-group verdict is rolled up from GroupResults when a review group
-// exists for the session. PR number and merge timestamp come from
-// pending_merges (merge-queue path only).
+// Review-group verdict is rolled up from GroupResultsAll when a review group
+// exists for the session — the wide read, because by the time this runs the
+// round is over and its member rows are closed (#2649). PR number and merge
+// timestamp come from pending_merges (merge-queue path only).
 //
 // Implementation note: this function delegates to ComputeSpawnOutcome to
 // produce the in-memory aggregate, then performs the INSERT OR REPLACE.

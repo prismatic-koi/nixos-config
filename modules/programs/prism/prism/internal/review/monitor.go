@@ -1039,17 +1039,34 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //     cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
-// firing logic. Pure-infrastructure failures (every member never bound its
-// port), ran-but-no-parseable-verdict rounds (any member terminated in
-// `finished` state without emitting a `<verdict>` tag — the #1993 shape),
-// AND rounds where a member's row was reaped mid-review (the #2573 shape,
-// where db.GroupResults drops the closed row) are all excluded by condition
-// 2 — mirroring the documented contract in
+// firing logic. Condition 2 excludes pure-infrastructure failures (every
+// member never bound its port), ran-but-no-parseable-verdict rounds (any
+// member terminated in `finished` state without emitting a `<verdict>` tag —
+// the #1993 shape), and rounds where a member's row was reaped mid-review (the
+// #2573 shape) — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //	"Count re-run cycles from the first round that had a full set of agent
 //	 results; do not count infrastructure-failure rounds toward your 3-cycle
 //	 limit."
+//
+// What enforces those exclusions changed in #2649. This function reads
+// db.GroupResultsAll, so a closed row is no longer dropped from groupData and
+// no longer excluded by its ABSENCE. Each of the three is now excluded by the
+// per-member predicate itself, on the facts the row carries: a non-terminal
+// state, an empty LastMessage, a recorded startup_error or stall_error, or a
+// terminal row whose message holds no parseable `<verdict>` tag. A member
+// reaped mid-review still fails that predicate — it was reaped precisely
+// because it had not produced a verdict — so the #2573 outcome is unchanged.
+//
+// One outcome DID change, deliberately: the #2594 sub-case. A member that
+// closed AFTER reaching `finished` with a parseable verdict used to drop out
+// of the narrow read and make its round non-counting. It is now present, and
+// its round counts. That is the correct answer — the round did produce a full
+// set of verdicts — and it is load-bearing after #2649, because the automatic
+// release closes every member of every delivered round. Without the wide read
+// this count returned zero for every past round and the LOOP-LIMIT footer
+// never fired.
 //
 // Pass excludeGroupID="" to count every group; pass the current group's id
 // when computing "cycles before this one" so that a caller can ask
