@@ -8,8 +8,11 @@ package cmd
 // A background monitor process watches the group for completion and delivers
 // the aggregated results to the worker session via prism prompt.
 //
-// Sessions persist until prism cleanup is invoked on the parent — this allows
-// re-reading review-security's findings tomorrow without re-running.
+// Agent sessions are released 15 minutes after the review-complete prompt is
+// delivered (review.ReapGracePeriod, issue #2649): the tmux session is killed
+// and the harness port is returned to the pool. Their DB rows survive, so
+// `prism checkin <parent>~review-<N>-<agent>` still renders the full agent
+// reasoning afterwards, and `prism retro` still reads the round.
 //
 // Flags:
 //
@@ -33,6 +36,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/container"
 	"github.com/prismatic-koi/prism/internal/harness"
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
+	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/session"
 )
@@ -278,6 +282,34 @@ func runReview(cmd *cobra.Command, args []string) error {
 	// Look up the isolation capabilities for this mode. All per-mode branching
 	// below reads from isoCaps rather than comparing against raw mode constants.
 	isoCaps := container.CapabilitiesFor(isoMode)
+
+	// Backstop reap sweep (#2649). Runs immediately BEFORE the cap check, so
+	// the cap is measured against live work rather than against finished
+	// rounds that nothing has released yet.
+	//
+	// The happy path is the monitor's own post-delivery reap, which releases a
+	// round ReapGracePeriod after it delivers. This sweep collects the rounds
+	// that path misses: a monitor killed during its wait (host reboot, OOM),
+	// or a round delivered by the sidecar recovery watcher rather than by a
+	// monitor.
+	//
+	// The sweep is deliberately UNSCOPED — it reaps every eligible round, not
+	// just this worker's. The concurrency cap is global, so another worker's
+	// leaked agents are what refuse this spawn; a per-parent sweep would not
+	// reclaim them. The candidate predicate makes that safe: see
+	// db.ReapableReviewAgents for why no member of a running round can be
+	// returned.
+	//
+	// Failure is non-fatal. A sweep that cannot read the DB must not refuse a
+	// review; the cap check below reports the real capacity either way.
+	if dReap, reapDBErr := openDB(); reapDBErr == nil {
+		if _, reapErr := review.ReapDeliveredReviewAgents(dReap, "", time.Now(), 0); reapErr != nil {
+			proglog.Warnf("[prism review] warning: pre-spawn reap sweep: %v — continuing\n", reapErr)
+		}
+		dReap.Close()
+	} else {
+		proglog.Warnf("[prism review] warning: pre-spawn reap sweep: open db: %v — continuing\n", reapDBErr)
+	}
 
 	// Concurrency cap checks: BEFORE any container-creation side effects.
 	// Both checks run after the DB isolation-mode lookup so that the cap

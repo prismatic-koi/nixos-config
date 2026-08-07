@@ -59,6 +59,17 @@ type MonitorOpts struct {
 	// Timeout is the maximum time to wait for the group to complete. Zero means
 	// no timeout (monitor runs until the group is complete).
 	Timeout time.Duration
+	// ReapAfterDelivery makes MonitorFunc wait out the reap grace period after
+	// it delivers the review-complete prompt, then release this round's agent
+	// sessions (issue #2649). RunAsync sets it for every production round.
+	//
+	// It is opt-in rather than always-on so MonitorFunc stays a fast, pure
+	// function for the tests that drive it directly: a test that does not ask
+	// for the reap does not pay the wait and sees no teardown.
+	ReapAfterDelivery bool
+	// ReapGrace overrides ReapGracePeriod for this round. Zero uses the
+	// default. Read only when ReapAfterDelivery is true.
+	ReapGrace time.Duration
 }
 
 // defaultPollInterval is how often the monitor polls GroupCompleted.
@@ -297,6 +308,16 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 
 	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
+
+	// Release this round's agent sessions once the grace period elapses
+	// (#2649). This runs LAST, and only after delivered_at is written: the
+	// reap predicate reads that column, so a failed SetGroupDeliveredAt above
+	// leaves the round un-reapable rather than reaping it early. The wait
+	// blocks this process, which has no work left to do — see
+	// ReapGroupAfterGrace for why the monitor hosts the wait.
+	if opts.ReapAfterDelivery {
+		ReapGroupAfterGrace(d, opts.GroupID, opts.ReapGrace)
+	}
 	return nil
 }
 

@@ -247,6 +247,49 @@ func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, perAgen
 	forceTerminateStuckMembers(d, agentSessions, perAgentTimeout)
 }
 
+// ReapSideEffectsForTest replaces the reaper's three process-side effects
+// (issue #2649) and returns a restore function the caller must defer.
+//
+// Tests must stub all three. The suite is isolated from host state
+// (`internal/sidecar` test-isolation convention): a real tmux.KillSession, a
+// real session.KillSidecar, or a real container EnsureRemoved would reach the
+// developer's tmux server, signal a live sidecar process, and delete files
+// under the real state root. Pass nil for a hook the test does not assert on
+// and it becomes a no-op.
+func ReapSideEffectsForTest(killTmux func(string), killSidecar func(string), removeContainer func(sessionName, isolationMode string)) func() {
+	prevTmux, prevSidecar, prevContainer := reapKillTmuxSession, reapKillSidecar, reapRemoveContainer
+	noopOne := func(string) {}
+	noopTwo := func(string, string) {}
+	if killTmux == nil {
+		killTmux = noopOne
+	}
+	if killSidecar == nil {
+		killSidecar = noopOne
+	}
+	if removeContainer == nil {
+		removeContainer = noopTwo
+	}
+	reapKillTmuxSession, reapKillSidecar, reapRemoveContainer = killTmux, killSidecar, removeContainer
+	return func() {
+		reapKillTmuxSession, reapKillSidecar, reapRemoveContainer = prevTmux, prevSidecar, prevContainer
+	}
+}
+
+// ReapClockForTest replaces the ReapGroupAfterGrace clock pair (issue #2649)
+// and returns a restore function. Without it, a test that exercises the
+// post-delivery reap would block for ReapGracePeriod.
+//
+// Both halves must be supplied together. A stubbed sleep with a real
+// time.Now() would return instantly and then read a clock that has NOT
+// advanced, so the sweep would find nothing and the test would fail for a
+// reason that says nothing about production. Pass a fake clock that the sleep
+// stub advances.
+func ReapClockForTest(sleep func(time.Duration), now func() time.Time) func() {
+	prevSleep, prevNow := reapSleep, reapNow
+	reapSleep, reapNow = sleep, now
+	return func() { reapSleep, reapNow = prevSleep, prevNow }
+}
+
 // PersistReviewOutcomeForTest is an exported wrapper around persistReviewOutcome
 // for use in external test packages (#2110). It allows tests to verify the
 // review-complete write trigger — verdict + pass/fail counts persisted on the

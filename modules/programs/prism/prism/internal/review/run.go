@@ -662,6 +662,11 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		AgentSessions: expectedSessions,
 		DBPath:        dbPath,
 		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
+		// Release this round's agent sessions ReapGracePeriod after the
+		// review-complete prompt lands (#2649). Without this the round's five
+		// sessions hold a concurrency slot and a harness port until a human
+		// notices.
+		ReapAfterDelivery: true,
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.
