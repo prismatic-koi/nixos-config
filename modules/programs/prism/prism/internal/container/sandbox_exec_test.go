@@ -1824,3 +1824,380 @@ func TestRegexQuotePath(t *testing.T) {
 		}
 	}
 }
+
+// ── section 5k: Go module cache + build cache (issue #2621) ─────────────────
+
+// TestGenerateProfile_GoCacheRWGrant verifies that generateProfile emits the
+// section-5k read-write grant for the two Go cache directories, so the repo
+// AGENTS.md quality gate (`go build ./...`, `go test ./...`) runs inside a
+// Darwin worker with no extra environment setup (issue #2621).
+//
+// The paths are asserted as LITERALS here, not derived from goCacheDirs, so
+// that a change to either the helper or the emitted block has to be a
+// deliberate edit of both. The grant must be read-write: go writes module
+// downloads plus cache/lock under GOMODCACHE and build outputs under GOCACHE,
+// so a read-only grant would not make the documented command work.
+//
+// The block is emitted unconditionally — the fake home here contains neither
+// directory, matching a fresh host. sandbox-exec silently ignores
+// (subpath ...) rules for non-existent paths.
+//
+// This substring assertion is necessary but not sufficient — the paired
+// Darwin integration tests in
+// internal/integration/sandbox_exec_go_cache_darwin_test.go prove the rule is
+// load-bearing against /usr/bin/sandbox-exec per docs/sandbox-exec-testing.md.
+func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately create NEITHER dir — emission is unconditional.
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache"})
+	profile := generateProfile(m)
+
+	// One clause per directory, identical operations. file-map-executable
+	// appears on NEITHER: section 9 allows process-exec* with no path filter,
+	// so adding the flag to a section-5k clause would change nothing. The
+	// module cache's execution posture comes from the section-22 deny.
+	for _, dir := range []string{
+		filepath.Join(fakeHome, "go", "pkg", "mod"),
+		filepath.Join(fakeHome, "Library", "Caches", "go-build"),
+	} {
+		want := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
+			"  (subpath " + quoteSBPL(dir) + "))\n"
+		if !strings.Contains(profile, want) {
+			t.Errorf("profile missing the section-5k grant for %s:\n%s\nfull profile:\n%s", dir, want, profile)
+		}
+	}
+}
+
+// TestGenerateProfile_GoCacheModuleCacheExecDeny pins the section-22 deny
+// that stops a sandboxed process executing anything out of the Go module
+// cache (issue #2621).
+//
+// The module cache holds dependency SOURCE. Section 5k grants it read-write
+// so the toolchain can populate it, so without an explicit deny a sandboxed
+// process could plant a binary among the sources and run it.
+//
+// The deny is required because section 9 allows process-exec* with NO path
+// filter. Expressing this as the mere ABSENCE of file-map-executable on the
+// section-5k clause does not work, and the host run of #2621 proved it: a
+// planted binary executed from the module cache under the production
+// profile, and from the build cache even with all of section 5k stripped.
+//
+// GOCACHE must NOT be denied — cmd/go can serve a linked test binary out of
+// the build cache on a warm build.
+func TestGenerateProfile_GoCacheModuleCacheExecDeny(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-exec"})
+	profile := generateProfile(m)
+
+	modCache := filepath.Join(fakeHome, "go", "pkg", "mod")
+	buildCache := filepath.Join(fakeHome, "Library", "Caches", "go-build")
+
+	wantDeny := "(deny process-exec* file-map-executable\n" +
+		"  (subpath " + quoteSBPL(modCache) + "))\n"
+	if !strings.Contains(profile, wantDeny) {
+		t.Errorf("profile missing the section-22 module-cache exec deny:\n%s\nfull profile:\n%s", wantDeny, profile)
+	}
+
+	// The build cache must not be swept into the deny — denying execution
+	// there risks breaking a warm-cache `go test`, the very gate section 5k
+	// exists to enable.
+	denyAt := strings.Index(profile, "(deny process-exec*")
+	if denyAt >= 0 && strings.Contains(profile[denyAt:], quoteSBPL(buildCache)) {
+		t.Errorf("the build cache %s appears in the exec deny — a warm-cache `go test` execs from it.\nfull profile:\n%s", buildCache, profile)
+	}
+
+	// file-map-executable must not appear on either section-5k allow clause:
+	// it is inert there (section 9's unqualified process-exec* already
+	// permits execution) and its presence would imply the grant governs
+	// execution, which it does not.
+	for _, dir := range []string{modCache, buildCache} {
+		rule := "(subpath " + quoteSBPL(dir) + ")"
+		at := strings.Index(profile, rule)
+		if at < 0 {
+			t.Fatalf("profile has no rule for %q.\nfull profile:\n%s", dir, profile)
+		}
+		start := strings.LastIndex(profile[:at], "(allow ")
+		if start >= 0 && strings.Contains(profile[start:at], "file-map-executable") {
+			t.Errorf("section-5k allow clause for %s carries file-map-executable — it is inert there;\nclause: %q", dir, profile[start:at])
+		}
+	}
+}
+
+// TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow is the ordering
+// guard for the section-22 deny (issue #2621).
+//
+// SBPL resolves a conflict in favour of the LATER rule. Section 9 emits
+// (allow process-exec* ...) with no path filter, so the module-cache deny is
+// effective ONLY while it is emitted after that allow. Move it above section
+// 9 and the module cache becomes executable again — with every substring
+// assertion in this file still green, because the deny text is present, just
+// outranked.
+//
+// This test is the tripwire for that silent failure, and for a future section
+// inserted below section 22 that re-allows process-exec*.
+func TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-order"})
+	profile := generateProfile(m)
+
+	allowAt := strings.Index(profile, "(allow process-exec*")
+	if allowAt < 0 {
+		t.Fatalf("profile has no (allow process-exec* ...) clause — the deny's ordering premise changed.\nfull profile:\n%s", profile)
+	}
+	denyAt := strings.Index(profile, "(deny process-exec*")
+	if denyAt < 0 {
+		t.Fatalf("profile has no (deny process-exec* ...) clause.\nfull profile:\n%s", profile)
+	}
+	if denyAt < allowAt {
+		t.Errorf("the module-cache exec deny (offset %d) is emitted BEFORE the section-9 process-exec* allow (offset %d) — "+
+			"SBPL takes the later rule, so the deny is silently overridden and the module cache is executable.\nfull profile:\n%s",
+			denyAt, allowAt, profile)
+	}
+
+	// No process-exec* allow may follow the deny — that would re-open it the
+	// same way.
+	if reAllow := strings.Index(profile[denyAt:], "(allow process-exec*"); reAllow >= 0 {
+		t.Errorf("a (allow process-exec* ...) clause is emitted AFTER the module-cache deny (offset %d) — it re-opens execution.\nfull profile:\n%s",
+			denyAt+reAllow, profile)
+	}
+}
+
+// TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches is the security AC
+// of issue #2621: the widening covers the two Go cache leaves and nothing
+// else.
+//
+// Each ancestor is checked in both (subpath ...) and (literal ...) form:
+//
+//   - ~/go — would expose ~/go/bin, where `go install` drops binaries that
+//     are typically on the host's PATH. A sandboxed agent must not be able to
+//     plant an executable the user later runs.
+//   - ~/go/pkg — the GOPATH package root, wider than the module cache.
+//   - ~/Library/Caches — the user's entire cache tree (browser, applications).
+//   - ~/Library, ~ — self-evidently out of bounds.
+//
+// ~/Library/Application Support/go (GOENV plus the Go telemetry dir) is
+// checked as an explicit non-grant too: go tolerates an unreadable env file
+// and telemetry is best-effort, so neither needs a grant.
+func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// No BareRoot: the section-6b ancestor block grants (subpath HOME) for
+	// file-test-existence when BareRoot is set, which would mask this check.
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-scope"})
+	profile := generateProfile(m)
+
+	for _, forbidden := range []string{
+		filepath.Join(fakeHome, "go"),
+		filepath.Join(fakeHome, "go", "pkg"),
+		filepath.Join(fakeHome, "Library", "Caches"),
+		filepath.Join(fakeHome, "Library"),
+		filepath.Join(fakeHome, "Library", "Application Support", "go"),
+		fakeHome,
+	} {
+		for _, form := range []string{
+			"(subpath " + quoteSBPL(forbidden) + ")",
+			"(literal " + quoteSBPL(forbidden) + ")",
+		} {
+			if strings.Contains(profile, form) {
+				t.Errorf("profile grants %s — outside the two Go cache dirs. Grant the LEAVES only.\nfull profile:\n%s", form, profile)
+			}
+		}
+	}
+
+	// Occurrence counts are exact, so a path cannot leak into a third clause
+	// unnoticed. The module cache appears twice by design — the section-5k
+	// allow plus the section-22 exec deny — and the build cache once.
+	for _, dir := range goCacheDirs(fakeHome) {
+		want := 1
+		if dir.execDenied {
+			want = 2 // section-5k allow + section-22 deny
+		}
+		if got := strings.Count(profile, quoteSBPL(dir.path)); got != want {
+			t.Errorf("Go cache dir %s must appear exactly %d time(s) in the profile; found %d.\nfull profile:\n%s",
+				dir.path, want, got, profile)
+		}
+	}
+}
+
+// TestGoCacheDirs_AreTheGoDarwinDefaults pins the resolved paths to the Go
+// toolchain's Darwin defaults (issue #2621).
+//
+// The values are exact, not approximate: the sandbox env forwards no GO*
+// variable and go's env file under ~/Library/Application Support is not
+// granted, so the in-sandbox toolchain always resolves GOMODCACHE to
+// $HOME/go/pkg/mod and GOCACHE to $HOME/Library/Caches/go-build. If Go ever
+// changes those defaults, this test is the tripwire.
+func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
+	got := goCacheDirs("/Users/example")
+	want := []goCacheDir{
+		{path: "/Users/example/go/pkg/mod", execDenied: true},
+		{path: "/Users/example/Library/Caches/go-build", execDenied: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("goCacheDirs returned %d entries (%v); want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i].path != want[i].path {
+			t.Errorf("goCacheDirs[%d].path = %q; want %q", i, got[i].path, want[i].path)
+		}
+		if got[i].execDenied != want[i].execDenied {
+			t.Errorf("goCacheDirs[%d].execDenied = %v; want %v (%s)",
+				i, got[i].execDenied, want[i].execDenied, want[i].path)
+		}
+	}
+
+	// Empty home yields no entries — the caller must not emit a grant rooted
+	// at "/" or an SBPL clause with no path filter.
+	if dirs := goCacheDirs(""); dirs != nil {
+		t.Errorf("goCacheDirs(\"\") = %v; want nil", dirs)
+	}
+}
+
+// TestGenerateProfile_GoCacheGrantAbsentWithoutHome verifies that an
+// unresolvable home emits no Go cache clause at all — never an (allow ...)
+// with no path filter, which SBPL would read as "everything" (issue #2621).
+func TestGenerateProfile_GoCacheGrantAbsentWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-nohome"})
+	profile := generateProfile(m)
+
+	if strings.Contains(profile, "go-build") {
+		t.Errorf("profile references go-build with no resolvable home:\n%s", profile)
+	}
+	if strings.Contains(profile, "(allow file-read* file-write* file-test-existence file-read-metadata\n)") {
+		t.Errorf("profile contains a filter-less allow clause:\n%s", profile)
+	}
+}
+
+// TestEnsureGoCacheDirs_CreatesBothDirs verifies that the Prepare-time
+// helper materialises the two directories the section-5k grant covers
+// (issue #2621).
+//
+// This is load-bearing, not cosmetic: a (subpath ...) grant on a path that
+// does not exist is a silent no-op, and the sandboxed process cannot create
+// the path itself because MkdirAll would first have to mkdir the ungranted
+// parents (~/go, ~/go/pkg, ~/Library/Caches) and gets EPERM. Without the
+// host-side creation, a machine that has never run go outside a sandbox
+// still fails the documented quality gate.
+func TestEnsureGoCacheDirs_CreatesBothDirs(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	ensureGoCacheDirs()
+
+	for _, dir := range goCacheDirs(fakeHome) {
+		info, err := os.Stat(dir.path)
+		if err != nil {
+			t.Errorf("ensureGoCacheDirs did not create %s: %v", dir.path, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%s exists but is not a directory", dir.path)
+		}
+	}
+}
+
+// TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal verifies the best-effort
+// posture (issue #2621): the Go caches are a build convenience, unlike the
+// work-dir git/ssh configs whose absence hard-fails Prepare, so a home that
+// cannot be written to must not stop a session from starting. This is the
+// homeless-shelter shape ($HOME unwritable inside the nix build sandbox).
+func TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal(t *testing.T) {
+	base := t.TempDir()
+	unwritable := filepath.Join(base, "ro-home")
+	if err := os.MkdirAll(unwritable, 0o500); err != nil {
+		t.Fatalf("create read-only fake home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
+	t.Setenv("HOME", unwritable)
+
+	// Must return normally — the only contract is "does not panic, does not
+	// abort the caller".
+	ensureGoCacheDirs()
+
+	if _, err := os.Stat(filepath.Join(unwritable, "go", "pkg", "mod")); err == nil {
+		t.Skip("fake home turned out to be writable (running as root?) — nothing to assert")
+	}
+}
+
+// ── GOTOOLCHAIN pin (issue #2621, round-4 escalation decision) ──────────────
+
+// TestGoToolchainEnv_PinsLocal asserts the sandbox env carries
+// GOTOOLCHAIN=local.
+//
+// Policy: nix is authoritative for the Go toolchain inside a sandbox. A
+// sandboxed agent must not silently download an unpinned toolchain from the
+// internet and execute it out of the shared module cache. When a go.mod needs
+// a newer toolchain than nix ships, the build must fail loudly and the fix is
+// to bump the nix-pinned Go, never to widen the sandbox.
+//
+// The exact value matters. "local" is the only setting that disables the
+// download-and-exec path outright; a version string ("go1.26.5") still permits
+// a switch, and "auto" is the default this exists to override.
+func TestGoToolchainEnv_PinsLocal(t *testing.T) {
+	got := GoToolchainEnv()
+	want := []string{"GOTOOLCHAIN=local"}
+
+	if len(got) != len(want) {
+		t.Fatalf("GoToolchainEnv() = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("GoToolchainEnv()[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestGoToolchainPin_IsCoupledToModuleCacheExecDeny documents and pins the
+// coupling between the two halves of the #2621 toolchain mechanism.
+//
+// The section-22 deny makes the module cache non-executable. That is only safe
+// for the build because GOTOOLCHAIN=local stops cmd/go downloading a toolchain
+// into that same directory and exec'ing it (cmd/go/internal/toolchain:
+// download at select.go:357, exec at select.go:458). Either half alone is a
+// defect:
+//
+//   - deny without the pin — `go build` breaks on any repo whose go.mod
+//     outgrows the nix-pinned toolchain, with the #2621 error shape;
+//   - pin without the deny — the module cache stays executable, which is the
+//     security hole the deny closes.
+//
+// A future edit that removes one must remove or reconsider the other. This
+// test fails if either half disappears.
+func TestGoToolchainPin_IsCoupledToModuleCacheExecDeny(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-toolchain-coupling"})
+	profile := generateProfile(m)
+
+	modCache := filepath.Join(fakeHome, "go", "pkg", "mod")
+	denyPresent := strings.Contains(profile,
+		"(deny process-exec* file-map-executable\n  (subpath "+quoteSBPL(modCache)+"))")
+
+	pinPresent := false
+	for _, kv := range GoToolchainEnv() {
+		if kv == "GOTOOLCHAIN=local" {
+			pinPresent = true
+		}
+	}
+
+	if denyPresent != pinPresent {
+		t.Errorf("the module-cache exec deny and the GOTOOLCHAIN=local pin must be present together "+
+			"(deny=%v, pin=%v). They are one mechanism: the deny blocks the toolchain exec that "+
+			"GOTOOLCHAIN=auto would perform out of the module cache. Removing one without the other "+
+			"either breaks `go build` on a go.mod version bump or reopens the module cache to execution.",
+			denyPresent, pinPresent)
+	}
+	if !denyPresent {
+		t.Errorf("module-cache exec deny missing from the profile;\nfull profile:\n%s", profile)
+	}
+}

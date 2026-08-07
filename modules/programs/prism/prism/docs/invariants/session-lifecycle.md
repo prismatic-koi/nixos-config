@@ -200,3 +200,14 @@ to all of them. The valid isolation modes referenced below are `bwrap`,
 - `prism cleanup`'s sidecar-teardown, port-release, DB-end, archive, and bus-message-purge steps are **identical across all isolation modes**; only the isolator-specific `EnsureRemoved` step differs (and is a no-op for `host`).
 - The concurrency cap is per-isolator: `bwrap` and `sandbox-exec` each enforce their own cap independently via `Isolator.Cap`; `host` is uncapped (`Isolator.Cap` returns `Limit: 0`).
 - A coordinator running inside a sandbox proxies CLI calls (`prism cleanup`, `prism logs`, `prism merges`, etc.) through `PRISM_HOST_API` to the host sidecar; the host-side prism DB and merge queue remain the source of truth regardless of which side the CLI is invoked from.
+
+### Go toolchain and caches (`sandbox-exec`)
+
+- A `sandbox-exec` session can run `go build ./...` and `go test ./...` with no extra environment setup. The Go caches at their default Darwin paths — `~/go/pkg/mod` (GOMODCACHE) and `~/Library/Caches/go-build` (GOCACHE) — are readable and writable from inside the sandbox, and are shared with the host rather than per-session, so a second session starts with a warm cache.
+- Both cache directories exist on the host before the sandbox starts: prism creates them at session-prepare time, because a sandbox grant on a path that does not exist grants nothing and the sandboxed process cannot create it.
+- No path outside those two directories is reachable as a result. In particular `~/go/bin` — where `go install` places binaries that are typically on the host `PATH` — is **not** reachable from inside the sandbox.
+- **Nothing can be executed from `~/go/pkg/mod`.** The module cache holds dependency source and is writable by the agent, so execution from it is denied outright. Copying a binary there and running it fails, even though writing it succeeds.
+- Binaries **can** be executed from `~/Library/Caches/go-build`. This is required: on a warm build the Go toolchain can run a linked test binary directly out of the build cache.
+- `GOTOOLCHAIN` is `local` inside the sandbox, and cannot be changed from within it. Nix is authoritative for the Go toolchain version. A sandboxed agent never downloads a Go toolchain from the internet.
+- When a project's `go.mod` requires a newer Go than nix provides, the build **fails loudly** — `go: go.mod requires go >= <version> (running <version>)` — instead of downloading one. The fix is to bump the nix-pinned Go, not to widen the sandbox.
+- These last two statements are one mechanism, not two independent settings: the toolchain auto-download writes into `~/go/pkg/mod` and then executes from it, which the module-cache execution denial blocks. Changing either without the other either breaks `go build` on a `go.mod` version bump or makes the module cache executable again.

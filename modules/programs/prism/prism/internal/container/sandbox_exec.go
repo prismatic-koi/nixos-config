@@ -91,6 +91,152 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 	return nil
 }
 
+// goCacheDir describes one Go cache directory the sandbox grants read-write,
+// together with whether the sandboxed process must also be able to map code
+// out of it (issue #2621).
+type goCacheDir struct {
+	// path is the absolute host path of the cache directory.
+	path string
+
+	// execDenied emits an explicit (deny process-exec* file-map-executable)
+	// for this directory in the final deny section.
+	//
+	// True for GOMODCACHE. The module cache holds module SOURCE, and with the
+	// GOTOOLCHAIN pin below nothing in the documented gate execs out of it, so
+	// a sandboxed process must not be able to run anything it plants among the
+	// dependency sources.
+	//
+	// COUPLING — read GoToolchainEnv before touching this. The "nothing execs
+	// from the module cache" premise is TRUE ONLY BECAUSE prism injects
+	// GOTOOLCHAIN=local. Under Go's default GOTOOLCHAIN=auto, cmd/go downloads
+	// a newer toolchain INTO the module cache and execs <dir>/bin/go from
+	// there, which this deny would block. The two changes are one mechanism:
+	// remove the env pin and this deny breaks `go build` on any repo whose
+	// go.mod outgrows the nix-pinned toolchain.
+	//
+	// The deny is load-bearing rather than decorative, and the ABSENCE of a
+	// file-map-executable grant does NOT achieve the same thing. Section 9
+	// emits (allow process-exec* ...) with NO path filter, so execution is
+	// permitted profile-wide and no section-5k grant governs it either way.
+	// The host run of #2621 proved this empirically: a planted binary ran
+	// from BOTH cache dirs, and it ran from GOCACHE even with the whole
+	// section-5k block stripped. Withholding a flag from an allow clause
+	// cannot narrow a capability that a later unqualified allow hands out.
+	// Only an explicit deny does.
+	//
+	// False for GOCACHE. cmd/go can serve a linked test binary straight out
+	// of the build cache on a warm build, so execution there must keep
+	// working — denying it risks breaking the very gate this section exists
+	// to enable.
+	execDenied bool
+}
+
+// goCacheDirs returns the Go cache directories the sandbox grants read-write
+// (section 5k of generateProfile, issue #2621), derived from the given home
+// directory. It returns nil when home is empty.
+//
+// The two entries are the Go toolchain's Darwin DEFAULTS:
+//
+//	<home>/go/pkg/mod                 GOMODCACHE (GOPATH=<home>/go)
+//	<home>/Library/Caches/go-build    GOCACHE    (os.UserCacheDir()/go-build)
+//
+// Hardcoding the defaults is exact rather than approximate: the sandbox env
+// is built explicitly and forwards no GO* variable, and go's env file under
+// ~/Library/Application Support is not granted, so the in-sandbox toolchain
+// cannot resolve anything else. See the section-5k comment for why reading
+// the host's GO* env here would be a widening vector.
+//
+// This is the single source of truth for the pair: generateProfile grants
+// these paths and ensureGoCacheDirs creates them, so the grant and the
+// directory cannot drift apart.
+func goCacheDirs(home string) []goCacheDir {
+	if home == "" {
+		return nil
+	}
+	return []goCacheDir{
+		{path: filepath.Join(home, "go", "pkg", "mod"), execDenied: true},
+		{path: filepath.Join(home, "Library", "Caches", "go-build")},
+	}
+}
+
+// GoToolchainEnvVar is the environment variable Go consults to decide whether
+// it may switch to a different toolchain than the one being run.
+const GoToolchainEnvVar = "GOTOOLCHAIN"
+
+// GoToolchainLocal pins the in-sandbox toolchain to the one on PATH — the
+// nix-provided Go — and disables the auto-download-and-exec path entirely.
+const GoToolchainLocal = "local"
+
+// GoToolchainEnv returns the env var pair that makes nix authoritative for the
+// Go toolchain inside a sandbox (issue #2621, owner decision on the round-4
+// escalation).
+//
+// # Policy
+//
+// A sandboxed agent must not silently download an unpinned Go toolchain from
+// the internet and execute it out of a shared cache. Nix provides the
+// toolchain; GOTOOLCHAIN=local makes that authoritative. When a project's
+// go.mod requires a newer toolchain than nix ships, the build fails loudly
+//
+//	go: go.mod requires go >= 1.27.0 (running go1.26.5)
+//
+// and the fix is to bump the nix-pinned Go — never to widen the sandbox.
+//
+// # Why this is load-bearing, not hygiene
+//
+// Go's built-in default is GOTOOLCHAIN=auto. Under auto, when go.mod's
+// go/toolchain directive exceeds the running toolchain, cmd/go downloads
+// module golang.org/toolchain@v0.0.1-<ver>.<goos>-<goarch> INTO GOMODCACHE,
+// sets the exec bits on the extracted tree, and execs <dir>/bin/go
+// (cmd/go/internal/toolchain/select.go: download at :357, exec bits at
+// :414-424, execGoToolchain at :458).
+//
+// That exec lands inside the directory the section-22 deny covers, so without
+// this pin the deny would break the very gate section 5k exists to enable —
+// failing as "go: exec go1.X.Y: operation not permitted", the #2621 symptom.
+// The alternative (carving golang.org/toolchain@* out of the deny) was
+// rejected: section 5k grants the module cache read-write, so a predictable
+// and agent-writable carve-out path is a bypass that masquerades as
+// protection.
+//
+// The pin cannot be overridden from inside the sandbox: prism forwards no
+// GO* variable, and go's env file (~/Library/Application Support/go/env) has
+// no grant, so this injected value is the only GOTOOLCHAIN the toolchain
+// sees.
+func GoToolchainEnv() []string {
+	return []string{GoToolchainEnvVar + "=" + GoToolchainLocal}
+}
+
+// ensureGoCacheDirs creates the section-5k Go cache directories on the host
+// before the sandbox starts (issue #2621).
+//
+// It is required because a (subpath ...) grant on a path that does not exist
+// is a silent no-op, and the sandboxed process cannot create the path itself:
+// MkdirAll would first have to mkdir the UNGRANTED parents (~/go, ~/go/pkg,
+// ~/Library/Caches) and gets EPERM there. Without this, the documented
+// quality gate would still fail with the exact #2621 error on any host that
+// has never run go outside a sandbox.
+//
+// Best-effort by design: a failure is logged, never fatal. The Go caches are
+// a build convenience, unlike the work-dir git/ssh configs whose absence
+// hard-fails Prepare, and a session must still start where $HOME is
+// unwritable (the homeless-shelter nix build sandbox).
+//
+// Mode 0o755 matches what the go toolchain itself creates (0o777 & umask) —
+// these are ordinary user caches shared with the host shell, not per-session
+// private state.
+func ensureGoCacheDirs() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = os.Getenv("HOME")
+	}
+	for _, dir := range goCacheDirs(home) {
+		if mkErr := os.MkdirAll(dir.path, 0o755); mkErr != nil {
+			log.Printf("container: sandbox-exec: create go cache dir %s: %v", dir.path, mkErr)
+		}
+	}
+}
+
 // generateProfile returns the SBPL profile content for this session.
 //
 // This is a (version 3) SBPL profile — see the migration that actioned this
@@ -121,6 +267,9 @@ func (s *sandboxExecIsolator) BuildRunArgs() []string {
 //   - RO subpath grant for the prism usage snapshot dir
 //     ($XDG_STATE_HOME/prism/usage) — the bottom-bar usage reader
 //     (issue #2572)
+//   - RW subpath grants for the two Go cache dirs — ~/go/pkg/mod and
+//     ~/Library/Caches/go-build — so the repo AGENTS.md quality gate
+//     (`go build ./...` / `go test ./...`) runs as documented (issue #2621)
 //   - Session work dir / worktree / bare repo / host-API socket dir (RW) —
 //     the work dir (subpath <sessionDir>) is the ONLY per-session writable
 //     grant (issue #2213 / PR #2221; Step 5 of #2132 deleted the staging
@@ -645,6 +794,81 @@ func generateProfile(m *Manager) string {
 		sb.WriteString("\n")
 	}
 
+	// ── 5k. Go module cache + build cache RW (issue #2621) ───────────────
+	// The repo AGENTS.md names `go build ./...` and `go test ./...` (run from
+	// modules/programs/prism/prism/) as "the first check for any prism code
+	// change". Under deny-default both commands fail in a Darwin worker:
+	// the Go toolchain writes downloaded modules to GOMODCACHE and compiled
+	// packages to GOCACHE, and neither path had a grant. The repo's primary
+	// quality gate was therefore unrunnable as documented on one of the two
+	// supported platforms.
+	//
+	// Path resolution: these are the Go DEFAULTS on Darwin, hardcoded rather
+	// than read from the host's GOPATH / GOMODCACHE / GOCACHE / GOENV. That
+	// is exact, not an approximation: prism builds the sandbox env explicitly
+	// (buildSandboxExecHomeEnv in cmd/agent_run_sandbox_exec_darwin.go) and
+	// forwards no GO* variable, and go's env file — $HOME/Library/Application
+	// Support/go/env — is not granted, so the in-sandbox toolchain always
+	// falls back to GOPATH=$HOME/go (→ GOMODCACHE=$HOME/go/pkg/mod) and
+	// GOCACHE=os.UserCacheDir()/go-build = $HOME/Library/Caches/go-build.
+	// Reading the host's GO* env here would ALSO be a widening vector — a
+	// host variable would then steer a sandbox grant — so the generator
+	// deliberately does not consult it. goCacheDirs is the single source of
+	// truth, shared with ensureGoCacheDirs (see below) so the grant and the
+	// created directory cannot drift apart.
+	//
+	// Scope — the LEAF cache dirs only, never a parent:
+	//   - NOT (subpath ~/go): that would expose ~/go/bin, where `go install`
+	//     drops binaries that are typically on the host's PATH. A sandboxed
+	//     agent must not be able to plant an executable the user later runs.
+	//   - NOT (subpath ~/Library/Caches): the user's whole cache tree,
+	//     including the daily-driver browser and application caches.
+	//   - NOT ~/Library/Application Support/go: GOENV and the Go telemetry
+	//     dir stay denied. go tolerates an unreadable env file and telemetry
+	//     is best-effort, so nothing needs them.
+	//
+	// Read-write is load-bearing for both: go writes module downloads plus
+	// its cache/lock file under GOMODCACHE, and build/test outputs under
+	// GOCACHE. A read-only grant does not make the documented command work.
+	//
+	// Neither clause carries file-map-executable. It would be pure noise
+	// here: section 9 allows process-exec* with no path filter, so execution
+	// is already permitted profile-wide and adding the flag to a section-5k
+	// clause changes nothing. The execution posture for the module cache is
+	// set by the explicit deny in the final section instead — see
+	// goCacheDir.execDenied.
+	//
+	// Accepted risk, stated plainly: these are shared, cross-session,
+	// host-visible caches, so a compromised agent could mutate an extracted
+	// module or a build-cache entry that a later HOST build consumes (go
+	// verifies module zips against go.sum on download, but does not re-verify
+	// an already-extracted tree — that is what `go mod verify` is for). This
+	// is the same trust class as the §5e ~/.npm grant (npx executes cached
+	// JS) and ~/.cache/nix. The alternative — redirecting GOMODCACHE/GOCACHE
+	// into the session work dir — trades that for a cold cache per session;
+	// see the PR for #2621 for the full comparison and the measurements.
+	//
+	// Concurrency is safe by design: the Go caches are built for concurrent
+	// multi-process access (a lock file under GOMODCACHE, content-addressed
+	// entries under GOCACHE), which is exactly what several parallel workers
+	// plus the host shell do.
+	//
+	// Emitted even when a dir does not exist on the host — sandbox-exec
+	// silently ignores (subpath ...) rules for non-existent paths (same shape
+	// as the 5d/5e/5f/5j grants). ensureGoCacheDirs creates them host-side at
+	// Prepare time, because a grant on a non-existent path is a no-op the
+	// sandboxed process cannot repair itself.
+	//
+	// One clause per directory. The two carry identical operations today, so
+	// a shared clause would be equivalent; separate clauses keep each
+	// directory's exact permission set auditable on its own line and make the
+	// paired deny below unambiguous about which path it narrows.
+	for _, dir := range goCacheDirs(home) {
+		sb.WriteString("(allow file-read* file-write* file-test-existence file-read-metadata\n")
+		sb.WriteString("  (subpath " + quoteSBPL(dir.path) + "))\n")
+		sb.WriteString("\n")
+	}
+
 	// ── 6. Session work dir + worktree + bare repo + host-API socket (RW) ─
 	// Session-specific read-write paths. Locked in #1012 and #1017.
 	// file-test-existence and file-read-metadata added alongside file-read*
@@ -1041,6 +1265,67 @@ func generateProfile(m *Manager) string {
 	// locale, font smoothing, and other settings. Without this the framework
 	// emits log warnings but continues; allowing it silences the denials.
 	sb.WriteString("(allow user-preference-read)\n")
+
+	// ── 22. FINAL DENIES — Go module cache is not executable (issue #2621) ─
+	// The module cache holds downloaded dependency SOURCE. Section 5k grants
+	// it read-write because the toolchain must populate it. Without this deny,
+	// a sandboxed process could plant a binary among the dependency sources
+	// and run it.
+	//
+	// PAIRED WITH GoToolchainEnv — do not change one without the other. The
+	// claim "nothing in the documented gate executes out of the module cache"
+	// holds ONLY because prism injects GOTOOLCHAIN=local. Under Go's default
+	// GOTOOLCHAIN=auto, cmd/go downloads a newer toolchain into the module
+	// cache and execs <dir>/bin/go from it, which this deny blocks — breaking
+	// the gate with the #2621 error shape. See the GoToolchainEnv godoc for
+	// the upstream call path and for why a golang.org/toolchain@* carve-out
+	// was rejected.
+	//
+	// THIS SECTION MUST STAY LAST, and it must in particular stay AFTER the
+	// section-9 process operations. That is not a stylistic preference — it
+	// is the only reason the rule has any effect:
+	//
+	//   - Section 9 emits (allow process-exec* ...) with NO path filter, so
+	//     execution is permitted profile-wide.
+	//   - SBPL resolves a conflict in favour of the LATER rule. A deny placed
+	//     before section 9 is silently overridden by that allow and the
+	//     module cache becomes executable again — with every substring test
+	//     still green, because the deny text is present, just outranked.
+	//
+	// This is the same deny-after-broader-allow shape as the /private/etc/ssh
+	// denies in section 4 and the ~/.aws deny in section 5, both of which are
+	// integration-tested (sandbox_exec_denies_darwin_test.go).
+	// TestGenerateProfile_GoCacheExecDenyFollowsProcessExecAllow pins the
+	// ordering so a future section inserted below cannot quietly break it.
+	//
+	// History: issue #2621 originally tried to express this as the ABSENCE of
+	// file-map-executable on the module cache's allow clause. The host run
+	// disproved that: a planted binary executed from the module cache under
+	// the production profile, and executed from the build cache even with the
+	// whole section-5k block stripped. Withholding a flag from one allow
+	// clause cannot narrow a capability that a later unqualified allow hands
+	// out. Only an explicit deny does.
+	//
+	// GOCACHE is deliberately NOT denied: cmd/go can serve a linked test
+	// binary straight out of the build cache on a warm build, so execution
+	// there must keep working.
+	var execDenied []goCacheDir
+	for _, dir := range goCacheDirs(home) {
+		if dir.execDenied {
+			execDenied = append(execDenied, dir)
+		}
+	}
+	if len(execDenied) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString("(deny process-exec* file-map-executable\n")
+		for i, dir := range execDenied {
+			sb.WriteString("  (subpath " + quoteSBPL(dir.path) + ")")
+			if i == len(execDenied)-1 {
+				sb.WriteString(")")
+			}
+			sb.WriteString("\n")
+		}
+	}
 
 	return sb.String()
 }

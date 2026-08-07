@@ -563,11 +563,25 @@ func TestGenerateProfile_NoHostLibraryRulesForChromium(t *testing.T) {
 	profile := generateProfile(m)
 
 	// No rule may reference the host home Library subtree EXCEPT the
-	// single-file ~/Library/Keychains/login.keychain-db grant restored in
-	// issue #2293 (the keyring-crate / pup Keychain-access path; #5i in
-	// generateProfile). We strip that one allowed reference out of the
-	// profile before scanning so an unrelated regression that adds a
-	// broader host-Library grant still fails this test.
+	// deliberate, enumerated exceptions below. Each one is elided from the
+	// profile before scanning, so an unrelated regression that adds a
+	// broader host-Library grant — above all one reaching
+	// ~/Library/Application Support/Google, the daily-driver Chrome profile
+	// — still fails this test.
+	//
+	// The exceptions, each a leaf and each traceable to its issue:
+	//
+	//   - ~/Library/Keychains/login.keychain-db — single-file grant restored
+	//     in issue #2293 (the keyring-crate / pup Keychain-access path; §5i
+	//     of generateProfile).
+	//   - ~/Library/Caches/go-build — GOCACHE, granted in issue #2621 (§5k)
+	//     so the AGENTS.md `go build ./...` / `go test ./...` quality gate
+	//     runs in a Darwin worker. The grant is on the go-build LEAF, never
+	//     on ~/Library/Caches; the scan below is what pins that.
+	//
+	// Adding an entry here must be a deliberate decision with its own
+	// justification in generateProfile — do not widen the list to silence a
+	// failure.
 	//
 	// Substring check on the unquoted path prefix catches
 	// (subpath ...), (literal ...), and (regex ...) forms alike. The
@@ -575,13 +589,19 @@ func TestGenerateProfile_NoHostLibraryRulesForChromium(t *testing.T) {
 	// <sessionDir>/Library is never emitted as a rule (the chromium
 	// skeleton deliberately has no dedicated rule), and the quoted
 	// sessionDir path itself does not contain "Library".
-	loginKeychain := filepath.Join(fakeHome, "Library", "Keychains", "login.keychain-db")
-	if !strings.Contains(profile, loginKeychain) {
-		t.Errorf("profile missing the (literal %q) Keychain grant restored in #2293; full profile:\n%s", loginKeychain, profile)
+	allowedHostLibraryPaths := map[string]string{
+		"#2293 login.keychain-db literal": filepath.Join(fakeHome, "Library", "Keychains", "login.keychain-db"),
+		"#2621 go-build cache subpath":    filepath.Join(fakeHome, "Library", "Caches", "go-build"),
 	}
-	profileWithoutKeychain := strings.ReplaceAll(profile, loginKeychain, "<keychain-grant-elided>")
-	if hostLibrary := filepath.Join(fakeHome, "Library"); strings.Contains(profileWithoutKeychain, hostLibrary) {
-		t.Errorf("profile references the host home Library %q (beyond the #2293 login.keychain-db literal) — #2247 must add no other host-Library grants; full profile:\n%s",
+	profileWithoutAllowed := profile
+	for label, path := range allowedHostLibraryPaths {
+		if !strings.Contains(profile, path) {
+			t.Errorf("profile missing the %s (%q); full profile:\n%s", label, path, profile)
+		}
+		profileWithoutAllowed = strings.ReplaceAll(profileWithoutAllowed, path, "<"+label+" elided>")
+	}
+	if hostLibrary := filepath.Join(fakeHome, "Library"); strings.Contains(profileWithoutAllowed, hostLibrary) {
+		t.Errorf("profile references the host home Library %q beyond the enumerated exceptions — no other host-Library grant may be added (#2247); full profile:\n%s",
 			hostLibrary, profile)
 	}
 

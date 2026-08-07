@@ -479,6 +479,23 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		env = append(env, container.SessionWorkDirKubeEnv(sessionDir)...)
 	}
 
+	// GOTOOLCHAIN=local: nix is authoritative for the Go toolchain inside the
+	// sandbox (issue #2621, owner decision on the round-4 escalation). A
+	// sandboxed agent must not silently download an unpinned toolchain from
+	// the internet and execute it out of the shared module cache.
+	//
+	// This is NOT optional hygiene — it is half of a two-part mechanism. Go
+	// defaults to GOTOOLCHAIN=auto, under which cmd/go downloads a newer
+	// toolchain INTO GOMODCACHE and execs <dir>/bin/go from it; the section-22
+	// deny in the SBPL profile blocks exactly that exec. Drop this line and a
+	// repo whose go.mod outgrows the nix-pinned Go fails with "go: exec
+	// go1.X.Y: operation not permitted". See container.GoToolchainEnv.
+	//
+	// Appended last so it wins over any GOTOOLCHAIN in the profile-level
+	// agent.envVars injected by AppendSandboxEnvVarsKV above: Go's exec
+	// package keeps the LAST occurrence of a duplicated key.
+	env = append(env, container.GoToolchainEnv()...)
+
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path
 	// on macOS is /usr/bin/sandbox-exec.
 	const sandboxExecBinary = "/usr/bin/sandbox-exec"

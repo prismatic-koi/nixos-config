@@ -286,6 +286,17 @@ func (s *sandboxExecIsolator) Prepare(ctx context.Context, m *Manager) ([]string
 		return nil, fmt.Errorf("container: sandbox-exec: cannot prepare session work dir: %w", err)
 	}
 
+	// ── Go cache dirs (issue #2621) ────────────────────────────────
+	// Materialise the two directories the section-5k SBPL grant covers
+	// (~/go/pkg/mod, ~/Library/Caches/go-build) so the repo AGENTS.md
+	// quality gate — `go build ./...` and `go test ./...` — runs inside the
+	// sandbox with no extra environment setup. A grant on a non-existent
+	// path is a silent no-op and the sandboxed process cannot create it
+	// itself (its ungranted parents return EPERM), so the creation has to
+	// happen host-side, here. Best-effort: ensureGoCacheDirs logs and
+	// continues, so a host with an unwritable $HOME still starts a session.
+	ensureGoCacheDirs()
+
 	// ── Containers-enabled prep (#2317 / #2322) ─────────────────
 	// Symmetric to the bwrap-side block in bwrapIsolator.Prepare (#2321).
 	// When the session's agent_status.containers_enabled gate is set, the

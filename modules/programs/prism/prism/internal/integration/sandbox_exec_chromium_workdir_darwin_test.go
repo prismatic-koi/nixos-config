@@ -81,11 +81,44 @@ func chromiumWorkDirFixture(t *testing.T, m *container.Manager) (string, prepare
 	if want := "(subpath " + sbplQuoteForTest(sessionDir) + ")"; !strings.Contains(prepared.content, want) {
 		t.Fatalf("generated profile missing %q.\nProfile:\n%s", want, prepared.content)
 	}
-	// No host-Library grant may exist (option B's security property).
+	// No host-Library grant may exist beyond the deliberate, enumerated
+	// exceptions below (option B's security property). The check runs against
+	// the REAL host home, so every unconditional host-Library rule in
+	// generateProfile has to be listed here or the fixture fatals.
+	//
+	// This is the integration-level twin of
+	// TestGenerateProfile_NoHostLibraryRulesForChromium in
+	// internal/container/session_work_dir_test.go — keep the two exception
+	// lists in step. A new host-Library grant must be added to BOTH.
+	//
+	// The exceptions, each a leaf and each traceable to its issue:
+	//
+	//   - ~/Library/Keychains/login.keychain-db — single-file grant restored
+	//     in issue #2293 (§5i of generateProfile), emitted unconditionally.
+	//   - ~/Library/Caches/go-build — GOCACHE, granted in issue #2621 (§5k)
+	//     so the AGENTS.md go build/test quality gate runs in a Darwin
+	//     worker. The grant is on the go-build LEAF, never on
+	//     ~/Library/Caches; the scan below is what pins that.
+	//
+	// Adding an entry here must be a deliberate decision with its own
+	// justification in generateProfile — do not widen the list to silence a
+	// failure.
 	home, err := os.UserHomeDir()
 	if err == nil && home != "" {
-		if hostLibrary := filepath.Join(home, "Library"); strings.Contains(prepared.content, hostLibrary) {
-			t.Fatalf("generated profile references the host home Library %q — #2247 must add no host-Library grants.\nProfile:\n%s",
+		allowedHostLibraryPaths := map[string]string{
+			"#2293 login.keychain-db literal": filepath.Join(home, "Library", "Keychains", "login.keychain-db"),
+			"#2621 go-build cache subpath":    filepath.Join(home, "Library", "Caches", "go-build"),
+		}
+		profileWithoutAllowed := prepared.content
+		for label, path := range allowedHostLibraryPaths {
+			if !strings.Contains(prepared.content, path) {
+				t.Fatalf("generated profile missing the %s (%q) — the host-Library scan below is checking the wrong thing.\nProfile:\n%s",
+					label, path, prepared.content)
+			}
+			profileWithoutAllowed = strings.ReplaceAll(profileWithoutAllowed, path, "<"+label+" elided>")
+		}
+		if hostLibrary := filepath.Join(home, "Library"); strings.Contains(profileWithoutAllowed, hostLibrary) {
+			t.Fatalf("generated profile references the host home Library %q beyond the enumerated exceptions — no other host-Library grant may be added (#2247).\nProfile:\n%s",
 				hostLibrary, prepared.content)
 		}
 	}
