@@ -290,7 +290,7 @@ func ResolveGitHubToken(cfg Config) (string, error) {
 // Unlike ResolveGitHubToken, a configured-but-unreadable path is NOT a hard
 // error: it is logged (naming the path, never the value) and treated as
 // absent. GitLab is a secondary forge — a broken or not-yet-decrypted GitLab
-// secret must not stop a session whose mahi is on GitHub from starting. The
+// secret must not stop a session whose work is on GitHub from starting. The
 // log line is what makes the misconfiguration visible.
 func ResolveGitLabToken(cfg Config) string {
 	if cfg.GitLabTokenPath != "" {

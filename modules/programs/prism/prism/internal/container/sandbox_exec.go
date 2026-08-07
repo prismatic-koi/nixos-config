@@ -878,9 +878,10 @@ func generateProfile(m *Manager) string {
 	//
 	// The first entry is the per-session work dir (issue #2213) — the ONLY
 	// per-session writable grant. It covers the generated ssh-config /
-	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, AND the
-	// chromium Library skeleton (issue #2247 — CFFIXED_USER_HOME points
-	// chromium's NSHomeDirectory() at <sessionDir>, so its writes land under
+	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, glab's
+	// GLAB_CONFIG_DIR config dir (issue #2668), AND the chromium Library
+	// skeleton (issue #2247 — CFFIXED_USER_HOME points chromium's
+	// NSHomeDirectory() at <sessionDir>, so its writes land under
 	// <sessionDir>/Library/... with NO dedicated rule and NO host-Library
 	// grant).
 	if sessionDirErr == nil {
