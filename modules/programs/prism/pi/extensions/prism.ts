@@ -30,6 +30,8 @@
 //                            (stopReason=stop, no pending, not reviewing)
 //                         → turn_end + state_change:interrupted (stopReason=aborted)
 //                         → turn_end (no state_change, other cases)
+//   message_start (role=user)
+//                         → msg_user            (prompt text, truncated)
 //   message_update        → msg_assistant       (text_delta only, truncated)
 //   after_provider_response (non-OK)
 //                         → provider_error
@@ -1769,6 +1771,83 @@ export function extractAssistantText(message: unknown): string[] {
     }
   }
   return out
+}
+
+/**
+ * Extract the user-visible text from a pi `UserMessage` (issue #2678).
+ *
+ * A pi `UserMessage.content` is either a plain string or an array of
+ * `TextContent`/`ImageContent` blocks (see pi-ai `types.d.ts` `UserMessage`).
+ * A plain string is returned as-is; an array is reduced to the concatenation
+ * of its `{type:"text", text}` blocks, in order. Image blocks are skipped —
+ * the wire protocol carries no image payload. Unlike `extractAssistantText`,
+ * this returns a single string (not one per block): a user turn is one
+ * `msg_user` row, not one row per block.
+ *
+ * Returns "" for a non-user message, a message with no text content, or
+ * malformed input, so the caller emits nothing rather than an empty frame.
+ */
+export function extractUserText(message: unknown): string {
+  if (message === null || typeof message !== "object") return ""
+  if ((message as { role?: unknown }).role !== "user") return ""
+  const content = (message as { content?: unknown }).content
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  const parts: string[] = []
+  for (const block of content) {
+    if (
+      block !== null &&
+      typeof block === "object" &&
+      (block as { type?: unknown }).type === "text" &&
+      typeof (block as { text?: unknown }).text === "string"
+    ) {
+      const text = (block as { text: string }).text
+      if (text.length > 0) parts.push(text)
+    }
+  }
+  return parts.join("")
+}
+
+/**
+ * Build the `msg_user` wire frame for a pi `message_start` event whose message
+ * has `role === "user"` (issue #2678). Returns `null` when the message is not a
+ * user message or carries no text, so the caller writes nothing.
+ *
+ * The text passes through `truncateString`, which (a) applies the same
+ * write-time secret redaction as every other outbound payload (#2589) and
+ * (b) caps the text at the 8 KiB wire limit with the `…[truncated]` sentinel.
+ * The `messageId` mirrors the assistant path: read from `message.id` when pi
+ * attaches one, else "".
+ *
+ * The frame shape matches `payload.MsgUser` (`messageId`, `text`) so that the
+ * sidecar's raw-persist path writes a well-formed `msg_user` row that
+ * `prism checkin` renders with the `▶ user` prefix.
+ */
+export function buildMsgUserFrame(message: unknown): {
+  type: "msg_user"
+  text: string
+  messageId: string
+  truncated?: boolean
+} | null {
+  if (message === null || typeof message !== "object") return null
+  if ((message as { role?: unknown }).role !== "user") return null
+  const raw = extractUserText(message)
+  if (raw.length === 0) return null
+  const mid = (message as { id?: unknown }).id
+  const messageId = typeof mid === "string" ? mid : ""
+  const { text, truncated } = truncateString(raw)
+  const frame: {
+    type: "msg_user"
+    text: string
+    messageId: string
+    truncated?: boolean
+  } = {
+    type: "msg_user",
+    text,
+    messageId,
+  }
+  if (truncated) frame.truncated = true
+  return frame
 }
 
 // ---------------------------------------------------------------------------
@@ -3779,7 +3858,24 @@ export default function prismExtension(pi: ExtensionAPI): void {
       currentAssistantSawDelta = false
       const mid = (message as { id?: unknown }).id
       currentAssistantMessageId = typeof mid === "string" ? mid : ""
+      return
     }
+    // ── User-message forwarding (issue #2678) ────────────────────────────
+    //
+    // pi's message_start fires for user, assistant, and toolResult roles.
+    // The assistant branch above only tracks local state; a user message
+    // completes the msg_user contract the receiving side already speaks
+    // (internal/harness/pi/adapter.go maps message_start role=user →
+    // msg_user, and the sidecar's raw-persist path writes the frame as a
+    // msg_user row). Emit one msg_user frame carrying the prompt text and
+    // its messageId so `prism checkin` can interleave the user half of the
+    // conversation. This is additive — no PROTOCOL_VERSION bump.
+    //
+    // A message whose role is neither user nor assistant (toolResult) is
+    // ignored, as before: buildMsgUserFrame returns null for it.
+    if (!writer || !handshakeComplete) return
+    const frame = buildMsgUserFrame(message)
+    if (frame !== null) writer.write(frame)
   })
 
   pi.on("message_update", async (event, ctx) => {

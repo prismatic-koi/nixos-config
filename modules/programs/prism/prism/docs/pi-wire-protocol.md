@@ -479,6 +479,36 @@ rows. The payload schema matches `internal/payload/payload.go:MsgAssistant`.
 - The accumulator resets on each `turn_start`. Multiple turns in a single
   session each produce their own single `msg_assistant` event.
 
+### 5.5.1 `msg_user`
+
+A complete user message. PI emits a `message_start` hook for every message
+(user, assistant, or toolResult). The extension translates the `role=user`
+case into one `msg_user` frame carrying the prompt text. This is the user
+half of the conversation that `prism checkin` interleaves with assistant
+turns under the `▶ user` prefix (issue #2678).
+
+```json
+{"type":"msg_user","text":"please run the tests","messageId":"msg_abc123"}
+```
+
+- `text` (string, required) — the user's message text. Truncated at 8 KiB
+  with the `…[truncated]` sentinel (§5.3), and passed through the same
+  write-time secret redaction as every other outbound field (#2589) before
+  it leaves the extension.
+- `messageId` (string, optional) — PI's message id when present, else the
+  empty string.
+
+Unlike `msg_assistant`, this frame is **not** coalesced: one user message is
+one frame is one `msg_user` row. The sidecar persists the frame directly
+(the raw-persist path in `handlePipeFrame`), and the payload matches
+`internal/payload/payload.go:MsgUser`. Emitting this frame is additive — the
+`message_start`→`msg_user` mapping already exists in the stdio adapter
+(`internal/harness/pi/adapter.go`), so **no `PROTOCOL_VERSION` bump** is
+required.
+
+A `message_start` whose role is neither `user` nor `assistant` (for example
+`toolResult`) produces no frame — it is ignored without error.
+
 ### 5.6 `turn_start`
 
 ```json
@@ -1032,6 +1062,7 @@ The frame schema is designed to translate cleanly into the existing
 | `tool_call` | `tool_call` | direct map. `payload.ToolCall` accepts these fields. |
 | `tool_result` | `tool_result` | direct map. `payload.ToolResult`. |
 | `msg_assistant` | `msg_assistant` | direct map. `payload.MsgAssistant`. |
+| `msg_user` | `msg_user` | direct map. `payload.MsgUser`. Not coalesced (§5.5.1). |
 | `turn_start` | `turn_start` | new event type — see §9.2. |
 | `turn_end` | `turn_end` | new event type — see §9.2. |
 | `provider_error` | `provider_error` | new event type — see §9.2. |
