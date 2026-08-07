@@ -28,6 +28,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/branchprotect"
 	"github.com/prismatic-koi/prism/internal/checkstate"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/forge"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/review"
 	"github.com/prismatic-koi/prism/internal/sandboxenv"
@@ -64,6 +65,16 @@ func runMerge(cmd *cobra.Command, args []string) error {
 	if err != nil || pr <= 0 {
 		return fmt.Errorf("prism merge: invalid PR number %q — must be a positive integer", prArg)
 	}
+
+	// GitLab guardrail (#2669): the local merge queue is GitHub-only. Refuse
+	// up front, before the gh pr view state probe below, so a gitlab.com
+	// remote never enqueues and never shells out to gh. github.com (and any
+	// remote forge.FromRemoteURL does not recognise) is unaffected — this
+	// check is a no-op for the default case.
+	if forge.IsGitLabDir("") {
+		return fmt.Errorf("prism merge: GitLab merge requests are not supported by the prism merge queue. Merge with: glab mr merge %d", pr)
+	}
+
 	waitFlag, _ := cmd.Flags().GetBool("wait")
 	jsonFlag, _ := cmd.Flags().GetBool("json")
 	timeoutFlag, _ := cmd.Flags().GetDuration("timeout")

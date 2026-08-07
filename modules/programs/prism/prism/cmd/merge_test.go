@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -143,6 +144,88 @@ func TestRunMerge_FailsWhenInstanceIDMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no instance_id") && !strings.Contains(err.Error(), "sidecar did not start") {
 		t.Fatalf("expected error about missing instance_id / sidecar not starting, got: %v", err)
+	}
+}
+
+// ── GitLab guardrail (#2669) ──────────────────────────────────────────────────
+
+// TestRunMerge_RefusesOnGitLabRemote verifies that `prism merge` refuses
+// outright when the current directory's origin remote is gitlab.com, before
+// any coordinator/instance_id/gh preflight checks run, and names the `glab`
+// workaround.
+func TestRunMerge_RefusesOnGitLabRemote(t *testing.T) {
+	openMergeTestDB(t)
+
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("remote", "add", "origin", "git@gitlab.com:owner/repo.git")
+	t.Chdir(dir)
+
+	// No session env is set — if the gitlab guard did not run first, this
+	// would instead fail on "cannot determine calling session", which would
+	// mask the intended message and prove the check ran too late (or not at
+	// all).
+	err := runMerge(mergeCmd, []string{"7"})
+	if err == nil {
+		t.Fatal("runMerge: expected error for a gitlab.com remote, got nil")
+	}
+	if !strings.Contains(err.Error(), "glab mr merge 7") {
+		t.Errorf("runMerge error %q does not name the glab workaround", err.Error())
+	}
+	if !strings.Contains(err.Error(), "not supported by the prism merge queue") {
+		t.Errorf("runMerge error %q does not explain why GitLab is unsupported", err.Error())
+	}
+}
+
+// TestRunMerge_GitHubRemoteUnaffected verifies the gitlab guard does not
+// fire for a github.com remote — it must fall through to the normal
+// coordinator-only guard (proving the check is additive, not a regression
+// for the primary forge).
+func TestRunMerge_GitHubRemoteUnaffected(t *testing.T) {
+	openMergeTestDB(t)
+
+	dir := t.TempDir()
+	runGit := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	runGit("init")
+	runGit("remote", "add", "origin", "git@github.com:owner/repo.git")
+	t.Chdir(dir)
+
+	const workerSession = "nixos-config@feature"
+	d, err := openDB()
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	if err := d.UpsertStatusSeedRootAgentName(workerSession, "nixos-config", "/worktree/feature", "idle", nil, nil, "worker", "", ""); err != nil {
+		d.Close()
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	d.Close()
+
+	t.Setenv("PRISM_SESSION_NAME", workerSession)
+	t.Setenv("TMUX", "")
+
+	err = runMerge(mergeCmd, []string{"42"})
+	if err == nil {
+		t.Fatal("runMerge: expected error for worker session, got nil")
+	}
+	if strings.Contains(err.Error(), "glab mr merge") {
+		t.Errorf("runMerge error %q wrongly fired the gitlab guard for a github.com remote", err.Error())
+	}
+	if !strings.Contains(err.Error(), "coordinator sessions only") {
+		t.Errorf("runMerge error %q does not mention 'coordinator sessions only'", err.Error())
 	}
 }
 
