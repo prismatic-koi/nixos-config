@@ -774,7 +774,11 @@ function segmentIsGitPush(segment: string): boolean {
 // `gh-pr-review-approve`. `git-stash` is scoped because the coordinator is
 // the deliberate exemption (it is then the sole prism writer to the shared
 // stack); the two `gh` entries are scoped because the coordinator's manual
-// merge and review paths must keep working. The `git-worktree-*` and
+// merge and review paths must keep working. THREE more entries carry
+// `appliesToRole: isReviewRole` — `git-checkout-review`, `git-apply-review`,
+// and `git-merge-review` (#2648). That predicate is narrower still: only
+// the five review roles are blocked, because ordinary workers use all three
+// commands legitimately. The `git-worktree-*` and
 // `nix-build-*` entries are unscoped: those hazards apply to coordinators too.
 
 /**
@@ -824,9 +828,63 @@ export function isWorkerClassRole(agentRole: string): boolean {
 }
 
 /**
+ * Review-role predicate for the working-tree-mutation deny entries (#2648).
+ *
+ * NARROWER than `isWorkerClassRole`: it matches only the five canonical
+ * review-agent roles, not every non-coordinator role. The distinction is
+ * deliberate. `git checkout`, `git apply`, and `git merge` are legitimate,
+ * everyday commands for an ordinary worker — a worker checks out a branch,
+ * applies a WIP patch (the sanctioned `git stash` alternative in AGENTS.md
+ * uses `git apply`), and can merge locally. Scoping these blocks to
+ * `isWorkerClassRole` would break all of that. Review agents are the only
+ * roles that must never touch the working tree: they inspect a PR from
+ * `git show` / `git diff` and record a verdict; they share worktree state
+ * with the worker under review, so a mutation there corrupts what the other
+ * reviewers and the worker see.
+ *
+ * The five names are the canonical review-agent identities, matched exactly
+ * against `internal/sidecar/host_api.go`'s review-agent set and the
+ * guard-suppression list later in this file (search "review-goal"). A new
+ * review role must be added here to inherit the block.
+ *
+ * Exported for unit testing.
+ */
+export function isReviewRole(agentRole: string): boolean {
+  return (
+    agentRole === "review-goal" ||
+    agentRole === "review-code" ||
+    agentRole === "review-context" ||
+    agentRole === "review-qa" ||
+    agentRole === "review-security"
+  )
+}
+
+/**
+ * Shared `reason` for the three review-scoped working-tree-mutation entries
+ * (#2648). States the rule AND the alternative, per the deny-list
+ * convention that a `reason` names the recommended path.
+ */
+const REVIEW_WORKING_TREE_REASON =
+  "blocked by prism extension: review agents do not modify the working " +
+  "tree or index. `git checkout`, `git apply`, and `git merge` all mutate " +
+  "the worktree you share with the worker under review, which corrupts the " +
+  "state the other review agents and the worker see. To read a file from " +
+  "the PR branch use `git show origin/<branch>:<path>` (pipe it to a temp " +
+  "file if you must run a command against it); to compare branches use " +
+  "`git diff origin/main...origin/<branch>`. See issue #2648."
+
+/**
  * Bash commands that the pi extension blocks before pi executes them.
  *
- * Add to this list only when a specific incident motivates a new entry.
+ * Add to this list when a specific incident motivates a new entry, OR when
+ * moving an existing always-on prompt prohibition onto a cheaper, stronger
+ * surface (#2648). The second class needs no incident: a prohibition the
+ * agent never contemplates still costs prompt tokens on every spawn, and a
+ * mechanical block is both zero standing cost and a stronger guarantee than
+ * prose (prose can be skimmed). An entry of this class MUST be paired with
+ * deletion of the prose it replaces, and scoped exactly as tightly as that
+ * prose was — the `git-*-review` entries are the worked example: they
+ * retired the working-tree-safety prose from the five review role files.
  * The permission block has ~50 entries because it is the primary
  * enforcement surface for agents; the pi extension grows
  * incrementally as agent behaviour demands. Keep entries tightly scoped
@@ -987,6 +1045,55 @@ export const BLOCKED_BASH_PATTERNS: readonly BlockedBashPattern[] = [
       "required-review gate the same way `gh pr merge` games the merge " +
       "gate. Review agents use the `prism review` mechanism, not " +
       "`gh pr review`. Hand off to the coordinator instead. See issue #2410.",
+  },
+  {
+    // #2648 — review agents must never mutate the working tree or index.
+    // They inspect a PR from `git show` / `git diff` output and record a
+    // verdict; they share worktree state with the worker under review, so
+    // a `checkout` / `apply` / `merge` there corrupts what the other
+    // reviewers and the worker see. This replaces the prose that used to
+    // state the same prohibition in all five agents/review-*.md files
+    // (the block is a stronger guarantee at zero standing prompt cost).
+    //
+    // Scoped to `isReviewRole`, NOT `isWorkerClassRole`: ordinary workers
+    // use all three commands legitimately (checkout a branch, apply the
+    // sanctioned WIP patch, merge locally), so a worker-class block would
+    // break real flows. review-qa was checked as the most likely to need
+    // a checkout for hands-on validation; its role file already directs it
+    // to run against `git show` output piped to a temp file rather than
+    // checking anything out, so no review role has a genuine need.
+    //
+    // The `(?!-)` after each subcommand keeps hyphenated cousins that do
+    // NOT mutate the tree usable — notably `git merge-base` (used to find
+    // a common ancestor for a diff) and `git checkout-index`.
+    id: "git-checkout-review",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+checkout\b(?!-)/.test(
+        segment,
+      ),
+    appliesToRole: isReviewRole,
+    reason: REVIEW_WORKING_TREE_REASON,
+  },
+  {
+    // #2648 — see git-checkout-review above.
+    id: "git-apply-review",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+apply\b(?!-)/.test(
+        segment,
+      ),
+    appliesToRole: isReviewRole,
+    reason: REVIEW_WORKING_TREE_REASON,
+  },
+  {
+    // #2648 — see git-checkout-review above. `(?!-)` preserves
+    // `git merge-base`, which review agents legitimately use for diffs.
+    id: "git-merge-review",
+    match: (segment: string) =>
+      /\bgit(\s+-C\s+\S+|\s+--git-dir\S*(\s+\S+)?)*\s+merge\b(?!-)/.test(
+        segment,
+      ),
+    appliesToRole: isReviewRole,
+    reason: REVIEW_WORKING_TREE_REASON,
   },
 ]
 

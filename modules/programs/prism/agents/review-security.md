@@ -25,7 +25,7 @@ Your remit is **security vulnerabilities**: are there exploitable weaknesses in 
 
 ## Reading the PR
 
-Use these commands to gather context — never modify the working tree:
+Use these commands to gather context:
 
 ```bash
 gh pr view <number>              # PR title, description
@@ -35,8 +35,6 @@ git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
 **Always read the full files being modified** — diffs alone are not enough. For security-sensitive code (authentication, input handling, file operations, network code, cryptography), complete file context shows initialization, cleanup, and error handling paths that partial diffs omit.
-
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
 ---
 
