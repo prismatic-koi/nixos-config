@@ -159,23 +159,36 @@ prism spawn --prompt "run `gh pr view 42` and summarise"
 
 ## Delegating work to another repo
 
-When you need to delegate work to a repo you are not the coordinator for, route it through that repo's `@main` coordinator session. The coordinator has full context about that repo's conventions, open work, and branch state.
+When you need to delegate work to a repo you are not the coordinator for, route it through that repo's **root session**. The root session has full context about that repo's conventions, open work, and branch state.
+
+A cross-repo `prism prompt` can target a root session, and nothing else. Two name shapes are root sessions:
+
+| Shape | When you see it |
+|---|---|
+| `<repo>@main` | The repo uses the bare+worktree layout. This is the coordinator. |
+| `<repo>` (a bare name, no `@`) | The project has no worktree, so it has no branch and no `@main` session. Example: `obsidian`. |
+
+A name that holds `~` — `<parent>~review-1-review-goal`, `<parent>~investigate-<slug>` — is never a root session. The host API refuses a cross-repo prompt to one with HTTP 403.
 
 **Flow:**
 
-1. Run `prism sessions list` and look for `<repo>@main`.
-2. **Found, not in `waiting` state:** send the work request with `prism prompt <repo>@main --prompt '...'`.
-3. **Found, in `waiting` state:** escalate to the user — the coordinator is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
-4. **Not found:** start the coordinator yourself with `prism spawn --repo <repo> --branch main --prompt '...'`. On `--branch main` prism spawn defaults to reuse semantics, so this is idempotent: if a healthy `<repo>@main` already exists the prompt is delivered to it; if not, a detached coordinator is started on the existing main worktree and the prompt is delivered on launch. There is no need to pre-spawn and then prompt.
+1. Run `prism sessions list` and look for the target repo's root session. Read the exact name from the output. Do not guess it: for a non-worktree project the name is bare, and `<repo>@main` does not exist.
+2. **Found, not in `waiting` state:** send the work request with `prism prompt <root-session> --prompt '...'`.
+3. **Found, in `waiting` state:** escalate to the user — the session is blocked and expecting human input. The user needs to switch to that session and unblock it directly. Do not attempt to work around the waiting state guard.
+4. **Not found, and the repo uses worktrees:** start the coordinator yourself with `prism spawn --repo <repo> --branch main --prompt '...'`. On `--branch main` prism spawn defaults to reuse semantics, so this is idempotent: if a healthy `<repo>@main` already exists the prompt is delivered to it; if not, a detached coordinator is started on the existing main worktree and the prompt is delivered on launch. There is no need to pre-spawn and then prompt.
+5. **Not found, and the project has no worktree:** escalate to the user. `prism spawn --branch main` makes a worktree session, so it cannot start a bare-name session for you.
 
-Only spawn directly into a feature branch in another repo (bypassing the coordinator) when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
+Only spawn directly into a feature branch in another repo (bypassing the root session) when you **are** the coordinator for that repo, or when the user explicitly instructs you to.
 
 ```bash
-# Check if the target repo has a coordinator session
+# Read the target repo's root-session name from the listing.
 prism sessions list
 
 # If home-ops@main exists and is not waiting:
 prism prompt home-ops@main --prompt 'Please update the plex image to the latest tag and open a PR'
+
+# A non-worktree project has a bare name and no @main session:
+prism prompt obsidian --prompt 'Please tidy the daily-note template'
 
 # If home-ops@main exists but IS in waiting state:
 # escalate to the user — they need to switch to that session and unblock it
@@ -1008,6 +1021,8 @@ prism sessions list          # human-readable table
 prism sessions list --json   # JSON array (use this when scripting)
 ```
 
+The default scope is: every session in your own repo, plus the **root session** of each other repo (`<repo>@main`, or a bare name for a project with no worktree). The listing hides other repos' workers, review agents and investigators as noise. Pass `--all` to see them. The scope matches the cross-repo `prism prompt` rule above, so any cross-repo target you can read from this listing is a target you can prompt.
+
 Use `prism checkin <session>` to read the recent conversation history for a session, sourced from the prism DB. The default output is a rich narrative view: assistant messages, state changes, and tool call one-liners interleaved chronologically. Pass `--json` when you need to parse the events programmatically. Which sessions you can read depends on your role — see [Who can check in on what](#who-can-check-in-on-what) below.
 
 ```bash
@@ -1095,6 +1110,8 @@ EOF
 
 The same shell-escaping conventions that apply to `prism spawn` apply here —
 see [Passing prompts safely](#passing-prompts-safely--shell-escaping) above.
+
+**Who you can target.** A session in your own repo: any of them, if you are the coordinator. A session in another repo: its root session only — `<repo>@main`, or a bare name for a project with no worktree. A cross-repo prompt to any other session answers HTTP 403. A worker can prompt its own coordinator and nothing else; a worker with something to say to its coordinator should use `prism escalate` instead. See [Delegating work to another repo](#delegating-work-to-another-repo) for the full rule.
 
 ### `prism prompt` flags
 

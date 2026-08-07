@@ -26,6 +26,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/profile"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/tmux"
 )
 
@@ -66,7 +67,12 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	round := NextRoundNumber(d, opts.ParentSession)
 	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
 
-	repo := deriveRepo(opts.ParentSession)
+	// sessionname.Repo, not the old local deriveRepo: the old helper split on
+	// "@" alone, so a non-worktree parent such as `obsidian` gave each of its
+	// review agents a repo of its own — `obsidian~investigate-v2` instead of
+	// `obsidian` (issue #2658). The repo written here is what every later
+	// repo-scoped query reads.
+	repo := sessionname.Repo(opts.ParentSession)
 
 	agents := opts.Agents
 	if len(agents) == 0 {
@@ -433,7 +439,8 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	// Determine round number from DB.
 	round := NextRoundNumber(d, opts.ParentSession)
 	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
-	repo := deriveRepo(opts.ParentSession)
+	// See the matching call in Run() above for why this is sessionname.Repo.
+	repo := sessionname.Repo(opts.ParentSession)
 
 	// Resolve the runtime active profile once for the round (#1207). See
 	// the matching block in Run() above for rationale, including the

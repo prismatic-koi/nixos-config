@@ -879,7 +879,7 @@ func runSpawn(cmd *cobra.Command, args []string) (retErr error) {
 
 	spawnOpts := session.SpawnOpts{
 		SessionName:  sessionName,
-		Repo:         deriveRepo(worktreePath),
+		Repo:         repoFromWorktreePath(worktreePath),
 		Worktree:     worktreePath,
 		AgentRole:    agentRole,
 		Prompt:       promptText,
@@ -1509,7 +1509,7 @@ func spawnOneAbtest(cmd *cobra.Command, a spawnOneAbtestArgs) (sessionName, work
 	}
 	spawnOpts := session.SpawnOpts{
 		SessionName:  sessionName,
-		Repo:         deriveRepo(worktreePath),
+		Repo:         repoFromWorktreePath(worktreePath),
 		Worktree:     worktreePath,
 		AgentRole:    agentRole,
 		Prompt:       a.promptText,

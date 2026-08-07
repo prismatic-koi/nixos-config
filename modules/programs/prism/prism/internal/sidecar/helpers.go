@@ -270,6 +270,17 @@ func isCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 	return authz.IsCoordinatorSession(sessionName, d, logger)
 }
 
+// isRootSession returns true when the session is the root session of its own
+// project: a "<repo>@main" coordinator, or a non-worktree session with a bare
+// name. See authz.IsRootSession for the full rule and for why it is a narrower
+// grant than isCoordinatorSession (issue #2658).
+//
+// Only the cross-repo arm of /prompt reads this. Every other handler keeps
+// reading isCoordinatorSession.
+func isRootSession(sessionName string, d *db.DB, logger *log.Logger) bool {
+	return authz.IsRootSession(sessionName, d, logger)
+}
+
 // isHostAPITerminalState returns true when the agent state is a terminal state
 // for the purpose of the host-API /logs follow handler.
 func isHostAPITerminalState(state agent.AgentState) bool {

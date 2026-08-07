@@ -2,24 +2,20 @@ package session
 
 import (
 	"log"
-	"strings"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // ScratchpadSession is the canonical name of the prism scratchpad tmux session.
-const ScratchpadSession = "scratchpad"
+const ScratchpadSession = sessionname.Scratchpad
 
 // IsMetaSession reports whether a session name identifies a prism-internal
 // meta-session (scratchpad, dashboard, etc.) rather than a user-spawned agent
 // session. Meta-sessions must not appear in agent_status and are excluded from
 // all session listings.
 func IsMetaSession(name string) bool {
-	switch name {
-	case ScratchpadSession, "prism-dashboard":
-		return true
-	}
-	return false
+	return sessionname.IsMeta(name)
 }
 
 // IsCoordinatorSession reports whether the named session is a coordinator.
@@ -37,15 +33,23 @@ func IsMetaSession(name string) bool {
 //     (session name ends with "@main"), which matches the convention used by
 //     isCoordinatorSession() in sidecar.go.
 //
+// A descendant session (a name that carries "~" — a review agent or an
+// investigator) is refused before any of the three steps runs. See the same
+// guard in authz.IsCoordinatorSession for the reasoning; the two copies must
+// answer alike, which is why both read sessionname.IsDescendant (#2658).
+//
 // The d parameter may be nil; when nil the DB-backed lookup is skipped and
 // only the heuristic is used.
 func IsCoordinatorSession(sessionName string, d *db.DB) bool {
+	if sessionname.IsDescendant(sessionName) {
+		return false
+	}
 	if d != nil {
 		name, rowExists, err := d.RootAgentName(sessionName)
 		if err == nil && rowExists {
 			if name != "" {
 				dbBased := name == "coordinator"
-				nameBased := strings.HasSuffix(sessionName, "@main")
+				nameBased := sessionname.HasCoordinatorSuffix(sessionName)
 				if dbBased != nameBased {
 					log.Printf("[debug] session: IsCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v — heuristic wins",
 						sessionName, dbBased, name, nameBased)
@@ -60,5 +64,5 @@ func IsCoordinatorSession(sessionName string, d *db.DB) bool {
 		// rowExists=false: no row yet — fall through to heuristic silently.
 	}
 	// Pre-migration fallback or DB unavailable: use name-suffix heuristic.
-	return strings.HasSuffix(sessionName, "@main")
+	return sessionname.HasCoordinatorSuffix(sessionName)
 }

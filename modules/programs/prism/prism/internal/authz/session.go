@@ -23,9 +23,9 @@ package authz
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // RepoFromSession returns the repo prefix for a session.
@@ -56,10 +56,28 @@ func RepoFromSession(sessionName string, d *db.DB) (string, error) {
 			return status.Repo, nil
 		}
 	}
-	if idx := strings.Index(sessionName, "@"); idx >= 0 {
-		return sessionName[:idx], nil
+	// The name-parse fallback applies to @-bearing names only, and issue #2658
+	// deliberately did not widen it. A name with no "@" and no DB row is an
+	// unknown session, and the caller must see "not found" (404) rather than a
+	// repo invented from the name. If this fallback answered for every name,
+	// `prism prompt <typo>` would resolve to a repo of its own, pass the
+	// cross-repo gate as a bare-name root session, and fail later with an
+	// opaque delivery error — the exact confusion #2658 reports.
+	if sessionname.HasBranch(sessionName) {
+		return sessionname.Repo(sessionName), nil
 	}
 	return "", fmt.Errorf("session %q not found", sessionName)
+}
+
+// RepoFromSessionName returns the repo of a session name, using the name
+// alone. It never reads the database and never fails.
+//
+// Prefer RepoFromSession where a DB handle exists: agent_status.repo is
+// authoritative. Use this function where the input is a name and there is no
+// row to read — for example when a repo is derived for a session that is
+// about to be created.
+func RepoFromSessionName(sessionName string) string {
+	return sessionname.Repo(sessionName)
 }
 
 // IsCoordinatorSession returns true when the session is a coordinator. When d
@@ -74,11 +92,20 @@ func RepoFromSession(sessionName string, d *db.DB) (string, error) {
 // logger must be non-nil. Every caller in this package normalises it first;
 // the sidecar wrapper passes the sidecar's own logger.
 func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool {
+	// A descendant session — a review agent or an investigator — is never a
+	// coordinator, whatever its root_agent_name column says (issue #2658).
+	// The guard is on the name, so a wrong DB value cannot promote it. The
+	// same guard is applied by session.IsCoordinatorSession, by
+	// db.retroIsCoordinator, and by IsRootSession below; all four read the
+	// rule from sessionname.IsDescendant so they cannot drift apart.
+	if sessionname.IsDescendant(sessionName) {
+		return false
+	}
 	if d != nil {
 		name, rowExists, err := d.RootAgentName(sessionName)
 		if err == nil && rowExists {
 			if name != "" {
-				nameBased := strings.HasSuffix(sessionName, "@main")
+				nameBased := sessionname.HasCoordinatorSuffix(sessionName)
 				dbBased := name == "coordinator"
 				if dbBased != nameBased {
 					logger.Printf("[debug] sidecar: isCoordinatorSession(%q): DB says %v (root_agent_name=%q), name heuristic says %v — heuristic wins",
@@ -94,5 +121,66 @@ func IsCoordinatorSession(sessionName string, d *db.DB, logger *log.Logger) bool
 		// rowExists=false means no row — no log needed, just use heuristic.
 	}
 	// Pre-migration fallback or DB unavailable: use name-suffix heuristic.
-	return strings.HasSuffix(sessionName, "@main")
+	return sessionname.HasCoordinatorSuffix(sessionName)
+}
+
+// IsRootSession reports whether sessionName is the root session of its own
+// project — the session an operator addresses when they mean "the top-level
+// session over there" (issue #2658).
+//
+// A session is a root session when ALL of the following hold:
+//
+//   - it is not a meta-session (scratchpad, prism-dashboard);
+//   - it is not a descendant (the name carries no "~");
+//   - its repo is non-empty; and
+//   - it is either a coordinator (a "<repo>@main" worktree session, per
+//     IsCoordinatorSession), or a bare name that carries no branch at all.
+//
+// # Why this is not IsCoordinatorSession
+//
+// The bug in #2658 is that a non-worktree session such as `obsidian` can never
+// satisfy the "@main" heuristic — it has no worktree, so it has no branch —
+// and so a single wrong root_agent_name value made it permanently unreachable
+// and invisible. The obvious repair is to call such a session a coordinator.
+// That repair is too broad. Coordinator status also grants the merge queue
+// (cmd/merge.go, cmd/merges.go), `prism investigate` (cmd/investigate.go),
+// `prism review` on another session's PR (cmd/review.go), the profile
+// override (cmd/profile.go), the permission audit (cmd/audit_permission.go),
+// and the wide tier-2/tier-3 `prism checkin` scope (authz/checkin.go). None of
+// those is needed to make a session reachable by name.
+//
+// So this predicate is deliberately narrow. It is read at exactly two places:
+// the cross-repo arm of the host-API /prompt gate, and the cross-repo arm of
+// the `prism sessions list` query. Everything else keeps reading
+// IsCoordinatorSession and is unchanged.
+//
+// # Why a bare name is admitted on its name alone
+//
+// The bare-name arm has no DB corroboration inside this function, which keeps
+// it testable with a nil handle. The /prompt route corroborates it upstream
+// anyway: it resolves the target through RepoFromSession first, and that call
+// requires a live agent_status row for any name with no "@". An unknown bare
+// name is therefore refused with 404 before this predicate is consulted.
+//
+// logger must be non-nil; callers normalise it first.
+func IsRootSession(sessionName string, d *db.DB, logger *log.Logger) bool {
+	if sessionname.IsMeta(sessionName) {
+		return false
+	}
+	if sessionname.IsDescendant(sessionName) {
+		return false
+	}
+	// A name that yields no repo ("", "@main", "@") is malformed. Fail closed
+	// rather than admit it on the strength of a suffix match.
+	if sessionname.Repo(sessionName) == "" {
+		return false
+	}
+	if sessionname.HasBranch(sessionName) {
+		// Worktree session: the root of the repo is its coordinator, and the
+		// coordinator rule is unchanged by #2658.
+		return IsCoordinatorSession(sessionName, d, logger)
+	}
+	// No branch means no worktree, so there is no "@main" sibling that could
+	// be the root instead. The session is the root of its own directory.
+	return true
 }

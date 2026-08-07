@@ -50,6 +50,7 @@ import (
 	_ "github.com/prismatic-koi/prism/internal/harness/pi"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	prismSession "github.com/prismatic-koi/prism/internal/session"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
@@ -154,13 +155,25 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 	// GET /session to retrieve the existing session ID rather than POST /session.
 	useContainerHarness := isoCaps.NeedsHostAPISocket || isoCaps.IsContainer
 
-	// Derive repo and worktree from session name and environment.
-	// The session name format is "repo@branch". The worktree is expected
-	// to be passed via environment (PRISM_WORKTREE) or derived from CWD.
-	repo := sessionName
-	if idx := strings.Index(sessionName, "@"); idx >= 0 {
-		repo = sessionName[:idx]
-	}
+	// Derive repo and worktree from session name and environment. The worktree
+	// is expected to be passed via environment (PRISM_WORKTREE) or derived
+	// from CWD.
+	//
+	// The repo value matters more than one line suggests: it becomes
+	// sidecar.Config.Repo, which internal/sidecar/state.go re-writes into
+	// agent_status.repo on EVERY state transition, and db.UpsertStatus sets
+	// `repo = excluded.repo` with no COALESCE. The sidecar is therefore the
+	// continuous LAST writer of the column and overwrites whatever the spawn
+	// path seeded.
+	//
+	// Until issue #2658 this held a private copy of the repo grammar that split
+	// on "@" alone. For a descendant of a non-worktree parent —
+	// `obsidian~investigate-v2` — that copy returned the whole name, so the row
+	// was re-attributed to a repo of its own moments after internal/review
+	// seeded it correctly. That is the exact evidence row in #2658. Do not
+	// reintroduce a local rule here; TestNoPrivateRepoGrammarInAWriter fails if
+	// you do.
+	repo := sessionname.Repo(sessionName)
 
 	worktree := os.Getenv("PRISM_WORKTREE")
 	if worktree == "" {

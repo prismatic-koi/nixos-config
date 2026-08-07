@@ -26,7 +26,7 @@ func runCheckinNoArg(showAll bool) error {
 		cwd = os.Getenv("PRISM_SPAWN_PATH")
 	}
 	if cwd != "" {
-		currentRepo = deriveRepo(cwd)
+		currentRepo = repoFromWorktreePath(cwd)
 	}
 
 	d, dbErr := openDB()

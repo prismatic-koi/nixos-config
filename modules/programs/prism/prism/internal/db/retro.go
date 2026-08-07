@@ -36,6 +36,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // RetroReport is the assembled, render-ready shape for one `prism retro` run.
@@ -313,11 +315,15 @@ func (d *DB) retroClassify(s *Session, groupParents map[string]string) (root, ki
 }
 
 // retroIsCoordinator reports whether name is a coordinator session. It mirrors
-// authz.IsCoordinatorSession's rule — the "@main" name suffix, or a
-// root_agent_name of "coordinator" — without the logger dependency, since a
-// retro read needs no diagnostics on the classification.
+// authz.IsCoordinatorSession's rule — a descendant name is never a
+// coordinator, then the "@main" name suffix, or a root_agent_name of
+// "coordinator" — without the logger dependency, since a retro read needs no
+// diagnostics on the classification.
 func (d *DB) retroIsCoordinator(name string) bool {
-	if strings.HasSuffix(name, "@main") {
+	if sessionname.IsDescendant(name) {
+		return false
+	}
+	if sessionname.HasCoordinatorSuffix(name) {
 		return true
 	}
 	if r, rowExists, err := d.RootAgentName(name); err == nil && rowExists && r == "coordinator" {

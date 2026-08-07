@@ -3,7 +3,7 @@ package review
 // prompt.go — review prompt construction and supporting helpers.
 //
 // buildReviewPrompt assembles the initial prompt for a review agent from the
-// pre-fetched PR context. The helpers in this file (sortStrings, deriveRepo,
+// pre-fetched PR context. The helpers in this file (sortStrings,
 // formatDuration, defaultDBPath, sanitisePRNumber) are pure utility functions
 // with no I/O or DB dependency.
 
@@ -211,14 +211,6 @@ func sortStrings(ss []string) {
 			ss[j], ss[j-1] = ss[j-1], ss[j]
 		}
 	}
-}
-
-// deriveRepo returns the repo portion of a session name (before "@").
-func deriveRepo(sessionName string) string {
-	if idx := strings.Index(sessionName, "@"); idx >= 0 {
-		return sessionName[:idx]
-	}
-	return sessionName
 }
 
 // formatDuration formats a duration as "Xm" or "Xs" for display.

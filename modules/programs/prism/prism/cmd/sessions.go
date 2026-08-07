@@ -82,7 +82,7 @@ graceful-degradation contract matching FormatWaiting.`,
 }
 
 func init() {
-	sessionsListCmd.Flags().BoolP("all", "A", false, "List ALL sessions across all repos, including other repos' workers.\nBy default the listing already includes other repos' coordinators — only their workers are hidden.")
+	sessionsListCmd.Flags().BoolP("all", "A", false, "List ALL sessions across all repos, including other repos' workers.\nBy default the listing already includes other repos' root sessions (<repo>@main, or a non-worktree session with a bare name) — only their workers are hidden.")
 	sessionsListCmd.Flags().Bool("json", false, "Emit structured JSON (array of session objects) to stdout instead of the human-readable table")
 
 	sessionsStatusCmd.Flags().Bool("waiting", false, "Only output the waiting count")
