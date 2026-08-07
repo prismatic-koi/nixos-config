@@ -38,6 +38,7 @@ import {
   BLOCKED_BASH_PATTERNS,
   checkBlockedBash,
   isWorkerClassRole,
+  isReviewRole,
   stripCommandSubstitutions,
   newDoomLoopState,
   snapshotGuardState,
@@ -1949,8 +1950,8 @@ describe("isGitPush", () => {
 // ---------------------------------------------------------------------------
 
 describe("BLOCKED_BASH_PATTERNS", () => {
-  it("contains exactly six entries", () => {
-    assert.equal(BLOCKED_BASH_PATTERNS.length, 6)
+  it("contains exactly nine entries", () => {
+    assert.equal(BLOCKED_BASH_PATTERNS.length, 9)
   })
 
   it("has the git-worktree-prune entry", () => {
@@ -1973,11 +1974,14 @@ describe("BLOCKED_BASH_PATTERNS", () => {
     assert.ok(ids.includes("git-stash"))
   })
 
-  it("the git-stash and gh-pr-* entries are role-scoped; the pre-#2202 entries are unscoped", () => {
+  it("the git-stash, gh-pr-*, and git-*-review entries are role-scoped; the pre-#2202 entries are unscoped", () => {
     const roleScoped = new Set([
       "git-stash",
       "gh-pr-merge",
       "gh-pr-review-approve",
+      "git-checkout-review",
+      "git-apply-review",
+      "git-merge-review",
     ])
     for (const p of BLOCKED_BASH_PATTERNS) {
       if (roleScoped.has(p.id)) {
@@ -1985,6 +1989,27 @@ describe("BLOCKED_BASH_PATTERNS", () => {
       } else {
         assert.equal(p.appliesToRole, undefined, p.id)
       }
+    }
+  })
+
+  it("has the git-checkout-review, git-apply-review, and git-merge-review entries (#2648)", () => {
+    const ids = BLOCKED_BASH_PATTERNS.map((p) => p.id)
+    assert.ok(ids.includes("git-checkout-review"))
+    assert.ok(ids.includes("git-apply-review"))
+    assert.ok(ids.includes("git-merge-review"))
+  })
+
+  it("the git-*-review reasons name the rule and the git show alternative (#2648)", () => {
+    for (const p of BLOCKED_BASH_PATTERNS) {
+      if (!p.id.endsWith("-review")) continue
+      assert.ok(
+        p.reason.includes("do not modify the working"),
+        `pattern ${p.id} reason should state the rule`,
+      )
+      assert.ok(
+        p.reason.includes("git show origin/<branch>:<path>"),
+        `pattern ${p.id} reason should name the git show alternative`,
+      )
     }
   })
 
@@ -2412,6 +2437,176 @@ describe("isWorkerClassRole (#2202)", () => {
 
   it("is false for the empty role (pi launched outside prism)", () => {
     assert.equal(isWorkerClassRole(""), false)
+  })
+})
+
+describe("isReviewRole (#2648)", () => {
+  it("is true for every review-* role", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      assert.equal(isReviewRole(role), true, role)
+    }
+  })
+
+  it("is false for worker (ordinary workers use checkout/apply/merge)", () => {
+    assert.equal(isReviewRole("worker"), false)
+  })
+
+  it("is false for coordinator", () => {
+    assert.equal(isReviewRole("coordinator"), false)
+  })
+
+  it("is false for the other non-coordinator prism roles", () => {
+    for (const role of ["ac", "investigate", "retro"]) {
+      assert.equal(isReviewRole(role), false, role)
+    }
+  })
+
+  it("is false for the empty role", () => {
+    assert.equal(isReviewRole(""), false)
+  })
+
+  it("is narrower than isWorkerClassRole (every review role is worker-class, not vice versa)", () => {
+    for (const role of [
+      "review-goal",
+      "review-code",
+      "review-context",
+      "review-qa",
+      "review-security",
+    ]) {
+      assert.equal(isReviewRole(role) && isWorkerClassRole(role), true, role)
+    }
+    assert.equal(isWorkerClassRole("worker") && !isReviewRole("worker"), true)
+  })
+})
+
+describe("checkBlockedBash — git checkout/apply/merge for review roles (#2648)", () => {
+  const reviewRoles = [
+    "review-goal",
+    "review-code",
+    "review-context",
+    "review-qa",
+    "review-security",
+  ]
+
+  it("blocks 'git checkout <branch>' for every review role", () => {
+    for (const role of reviewRoles) {
+      const hit = checkBlockedBash("git checkout feature-branch", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "git-checkout-review", role)
+    }
+  })
+
+  it("blocks 'git checkout <branch> -- <path>' (the staging form) for review roles", () => {
+    const hit = checkBlockedBash(
+      "git checkout origin/main -- src/foo.ts",
+      "review-qa",
+    )
+    assert.notEqual(hit, null)
+    assert.equal(hit!.id, "git-checkout-review")
+  })
+
+  it("blocks 'git apply' for review roles", () => {
+    for (const role of reviewRoles) {
+      const hit = checkBlockedBash("git apply /tmp/x.patch", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "git-apply-review", role)
+    }
+  })
+
+  it("blocks 'git merge' for review roles", () => {
+    for (const role of reviewRoles) {
+      const hit = checkBlockedBash("git merge origin/main", role)
+      assert.notEqual(hit, null, role)
+      assert.equal(hit!.id, "git-merge-review", role)
+    }
+  })
+
+  it("blocks the 'git -C <path>' and second-segment forms for review roles", () => {
+    assert.equal(
+      checkBlockedBash("git -C /repo checkout main", "review-code")!.id,
+      "git-checkout-review",
+    )
+    assert.equal(
+      checkBlockedBash("cd /repo && git merge foo", "review-code")!.id,
+      "git-merge-review",
+    )
+  })
+
+  it("the block reason names the rule and the git show alternative", () => {
+    const hit = checkBlockedBash("git checkout main", "review-goal")
+    assert.notEqual(hit, null)
+    assert.ok(hit!.reason.includes("do not modify the working"))
+    assert.ok(hit!.reason.includes("git show origin/<branch>:<path>"))
+  })
+
+  it("does NOT block for ordinary workers (they use these legitimately)", () => {
+    for (const cmd of [
+      "git checkout feature-branch",
+      "git apply /tmp/x.patch",
+      "git merge origin/main",
+    ]) {
+      assert.equal(checkBlockedBash(cmd, "worker"), null, cmd)
+    }
+  })
+
+  it("does NOT block for the coordinator", () => {
+    for (const cmd of [
+      "git checkout main",
+      "git apply /tmp/x.patch",
+      "git merge feature",
+    ]) {
+      assert.equal(checkBlockedBash(cmd, "coordinator"), null, cmd)
+    }
+  })
+
+  it("does NOT block for the ac/investigate/retro roles", () => {
+    for (const role of ["ac", "investigate", "retro"]) {
+      assert.equal(checkBlockedBash("git checkout main", role), null, role)
+    }
+  })
+
+  it("does NOT block when no role is passed", () => {
+    assert.equal(checkBlockedBash("git checkout main"), null)
+    assert.equal(checkBlockedBash("git merge foo", ""), null)
+  })
+
+  it("does NOT block hyphenated cousins for review roles (merge-base, checkout-index)", () => {
+    assert.equal(
+      checkBlockedBash("git merge-base origin/main origin/feature", "review-goal"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("git checkout-index -a", "review-goal"),
+      null,
+    )
+  })
+
+  it("does NOT block the still-allowed read commands for review roles", () => {
+    for (const cmd of [
+      "git show origin/feature:src/foo.ts",
+      "git diff origin/main...origin/feature",
+      "gh pr diff 123",
+      "gh pr view 123",
+    ]) {
+      assert.equal(checkBlockedBash(cmd, "review-qa"), null, cmd)
+    }
+  })
+
+  it("does NOT block 'checkout'/'apply'/'merge' inside quoted strings for review roles", () => {
+    assert.equal(
+      checkBlockedBash('git commit -m "add merge helper"', "review-code"),
+      null,
+    )
+    assert.equal(
+      checkBlockedBash("rg 'git checkout' modules/", "review-code"),
+      null,
+    )
   })
 })
 

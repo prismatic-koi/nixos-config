@@ -42,7 +42,7 @@ STE findings do not apply to class C conversational output (acknowledgement, rap
 
 ## Reading the PR
 
-Use these commands to gather context — never modify the working tree:
+Use these commands to gather context:
 
 ```bash
 gh pr view <number>              # PR title, description, branch name, linked issues
@@ -52,8 +52,6 @@ git diff origin/main...origin/<branch>  # cross-branch comparison
 ```
 
 **Always read the full files being modified** — diffs alone are not enough. Complete file context shows whether an import is truly missing or wired elsewhere, and whether an external-facing change matches internal dependencies.
-
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
 ---
 

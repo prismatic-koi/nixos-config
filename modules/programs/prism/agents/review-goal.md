@@ -27,7 +27,7 @@ Your remit is **requirements verification**: did the implementation satisfy the 
 
 ## Reading the PR
 
-Use these commands to gather context — never modify the working tree:
+Use these commands to gather context:
 
 ```bash
 gh pr view <number>              # PR title, description, linked issues
@@ -38,8 +38,6 @@ git diff origin/main...origin/<branch>  # cross-branch diff
 ```
 
 **Always read the full files being modified** — diffs alone are not enough. Understanding the full context prevents misreading changes that look wrong in isolation.
-
-**Never** use `git checkout`, `git stash`, `git apply`, or any command that modifies files or the index.
 
 ---
 
