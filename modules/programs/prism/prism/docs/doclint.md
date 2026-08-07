@@ -171,6 +171,39 @@ doc that already carries an unparameterised skip should migrate to
 `identifiers` (or the appropriate class list) so the other checks still
 apply to its prose.
 
+## Out-of-subtree path references
+
+The scan reads backticked spans only (see [What the lint
+checks](#what-the-lint-checks)). A bare, unbackticked path is prose to the
+lint. The lint never scans it. A backticked path is a `file_path` token. It
+must resolve under the prism source root, or under the repo root when the
+repo root is present.
+
+The nix sandbox build copies the prism subtree only, so the repo root is
+absent there. A backticked path outside the prism subtree resolves on a
+developer worktree. It does not resolve in the nix build. It then fails the
+`nix-build-prism-checked` CI job with no local signal.
+
+`TestDocsResolve_NixSandboxConfiguration` closes that gap. It copies the
+prism subtree to a location with no repo root, then runs the scan. An
+out-of-subtree backticked path fails `go test` locally, the same way the
+nix build fails.
+
+Two routes let a doc reference an out-of-subtree file:
+
+- Do not backtick the path. A bare path is not a token, so it never
+  produces a finding.
+- Backtick the path and add a `doclint-ignore` annotation for it. Add a
+  follow-up comment that states why the path sits outside the prism
+  subtree.
+
+This class of failure cost PR #2676 two CI round trips. A doc referenced an
+out-of-subtree path. The follow-up fix added a `doclint-ignore`, and its
+explanatory comment backticked a second out-of-subtree path three lines
+above. The scan reads inside HTML comments, so that comment became a new
+finding. When a comment must name an out-of-subtree path, leave it
+unbackticked.
+
 ## ASD-STE100 prose checks (issues #2490, #2496)
 
 <!-- doclint-ignore: should, would, may, might, could, has, have, had, been, e, i, etc, leverage, seamlessly, robust, comprehensive, plethora, myriad -->
@@ -346,6 +379,14 @@ The test runs in two environments and must pass in both:
    and `$HOME=/homeless-shelter` is unwritable. The repo-root `AGENTS.md`
    does not exist and the lint skips it gracefully. The index covers
    Go source only.
+
+`TestDocsResolve` runs in whichever environment invokes it, so it only
+reaches the nix-sandbox configuration under the checked nix build.
+`TestDocsResolve_NixSandboxConfiguration` reaches that configuration under a
+plain `go test` as well. It copies the prism subtree to a location with no
+repo-root `AGENTS.md`. The per-doc repo-root lookup then returns the empty
+string for real. See [Out-of-subtree path
+references](#out-of-subtree-path-references).
 
 The lint locates its scan roots via `runtime.Caller`, never via `$HOME`
 or `os.Getwd()`, so nothing about the environment matters other than
