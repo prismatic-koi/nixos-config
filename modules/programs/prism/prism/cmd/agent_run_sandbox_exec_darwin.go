@@ -267,6 +267,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		SshBin:              cfg.SshBin,
 		GitHubTokenPath:     cfg.GitHubTokenPath,
 		GitHubTokenPaths:    cfg.GitHubTokenPaths,
+		GitLabTokenPath:     cfg.GitLabTokenPath,
 		HostAPISockPath:     hostAPISockPath,
 		InstanceID:          instanceID,
 		RuntimeEnv:          sandboxRuntimeEnv,
@@ -474,9 +475,18 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// cache dir is session-derived. The (subpath <sessionDir>) RW allow in
 	// the SBPL profile covers kubectl's MkdirAll of the cache dir — no extra
 	// profile rule is needed — and the cache stays per-session and ephemeral.
+	// GLAB_CONFIG_DIR: redirect glab's config dir into the session work dir
+	// (issue #2668). glab reads ~/.config/glab-cli/config.yml on every
+	// invocation and aborts when the read returns EPERM, which is what the
+	// deny-default profile gives it for the real host path. The redirect also
+	// keeps the owner's interactive glab login out of the sandbox: the agent
+	// authenticates with the injected GITLAB_TOKEN value instead. The
+	// (subpath <sessionDir>) RW allow covers glab's MkdirAll — no extra
+	// profile rule is needed — and the config stays per-session and ephemeral.
 	if sessionDir, workDirErr := m.SessionWorkDir(); workDirErr == nil && sessionDir != "" {
 		env = append(env, container.SessionWorkDirGitEnv(sessionDir, ctrCfg.SshBin)...)
 		env = append(env, container.SessionWorkDirKubeEnv(sessionDir)...)
+		env = append(env, container.SessionWorkDirGlabEnv(sessionDir)...)
 	}
 
 	// GOTOOLCHAIN=local: nix is authoritative for the Go toolchain inside the

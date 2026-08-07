@@ -142,7 +142,7 @@ It moved there because `internal/payload` is a stdlib-only leaf package, which i
 
 **When you add a credential, edit two places in the same change:**
 
-1. `payload.ForwardedCredentialEnvNames` (or `otherCredentialEnvNames`, for a name prism does not forward but that can still be present in a host-mode agent's environment) in `internal/payload/redact.go`.
+1. `payload.ForwardedCredentialEnvNames` (or `otherCredentialEnvNames`, for a name prism does not forward but that can still be present in a host-mode agent's environment) in `internal/payload/redact.go`. A credential prism resolves host-side from a sops file and injects as a VALUE gets its own exported constant instead — `GitHubTokenEnvName`, `GitLabTokenEnvName` — which `credentialEnvNameList` folds into the same union. Add such a name to the test-only `credentialEnvNames` map in `argv_redact_test.go` as well; that map is derived from the forwarding list, so a constant-shaped name needs the one explicit line.
 2. `CREDENTIAL_ENV_NAMES` in `modules/programs/prism/pi/extensions/prism.ts`, so the pi extension redacts it before the frame reaches the socket.
 
 `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one of the two. See `modules/programs/prism/prism/docs/secret-redaction.md` for the full control.

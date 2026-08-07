@@ -96,9 +96,16 @@ not match: they name a file, not a secret, and redacting a path corrupts
 diagnosable output for no gain.
 
 `internal/container` derives its injection list from the same registry
-(`ForwardedCredentialEnvNames`, `GitHubTokenEnvName`,
+(`ForwardedCredentialEnvNames`, `GitHubTokenEnvName`, `GitLabTokenEnvName`,
 `PrismGitHubTokenEnvPrefix`), so a credential added for injection is redacted
 without a second edit.
+
+Two of those names are not forwarded verbatim from the host environment:
+prism resolves the GitHub and GitLab tokens host-side, from the sops file the
+config names, and injects the VALUE (`ResolveGitHubToken`,
+`ResolveGitLabToken`). They are in the registry for the same reason as the
+rest: the capturing process holds the value, so the value layer can remove
+it.
 
 ### Layer 2 — shape matching (secondary)
 
@@ -106,8 +113,9 @@ The shape layer covers the case where the secret is not in the environment of
 the capturing process. It is defence in depth and it never replaces layer 1.
 
 Each shape is anchored on a distinctive issuer prefix: `ghp_`, `github_pat_`,
-`sk-ant-`, `sk-or-v1-`, `sk-proj-`, `xoxb-`, `AKIA`, `AIza`, `ATATT3`, and the
-PEM private-key block. `CredentialShapeNames` lists them in match order.
+`glpat-`, `sk-ant-`, `sk-or-v1-`, `sk-proj-`, `xoxb-`, `AKIA`, `AIza`,
+`ATATT3`, and the PEM private-key block. `CredentialShapeNames` lists them in
+match order.
 
 A shape with a generic body — a bare base64 run, a JWT — is deliberately
 absent. Its false-positive rate would corrupt more output than the rule
@@ -249,7 +257,10 @@ outside prism's code.
 - To add a credential name, edit two places in the same change:
   1. `ForwardedCredentialEnvNames` in `internal/payload/redact.go` — or
      `otherCredentialEnvNames`, for a name prism does not forward but that can
-     still be present in a host-mode agent's environment.
+     still be present in a host-mode agent's environment. A name prism
+     resolves host-side and injects as a value gets its own exported
+     constant instead (`GitHubTokenEnvName`, `GitLabTokenEnvName`), which
+     `credentialEnvNameList` folds into the same union.
   2. `CREDENTIAL_ENV_NAMES` in the extension.
 
   `TestRedactorParityWithExtension_EnvNameRegistry` fails if you edit only one

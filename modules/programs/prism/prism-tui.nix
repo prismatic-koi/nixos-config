@@ -19,6 +19,21 @@ let
       config.home-manager.users.${username}.sops.secrets.github_token.path
     else
       config.sops.secrets.github_token.path;
+  # Absolute path to the sops-decrypted GitLab token secret file, or "" when
+  # the host does not enable the GitLab CLI. Threaded into config.json
+  # (gitlab_token_path) so prism reads the token at spawn time and injects
+  # GITLAB_TOKEN into the agent sandbox as a value — the host env var is
+  # rendered as a shell command substitution and only expands under a login
+  # shell (#2348). The same path admits `gitlab_token` to the sandbox-exec
+  # secrets.d allowlist. See issue #2668. The platform split mirrors
+  # githubTokenPath above.
+  gitlabTokenPath =
+    if !config.nx.programs.gitlab-cli.enable then
+      ""
+    else if pkgs.stdenv.isDarwin then
+      config.home-manager.users.${username}.sops.secrets.gitlab_token.path
+    else
+      config.sops.secrets.gitlab_token.path;
   gitCfg = config.home-manager.users.${config.nx.username}.programs.git;
   # Extract the first includes entry that has user.name and user.email set.
   # This mirrors the values defined in modules/programs/git.nix.
@@ -91,6 +106,12 @@ let
     # boot-restore path started tmux from a systemd unit and every session's
     # GITHUB_TOKEN was frozen to the literal string $(cat /run/secrets/…).
     github_token_paths = config.nx.programs.prism.githubTokenPaths;
+    # gitlab_token_path: absolute path to the sops-decrypted GitLab token
+    # file, or "" when nx.programs.gitlab-cli.enable is false. Read by
+    # credentialEnvVars at spawn time to inject GITLAB_TOKEN into the agent
+    # sandbox, and used by the sandbox-exec profile generator as the source
+    # that admits `gitlab_token` to the secrets.d allowlist (#2668).
+    gitlab_token_path = gitlabTokenPath;
   };
 in
 {

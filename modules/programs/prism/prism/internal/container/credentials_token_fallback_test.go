@@ -34,6 +34,11 @@ func clearTokenEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		"GITHUB_TOKEN",
+		// GITLAB_TOKEN is cleared for the same reason as GITHUB_TOKEN: the
+		// developer running the suite has a real one in their environment,
+		// and an ambient value would make the "no source configured" cases
+		// pass or fail for the wrong reason (issue #2668).
+		"GITLAB_TOKEN",
 		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_WORKER",
 		"PRISM_GITHUB_TOKEN_PRISMATIC_KOI_COORDINATOR",
 		"PRISM_GITHUB_TOKEN_THANKYOU_PAYROLL_WORKER",

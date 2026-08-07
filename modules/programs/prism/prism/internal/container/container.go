@@ -299,6 +299,18 @@ type Config struct {
 	// guard).
 	GitHubTokenPaths map[string]string
 
+	// GitLabTokenPath is the absolute path to the sops-decrypted GitLab token
+	// secret file on the host (e.g. ~/.config/sops-nix/secrets/gitlab_token on
+	// Darwin). credentialEnvVars reads the file at spawn time and injects the
+	// contents as GITLAB_TOKEN, so the value never depends on a shell having
+	// expanded the host's "$(cat <path>)" session variable — the same
+	// file-first shape GitHubTokenPaths uses (#2348). The path is also the
+	// source that admits `gitlab_token` to the sandbox-exec secrets.d
+	// allowlist (collectSecretsDAllowlistNames). Empty means no GitLab token
+	// is configured on this host: no env var is injected and no secrets.d
+	// exception is emitted. See issue #2668.
+	GitLabTokenPath string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session
@@ -582,24 +594,56 @@ func WriteHarnessConfig(sessionName, content string) error {
 	return nil
 }
 
+// SandboxSshHosts are the forge hosts the generated sandbox ssh config
+// carries a stanza for, in emission order. Both map to the SAME mounted
+// access key: modules/programs/git.nix points github.com and gitlab.com at
+// ~/.ssh/prismatic-koi-ed25519 on the host, so gitlab.com needs no new key
+// material inside the sandbox — only a host stanza (issue #2668).
+//
+// No other SSH host is expected inside an agent sandbox. Adding one here
+// grants the sandbox git-over-SSH reach to that host with the access key,
+// so treat any addition as a sandbox-boundary change.
+var SandboxSshHosts = []string{"github.com", "gitlab.com"}
+
+// sandboxSshConfig renders the generated sandbox ssh config: one stanza per
+// SandboxSshHosts entry, every stanza pointing at identityFile.
+//
+// It is the single source of truth for both generators — writeSshConfig
+// (bwrap, sandbox-$HOME-relative generic key path) and writeSshConfigToDir
+// (sandbox-exec, stable host key path). The two differ ONLY in the
+// identityFile they pass; keeping the body here is what stops the two
+// copies drifting, which they previously did by duplicating the string.
+func sandboxSshConfig(identityFile string) string {
+	var b strings.Builder
+	for i, host := range SandboxSshHosts {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("Host " + host + "\n")
+		b.WriteString("  StrictHostKeyChecking accept-new\n")
+		b.WriteString("  IdentityFile " + identityFile + "\n")
+		b.WriteString("  IdentitiesOnly yes\n")
+	}
+	return b.String()
+}
+
 // writeSshConfig generates a minimal ~/.ssh/config for the sandbox and writes
 // it to a temp file. The file is later mounted at $HOME/.ssh/config:ro inside
 // the sandbox, where $HOME depends on the isolation mode (see isolationMode).
 //
-// The config only needs to handle GitHub; other SSH hosts are not expected
-// inside agent sandboxes. The IdentityFile path is $HOME/.ssh/access-key
-// using the sandbox-specific $HOME prefix, which matches the generic name
-// used by the bwrap bind-mount (<hostHome>/.ssh/access-key).
+// The config handles the forge hosts in SandboxSshHosts (github.com and
+// gitlab.com); other SSH hosts are not expected inside agent sandboxes. The
+// IdentityFile path is $HOME/.ssh/access-key using the sandbox-specific
+// $HOME prefix, which matches the generic name used by the bwrap bind-mount
+// (<hostHome>/.ssh/access-key). Both stanzas share that one key — the host
+// maps github.com and gitlab.com to the same access key (#2668).
 //
 // Only the bwrap Prepare path calls this; sandbox-exec generates its ssh
 // config into the per-session work dir instead (writeSshConfigToDir in
 // session_work_dir.go, issue #2213) with the stable host key path.
 func (m *Manager) writeSshConfig(mode isolationMode) error {
 	identityFile := filepath.Join(sandboxHome(m, mode), ".ssh", "access-key")
-	sshConfig := "Host github.com\n" +
-		"  StrictHostKeyChecking accept-new\n" +
-		"  IdentityFile " + identityFile + "\n" +
-		"  IdentitiesOnly yes\n"
+	sshConfig := sandboxSshConfig(identityFile)
 	if err := os.WriteFile(m.sshConfigFilePath(), []byte(sshConfig), 0o600); err != nil {
 		return fmt.Errorf("container: write ssh config: %w", err)
 	}

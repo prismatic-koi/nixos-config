@@ -212,6 +212,11 @@ integration test coverage exists for:
   `~/.config/kube/agents-config`), and a fake-tree counter-rotation
   simulation proving the exceptions are counter-independent (#1410/#1573).
   See `sandbox_exec_secrets_deny_darwin_test.go`.
+- **The gitlab_token carve-out** — the one name #2668 adds to that
+  allowlist, derived from `Config.GitLabTokenPath`: readable in-sandbox when
+  the host configures it, denied when it does not, with `github_token` in
+  the same generation dir denied in both cases, plus the paired negative
+  that strips the exception. See `sandbox_exec_gitlab_token_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to

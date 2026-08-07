@@ -115,6 +115,18 @@ type Config struct {
 	// then falls back to the env-var path with a $(-literal guard.
 	GitHubTokenPaths map[string]string `json:"github_token_paths,omitempty"`
 
+	// GitLabTokenPath is the absolute path to the sops-decrypted GitLab token
+	// secret file on the host (e.g. ~/.config/sops-nix/secrets/gitlab_token on
+	// Darwin). Threaded into container.Config so credentialEnvVars can read
+	// the token at spawn time and inject GITLAB_TOKEN into the sandbox as a
+	// VALUE — the same file-first shape GitHubTokenPaths uses, and for the
+	// same reason (#2348: the host env var is rendered as "$(cat <path>)" by
+	// home-manager and only expands under a login shell). Empty means the
+	// host has no GitLab token configured (nx.programs.gitlab-cli.enable is
+	// false); the resolver then falls back to the inherited GITLAB_TOKEN env
+	// var behind the $(-literal guard. See issue #2668.
+	GitLabTokenPath string `json:"gitlab_token_path,omitempty"`
+
 	// Restore behaviour.
 	// RestoreStaggerDelayMs is the delay in milliseconds inserted between
 	// successive session creates in `prism restore` to flatten the startup
@@ -200,6 +212,7 @@ type parsedConfig struct {
 	SshBin                    string             `json:"ssh_bin"`
 	GitHubTokenPath           string             `json:"github_token_path"`
 	GitHubTokenPaths          *map[string]string `json:"github_token_paths"`
+	GitLabTokenPath           string             `json:"gitlab_token_path"`
 	PIExtensionDir            string             `json:"pi_extension_dir"`
 	RestoreStaggerDelayMs     *int               `json:"restore_stagger_delay_ms"`
 	BwrapConcurrencyCap       *int               `json:"bwrap_concurrency_cap"`
@@ -385,6 +398,9 @@ func load() Config {
 	}
 	if parsed.GitHubTokenPaths != nil {
 		cfg.GitHubTokenPaths = *parsed.GitHubTokenPaths
+	}
+	if parsed.GitLabTokenPath != "" {
+		cfg.GitLabTokenPath = parsed.GitLabTokenPath
 	}
 	if parsed.PIExtensionDir != "" {
 		cfg.PIExtensionDir = parsed.PIExtensionDir

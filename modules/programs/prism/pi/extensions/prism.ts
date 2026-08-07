@@ -1937,6 +1937,7 @@ export const CREDENTIAL_ENV_NAMES: readonly string[] = [
   "GEMINI_API_KEY",
   "GH_TOKEN",
   "GITHUB_TOKEN",
+  "GITLAB_TOKEN",
   "GOOGLE_API_KEY",
   "GRAFANA_API_KEY",
   "NOTION_API_KEY",
@@ -2007,6 +2008,11 @@ export const CREDENTIAL_SHAPES: ReadonlyArray<{
     name: "github-token",
     pattern: String.raw`gh[pousr]_[A-Za-z0-9]{36,255}`,
     triggers: ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"],
+  },
+  {
+    name: "gitlab-pat",
+    pattern: String.raw`glpat-[A-Za-z0-9_-]{20,255}`,
+    triggers: ["glpat-"],
   },
   {
     name: "anthropic-api-key",

@@ -426,12 +426,14 @@ func generateProfile(m *Manager) string {
 	// the entire home-manager sops-nix secrets tree
 	// (~/.config/sops-nix/secrets → /var/folders/<…>/T/secrets.d/<N>/) to the
 	// sandbox: the daily-driver GitHub PAT, full-power AWS config, admin kube
-	// configs, gitlab/hass/notion/syncthing keys, the non-prism SSH keys, and
-	// the secrets.d/age-keys.txt copy. None of those are read in-sandbox —
-	// GITHUB_TOKEN, OPENROUTER_API_KEY, etc. are resolved host-side by
-	// agent-run (credentialEnvVars, including the #2029 GitHubTokenPath file
-	// fallback) and injected into the sandbox env as VALUES before
-	// sandbox-exec starts.
+	// configs, hass/notion/syncthing keys, the non-prism SSH keys, and
+	// the secrets.d/age-keys.txt copy. Almost none of those are read
+	// in-sandbox — GITHUB_TOKEN, OPENROUTER_API_KEY, etc. are resolved
+	// host-side by agent-run (credentialEnvVars, including the #2029
+	// GitHubTokenPath file fallback) and injected into the sandbox env as
+	// VALUES before sandbox-exec starts. The single exception is
+	// gitlab_token, which IS read in-sandbox — see
+	// collectSecretsDAllowlistNames (issue #2668).
 	//
 	// Shape:
 	//   1. deny file-write* on the secrets.d subtree, no exceptions — nothing
@@ -876,9 +878,10 @@ func generateProfile(m *Manager) string {
 	//
 	// The first entry is the per-session work dir (issue #2213) — the ONLY
 	// per-session writable grant. It covers the generated ssh-config /
-	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, AND the
-	// chromium Library skeleton (issue #2247 — CFFIXED_USER_HOME points
-	// chromium's NSHomeDirectory() at <sessionDir>, so its writes land under
+	// gitconfig / allowed_signers, kubectl's KUBECACHEDIR cache, glab's
+	// GLAB_CONFIG_DIR config dir (issue #2668), AND the chromium Library
+	// skeleton (issue #2247 — CFFIXED_USER_HOME points chromium's
+	// NSHomeDirectory() at <sessionDir>, so its writes land under
 	// <sessionDir>/Library/... with NO dedicated rule and NO host-Library
 	// grant).
 	if sessionDirErr == nil {
@@ -1341,6 +1344,18 @@ func generateProfile(m *Manager) string {
 //	~/.config/aws/readonly-config        — read via AWS_CONFIG_FILE env (#2234)
 //	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env (#2234)
 //	~/.config/kube/agents-config         — read via KUBECONFIG env (#2235)
+//	cfg.GitLabTokenPath                  — the gitlab_token sops secret (#2668)
+//
+// The GitLab entry is the one addition since #2211 and it meets the rule
+// below: an in-sandbox consumer reads it. Any zsh the agent starts sources
+// the home-manager session vars, which re-derive GITLAB_TOKEN by running
+// `cat <this path>`. With the read denied that cat fails and OVERWRITES the
+// injected GITLAB_TOKEN with an empty string, so glab breaks in every
+// zsh-launched command — the same mechanism the bwrap SHELL=/bin/sh pin
+// works around on Linux. Note what the exception does NOT do: the token
+// VALUE is already inside the sandbox as an env var (credentialEnvVars
+// injects it), so this grants a second route to a secret the sandbox
+// already holds, not a new secret. The exception is one file, by name.
 //
 // Each source is resolved via filepath.EvalSymlinks; when the resolved
 // target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is
@@ -1351,8 +1366,10 @@ func generateProfile(m *Manager) string {
 //
 // This list is the enforcement half of the inventory in issue #2211: every
 // other name under secrets.d/<N>/ (github_token, the role PATs, aws-config,
-// workkube, gitlab_token, …) stays denied. Do NOT add a source here merely
-// because a secret exists — only because an in-sandbox consumer reads it.
+// workkube, …) stays denied. Do NOT add a source here merely because a
+// secret exists — only because an in-sandbox consumer reads it. gitlab_token
+// moved from the denied list to the sources above when #2668 gave it such a
+// consumer; it is still denied on any host that does not configure it.
 func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	if home == "" {
 		return nil
@@ -1373,6 +1390,13 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 		filepath.Join(home, ".config", "aws", "readonly-config"),
 		filepath.Join(home, ".config", "aws", "credentials"),
 		filepath.Join(home, ".config", "kube", "agents-config"),
+	}
+	// The GitLab token source is config-driven, not a fixed path: it is the
+	// same gitlab_token_path prism reads host-side to inject GITLAB_TOKEN.
+	// A host without nx.programs.gitlab-cli.enable leaves it empty, so no
+	// exception is emitted and gitlab_token stays denied (issue #2668).
+	if m.cfg.GitLabTokenPath != "" {
+		sources = append(sources, m.cfg.GitLabTokenPath)
 	}
 	seen := map[string]bool{}
 	var names []string
