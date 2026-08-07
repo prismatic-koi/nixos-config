@@ -59,6 +59,17 @@ type MonitorOpts struct {
 	// Timeout is the maximum time to wait for the group to complete. Zero means
 	// no timeout (monitor runs until the group is complete).
 	Timeout time.Duration
+	// ReapAfterDelivery makes MonitorFunc wait out the reap grace period after
+	// it delivers the review-complete prompt, then release this round's agent
+	// sessions (issue #2649). RunAsync sets it for every production round.
+	//
+	// It is opt-in rather than always-on so MonitorFunc stays a fast, pure
+	// function for the tests that drive it directly: a test that does not ask
+	// for the reap does not pay the wait and sees no teardown.
+	ReapAfterDelivery bool
+	// ReapGrace overrides ReapGracePeriod for this round. Zero uses the
+	// default. Read only when ReapAfterDelivery is true.
+	ReapGrace time.Duration
 }
 
 // defaultPollInterval is how often the monitor polls GroupCompleted.
@@ -297,6 +308,16 @@ func MonitorFunc(opts MonitorOpts) error {
 	}
 
 	proglog.Infof("[prism monitor-review] results delivered to %s\n", opts.WorkerSession)
+
+	// Release this round's agent sessions once the grace period elapses
+	// (#2649). This runs LAST, and only after delivered_at is written: the
+	// reap predicate reads that column, so a failed SetGroupDeliveredAt above
+	// leaves the round un-reapable rather than reaping it early. The wait
+	// blocks this process, which has no work left to do — see
+	// ReapGroupAfterGrace for why the monitor hosts the wait.
+	if opts.ReapAfterDelivery {
+		ReapGroupAfterGrace(d, opts.GroupID, opts.ReapGrace)
+	}
 	return nil
 }
 
@@ -1018,17 +1039,34 @@ func buildLoopLimitFooter(cycles int, prNumber string) string {
 //     cannot drift.
 //
 // This is the single source of truth for cycle counting in the LOOP-LIMIT
-// firing logic. Pure-infrastructure failures (every member never bound its
-// port), ran-but-no-parseable-verdict rounds (any member terminated in
-// `finished` state without emitting a `<verdict>` tag — the #1993 shape),
-// AND rounds where a member's row was reaped mid-review (the #2573 shape,
-// where db.GroupResults drops the closed row) are all excluded by condition
-// 2 — mirroring the documented contract in
+// firing logic. Condition 2 excludes pure-infrastructure failures (every
+// member never bound its port), ran-but-no-parseable-verdict rounds (any
+// member terminated in `finished` state without emitting a `<verdict>` tag —
+// the #1993 shape), and rounds where a member's row was reaped mid-review (the
+// #2573 shape) — mirroring the documented contract in
 // `modules/programs/prism/skills/prism/SKILL.md`:
 //
 //	"Count re-run cycles from the first round that had a full set of agent
 //	 results; do not count infrastructure-failure rounds toward your 3-cycle
 //	 limit."
+//
+// What enforces those exclusions changed in #2649. This function reads
+// db.GroupResultsAll, so a closed row is no longer dropped from groupData and
+// no longer excluded by its ABSENCE. Each of the three is now excluded by the
+// per-member predicate itself, on the facts the row carries: a non-terminal
+// state, an empty LastMessage, a recorded startup_error or stall_error, or a
+// terminal row whose message holds no parseable `<verdict>` tag. A member
+// reaped mid-review still fails that predicate — it was reaped precisely
+// because it had not produced a verdict — so the #2573 outcome is unchanged.
+//
+// One outcome DID change, deliberately: the #2594 sub-case. A member that
+// closed AFTER reaching `finished` with a parseable verdict used to drop out
+// of the narrow read and make its round non-counting. It is now present, and
+// its round counts. That is the correct answer — the round did produce a full
+// set of verdicts — and it is load-bearing after #2649, because the automatic
+// release closes every member of every delivered round. Without the wide read
+// this count returned zero for every past round and the LOOP-LIMIT footer
+// never fired.
 //
 // Pass excludeGroupID="" to count every group; pass the current group's id
 // when computing "cycles before this one" so that a caller can ask
@@ -1070,24 +1108,32 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		}
 
 		// Condition 2: every member produced a parseable `<verdict>` tag.
-		// We use GroupResults to read each member's last assistant message,
-		// startup_error, and state, and require AssessPassed to return
-		// VerdictPass or VerdictFail for every member (#1995). A group where
-		// any member terminated without a parseable verdict — empty
-		// LastMessage, startup_error, mid-analysis truncation, or a row that
-		// GroupResults dropped because it was closed mid-review (#2573) — is
-		// NOT counted: the worker is expected to re-run.
+		// We read each member's last assistant message, startup_error, and
+		// state, and require AssessPassed to return VerdictPass or VerdictFail
+		// for every member (#1995). A group where any member terminated
+		// without a parseable verdict — empty LastMessage, startup_error, or
+		// mid-analysis truncation — is NOT counted: the worker is expected to
+		// re-run.
 		//
-		// #2594 sub-case: a row that closed AFTER it delivered a full verdict
-		// also drops out of GroupResults, so an ordinary, complete round can
-		// read as non-counting here too. The failure direction stays safe:
-		// the LOOP-LIMIT footer fires late, never early, because a round
-		// that should count is only skipped, never wrongly counted. Decision
-		// recorded in #2594: this read site keeps its current, narrower
-		// contract on purpose, so it does not touch the #1495 cleanup escape
-		// hatch. A consumer that needs an accurate historical count — for
-		// example a retro over past rounds — must read `agent_events`
-		// directly, not GroupResults.
+		// The read is GroupResultsAll, not GroupResults (#2649, #2584).
+		// The `ended_at IS NULL` filter on GroupResults is correct on the live
+		// aggregation path — it is what makes the #1495 cleanup escape hatch
+		// work — and wrong here. Review agents are now released automatically
+		// 15 minutes after their round is delivered, so by the time a later
+		// round asks "how many cycles came before me", every earlier round's
+		// rows are closed. Through the narrow read this loop counted zero every
+		// time, and the LOOP-LIMIT footer — the thing that tells a worker to
+		// stop and escalate at three cycles — never fired.
+		//
+		// Widening the read does not loosen the predicate. A row closed while
+		// still non-terminal, or closed before it emitted a verdict, is now
+		// visible with its real state and its empty LastMessage, and
+		// ClassifyRound rejects it for that reason instead of for its absence.
+		// The #1495 abandoned-agent row reads as state "interrupted", which is
+		// not verdict-producing, so that round still does not count. The one
+		// behaviour that changes is the #2594 sub-case — a row that closed
+		// AFTER delivering a full verdict now counts, which is what it always
+		// should have done.
 		//
 		// The expected member list comes from gMembers (agent_status rows,
 		// including closed ones), NOT from the groupData keys. That is the
@@ -1100,13 +1146,21 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		// verdicts; the other two finished with no parseable `<verdict>` tag.
 		// See `docs/diagnoses/review-agent-no-verdict-1993.md` for the full
 		// trace; #1995 tightened both predicates to share this contract.
-		groupData, gErr := d.GroupResults(gid)
+		// The HISTORICAL read (#2649). GroupResults drops rows whose ended_at
+		// is set, which is correct on the live aggregation path and wrong
+		// here: review agents are released automatically 15 minutes after
+		// their round is delivered, so by the time a later round asks "how
+		// many cycles came before me", every earlier round's rows are closed.
+		// Read through GroupResults, this loop counted zero every time and the
+		// LOOP-LIMIT footer never fired. The release deletes no row and no
+		// event, so the wider read still sees the full history.
+		groupData, gErr := d.GroupResultsAll(gid)
 		if gErr != nil {
 			// Be defensive: a bad row should not silently underreport cycle
 			// count. Log and skip the group so we do not fire LOOP-LIMIT
 			// based on partial data, but do not return the error — callers
 			// (the monitor) treat a missing footer as a benign degradation.
-			proglog.Warnf("[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
+			proglog.Warnf("[prism review] warning: GroupResultsAll(%s) failed during cycle counting: %v\n", gid, gErr)
 			continue
 		}
 		if len(groupData) == 0 {

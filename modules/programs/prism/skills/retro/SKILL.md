@@ -26,10 +26,23 @@ Run these commands to collect the data for analysis. Work through them in order.
 ### 1. Confirm the session exists and discover subsessions
 
 ```bash
-prism sessions list
+prism sessions list      # is the worker session still live?
+prism reviews list       # which review rounds did it run, and with which agents?
 ```
 
-Look for the named session and any `~review-N-<agent>` subsessions attached to it. If the session is not present, see [Edge cases](#edge-cases).
+Look for the named session in `prism sessions list`. If it is not present, see
+[Edge cases](#edge-cases).
+
+Use `prism reviews list` — not `prism sessions list` — to discover the
+`~review-N-<agent>` subsessions. A review agent is released 15 minutes after
+its round completes (issue #2649), and `prism sessions list` shows live
+sessions only, so a completed round is usually absent from it. `prism reviews
+list` reads the review group, so it lists every round and every agent whether
+the sessions are live or released.
+
+A released agent keeps all of its history. `prism checkin
+<session>~review-<N>-<agent> --verbose` works on it exactly as it does on a
+live agent — see step 4.
 
 ### 2. Worker metrics (optional but useful)
 
@@ -182,7 +195,9 @@ If `prism sessions list` does not show the named session, output:
 Do not proceed with analysis.
 
 **Session has no review cycles**
-If no `~review-N-*` subsessions exist, the session was single-shot work (no `prism review` was run, or the first cycle passed and cleaned up). Complete the retrospective normally; mark the "Review cycle analysis" section as "N/A — session had no review cycles."
+If `prism reviews list` shows no round for the session, it was single-shot work — no `prism review` was run. Complete the retrospective normally; mark the "Review cycle analysis" section as "N/A — session had no review cycles."
+
+Do not read an empty `prism sessions list` as "no review cycles". Review agents are released 15 minutes after their round completes (issue #2649), so a session that ran three rounds shows none of them there. `prism reviews list` is the surface that answers this question.
 
 **Session hit the 3-cycle review limit**
 This is a convergence failure. In the "Review cycle analysis" section, document:

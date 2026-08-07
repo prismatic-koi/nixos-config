@@ -338,6 +338,105 @@ func (d *DB) DeliveredGroupIDsForParent(parentSession string) (map[string]struct
 	return result, nil
 }
 
+// ReapCandidate is one review-agent session that the reaper may release.
+// It is the projection ReapableReviewAgents returns: enough to run the
+// teardown and to log what was reaped, and nothing else.
+type ReapCandidate struct {
+	// SessionName is the review-agent session, shaped
+	// `<parent>~review-<N>-<role>`.
+	SessionName string
+	// GroupID is the session_groups row the agent belongs to.
+	GroupID string
+	// ParentSession is that group's parent_session — the worker that ran
+	// `prism review`.
+	ParentSession string
+	// State is the agent_status.state at query time. Always one of
+	// terminalStates; the query refuses to return anything else.
+	State string
+	// IsolationMode is the persisted isolation mode, or "" when the column
+	// is NULL. The reaper uses it to dispatch container teardown.
+	IsolationMode string
+	// DeliveredAt is session_groups.delivered_at in epoch milliseconds.
+	DeliveredAt int64
+}
+
+// ReapableReviewAgents returns every agent_status row that is safe for an
+// automated reaper to release (issue #2649). Pass groupID to scope the query
+// to one review round; pass "" to scan every group.
+//
+// deliveredBefore is an epoch-millisecond cut-off: only groups whose
+// delivered_at is at or before it are returned. Callers pass
+// `now - gracePeriod`.
+//
+// # Why this query cannot reach a live agent
+//
+// Four conditions are ANDed, and the third is the load-bearing one:
+//
+//  1. `agent_status.ended_at IS NULL` — the row has not already been reaped,
+//     so the sweep is idempotent and does no repeat work.
+//  2. `agent_status.state IN (finished, error, deleted)` — the session itself
+//     is terminal. An `active`, `idle`, `waiting`, `compacting`, `reviewing`,
+//     `escalated`, or `interrupted` row is never returned. `interrupted` is excluded
+//     deliberately, for the same reason terminalStates excludes it: the user
+//     may still redirect an interrupted agent with `prism prompt`.
+//  3. `session_groups.delivered_at IS NOT NULL` — the round's review-complete
+//     prompt was already delivered to the parent worker. This is the
+//     authoritative end-of-life signal for a group (#2259). While a round is
+//     running, delivered_at is NULL for that group, so NO member of a running
+//     round is reapable — not even a member that has already finished and is
+//     waiting for its four siblings. That is what makes reaping a live agent
+//     structurally impossible rather than merely unlikely (#2613).
+//  4. `session_groups.delivered_at <= ?` — the grace period has elapsed.
+//
+// The join to session_groups also restricts the result to review agents:
+// session_groups rows are written only by `prism review`
+// (db.RegisterGroupWithPR, called from internal/review/run.go), so a worker,
+// a coordinator, or an investigator session can never appear here. The caller
+// re-checks the session-name shape in Go as defence in depth.
+func (d *DB) ReapableReviewAgents(groupID string, deliveredBefore int64) ([]ReapCandidate, error) {
+	placeholders := make([]string, len(terminalStates))
+	args := make([]any, 0, 2+len(terminalStates))
+	args = append(args, deliveredBefore)
+	for i, s := range terminalStates {
+		placeholders[i] = "?"
+		args = append(args, s)
+	}
+	q := `
+SELECT s.session_name, g.group_id, g.parent_session, s.state,
+       COALESCE(s.isolation_mode, ''), g.delivered_at
+FROM agent_status s
+JOIN session_groups g ON g.group_id = s.group_id
+WHERE s.ended_at IS NULL
+  AND g.delivered_at IS NOT NULL
+  AND g.delivered_at <= ?
+  AND s.state IN (` + strings.Join(placeholders, ",") + `)`
+	if groupID != "" {
+		q += "\n  AND g.group_id = ?"
+		args = append(args, groupID)
+	}
+	q += "\nORDER BY s.session_name ASC"
+
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: reapable review agents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ReapCandidate
+	for rows.Next() {
+		var c ReapCandidate
+		if err := rows.Scan(&c.SessionName, &c.GroupID, &c.ParentSession,
+			&c.State, &c.IsolationMode, &c.DeliveredAt); err != nil {
+			return nil, fmt.Errorf("db: reapable review agents: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: reapable review agents: iterate: %w", err)
+	}
+	return out, nil
+}
+
 // GroupResults returns the terminal state and last assistant message for every
 // member of the group, keyed by session_name. It is intended for use after
 // GroupCompleted returns true. Members that are still active are included but
@@ -382,6 +481,14 @@ func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) 
 // review agent_status rows are closed. Calling GroupResults on a historical
 // group_id would therefore return an empty map and mislabel every agent as
 // having no verdict, which is false for most of them (issue #2584 / #2594).
+//
+// The automatic release of finished review agents (#2649) makes that reasoning
+// bite sooner and adds a second caller. A round's rows used to close only when
+// the parent worker was cleaned up; they now close 15 minutes after the round
+// is delivered. `CompletedReviewCyclesForParent` therefore reads through here
+// too — through GroupResults it counted zero past cycles once the release had
+// run, and the LOOP-LIMIT footer that tells a worker to stop and escalate at
+// three cycles stopped firing.
 func (d *DB) GroupResultsAll(groupID string) (map[string]GroupMemberResult, error) {
 	return d.groupResults(groupID, true)
 }

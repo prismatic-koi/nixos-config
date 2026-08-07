@@ -241,12 +241,44 @@ The review-complete prompt includes a one-line summary header followed by a
 written to `/tmp` — use `prism checkin <session>~review-<N>-<agent>` to read
 the full agent reasoning if needed, where `<session>` is your own session
 name. That read is in scope for a worker; every other target is not — see
-[Who can check in on what](#who-can-check-in-on-what). All 5 agents must
+[Who can check in on what](#who-can-check-in-on-what). The read stays
+available after the agent session is released — see
+[How long review-agent sessions stay live](#how-long-review-agent-sessions-stay-live).
+All 5 agents must
 pass. On FAIL, fix every
 blocking issue, commit, push, and re-run per the targeted-rerun condition in
 `worker.md` — a fix in one area can create issues in another. After 3 full
 review cycles without convergence, stop and escalate to the coordinator via
 `prism escalate`; do not run a 4th cycle.
+
+### How long review-agent sessions stay live
+
+A review agent is released **15 minutes** after the review-complete prompt is
+delivered for its round (issue #2649). The release kills the tmux session and
+returns the harness port to the pool. It runs on its own — no operator command
+is needed.
+
+The release keeps every database row. It deletes no `agent_status` row, no
+`agent_events` row, and no `session_groups` row. It removes no worktree and
+deletes no branch. No git command runs on this path.
+
+What this means for you:
+
+- `prism checkin <session>~review-<N>-<agent>` keeps working after the 15
+  minutes. The command renders `agent_events` rows out of the prism database,
+  and the release preserves them. Use it at any time.
+- `prism checkin <session>~review` and `prism reviews list` keep working too.
+  Both read the review group, not the live session list.
+- `prism sessions list` stops showing a released agent. The list shows live
+  sessions only. To find the agents of a past round, use `prism reviews list`.
+- `tmux attach` to a released agent fails. Attach within the 15 minutes if you
+  want to read the pane directly.
+
+The 15 minutes is why the release exists at all. Each round holds five
+concurrency slots and five harness ports. Before #2649 nothing released them,
+so a worker that ran three rounds held fifteen slots for the rest of its life.
+The cap is global, so that capacity was taken from every other agent on the
+host.
 
 For a synchronous flow (one-shot script, no other work to do meanwhile) pass
 `--wait`:

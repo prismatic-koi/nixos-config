@@ -49,6 +49,7 @@ func TestRecordSessionReap_RoundTrip(t *testing.T) {
 		db.ReapCauseMonitorTimeout,
 		db.ReapCauseParentCleanup,
 		db.ReapCauseCleanupCommand,
+		db.ReapCauseAutoRelease,
 	}
 
 	for _, cause := range causes {
@@ -96,6 +97,7 @@ func TestSessionReapCauseDescriptions_NameOneCauseEach(t *testing.T) {
 		db.ReapCauseMonitorTimeout,
 		db.ReapCauseParentCleanup,
 		db.ReapCauseCleanupCommand,
+		db.ReapCauseAutoRelease,
 	}
 	for _, c := range causes {
 		desc := c.Description()

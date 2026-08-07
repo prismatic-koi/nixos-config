@@ -34,8 +34,16 @@ import (
 //
 // Each agent is spawned as its own independent top-level tmux session named
 // <parent>~review-<N>-<agent.Name>. Previous rounds' sessions are NOT killed
-// — they persist until prism cleanup is invoked on the parent. This is a
-// deliberate behaviour change from the old multi-window round model.
+// here — that is a deliberate behaviour change from the old multi-window round
+// model, and it still holds.
+//
+// What releases them has changed (#2649). A round's sessions are now released
+// automatically 15 minutes after its review-complete prompt is delivered; they
+// are no longer held until prism cleanup of the parent. That release gates on
+// session_groups.delivered_at, which only the async delivery paths write
+// (MonitorFunc and the recovery watcher), so it does not apply to a round this
+// synchronous entry point ran. Run has no production caller today — RunAsync
+// is the live path — so no round actually reaches that state.
 //
 // On SIGINT, only the current round's in-progress sessions are killed by the
 // caller via KillSessionsByNames (using the session names from onSessionsCreated).
@@ -62,8 +70,10 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	}
 	defer d.Close()
 
-	// Determine round number from DB. We do NOT kill previous review sessions —
-	// they persist until prism cleanup on the parent (deliberate).
+	// Determine round number from DB. We do NOT kill previous review sessions
+	// here (deliberate). Since #2649 they are released automatically 15 minutes
+	// after their round is delivered — see the Run doc comment for why that
+	// release does not cover a round this function ran.
 	round := NextRoundNumber(d, opts.ParentSession)
 	roundPrefix := fmt.Sprintf("%s~review-%d-", opts.ParentSession, round)
 
@@ -341,9 +351,13 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 	// for termination detection instead of per-session name-based polling.
 	liveResults, pollErr := pollAgents(ctx, d, liveAgents, liveSessions, opts.Timeout, liveSpawnTimes, opts.OnProgress, groupID)
 
-	// Sessions persist — do NOT kill them here. The user can re-read them later.
-	// Containers, tmux sessions, and sidecars remain alive until prism cleanup
-	// is invoked on the parent, which cascades via KillReviewSessionsForParent.
+	// Do NOT kill the sessions here. Since #2649 a round is released
+	// automatically 15 minutes after its review-complete prompt is delivered,
+	// and prism cleanup of the parent still cascades via
+	// KillReviewSessionsForParent. Neither is this function's job. Re-reading a
+	// past round does not need a live session either way: the release and the
+	// cascade both preserve every agent_events row, so
+	// `prism checkin <parent>~review-<N>-<agent>` keeps working.
 
 	// Merge live results with spawn-failure results, preserving original agent order.
 	results := make([]AgentResult, len(agents))
@@ -662,6 +676,11 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 		AgentSessions: expectedSessions,
 		DBPath:        dbPath,
 		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
+		// Release this round's agent sessions ReapGracePeriod after the
+		// review-complete prompt lands (#2649). Without this the round's five
+		// sessions hold a concurrency slot and a harness port until a human
+		// notices.
+		ReapAfterDelivery: true,
 	}
 	if startErr := StartMonitorProcess(monitorOpts, prismBinary); startErr != nil {
 		// Monitor failed to start — not fatal for spawning, but warn loudly.
