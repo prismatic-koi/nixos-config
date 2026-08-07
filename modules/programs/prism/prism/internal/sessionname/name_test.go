@@ -8,6 +8,16 @@ import "testing"
 // The pre-#2658 rule split on "@" alone. Every case marked "was broken" below
 // FAILS against that rule: a name with no "@" was returned whole, so a
 // non-worktree session's descendants each became their own repo.
+//
+// This file uses the literal names from the issue (`obsidian`,
+// `obsidian~investigate-v2`) rather than `prism-test`-prefixed fixtures, so
+// each case is traceable to the reported defect. That is safe here and only
+// here: Repo is a pure string function. It opens no database, starts no tmux
+// session, and reads no host state, so no name in this file can collide with a
+// live session. Every test in this package holds that property. The tests that
+// DO touch a DB — internal/authz/root_session_test.go,
+// internal/sidecar/host_api_bare_name_prompt_test.go — use `prism-test`
+// fixtures, per the naming discipline of #2112.
 func TestRepo(t *testing.T) {
 	tests := []struct {
 		name string
