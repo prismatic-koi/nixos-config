@@ -114,8 +114,12 @@ func gateReviewAgents(
 				// Clean up the half-alive session so a subsequent spawn with
 				// the same name does not see stale state. Mirror the cleanup
 				// the spawn loop already performs for SpawnSession failures.
+				//
+				// The cleanup closes the row in state "error", which is the
+				// same shape a force-terminate leaves behind. Pass the cause
+				// so the round report can tell the two apart (#2613).
 				session.KillSidecar(agentSession)
-				cleanupAgentSession(d, agentSession)
+				cleanupAgentSession(d, agentSession, db.ReapCauseReadinessGate, readyErr.Error())
 				_ = tmux.KillSession(agentSession)
 				return
 			}

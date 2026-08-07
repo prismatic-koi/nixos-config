@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/proglog"
 )
 
 // NoVerdictClass names the reason an expected review agent produced no
@@ -55,8 +56,21 @@ const (
 	NoVerdictCrashed NoVerdictClass = "ended in error state"
 	// NoVerdictSessionEnded — the member's agent_status row exists but its
 	// ended_at is set, so db.GroupResults excluded it. The session was
-	// reaped mid-round; no verdict was recorded (#2573).
+	// reaped mid-round; no verdict was recorded (#2573). Since #2613 this
+	// class covers only the reaps for which no closing path recorded a
+	// cause, plus the tmux-session-end hook; the two causes it used to
+	// conflate now have classes of their own below.
 	NoVerdictSessionEnded NoVerdictClass = "session ended mid-review"
+	// NoVerdictNotReady — the agent was spawned but never signalled
+	// readiness, so the review readiness gate closed its row before the
+	// round began (#2613). Distinct from NoVerdictForceTerminated: nothing
+	// terminated a running agent, because the agent never came up.
+	NoVerdictNotReady NoVerdictClass = "failed its readiness gate"
+	// NoVerdictForceTerminated — a prism lifecycle path closed the row while
+	// the round was running: the monitor's safety-timeout sweep, a cleanup
+	// cascade from the parent worker, or a direct cleanup command (#2613).
+	// Distinct from NoVerdictNotReady: the agent was up and was stopped.
+	NoVerdictForceTerminated NoVerdictClass = "force-terminated"
 	// NoVerdictSessionUnknown — no agent_status row for the member could be
 	// read at all: the row was deleted, or it was never registered against
 	// the group.
@@ -82,7 +96,8 @@ const (
 func (c NoVerdictClass) Infrastructure() bool {
 	switch c {
 	case NoVerdictNoStart, NoVerdictStalled, NoVerdictCrashed,
-		NoVerdictSessionEnded, NoVerdictSessionUnknown, NoVerdictUnexpectedState:
+		NoVerdictSessionEnded, NoVerdictSessionUnknown, NoVerdictUnexpectedState,
+		NoVerdictNotReady, NoVerdictForceTerminated:
 		return true
 	default:
 		return false
@@ -95,6 +110,10 @@ func (c NoVerdictClass) countLabel() string {
 	switch c {
 	case NoVerdictNoStart:
 		return "failed to start (no frames received)"
+	case NoVerdictNotReady:
+		return "failed its readiness gate (no readiness signal)"
+	case NoVerdictForceTerminated:
+		return "force-terminated by a prism lifecycle path"
 	default:
 		return string(c)
 	}
@@ -242,8 +261,10 @@ func (rs RoundStatus) TargetedRerunAllowed() bool {
 func (rs RoundStatus) ClassSummary() string {
 	order := []NoVerdictClass{
 		NoVerdictNoStart,
+		NoVerdictNotReady,
 		NoVerdictStalled,
 		NoVerdictCrashed,
+		NoVerdictForceTerminated,
 		NoVerdictSessionEnded,
 		NoVerdictSessionUnknown,
 		NoVerdictUnexpectedState,
@@ -268,7 +289,27 @@ func (rs RoundStatus) ClassSummary() string {
 // the classifier can report why the member vanished; pass nil when the caller
 // has no DB handle (the member is then classified as
 // NoVerdictSessionUnknown).
+//
+// ClassifyRound reports a closed row without its recorded close cause. Use
+// ClassifyRoundWithCauses wherever a DB handle is available — that is what
+// splits a readiness-gate failure from a force-terminate (#2613). This
+// signature is kept for callers that need only the cycle-counting predicate,
+// which does not depend on the cause.
 func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) RoundStatus {
+	return ClassifyRoundWithCauses(agents, agentSessions, groupData, endedRows, nil)
+}
+
+// ClassifyRoundWithCauses is ClassifyRound plus the close causes recorded for
+// the group's closed rows (db.SessionEndCauses). causes may be nil or partial;
+// a member with no recorded cause degrades to the same output ClassifyRound
+// produces.
+func ClassifyRoundWithCauses(
+	agents []Agent,
+	agentSessions []string,
+	groupData map[string]db.GroupMemberResult,
+	endedRows map[string]db.Status,
+	causes map[string]db.SessionEndCause,
+) RoundStatus {
 	rs := RoundStatus{Expected: len(agents)}
 	for i, ag := range agents {
 		session := ""
@@ -282,7 +323,7 @@ func ClassifyRound(agents []Agent, agentSessions []string, groupData map[string]
 
 		mr, present := groupData[session]
 		if session == "" || !present {
-			class, reason := classifyAbsentMember(session, endedRows)
+			class, reason := classifyAbsentMember(session, endedRows, causes)
 			rs.Missing = append(rs.Missing, MissingVerdict{
 				Agent:   name,
 				Session: session,
@@ -365,7 +406,13 @@ func classifyMember(mr db.GroupMemberResult) (NoVerdictClass, string, VerdictKin
 //
 // The group itself never "loses" a member: group_id linkage is intact in both
 // cases, which is why db.GroupCompleted still reports the round complete.
-func classifyAbsentMember(session string, endedRows map[string]db.Status) (NoVerdictClass, string) {
+//
+// causes carries the close cause each lifecycle path recorded for the row
+// (#2613), plus the sidecar's own startup_error / stall_error events. The
+// order below is causal, not alphabetical: an agent that failed on its own
+// (no-start, stall) is reported by that failure, because the later close is a
+// consequence of it, not the cause of the missing verdict.
+func classifyAbsentMember(session string, endedRows map[string]db.Status, causes map[string]db.SessionEndCause) (NoVerdictClass, string) {
 	if session == "" {
 		return NoVerdictSessionUnknown, "no session name was recorded for this agent slot"
 	}
@@ -378,28 +425,95 @@ func classifyAbsentMember(session string, endedRows map[string]db.Status) (NoVer
 	if row.EndedAt != nil {
 		when = row.EndedAt.UTC().Format(time.RFC3339)
 	}
-	return NoVerdictSessionEnded, fmt.Sprintf(
-		"the agent_status row was closed at %s in state %q, so it is excluded from the group results — %s",
-		when, row.State, endedRowHint(row.State))
+	closedAt := fmt.Sprintf("the agent_status row was closed at %s in state %q", when, row.State)
+
+	cause := causes[session]
+
+	// 1. The sidecar recorded that the agent never ran (#1222). The close
+	//    that followed is bookkeeping; the no-start is the cause.
+	if cause.StartupError != "" {
+		return NoVerdictNoStart, fmt.Sprintf("%s — %s", cause.StartupError, closedAt)
+	}
+	// 2. The sidecar recorded a mid-run stall (#2239). Same reasoning: the
+	//    stall came first, and it is what the operator must act on. Before
+	//    #2613 a stalled agent whose tmux session then died was reported as
+	//    an unexplained reap, because this branch did not exist.
+	if cause.StallError != "" {
+		return NoVerdictStalled, fmt.Sprintf("%s — %s", cause.StallError, closedAt)
+	}
+	// 3. The state the row was left in already explains itself. "finished"
+	//    means the agent completed and the row closed before the results were
+	//    aggregated (#2594); "deleted" means the harness dropped the session.
+	//    A close cause recorded on top of either says who closed the row, not
+	//    why the verdict is missing, so the state wins.
+	if hint := selfExplainingStateHint(row.State); hint != "" {
+		return NoVerdictSessionEnded, fmt.Sprintf("%s — %s", closedAt, hint)
+	}
+	// 4. A lifecycle path recorded why it closed the row. Exactly one cause.
+	if cause.Cause != "" {
+		detail := ""
+		if cause.Detail != "" {
+			detail = fmt.Sprintf(" (%s)", cause.Detail)
+		}
+		return classForReapCause(cause.Cause), fmt.Sprintf("%s — %s%s",
+			closedAt, cause.Cause.Description(), detail)
+	}
+	// 5. The tmux session-closed hook stamped ended_at. It rewrites no state,
+	//    so the state column is whatever the agent last reached.
+	if cause.TmuxSessionEnded {
+		return NoVerdictSessionEnded, fmt.Sprintf(
+			"%s — the tmux session closed and the session-end hook closed the row", closedAt)
+	}
+	// 6. Nothing was recorded. Say exactly that rather than guessing between
+	//    paths — a guess reads as a finding and is not one.
+	return NoVerdictSessionEnded, fmt.Sprintf("%s — %s", closedAt, endedRowHint(row.State))
 }
 
-// endedRowHint maps the state a reaped row was left in to the lifecycle path
-// that most likely closed it. It is a diagnostic hint for the operator, not a
-// guarantee: every path listed writes ended_at, and only the state string
-// distinguishes them.
-func endedRowHint(state string) string {
+// selfExplainingStateHint returns the explanation for a closed row whose state
+// already accounts for the missing verdict, or "" when the state does not.
+// These states are reported from the state alone, ahead of any recorded close
+// cause: knowing that an operator ran `prism cleanup` on a row that had
+// already reached "finished" does not explain the missing verdict.
+func selfExplainingStateHint(state string) string {
 	switch state {
+	case "finished":
+		return "the agent finished but its row was closed before results were aggregated"
 	case "deleted":
 		return "the harness reported session.deleted (the sidecar closes the row on that event)"
-	case "interrupted":
-		return "the session was interrupted and then closed, e.g. by `prism cleanup`"
-	case "error":
-		return "the session was force-terminated, or its readiness gate failed"
-	case "finished":
-		return "the agent finished but its row was closed before results were aggregated, e.g. by the tmux-session-end hook"
 	default:
-		return fmt.Sprintf("the row was closed while the agent was still in state %q, e.g. by the tmux-session-end hook or `prism reset`", state)
+		return ""
 	}
+}
+
+// classForReapCause maps a recorded close cause to the no-verdict class that
+// describes it. The mapping is total: an unrecognised cause (a newer prism
+// wrote it) degrades to NoVerdictForceTerminated, which is accurate for every
+// path that closes a row deliberately.
+func classForReapCause(c db.SessionReapCause) NoVerdictClass {
+	switch c {
+	case db.ReapCauseReadinessGate:
+		return NoVerdictNotReady
+	case db.ReapCauseSpawnFailure:
+		return NoVerdictNoStart
+	default:
+		return NoVerdictForceTerminated
+	}
+}
+
+// endedRowHint is the last-resort text for a closed row with NO recorded
+// cause. Each branch names one possibility. Before #2613 the "error" branch
+// named two — "the session was force-terminated, or its readiness gate
+// failed" — which is why #2610 could not be diagnosed from the report. Those
+// two paths now record a cause and are classified above, so this branch says
+// only what is true: the row closed and nothing recorded why.
+func endedRowHint(state string) string {
+	if hint := selfExplainingStateHint(state); hint != "" {
+		return hint
+	}
+	if state == "interrupted" {
+		return "the session was interrupted and then closed"
+	}
+	return "no close cause was recorded for this row"
 }
 
 // endedGroupMembers returns the group's agent_status rows whose ended_at is
@@ -415,6 +529,25 @@ func endedGroupMembers(d *db.DB, groupID string) map[string]db.Status {
 		return nil
 	}
 	return endedRowsFrom(members)
+}
+
+// endedMemberCauses reads the recorded close cause for every closed row in
+// endedRows (#2613). Errors are non-fatal: the caller degrades to the
+// no-cause-recorded wording rather than losing the delivery.
+func endedMemberCauses(d *db.DB, endedRows map[string]db.Status) map[string]db.SessionEndCause {
+	if d == nil || len(endedRows) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(endedRows))
+	for name := range endedRows {
+		names = append(names, name)
+	}
+	causes, err := d.SessionEndCauses(names)
+	if err != nil {
+		proglog.Warnf("[prism review] warning: SessionEndCauses: %v — reporting closed rows without a cause\n", err)
+		return nil
+	}
+	return causes
 }
 
 // endedRowsFrom filters a member slice down to the rows whose ended_at is set.

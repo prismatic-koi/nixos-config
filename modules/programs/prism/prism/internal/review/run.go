@@ -276,7 +276,7 @@ func Run(ctx context.Context, opts Opts, onSessionsCreated func(sessionNames []s
 			// SpawnSession may have partially progressed; be defensive so a
 			// second spawn attempt with the same name doesn't see stale state.
 			session.KillSidecar(agentSession)
-			cleanupAgentSession(d, agentSession)
+			cleanupAgentSession(d, agentSession, db.ReapCauseSpawnFailure, spawnSessErr.Error())
 			_ = tmux.KillSession(agentSession)
 			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
 			continue
@@ -573,7 +573,7 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 				opts.OnProgress(fmt.Sprintf("%s failed to start: %s", FormatAgentDisplayName(ag.Name), sanitizeSpawnError(opts.PRNumber, ag.Name, spawnSessErr)))
 			}
 			session.KillSidecar(agentSession)
-			cleanupAgentSession(d, agentSession)
+			cleanupAgentSession(d, agentSession, db.ReapCauseSpawnFailure, spawnSessErr.Error())
 			_ = tmux.KillSession(agentSession)
 			spawnErr[i] = fmt.Errorf("spawn session for %s: %w", ag.Name, spawnSessErr)
 			continue
@@ -629,13 +629,30 @@ func RunAsync(opts Opts, prismBinary string) (*AsyncResult, error) {
 	}
 
 	// Start the detached monitor process.
+	//
+	// Agents/AgentSessions carry the FULL spawned set, not just the agents
+	// that came up (#2613). ClassifyRound walks exactly this list to decide
+	// how many agents the round expected, so passing only the live set made
+	// the round shrink to fit its own failures: four live agents that all
+	// passed produced Expected=4, Missing=0, and therefore a "complete"
+	// round that printed "All 5 review agents passed" and consumed one of
+	// the worker's three cycles. That is the exact failure #2573 closed for
+	// mid-round reaps, reopened on the spawn-time path. An agent that never
+	// came up now stays in the expected set and is reported as missing, with
+	// the cause its cleanup recorded.
+	//
+	// The other consumers of these fields tolerate the wider set:
+	// forceTerminateStuckMembers skips rows that are already closed or
+	// terminal, and the poll loop keys off GroupCompleted(groupID), not this
+	// list.
+	expectedAgents, expectedSessions := expectedRoundSet(agents, agentSessions, spawnErr)
 	monitorOpts := MonitorOpts{
 		GroupID:       groupID,
 		WorkerSession: opts.WorkerSession,
 		PRNumber:      opts.PRNumber,
 		Round:         round,
-		Agents:        liveAgents,
-		AgentSessions: liveSessions,
+		Agents:        expectedAgents,
+		AgentSessions: expectedSessions,
 		DBPath:        dbPath,
 		Timeout:       opts.Timeout * 2, // 2x per-agent timeout as group monitor limit
 	}
@@ -746,4 +763,25 @@ func LookupParentSession() string {
 		return ""
 	}
 	return sess
+}
+
+// expectedRoundSet returns the (agents, sessions) pair the round's monitor
+// must treat as its EXPECTED set.
+//
+// It returns the full spawned set. spawnErr is accepted, and deliberately not
+// used to filter, because filtering by it is the defect this function exists
+// to prevent (#2613): ClassifyRound derives RoundStatus.Expected from the
+// list it is given, so a monitor handed only the agents that came up counts a
+// four-agent round as complete. Four PASS verdicts then render as "All 5
+// review agents passed" and consume one of the worker's three cycles, while
+// the fifth dimension was never examined. That is the same silent-pass
+// failure #2573 closed for a mid-round reap, on the spawn-time path.
+//
+// An agent that failed to spawn or to become ready stays in the expected set
+// and surfaces as a missing verdict, classified by the cause its cleanup
+// recorded. The round is therefore incomplete, does not count toward the
+// 3-cycle limit, and reads as unreviewed rather than as a pass.
+func expectedRoundSet(agents []Agent, agentSessions []string, spawnErr []error) ([]Agent, []string) {
+	_ = spawnErr // see the doc comment: the expected set is never filtered.
+	return agents, agentSessions
 }

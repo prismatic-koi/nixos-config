@@ -654,6 +654,22 @@ type cleanupResult struct {
 // modes route through one code path. Callers populate
 // result.HarnessSessionIDCleared from that helper's outcome.
 func applyDBLifecycleClears(d *db.DB, sessionName string, result *cleanupResult) {
+	// 0. Record WHY this row is about to close (#2613). A closed row in
+	//    state "error" is otherwise indistinguishable from one a review
+	//    readiness gate or the monitor's safety sweep closed, and the review
+	//    report then has to name several paths for one row.
+	//
+	//    Guarded on ended_at, matching SetEnded's own `AND ended_at IS NULL`
+	//    in step 2 below. Re-running cleanup on an already-ended session is
+	//    an explicitly supported no-op, and CleanupReviewSessionsForParent
+	//    has usually already closed the review children by the time this
+	//    runs; without the guard, either would stamp `cleanup_command` over
+	//    a row's real cause, and SessionEndCauses returns the latest record.
+	//    Best-effort: a lost diagnostic must never block the cleanup.
+	if st, lookupErr := d.CurrentStatus(sessionName); lookupErr == nil && st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(sessionName, db.ReapCauseCleanupCommand)
+	}
+
 	// 1. Release the harness port. ReleasePort is idempotent on existing
 	//    rows (UPDATE on an already-NULL port is a no-op success); the
 	//    "session not found" error only fires when the agent_status row

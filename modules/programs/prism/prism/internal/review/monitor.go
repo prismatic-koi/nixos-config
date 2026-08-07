@@ -161,13 +161,19 @@ func MonitorFunc(opts MonitorOpts) error {
 	// produced no verdict.
 	endedRows := endedGroupMembers(d, opts.GroupID)
 
+	// Read the close cause each lifecycle path recorded for those rows
+	// (#2613). Without it the report can only see the state string, which is
+	// why it used to name a force-terminate and a readiness-gate failure as
+	// two possibilities for the same row.
+	endedCauses := endedMemberCauses(d, endedRows)
+
 	// Build AgentResult slice, handling "missing" sessions (row reaped or
 	// deleted mid-review).
-	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData, endedRows)
+	results := buildMonitorResults(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
 
 	// Classify the round once. RoundStatus is the single source of truth for
 	// both the report wording and the cycle-counter gate below (#2573).
-	status := ClassifyRound(opts.Agents, opts.AgentSessions, groupData, endedRows)
+	status := ClassifyRoundWithCauses(opts.Agents, opts.AgentSessions, groupData, endedRows, endedCauses)
 
 	// Format the delivery message. FormatResultsForRound keeps the summary
 	// footer's retry hint consistent with the re-run advice below (#2573).
@@ -386,6 +392,14 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 		}
 		proglog.Warnf("[prism monitor-review] force-terminating stuck member %s (state=%q, per-agent timeout=%v)\n",
 			sess, status.State, perAgentTimeout)
+		// Record WHY this row is about to close, before it closes (#2613).
+		// The monitor is the only path that force-terminates a member of a
+		// live round, and without this record the resulting row is
+		// indistinguishable in the report from a readiness-gate cleanup.
+		if err := d.RecordSessionReap(sess, db.ReapCauseMonitorTimeout,
+			fmt.Sprintf("still in state %q when the monitor safety deadline fired (per-agent timeout %v)", status.State, perAgentTimeout)); err != nil {
+			proglog.Warnf("[prism monitor-review] warning: RecordSessionReap(%s): %v\n", sess, err)
+		}
 		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
 			proglog.Warnf("[prism monitor-review] warning: UpsertStatus(%s, error): %v\n", sess, err)
 		}
@@ -404,9 +418,11 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 //
 // endedRows carries the group's agent_status rows whose ended_at is set —
 // exactly the rows db.GroupResults drops. It lets the missing-session branch
-// state WHY the member vanished (#2573). Pass nil when no DB handle is
-// available; the branch then reports the absence without a cause.
-func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) []AgentResult {
+// state WHY the member vanished (#2573). endedCauses carries the close cause
+// each lifecycle path recorded for those rows (#2613). Pass nil for either
+// when no DB handle is available; the branch then reports the absence without
+// a cause.
+func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status, endedCauses map[string]db.SessionEndCause) []AgentResult {
 	results := make([]AgentResult, len(agents))
 	for i, ag := range agents {
 		agentSession := ""
@@ -418,7 +434,7 @@ func buildMonitorResults(agents []Agent, agentSessions []string, groupData map[s
 		if !ok || agentSession == "" {
 			// Session was reaped mid-review (ended_at set), deleted, or never
 			// registered — count as missing and name the recorded cause.
-			class, reason := classifyAbsentMember(agentSession, endedRows)
+			class, reason := classifyAbsentMember(agentSession, endedRows, endedCauses)
 			results[i] = AgentResult{
 				Agent:   ag,
 				Passed:  false,
@@ -1175,12 +1191,26 @@ func fallbackFilePath(prNumber string, round int) string {
 // for use in external test packages. It passes no ended-row detail, which is
 // the degraded shape a caller without a DB handle sees (#2573).
 func BuildMonitorResultsForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult) []AgentResult {
-	return buildMonitorResults(agents, agentSessions, groupData, nil)
+	return buildMonitorResults(agents, agentSessions, groupData, nil, nil)
 }
 
 // BuildMonitorResultsWithEndedForTest is the #2573 variant: it also supplies
 // the group's closed (ended_at set) agent_status rows so tests can assert the
-// reaped-session reason text.
+// reaped-session reason text. It records no close cause, which is the shape a
+// pre-#2613 row has.
 func BuildMonitorResultsWithEndedForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status) []AgentResult {
-	return buildMonitorResults(agents, agentSessions, groupData, endedRows)
+	return buildMonitorResults(agents, agentSessions, groupData, endedRows, nil)
+}
+
+// BuildMonitorResultsWithCausesForTest is the #2613 variant: it also supplies
+// the close cause recorded for each closed row, so tests can assert that the
+// report names one cause rather than a disjunction.
+func BuildMonitorResultsWithCausesForTest(agents []Agent, agentSessions []string, groupData map[string]db.GroupMemberResult, endedRows map[string]db.Status, endedCauses map[string]db.SessionEndCause) []AgentResult {
+	return buildMonitorResults(agents, agentSessions, groupData, endedRows, endedCauses)
+}
+
+// EndedMemberCausesForTest is an exported wrapper around endedMemberCauses so
+// tests can exercise the DB read that feeds the classifier (#2613).
+func EndedMemberCausesForTest(d *db.DB, endedRows map[string]db.Status) map[string]db.SessionEndCause {
+	return endedMemberCauses(d, endedRows)
 }

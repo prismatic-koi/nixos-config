@@ -139,7 +139,7 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 		// DB-backed: clean up only the actual group members.
 		names := make([]string, 0, len(members))
 		for _, row := range members {
-			cleanupAgentSession(d, row.SessionName)
+			cleanupAgentSession(d, row.SessionName, db.ReapCauseParentCleanup)
 			names = append(names, row.SessionName)
 		}
 		// Kill the tmux sessions (best effort, idempotent).
@@ -155,7 +155,7 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 	rows, err := d.AllStatusesWithPrefix(prefix)
 	if err == nil {
 		for _, row := range rows {
-			cleanupAgentSession(d, row.SessionName)
+			cleanupAgentSession(d, row.SessionName, db.ReapCauseParentCleanup)
 		}
 	}
 
@@ -171,8 +171,28 @@ func CleanupReviewSessionsForParent(d *db.DB, parentSession string) {
 // stuck at "idle" would otherwise block the group's terminal-state count
 // forever. State="error" is a valid agent state machine transition from any
 // non-terminal state and is treated as terminal by GroupCompleted.
-func cleanupAgentSession(d *db.DB, agentSession string) {
+//
+// cause names the path that is closing the row (#2613). It is recorded as a
+// session_reaped event so the review report and a coordinator reading the DB
+// can both name one cause instead of guessing between the paths that leave
+// state="error" behind. detail is optional free text; pass "" when the cause
+// alone is the whole story.
+//
+// The record is guarded on ended_at, exactly like the state write below it and
+// like db.SetEnded's own `AND ended_at IS NULL`. Without the guard this helper
+// claims a close it did not perform: `prism cleanup` of a parent worker
+// cascades through CleanupReviewSessionsForParent, whose GroupMembersForParent
+// returns every member row across every round — including rows a readiness
+// gate closed hours earlier. Recording unconditionally would stamp
+// `parent_cleanup` over that row's real `readiness_gate` cause, and
+// SessionEndCauses returns the latest event, so the report would name a cause
+// that is false. A wrong cause is worse than the disjunction this all
+// replaces.
+func cleanupAgentSession(d *db.DB, agentSession string, cause db.SessionReapCause, detail ...string) {
 	st, lookupErr := d.CurrentStatus(agentSession)
+	if lookupErr == nil && st != nil && st.EndedAt == nil {
+		d.RecordReapBestEffort(agentSession, cause, detail...)
+	}
 	if lookupErr == nil && st != nil && !isTerminalAgentState(st.State) {
 		_ = d.UpsertStatus(agentSession, st.Repo, st.Worktree, "error", nil, nil)
 	}
