@@ -139,6 +139,76 @@ func TestSpawnSession_AgentOnly_SeedsFallbackTitle(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_AgentOnly_RespawnPreservesExistingTitle verifies that
+// re-spawning a session name whose agent_status row already carries a title
+// (a real harness-reported title, or a human rename — simulated here via
+// UpsertStatusWithRootAgent, matching what the sidecar would have written)
+// does not get clobbered by a fallback derived from a new spawn prompt. This
+// is the respawn-after-cleanup path (internal/db/respawn_after_cleanup_test.go,
+// #2094): cleanup leaves the row behind with ended_at set; a later spawn on
+// the same session name re-seeds it to idle via the same
+// UpsertStatusSeedRootAgentName call SpawnSession uses (#2641 review).
+func TestSpawnSession_AgentOnly_RespawnPreservesExistingTitle(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@branch~review-1-review-code"
+	opts := SpawnOpts{
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         "review this PR",
+		Layout:         LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
+	}
+
+	// First incarnation: spawn, then simulate the sidecar writing a real
+	// harness-reported title (what a human rename or future pi auto-titling
+	// would produce), then simulate `prism cleanup` leaving the row behind
+	// with ended_at set but the title untouched.
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession (first incarnation): %v", err)
+	}
+	realTitle := "a real harness-reported title"
+	// Use "finished" rather than "active" so the subsequent idle re-seed on
+	// respawn is a recognised transition (matches the terminal states
+	// covered by internal/db/respawn_after_cleanup_test.go, #2094) and does
+	// not log a spurious advisory warning unrelated to what this test checks.
+	if err := d.UpsertStatusWithRootAgent(sessionName, "myrepo", "/worktrees/myrepo-branch", "finished", &realTitle, nil, nil, nil); err != nil {
+		t.Fatalf("UpsertStatusWithRootAgent: %v", err)
+	}
+	if err := d.SetEnded(sessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	// Second incarnation: respawn the same session name with a different
+	// prompt. The fallback derived from the new prompt must NOT overwrite
+	// the real title left by the first incarnation.
+	opts.Prompt = "a completely different follow-up task"
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession (respawn): %v", err)
+	}
+
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want row")
+	}
+	if st.Title == nil || *st.Title != realTitle {
+		got := "<nil>"
+		if st.Title != nil {
+			got = *st.Title
+		}
+		t.Errorf("title = %q after respawn, want preserved real title %q", got, realTitle)
+	}
+}
+
 // TestSpawnSession_AgentOnly_WritesGroupID verifies that when opts.GroupID is
 // non-empty, SpawnSession writes it to agent_status.group_id. This is the hook
 // Issue E (#860) will use to wire review rounds into session_groups.

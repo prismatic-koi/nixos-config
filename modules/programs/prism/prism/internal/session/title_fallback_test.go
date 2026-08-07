@@ -26,6 +26,21 @@ func TestDeriveFallbackTitle(t *testing.T) {
 			"This is a very long prompt title that goes on and on and on and on and on and on and on and on forever",
 			"This is a very long prompt title that goes on and on and on and on and on and o…",
 		},
+		{
+			// #2641 review: an ESC byte surviving into the title could carry an
+			// ANSI/OSC escape sequence into the rendered dashboard row. The ESC
+			// itself must be dropped; the escape sequence's payload bytes are
+			// left behind as inert printable text with no ESC prefix to give
+			// them meaning.
+			"ANSI escape injection",
+			"Fix login \x1b[31mbug\x1b[0m now",
+			"Fix login [31mbug[0m now",
+		},
+		{
+			"other control bytes dropped",
+			"deploy\x07\x00\x7f service",
+			"deploy service",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
