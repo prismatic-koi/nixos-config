@@ -24,6 +24,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1208,6 +1209,11 @@ func TestReap_RecordsAutoReleaseCause(t *testing.T) {
 // the ordering is falsifiable. An earlier version of this test asserted either
 // side of the sweep and passed with the two writes swapped — it pinned the end
 // state, not the order.
+//
+// Scope: this test pins cause-before-`ended_at` ONLY. It fires no tmux hook,
+// so it cannot see the round-4 defect where the tmux kill closed the row first
+// — TestReap_CauseSurvivesTheTmuxSessionClosedHook covers that. The two catch
+// different mutations and neither supersedes the other.
 func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	d := openTestDB(t)
 	installReapProbe(t)
@@ -1247,41 +1253,114 @@ func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
 	}
 }
 
-// TestReap_SkipsCauseWhenTheRowIsAlreadyClosed pins the ended_at guard on the
-// cause write. The candidate query filters on ended_at IS NULL at QUERY time;
-// a parent cleanup or a second concurrent sweep can close the row before this
-// sweep's write lands. SessionEndCauses returns the latest event, so an
-// unguarded write would overwrite a true parent_cleanup with a close this
-// sweep did not perform.
-func TestReap_SkipsCauseWhenTheRowIsAlreadyClosed(t *testing.T) {
+// TestReap_CauseSurvivesTheTmuxSessionClosedHook is the regression test for
+// the round-4 defect: `reapOne` killed the tmux session before it recorded the
+// `auto_release` cause.
+//
+// Killing a review agent's tmux session fires tmux's GLOBAL `session-closed`
+// hook (`modules/programs/prism/tmux.nix`), which runs
+// `prism event tmux-session-end`, which calls `ReleasePort` and `SetEnded`
+// (`cmd/event.go`). The row therefore closes from underneath `reapOne`, the
+// `ended_at` guard on the cause write then declines to record, and the cause
+// is lost — on most releases, because `reapOne` also killed the sidecar and
+// ran container teardown before reaching the write.
+//
+// The kill stub below does exactly what the hook does. No other test fires it:
+// `reapKillTmuxSession` is stubbed everywhere, which is precisely why the
+// suite could not see this defect while it was live.
+func TestReap_CauseSurvivesTheTmuxSessionClosedHook(t *testing.T) {
 	d := openTestDB(t)
-	parent := "nixos-config@reap-cause-raced"
+	parent := "nixos-config@reap-tmux-hook"
 	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
 	sess := sessions[0]
 
-	// Simulate the race: another path closes the row and records its own cause
-	// between the candidate query and this sweep's write. The container hook is
-	// the last step before the cause write, so it is the right injection point.
-	t.Cleanup(review.ReapSideEffectsForTest(nil, nil, func(name, _ string) {
+	hookFired := false
+	t.Cleanup(review.ReapSideEffectsForTest(func(name string) {
 		if name != sess {
 			return
 		}
-		d.RecordReapBestEffort(name, db.ReapCauseParentCleanup, "raced ahead of the release")
-		if err := d.SetEnded(name); err != nil {
-			t.Fatalf("SetEnded during simulated race: %v", err)
+		hookFired = true
+		// Verbatim shape of cmd/event.go's tmux-session-end handler.
+		if err := d.ReleasePort(name); err != nil {
+			t.Errorf("simulated session-closed hook: ReleasePort: %v", err)
 		}
-	}))
+		if err := d.SetEnded(name); err != nil {
+			t.Errorf("simulated session-closed hook: SetEnded: %v", err)
+		}
+	}, nil, nil))
 
 	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
 		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+	if !hookFired {
+		t.Fatal("the tmux kill never ran for the seeded session — the simulated hook never executed")
 	}
 
 	causes, err := d.SessionEndCauses([]string{sess})
 	if err != nil {
 		t.Fatalf("SessionEndCauses: %v", err)
 	}
-	if causes[sess].Cause != db.ReapCauseParentCleanup {
-		t.Errorf("Cause = %q, want %q — the release must not claim a close another path performed",
-			causes[sess].Cause, db.ReapCauseParentCleanup)
+	if causes[sess].Cause != db.ReapCauseAutoRelease {
+		t.Errorf("Cause = %q, want %q — the cause must be recorded BEFORE the tmux kill, because the session-closed hook closes the row and the ended_at guard then skips the write",
+			causes[sess].Cause, db.ReapCauseAutoRelease)
+	}
+	if st := statusOf(t, d, sess); st.EndedAt == nil {
+		t.Errorf("%q: ended_at is NULL, want the row closed", sess)
+	}
+}
+
+// TestReap_SkipsCauseWhenTheRowIsAlreadyClosed pins the ended_at guard on the
+// cause write. The candidate query filters on ended_at IS NULL at QUERY time;
+// another path can close the row before this sweep's write lands.
+// SessionEndCauses returns the latest event, so an unguarded write would
+// overwrite a true parent_cleanup with a close this sweep did not perform.
+//
+// The race is staged across two candidates of one sweep, because the cause
+// write is now the FIRST thing reapOne does — there is no per-session hook
+// left that runs before it. Tearing down the alphabetically-first candidate
+// closes the second one, so by the time reapOne reaches it the guard has
+// something real to refuse.
+func TestReap_SkipsCauseWhenTheRowIsAlreadyClosed(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@reap-cause-raced"
+	_, sessions := seedRound(t, d, parent, 1, []string{"finished", "finished"}, true)
+
+	// Candidates are processed in session_name ASC order.
+	ordered := append([]string{}, sessions...)
+	sort.Strings(ordered)
+	first, second := ordered[0], ordered[1]
+
+	raced := false
+	t.Cleanup(review.ReapSideEffectsForTest(func(name string) {
+		if name != first {
+			return
+		}
+		// While candidate 1 is being torn down, another path closes candidate
+		// 2 and records its own cause.
+		raced = true
+		d.RecordReapBestEffort(second, db.ReapCauseParentCleanup, "raced ahead of the release")
+		if err := d.SetEnded(second); err != nil {
+			t.Errorf("SetEnded during simulated race: %v", err)
+		}
+	}, nil, nil))
+
+	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+	if !raced {
+		t.Fatal("the simulated race never ran — the guard was never exercised")
+	}
+
+	causes, err := d.SessionEndCauses([]string{first, second})
+	if err != nil {
+		t.Fatalf("SessionEndCauses: %v", err)
+	}
+	if causes[second].Cause != db.ReapCauseParentCleanup {
+		t.Errorf("%q: Cause = %q, want %q — the release must not claim a close another path performed",
+			second, causes[second].Cause, db.ReapCauseParentCleanup)
+	}
+	// The unraced candidate is still recorded normally.
+	if causes[first].Cause != db.ReapCauseAutoRelease {
+		t.Errorf("%q: Cause = %q, want %q", first, causes[first].Cause, db.ReapCauseAutoRelease)
 	}
 }

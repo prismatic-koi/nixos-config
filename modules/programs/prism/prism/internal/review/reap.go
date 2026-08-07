@@ -180,22 +180,32 @@ func ReapDeliveredReviewAgents(d *db.DB, groupID string, now time.Time, grace ti
 // reapOne applies the `prism close --keep-worktree` teardown to a single
 // review agent. Every step is best-effort and idempotent.
 //
-// The order matters: kill the process-side state first (tmux pane, sidecar,
-// container temp files) and write the DB last. If the process dies between
-// steps, the next sweep still sees `ended_at IS NULL` and retries the whole
-// sequence. Writing `ended_at` first would mark the row reaped while the tmux
-// session was still alive, and no later sweep would revisit it.
+// The order has two constraints, and they act on different steps.
+//
+// `ended_at` is written LAST. If the process dies part-way, the next sweep
+// still sees `ended_at IS NULL` and retries the whole sequence. Writing it
+// first would mark the row reaped while the tmux session was still alive, and
+// no later sweep would revisit it.
+//
+// The `auto_release` cause is recorded FIRST — before the tmux kill, not just
+// before `ended_at`. Killing the tmux session fires tmux's global
+// `session-closed` hook (`modules/programs/prism/tmux.nix`), which runs
+// `prism event tmux-session-end`, which calls `ReleasePort` and `SetEnded`
+// (`cmd/event.go`). So the kill can close the row from underneath this
+// function, and the guard below would then correctly — and uselessly — decline
+// to record anything. Recording after the kill lost the cause on most
+// releases, which made the #2613 invariant this change adds false in practice.
+//
+// The two constraints do not conflict: `RecordSessionReap` appends an
+// `agent_events` row and never touches `ended_at`, so moving it to the front
+// leaves the retry property above exactly as it was. `ended_at` is still the
+// last thing this function writes to `agent_status`.
 func reapOne(d *db.DB, c db.ReapCandidate) {
 	proglog.Infof("[prism reap] releasing %s (state=%s, group=%s, parent=%s)\n",
 		c.SessionName, c.State, c.GroupID, c.ParentSession)
 
-	reapKillTmuxSession(c.SessionName)
-	reapKillSidecar(c.SessionName)
-	reapRemoveContainer(c.SessionName, c.IsolationMode)
-
-	// Record why this row is about to close (#2613). Written BEFORE the close,
-	// so a reader that sees a closed row also sees the cause. Best-effort: a
-	// lost diagnostic must never block the release.
+	// Record why this row is about to close (#2613), before anything can close
+	// it. Best-effort: a lost diagnostic must never block the release.
 	//
 	// This path differs from the five other #2613 causes in kind: they close a
 	// row that was still running, and this one closes a row that had already
@@ -207,10 +217,18 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	// one the #2613 invariant states: a path that finds the row already closed
 	// records nothing, so it cannot claim a close it did not perform. The
 	// candidate query already filtered on ended_at IS NULL, but that was at
-	// query time — a parent cleanup or a second concurrent sweep can close the
-	// row before this write lands. SessionEndCauses returns the LATEST event,
-	// so an unguarded write here would overwrite a true parent_cleanup with a
-	// close this sweep did not perform.
+	// query time — a parent cleanup, or this sweep's own earlier candidate, can
+	// close the row in between. SessionEndCauses returns the LATEST event, so an
+	// unguarded write here would overwrite a true parent_cleanup with a close
+	// this sweep did not perform.
+	//
+	// Edge case of recording first: if a later step fails and the row stays
+	// open, this event is already on the trail and the next sweep records a
+	// second one. That is acceptable and is not de-duplicated. agent_events is
+	// an append-only diagnostic trail, SessionEndCauses reads only the latest
+	// event, and both events carry the same cause — so every reader sees
+	// `auto_release` either way. The cost is one redundant row; the alternative
+	// (record last) is the defect this ordering exists to fix.
 	if st, err := d.CurrentStatus(c.SessionName); err != nil {
 		proglog.Warnf("[prism reap] warning: status re-read for %q before recording cause: %v\n", c.SessionName, err)
 	} else if st != nil && st.EndedAt == nil {
@@ -218,6 +236,10 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 			fmt.Sprintf("round delivered at %s; released after the %s grace period",
 				time.UnixMilli(c.DeliveredAt).UTC().Format(time.RFC3339), ReapGracePeriod))
 	}
+
+	reapKillTmuxSession(c.SessionName)
+	reapKillSidecar(c.SessionName)
+	reapRemoveContainer(c.SessionName, c.IsolationMode)
 
 	// Release the harness port. A row whose port is already NULL is a
 	// no-op success; a missing row returns an error, which cannot happen
