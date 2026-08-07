@@ -325,6 +325,41 @@ func TestProbeInitialState_UnknownMergeState_Undetermined(t *testing.T) {
 	}
 }
 
+// TestProbeInitialState_Behind_NamesWatcherOwnership is #2654: a PR whose
+// mergeStateStatus is BEHIND must get its own outcome and a message that
+// names the watcher as the one that runs `gh pr update-branch`, forbids the
+// coordinator/worker from running it, and explains why a sync below the
+// head of the queue is wasted work.
+func TestProbeInitialState_Behind_NamesWatcherOwnership(t *testing.T) {
+	stubGhBinRuleset(t,
+		`{"state":"OPEN","number":2654,"title":"needs sync","mergedAt":null,"mergeStateStatus":"BEHIND","reviewDecision":"","baseRefName":"main","statusCheckRollup":[{"name":"pr-gate","conclusion":"SUCCESS","status":"COMPLETED"}]}`,
+		"", // classic 404s
+		zeroApprovalRuleset,
+	)
+	dec, err := probeInitialState(2654)
+	if err != nil {
+		t.Fatalf("probeInitialState: %v", err)
+	}
+	if dec.Outcome != initialOutcomeEnqueueBehind {
+		t.Errorf("outcome: got %v, want EnqueueBehind", dec.Outcome)
+	}
+	if !strings.Contains(dec.Message, "BEHIND") {
+		t.Errorf("message %q does not name the observed BEHIND state", dec.Message)
+	}
+	if !strings.Contains(dec.Message, "gh pr update-branch") {
+		t.Errorf("message %q does not name the forbidden action (gh pr update-branch)", dec.Message)
+	}
+	if !strings.Contains(dec.Message, "do not run") {
+		t.Errorf("message %q does not forbid the coordinator/worker from running the sync themselves", dec.Message)
+	}
+	if !strings.Contains(dec.Message, "merge watcher") {
+		t.Errorf("message %q does not name the merge watcher as the one that runs the sync", dec.Message)
+	}
+	if !strings.Contains(dec.Message, "wasted work") {
+		t.Errorf("message %q does not explain that syncing below the head of the queue is wasted work", dec.Message)
+	}
+}
+
 // TestProbeInitialState_ZeroApprovalRepo_NeverRequiresApproval sweeps every
 // non-CLEAN state that used to reach the guessed human-approval fallthrough.
 // On a repo requiring zero approving reviews, none of them may produce that

@@ -183,7 +183,7 @@ Never use `--merge` (creates a merge commit, rejected by the ruleset) or `--reba
 
 **Build agents:** If you are working on a feature branch, your job ends at "PR opened and pushed". The coordinator on `@main` drives the merge via `prism merge <pr>` — do not attempt to merge the PR yourself, do not enqueue it in the merge queue, and do not wait for it to land before handing off. Once your PR is open and your self-review has passed, you are done.
 
-**Required status checks:** The required status check on `main` is `pr-gate`. Your branch must be up to date with `main` before it can merge. If `gh pr merge` fails because the branch is behind, use `gh pr update-branch <number>` to sync it.
+**Required status checks:** The required status check on `main` is `pr-gate`. Your branch must be up to date with `main` before it can merge. This applies only to the manual merge fallback (you running `gh pr merge` yourself, outside the merge queue): if it fails because the branch is behind, use `gh pr update-branch <number>` to sync it. It does not apply to a PR already enqueued via `prism merge` — there, the merge-queue watcher syncs the branch itself, just-in-time, when the PR reaches the head of the queue; do not run `gh pr update-branch` against a queued PR yourself (issue #2654).
 
 ### General Workflow Principles
 
