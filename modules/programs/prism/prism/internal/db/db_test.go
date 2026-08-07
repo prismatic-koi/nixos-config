@@ -1672,8 +1672,9 @@ func TestAllocatePort_Exhaustion(t *testing.T) {
 	// fsync) instead of ~2000 (#2611). AllocatePort's exhaustion check only
 	// reads harness_port for non-ended sessions
 	// (WHERE ended_at IS NULL AND harness_port IS NOT NULL), so a direct INSERT
-	// with ended_at NULL and harness_port set is equivalent to the
-	// UpsertStatus + setPort pair it replaces. See docs/test-database-fsync.md.
+	// with ended_at NULL and harness_port set is equivalent to the per-row
+	// UpsertStatus + direct harness_port UPDATE it replaces.
+	// See docs/test-database-fsync.md.
 	func() {
 		raw := openRawSQLite(t, d.Path())
 		tx, err := raw.Begin()
@@ -3779,17 +3780,6 @@ func TestGroupFK_OnDeleteSetNull_MigratedDB(t *testing.T) {
 	if s.State != "active" {
 		t.Errorf("State after cascade on migrated DB: got %q, want \"active\"", s.State)
 	}
-}
-
-// setPort is a test helper that writes harness_port directly via QueryRow.
-func setPort(d *db.DB, sessionName string, port int) error {
-	// Use QueryRow with a dummy scan to execute the UPDATE.
-	var dummy int
-	err := d.QueryRow(
-		"UPDATE agent_status SET harness_port = ? WHERE session_name = ? RETURNING 1",
-		port, sessionName,
-	).Scan(&dummy)
-	return err
 }
 
 // ── QueryAuditEvents tests ────────────────────────────────────────────────────
