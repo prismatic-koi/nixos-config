@@ -62,6 +62,9 @@ import {
   // Assistant-message text extraction (issue #1764)
   extractAssistantText,
   isAssistantTextDeltaEvent,
+  // User-message forwarding (issue #2678)
+  extractUserText,
+  buildMsgUserFrame,
   // Mid-tool heartbeat (issue #1761)
   startToolHeartbeat,
   TOOL_HEARTBEAT_INTERVAL_MS,
@@ -5389,6 +5392,222 @@ describe("#1764: pi 0.72.1 wire-frame coverage matrix", () => {
       0,
       matrix[6].desc,
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #2678: user-message forwarding — extractUserText
+// ---------------------------------------------------------------------------
+
+describe("#2678: extractUserText", () => {
+  it("returns a plain string content verbatim", () => {
+    assert.equal(
+      extractUserText({ role: "user", content: "hello world", timestamp: 0 }),
+      "hello world",
+    )
+  })
+
+  it("concatenates text blocks of an array content, in order", () => {
+    assert.equal(
+      extractUserText({
+        role: "user",
+        content: [
+          { type: "text", text: "part one " },
+          { type: "text", text: "part two" },
+        ],
+        timestamp: 0,
+      }),
+      "part one part two",
+    )
+  })
+
+  it("skips image blocks and keeps text blocks", () => {
+    assert.equal(
+      extractUserText({
+        role: "user",
+        content: [
+          { type: "text", text: "look: " },
+          { type: "image", data: "…base64…", mimeType: "image/png" },
+          { type: "text", text: "done" },
+        ],
+        timestamp: 0,
+      }),
+      "look: done",
+    )
+  })
+
+  it("filters out empty-string text blocks", () => {
+    assert.equal(
+      extractUserText({
+        role: "user",
+        content: [
+          { type: "text", text: "" },
+          { type: "text", text: "real" },
+          { type: "text", text: "" },
+        ],
+        timestamp: 0,
+      }),
+      "real",
+    )
+  })
+
+  it("returns \"\" for a non-user role (assistant, toolResult)", () => {
+    assert.equal(
+      extractUserText({
+        role: "assistant",
+        content: [{ type: "text", text: "hi" }],
+      }),
+      "",
+    )
+    assert.equal(
+      extractUserText({
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "bash",
+        content: [{ type: "text", text: "ls output" }],
+        isError: false,
+        timestamp: 0,
+      }),
+      "",
+    )
+  })
+
+  it("returns \"\" for null, undefined, primitives, and malformed messages", () => {
+    assert.equal(extractUserText(null), "")
+    assert.equal(extractUserText(undefined), "")
+    assert.equal(extractUserText("hello"), "")
+    assert.equal(extractUserText({ role: "user" }), "")
+    assert.equal(
+      extractUserText({ role: "user", content: [null, 42, { type: "text" }] }),
+      "",
+    )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #2678: user-message forwarding — buildMsgUserFrame
+// ---------------------------------------------------------------------------
+
+describe("#2678: buildMsgUserFrame", () => {
+  after(() => resetDefaultSecretRedactor())
+
+  it("builds a msg_user frame carrying text and messageId", () => {
+    const frame = buildMsgUserFrame({
+      role: "user",
+      id: "msg-abc",
+      content: "please do the mahi",
+      timestamp: 0,
+    })
+    assert.deepEqual(frame, {
+      type: "msg_user",
+      text: "please do the mahi",
+      messageId: "msg-abc",
+    })
+  })
+
+  it("emits messageId \"\" when pi attaches no id", () => {
+    const frame = buildMsgUserFrame({
+      role: "user",
+      content: "no id here",
+      timestamp: 0,
+    })
+    assert.notEqual(frame, null)
+    assert.equal(frame!.messageId, "")
+    assert.equal(frame!.text, "no id here")
+  })
+
+  it("returns null for a non-user message (assistant, toolResult)", () => {
+    // The role gate is what keeps the assistant path untouched: an
+    // assistant message_start produces no msg_user frame.
+    assert.equal(
+      buildMsgUserFrame({
+        role: "assistant",
+        content: [{ type: "text", text: "hi" }],
+      }),
+      null,
+    )
+    assert.equal(
+      buildMsgUserFrame({
+        role: "toolResult",
+        toolCallId: "c1",
+        toolName: "bash",
+        content: [{ type: "text", text: "out" }],
+        isError: false,
+        timestamp: 0,
+      }),
+      null,
+    )
+  })
+
+  it("returns null for a user message with no text (image-only or empty)", () => {
+    assert.equal(
+      buildMsgUserFrame({
+        role: "user",
+        content: [{ type: "image", data: "x", mimeType: "image/png" }],
+        timestamp: 0,
+      }),
+      null,
+    )
+    assert.equal(
+      buildMsgUserFrame({ role: "user", content: "", timestamp: 0 }),
+      null,
+    )
+  })
+
+  it("redacts a credential-shaped value at rest (security)", () => {
+    // AC [security]: user text passes the same write-time redaction as
+    // every other payload. truncateString runs defaultSecretRedactor over
+    // the text before it becomes a frame, so a GitHub token typed into the
+    // prompt never reaches agent_events verbatim.
+    resetDefaultSecretRedactor()
+    const token = `ghp_${"A".repeat(36)}`
+    const frame = buildMsgUserFrame({
+      role: "user",
+      id: "msg-sec",
+      content: `my token is ${token}`,
+      timestamp: 0,
+    })
+    assert.notEqual(frame, null)
+    assert.ok(
+      !frame!.text.includes(token),
+      `raw token leaked into frame: ${frame!.text}`,
+    )
+    assert.ok(
+      frame!.text.includes("[redacted:github-token]"),
+      `expected redaction marker, got: ${frame!.text}`,
+    )
+  })
+
+  it("truncates text over the wire limit with the sentinel (edge-case)", () => {
+    // AC [edge-case]: user text longer than the 8 KiB wire limit is
+    // truncated with the existing sentinel, per the wire protocol.
+    const long = "a".repeat(TRUNCATION_LIMIT_BYTES + 100)
+    const frame = buildMsgUserFrame({
+      role: "user",
+      id: "msg-long",
+      content: long,
+      timestamp: 0,
+    })
+    assert.notEqual(frame, null)
+    assert.equal(frame!.truncated, true)
+    assert.ok(frame!.text.endsWith(TRUNCATION_SENTINEL))
+    assert.equal(
+      Buffer.byteLength(
+        frame!.text.slice(0, frame!.text.length - TRUNCATION_SENTINEL.length),
+        "utf8",
+      ),
+      TRUNCATION_LIMIT_BYTES,
+    )
+  })
+
+  it("omits the truncated flag when text fits the wire limit", () => {
+    const frame = buildMsgUserFrame({
+      role: "user",
+      content: "short",
+      timestamp: 0,
+    })
+    assert.notEqual(frame, null)
+    assert.equal("truncated" in frame!, false)
   })
 })
 
