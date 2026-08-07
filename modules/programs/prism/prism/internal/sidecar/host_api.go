@@ -620,15 +620,16 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if showAll {
 			sessions, err = s.cfg.DB.AllActiveStatus()
 		} else {
-			// Same-repo: everything. Other repos: only coordinators
-			// (root_agent_name = 'coordinator', with @main name-heuristic
-			// fallback for pre-migration rows where root_agent_name IS NULL).
+			// Same-repo: everything. Other repos: only root sessions — a
+			// "<repo>@main" coordinator, or a non-worktree session with a bare
+			// name (issue #2658). The SQL states the same rule as
+			// authz.IsRootSession, which the /prompt gate above reads.
 			ownRepo, repoErr := repoFromSession(s.cfg.SessionName, s.cfg.DB)
 			if repoErr != nil {
 				writeError(w, http.StatusInternalServerError, "cannot derive repo from session name: "+repoErr.Error())
 				return
 			}
-			sessions, err = s.cfg.DB.AllActiveStatusForRepoAndOtherCoordinators(ownRepo)
+			sessions, err = s.cfg.DB.AllActiveStatusForRepoAndOtherRootSessions(ownRepo)
 		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "db error: "+err.Error())
@@ -1187,10 +1188,25 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		crossRepo := targetRepo != ownRepo
 
 		if s.cfg.AgentRole == "coordinator" {
-			// Coordinator: own repo any session allowed; cross-repo only @main.
-			if crossRepo && !isCoordinatorSession(req.Session, s.cfg.DB, s.logger()) {
+			// Coordinator: own repo any session allowed; cross-repo only a root
+			// session.
+			//
+			// The gate reads isRootSession, not isCoordinatorSession (issue
+			// #2658). A non-worktree session such as `obsidian` has no branch,
+			// so it can never end in "@main" and was refused here even though it
+			// is the only session for its project. isRootSession admits it and
+			// admits nothing else new: a descendant ("~"), a meta-session, and
+			// an other-repo worker are all still refused. The grant is scoped to
+			// prompt routing; the merge queue, `prism investigate` and the wide
+			// `prism checkin` scope keep reading isCoordinatorSession.
+			//
+			// req.Session already resolved through repoFromSession above, which
+			// requires a live agent_status row for any name with no "@". An
+			// unknown bare name is therefore refused with 404 before it reaches
+			// this line.
+			if crossRepo && !isRootSession(req.Session, s.cfg.DB, s.logger()) {
 				writeError(w, http.StatusForbidden,
-					fmt.Sprintf("cross-repo prompts can only target coordinators (<repo>@main), got %q", req.Session))
+					fmt.Sprintf("cross-repo prompts can only target root sessions (<repo>@main, or a non-worktree session with a bare name), got %q", req.Session))
 				return
 			}
 		} else {

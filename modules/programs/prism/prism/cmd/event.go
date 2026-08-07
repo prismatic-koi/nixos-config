@@ -104,9 +104,16 @@ func deriveBareRoot(worktree string) string {
 	return ""
 }
 
-// deriveRepo returns the repo name from a worktree path by walking up to find
-// the .bare marker. Returns empty string if not found.
-func deriveRepo(worktree string) string {
+// repoFromWorktreePath returns the repo name from a worktree path by walking
+// up to find the .bare marker. Returns empty string if not found.
+//
+// The name says "worktree path" because this function takes a filesystem path.
+// Its name-taking counterpart is sessionname.Repo, which takes a session name.
+// Until issue #2658 both were called `deriveRepo`, in two packages, with
+// incompatible semantics: this one returns "" for a non-worktree session,
+// while the other returned the whole session name. That is how
+// `obsidian~investigate-v2` came to be stored as its own repo.
+func repoFromWorktreePath(worktree string) string {
 	bareRoot := deriveBareRoot(worktree)
 	if bareRoot == "" {
 		return ""
@@ -147,9 +154,10 @@ var eventStateChangeCmd = &cobra.Command{
 			return nil
 		}
 
-		// For non-worktree sessions deriveRepo returns "" — that matches the
-		// row tmux-session-start already wrote, so pass it through as-is.
-		repo := deriveRepo(worktree)
+		// For non-worktree sessions repoFromWorktreePath returns "" — that
+		// matches the row tmux-session-start already wrote, so pass it through
+		// as-is.
+		repo := repoFromWorktreePath(worktree)
 
 		d, err := openDB()
 		if err != nil {
@@ -293,7 +301,7 @@ var eventTmuxSessionStartCmd = &cobra.Command{
 			return err
 		}
 
-		repo := deriveRepo(worktree)
+		repo := repoFromWorktreePath(worktree)
 		if repo == "" {
 			// Non-worktree session: skip only the meta-sessions (scratchpad and
 			// prism-dashboard) that must not appear in agent_status. All other

@@ -1,13 +1,19 @@
 package cmd
 
 // Tests for the default-scope behaviour of `prism list-sessions` (#1830):
-// other-repo coordinators are visible; other-repo workers are hidden.
+// other-repo root sessions are visible; other-repo workers are hidden.
+//
+// Issue #2658 widened "root session" from "<repo>@main coordinator" to
+// "<repo>@main coordinator, or a non-worktree session with a bare name", and
+// renamed the query accordingly. The tests below keep the pre-#2658 cases
+// unchanged and add the bare-name cases.
 
 import (
 	"strings"
 	"testing"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
 // TestListSessions_DefaultScope_HidesOtherRepoWorkers verifies the four-session
@@ -36,9 +42,9 @@ func TestListSessions_DefaultScope_HidesOtherRepoWorkers(t *testing.T) {
 	}
 
 	// Query the new DB method directly.
-	results, err := d.AllActiveStatusForRepoAndOtherCoordinators("repoA")
+	results, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
 	if err != nil {
-		t.Fatalf("AllActiveStatusForRepoAndOtherCoordinators: %v", err)
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
 	}
 
 	nameSet := make(map[string]bool)
@@ -76,9 +82,9 @@ func TestListSessions_DefaultScope_PreMigrationCoordinator(t *testing.T) {
 		t.Fatalf("UpsertStatus repoC@feat: %v", err)
 	}
 
-	results, err := d.AllActiveStatusForRepoAndOtherCoordinators("repoA")
+	results, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
 	if err != nil {
-		t.Fatalf("AllActiveStatusForRepoAndOtherCoordinators: %v", err)
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
 	}
 
 	nameSet := make(map[string]bool)
@@ -108,9 +114,9 @@ func TestListSessions_DefaultScope_RunE_Output(t *testing.T) {
 	// Simulate CWD inside repoA by setting PRISM_SPAWN_PATH.
 	// runListSessions falls back to PRISM_SPAWN_PATH when os.Getwd() returns
 	// a path that derives to the same repo. We use a worktree path that
-	// deriveRepo maps to "repoA".
+	// repoFromWorktreePath maps to "repoA".
 	//
-	// deriveRepo calls git to find the root; in a test environment the CWD
+	// repoFromWorktreePath calls git to find the root; in a test environment the CWD
 	// is under the actual repo, so we override via the workaround of setting
 	// --all=false and faking currentRepo by overriding the flag directly.
 	//
@@ -141,9 +147,9 @@ func TestListSessions_DefaultScope_RunE_Output(t *testing.T) {
 	}
 
 	// Verify the DB method directly for the scoped result.
-	got, err := d.AllActiveStatusForRepoAndOtherCoordinators("repoA")
+	got, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
 	if err != nil {
-		t.Fatalf("AllActiveStatusForRepoAndOtherCoordinators: %v", err)
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
 	}
 	gotNames := make(map[string]bool)
 	for _, s := range got {
@@ -157,9 +163,9 @@ func TestListSessions_DefaultScope_RunE_Output(t *testing.T) {
 	}
 }
 
-// TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer is a focused DB-layer
+// TestAllActiveStatusForRepoAndOtherRootSessions_DBLayer is a focused DB-layer
 // unit test for the new method.
-func TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer(t *testing.T) {
+func TestAllActiveStatusForRepoAndOtherRootSessions_DBLayer(t *testing.T) {
 	d := openStatsTestDB(t)
 
 	// Helper to insert a session with an explicit root_agent_name.
@@ -184,9 +190,9 @@ func TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer(t *testing.T) {
 	insert("repoC@main", "repoC", "")            // other-repo, NULL root_agent_name, @main → heuristic coordinator
 	insert("repoC@feat", "repoC", "")            // other-repo, NULL root_agent_name, non-main → hidden
 
-	results, err := d.AllActiveStatusForRepoAndOtherCoordinators("repoA")
+	results, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
 	if err != nil {
-		t.Fatalf("AllActiveStatusForRepoAndOtherCoordinators: %v", err)
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
 	}
 
 	statusMap := make(map[string]db.Status)
@@ -205,6 +211,81 @@ func TestAllActiveStatusForRepoAndOtherCoordinators_DBLayer(t *testing.T) {
 	for _, name := range hidden {
 		if _, ok := statusMap[name]; ok {
 			t.Errorf("session %q should be hidden but was returned", name)
+		}
+	}
+}
+
+// TestListSessions_BareNameSessionIsVisible is the #2658 AC: "`prism sessions
+// list` run from the `nixos-config` worktree includes the `obsidian` row."
+//
+// A non-worktree session has a bare name, so it can never equal
+// `repo || '@main'`, and its row here carries the wrong root_agent_name that
+// the issue reports. Both halves of the pre-#2658 rule therefore answered
+// false and the row was dropped. `prism dashboard` used a different query and
+// did show it, so the two surfaces disagreed about which sessions exist.
+//
+// Negative-mutation guard: restore the pre-#2658 clause
+// `root_agent_name = 'coordinator' OR (root_agent_name IS NULL AND
+// session_name = (repo || '@main'))` and the first assertion fails.
+func TestListSessions_BareNameSessionIsVisible(t *testing.T) {
+	d := openStatsTestDB(t)
+
+	// The viewer's own repo.
+	if err := d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi", ""); err != nil {
+		t.Fatalf("seed repoA@main: %v", err)
+	}
+	// The reported row: bare name, own repo, wrong root_agent_name.
+	if err := d.UpsertStatusSeedRootAgentName("bare-project", "bare-project", "/docs/bare-project", "active", nil, nil, "review-goal", "pi", "host"); err != nil {
+		t.Fatalf("seed bare-project: %v", err)
+	}
+	// Its investigator. Post-#2658 the repo column is the parent's repo, so
+	// the row is cross-repo for the viewer and must stay hidden.
+	if err := d.UpsertStatusSeedRootAgentName("bare-project~investigate-v2", "bare-project", "/docs/bare-project", "active", nil, nil, "worker", "pi", "host"); err != nil {
+		t.Fatalf("seed investigator: %v", err)
+	}
+
+	results, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
+	if err != nil {
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
+	}
+	nameSet := make(map[string]bool, len(results))
+	for _, s := range results {
+		nameSet[s.SessionName] = true
+	}
+
+	if !nameSet["bare-project"] {
+		t.Error("bare-name session missing from the default-scope listing — it is reachable by `prism prompt` but invisible to `prism sessions list`")
+	}
+	if nameSet["bare-project~investigate-v2"] {
+		t.Error("an investigator of another repo's bare-name session must stay hidden — only root sessions cross the repo boundary")
+	}
+	if !nameSet["repoA@main"] {
+		t.Error("own-repo coordinator missing from the listing")
+	}
+}
+
+// TestListSessions_MetaSessionsAreNeverListed pins the #2658 edge-case AC.
+// cmd/event.go refuses to write these rows at all, so the exclusion here is
+// defence in depth: it holds even if a row is written by another route.
+func TestListSessions_MetaSessionsAreNeverListed(t *testing.T) {
+	d := openStatsTestDB(t)
+
+	if err := d.UpsertStatusSeedRootAgentName("repoA@main", "repoA", "/wA/main", "active", nil, nil, "coordinator", "pi", ""); err != nil {
+		t.Fatalf("seed repoA@main: %v", err)
+	}
+	for _, meta := range sessionname.MetaNames() {
+		if err := d.UpsertStatus(meta, meta, "/tmp/"+meta, "active", nil, nil); err != nil {
+			t.Fatalf("seed %q: %v", meta, err)
+		}
+	}
+
+	results, err := d.AllActiveStatusForRepoAndOtherRootSessions("repoA")
+	if err != nil {
+		t.Fatalf("AllActiveStatusForRepoAndOtherRootSessions: %v", err)
+	}
+	for _, s := range results {
+		if sessionname.IsMeta(s.SessionName) {
+			t.Errorf("meta-session %q appeared in the default-scope listing", s.SessionName)
 		}
 	}
 }

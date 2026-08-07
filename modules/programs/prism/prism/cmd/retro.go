@@ -87,7 +87,7 @@ func runRetro(cmd *cobra.Command, _ []string) error {
 	// Default to the current repo when --repo is not given.
 	if repoFilter == "" {
 		if cwd, cwErr := os.Getwd(); cwErr == nil {
-			repoFilter = deriveRepo(cwd)
+			repoFilter = repoFromWorktreePath(cwd)
 		}
 	}
 

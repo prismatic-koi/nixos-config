@@ -297,7 +297,7 @@ func TestEventStateChange_TracksNonWorktreeSession(t *testing.T) {
 	t.Setenv("PRISM_HOST_API", "")
 	const session = "obsidian"
 
-	// Worktree path with no .bare ancestor — deriveRepo returns "".
+	// Worktree path with no .bare ancestor — repoFromWorktreePath returns "".
 	worktree := t.TempDir()
 
 	dbFile := filepath.Join(t.TempDir(), "prism.db")
@@ -421,7 +421,7 @@ func TestEventStateChange_SkipsMetaSessions(t *testing.T) {
 
 // TestEventStateChange_WorktreeSession verifies the original worktree-backed
 // happy path: a state-change invocation against a path with a .bare ancestor
-// resolves repo via deriveRepo and writes it to both agent_status and the
+// resolves repo via repoFromWorktreePath and writes it to both agent_status and the
 // state_change event row.
 //
 // Regression guard for issue #576 — relaxing the guard must not break the
