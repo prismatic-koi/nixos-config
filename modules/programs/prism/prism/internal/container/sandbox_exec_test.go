@@ -2127,3 +2127,77 @@ func TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal(t *testing.T) {
 		t.Skip("fake home turned out to be writable (running as root?) — nothing to assert")
 	}
 }
+
+// ── GOTOOLCHAIN pin (issue #2621, round-4 escalation decision) ──────────────
+
+// TestGoToolchainEnv_PinsLocal asserts the sandbox env carries
+// GOTOOLCHAIN=local.
+//
+// Policy: nix is authoritative for the Go toolchain inside a sandbox. A
+// sandboxed agent must not silently download an unpinned toolchain from the
+// internet and execute it out of the shared module cache. When a go.mod needs
+// a newer toolchain than nix ships, the build must fail loudly and the fix is
+// to bump the nix-pinned Go, never to widen the sandbox.
+//
+// The exact value matters. "local" is the only setting that disables the
+// download-and-exec path outright; a version string ("go1.26.5") still permits
+// a switch, and "auto" is the default this exists to override.
+func TestGoToolchainEnv_PinsLocal(t *testing.T) {
+	got := GoToolchainEnv()
+	want := []string{"GOTOOLCHAIN=local"}
+
+	if len(got) != len(want) {
+		t.Fatalf("GoToolchainEnv() = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("GoToolchainEnv()[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestGoToolchainPin_IsCoupledToModuleCacheExecDeny documents and pins the
+// coupling between the two halves of the #2621 toolchain mechanism.
+//
+// The section-22 deny makes the module cache non-executable. That is only safe
+// for the build because GOTOOLCHAIN=local stops cmd/go downloading a toolchain
+// into that same directory and exec'ing it (cmd/go/internal/toolchain:
+// download at select.go:357, exec at select.go:458). Either half alone is a
+// defect:
+//
+//   - deny without the pin — `go build` breaks on any repo whose go.mod
+//     outgrows the nix-pinned toolchain, with the #2621 error shape;
+//   - pin without the deny — the module cache stays executable, which is the
+//     security hole the deny closes.
+//
+// A future edit that removes one must remove or reconsider the other. This
+// test fails if either half disappears.
+func TestGoToolchainPin_IsCoupledToModuleCacheExecDeny(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-toolchain-coupling"})
+	profile := generateProfile(m)
+
+	modCache := filepath.Join(fakeHome, "go", "pkg", "mod")
+	denyPresent := strings.Contains(profile,
+		"(deny process-exec* file-map-executable\n  (subpath "+quoteSBPL(modCache)+"))")
+
+	pinPresent := false
+	for _, kv := range GoToolchainEnv() {
+		if kv == "GOTOOLCHAIN=local" {
+			pinPresent = true
+		}
+	}
+
+	if denyPresent != pinPresent {
+		t.Errorf("the module-cache exec deny and the GOTOOLCHAIN=local pin must be present together "+
+			"(deny=%v, pin=%v). They are one mechanism: the deny blocks the toolchain exec that "+
+			"GOTOOLCHAIN=auto would perform out of the module cache. Removing one without the other "+
+			"either breaks `go build` on a go.mod version bump or reopens the module cache to execution.",
+			denyPresent, pinPresent)
+	}
+	if !denyPresent {
+		t.Errorf("module-cache exec deny missing from the profile;\nfull profile:\n%s", profile)
+	}
+}

@@ -101,9 +101,18 @@ type goCacheDir struct {
 	// execDenied emits an explicit (deny process-exec* file-map-executable)
 	// for this directory in the final deny section.
 	//
-	// True for GOMODCACHE. The module cache holds module SOURCE — nothing in
-	// the documented gate execs out of it, so a sandboxed process must not be
-	// able to run anything it plants among the dependency sources.
+	// True for GOMODCACHE. The module cache holds module SOURCE, and with the
+	// GOTOOLCHAIN pin below nothing in the documented gate execs out of it, so
+	// a sandboxed process must not be able to run anything it plants among the
+	// dependency sources.
+	//
+	// COUPLING — read GoToolchainEnv before touching this. The "nothing execs
+	// from the module cache" premise is TRUE ONLY BECAUSE prism injects
+	// GOTOOLCHAIN=local. Under Go's default GOTOOLCHAIN=auto, cmd/go downloads
+	// a newer toolchain INTO the module cache and execs <dir>/bin/go from
+	// there, which this deny would block. The two changes are one mechanism:
+	// remove the env pin and this deny breaks `go build` on any repo whose
+	// go.mod outgrows the nix-pinned toolchain.
 	//
 	// The deny is load-bearing rather than decorative, and the ABSENCE of a
 	// file-map-executable grant does NOT achieve the same thing. Section 9
@@ -148,6 +157,54 @@ func goCacheDirs(home string) []goCacheDir {
 		{path: filepath.Join(home, "go", "pkg", "mod"), execDenied: true},
 		{path: filepath.Join(home, "Library", "Caches", "go-build")},
 	}
+}
+
+// GoToolchainEnvVar is the environment variable Go consults to decide whether
+// it may switch to a different toolchain than the one being run.
+const GoToolchainEnvVar = "GOTOOLCHAIN"
+
+// GoToolchainLocal pins the in-sandbox toolchain to the one on PATH — the
+// nix-provided Go — and disables the auto-download-and-exec path entirely.
+const GoToolchainLocal = "local"
+
+// GoToolchainEnv returns the env var pair that makes nix authoritative for the
+// Go toolchain inside a sandbox (issue #2621, owner decision on the round-4
+// escalation).
+//
+// # Policy
+//
+// A sandboxed agent must not silently download an unpinned Go toolchain from
+// the internet and execute it out of a shared cache. Nix provides the
+// toolchain; GOTOOLCHAIN=local makes that authoritative. When a project's
+// go.mod requires a newer toolchain than nix ships, the build fails loudly
+//
+//	go: go.mod requires go >= 1.27.0 (running go1.26.5)
+//
+// and the fix is to bump the nix-pinned Go — never to widen the sandbox.
+//
+// # Why this is load-bearing, not hygiene
+//
+// Go's built-in default is GOTOOLCHAIN=auto. Under auto, when go.mod's
+// go/toolchain directive exceeds the running toolchain, cmd/go downloads
+// module golang.org/toolchain@v0.0.1-<ver>.<goos>-<goarch> INTO GOMODCACHE,
+// sets the exec bits on the extracted tree, and execs <dir>/bin/go
+// (cmd/go/internal/toolchain/select.go: download at :357, exec bits at
+// :414-424, execGoToolchain at :458).
+//
+// That exec lands inside the directory the section-22 deny covers, so without
+// this pin the deny would break the very gate section 5k exists to enable —
+// failing as "go: exec go1.X.Y: operation not permitted", the #2621 symptom.
+// The alternative (carving golang.org/toolchain@* out of the deny) was
+// rejected: section 5k grants the module cache read-write, so a predictable
+// and agent-writable carve-out path is a bypass that masquerades as
+// protection.
+//
+// The pin cannot be overridden from inside the sandbox: prism forwards no
+// GO* variable, and go's env file (~/Library/Application Support/go/env) has
+// no grant, so this injected value is the only GOTOOLCHAIN the toolchain
+// sees.
+func GoToolchainEnv() []string {
+	return []string{GoToolchainEnvVar + "=" + GoToolchainLocal}
 }
 
 // ensureGoCacheDirs creates the section-5k Go cache directories on the host
@@ -1211,10 +1268,18 @@ func generateProfile(m *Manager) string {
 
 	// ── 22. FINAL DENIES — Go module cache is not executable (issue #2621) ─
 	// The module cache holds downloaded dependency SOURCE. Section 5k grants
-	// it read-write because the toolchain must populate it, but nothing in
-	// the documented `go build ./...` / `go test ./...` gate ever executes
-	// out of it. Without this deny, a sandboxed process could plant a binary
-	// among the dependency sources and run it.
+	// it read-write because the toolchain must populate it. Without this deny,
+	// a sandboxed process could plant a binary among the dependency sources
+	// and run it.
+	//
+	// PAIRED WITH GoToolchainEnv — do not change one without the other. The
+	// claim "nothing in the documented gate executes out of the module cache"
+	// holds ONLY because prism injects GOTOOLCHAIN=local. Under Go's default
+	// GOTOOLCHAIN=auto, cmd/go downloads a newer toolchain into the module
+	// cache and execs <dir>/bin/go from it, which this deny blocks — breaking
+	// the gate with the #2621 error shape. See the GoToolchainEnv godoc for
+	// the upstream call path and for why a golang.org/toolchain@* carve-out
+	// was rejected.
 	//
 	// THIS SECTION MUST STAY LAST, and it must in particular stay AFTER the
 	// section-9 process operations. That is not a stylistic preference — it
