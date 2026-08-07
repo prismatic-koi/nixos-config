@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/review"
 )
 
 // formatTokensGrouped renders a token count as a plain integer with comma
@@ -153,6 +154,71 @@ func renderRetroTrains(styleHeader, styleDim lipgloss.Style, trains []db.RetroTr
 			formatRetroCost(t.CostUSD),
 		)
 	}
+}
+
+// renderRetroReviewCycles renders section 3 of `prism retro <train-session>`:
+// per review cycle, per agent, the cost, turn count, and verdict (issue
+// #2584). train with no review groups at all (session_groups has no rows for
+// it) states that plainly rather than printing an empty table — the edge
+// case AC.
+func renderRetroReviewCycles(train string, cycles []review.ReviewCycle) {
+	styleHeader := lipgloss.NewStyle().Bold(true)
+	styleDim := lipgloss.NewStyle().Foreground(lipgloss.Color(ColorSecondary))
+	styleBold := lipgloss.NewStyle().Bold(true)
+
+	fmt.Printf("%s  %s\n", styleHeader.Render("Review cycles"), styleDim.Render("train "+train))
+	fmt.Println()
+
+	if len(cycles) == 0 {
+		fmt.Println(styleDim.Render("  no review cycles ran for this train"))
+		return
+	}
+
+	for _, c := range cycles {
+		statusLabel := "counts toward the 3-cycle limit"
+		if !c.CountsAsCycle {
+			statusLabel = "NON-COUNTING: " + c.NonCountingLabel
+		}
+		prLabel := c.PRNumber
+		if prLabel == "" {
+			prLabel = "—"
+		}
+		fmt.Printf("  %s  pr %s  %s\n", styleBold.Render(fmt.Sprintf("round %d", c.Round)), prLabel, styleDim.Render(statusLabel))
+
+		if len(c.Agents) == 0 {
+			// No agent_status rows were ever recorded for this round — "no
+			// review data recorded", distinct from a recorded zero cost
+			// (issue #2584 correction 2).
+			fmt.Println(styleDim.Render("    no review data recorded for this round"))
+			fmt.Println()
+			continue
+		}
+
+		agentW := len("AGENT")
+		for _, a := range c.Agents {
+			if len(a.Agent) > agentW {
+				agentW = len(a.Agent)
+			}
+		}
+		header := fmt.Sprintf("    %-*s  %6s  %8s  %8s", agentW, "AGENT", "TURNS", "COST", "VERDICT")
+		fmt.Println(styleDim.Render(header))
+		for _, a := range c.Agents {
+			turns := "—"
+			cost := "—"
+			if a.DataRecorded {
+				turns = fmt.Sprintf("%d", a.Turns)
+				cost = formatRetroCost(a.CostUSD)
+			}
+			verdict := a.Verdict
+			if verdict == "" {
+				verdict = "no verdict: " + a.NoVerdictClass
+			}
+			fmt.Printf("    %-*s  %6s  %8s  %s\n", agentW, a.Agent, turns, cost, verdict)
+		}
+		fmt.Println()
+	}
+
+	fmt.Println(styleDim.Render("  \"no review data recorded\" (agent-slot with no data) is distinct from a recorded cost of $0.00."))
 }
 
 func renderRetroWaste(styleHeader, styleLabel, styleDim lipgloss.Style, ws db.RetroWasteSignals) {

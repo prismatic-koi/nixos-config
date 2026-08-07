@@ -85,6 +85,9 @@ type GroupInfo struct {
 	PRNumber      string
 	Round         int
 	CreatedAt     time.Time
+	// DeliveredAt is the time the review-complete prompt was accepted for
+	// this group (#2259), or nil when the round has not been delivered.
+	DeliveredAt *time.Time
 }
 
 // LatestGroupForParent returns the most recently created session_groups row
@@ -96,26 +99,43 @@ type GroupInfo struct {
 // stuck-but-complete case the watcher exists to handle has ZERO non-terminal
 // members by definition.
 func (d *DB) LatestGroupForParent(parentSession string) (*GroupInfo, error) {
-	const q = `SELECT group_id, parent_session, pr_number, round, created_at
+	const q = `SELECT group_id, parent_session, pr_number, round, created_at, delivered_at
 	            FROM session_groups
 	            WHERE parent_session = ?
 	            ORDER BY created_at DESC, group_id DESC
 	            LIMIT 1`
 	row := d.conn.QueryRow(q, parentSession)
-	var gi GroupInfo
-	var prNumber sql.NullString
-	var round sql.NullInt64
-	if err := row.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt); err != nil {
+	gi, err := scanGroupInfoRow(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("db: latest group for parent %q: %w", parentSession, err)
+	}
+	return gi, nil
+}
+
+// scanGroupInfoRow scans one session_groups row (group_id, parent_session,
+// pr_number, round, created_at, delivered_at, in that order) into a GroupInfo.
+// Shared by every reader of that shape so the NULL handling for pr_number,
+// round, and delivered_at stays in one place.
+func scanGroupInfoRow(row *sql.Row) (*GroupInfo, error) {
+	var gi GroupInfo
+	var prNumber sql.NullString
+	var round sql.NullInt64
+	var deliveredAt sql.NullInt64
+	if err := row.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt, &deliveredAt); err != nil {
+		return nil, err
 	}
 	if prNumber.Valid {
 		gi.PRNumber = prNumber.String
 	}
 	if round.Valid {
 		gi.Round = int(round.Int64)
+	}
+	if deliveredAt.Valid {
+		t := time.UnixMilli(deliveredAt.Int64)
+		gi.DeliveredAt = &t
 	}
 	return &gi, nil
 }
@@ -125,24 +145,62 @@ func (d *DB) LatestGroupForParent(parentSession string) (*GroupInfo, error) {
 // reconstruct the review-complete delivery message when the detached monitor
 // subprocess dies.
 func (d *DB) GetGroup(groupID string) (*GroupInfo, error) {
-	const q = `SELECT group_id, parent_session, pr_number, round, created_at FROM session_groups WHERE group_id = ?`
+	const q = `SELECT group_id, parent_session, pr_number, round, created_at, delivered_at FROM session_groups WHERE group_id = ?`
 	row := d.conn.QueryRow(q, groupID)
-	var gi GroupInfo
-	var prNumber sql.NullString
-	var round sql.NullInt64
-	if err := row.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt); err != nil {
+	gi, err := scanGroupInfoRow(row)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("db: get group %q: %w", groupID, err)
 	}
-	if prNumber.Valid {
-		gi.PRNumber = prNumber.String
+	return gi, nil
+}
+
+// GroupsForParent returns every session_groups row whose parent_session
+// matches parentSession, ordered by round ascending (ties broken by
+// created_at ascending) — the natural review-cycle order (issue #2584).
+// Returns an empty, non-nil slice when parentSession has no review groups.
+//
+// round is a native session_groups column; callers must group and order
+// review cycles by it directly rather than parsing a round number out of a
+// session name (docs/retro.md section 3).
+func (d *DB) GroupsForParent(parentSession string) ([]GroupInfo, error) {
+	const q = `SELECT group_id, parent_session, pr_number, round, created_at, delivered_at
+	            FROM session_groups
+	            WHERE parent_session = ?
+	            ORDER BY round ASC, created_at ASC, group_id ASC`
+	rows, err := d.conn.Query(q, parentSession)
+	if err != nil {
+		return nil, fmt.Errorf("db: groups for parent %q: %w", parentSession, err)
 	}
-	if round.Valid {
-		gi.Round = int(round.Int64)
+	defer rows.Close()
+
+	out := []GroupInfo{}
+	for rows.Next() {
+		var gi GroupInfo
+		var prNumber sql.NullString
+		var round sql.NullInt64
+		var deliveredAt sql.NullInt64
+		if err := rows.Scan(&gi.GroupID, &gi.ParentSession, &prNumber, &round, &gi.CreatedAt, &deliveredAt); err != nil {
+			return nil, fmt.Errorf("db: groups for parent %q: scan: %w", parentSession, err)
+		}
+		if prNumber.Valid {
+			gi.PRNumber = prNumber.String
+		}
+		if round.Valid {
+			gi.Round = int(round.Int64)
+		}
+		if deliveredAt.Valid {
+			t := time.UnixMilli(deliveredAt.Int64)
+			gi.DeliveredAt = &t
+		}
+		out = append(out, gi)
 	}
-	return &gi, nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: groups for parent %q: iterate: %w", parentSession, err)
+	}
+	return out, nil
 }
 
 // GroupCompleted reports whether the review group has reached a terminal
@@ -311,12 +369,36 @@ func (d *DB) DeliveredGroupIDsForParent(parentSession string) (map[string]struct
 // LastMessage is populated from the most recent msg_assistant event payload
 // for each session. It is empty when no such event has been recorded.
 func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) {
+	return d.groupResults(groupID, false)
+}
+
+// GroupResultsAll is GroupResults without the `ended_at IS NULL` filter — it
+// includes every member of the group, whether or not its agent_status row has
+// been closed. Live callers must use GroupResults (see its doc comment for
+// why the #1495 cleanup escape hatch depends on excluding ended rows). This
+// variant exists for a historical read where exclusion would be wrong: by the
+// time `prism retro` runs, every review-agent row for a completed round is
+// closed (ended_at IS NOT NULL) — measured on the live DB, 100% of historical
+// review agent_status rows are closed. Calling GroupResults on a historical
+// group_id would therefore return an empty map and mislabel every agent as
+// having no verdict, which is false for most of them (issue #2584 / #2594).
+func (d *DB) GroupResultsAll(groupID string) (map[string]GroupMemberResult, error) {
+	return d.groupResults(groupID, true)
+}
+
+// groupResults is the shared implementation behind GroupResults and
+// GroupResultsAll. includeEnded controls whether rows with a non-NULL
+// ended_at are included.
+func (d *DB) groupResults(groupID string, includeEnded bool) (map[string]GroupMemberResult, error) {
 	// Fetch each member's session_name, state, and root_agent_name.
-	// Exclude rows that have been ended (ended_at IS NOT NULL) — see comment above.
-	const statusQ = `
+	statusQ := `
 SELECT session_name, state, COALESCE(root_agent_name, '')
 FROM agent_status
-WHERE group_id = ? AND ended_at IS NULL`
+WHERE group_id = ?`
+	if !includeEnded {
+		// Exclude rows that have been ended (ended_at IS NOT NULL) — see comment above.
+		statusQ += ` AND ended_at IS NULL`
+	}
 	rows, err := d.conn.Query(statusQ, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("db: group results: query statuses: %w", err)

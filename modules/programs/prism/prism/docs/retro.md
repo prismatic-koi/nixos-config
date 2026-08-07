@@ -178,7 +178,7 @@ Sections are numbered to match the tracking issue, in reading order.
 |---|---|---|---|
 | 1 | Window totals | `spawn_outcome`, aggregated | States the context-re-read share: cache-read tokens as a percentage of total token volume. |
 | 2 | Trains table | `spawn_outcome` joined to `session_groups` | One row per train: name, profile tier, worker cost, review cost, review-cycle count, total, share of window. |
-| 3 | Review-cycle detail | `spawn_outcome` joined to `session_groups`, grouped by `round` | Per cycle, per agent: cost, turns, verdict. Depends on #2573 — see section 6. |
+| 3 | Review-cycle detail | `agent_events` (turns/cost/tokens) joined to `session_groups.round`; verdicts via `db.GroupResultsAll` + `review.ClassifyRound` (NOT `spawn_outcome`, NOT the live `db.GroupResults`) | Per cycle, per agent: cost, turns, verdict. Landed as issue #2584 — see section 6. |
 | 4 | Fixed-overhead accounting | `agent_events`, `msg_assistant` payloads, first turn only | The one section that reads event-level data. See section 2.3. |
 | 5 | Waste signals | `spawn_outcome`, aggregated | `doom_loop_count`, `tool_error_count`, `permission_ask_count`, `permission_denied_count`, stalls, non-converging cycles. Zero counts are stated explicitly, not omitted. |
 
@@ -214,15 +214,41 @@ stated.
    whether cleanup has written their rows (`WriteSpawnOutcomeCascade`, #2591)
    or the rows predate that change.
 
-3. **Section 3, review-cycle detail.** Depends on
-   [#2573](https://github.com/prismatic-koi/nixos-config/issues/2573), which
-   is in flight and is actively changing how a round with a missing verdict
-   (no-start or mid-round infrastructure failure) is classified and
-   reported. Building section 3 against today's semantics means rebuilding
-   it the moment #2573 lands. This issue waits for #2573 so the "non-counting
-   round" label in section 3 matches the classification #2573 introduces,
-   rather than a classification this design would otherwise have to guess
-   at.
+3. **Section 3, review-cycle detail.** Depended on
+   [#2573](https://github.com/prismatic-koi/nixos-config/issues/2573) (merged
+   as PR #2580), which classifies a round with a missing verdict (no-start or
+   mid-round infrastructure failure). Landed as issue #2584. Two corrections
+   surfaced after a dogfood retro, before implementation started:
+
+   - **Route taken for per-agent metrics: `agent_events`, not
+     `spawn_outcome`.** Review-agent sessions almost never carry a
+     `spawn_outcome` row (measured coverage before #2591:
+     41 of 3,384, 1.2% — `WriteSpawnOutcome` is called for the parent
+     instance only, with no cascade to review children before that issue).
+     `internal/db/retro.go`'s `SessionEventAggregates` aggregates turns and
+     token/cost totals directly from `agent_events`, COALESCEd against NULL
+     fields, keyed by `session_name`.
+   - **Verdicts: `db.GroupResultsAll`, not the live `db.GroupResults`.**
+     `GroupResults` filters `WHERE ended_at IS NULL` — correct for the
+     in-flight monitor loop, wrong for a historical read: by the time an
+     operator runs `prism retro`, every review-agent `agent_status` row for a
+     completed round is closed (measured on the live DB: 3,290 of 3,290
+     review `agent_status` rows are closed — issue #2594). Reading
+     `GroupResults` here would return an empty map for every historical round
+     and mislabel every agent as having no verdict. `GroupResultsAll` (same
+     query, no `ended_at` filter) plus `review.ClassifyRound` — the
+     same classifier #2573 uses for the live delivery message — keeps the
+     historical read and the live read on one classification, so a round
+     #2573 marks non-counting renders that way here too.
+   - **"No review data recorded" is restored and distinct from a recorded
+     zero.** A round whose `session_groups` row was registered but never got
+     an `agent_status` member (the group's own field is empty) renders "no
+     review data recorded for this round"; an agent that ran and genuinely
+     cost $0.00 (subscription profile) renders that cost, not "no data".
+     These never collapse into the same message (issue #2584 correction 2 —
+     supersedes section 2.4 above, which is only about `spawn_outcome` row
+     survival, not about whether a round ever got members in the first
+     place).
 
 4. **Section 4, fixed-overhead accounting.** The event-level query path over
    `msg_assistant` payloads described in section 2.3. Depended on issue 2

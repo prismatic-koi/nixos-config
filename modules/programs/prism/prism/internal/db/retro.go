@@ -40,6 +40,74 @@ import (
 	"github.com/prismatic-koi/prism/internal/sessionname"
 )
 
+// SessionEventAggregate is the per-session turn count and token/cost total
+// computed directly from agent_events, for the sessions named in
+// SessionEventAggregates. It is the review-agent counterpart of
+// spawn_outcome's aggregate columns, used where spawn_outcome coverage does
+// not reach: review-agent sessions almost never get a spawn_outcome row
+// (measured coverage before #2591: 41 of 3,384, 1.2%), so section 3 of
+// `prism retro` (issue #2584) reads agent_events directly rather than relying
+// on spawn_outcome or the WriteSpawnOutcomeCascade backfill.
+type SessionEventAggregate struct {
+	Turns            int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	CostUSD          float64
+}
+
+// SessionEventAggregates computes SessionEventAggregate for every session
+// named in sessionNames, keyed by session_name. A session with no
+// msg_assistant events is simply absent from the returned map (a zero value,
+// not an entry) — callers treat a missing key as "no turns recorded", which
+// AssembleReviewCycles distinguishes from a recorded zero via the per-agent
+// verdict classification, not via this map's presence.
+//
+// Every SUM uses COALESCE so a NULL token field (which occurs) counts as zero
+// rather than voiding the whole aggregate — the same defence ComputeSpawnOutcome
+// applies to its own aggregate query.
+func (d *DB) SessionEventAggregates(sessionNames []string) (map[string]SessionEventAggregate, error) {
+	result := map[string]SessionEventAggregate{}
+	if len(sessionNames) == 0 {
+		return result, nil
+	}
+
+	placeholders := strings.Repeat("?,", len(sessionNames))
+	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
+	q := `
+SELECT session_name,
+       COUNT(*),
+       COALESCE(SUM(COALESCE(JSON_EXTRACT(payload,'$.outputTokens'), 0)), 0),
+       COALESCE(SUM(COALESCE(JSON_EXTRACT(payload,'$.cacheReadTokens'), 0)), 0),
+       COALESCE(SUM(COALESCE(JSON_EXTRACT(payload,'$.cacheWriteTokens'), 0)), 0),
+       COALESCE(SUM(COALESCE(JSON_EXTRACT(payload,'$.cost'), 0.0)), 0.0)
+FROM agent_events
+WHERE type = 'msg_assistant' AND session_name IN (` + placeholders + `)
+GROUP BY session_name`
+	args := make([]any, len(sessionNames))
+	for i, n := range sessionNames {
+		args[i] = n
+	}
+	rows, err := d.conn.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("db: session event aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name string
+		var agg SessionEventAggregate
+		if err := rows.Scan(&name, &agg.Turns, &agg.OutputTokens, &agg.CacheReadTokens, &agg.CacheWriteTokens, &agg.CostUSD); err != nil {
+			return nil, fmt.Errorf("db: session event aggregates: scan: %w", err)
+		}
+		result[name] = agg
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("db: session event aggregates: iterate: %w", err)
+	}
+	return result, nil
+}
+
 // RetroReport is the assembled, render-ready shape for one `prism retro` run.
 // It is the wire shape of the host-API GET /retro response and the value the
 // CLI marshals for `--json`; the JSON tags are the snake_case contract the AC

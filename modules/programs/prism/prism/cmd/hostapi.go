@@ -302,13 +302,16 @@ func proxyStats(apiURL, view, sessionFilter string, days int, repoFilter string,
 // db.RetroReport JSON for the caller to render or print. The GET /retro
 // endpoint runs the same db.AssembleRetro the direct CLI path uses, so the
 // rendered output is identical on the host and sandbox paths (issue #2583).
-func proxyRetro(apiURL, repo string, sinceMs int64) ([]byte, error) {
+func proxyRetro(apiURL, repo string, sinceMs int64, train string) ([]byte, error) {
 	params := map[string]string{}
 	if repo != "" {
 		params["repo"] = repo
 	}
 	if sinceMs > 0 {
 		params["since"] = fmt.Sprintf("%d", sinceMs)
+	}
+	if train != "" {
+		params["train"] = train
 	}
 	return proxyReadToHostAPI(apiURL, "/retro", params)
 }
