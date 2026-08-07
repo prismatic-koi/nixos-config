@@ -249,6 +249,14 @@ type Config struct {
 	// /session) to discover the session ID for subsequent prism prompt delivery.
 	// DeliverInitialPrompt is a no-op in container mode (RFC #691, Phase 1a).
 	InitialPrompt string
+	// TitleGenerator produces the once-per-session dashboard title (#2683).
+	//
+	// NIL DISABLES THE MODEL CALL ENTIRELY. The session still gets its
+	// deterministic fallback title and its regex-extracted issue_ref — only
+	// the summarisation step is skipped. nil is the default, so no test
+	// makes a network call unless it opts in; cmd/sidecar.go sets it for the
+	// real process. See internal/sidecar/title.go.
+	TitleGenerator TitleGenerator
 	// PrismBinaryPath, when non-empty, overrides the path to the prism binary
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,
 	// /prompt). Used in tests to inject a stub binary.
@@ -471,6 +479,12 @@ type Sidecar struct {
 	// already stops the timer; busyEpoch provides an additional guard for
 	// the timer closure so it can bail out even if Stop() loses the race.
 	busyEpoch uint64
+	// titleGenAttempted latches once this session has tried to generate its
+	// title, so the attempt happens at most once per sidecar process however
+	// many turns the session runs (#2683). Guarded by s.mu. See
+	// internal/sidecar/title.go for the second, SQL-side guard that covers a
+	// restarted sidecar.
+	titleGenAttempted bool
 	// lastTitle is the most recently upserted session title. Used when
 	// pushing state-change events to the dashboard socket so the dashboard
 	// can update the title display immediately without a DB round-trip.
@@ -2648,6 +2662,15 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		s.pipeAccum = &empty
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 
+		// Title the session from its spawn prompt (#2683). This is the WORKER
+		// path: a spawned session has its task description in cfg.InitialPrompt
+		// before the agent produces any output, so the first turn is the
+		// earliest point a title can be written. A coordinator has no spawn
+		// prompt and reaches the same function from the msg_user case below.
+		// maybeGenerateTitle latches internally, so the remaining turns of a
+		// long session cost one map-free bool read each.
+		s.maybeGenerateTitle(s.cfg.InitialPrompt)
+
 	case "msg_assistant":
 		// Buffer the text fragment; do not write a row yet.
 		var f struct {
@@ -2728,6 +2751,22 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// spuriously finish during the retry window.
 		s.cancelIdleTimer()
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+
+	case "msg_user":
+		// The extension emits this on a user message_start (#2678). It is the
+		// COORDINATOR's title source: a coordinator has no spawn prompt, so
+		// the first thing the operator typed is the only text that says what
+		// the session is for.
+		//
+		// The frame is persisted exactly as the default branch would, so this
+		// case changes no existing behaviour — it only adds the title hook.
+		s.writeEvent(frame.Type, json.RawMessage(line), nil)
+		var userFrame struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(line, &userFrame); err == nil {
+			s.maybeGenerateTitle(userFrame.Text)
+		}
 
 	case "tool_call", "tool_result",
 		"provider_error", "auto_retry_end":

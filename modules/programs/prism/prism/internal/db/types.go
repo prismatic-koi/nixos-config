@@ -20,11 +20,23 @@ type Event struct {
 
 // Status represents a row in the agent_status table.
 type Status struct {
-	SessionName      string
-	Repo             string
-	Worktree         string
-	State            string
-	Title            *string
+	SessionName string
+	Repo        string
+	Worktree    string
+	State       string
+	Title       *string
+	// TitleSource records who wrote Title: "human" (a harness-reported
+	// rename), "generated" (internal/titlegen's model summary), or
+	// "fallback" (deriveFallbackTitle over the spawn prompt). nil means the
+	// title predates provenance tracking, or there is no title. The
+	// generator refuses to overwrite a "human" title (#2683).
+	TitleSource *string
+	// IssueRef is the issue or ticket the work came from, e.g. "#2683" or
+	// "PLAT-123". Always extracted from source text by regex, never supplied
+	// by a model. nil means the source text carried no reference — it never
+	// means "not yet determined", and no reader should backfill it by
+	// guessing (#2683).
+	IssueRef         *string
 	AgentName        *string
 	ModelID          *string
 	RootAgentName    *string
@@ -54,6 +66,42 @@ type Status struct {
 	// vars point at the filtered socket. Defaults to false; flipped by
 	// Step 3 (sidecar wiring) and Step 6 (`prism spawn --containers`).
 	ContainersEnabled bool `json:"containers_enabled"`
+}
+
+// DisplayTitle returns the title cell for the dashboard and for
+// `prism sessions list`: the issue or ticket reference, then the title
+// (#2683).
+//
+// One definition, used by every renderer, so the two surfaces cannot drift
+// into showing different things for the same row.
+//
+//	"#2683 · generate session titles"   both present
+//	"generate session titles"           no reference in the source text
+//	"#2683"                             a reference but no title
+//	""                                  neither
+//
+// Both parts are safe to render verbatim. Title is written only through
+// paths that pass titlegen.Sanitise, which drops control bytes; IssueRef is
+// produced by a regex that admits only '#', '-', ASCII letters and digits,
+// so it cannot carry one at all. The caller still owns truncation — column
+// widths are the renderer's business, not this method's.
+func (s Status) DisplayTitle() string {
+	title := ""
+	if s.Title != nil {
+		title = *s.Title
+	}
+	ref := ""
+	if s.IssueRef != nil {
+		ref = *s.IssueRef
+	}
+	switch {
+	case ref == "":
+		return title
+	case title == "":
+		return ref
+	default:
+		return ref + " · " + title
+	}
 }
 
 // BusMessage represents a row in the bus_messages table.

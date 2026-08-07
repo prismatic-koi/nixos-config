@@ -70,10 +70,9 @@ type AgentSession struct {
 // db.AllProfileNames); pass nil when not available (e.g. in tests that
 // pre-date the profile-column wiring, or the value is not needed).
 func StatusToAgentSession(s db.Status, clientCounts map[string]int, groupParents map[string]string, profileNames map[string]string) AgentSession {
-	title := ""
-	if s.Title != nil {
-		title = *s.Title
-	}
+	// DisplayTitle folds agent_status.issue_ref in front of the title so the
+	// reference is visible on the dashboard rather than write-only (#2683).
+	title := s.DisplayTitle()
 	agentName := ""
 	if s.AgentName != nil {
 		agentName = *s.AgentName

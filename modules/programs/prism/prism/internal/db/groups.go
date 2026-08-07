@@ -787,7 +787,7 @@ WHERE a.session_name = ?`
 // to a session_groups row with parent_session = parentSession.
 func (d *DB) GroupMembersForParent(parentSession string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)`
 	return d.queryStatuses(q, parentSession)
@@ -799,7 +799,7 @@ WHERE group_id IN (SELECT group_id FROM session_groups WHERE parent_session = ?)
 // cleaned up.
 func (d *DB) GroupMembersForGroup(groupID string) ([]Status, error) {
 	const q = `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE group_id = ?
 ORDER BY session_name ASC`
@@ -897,7 +897,7 @@ func (d *DB) ReviewGroupsList(limit int) ([]ReviewGroupSummary, error) {
 	placeholders := strings.Repeat("?,", len(groupIDs))
 	placeholders = placeholders[:len(placeholders)-1] // trim trailing comma
 	memberQ := `
-SELECT session_name, repo, worktree, state, title, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
+SELECT session_name, repo, worktree, state, title, title_source, issue_ref, agent_name, model_id, root_agent_name, root_model_id, isolation_mode, instance_id, last_seen, ended_at, harness, harness_session_id, harness_port, group_id, muted, containers_enabled
 FROM agent_status
 WHERE group_id IN (` + placeholders + `)
 ORDER BY group_id ASC, session_name ASC`

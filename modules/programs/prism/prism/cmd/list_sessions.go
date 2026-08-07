@@ -158,9 +158,11 @@ func renderSessionTable(ss []db.Status, groupParents map[string]string, abtestPa
 
 	var rows []row
 	for _, s := range ss {
-		title := "—"
-		if s.Title != nil && *s.Title != "" {
-			title = *s.Title
+		// DisplayTitle folds agent_status.issue_ref in front of the title so
+		// the reference is visible here rather than write-only (#2683).
+		title := s.DisplayTitle()
+		if title == "" {
+			title = "—"
 		}
 		port := ""
 		if s.HarnessPort != nil {

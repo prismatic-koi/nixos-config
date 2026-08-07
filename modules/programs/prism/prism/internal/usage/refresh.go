@@ -657,3 +657,50 @@ func filterOut(items, drop []string) []string {
 	}
 	return out
 }
+
+// ── Shared request shape (exported seam) ─────────────────────────────────────
+//
+// The three elements of the WAF-critical request shape are described at the
+// top of this file. They are needed by every caller that talks to
+// `/v1/messages` on the Claude Code OAuth path, not only by the usage
+// refresh — internal/titlegen is the second such caller (#2683).
+//
+// The seam is deliberately THIN: three symbols that expose the shape, and
+// nothing that exposes a token, a body, or a response. The mirror discipline
+// stated at the top of this file still applies and still has one home — when
+// the pi extension changes the shape, this file changes, and every caller
+// gets the new shape without a second edit. Do NOT copy any of the mirrored
+// constants into another package: a second copy is a second thing to forget,
+// and the failure mode is a 429 that reads as quota exhaustion.
+
+// ClaudeCodeIdentity is element 3 of the request shape: this exact string,
+// as the FIRST system block, with `cache_control: {type: ephemeral}`.
+//
+// A caller that adds its own system blocks must append them AFTER this one.
+// Demoting it returns HTTP 429 with no retry-after and no rate-limit
+// headers.
+const ClaudeCodeIdentity = claudeCodeIdentity
+
+// MessagesURL builds `<base>/v1/messages?beta=true` — element 1 of the
+// request shape. An empty base means DefaultBaseURL.
+//
+// The `?beta=true` parameter is not optional and not decorative: omitting it
+// is one of the three ways to be rejected by the WAF with a misleading 429.
+func MessagesURL(base string) (string, error) {
+	r := Refresher{BaseURL: base}
+	return r.requestURL()
+}
+
+// ApplyOAuthHeaders writes element 2 of the request shape onto h: the
+// `x-stainless-*` block, the `claude-cli/<version>` user-agent, `x-app`,
+// `anthropic-dangerous-direct-browser-access`, `anthropic-version`, the
+// per-model `anthropic-beta` list, and the bearer token.
+//
+// modelID selects the beta list (haiku excludes interleaved thinking), so
+// pass the model the request body actually names.
+//
+// The token is written to the `authorization` header and to nothing else.
+// This function does not log, retain, or return it.
+func ApplyOAuthHeaders(h http.Header, token, modelID string) {
+	applyOAuthHeaders(h, token, modelID)
+}
