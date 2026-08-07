@@ -1824,3 +1824,190 @@ func TestRegexQuotePath(t *testing.T) {
 		}
 	}
 }
+
+// ── section 5k: Go module cache + build cache (issue #2621) ─────────────────
+
+// TestGenerateProfile_GoCacheRWGrant verifies that generateProfile emits the
+// section-5k read-write grant for the two Go cache directories, so the repo
+// AGENTS.md quality gate (`go build ./...`, `go test ./...`) runs inside a
+// Darwin worker with no extra environment setup (issue #2621).
+//
+// The paths are asserted as LITERALS here, not derived from goCacheDirs, so
+// that a change to either the helper or the emitted block has to be a
+// deliberate edit of both. The grant must be read-write: go writes module
+// downloads plus cache/lock under GOMODCACHE and build outputs under GOCACHE,
+// so a read-only grant would not make the documented command work.
+//
+// The block is emitted unconditionally — the fake home here contains neither
+// directory, matching a fresh host. sandbox-exec silently ignores
+// (subpath ...) rules for non-existent paths.
+//
+// This substring assertion is necessary but not sufficient — the paired
+// Darwin integration tests in
+// internal/integration/sandbox_exec_go_cache_darwin_test.go prove the rule is
+// load-bearing against /usr/bin/sandbox-exec per docs/sandbox-exec-testing.md.
+func TestGenerateProfile_GoCacheRWGrant(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	// Deliberately create NEITHER dir — emission is unconditional.
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache"})
+	profile := generateProfile(m)
+
+	wantBlock := "(allow file-read* file-write* file-test-existence file-read-metadata\n" +
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "go", "pkg", "mod")) + ")\n" +
+		"  (subpath " + quoteSBPL(filepath.Join(fakeHome, "Library", "Caches", "go-build")) + "))\n"
+	if !strings.Contains(profile, wantBlock) {
+		t.Errorf("profile missing the section-5k Go cache RW grant block:\n%s\nfull profile:\n%s", wantBlock, profile)
+	}
+}
+
+// TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches is the security AC
+// of issue #2621: the widening covers the two Go cache leaves and nothing
+// else.
+//
+// Each ancestor is checked in both (subpath ...) and (literal ...) form:
+//
+//   - ~/go — would expose ~/go/bin, where `go install` drops binaries that
+//     are typically on the host's PATH. A sandboxed agent must not be able to
+//     plant an executable the user later runs.
+//   - ~/go/pkg — the GOPATH package root, wider than the module cache.
+//   - ~/Library/Caches — the user's entire cache tree (browser, applications).
+//   - ~/Library, ~ — self-evidently out of bounds.
+//
+// ~/Library/Application Support/go (GOENV plus the Go telemetry dir) is
+// checked as an explicit non-grant too: go tolerates an unreadable env file
+// and telemetry is best-effort, so neither needs a grant.
+func TestGenerateProfile_GoCacheGrantsNothingOutsideTheCaches(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// No BareRoot: the section-6b ancestor block grants (subpath HOME) for
+	// file-test-existence when BareRoot is set, which would mask this check.
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-scope"})
+	profile := generateProfile(m)
+
+	for _, forbidden := range []string{
+		filepath.Join(fakeHome, "go"),
+		filepath.Join(fakeHome, "go", "pkg"),
+		filepath.Join(fakeHome, "Library", "Caches"),
+		filepath.Join(fakeHome, "Library"),
+		filepath.Join(fakeHome, "Library", "Application Support", "go"),
+		fakeHome,
+	} {
+		for _, form := range []string{
+			"(subpath " + quoteSBPL(forbidden) + ")",
+			"(literal " + quoteSBPL(forbidden) + ")",
+		} {
+			if strings.Contains(profile, form) {
+				t.Errorf("profile grants %s — outside the two Go cache dirs. Grant the LEAVES only.\nfull profile:\n%s", form, profile)
+			}
+		}
+	}
+
+	// Each granted leaf appears exactly once: a second occurrence would mean
+	// the path leaked into another clause.
+	for _, dir := range goCacheDirs(fakeHome) {
+		if got := strings.Count(profile, quoteSBPL(dir)); got != 1 {
+			t.Errorf("Go cache dir %s must appear exactly once in the profile; found %d occurrences.\nfull profile:\n%s", dir, got, profile)
+		}
+	}
+}
+
+// TestGoCacheDirs_AreTheGoDarwinDefaults pins the resolved paths to the Go
+// toolchain's Darwin defaults (issue #2621).
+//
+// The values are exact, not approximate: the sandbox env forwards no GO*
+// variable and go's env file under ~/Library/Application Support is not
+// granted, so the in-sandbox toolchain always resolves GOMODCACHE to
+// $HOME/go/pkg/mod and GOCACHE to $HOME/Library/Caches/go-build. If Go ever
+// changes those defaults, this test is the tripwire.
+func TestGoCacheDirs_AreTheGoDarwinDefaults(t *testing.T) {
+	got := goCacheDirs("/Users/example")
+	want := []string{
+		"/Users/example/go/pkg/mod",
+		"/Users/example/Library/Caches/go-build",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("goCacheDirs returned %d entries (%v); want %d (%v)", len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("goCacheDirs[%d] = %q; want %q", i, got[i], want[i])
+		}
+	}
+
+	// Empty home yields no entries — the caller must not emit a grant rooted
+	// at "/" or an SBPL clause with no path filter.
+	if dirs := goCacheDirs(""); dirs != nil {
+		t.Errorf("goCacheDirs(\"\") = %v; want nil", dirs)
+	}
+}
+
+// TestGenerateProfile_GoCacheGrantAbsentWithoutHome verifies that an
+// unresolvable home emits no Go cache clause at all — never an (allow ...)
+// with no path filter, which SBPL would read as "everything" (issue #2621).
+func TestGenerateProfile_GoCacheGrantAbsentWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	m := newSandboxExecManager(Config{SessionName: "repo@go-cache-nohome"})
+	profile := generateProfile(m)
+
+	if strings.Contains(profile, "go-build") {
+		t.Errorf("profile references go-build with no resolvable home:\n%s", profile)
+	}
+	if strings.Contains(profile, "(allow file-read* file-write* file-test-existence file-read-metadata\n)") {
+		t.Errorf("profile contains a filter-less allow clause:\n%s", profile)
+	}
+}
+
+// TestEnsureGoCacheDirs_CreatesBothDirs verifies that the Prepare-time
+// helper materialises the two directories the section-5k grant covers
+// (issue #2621).
+//
+// This is load-bearing, not cosmetic: a (subpath ...) grant on a path that
+// does not exist is a silent no-op, and the sandboxed process cannot create
+// the path itself because MkdirAll would first have to mkdir the ungranted
+// parents (~/go, ~/go/pkg, ~/Library/Caches) and gets EPERM. Without the
+// host-side creation, a machine that has never run go outside a sandbox
+// still fails the documented quality gate.
+func TestEnsureGoCacheDirs_CreatesBothDirs(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	ensureGoCacheDirs()
+
+	for _, dir := range goCacheDirs(fakeHome) {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Errorf("ensureGoCacheDirs did not create %s: %v", dir, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%s exists but is not a directory", dir)
+		}
+	}
+}
+
+// TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal verifies the best-effort
+// posture (issue #2621): the Go caches are a build convenience, unlike the
+// work-dir git/ssh configs whose absence hard-fails Prepare, so a home that
+// cannot be written to must not stop a session from starting. This is the
+// homeless-shelter shape ($HOME unwritable inside the nix build sandbox).
+func TestEnsureGoCacheDirs_UnwritableHomeIsNotFatal(t *testing.T) {
+	base := t.TempDir()
+	unwritable := filepath.Join(base, "ro-home")
+	if err := os.MkdirAll(unwritable, 0o500); err != nil {
+		t.Fatalf("create read-only fake home: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(unwritable, 0o700) })
+	t.Setenv("HOME", unwritable)
+
+	// Must return normally — the only contract is "does not panic, does not
+	// abort the caller".
+	ensureGoCacheDirs()
+
+	if _, err := os.Stat(filepath.Join(unwritable, "go", "pkg", "mod")); err == nil {
+		t.Skip("fake home turned out to be writable (running as root?) — nothing to assert")
+	}
+}
