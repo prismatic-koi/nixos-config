@@ -1091,24 +1091,32 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		}
 
 		// Condition 2: every member produced a parseable `<verdict>` tag.
-		// We use GroupResults to read each member's last assistant message,
-		// startup_error, and state, and require AssessPassed to return
-		// VerdictPass or VerdictFail for every member (#1995). A group where
-		// any member terminated without a parseable verdict — empty
-		// LastMessage, startup_error, mid-analysis truncation, or a row that
-		// GroupResults dropped because it was closed mid-review (#2573) — is
-		// NOT counted: the worker is expected to re-run.
+		// We read each member's last assistant message, startup_error, and
+		// state, and require AssessPassed to return VerdictPass or VerdictFail
+		// for every member (#1995). A group where any member terminated
+		// without a parseable verdict — empty LastMessage, startup_error, or
+		// mid-analysis truncation — is NOT counted: the worker is expected to
+		// re-run.
 		//
-		// #2594 sub-case: a row that closed AFTER it delivered a full verdict
-		// also drops out of GroupResults, so an ordinary, complete round can
-		// read as non-counting here too. The failure direction stays safe:
-		// the LOOP-LIMIT footer fires late, never early, because a round
-		// that should count is only skipped, never wrongly counted. Decision
-		// recorded in #2594: this read site keeps its current, narrower
-		// contract on purpose, so it does not touch the #1495 cleanup escape
-		// hatch. A consumer that needs an accurate historical count — for
-		// example a retro over past rounds — must read `agent_events`
-		// directly, not GroupResults.
+		// The read is GroupResultsAll, not GroupResults (#2649, #2584).
+		// The `ended_at IS NULL` filter on GroupResults is correct on the live
+		// aggregation path — it is what makes the #1495 cleanup escape hatch
+		// work — and wrong here. Review agents are now released automatically
+		// 15 minutes after their round is delivered, so by the time a later
+		// round asks "how many cycles came before me", every earlier round's
+		// rows are closed. Through the narrow read this loop counted zero every
+		// time, and the LOOP-LIMIT footer — the thing that tells a worker to
+		// stop and escalate at three cycles — never fired.
+		//
+		// Widening the read does not loosen the predicate. A row closed while
+		// still non-terminal, or closed before it emitted a verdict, is now
+		// visible with its real state and its empty LastMessage, and
+		// ClassifyRound rejects it for that reason instead of for its absence.
+		// The #1495 abandoned-agent row reads as state "interrupted", which is
+		// not verdict-producing, so that round still does not count. The one
+		// behaviour that changes is the #2594 sub-case — a row that closed
+		// AFTER delivering a full verdict now counts, which is what it always
+		// should have done.
 		//
 		// The expected member list comes from gMembers (agent_status rows,
 		// including closed ones), NOT from the groupData keys. That is the
@@ -1121,13 +1129,21 @@ func CompletedReviewCyclesForParent(d *db.DB, parentSession, excludeGroupID stri
 		// verdicts; the other two finished with no parseable `<verdict>` tag.
 		// See `docs/diagnoses/review-agent-no-verdict-1993.md` for the full
 		// trace; #1995 tightened both predicates to share this contract.
-		groupData, gErr := d.GroupResults(gid)
+		// The HISTORICAL read (#2649). GroupResults drops rows whose ended_at
+		// is set, which is correct on the live aggregation path and wrong
+		// here: review agents are released automatically 15 minutes after
+		// their round is delivered, so by the time a later round asks "how
+		// many cycles came before me", every earlier round's rows are closed.
+		// Read through GroupResults, this loop counted zero every time and the
+		// LOOP-LIMIT footer never fired. The release deletes no row and no
+		// event, so the wider read still sees the full history.
+		groupData, gErr := d.GroupResultsAll(gid)
 		if gErr != nil {
 			// Be defensive: a bad row should not silently underreport cycle
 			// count. Log and skip the group so we do not fire LOOP-LIMIT
 			// based on partial data, but do not return the error — callers
 			// (the monitor) treat a missing footer as a benign degradation.
-			proglog.Warnf("[prism review] warning: GroupResults(%s) failed during cycle counting: %v\n", gid, gErr)
+			proglog.Warnf("[prism review] warning: GroupResultsAll(%s) failed during cycle counting: %v\n", gid, gErr)
 			continue
 		}
 		if len(groupData) == 0 {

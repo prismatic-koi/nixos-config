@@ -481,6 +481,14 @@ func (d *DB) GroupResults(groupID string) (map[string]GroupMemberResult, error) 
 // review agent_status rows are closed. Calling GroupResults on a historical
 // group_id would therefore return an empty map and mislabel every agent as
 // having no verdict, which is false for most of them (issue #2584 / #2594).
+//
+// The automatic release of finished review agents (#2649) makes that reasoning
+// bite sooner and adds a second caller. A round's rows used to close only when
+// the parent worker was cleaned up; they now close 15 minutes after the round
+// is delivered. `CompletedReviewCyclesForParent` therefore reads through here
+// too — through GroupResults it counted zero past cycles once the release had
+// run, and the LOOP-LIMIT footer that tells a worker to stop and escalate at
+// three cycles stopped firing.
 func (d *DB) GroupResultsAll(groupID string) (map[string]GroupMemberResult, error) {
 	return d.groupResults(groupID, true)
 }

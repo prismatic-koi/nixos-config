@@ -1037,3 +1037,186 @@ func TestMonitorFunc_NoReapWhenNotRequested(t *testing.T) {
 		t.Errorf("%q was ended with ReapAfterDelivery unset", sessions[0])
 	}
 }
+
+// ── The reap must not silence the LOOP-LIMIT footer ─────────────────────────
+
+// seedVerdictRound seeds one complete, verdict-producing round for parent:
+// every member finished with a parseable `<verdict>` tag. It returns the
+// group id and the member session names.
+func seedVerdictRound(t *testing.T, d *db.DB, parent string, round int, verdict string) (string, []string) {
+	t.Helper()
+	groupID, sessions := seedRound(t, d, parent, round,
+		[]string{"finished", "finished", "finished", "finished", "finished"}, true)
+	for _, sess := range sessions {
+		seedAssistantEvent(t, d, sess,
+			"Reviewed round "+strconv.Itoa(round)+".\n<verdict>"+verdict+"</verdict>")
+	}
+	return groupID, sessions
+}
+
+// TestCompletedReviewCycles_SurviveTheReap is the regression guard for the
+// interaction between the automatic release (#2649) and the LOOP-LIMIT footer
+// (#1512).
+//
+// CompletedReviewCyclesForParent counts a past round only when every member
+// produced a parseable verdict. Its read used to be db.GroupResults, which
+// drops rows with ended_at set. The release stamps ended_at on every member of
+// a delivered round, so once it runs, every past round read as "produced no
+// verdicts" and the count collapsed to zero.
+//
+// The consequence was not cosmetic: the footer is what tells a worker it has
+// reached three cycles and must stop and escalate. A worker whose rounds were
+// released before the next round completed would never have been told.
+//
+// The history the count needs is intact after a release — the release deletes
+// no agent_status row and no agent_events row. Only the read had to change.
+func TestCompletedReviewCycles_SurviveTheReap(t *testing.T) {
+	d := openTestDB(t)
+	installReapProbe(t)
+	parent := "nixos-config@reap-loop-limit"
+
+	// Three complete, non-converged rounds — the shape that must trip the
+	// LOOP-LIMIT footer.
+	for round := 1; round <= 3; round++ {
+		seedVerdictRound(t, d, parent, round, "FAIL")
+	}
+
+	before, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent (before reap): %v", err)
+	}
+	if before != 3 {
+		t.Fatalf("precondition: counted %d cycles before the reap, want 3", before)
+	}
+
+	res, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0)
+	if err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+	if len(res.Reaped) != 15 {
+		t.Fatalf("reaped %d sessions, want all 15", len(res.Reaped))
+	}
+
+	after, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent (after reap): %v", err)
+	}
+	if after != 3 {
+		t.Errorf("counted %d cycles after the reap, want 3 — releasing a round must not erase it from the cycle count, or the LOOP-LIMIT footer stops firing",
+			after)
+	}
+}
+
+// TestCompletedReviewCycles_ReapedRoundWithoutVerdictsStillDoesNotCount pins
+// the other direction: the wider read must not start counting rounds that
+// never produced a full set of verdicts. An incomplete round stays
+// non-counting after it is released, exactly as it was before.
+func TestCompletedReviewCycles_ReapedRoundWithoutVerdictsStillDoesNotCount(t *testing.T) {
+	d := openTestDB(t)
+	installReapProbe(t)
+	parent := "nixos-config@reap-loop-limit-incomplete"
+
+	// One good round, and one where a single agent emitted no verdict.
+	seedVerdictRound(t, d, parent, 1, "FAIL")
+	_, round2 := seedRound(t, d, parent, 2,
+		[]string{"finished", "finished", "finished", "finished", "finished"}, true)
+	for _, sess := range round2[:4] {
+		seedAssistantEvent(t, d, sess, "Reviewed.\n<verdict>FAIL</verdict>")
+	}
+	// round2[4] finishes with no assistant message at all — no verdict.
+
+	before, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent (before reap): %v", err)
+	}
+	if before != 1 {
+		t.Fatalf("precondition: counted %d cycles before the reap, want 1", before)
+	}
+
+	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+
+	after, err := review.CompletedReviewCyclesForParent(d, parent, "")
+	if err != nil {
+		t.Fatalf("CompletedReviewCyclesForParent (after reap): %v", err)
+	}
+	if after != 1 {
+		t.Errorf("counted %d cycles after the reap, want 1 — an incomplete round must stay non-counting", after)
+	}
+}
+
+// TestReap_RecordsAutoReleaseCause verifies that the release records why it
+// closed the row (#2613). Without it, a coordinator asking why a review-agent
+// row is closed is told that nothing recorded why — the exact gap #2613 exists
+// to remove, on what is now the most common closer of these rows.
+func TestReap_RecordsAutoReleaseCause(t *testing.T) {
+	d := openTestDB(t)
+	installReapProbe(t)
+	parent := "nixos-config@reap-cause"
+
+	_, sessions := seedRound(t, d, parent, 1, []string{"finished", "error"}, true)
+
+	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+
+	causes, err := d.SessionEndCauses(sessions)
+	if err != nil {
+		t.Fatalf("SessionEndCauses: %v", err)
+	}
+	for _, sess := range sessions {
+		rec, ok := causes[sess]
+		if !ok {
+			t.Fatalf("%q: no close cause recorded", sess)
+		}
+		if rec.Cause != db.ReapCauseAutoRelease {
+			t.Errorf("%q: Cause = %q, want %q", sess, rec.Cause, db.ReapCauseAutoRelease)
+		}
+		if !rec.Recorded() {
+			t.Errorf("%q: Recorded() = false, want true", sess)
+		}
+		if rec.Detail == "" {
+			t.Errorf("%q: Detail is empty, want the delivery time and the grace period", sess)
+		}
+	}
+}
+
+// TestReap_CauseIsRecordedBeforeTheRowCloses pins the ordering the #2613
+// contract requires: a reader that sees a closed row must also see the cause.
+// A cause written after ended_at leaves a window in which the row reads as
+// closed with nothing to explain it.
+func TestReap_CauseIsRecordedBeforeTheRowCloses(t *testing.T) {
+	d := openTestDB(t)
+	parent := "nixos-config@reap-cause-order"
+	_, sessions := seedRound(t, d, parent, 1, []string{"finished"}, true)
+	sess := sessions[0]
+
+	// The container hook is the last side effect before the DB writes, so it
+	// is the point at which the row must still be open and the cause must not
+	// yet exist. Assert the pre-state there, then re-assert after the sweep.
+	restore := review.ReapSideEffectsForTest(nil, nil, func(name, _ string) {
+		if name != sess {
+			return
+		}
+		if st := statusOf(t, d, name); st.EndedAt != nil {
+			t.Errorf("%q was closed before its teardown ran", name)
+		}
+	})
+	t.Cleanup(restore)
+
+	if _, err := review.ReapDeliveredReviewAgents(d, "", afterGrace(), 0); err != nil {
+		t.Fatalf("ReapDeliveredReviewAgents: %v", err)
+	}
+
+	causes, err := d.SessionEndCauses([]string{sess})
+	if err != nil {
+		t.Fatalf("SessionEndCauses: %v", err)
+	}
+	if causes[sess].Cause != db.ReapCauseAutoRelease {
+		t.Errorf("Cause = %q, want %q", causes[sess].Cause, db.ReapCauseAutoRelease)
+	}
+	if st := statusOf(t, d, sess); st.EndedAt == nil {
+		t.Errorf("%q: ended_at is NULL, want the row closed", sess)
+	}
+}

@@ -67,6 +67,17 @@ const (
 	// ReapCauseCleanupCommand — an operator ran `prism cleanup` / `prism
 	// close` against this session directly (cmd/cleanup.go).
 	ReapCauseCleanupCommand SessionReapCause = "cleanup_command"
+	// ReapCauseAutoRelease — the automatic release closed an already-terminal
+	// review agent once the grace period after its round's review-complete
+	// prompt had elapsed (internal/review/reap.go, issue #2649).
+	//
+	// This cause is unlike the other five. They all close a row that was
+	// still running; this one closes a row that had already stopped. It is
+	// recorded for the same reason they are: after #2649 this is the most
+	// common closer of review-agent rows by a wide margin, and a coordinator
+	// asking "why is this row closed" must not be told that nothing recorded
+	// why.
+	ReapCauseAutoRelease SessionReapCause = "auto_release"
 )
 
 // Description renders the cause as a single, specific sentence fragment for a
@@ -83,6 +94,8 @@ func (c SessionReapCause) Description() string {
 		return "a cleanup of the parent worker session cascaded to this review agent"
 	case ReapCauseCleanupCommand:
 		return "an operator closed this session with `prism cleanup` or `prism close`"
+	case ReapCauseAutoRelease:
+		return "the automatic release closed this already-finished review agent after the grace period following its round"
 	case "":
 		return ""
 	default:

@@ -189,6 +189,19 @@ func reapOne(d *db.DB, c db.ReapCandidate) {
 	reapKillSidecar(c.SessionName)
 	reapRemoveContainer(c.SessionName, c.IsolationMode)
 
+	// Record why this row is about to close (#2613). Written BEFORE SetEnded,
+	// so a reader that sees a closed row also sees the cause. Best-effort: a
+	// lost diagnostic must never block the release.
+	//
+	// This path differs from the five #2613 causes in kind: they close a row
+	// that was still running, and this one closes a row that had already
+	// stopped. The record matters anyway, because after #2649 this is the most
+	// common closer of review-agent rows, and without it a coordinator reading
+	// the DB is told that nothing recorded why.
+	d.RecordReapBestEffort(c.SessionName, db.ReapCauseAutoRelease,
+		fmt.Sprintf("round delivered at %s; released after the %s grace period",
+			time.UnixMilli(c.DeliveredAt).UTC().Format(time.RFC3339), ReapGracePeriod))
+
 	// Release the harness port. A row whose port is already NULL is a
 	// no-op success; a missing row returns an error, which cannot happen
 	// here because the candidate came from that same table.
