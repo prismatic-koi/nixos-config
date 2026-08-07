@@ -688,13 +688,23 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 	// set — eliminating the NULL window between seed and SetIsolationMode
 	// (issue #1866). ActiveSessionCountForMode counts this row correctly from
 	// the moment the seed returns.
+	// Seed a fallback dashboard title from the spawn prompt (#2641). pi never
+	// auto-generates a session title in any mode (see title_fallback.go for
+	// the full diagnosis), so a headless spawned worker would otherwise never
+	// show one. This only affects the row's initial INSERT — a real
+	// harness-reported title (or a later human rename) still overwrites it
+	// normally.
+	var seedTitle *string
+	if t := deriveFallbackTitle(opts.Prompt); t != "" {
+		seedTitle = &t
+	}
 	if err := d.UpsertStatusSeedRootAgentName(
-		opts.SessionName, opts.Repo, opts.Worktree, "idle", nil, nil, opts.AgentRole, effectiveHarness, mode,
+		opts.SessionName, opts.Repo, opts.Worktree, "idle", seedTitle, nil, opts.AgentRole, effectiveHarness, mode,
 	); err != nil {
 		startup.log("spawn-session: seed status FAILED: %v", err)
 		return fmt.Errorf("spawn session: seed status: %w", err)
 	}
-	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q)", mode)
+	startup.log("spawn-session: agent_status seeded (state=idle, isolation_mode=%q, title=%v)", mode, seedTitle != nil)
 
 	// Step 2: Write group_id when set (hook for Issue E — single-session
 	// spawns leave GroupID empty and this is a no-op).

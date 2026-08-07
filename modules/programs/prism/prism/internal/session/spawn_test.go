@@ -98,6 +98,47 @@ func TestSpawnSession_AgentOnly_SeedsRootAgentName(t *testing.T) {
 	}
 }
 
+// TestSpawnSession_AgentOnly_SeedsFallbackTitle verifies that SpawnSession
+// seeds agent_status.title from the spawn prompt when the row is freshly
+// created (#2641) — the fallback used because pi never emits a
+// harness-reported title for a headless session (see title_fallback.go).
+func TestSpawnSession_AgentOnly_SeedsFallbackTitle(t *testing.T) {
+	d, _ := openSpawnTestDB(t)
+
+	_ = spyTmuxBin(t)
+	t.Setenv("PRISM_TEST_SUBPROCESS", "1")
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	const sessionName = "myrepo@branch~review-1-review-code"
+	opts := SpawnOpts{
+		SessionName:    sessionName,
+		Repo:           "myrepo",
+		Worktree:       "/worktrees/myrepo-branch",
+		AgentRole:      "review-code",
+		Prompt:         "review this PR\n\nMore detail that should not appear in the title.",
+		Layout:         LayoutAgentOnly,
+		PIExtensionDir: testPIExtensionDir,
+	}
+
+	if err := SpawnSession(d, opts); err != nil {
+		t.Fatalf("SpawnSession: %v", err)
+	}
+
+	st, err := d.CurrentStatus(sessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("CurrentStatus: got nil, want row")
+	}
+	if st.Title == nil {
+		t.Fatal("title = nil, want a fallback title derived from the prompt")
+	}
+	if *st.Title != "review this PR" {
+		t.Errorf("title = %q, want %q", *st.Title, "review this PR")
+	}
+}
+
 // TestSpawnSession_AgentOnly_WritesGroupID verifies that when opts.GroupID is
 // non-empty, SpawnSession writes it to agent_status.group_id. This is the hook
 // Issue E (#860) will use to wire review rounds into session_groups.

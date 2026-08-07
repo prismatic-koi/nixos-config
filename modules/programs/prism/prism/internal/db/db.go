@@ -115,6 +115,13 @@ CREATE TABLE IF NOT EXISTS agent_status (
   repo              TEXT NOT NULL,
   worktree          TEXT NOT NULL,
   state             TEXT NOT NULL,
+  -- title: NULL means "no title has ever been written"; a non-NULL value
+  -- (including '') means some writer supplied one. In practice this column
+  -- never observably holds '' -- every writer that could produce an empty
+  -- string normalises it to nil/NULL before writing (see
+  -- internal/session/title_fallback.go and internal/sidecar/helpers.go's
+  -- strPtr, #2641) -- so readers may treat NULL and '' identically without
+  -- losing information.
   title             TEXT,
   agent_name        TEXT,
   model_id          TEXT,
