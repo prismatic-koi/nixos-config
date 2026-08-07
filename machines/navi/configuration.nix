@@ -39,6 +39,7 @@
       corectrl.enable = true;
       darktable.enable = true;
       gcalcli.enable = true;
+      gitlab-cli.enable = true;
       homeAutomation.enable = true;
       obsidian.enable = true;
       picard.enable = true;
