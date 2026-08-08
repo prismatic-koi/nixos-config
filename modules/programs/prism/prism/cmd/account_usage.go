@@ -82,6 +82,11 @@ type accountUsageJSON struct {
 	FiveHour   *windowJSON `json:"five_hour,omitempty"`
 	SevenDay   *windowJSON `json:"seven_day,omitempty"`
 	Error      string      `json:"error,omitempty"`
+	// OrganizationID and WorkspaceID mirror usage.Snapshot's fields of the
+	// same name (issue #2713, parent #2699) — the round-trip AC requires
+	// them to reach `prism account usage --json`, not just the on-disk file.
+	OrganizationID string `json:"organization_id,omitempty"`
+	WorkspaceID    string `json:"workspace_id,omitempty"`
 }
 
 func runAccountUsage(cmd *cobra.Command, args []string) error {
@@ -175,6 +180,8 @@ func renderAccountUsageJSON(rows []usage.AccountSnapshot, now time.Time) error {
 		}
 		entry.CapturedAt = row.Snapshot.CapturedAt
 		entry.Stale = row.Stale(now)
+		entry.OrganizationID = row.Snapshot.OrganizationID
+		entry.WorkspaceID = row.Snapshot.WorkspaceID
 		if w := row.Snapshot.Windows; w != nil {
 			entry.FiveHour = windowToJSON(w.FiveHour, now)
 			entry.SevenDay = windowToJSON(w.SevenDay, now)
