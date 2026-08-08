@@ -27,6 +27,7 @@ var (
 	exporterFlagPort      int
 	exporterFlagDBPath    string
 	exporterFlagStatePath string
+	exporterFlagUsageDir  string
 )
 
 var exporterCmd = &cobra.Command{
@@ -72,6 +73,9 @@ func init() {
 		"path to prism.db (default $XDG_STATE_HOME/prism/prism.db)")
 	exporterCmd.Flags().StringVar(&exporterFlagStatePath, "state", "",
 		"path to the tail-cursor state file (default alongside prism.db)")
+	exporterCmd.Flags().StringVar(&exporterFlagUsageDir, "usage-dir", "",
+		"path to the usage-snapshot directory for account attribution "+
+			"(default $XDG_STATE_HOME/prism/usage)")
 	rootCmd.AddCommand(exporterCmd)
 }
 
@@ -92,6 +96,7 @@ func runExporter(cmd *cobra.Command, _ []string) error {
 	e, err := exporter.New(exporter.Config{
 		DBPath:     dbFile,
 		StatePath:  statePath,
+		UsageDir:   exporterFlagUsageDir,
 		ListenAddr: net.JoinHostPort(exporterFlagListen, strconv.Itoa(exporterFlagPort)),
 		Logger:     log.New(cmd.ErrOrStderr(), "prism-exporter: ", log.LstdFlags),
 	})

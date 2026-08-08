@@ -3,6 +3,7 @@ package exporter_test
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -33,9 +34,11 @@ type harness struct {
 	dir       string
 	dbPath    string
 	statePath string
+	usageDir  string
 	writeDB   *db.DB
 	logBuf    *bytes.Buffer
 	exp       *exporter.Exporter
+	rawDB     *sql.DB
 }
 
 // newHarness creates a fresh prism.db and an exporter over it. The exporter
@@ -48,7 +51,11 @@ func newHarness(t *testing.T) *harness {
 		dir:       dir,
 		dbPath:    filepath.Join(dir, "prism.db"),
 		statePath: filepath.Join(dir, "exporter-state.json"),
-		logBuf:    &bytes.Buffer{},
+		// A per-test usage dir keeps account resolution hermetic: the
+		// exporter never reads the real ~/.local/state/prism/usage. Tests
+		// that exercise the account dimension write snapshots here.
+		usageDir: filepath.Join(dir, "usage"),
+		logBuf:   &bytes.Buffer{},
 	}
 	h.writeDB = sidecartest.OpenDB(t, h.dbPath)
 	t.Cleanup(func() { _ = h.writeDB.Close() })
@@ -63,6 +70,7 @@ func (h *harness) newExporter() *exporter.Exporter {
 	e, err := exporter.New(exporter.Config{
 		DBPath:     h.dbPath,
 		StatePath:  h.statePath,
+		UsageDir:   h.usageDir,
 		ListenAddr: "127.0.0.1:0",
 		Logger:     log.New(h.logBuf, "", 0),
 		Version:    "test-version",
@@ -186,22 +194,27 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 }
 
 // #2700 shipped exactly two metrics; #2703 adds the six lifecycle and
-// outcome counters on top. #2702 and #2706 own the rest.
-func TestExporter_ShipsExactlyTheEightSpecifiedMetrics(t *testing.T) {
+// outcome counters; #2704 adds the three cost/token counters and the
+// prism_account_info gauge. #2702 and #2706 own the rest.
+func TestExporter_ShipsExactlyTheTwelveSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 	h.writeEvent("tool_call", 0)
 
 	exp := h.scrape(h.exp)
 	want := []string{
+		exporter.MetricAccountInfo,
 		exporter.MetricAgentEventsTotal,
 		exporter.MetricBuildInfo,
 		exporter.MetricDoomLoopsTotal,
 		exporter.MetricEscalationsTotal,
+		exporter.MetricModelCostUSDTotal,
+		exporter.MetricModelTokensTotal,
 		exporter.MetricPermissionDeniedTotal,
 		exporter.MetricReviewVerdictsTotal,
 		exporter.MetricSessionsEndedTotal,
 		exporter.MetricSpawnsTotal,
+		exporter.MetricSpendByProfileUSDTotal,
 	}
 	got := exp.FamilyNames()
 	sort.Strings(want)
@@ -536,6 +549,15 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricEscalationsTotal:      1000,
 		exporter.MetricDoomLoopsTotal:        1000,
 		exporter.MetricPermissionDeniedTotal: 1000,
+		// The #2704 metrics. account_org_id, provider, model_id, kind, and
+		// profile are all bounded at low tens (#2699 section 6); account and
+		// workspace_id on prism_account_info are operator-controlled and
+		// equally bounded. A large-but-finite bound still catches an
+		// accidental unbounded label creeping in later.
+		exporter.MetricModelCostUSDTotal:      1000,
+		exporter.MetricModelTokensTotal:       4000,
+		exporter.MetricSpendByProfileUSDTotal: 1000,
+		exporter.MetricAccountInfo:            1000,
 	}
 	for name, family := range exp.Families {
 		bound, ok := bounds[name]

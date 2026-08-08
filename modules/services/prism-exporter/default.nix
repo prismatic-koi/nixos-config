@@ -9,6 +9,10 @@
 #
 # The exporter reads `$XDG_STATE_HOME/prism/prism.db`, which lives in
 # the user's home, and writes its tail-cursor state file next to it.
+# It also reads the sibling `$XDG_STATE_HOME/prism/usage/` snapshot
+# directory to map an account name to its org ID for the account
+# dimension of the cost counters (#2704); that path resolves the same
+# way `prism.db` does, so no extra flag is needed.
 # A system unit would have to reach across the user boundary to do
 # that; a DynamicUser system unit could not do it at all. So this is
 # a `systemd.user.service`, in the same shape as `prism-restore` in

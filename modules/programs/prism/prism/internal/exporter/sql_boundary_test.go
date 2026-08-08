@@ -50,6 +50,45 @@ var writeKeywords = []string{
 	"BEGIN", "COMMIT", "ROLLBACK", "PRAGMA",
 }
 
+// payloadNumericJSONPaths is the closed allowlist of agent_events.payload
+// JSON fields the exporter may read. #2699 section 5 records payload as
+// "aggregate numbers out, never emit the string": the message body must never
+// leave this surface, but these per-turn scalar fields — the model id and the
+// numbers the cost/token counters need — are the "aggregate numbers" it
+// permits. Every entry here is either a closed-set label ($.model) or a
+// number ($.cost and the four token counts). NONE is a free-text body field;
+// $.text (the message body) is deliberately absent and must stay absent.
+//
+// The exporter reads payload ONLY through JSON_EXTRACT of one of these paths
+// (see CostEventsTailSQL). A bare `payload` read, or a JSON_EXTRACT of any
+// other path, still fails the forbidden-column scan below — the carve-out is
+// scoped to exactly this list. This mirrors the #2720 narrowing of the
+// spawn_inputs whole-table ban to a column-level ban.
+var payloadNumericJSONPaths = []string{
+	"model",
+	"inputTokens",
+	"outputTokens",
+	"cacheReadTokens",
+	"cacheWriteTokens",
+	"cost",
+}
+
+// allowedPayloadExtractRe matches JSON_EXTRACT(payload, '$.<field>') for a
+// field on the allowlist above, with an optional table qualifier
+// (ae.payload). It is used to strip the sanctioned numeric reads before the
+// forbidden-column scan, so an allowlisted extract does not trip the bare
+// `payload` ban while every other use of payload still does.
+var allowedPayloadExtractRe = regexp.MustCompile(
+	`(?i)JSON_EXTRACT\(\s*(?:[a-z_][a-z0-9_]*\.)?payload\s*,\s*'\$\.(?:` +
+		strings.Join(payloadNumericJSONPaths, "|") + `)'\s*\)`)
+
+// stripAllowedPayloadExtracts removes every allowlisted JSON_EXTRACT(payload,
+// …) expression from a statement, so a scan for a bare `payload` read sees
+// only the payload references the exporter is NOT allowed to make.
+func stripAllowedPayloadExtracts(stmt string) string {
+	return allowedPayloadExtractRe.ReplaceAllString(stmt, " ")
+}
+
 // identifier matches a bare SQL identifier so a check on "text" does not
 // fire on the word "context" inside a longer token.
 var identifierRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*`)
@@ -70,7 +109,12 @@ func TestExporterSQL_ReadsNoRawTextBodyColumn(t *testing.T) {
 		t.Fatal("exporter.AllSQL is empty; the boundary test would pass vacuously")
 	}
 	for _, stmt := range exporter.AllSQL {
-		ids := identifiers(stmt)
+		// Strip the sanctioned numeric/model payload extracts first: #2699
+		// section 5 permits "aggregate numbers out" of agent_events.payload
+		// (see payloadNumericJSONPaths). Any other read of payload — a bare
+		// column, or a non-allowlisted JSON path — survives the strip and is
+		// caught below.
+		ids := identifiers(stripAllowedPayloadExtracts(stmt))
 		for _, forbidden := range forbiddenColumns {
 			for _, id := range ids {
 				if id == forbidden {
@@ -78,6 +122,46 @@ func TestExporterSQL_ReadsNoRawTextBodyColumn(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// TestExporterSQL_PayloadIsReadOnlyViaAllowlistedNumericExtract pins the
+// #2704 narrowing: agent_events.payload may be read, but ONLY through
+// JSON_EXTRACT of an allowlisted numeric/model field. A bare payload read or
+// a JSON path outside the allowlist must still fail. This is the payload
+// analogue of TestExporterSource_WholeTableBanIsLimitedToSpawnInputs (#2720).
+func TestExporterSQL_PayloadIsReadOnlyViaAllowlistedNumericExtract(t *testing.T) {
+	// 1. The allowlist itself must contain no free-text body field. $.text is
+	//    the message body; if it ever appears here the carve-out has been
+	//    widened into a content leak.
+	for _, path := range payloadNumericJSONPaths {
+		for _, banned := range []string{"text", "payload", "prompt"} {
+			if strings.EqualFold(path, banned) {
+				t.Errorf("payloadNumericJSONPaths contains the free-text field %q; the carve-out is for aggregate numbers only (#2699 section 5)", path)
+			}
+		}
+	}
+
+	// 2. After stripping the allowlisted extracts, no statement may name
+	//    payload at all — that would be a bare read or a non-allowlisted path.
+	for _, stmt := range exporter.AllSQL {
+		for _, id := range identifiers(stripAllowedPayloadExtracts(stmt)) {
+			if id == "payload" {
+				t.Errorf("a statement reads payload outside the allowlisted JSON_EXTRACT form (bare column or non-allowlisted path):\n%s", stmt)
+			}
+		}
+	}
+
+	// 3. The carve-out must not be vacuous: at least one statement must read
+	//    payload through the allowlisted form, or this test proves nothing.
+	found := false
+	for _, stmt := range exporter.AllSQL {
+		if allowedPayloadExtractRe.MatchString(stmt) {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("no statement reads payload via the allowlisted JSON_EXTRACT form; the carve-out test is vacuous")
 	}
 }
 

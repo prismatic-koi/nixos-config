@@ -40,6 +40,7 @@ import (
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/metrics"
 	"github.com/prismatic-koi/prism/internal/tailcursor"
+	"github.com/prismatic-koi/prism/internal/usage"
 )
 
 // Version is the version string reported by prism_exporter_build_info. It
@@ -100,6 +101,13 @@ type Config struct {
 	DBPath string
 	// StatePath is the tail-cursor state file. Required.
 	StatePath string
+	// UsageDir is the prism usage-snapshot directory
+	// (~/.local/state/prism/usage), read at scrape time to map an account
+	// name to its org ID for the #2704 account dimension. Optional: when
+	// empty, New resolves it from usage.DefaultDir(), and if that also fails
+	// every account folds to account_org_id="unknown" rather than the scrape
+	// failing.
+	UsageDir string
 	// ListenAddr is the "host:port" the HTTP server binds. Required.
 	// A port of 0 binds an ephemeral port — Addr reports the real one.
 	ListenAddr string
@@ -123,6 +131,7 @@ type Exporter struct {
 
 	eventsTotal *metrics.CounterVec
 	lifecycle   *lifecycleCounters
+	cost        *costCounters
 	tailers     []tailcursor.Advancer
 
 	// mu serialises the tail advance and the state write. Both the scrape
@@ -246,7 +255,34 @@ func New(cfg Config) (*Exporter, error) {
 		return nil, fmt.Errorf("exporter: build lifecycle events tailer: %w", err)
 	}
 
-	e.tailers = []tailcursor.Advancer{tailer, lifecycleTailer}
+	// The three #2704 cost and token counters, plus the prism_account_info
+	// join gauge. A third tailer over agent_events, with its own cursor,
+	// reading only the msg_assistant rows that carry token usage. The account
+	// resolver reads the usage snapshots at scrape time (cost.go).
+	usageDir := cfg.UsageDir
+	if usageDir == "" {
+		// Best effort: a failure here is not fatal. An empty usageDir makes
+		// every account resolve to "unknown" rather than failing the daemon.
+		if dir, dirErr := usage.DefaultDir(); dirErr == nil {
+			usageDir = dir
+		} else {
+			logger.Printf("cannot resolve the usage-snapshot directory (%v); "+
+				"account attribution will report account_org_id=\"unknown\" until --usage-dir is set", dirErr)
+		}
+	}
+	e.cost = newCostCounters(e.registry, &accountResolver{usageDir: usageDir})
+	costTailer, err := tailcursor.New[costEvent](
+		TailerCostEvents,
+		costEventSource{conn: conn},
+		e.cost.apply,
+		tailcursor.WithLogger(logger),
+	)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("exporter: build cost events tailer: %w", err)
+	}
+
+	e.tailers = []tailcursor.Advancer{tailer, lifecycleTailer, costTailer}
 
 	return e, nil
 }
