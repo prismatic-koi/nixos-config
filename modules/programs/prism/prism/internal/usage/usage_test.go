@@ -99,6 +99,91 @@ func TestWrite_FormatMatchesIssue2537(t *testing.T) {
 	}
 }
 
+// TestWrite_OrganizationAndWorkspaceIDRoundTrip covers the functional ACs of
+// issue #2713: both fields persist to disk and round-trip back through
+// ReadAll, and a snapshot that carries neither omits both from the JSON
+// rather than writing them as empty strings.
+func TestWrite_OrganizationAndWorkspaceIDRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	snap := fullSnapshot()
+	snap.OrganizationID = "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6"
+	snap.WorkspaceID = "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD"
+	if err := NewStore(dir).Write(snap); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	rows, err := ReadAll(dir)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Snapshot == nil {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if got := rows[0].Snapshot.OrganizationID; got != snap.OrganizationID {
+		t.Errorf("OrganizationID = %q, want %q", got, snap.OrganizationID)
+	}
+	if got := rows[0].Snapshot.WorkspaceID; got != snap.WorkspaceID {
+		t.Errorf("WorkspaceID = %q, want %q", got, snap.WorkspaceID)
+	}
+}
+
+// TestWrite_OrganizationAndWorkspaceIDOmittedWhenAbsent covers the edge-case
+// AC: a snapshot with neither field set must not write them as
+// present-and-empty.
+func TestWrite_OrganizationAndWorkspaceIDOmittedWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	if err := NewStore(dir).Write(fullSnapshot()); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "work.json"))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range []string{"organization_id", "workspace_id"} {
+		if _, present := got[key]; present {
+			t.Errorf("absent field %q must be omitted, but it is present in %s", key, raw)
+		}
+	}
+}
+
+// TestReadAll_PreExistingFileWithNoOrgFieldsLoadsCleanly covers the edge-case
+// AC: a snapshot file written before this change (no org/workspace fields)
+// must load without error and report both fields as absent, not error out.
+func TestReadAll_PreExistingFileWithNoOrgFieldsLoadsCleanly(t *testing.T) {
+	dir := t.TempDir()
+	// Deliberately hand-written, mirroring a pre-#2713 on-disk file: no
+	// organization_id / workspace_id keys at all.
+	preExisting := `{
+		"captured_at": "2026-08-02T23:43:28Z",
+		"account": "work",
+		"unified_status": "allowed_warning"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "work.json"), []byte(preExisting), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	rows, err := ReadAll(dir)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Snapshot == nil {
+		t.Fatalf("rows = %+v", rows)
+	}
+	if rows[0].ReadErr != nil {
+		t.Errorf("ReadErr = %v, want nil for a valid pre-existing file", rows[0].ReadErr)
+	}
+	if rows[0].Snapshot.OrganizationID != "" {
+		t.Errorf("OrganizationID = %q, want absent", rows[0].Snapshot.OrganizationID)
+	}
+	if rows[0].Snapshot.WorkspaceID != "" {
+		t.Errorf("WorkspaceID = %q, want absent", rows[0].Snapshot.WorkspaceID)
+	}
+}
+
 // TestWrite_UtilizationStaysRawFraction guards the "do NOT multiply by 100"
 // rule: the display legs (#2540) scale, the store does not.
 func TestWrite_UtilizationStaysRawFraction(t *testing.T) {
