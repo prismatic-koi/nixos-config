@@ -87,6 +87,12 @@ var knownEventTypes = map[string]struct{}{
 	"permission_denied":  {},
 	"provider_error":     {},
 	"session.escalated":  {},
+	// review.verdict_pass / review.verdict_fail are written by
+	// internal/review/monitor.go persistReviewOutcome (#2703): one durable
+	// event per verdict-producing review round, feeding
+	// prism_review_verdicts_total.
+	"review.verdict_pass": {},
+	"review.verdict_fail": {},
 	// session.spawn_intent is written at the SpawnSession chokepoint, so it
 	// occurs on EVERY spawn through every front door. Leaving it out put the
 	// highest-frequency in-tree event type into the "other" bucket, which

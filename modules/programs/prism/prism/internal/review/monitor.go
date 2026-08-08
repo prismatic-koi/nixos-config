@@ -22,10 +22,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/proglog"
 	"github.com/prismatic-koi/prism/internal/promptdelivery"
+)
+
+// Event types written by persistReviewOutcome (#2703). Each round that
+// reaches a real pass/fail verdict writes exactly one of these as a durable
+// agent_events row, so the exporter's tail cursor can count
+// prism_review_verdicts_total{verdict} without ever reading the free-form
+// review report text. The verdict lives in the TYPE, not the payload — the
+// exporter must never read agent_events.payload (#2699 section 5), and
+// folding the verdict into the type is the same trick eventtypes.go already
+// uses for the closed label set.
+const (
+	// EventReviewVerdictPass is written when every review agent in the round
+	// passed.
+	EventReviewVerdictPass = "review.verdict_pass"
+	// EventReviewVerdictFail is written when at least one review agent in
+	// the round did not pass.
+	EventReviewVerdictFail = "review.verdict_fail"
 )
 
 // MonitorOpts configures the group-completion monitor.
@@ -366,6 +385,26 @@ func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult,
 		return
 	}
 	proglog.Infof("[prism monitor-review] persisted review verdict=%s pass=%d fail=%d on worker spawn_outcome (iid=%s)\n", verdict, passCount, failCount, sess.InstanceID)
+
+	// Durable event for the exporter's tail cursor (#2703). Best-effort:
+	// telemetry must never break the review-outcome path it rides alongside.
+	instanceID := sess.InstanceID
+	eventType := EventReviewVerdictFail
+	if allPassed {
+		eventType = EventReviewVerdictPass
+	}
+	if err := d.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: workerSession,
+		Repo:        sess.Repo,
+		Worktree:    sess.Worktree,
+		InstanceID:  &instanceID,
+		Type:        eventType,
+		Payload:     "{}",
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		proglog.Warnf("[prism monitor-review] warning: write %s event (iid=%s): %v\n", eventType, sess.InstanceID, err)
+	}
 }
 
 // forceTerminateStuckMembers walks the given session names and transitions any

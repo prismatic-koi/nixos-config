@@ -166,8 +166,10 @@ func TestExporter_HostileEventTypeCannotCorruptTheExposition(t *testing.T) {
 	if _, ok := exp.Families["prism_injected_total"]; ok {
 		t.Fatal("a hostile event type injected a whole new metric family into the exposition")
 	}
-	if got := len(exp.FamilyNames()); got != 2 {
-		t.Fatalf("exposition has %d families, want 2: %v", got, exp.FamilyNames())
+	// 2 from #2700 (build_info, agent_events_total) + 6 from #2703's
+	// lifecycle and outcome counters.
+	if got := len(exp.FamilyNames()); got != 8 {
+		t.Fatalf("exposition has %d families, want 8: %v", got, exp.FamilyNames())
 	}
 }
 
