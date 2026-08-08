@@ -53,6 +53,7 @@
         enable = true;
         notifyOnWake = true;
       };
+      prismExporter.enable = true;
       syncthing = {
         enable = true;
         obsidian.enable = true;

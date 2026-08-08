@@ -11,6 +11,7 @@
     ./polkit.nix
     ./power-profiles-daemon.nix
     ./printer.nix
+    ./prism-exporter
     ./syncthing
     ./udiskie.nix
   ];

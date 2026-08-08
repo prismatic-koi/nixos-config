@@ -55,6 +55,7 @@
         notifyOnWake = true;
       };
       blocky.enable = false; # for roaming, slows startup at home
+      prismExporter.enable = true;
       syncthing = {
         enable = true;
         obsidian.enable = true;

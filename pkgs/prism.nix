@@ -13,9 +13,17 @@
   runChecks ? false,
 }:
 
+let
+  # Single source of truth for the version string. It names the derivation
+  # and it is the value `prism_exporter_build_info{version=...}` reports on
+  # the `prism exporter` daemon (issue #2700). Without the ldflag below, that
+  # label reads "dev" on every machine, and a build-info metric whose stated
+  # purpose is "the labels carry the value" carries a constant instead.
+  prismVersion = "0.1.0";
+in
 buildGoModule {
   pname = "prism";
-  version = "0.1.0";
+  version = prismVersion;
 
   src = ../modules/programs/prism/prism;
 
@@ -94,6 +102,7 @@ buildGoModule {
       "-X github.com/prismatic-koi/prism/internal/review.reviewGoSHA=${
         builtins.substring 0 12 reviewGoHash
       }"
+      "-X github.com/prismatic-koi/prism/internal/exporter.Version=${prismVersion}"
     ];
 
   # tmux is NOT in nativeCheckInputs.
