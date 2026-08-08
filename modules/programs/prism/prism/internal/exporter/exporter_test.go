@@ -525,8 +525,8 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricAgentEventsTotal: exporter.MaxAgentEventsSeries,
 		exporter.MetricBuildInfo:        1,
 		// The six #2703 counters have no closed-set enforcement of their own
-		// today: repo, agent_role, isolation_mode, end_state, and verdict are
-		// all pre-sanctioned safe labels under #2699 section 6, so there is
+		// today: repo, agent_role, isolation_mode, end_state, profile, and
+		// verdict are all pre-sanctioned safe labels under #2699 section 6, so there is
 		// no fold to bound them against a hostile value the way
 		// agent_events.type needs one. A large-but-finite bound here still
 		// catches an accidental unbounded label creeping in later.

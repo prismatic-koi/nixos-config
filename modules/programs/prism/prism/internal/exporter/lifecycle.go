@@ -18,10 +18,11 @@ import (
 // The dispatch below is closed-set by construction: (*lifecycleCounters).apply
 // only ever calls Inc on one of the six CounterVecs constructed in New, and
 // every label value handed to Inc is either a value already sanctioned as a
-// safe label by #2699 section 6 (repo, agent_role, isolation_mode, end_state)
-// or a value drawn from a two-element closed set (verdict). prism_spawns_total
-// does NOT carry a profile label — see the comment on LifecycleEventsTailSQL
-// in sql.go for why.
+// safe label by #2699 section 6 (repo, agent_role, isolation_mode, end_state,
+// profile) or a value drawn from a two-element closed set (verdict).
+// prism_spawns_total DOES carry a profile label (issue #2720) — see the
+// comment on LifecycleEventsTailSQL in sql.go for the boundary-test
+// narrowing that made this safe.
 
 // Metric names for the six #2703 counters.
 const (
@@ -78,13 +79,13 @@ type lifecycleCounters struct {
 // newLifecycleCounters constructs and registers the six #2703 CounterVecs.
 func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 	lc := &lifecycleCounters{
-		// profile is deliberately not a label here — see the comment on
-		// LifecycleEventsTailSQL for why: its only durable source is
-		// spawn_inputs, which is off-limits to this package.
+		// profile is sourced from spawn_inputs.profile_name via the
+		// LifecycleEventsTailSQL join (issue #2720); NULL folds to "default"
+		// at scan time in sql.go, never the empty string.
 		spawnsTotal: metrics.NewCounterVec(
 			MetricSpawnsTotal,
-			"Total prism spawn attempts observed by the exporter, by repo, agent role, and isolation mode.",
-			[]string{"repo", "agent_role", "isolation_mode"},
+			"Total prism spawn attempts observed by the exporter, by repo, agent role, isolation mode, and profile.",
+			[]string{"repo", "agent_role", "isolation_mode", "profile"},
 		),
 		sessionsEndedTotal: metrics.NewCounterVec(
 			MetricSessionsEndedTotal,
@@ -128,7 +129,7 @@ func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 func (lc *lifecycleCounters) apply(ev lifecycleEvent) error {
 	switch ev.Type {
 	case session.EventSpawnIntent:
-		return lc.spawnsTotal.Inc(ev.Repo, ev.AgentRole, ev.IsolationMode)
+		return lc.spawnsTotal.Inc(ev.Repo, ev.AgentRole, ev.IsolationMode, ev.ProfileName)
 	case db.SessionReapEventType:
 		return lc.sessionsEndedTotal.Inc(ev.Repo, ev.AgentRole, ev.EndState)
 	case eventTypeEscalated:

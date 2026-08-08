@@ -17,10 +17,12 @@ import (
 	"github.com/prismatic-koi/prism/internal/session"
 )
 
-// spawnFixture wires up a sessions row (agent_role) and an agent_status row
-// (isolation_mode) sharing one instance_id, then writes a session.spawn_intent
-// event referencing it — the shape LifecycleEventsTailSQL's join expects.
-func (h *harness) spawnFixture(repo, agentRole, isolationMode string) (instanceID, sessionName string) {
+// spawnFixture wires up a sessions row (agent_role), an agent_status row
+// (isolation_mode), and a spawn_inputs row (profile_name) sharing one
+// instance_id, then writes a session.spawn_intent event referencing it —
+// the shape LifecycleEventsTailSQL's join expects. Pass "" for profileName
+// to leave spawn_inputs.profile_name NULL (issue #2720's default-fold AC).
+func (h *harness) spawnFixture(repo, agentRole, isolationMode, profileName string) (instanceID, sessionName string) {
 	h.t.Helper()
 	instanceID = uuid.New().String()
 	sessionName = "prism-test@" + instanceID[:8]
@@ -44,6 +46,17 @@ func (h *harness) spawnFixture(repo, agentRole, isolationMode string) (instanceI
 	}
 	if err := h.writeDB.SetIsolationMode(sessionName, isolationMode); err != nil {
 		h.t.Fatalf("SetIsolationMode: %v", err)
+	}
+
+	si := db.SpawnInputs{
+		InstanceID: instanceID,
+		CreatedAt:  time.Now().UnixMilli(),
+	}
+	if profileName != "" {
+		si.ProfileName = &profileName
+	}
+	if err := h.writeDB.InsertSpawnInputs(si); err != nil {
+		h.t.Fatalf("InsertSpawnInputs: %v", err)
 	}
 
 	iid := instanceID
@@ -87,17 +100,35 @@ func TestExporter_SpawnsTotalIncrementsOnSpawnIntent(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 
-	h.spawnFixture("nixos-config", "worker", "bwrap")
-	h.spawnFixture("nixos-config", "worker", "bwrap")
-	h.spawnFixture("nixos-config", "coordinator", "host")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	h.spawnFixture("nixos-config", "coordinator", "host", "")
 
-	labels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap"}
+	labels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "max"}
 	if got := counterValue(t, h, exporter.MetricSpawnsTotal, labels); got != 2 {
 		t.Errorf("%s%v = %v, want 2", exporter.MetricSpawnsTotal, labels, got)
 	}
-	coordLabels := map[string]string{"repo": "nixos-config", "agent_role": "coordinator", "isolation_mode": "host"}
+	coordLabels := map[string]string{"repo": "nixos-config", "agent_role": "coordinator", "isolation_mode": "host", "profile": "default"}
 	if got := counterValue(t, h, exporter.MetricSpawnsTotal, coordLabels); got != 1 {
 		t.Errorf("%s%v = %v, want 1", exporter.MetricSpawnsTotal, coordLabels, got)
+	}
+}
+
+// ── AC (edge-case): a NULL profile_name is labelled "default", not "" ─────
+
+func TestExporter_SpawnsTotalLabelsNullProfileAsDefault(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	h.spawnFixture("nixos-config", "worker", "bwrap", "")
+
+	labels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "default"}
+	if got := counterValue(t, h, exporter.MetricSpawnsTotal, labels); got != 1 {
+		t.Errorf("%s%v = %v, want 1", exporter.MetricSpawnsTotal, labels, got)
+	}
+	emptyLabels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": ""}
+	if got := counterValue(t, h, exporter.MetricSpawnsTotal, emptyLabels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 (NULL profile_name must fold to \"default\", not empty string)", exporter.MetricSpawnsTotal, emptyLabels, got)
 	}
 }
 
@@ -105,7 +136,7 @@ func TestExporter_SessionsEndedTotalIncrementsOnSessionReaped(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 
-	instanceID, sessionName := h.spawnFixture("nixos-config", "worker", "bwrap")
+	instanceID, sessionName := h.spawnFixture("nixos-config", "worker", "bwrap", "max")
 	h.endFixture(instanceID, sessionName, "finished")
 
 	labels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "end_state": "finished"}
@@ -241,10 +272,10 @@ func TestExporter_LifecycleCountersSurviveRestart(t *testing.T) {
 	h.writeEvent("permission_denied", 0)
 	h.writeEvent("session.escalated", 0)
 	h.writeEvent(review.EventReviewVerdictPass, 0)
-	h.spawnFixture("nixos-config", "worker", "bwrap")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
 
 	labels := map[string]string{"repo": "nixos-config"}
-	spawnLabels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap"}
+	spawnLabels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "max"}
 	verdictLabels := map[string]string{"verdict": "pass"}
 
 	before := struct {
@@ -297,7 +328,7 @@ func TestExporter_LifecycleCountersCarryNoUnboundedLabel(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 
-	h.spawnFixture("nixos-config", "worker", "bwrap")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
 	h.writeEvent("session.escalated", 0)
 	h.writeEvent("doom_loop_detected", 0)
 	h.writeEvent("permission_denied", 0)
