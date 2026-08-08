@@ -55,14 +55,20 @@ const (
 	// exactly one per tailed row, so #2699 section 3 is not in tension with
 	// it.
 	//
-	// spawn_inputs is deliberately NOT joined, even though it holds
-	// profile_name: the table also holds prompt_text and extras, and
-	// sql_boundary_test.go's unambiguous-name check bans the bare table name
-	// spawn_inputs anywhere in this package's source, not just its sensitive
-	// columns. prism_spawns_total therefore carries {repo, agent_role,
-	// isolation_mode} and NOT {profile}. Adding a profile label needs a
-	// durable, non-spawn_inputs source, which is a db.go schema change and
-	// out of this package's footprint.
+	// spawn_inputs IS now joined (issue #2720), for profile_name only. It
+	// was excluded in #2703/PR #2718 because sql_boundary_test.go's
+	// unambiguous-name check banned the bare table name spawn_inputs
+	// anywhere in this package's source — stricter than the spec it
+	// enforced. #2699 section 5 bans two COLUMNS of spawn_inputs
+	// (prompt_text, extras), not the table, and both are already caught by
+	// the separate forbiddenColumns identifier scan. #2699 section 6 lists
+	// profile as an explicitly safe label. #2720 narrowed the boundary test
+	// to the column-level ban that the spec actually calls for; see the
+	// comment at that edit site (sql_boundary_test.go) for why the other
+	// three whole-table bans (harness_frames, bus_messages,
+	// pending_replay_deliveries) are unaffected and remain in force — those
+	// tables hold nothing but free-text bodies, so a blanket ban is correct
+	// for them and wrong for spawn_inputs.
 	//
 	// The join is safe against the 90-day prune. sessions and agent_events
 	// are pruned inside the SAME Prune() transaction (internal/db/
@@ -74,15 +80,24 @@ const (
 	// session row is gone. agent_status rows are pruned only once their own
 	// ended_at is old AND no live sessions row shares the instance_id — a
 	// strictly later condition than the sessions prune — so the same
-	// argument covers it.
+	// argument covers it. spawn_inputs is declared
+	// `ON DELETE CASCADE REFERENCES sessions(instance_id)` (internal/db/
+	// db.go) and is deleted, if at all, by the very same
+	// `DELETE FROM sessions ...` statement in the same Prune() transaction
+	// — there is no separate spawn_inputs DELETE and no separate condition
+	// to check, so the sessions argument above applies to it unchanged: a
+	// spawn_inputs row cannot vanish while its agent_events row is still
+	// ahead of the cursor.
 	//
 	// None of the projected columns appear in the #2699 section 5 forbidden
 	// list: repo, type are on agent_events; agent_role, end_state are on
-	// sessions; isolation_mode is on agent_status.
-	LifecycleEventsTailSQL = `SELECT ae.rowid, ae.type, ae.repo, s.agent_role, s.end_state, ast.isolation_mode ` +
+	// sessions; isolation_mode is on agent_status; profile_name is on
+	// spawn_inputs and is not prompt_text or extras.
+	LifecycleEventsTailSQL = `SELECT ae.rowid, ae.type, ae.repo, s.agent_role, s.end_state, ast.isolation_mode, si.profile_name ` +
 		`FROM agent_events ae ` +
 		`LEFT JOIN sessions s ON s.instance_id = ae.instance_id ` +
 		`LEFT JOIN agent_status ast ON ast.instance_id = ae.instance_id ` +
+		`LEFT JOIN spawn_inputs si ON si.instance_id = ae.instance_id ` +
 		`WHERE ae.rowid > ? ORDER BY ae.rowid ASC LIMIT ?`
 )
 
@@ -142,6 +157,11 @@ type lifecycleEvent struct {
 	AgentRole     string
 	EndState      string
 	IsolationMode string
+	// ProfileName is the resolved label value: spawn_inputs.profile_name, or
+	// "default" when that column is NULL (no --profile flag was passed).
+	// The NULL->default fold happens in Records below, at scan time, so
+	// lifecycle.go's dispatch never has to special-case NULL.
+	ProfileName string
 }
 
 // lifecycleEventSource is the tailcursor.Source over agent_events used by
@@ -170,17 +190,24 @@ func (s lifecycleEventSource) Records(ctx context.Context, afterID int64, limit 
 	out := make([]tailcursor.Record[lifecycleEvent], 0, limit)
 	for rows.Next() {
 		var (
-			rec                                tailcursor.Record[lifecycleEvent]
-			repo                               string
-			agentRole, endState, isolationMode sql.NullString
+			rec                                             tailcursor.Record[lifecycleEvent]
+			repo                                            string
+			agentRole, endState, isolationMode, profileName sql.NullString
 		)
-		if err := rows.Scan(&rec.ID, &rec.Value.Type, &repo, &agentRole, &endState, &isolationMode); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.Value.Type, &repo, &agentRole, &endState, &isolationMode, &profileName); err != nil {
 			return nil, fmt.Errorf("exporter: scan lifecycle event row: %w", err)
 		}
 		rec.Value.Repo = repo
 		rec.Value.AgentRole = agentRole.String
 		rec.Value.EndState = endState.String
 		rec.Value.IsolationMode = isolationMode.String
+		// A spawn with no --profile flag has profile_name NULL. Label it
+		// "default", not the empty string (#2720 AC).
+		if profileName.Valid {
+			rec.Value.ProfileName = profileName.String
+		} else {
+			rec.Value.ProfileName = "default"
+		}
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {

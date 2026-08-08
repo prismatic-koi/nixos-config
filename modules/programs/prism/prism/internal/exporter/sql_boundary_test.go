@@ -164,7 +164,21 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 	// Only the unambiguous names. "text", "title", "error", and "extras"
 	// are ordinary English words that appear in log messages, so they are
 	// checked inside SQL statements only (see the tests above).
-	unambiguous := []string{"prompt_text", "rubric_breakdown", "issue_ref", "harness_frames", "spawn_inputs", "pending_replay_deliveries", "bus_messages"}
+	//
+	// spawn_inputs is deliberately NOT in this list (issue #2720). The other
+	// three whole-table entries — harness_frames, bus_messages, and
+	// pending_replay_deliveries — exist to hold free-text bodies, so every
+	// column in them is sensitive and a blanket table-name ban is correct.
+	// spawn_inputs is mostly closed-set operator config (profile_name,
+	// isolation_flag, model_flag, agent_flag, ...) with exactly two free-text
+	// columns among them — prompt_text and extras — and both of those are
+	// already caught by the forbiddenColumns identifier scan above. Banning
+	// the bare table name added nothing for the real hazard and instead made
+	// profile_name (an #2699 section 6 sanctioned safe label) unreachable
+	// from this package. Do NOT restore spawn_inputs to this list as a
+	// "security fix" without re-reading #2699 section 5 and #2720 first —
+	// the column-level ban below is the correct granularity for this table.
+	unambiguous := []string{"prompt_text", "rubric_breakdown", "issue_ref", "harness_frames", "pending_replay_deliveries", "bus_messages"}
 
 	for _, lit := range packageStringLiterals(t) {
 		upper := strings.ToUpper(lit)
@@ -179,6 +193,46 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 		for _, name := range unambiguous {
 			if strings.Contains(lower, name) {
 				t.Errorf("a string literal names %q, which the exporter must never read (#2699 section 5):\n%s", name, lit)
+			}
+		}
+	}
+}
+
+// TestExporterSource_WholeTableBanIsLimitedToSpawnInputs is the #2720
+// security AC: harness_frames, bus_messages, and pending_replay_deliveries
+// remain banned as whole tables (they hold nothing but free-text bodies),
+// while spawn_inputs — narrowed to a column-level ban — is reachable by
+// name. This pins the narrowing to exactly one table so a future edit that
+// widens it again is caught here, not discovered downstream.
+func TestExporterSource_WholeTableBanIsLimitedToSpawnInputs(t *testing.T) {
+	stillBanned := []string{"harness_frames", "bus_messages", "pending_replay_deliveries"}
+	for _, lit := range packageStringLiterals(t) {
+		lower := strings.ToLower(lit)
+		for _, name := range stillBanned {
+			if strings.Contains(lower, name) {
+				t.Errorf("a string literal names %q, which must remain banned as a whole table (#2699 section 5, #2720):\n%s", name, lit)
+			}
+		}
+	}
+
+	// spawn_inputs itself must be reachable — the whole point of #2720 — but
+	// its two sensitive columns must still be unreadable, enforced by the
+	// forbiddenColumns scan in TestExporterSQL_ReadsNoRawTextBodyColumn.
+	foundSpawnInputs := false
+	for _, stmt := range exporter.AllSQL {
+		if strings.Contains(strings.ToLower(stmt), "spawn_inputs") {
+			foundSpawnInputs = true
+		}
+	}
+	if !foundSpawnInputs {
+		t.Error("expected at least one statement in exporter.AllSQL to name spawn_inputs (profile_name enrichment, #2720); found none")
+	}
+	for _, forbidden := range []string{"prompt_text", "extras"} {
+		for _, stmt := range exporter.AllSQL {
+			for _, id := range identifiers(stmt) {
+				if id == forbidden {
+					t.Errorf("statement reads the forbidden spawn_inputs column %q:\n%s", forbidden, stmt)
+				}
 			}
 		}
 	}
