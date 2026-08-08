@@ -31,7 +31,7 @@ type sessionMetrics struct {
 
 	// EventCost is the sum of per-turn costs reported directly in the agent
 	// SSE event payload (MsgAssistant.Cost). It is used as a fallback when the
-	// model is not present in the local modelCosts pricing table — for example,
+	// model is not present in the pricing.ModelCosts table — for example,
 	// openrouter/* models that are billed at rates not known to this client.
 	EventCost float64
 
