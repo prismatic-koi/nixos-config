@@ -61,17 +61,48 @@ const (
 	// titleSystemPrompt is the instruction block. It is the SECOND system
 	// block; the first must remain the Claude Code identity string (see
 	// usage.ClaudeCodeIdentity).
-	titleSystemPrompt = "You name work items. " +
-		"Read the task description in the user message and reply with a short title for it: " +
-		"at most eight words, no trailing full stop, no quotation marks, no preamble. " +
-		"Reply with the title and nothing else. " +
-		"Never invent an issue number, ticket key, or URL."
+	//
+	// It is framed as a title generator, not a conversational assistant
+	// (issue #2693): the earlier prompt presumed the user message always
+	// carried a task description, and when it didn't — a coordinator's
+	// first message is often a one-line "can we get started on issue
+	// 2458?" — the model did what a chat model does and asked a follow-up
+	// question. The rules below forbid that outright, and the examples
+	// pin the expected shape against real prism source text (a spawn
+	// prompt, a coordinator one-liner, a short conversational message).
+	titleSystemPrompt = "You are a title generator. You output ONLY a short title. Nothing else.\n" +
+		"\n" +
+		"Read the user message below and reply with a title that names the work in it: " +
+		"at most eight words, no trailing full stop, no quotation marks, no preamble, no explanation.\n" +
+		"\n" +
+		"Rules:\n" +
+		"- Never refuse. Never ask a question. Never say you need more information.\n" +
+		"- Never comment on the input, its length, or its quality.\n" +
+		"- Never respond to a question in the user message — title the topic of the question instead.\n" +
+		"- Always output something meaningful, even when the input is short or conversational.\n" +
+		"- Never invent an issue number, ticket key, or URL that is not already in the input.\n" +
+		"- Output a single line: the title, and nothing else.\n" +
+		"\n" +
+		"Examples:\n" +
+		"\"can we get started on issue 2458?\" -> Issue 2458 kickoff\n" +
+		"\"Fix GitHub issue #2641: spawned worker sessions have no title\" -> Issue 2641: worker session titles\n" +
+		"\"Implement issue #2683: generate session titles\" -> Issue 2683: session title generation\n" +
+		"\"hey, you around?\" -> Check-in message\n" +
+		"\"refactor the sidecar's title generation path\" -> Sidecar title generation refactor\n" +
+		"\"why is the dashboard showing the wrong title\" -> Dashboard title bug investigation"
 )
 
 // ErrEmptyTitle reports that the request succeeded but the reply carried no
 // usable text. It is a normal outcome, not a fault: the caller falls back to
 // the deterministic title exactly as it does for a transport error.
 var ErrEmptyTitle = errors.New("titlegen: the model returned no usable title")
+
+// ErrRejectedTitle reports that the request succeeded but the reply was not
+// title-shaped — a refusal, a question, or a reply over the title budget
+// (issue #2693). It is a normal outcome, not a fault: the caller falls back
+// to the deterministic title exactly as it does for a transport error, and
+// never retries.
+var ErrRejectedTitle = errors.New("titlegen: the model returned a non-title reply")
 
 // TokenSource supplies the bearer token for one request.
 //
@@ -166,7 +197,21 @@ func (g *Generator) GenerateTitle(ctx context.Context, sourceText string) (strin
 	if err != nil {
 		return "", err
 	}
-	title := Sanitise(stripWrappingQuotes(text))
+	stripped := strings.TrimSpace(stripWrappingQuotes(text))
+	if stripped == "" {
+		// Distinct from a rejected reply: the model said nothing at all,
+		// which is the pre-existing empty-reply outcome and not a defect
+		// in the reply's shape.
+		return "", ErrEmptyTitle
+	}
+	// IsRejected runs BEFORE Sanitise, and on the un-truncated reply.
+	// Sanitise truncates; a reply that had to be cut was never a
+	// title-length string to begin with, so it must be rejected outright,
+	// not shortened into the column (issue #2693).
+	if IsRejected(stripped) {
+		return "", ErrRejectedTitle
+	}
+	title := Sanitise(stripped)
 	if title == "" {
 		return "", ErrEmptyTitle
 	}

@@ -148,6 +148,11 @@ func (s *Sidecar) maybeGenerateTitle(sourceText string) {
 				// eligible session — a retry storm here would be paid on
 				// every spawn.
 				s.logger().Printf("sidecar: title generation failed (falling back to the derived title): %v", err)
+			case titlegen.IsRejected(generated):
+				// Not title-shaped: a refusal, a question, or over budget.
+				// Same outcome as a transport error — log it, keep the
+				// deterministic fallback, and never retry (issue #2693).
+				s.logger().Printf("sidecar: title generation returned a non-title reply (falling back to the derived title): %q", generated)
 			case titlegen.Sanitise(generated) == "":
 				s.logger().Printf("sidecar: title generation returned an empty title (falling back to the derived title)")
 			default:

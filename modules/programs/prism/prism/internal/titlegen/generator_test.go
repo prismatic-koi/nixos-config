@@ -149,19 +149,37 @@ func TestGenerateTitle_SanitisesModelOutput(t *testing.T) {
 	}
 }
 
-// TestGenerateTitle_TruncatesToMaxTitleRunes verifies a chatty model cannot
-// produce a title wider than the dashboard column budget.
-func TestGenerateTitle_TruncatesToMaxTitleRunes(t *testing.T) {
+// TestGenerateTitle_OverBudgetReplyIsRejected verifies a chatty, over-budget
+// reply is rejected rather than truncated into the title column (issue
+// #2693): truncation is a display guard, not a validity check.
+func TestGenerateTitle_OverBudgetReplyIsRejected(t *testing.T) {
 	long := strings.Repeat("very long title ", 40)
 	g := newTestGenerator(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, sseBody(long))
 	})
 	got, err := g.GenerateTitle(context.Background(), "task")
-	if err != nil {
-		t.Fatalf("GenerateTitle: %v", err)
+	if !errors.Is(err, ErrRejectedTitle) {
+		t.Errorf("err = %v, want ErrRejectedTitle", err)
 	}
-	if n := len([]rune(got)); n > MaxTitleRunes {
-		t.Errorf("GenerateTitle returned %d runes, want <= %d", n, MaxTitleRunes)
+	if got != "" {
+		t.Errorf("GenerateTitle returned %q alongside ErrRejectedTitle, want empty", got)
+	}
+}
+
+// TestGenerateTitle_RefusalReplyIsRejected covers the observed failure from
+// the issue directly: the model asks a clarifying question instead of
+// producing a title.
+func TestGenerateTitle_RefusalReplyIsRejected(t *testing.T) {
+	refusal := "I need a task description to create a title. Could you share what issue 2458 is about?"
+	g := newTestGenerator(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, sseBody(refusal))
+	})
+	got, err := g.GenerateTitle(context.Background(), "can we get started on issue 2458?")
+	if !errors.Is(err, ErrRejectedTitle) {
+		t.Errorf("err = %v, want ErrRejectedTitle", err)
+	}
+	if got != "" {
+		t.Errorf("GenerateTitle returned %q alongside ErrRejectedTitle, want empty", got)
 	}
 }
 

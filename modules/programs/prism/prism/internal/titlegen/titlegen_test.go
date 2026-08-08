@@ -85,6 +85,52 @@ func TestSanitise_OSCSequenceIsDefanged(t *testing.T) {
 	}
 }
 
+// TestIsRejected pins the small, table-driven rejection rule set from
+// issue #2693: a reply that is not title-shaped must be rejected so the
+// caller falls back, rather than being truncated into the title column.
+func TestIsRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want bool
+	}{
+		{"good title", "Issue 2458 kickoff", false},
+		{"good title with punctuation", "Fix login bug", false},
+		{"empty", "", true},
+		{"whitespace only", "   \n\t ", true},
+		{
+			"the observed failure: a clarifying question",
+			"I need a task description to create a title. Could you share what issue 2458 is about?",
+			true,
+		},
+		{"ends in a question mark", "What is issue 2458 about?", true},
+		{"ends in a question mark, otherwise short", "Ready to start?", true},
+		{
+			"exceeds the title budget",
+			strings.Repeat("very long title ", 40),
+			true,
+		},
+		{"exactly at the budget", strings.Repeat("a", MaxTitleRunes), false},
+		{"one over the budget", strings.Repeat("a", MaxTitleRunes+1), true},
+		{"opens with I need", "I need more context before I can title this", true},
+		{"opens with I don't have", "I don't have enough information to title this", true},
+		{"opens with I can't", "I can't generate a title from this input", true},
+		{"opens with Could you", "Could you clarify the task", true},
+		{"opens with Can you", "Can you provide more detail", true},
+		{"opens with Please provide", "Please provide a task description", true},
+		{"opens with Sorry,", "Sorry, I can't help with that", true},
+		{"stem mid-sentence is not rejected", "Login fix: I need to check the session flow", false},
+		{"leading/trailing whitespace is trimmed before judging", "  Issue 2458 kickoff  \n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsRejected(tc.in); got != tc.want {
+				t.Errorf("IsRejected(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestEligible pins the scope decision from the issue: coordinators and
 // workers are titled; review agents are not, and are the reason the check
 // exists. The allowlist shape means an unknown role is excluded rather than

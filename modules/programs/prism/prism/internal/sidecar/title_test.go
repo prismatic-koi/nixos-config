@@ -488,4 +488,48 @@ func TestTitleGen_BlankSourceDoesNotConsumeTheAttempt(t *testing.T) {
 	}
 }
 
+// TestTitleGen_RejectedReplyFallsBackAndDoesNotBlock covers the issue #2693
+// edge cases: a reply that is not title-shaped must be rejected via
+// titlegen.IsRejected, and the caller must fall back to the deterministic
+// title exactly as it does for a transport error -- never a retry, never a
+// blocked turn.
+func TestTitleGen_RejectedReplyFallsBackAndDoesNotBlock(t *testing.T) {
+	cases := []struct {
+		name  string
+		reply string
+	}{
+		{
+			"the observed failure: a conversational refusal",
+			"I need a task description to create a title. Could you share what issue 2458 is about?",
+		},
+		{"a bare question", "What is this task about?"},
+		{"a reply over the title budget", strings.Repeat("very long title ", 40)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := &stubTitleGenerator{title: tc.reply}
+			sc, bus := newTitleTestSidecar(t, "coordinator", "", gen)
+
+			feedMsgUser(t, sc, "can we get started on issue 2458?")
+			sc.WaitNotifies()
+
+			if got := gen.callCount(); got != 1 {
+				t.Fatalf("model call count = %d, want exactly 1 (a rejected reply must not be retried)", got)
+			}
+
+			st, err := bus.DB.CurrentStatus(sc.cfg.SessionName)
+			if err != nil {
+				t.Fatalf("CurrentStatus: %v", err)
+			}
+			const wantFallback = "can we get started on issue 2458?"
+			if st.Title == nil || *st.Title != wantFallback {
+				t.Errorf("title = %v, want the deterministic fallback %q", st.Title, wantFallback)
+			}
+			if strings.HasSuffix(*st.Title, "?") && *st.Title != wantFallback {
+				t.Errorf("title = %q, a rejected reply must never reach the title column", *st.Title)
+			}
+		})
+	}
+}
+
 func ptrTo(s string) *string { return &s }
