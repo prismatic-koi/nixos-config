@@ -40,6 +40,8 @@ If the work fits in one PR, file an issue. If it spans multiple PRs with depende
 
 Before spawning alongside an in-flight PR, check the file footprint — overlapping filenames and shared Go packages both count. When safe, spawn in parallel and let the workers know what else is in flight so they can route around it. When unsafe, sequence.
 
+When more than two sessions are in flight at once, name every concurrent sibling's file or package footprint in each spawn prompt, not just the one you're checking for conflict.
+
 ---
 
 ## Complexity triage
