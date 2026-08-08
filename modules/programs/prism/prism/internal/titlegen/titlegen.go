@@ -42,6 +42,8 @@
 // and the remote end is not a trust boundary.
 package titlegen
 
+import "strings"
+
 // MaxTitleRunes bounds a title. It matches internal/session's
 // fallbackTitleMaxRunes so a generated title and a fallback title occupy the
 // same column width in every renderer.
@@ -91,6 +93,79 @@ func Eligible(rootAgentName string) bool {
 // behind as inert printable text with no ESC prefix to give them meaning,
 // whereas turning ESC into a space would still leave `[31m` looking like a
 // truncated sequence to a careless downstream re-assembler.
+// refusalStems are first-person openers a model uses when it declines to
+// title the input, or asks the user for more information instead of
+// producing a title. Matched case-insensitively against the START of the
+// sanitised reply only, so a title that merely mentions one of these words
+// mid-sentence ("I need to fix the login flow") is never rejected.
+//
+// The list is intentionally short and pinned by table-driven tests
+// (issue #2693) rather than grown into a classifier: it exists to catch the
+// observed failure mode, not to detect every possible refusal.
+var refusalStems = []string{
+	"i need",
+	"i don't have",
+	"i do not have",
+	"i'm not sure",
+	"i am not sure",
+	"i can't",
+	"i cannot",
+	"i couldn't",
+	"i could not",
+	"could you",
+	"can you",
+	"please provide",
+	"please share",
+	"what is the",
+	"what's the",
+	"sorry,",
+}
+
+// IsRejected reports whether reply is NOT title-shaped and must be
+// discarded in favour of the deterministic fallback (issue #2693).
+//
+// reply is the RAW model output, before Sanitise runs. IsRejected must see
+// it before truncation: Sanitise cuts an over-length reply down to
+// MaxTitleRunes, and a reply that had to be cut was never a title-length
+// string to begin with — it must be rejected outright, not shortened into
+// the column. Passing an already-sanitised string still works (a truncated
+// reply can never itself exceed the budget, so that check is simply moot),
+// but callers should prefer the raw text so the length check is meaningful.
+//
+// It exists as its own exported seam, next to Sanitise, so the sidecar
+// rejects a bad reply through a tested function rather than an inline
+// string check.
+//
+// A reply is rejected when, after trimming surrounding whitespace, it:
+//   - is empty (nothing to judge — the caller's empty-string handling
+//     already covers this, but IsRejected treats it as rejected too, so a
+//     caller that skips the empty check is still safe);
+//   - ends in "?" — a title never asks a question;
+//   - exceeds MaxTitleRunes — a title-shaped reply fits the display budget
+//     without needing to be cut;
+//   - opens with a first-person refusal or clarification stem (case
+//     insensitive), such as "I need a task description..." or "Could you
+//     share...".
+func IsRejected(reply string) bool {
+	trimmed := strings.TrimSpace(reply)
+	if trimmed == "" {
+		return true
+	}
+	if len([]rune(trimmed)) > MaxTitleRunes {
+		return true
+	}
+	if strings.HasSuffix(trimmed, "?") {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	for _, stem := range refusalStems {
+		if strings.HasPrefix(lower, stem) {
+			return true
+		}
+	}
+	return false
+}
+
 func Sanitise(s string) string {
 	line := firstNonBlankLine(s)
 	if line == "" {
