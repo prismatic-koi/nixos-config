@@ -71,6 +71,55 @@
 # We rely on the platform-appropriate defaults rather than pinning
 # `set_collectors` so the exporter's platform-conditional collector
 # registration handles the split naturally.
+#
+# ── Systemd unit health metrics (issue #2462, NixOS only) ───────────
+#
+# Collector choice: the embedded `prometheus.exporter.unix` `systemd`
+# collector (same component as above), not a separate
+# `otelcol.receiver.hostmetrics`-style route or a bundled
+# node_exporter binary — same reasoning as the host-metrics decision
+# above: it is already compiled in, so enabling it costs nothing
+# extra on the host. `enable_collectors = ["systemd"]` turns it on
+# (it is NOT part of the Linux default collector set, unlike the
+# host-metrics collectors above); a `systemd { unit_include = ... }`
+# block restricts which units it reports on, per the cardinality note
+# below.
+#
+# The hard part: user units. The embedded systemd collector is the
+# vendored `prometheus/node_exporter` collector, which talks to
+# systemd over `github.com/coreos/go-systemd/v22/dbus`, calling
+# `NewSystemConnectionContext` — a hardcoded dial of the *system* bus
+# socket (`unix:path=/run/systemd/private`, confirmed by inspecting
+# the built `alloy` binary's symbol table). There is no flag or River
+# attribute to redirect it at a user session bus, and Alloy runs as a
+# single system-wide DynamicUser service — it has no per-user session
+# to dial into even if the collector supported it. So the embedded
+# collector sees system units ONLY. The bespoke units this issue
+# names (battery-monitor, flake-update-notifier, the prism sidecar)
+# are `systemd.user.services` — invisible to this path.
+#
+# Resolution: a small user-scope timer (`systemdUserUnitTextfileTimer`
+# below) runs `systemctl --user show --property=ActiveState` against
+# the named user units and writes the result as Prometheus text
+# exposition format into the directory the `textfile` collector reads
+# (also part of the default Linux collector set, but a no-op until a
+# `directory` is configured — done below). This reuses the same
+# `prometheus.exporter.unix "node"` scrape already in the config; no
+# second scrape target, no second `prometheus.remote_write`.
+#
+# The prism sidecar is NOT covered by either path: `tmux.nix` spawns
+# it via `systemd-run --user --scope --collect` into an
+# auto-named transient scope (`run-uN.scope`) precisely so its
+# lifetime is decoupled from the `prism-restore.service` unit that
+# creates it (issue #2340) — there is no stable, predictable unit
+# name to point either collector at. The closest fixed-name proxy is
+# `prism-restore.service` itself (the login-time unit that spawns
+# sidecars), which IS tracked below; a unit-name allocation scheme
+# for individual sidecars is out of scope for this PR — see the PR
+# description for what it would take.
+#
+# Cardinality: see `systemdUnitIncludePattern` below for the
+# allowlist and the resulting series-count estimate.
 {
   config,
   lib,
@@ -98,6 +147,78 @@ let
   #     gets a 403.
   syncthingCfg = config.nx.services.syncthing;
   scrapeSyncthing = isLinux && syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
+
+  # ── Systemd unit health metrics (issue #2462) ───────────────────────
+  #
+  # System-unit coverage: the embedded `prometheus.exporter.unix`
+  # `systemd` collector, restricted to `.service` and `.timer` units.
+  # Excluding `.mount`, `.device`, `.socket`, `.scope`, `.slice`, and
+  # `.target` units cuts the bulk of the noise (mount points, kernel
+  # devices, systemd-run scopes, cgroup slices) that would otherwise
+  # multiply the series count for no operational value. Each surviving
+  # unit is reported by `node_systemd_unit_state{name=...,state=...}`
+  # with one series per (unit, state) pair — 6 possible ActiveState
+  # values (active, reloading, inactive, failed, activating,
+  # deactivating) — so the per-host series count is
+  # `6 * count(.service + .timer units)`. A typical NixOS desktop
+  # carries on the order of 100-130 service/timer units, so this is
+  # roughly 600-800 series per host, ~1200-1600 for navi+tui combined.
+  # See the PR description for the operator-measured actual count.
+  systemdUnitIncludePattern = ".+\\.(service|timer)$";
+
+  # Directory the textfile collector reads from, and the bespoke user
+  # units written into it by `systemdUserUnitTextfileScript` below.
+  # World-readable (0755 dir, 0644 files) so the alloy DynamicUser
+  # service can read it — DynamicUser's implied ProtectSystem=strict
+  # makes most of the filesystem read-only, not inaccessible, so a
+  # world-readable path outside /usr, /boot, and /efi remains
+  # readable without any extra grant (unlike the Syncthing API key,
+  # which needs SupplementaryGroups because it is NOT world-readable).
+  systemdUserUnitTextfileDir = "/var/lib/prometheus-node-exporter-textfile";
+  systemdUserUnitTextfileName = "systemd-user-units.prom";
+
+  # The bespoke user units named in issue #2462. `prism-restore` is
+  # the closest fixed-name proxy for "the prism sidecar" — see the
+  # module header for why the sidecar itself has no trackable unit
+  # name (it runs in an auto-named transient scope, issue #2340).
+  bespokeUserUnits = [
+    "battery-monitor.service"
+    "flake-update-notifier.service"
+    "prism-restore.service"
+  ];
+
+  # Runs under the user's own session (via a `systemd.user.timer`), so
+  # `systemctl --user` talks to the user's own session bus — this is
+  # the resolution to the user-bus problem described in the module
+  # header: proxy the read through a process that already has a user
+  # session, rather than trying to make the system-scope alloy
+  # service reach across the session boundary. Emits two low-
+  # cardinality gauges per unit (active/failed booleans) rather than
+  # mirroring the embedded collector's full 6-state pattern — 3 units
+  # * 2 metrics = 6 series total, negligible next to the system-unit
+  # count above.
+  systemdUserUnitTextfileScript = pkgs.writeShellScript "systemd-user-unit-metrics" ''
+    set -euo pipefail
+    dir="${systemdUserUnitTextfileDir}"
+    final="$dir/${systemdUserUnitTextfileName}"
+    tmp="$final.$$"
+    {
+      echo "# HELP node_systemd_user_unit_active Whether a bespoke systemd --user unit is in the active state (1) or not (0)."
+      echo "# TYPE node_systemd_user_unit_active gauge"
+      echo "# HELP node_systemd_user_unit_failed Whether a bespoke systemd --user unit is in the failed state (1) or not (0)."
+      echo "# TYPE node_systemd_user_unit_failed gauge"
+      ${lib.concatMapStringsSep "\n      " (unit: ''
+        state=$(${pkgs.systemd}/bin/systemctl --user show ${lib.escapeShellArg unit} --property=ActiveState --value 2>/dev/null || echo unknown)
+        active=0; failed=0
+        [ "$state" = active ] && active=1
+        [ "$state" = failed ] && failed=1
+        echo "node_systemd_user_unit_active{unit=\"${unit}\"} $active"
+        echo "node_systemd_user_unit_failed{unit=\"${unit}\"} $failed"
+      '') bespokeUserUnits}
+    } > "$tmp"
+    ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
+    ${pkgs.coreutils}/bin/mv -f "$tmp" "$final"
+  '';
 
   # Starts with a newline and ends without a blank line, so that the
   # empty case reproduces the previous file byte for byte.
@@ -148,7 +269,19 @@ let
     // compiled into the alloy binary — it is NOT a separate
     // node_exporter package or service (see module header for the
     // reasoning behind not using `otelcol.receiver.hostmetrics`).
-    prometheus.exporter.unix "node" {
+    prometheus.exporter.unix "node" {${lib.optionalString isLinux ''
+
+      // See module header "Systemd unit health metrics" for the
+      // collector choice and the user-unit resolution.
+      enable_collectors = ["systemd"]
+
+      systemd {
+        unit_include = `${systemdUnitIncludePattern}`
+      }
+
+      textfile {
+        directory = "${systemdUserUnitTextfileDir}"
+      }''}
     }
 
     prometheus.scrape "node" {
@@ -261,6 +394,38 @@ in
         systemd.services.alloy.serviceConfig.SupplementaryGroups = lib.mkIf scrapeSyncthing [
           syncthingCfg.apiKeyGroup
         ];
+
+        # World-readable so the alloy DynamicUser service can read the
+        # textfile written into it -- see the module header "Systemd
+        # unit health metrics" for why no group grant is needed here
+        # (unlike the Syncthing key file above).
+        systemd.tmpfiles.rules = [
+          "d ${systemdUserUnitTextfileDir} 0755 ${config.nx.username} users - -"
+        ];
+
+        # Periodic snapshot of the bespoke user units into the
+        # textfile collector directory. Runs as the user (not root),
+        # so `systemctl --user` reaches the caller's own session bus --
+        # see the module header for why this is the resolution to the
+        # embedded systemd collector's system-bus-only limitation.
+        home-manager.users.${config.nx.username} = {
+          systemd.user.services.systemd-user-unit-metrics = {
+            Unit.Description = "Snapshot bespoke systemd --user unit health for Alloy's textfile collector";
+            Service = {
+              Type = "oneshot";
+              ExecStart = "${systemdUserUnitTextfileScript}";
+            };
+          };
+
+          systemd.user.timers.systemd-user-unit-metrics = {
+            Unit.Description = "Periodic trigger for systemd-user-unit-metrics.service";
+            Timer = {
+              OnBootSec = "1m";
+              OnUnitActiveSec = "1m";
+            };
+            Install.WantedBy = [ "timers.target" ];
+          };
+        };
       })
 
       # ── Darwin ───────────────────────────────────────────────────────
