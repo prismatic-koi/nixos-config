@@ -148,6 +148,20 @@ let
   syncthingCfg = config.nx.services.syncthing;
   scrapeSyncthing = isLinux && syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
 
+  # ── Prism exporter scrape (issue #2701) ──────────────────────────────
+  #
+  # The exporter is a user-scope systemd service, running on the host
+  # only when a session is logged in (lingering is not enabled — see
+  # the prism-exporter module header for why). Alloy dials the
+  # loopback endpoint regardless of login state, so the scrape target
+  # will report up=0 when no session exists. That is expected behaviour
+  # and is accounted for in the AC for #2701.
+  #
+  # Gate on both the exporter being enabled (system config) and isLinux
+  # (Darwin is #2705). Forward to the existing prometheus.remote_write.
+  prismExporterCfg = config.nx.services.prismExporter;
+  scrapePrismExporter = isLinux && prismExporterCfg.enable;
+
   # ── Systemd unit health metrics (issue #2462) ───────────────────────
   #
   # System-unit coverage: the embedded `prometheus.exporter.unix`
@@ -177,13 +191,15 @@ let
   systemdUserUnitTextfileDir = "/var/lib/prometheus-node-exporter-textfile";
   systemdUserUnitTextfileName = "systemd-user-units.prom";
 
-  # The bespoke user units named in issue #2462. `prism-restore` is
-  # the closest fixed-name proxy for "the prism sidecar" — see the
-  # module header for why the sidecar itself has no trackable unit
-  # name (it runs in an auto-named transient scope, issue #2340).
+  # The bespoke user units named in issue #2462, plus the prism
+  # exporter from #2701. `prism-restore` is the closest fixed-name
+  # proxy for "the prism sidecar" — see the module header for why the
+  # sidecar itself has no trackable unit name (it runs in an auto-named
+  # transient scope, issue #2340).
   bespokeUserUnits = [
     "battery-monitor.service"
     "flake-update-notifier.service"
+    "prism-exporter.service"
     "prism-restore.service"
   ];
 
@@ -218,6 +234,23 @@ let
     } > "$tmp"
     ${pkgs.coreutils}/bin/chmod 0644 "$tmp"
     ${pkgs.coreutils}/bin/mv -f "$tmp" "$final"
+  '';
+
+  # Starts with a newline and ends without a blank line, so that the
+  # empty case reproduces the previous file byte for byte.
+  prismExporterScrapeBlock = lib.optionalString scrapePrismExporter ''
+
+    // ── Prism exporter metrics ──────────────────────────────────────
+    //
+    // The exporter runs as a user-scope systemd service and serves
+    // Prometheus metrics on a loopback port. See #2701 for the full
+    // scope and #2700 for the exporter daemon shape.
+    prometheus.scrape "prism_exporter" {
+      targets         = [{"__address__" = "127.0.0.1:${toString prismExporterCfg.port}"}]
+      metrics_path    = "/metrics"
+      forward_to      = [prometheus.remote_write.default.receiver]
+      scrape_interval = "60s"
+    }
   '';
 
   # Starts with a newline and ends without a blank line, so that the
@@ -289,6 +322,7 @@ let
       forward_to      = [prometheus.remote_write.default.receiver]
       scrape_interval = "60s"
     }
+    ${prismExporterScrapeBlock}
     ${syncthingScrapeBlock}
     // ── Push to home-ops Prometheus over the tailnet ────────────────
     //
