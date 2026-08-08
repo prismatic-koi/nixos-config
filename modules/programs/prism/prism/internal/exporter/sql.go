@@ -154,6 +154,49 @@ const (
 		`ORDER BY ae.rowid ASC LIMIT ?`
 )
 
+// The four #2702 state-gauge statements. Unlike the tail statements above,
+// these are recomputed on every scrape (#2699 section 4: a gauge carries no
+// monotonicity contract, so a plain SELECT is safe here) and each is a bare
+// projection with no aggregate function — the counting happens in Go, in
+// gauges.go — so none of these trips the full-table-aggregate ban that rule
+// 2 above enforces for counters.
+//
+// BusMessagesPendingSQL is the one that collides with an existing whole-
+// table ban: sql_boundary_test.go's unambiguous-name check banned the bare
+// table name bus_messages anywhere in this package's source, which is
+// stricter than #2699 section 5 actually requires. Section 5 bans the
+// COLUMN bus_messages.text ("free-form inter-session messages"), not the
+// table, and that column is already caught by the separate forbiddenColumns
+// identifier scan. This statement reads bus_messages.repo only. The
+// boundary test is narrowed to the column-level ban, exactly as #2720
+// narrowed the equivalent whole-table ban on spawn_inputs and #2724 narrowed
+// the equivalent ban on agent_events.payload; see the comment at that edit
+// site (sql_boundary_test.go) for why harness_frames and
+// pending_replay_deliveries remain whole-table bans — every column in those
+// two holds free-text bodies, so a blanket ban is correct for them and wrong
+// for bus_messages.
+const (
+	// SessionsActiveSQL backs prism_sessions_active{repo,agent_role,state}.
+	// ended_at IS NULL selects the live rows; agent_status is never pruned
+	// while a row is live (internal/db/maintenance.go), so this is safe
+	// against the 90-day prune by construction, independent of the tail-
+	// cursor argument that protects the counters above.
+	SessionsActiveSQL = `SELECT repo, root_agent_name, state FROM agent_status WHERE ended_at IS NULL`
+
+	// MergeQueueDepthSQL backs prism_merge_queue_depth{repo}: the rows
+	// currently enqueued and being watched.
+	MergeQueueDepthSQL = `SELECT repo FROM pending_merges WHERE status = 'watching'`
+
+	// MergesByStatusSQL backs prism_merges_by_status{repo,status}: every
+	// pending_merges row, watching or terminal.
+	MergesByStatusSQL = `SELECT repo, status FROM pending_merges`
+
+	// BusMessagesPendingSQL backs prism_bus_messages_pending{repo}. It reads
+	// bus_messages.repo only — never .text, which #2699 section 5 bans (see
+	// the narrowing note above).
+	BusMessagesPendingSQL = `SELECT repo FROM bus_messages WHERE delivered_at IS NULL`
+)
+
 // AllSQL is every statement the exporter issues, in one slice, for the
 // boundary test to walk.
 var AllSQL = []string{
@@ -161,6 +204,10 @@ var AllSQL = []string{
 	AgentEventsTailSQL,
 	LifecycleEventsTailSQL,
 	CostEventsTailSQL,
+	SessionsActiveSQL,
+	MergeQueueDepthSQL,
+	MergesByStatusSQL,
+	BusMessagesPendingSQL,
 }
 
 // agentEventSource is the tailcursor.Source over agent_events. The value

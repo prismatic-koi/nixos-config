@@ -249,20 +249,24 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 	// are ordinary English words that appear in log messages, so they are
 	// checked inside SQL statements only (see the tests above).
 	//
-	// spawn_inputs is deliberately NOT in this list (issue #2720). The other
-	// three whole-table entries — harness_frames, bus_messages, and
-	// pending_replay_deliveries — exist to hold free-text bodies, so every
-	// column in them is sensitive and a blanket table-name ban is correct.
-	// spawn_inputs is mostly closed-set operator config (profile_name,
-	// isolation_flag, model_flag, agent_flag, ...) with exactly two free-text
-	// columns among them — prompt_text and extras — and both of those are
-	// already caught by the forbiddenColumns identifier scan above. Banning
-	// the bare table name added nothing for the real hazard and instead made
-	// profile_name (an #2699 section 6 sanctioned safe label) unreachable
-	// from this package. Do NOT restore spawn_inputs to this list as a
-	// "security fix" without re-reading #2699 section 5 and #2720 first —
-	// the column-level ban below is the correct granularity for this table.
-	unambiguous := []string{"prompt_text", "rubric_breakdown", "issue_ref", "harness_frames", "pending_replay_deliveries", "bus_messages"}
+	// spawn_inputs and bus_messages are deliberately NOT in this list (issues
+	// #2720 and #2702). The remaining two whole-table entries —
+	// harness_frames and pending_replay_deliveries — exist to hold free-text
+	// bodies, so every column in them is sensitive and a blanket table-name
+	// ban is correct. spawn_inputs is mostly closed-set operator config
+	// (profile_name, isolation_flag, model_flag, agent_flag, ...) with
+	// exactly two free-text columns among them — prompt_text and extras — and
+	// both are already caught by the forbiddenColumns identifier scan above.
+	// bus_messages is similar: repo, urgency, sent_at, delivered_at are all
+	// closed-set or numeric, and the one free-text column — text, the
+	// message body #2699 section 5 bans — is likewise already caught there.
+	// Banning either bare table name added nothing for the real hazard and
+	// instead made profile_name (spawn_inputs) and the #2702 bus-backlog
+	// gauge (bus_messages.repo) unreachable from this package. Do NOT
+	// restore either name to this list as a "security fix" without
+	// re-reading #2699 section 5, #2720, and #2702 first — the column-level
+	// ban below is the correct granularity for both tables.
+	unambiguous := []string{"prompt_text", "rubric_breakdown", "issue_ref", "harness_frames", "pending_replay_deliveries"}
 
 	for _, lit := range packageStringLiterals(t) {
 		upper := strings.ToUpper(lit)
@@ -283,13 +287,13 @@ func TestExporterSource_ContainsNoWriteStatementAndNoForbiddenColumnLiteral(t *t
 }
 
 // TestExporterSource_WholeTableBanIsLimitedToSpawnInputs is the #2720
-// security AC: harness_frames, bus_messages, and pending_replay_deliveries
-// remain banned as whole tables (they hold nothing but free-text bodies),
-// while spawn_inputs — narrowed to a column-level ban — is reachable by
-// name. This pins the narrowing to exactly one table so a future edit that
-// widens it again is caught here, not discovered downstream.
+// security AC: harness_frames and pending_replay_deliveries remain banned as
+// whole tables (they hold nothing but free-text bodies), while spawn_inputs
+// — narrowed to a column-level ban — is reachable by name. This pins the
+// narrowing to exactly one table so a future edit that widens it again is
+// caught here, not discovered downstream.
 func TestExporterSource_WholeTableBanIsLimitedToSpawnInputs(t *testing.T) {
-	stillBanned := []string{"harness_frames", "bus_messages", "pending_replay_deliveries"}
+	stillBanned := []string{"harness_frames", "pending_replay_deliveries"}
 	for _, lit := range packageStringLiterals(t) {
 		lower := strings.ToLower(lit)
 		for _, name := range stillBanned {
@@ -317,6 +321,31 @@ func TestExporterSource_WholeTableBanIsLimitedToSpawnInputs(t *testing.T) {
 				if id == forbidden {
 					t.Errorf("statement reads the forbidden spawn_inputs column %q:\n%s", forbidden, stmt)
 				}
+			}
+		}
+	}
+}
+
+// TestExporterSource_BusMessagesWholeTableBanIsColumnLevel is the #2702
+// analogue of the #2720 test above: bus_messages must be reachable by name
+// (the #2702 bus-backlog gauge needs it), but its one free-text column —
+// text, the inter-session message body #2699 section 5 bans — must still be
+// unreadable, enforced by the forbiddenColumns scan in
+// TestExporterSQL_ReadsNoRawTextBodyColumn.
+func TestExporterSource_BusMessagesWholeTableBanIsColumnLevel(t *testing.T) {
+	foundBusMessages := false
+	for _, stmt := range exporter.AllSQL {
+		if strings.Contains(strings.ToLower(stmt), "bus_messages") {
+			foundBusMessages = true
+		}
+	}
+	if !foundBusMessages {
+		t.Error("expected at least one statement in exporter.AllSQL to name bus_messages (bus-backlog gauge, #2702); found none")
+	}
+	for _, stmt := range exporter.AllSQL {
+		for _, id := range identifiers(stmt) {
+			if id == "text" {
+				t.Errorf("statement reads the forbidden bus_messages column %q:\n%s", "text", stmt)
 			}
 		}
 	}
