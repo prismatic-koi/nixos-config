@@ -46,6 +46,44 @@ const (
 	// section 6). payload is NOT read: it holds assistant and user message
 	// content.
 	AgentEventsTailSQL = `SELECT rowid, type FROM agent_events WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`
+
+	// LifecycleEventsTailSQL is the #2703 tailer's batch read. It LEFT JOINs
+	// sessions and agent_status by instance_id to pick up the closed-set
+	// label columns (#2699 section 6: repo, agent_role, isolation_mode,
+	// end_state) that a handful of event types need. The join is per-row
+	// label enrichment, never an aggregate: the counter value is still
+	// exactly one per tailed row, so #2699 section 3 is not in tension with
+	// it.
+	//
+	// spawn_inputs is deliberately NOT joined, even though it holds
+	// profile_name: the table also holds prompt_text and extras, and
+	// sql_boundary_test.go's unambiguous-name check bans the bare table name
+	// spawn_inputs anywhere in this package's source, not just its sensitive
+	// columns. prism_spawns_total therefore carries {repo, agent_role,
+	// isolation_mode} and NOT {profile}. Adding a profile label needs a
+	// durable, non-spawn_inputs source, which is a db.go schema change and
+	// out of this package's footprint.
+	//
+	// The join is safe against the 90-day prune. sessions and agent_events
+	// are pruned inside the SAME Prune() transaction (internal/db/
+	// maintenance.go), sessions on ended_at and agent_events on created_at,
+	// and an event's created_at always precedes its session's ended_at. So
+	// whenever a sessions row is old enough to be pruned, every agent_events
+	// row for that instance_id is at least as old and is pruned in the same
+	// transaction: an agent_events row can never be tailed after its
+	// session row is gone. agent_status rows are pruned only once their own
+	// ended_at is old AND no live sessions row shares the instance_id — a
+	// strictly later condition than the sessions prune — so the same
+	// argument covers it.
+	//
+	// None of the projected columns appear in the #2699 section 5 forbidden
+	// list: repo, type are on agent_events; agent_role, end_state are on
+	// sessions; isolation_mode is on agent_status.
+	LifecycleEventsTailSQL = `SELECT ae.rowid, ae.type, ae.repo, s.agent_role, s.end_state, ast.isolation_mode ` +
+		`FROM agent_events ae ` +
+		`LEFT JOIN sessions s ON s.instance_id = ae.instance_id ` +
+		`LEFT JOIN agent_status ast ON ast.instance_id = ae.instance_id ` +
+		`WHERE ae.rowid > ? ORDER BY ae.rowid ASC LIMIT ?`
 )
 
 // AllSQL is every statement the exporter issues, in one slice, for the
@@ -53,6 +91,7 @@ const (
 var AllSQL = []string{
 	AgentEventsMaxRowIDSQL,
 	AgentEventsTailSQL,
+	LifecycleEventsTailSQL,
 }
 
 // agentEventSource is the tailcursor.Source over agent_events. The value
@@ -89,6 +128,63 @@ func (s agentEventSource) Records(ctx context.Context, afterID int64, limit int)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("exporter: iterate agent_events rows: %w", err)
+	}
+	return out, nil
+}
+
+// lifecycleEvent is the per-row value tailed by the number 2703 lifecycle
+// counters. Every field beyond Type is optional: most event types this
+// tailer sees carry none of the joined columns, and the dispatcher
+// (lifecycle.go) reads only the fields the event type it is handling needs.
+type lifecycleEvent struct {
+	Type          string
+	Repo          string
+	AgentRole     string
+	EndState      string
+	IsolationMode string
+}
+
+// lifecycleEventSource is the tailcursor.Source over agent_events used by
+// the #2703 lifecycle and outcome counters. It shares MaxID with
+// agentEventSource: both tail the SAME table by the SAME rowid space, so a
+// second, independent MAX(rowid) query would be redundant and would trip
+// the boundary test that permits MAX() only in AgentEventsMaxRowIDSQL, for
+// no reason.
+type lifecycleEventSource struct {
+	conn *sql.DB
+}
+
+var _ tailcursor.Source[lifecycleEvent] = lifecycleEventSource{}
+
+func (s lifecycleEventSource) MaxID(ctx context.Context) (int64, error) {
+	return agentEventSource{conn: s.conn}.MaxID(ctx)
+}
+
+func (s lifecycleEventSource) Records(ctx context.Context, afterID int64, limit int) ([]tailcursor.Record[lifecycleEvent], error) {
+	rows, err := s.conn.QueryContext(ctx, LifecycleEventsTailSQL, afterID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("exporter: tail lifecycle events after %d: %w", afterID, err)
+	}
+	defer rows.Close()
+
+	out := make([]tailcursor.Record[lifecycleEvent], 0, limit)
+	for rows.Next() {
+		var (
+			rec                                tailcursor.Record[lifecycleEvent]
+			repo                               string
+			agentRole, endState, isolationMode sql.NullString
+		)
+		if err := rows.Scan(&rec.ID, &rec.Value.Type, &repo, &agentRole, &endState, &isolationMode); err != nil {
+			return nil, fmt.Errorf("exporter: scan lifecycle event row: %w", err)
+		}
+		rec.Value.Repo = repo
+		rec.Value.AgentRole = agentRole.String
+		rec.Value.EndState = endState.String
+		rec.Value.IsolationMode = isolationMode.String
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("exporter: iterate lifecycle event rows: %w", err)
 	}
 	return out, nil
 }

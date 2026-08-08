@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -184,15 +185,27 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 	}
 }
 
-// This issue ships exactly two metrics. #2702 to #2706 own the rest.
-func TestExporter_ShipsExactlyTheTwoSpecifiedMetrics(t *testing.T) {
+// #2700 shipped exactly two metrics; #2703 adds the six lifecycle and
+// outcome counters on top. #2702 and #2706 own the rest.
+func TestExporter_ShipsExactlyTheEightSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 	h.writeEvent("tool_call", 0)
 
 	exp := h.scrape(h.exp)
-	want := []string{exporter.MetricAgentEventsTotal, exporter.MetricBuildInfo}
+	want := []string{
+		exporter.MetricAgentEventsTotal,
+		exporter.MetricBuildInfo,
+		exporter.MetricDoomLoopsTotal,
+		exporter.MetricEscalationsTotal,
+		exporter.MetricPermissionDeniedTotal,
+		exporter.MetricReviewVerdictsTotal,
+		exporter.MetricSessionsEndedTotal,
+		exporter.MetricSpawnsTotal,
+	}
 	got := exp.FamilyNames()
+	sort.Strings(want)
+	sort.Strings(got)
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("exposed metric families %v, want exactly %v", got, want)
 	}
@@ -511,6 +524,18 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 	bounds := map[string]int{
 		exporter.MetricAgentEventsTotal: exporter.MaxAgentEventsSeries,
 		exporter.MetricBuildInfo:        1,
+		// The six #2703 counters have no closed-set enforcement of their own
+		// today: repo, agent_role, isolation_mode, end_state, and verdict are
+		// all pre-sanctioned safe labels under #2699 section 6, so there is
+		// no fold to bound them against a hostile value the way
+		// agent_events.type needs one. A large-but-finite bound here still
+		// catches an accidental unbounded label creeping in later.
+		exporter.MetricSpawnsTotal:           1000,
+		exporter.MetricSessionsEndedTotal:    1000,
+		exporter.MetricReviewVerdictsTotal:   2,
+		exporter.MetricEscalationsTotal:      1000,
+		exporter.MetricDoomLoopsTotal:        1000,
+		exporter.MetricPermissionDeniedTotal: 1000,
 	}
 	for name, family := range exp.Families {
 		bound, ok := bounds[name]

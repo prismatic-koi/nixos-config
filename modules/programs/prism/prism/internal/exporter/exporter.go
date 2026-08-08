@@ -122,6 +122,7 @@ type Exporter struct {
 	store    *tailcursor.Store
 
 	eventsTotal *metrics.CounterVec
+	lifecycle   *lifecycleCounters
 	tailers     []tailcursor.Advancer
 
 	// mu serialises the tail advance and the state write. Both the scrape
@@ -227,7 +228,25 @@ func New(cfg Config) (*Exporter, error) {
 		conn.Close()
 		return nil, fmt.Errorf("exporter: build agent_events tailer: %w", err)
 	}
-	e.tailers = []tailcursor.Advancer{tailer}
+
+	// The six #2703 lifecycle and outcome counters. A second, independent
+	// tailer over the same agent_events table, with its own cursor — see
+	// lifecycle.go and LifecycleEventsTailSQL for why one more tailer is
+	// simpler and safer here than teaching the #2700 tailer a second Value
+	// shape.
+	e.lifecycle = newLifecycleCounters(e.registry)
+	lifecycleTailer, err := tailcursor.New[lifecycleEvent](
+		TailerLifecycleEvents,
+		lifecycleEventSource{conn: conn},
+		e.lifecycle.apply,
+		tailcursor.WithLogger(logger),
+	)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("exporter: build lifecycle events tailer: %w", err)
+	}
+
+	e.tailers = []tailcursor.Advancer{tailer, lifecycleTailer}
 
 	return e, nil
 }
