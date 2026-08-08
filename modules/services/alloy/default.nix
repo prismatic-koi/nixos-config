@@ -1,10 +1,14 @@
 # Grafana Alloy — cross-platform telemetry collector.
 #
-# Part of the fleet telemetry train (issue #2458). This is the first
-# child (issue #2460): host metrics only. Loki log shipping and other
-# signals are explicitly out of scope here — a commented seam is left
-# in the generated Alloy config so a later train can wire `loki.write`
+# Part of the fleet telemetry train (issue #2458). The first child
+# (issue #2460) added host metrics. Issue #2461 added a Syncthing
+# `/metrics` scrape on the Linux hosts. Loki log shipping and other
+# signals are still out of scope here — a commented seam is left in
+# the generated Alloy config so a later train can wire `loki.write`
 # without redesigning the module surface.
+#
+# Every scrape forwards to the single `prometheus.remote_write`
+# below. Do not add a second one.
 #
 # ── Cross-platform shape ─────────────────────────────────────────────
 #
@@ -79,6 +83,47 @@ let
   hostname = config.networking.hostName;
   isDarwin = !isLinux;
 
+  # ── Syncthing scrape (issue #2461) ──────────────────────────────────
+  #
+  # Emitted only on a Linux host that runs Syncthing AND carries a
+  # pinned, sops-encrypted REST API key. One reason for each term:
+  #
+  #   * isLinux — m4mac is out of scope until #2694 confirms the Darwin
+  #     Alloy path works at all. Keeping this term first also lets the
+  #     `&&` short-circuit skip the NixOS-only options below on Darwin.
+  #   * syncthing.enable — a host without Syncthing must still evaluate,
+  #     and must not emit a scrape target that can never come up.
+  #   * apiKeyFile != null — /metrics needs the API key, so a host with
+  #     no pinned key gets no scrape rather than a target that always
+  #     gets a 403.
+  syncthingCfg = config.nx.services.syncthing;
+  scrapeSyncthing = isLinux && syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
+
+  # Starts with a newline and ends without a blank line, so that the
+  # empty case reproduces the previous file byte for byte.
+  syncthingScrapeBlock = lib.optionalString scrapeSyncthing ''
+
+    // ── Syncthing folder + connection metrics ───────────────────────
+    //
+    // Syncthing serves a Prometheus endpoint at /metrics on its REST
+    // API port. That endpoint needs the REST API key, which Syncthing
+    // accepts as a Bearer token.
+    //
+    // `bearer_token_file` keeps the key out of this generated file:
+    // alloy reads the sops-decrypted path at scrape time, on every
+    // scrape. Do NOT inline the key here — /etc/alloy/config.alloy is
+    // world-readable.
+    prometheus.scrape "syncthing" {
+      targets = [
+        {"__address__" = "${config.services.syncthing.guiAddress}"},
+      ]
+      metrics_path      = "/metrics"
+      bearer_token_file = "${syncthingCfg.apiKeyFile}"
+      forward_to        = [prometheus.remote_write.default.receiver]
+      scrape_interval   = "60s"
+    }
+  '';
+
   # Alloy River config. Kept as a single generated file for both
   # platforms — the metric-collection component is the same on both.
   #
@@ -111,7 +156,7 @@ let
       forward_to      = [prometheus.remote_write.default.receiver]
       scrape_interval = "60s"
     }
-
+    ${syncthingScrapeBlock}
     // ── Push to home-ops Prometheus over the tailnet ────────────────
     //
     // v1 needs no auth token — the tailnet is the auth boundary
@@ -208,6 +253,14 @@ in
           # v1 requires no auth token, and if it ever does, this is
           # the seam for a sops-decrypted path.
         };
+
+        # The upstream module runs alloy under DynamicUser, so there is
+        # no stable UID to grant the Syncthing key file to. Alloy joins
+        # the group that owns the file instead — see the `apiKeyGroup`
+        # comment in modules/services/syncthing/secrets.nix.
+        systemd.services.alloy.serviceConfig.SupplementaryGroups = lib.mkIf scrapeSyncthing [
+          syncthingCfg.apiKeyGroup
+        ];
       })
 
       # ── Darwin ───────────────────────────────────────────────────────
