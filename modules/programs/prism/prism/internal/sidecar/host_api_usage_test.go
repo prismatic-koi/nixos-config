@@ -80,6 +80,75 @@ const fullBody = `{
   "overage": { "status": "rejected", "disabled_reason": "out_of_credits" }
 }`
 
+// fullBodyWithOrgWorkspace adds the anthropic-organization-id /
+// anthropic-workspace-id pair (issue #2713, parent #2699) to fullBody.
+const fullBodyWithOrgWorkspace = `{
+  "unified_status": "allowed_warning",
+  "representative_claim": "five_hour",
+  "unified_reset": 1785634800,
+  "windows": {
+    "five_hour": {
+      "status": "allowed_warning",
+      "utilization": 0.94,
+      "reset": 1785634800,
+      "surpassed_threshold": 0.9
+    },
+    "seven_day": {
+      "status": "allowed",
+      "utilization": 0.42,
+      "reset": 1786021200
+    }
+  },
+  "fallback": { "status": "available", "percentage": 0.5 },
+  "overage": { "status": "rejected", "disabled_reason": "out_of_credits" },
+  "organization_id": "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6",
+  "workspace_id": "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD"
+}`
+
+// TestHostAPI_UsageSnapshot_PersistsOrganizationAndWorkspaceID covers the
+// functional round-trip AC for issue #2713: both fields reach the persisted
+// JSON via the same endpoint the active refresh path (`prism account usage`)
+// POSTs through.
+func TestHostAPI_UsageSnapshot_PersistsOrganizationAndWorkspaceID(t *testing.T) {
+	usageDir := usageTestEnv(t)
+	seedAccountPointer(t, "work")
+	sc := newUsageSidecar(t)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/usage/snapshot", fullBodyWithOrgWorkspace)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+
+	perAccount := readSnapshot(t, filepath.Join(usageDir, "work.json"))
+	if perAccount["organization_id"] != "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6" {
+		t.Errorf("organization_id = %v, want the seeded org id", perAccount["organization_id"])
+	}
+	if perAccount["workspace_id"] != "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD" {
+		t.Errorf("workspace_id = %v, want the seeded workspace id", perAccount["workspace_id"])
+	}
+}
+
+// TestHostAPI_UsageSnapshot_OrgAndWorkspaceIDOmittedWhenAbsent covers the
+// edge-case AC: a request without either header must not persist them as
+// present-and-empty.
+func TestHostAPI_UsageSnapshot_OrgAndWorkspaceIDOmittedWhenAbsent(t *testing.T) {
+	usageDir := usageTestEnv(t)
+	seedAccountPointer(t, "work")
+	sc := newUsageSidecar(t)
+
+	rr := doHostAPI(t, sc, http.MethodPost, "/usage/snapshot", fullBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %q, want 200", rr.Code, rr.Body.String())
+	}
+
+	perAccount := readSnapshot(t, filepath.Join(usageDir, "work.json"))
+	for _, key := range []string{"organization_id", "workspace_id"} {
+		if _, present := perAccount[key]; present {
+			t.Errorf("work.json carries %q, want it omitted when the request did not supply it", key)
+		}
+	}
+}
+
 func readSnapshot(t *testing.T, path string) map[string]any {
 	t.Helper()
 	raw, err := os.ReadFile(path)

@@ -112,6 +112,16 @@ export interface RateLimitSnapshot {
     status?: string
     disabled_reason?: string
   }
+  /**
+   * organization_id and workspace_id mirror the `anthropic-organization-id`
+   * and `anthropic-workspace-id` response headers (issue #2713, parent
+   * #2699). Both are server-assigned and stable across a local account
+   * rename, which is why fleet-wide attribution keys off the org id rather
+   * than the account name. Neither is a credential; nothing here reads or
+   * sends the bearer token.
+   */
+  organization_id?: string
+  workspace_id?: string
 }
 
 /** Injectable POST transport. Used by the tests; production uses sendSnapshot. */
@@ -239,10 +249,11 @@ function parseWindow(
  * are unparseable also yields null, for the same reason: an information-free
  * snapshot must not overwrite a good one.
  *
- * The header names read here are exactly the allowlist confirmed in #2537.
- * There is no bulk `Object.fromEntries(response.headers)` anywhere in this
- * module — that shape would sweep up `authorization` along with everything
- * else.
+ * The header names read here are exactly the allowlist confirmed in #2537,
+ * plus `anthropic-organization-id` and `anthropic-workspace-id` confirmed in
+ * #2713. There is no bulk `Object.fromEntries(response.headers)` anywhere in
+ * this module — that shape would sweep up `authorization` along with
+ * everything else.
  */
 export function parseUnifiedRateLimitHeaders(
   headers: HeaderReader,
@@ -279,7 +290,20 @@ export function parseUnifiedRateLimitHeaders(
       ),
     }),
   }
-  return pruneUndefined(snapshot) ?? null
+  const pruned = pruneUndefined(snapshot)
+  if (pruned === undefined) return null
+
+  // anthropic-organization-id and anthropic-workspace-id (issue #2713,
+  // parent #2699) ride the same response as the rate-limit headers above but
+  // are not THEMSELVES rate-limit information, so they are read only once
+  // the snapshot is known to carry real data — an org/workspace pair with no
+  // usage data attached would be as meaningless as an empty snapshot, and
+  // the emptiness check above must stay the sole gate on whether this
+  // response is worth sending at all. Mirrors the same ordering rule in
+  // internal/usage/refresh.go::ParseRateLimitHeaders.
+  pruned.organization_id = readString(headers, "anthropic-organization-id")
+  pruned.workspace_id = readString(headers, "anthropic-workspace-id")
+  return pruneUndefined(pruned) ?? null
 }
 
 // ---------------------------------------------------------------------------

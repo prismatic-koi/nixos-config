@@ -213,6 +213,10 @@ type SnapshotPayload struct {
 	Windows             *Windows  `json:"windows,omitempty"`
 	Fallback            *Fallback `json:"fallback,omitempty"`
 	Overage             *Overage  `json:"overage,omitempty"`
+	// OrganizationID and WorkspaceID mirror `anthropic-organization-id` and
+	// `anthropic-workspace-id` — see the field comment on usage.Snapshot.
+	OrganizationID string `json:"organization_id,omitempty"`
+	WorkspaceID    string `json:"workspace_id,omitempty"`
 }
 
 // ToSnapshot builds the persisted object for display purposes only.
@@ -231,6 +235,8 @@ func (p *SnapshotPayload) ToSnapshot(account string, capturedAt time.Time) Snaps
 		Windows:             p.Windows,
 		Fallback:            p.Fallback,
 		Overage:             p.Overage,
+		OrganizationID:      p.OrganizationID,
+		WorkspaceID:         p.WorkspaceID,
 	}
 }
 
@@ -249,9 +255,10 @@ func (p *SnapshotPayload) ToSnapshot(account string, capturedAt time.Time) Snaps
 //     yields nil, not an empty payload. An information-free payload must
 //     never overwrite a good snapshot.
 //
-// The header names read here are exactly the allowlist confirmed in #2537.
-// There is no bulk sweep of http.Header anywhere in this file — that shape
-// would collect `authorization` along with everything else.
+// The header names read here are exactly the allowlist confirmed in #2537,
+// plus `anthropic-organization-id` and `anthropic-workspace-id` confirmed in
+// #2713. There is no bulk sweep of http.Header anywhere in this file — that
+// shape would collect `authorization` along with everything else.
 func ParseRateLimitHeaders(h http.Header) *SnapshotPayload {
 	p := &SnapshotPayload{
 		UnifiedStatus:       headerString(h, "anthropic-ratelimit-unified-status"),
@@ -280,6 +287,16 @@ func ParseRateLimitHeaders(h http.Header) *SnapshotPayload {
 	if p.isEmpty() {
 		return nil
 	}
+
+	// anthropic-organization-id and anthropic-workspace-id (issue #2713,
+	// parent #2699) ride the same response as the rate-limit headers above
+	// but are not THEMSELVES rate-limit information, so they are read only
+	// once the payload is known to carry real data — an org/workspace pair
+	// with no usage data attached would be as meaningless as an empty
+	// snapshot, and the isEmpty check above must stay the sole gate on
+	// whether this response is worth persisting at all.
+	p.OrganizationID = headerString(h, "anthropic-organization-id")
+	p.WorkspaceID = headerString(h, "anthropic-workspace-id")
 	return p
 }
 

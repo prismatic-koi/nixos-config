@@ -57,6 +57,8 @@ const FULL_HEADERS: Record<string, string> = {
   "anthropic-ratelimit-unified-fallback-percentage": "0.5",
   "anthropic-ratelimit-unified-overage-status": "rejected",
   "anthropic-ratelimit-unified-overage-disabled-reason": "out_of_credits",
+  "anthropic-organization-id": "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6",
+  "anthropic-workspace-id": "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD",
 }
 
 // ---------------------------------------------------------------------------
@@ -85,7 +87,29 @@ describe("parseUnifiedRateLimitHeaders", () => {
       },
       fallback: { status: "available", percentage: 0.5 },
       overage: { status: "rejected", disabled_reason: "out_of_credits" },
+      organization_id: "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6",
+      workspace_id: "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD",
     })
+  })
+
+  it("omits organization_id and workspace_id when the response carries neither (issue #2713)", () => {
+    const got = parseUnifiedRateLimitHeaders(
+      makeHeaders({ "anthropic-ratelimit-unified-status": "allowed" }),
+    )
+    assert.equal(got?.organization_id, undefined)
+    assert.equal(got?.workspace_id, undefined)
+    assert.equal("organization_id" in (got ?? {}), false)
+    assert.equal("workspace_id" in (got ?? {}), false)
+  })
+
+  it("returns null when only organization_id/workspace_id are present, with no rate-limit data", () => {
+    const got = parseUnifiedRateLimitHeaders(
+      makeHeaders({
+        "anthropic-organization-id": "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6",
+        "anthropic-workspace-id": "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD",
+      }),
+    )
+    assert.equal(got, null)
   })
 
   it("keeps utilization as the raw fraction — 0.94 stays 0.94", () => {

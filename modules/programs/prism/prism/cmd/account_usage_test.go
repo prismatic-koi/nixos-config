@@ -270,6 +270,89 @@ func TestAccountUsage_JSONEmitsSnakeCaseAndRFC3339(t *testing.T) {
 	}
 }
 
+// TestAccountUsage_JSONIncludesOrganizationAndWorkspaceID covers the AC on
+// issue #2713 that the round-trip must reach `prism account usage --json`,
+// not just the on-disk file.
+func TestAccountUsage_JSONIncludesOrganizationAndWorkspaceID(t *testing.T) {
+	dir := withUsageFixture(t)
+	writeUsageSnapshot(t, dir, usage.Snapshot{
+		CapturedAt:     usage.FormatCapturedAt(time.Now()),
+		Account:        "work",
+		OrganizationID: "21de5100-bc45-43da-a760-35ceb8d5dc74",
+		WorkspaceID:    "wrkspc_01RimArRBsMZifz4vp5crzm1",
+		Windows: &usage.Windows{
+			FiveHour: &usage.Window{Utilization: f64u(0.1), Reset: i64u(time.Now().Add(time.Hour).Unix())},
+		},
+	})
+
+	c := &cobra.Command{}
+	c.Flags().Bool("json", true, "")
+	if err := c.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json: %v", err)
+	}
+
+	captured := captureStdout(t, func() {
+		if err := runAccountUsage(c, nil); err != nil {
+			t.Fatalf("account usage --json: %v", err)
+		}
+	})
+
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(captured)), &rows); err != nil {
+		t.Fatalf("parse json: %v (raw: %q)", err, captured)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row["organization_id"] != "21de5100-bc45-43da-a760-35ceb8d5dc74" {
+		t.Errorf("organization_id = %v, want the seeded org id", row["organization_id"])
+	}
+	if row["workspace_id"] != "wrkspc_01RimArRBsMZifz4vp5crzm1" {
+		t.Errorf("workspace_id = %v, want the seeded workspace id", row["workspace_id"])
+	}
+}
+
+// TestAccountUsage_JSONOmitsOrganizationAndWorkspaceIDWhenAbsent is the
+// edge-case half: a snapshot with neither field set must not print them as
+// present-and-empty in --json output.
+func TestAccountUsage_JSONOmitsOrganizationAndWorkspaceIDWhenAbsent(t *testing.T) {
+	dir := withUsageFixture(t)
+	writeUsageSnapshot(t, dir, usage.Snapshot{
+		CapturedAt: usage.FormatCapturedAt(time.Now()),
+		Account:    "work",
+		Windows: &usage.Windows{
+			FiveHour: &usage.Window{Utilization: f64u(0.1), Reset: i64u(time.Now().Add(time.Hour).Unix())},
+		},
+	})
+
+	c := &cobra.Command{}
+	c.Flags().Bool("json", true, "")
+	if err := c.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json: %v", err)
+	}
+
+	captured := captureStdout(t, func() {
+		if err := runAccountUsage(c, nil); err != nil {
+			t.Fatalf("account usage --json: %v", err)
+		}
+	})
+
+	var rows []map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(captured)), &rows); err != nil {
+		t.Fatalf("parse json: %v (raw: %q)", err, captured)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	for _, key := range []string{"organization_id", "workspace_id"} {
+		if _, present := row[key]; present {
+			t.Errorf("row carries %q, want it omitted when the snapshot did not supply it", key)
+		}
+	}
+}
+
 func TestAccountUsage_JSONEmptyArrayWhenNoSnapshots(t *testing.T) {
 	_ = withUsageFixture(t)
 
