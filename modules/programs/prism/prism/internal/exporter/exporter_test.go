@@ -195,8 +195,9 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 
 // #2700 shipped exactly two metrics; #2703 adds the six lifecycle and
 // outcome counters; #2704 adds the three cost/token counters and the
-// prism_account_info gauge. #2702 and #2706 own the rest.
-func TestExporter_ShipsExactlyTheTwelveSpecifiedMetrics(t *testing.T) {
+// prism_account_info gauge; #2702 adds the four state gauges. #2706 owns
+// the rest.
+func TestExporter_ShipsExactlyTheSixteenSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 	h.writeEvent("tool_call", 0)
@@ -206,12 +207,16 @@ func TestExporter_ShipsExactlyTheTwelveSpecifiedMetrics(t *testing.T) {
 		exporter.MetricAccountInfo,
 		exporter.MetricAgentEventsTotal,
 		exporter.MetricBuildInfo,
+		exporter.MetricBusMessagesPending,
 		exporter.MetricDoomLoopsTotal,
 		exporter.MetricEscalationsTotal,
+		exporter.MetricMergeQueueDepth,
+		exporter.MetricMergesByStatus,
 		exporter.MetricModelCostUSDTotal,
 		exporter.MetricModelTokensTotal,
 		exporter.MetricPermissionDeniedTotal,
 		exporter.MetricReviewVerdictsTotal,
+		exporter.MetricSessionsActive,
 		exporter.MetricSessionsEndedTotal,
 		exporter.MetricSpawnsTotal,
 		exporter.MetricSpendByProfileUSDTotal,
@@ -558,6 +563,15 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricModelTokensTotal:       4000,
 		exporter.MetricSpendByProfileUSDTotal: 1000,
 		exporter.MetricAccountInfo:            1000,
+		// The four #2702 state gauges. repo, agent_role, and status are all
+		// bounded at low tens under #2699 section 6; state is folded through
+		// stateLabel to the pinned agent.AgentState set (see gauges.go), so it
+		// cannot grow beyond that set plus the "other" bucket regardless of
+		// what agent_status.state actually holds.
+		exporter.MetricSessionsActive:     1000,
+		exporter.MetricMergeQueueDepth:    1000,
+		exporter.MetricMergesByStatus:     1000,
+		exporter.MetricBusMessagesPending: 1000,
 	}
 	for name, family := range exp.Families {
 		bound, ok := bounds[name]

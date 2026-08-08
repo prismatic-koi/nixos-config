@@ -284,6 +284,11 @@ func New(cfg Config) (*Exporter, error) {
 
 	e.tailers = []tailcursor.Advancer{tailer, lifecycleTailer, costTailer}
 
+	// The four #2702 state gauges. Unlike the tailers above, these read
+	// prism.db directly on every Collect() — see gauges.go for why that is
+	// correct for a gauge and safe against the 90-day prune.
+	registerStateGauges(e.registry, conn, logger)
+
 	return e, nil
 }
 
