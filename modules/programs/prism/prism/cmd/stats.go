@@ -34,29 +34,6 @@ import (
 // These are pre-sidecar "legacy" events that predate agent session tracking.
 const legacySentinel = ""
 
-// modelCosts contains per-million-token pricing for known models.
-// Cost is in USD. Keys are "providerID/modelID" exactly as stored in payloads —
-// these must match the model IDs emitted by the pi plugin verbatim.
-// Add new entries when new models are configured.
-var modelCosts = map[string]struct {
-	Input      float64
-	Output     float64
-	CacheRead  float64
-	CacheWrite float64
-}{
-	// Anthropic direct models (hyphens as version separators).
-	"anthropic/claude-sonnet-4-6": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
-	"anthropic/claude-opus-4-6":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
-	"anthropic/claude-haiku-4-5":  {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
-	// GitHub Copilot models (dots as version separators — different from Anthropic direct).
-	"github-copilot/claude-sonnet-4.6": {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
-	"github-copilot/claude-opus-4.6":   {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
-	"github-copilot/claude-haiku-4.5":  {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
-	// Google Gemini models.
-	"google/gemini-3-flash-preview":        {Input: 0.15, Output: 0.60, CacheRead: 0.0375, CacheWrite: 0},
-	"google/gemini-3.1-flash-lite-preview": {Input: 0.075, Output: 0.30, CacheRead: 0.01875, CacheWrite: 0},
-}
-
 var statsCmd = &cobra.Command{
 	Use:   "stats [instance-id|session-name]",
 	Short: "Session metrics and statistics",

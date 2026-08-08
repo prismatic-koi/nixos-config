@@ -6,6 +6,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/payload"
+	"github.com/prismatic-koi/prism/internal/pricing"
 )
 
 // ---------- legacy per-session detail (kept for --doomloops/denials/asks) ----------
@@ -58,17 +59,10 @@ type subagentInvocation struct {
 }
 
 func (m *sessionMetrics) totalCost() float64 {
-	model := m.ModelID
-	costs, ok := modelCosts[model]
-	if !ok {
-		// Model not in local pricing table — fall back to the cost reported
-		// directly in the event payload (e.g. openrouter/* models).
-		return m.EventCost
-	}
-	return (float64(m.InputTokens)*costs.Input +
-		float64(m.OutputTokens)*costs.Output +
-		float64(m.CacheReadTokens)*costs.CacheRead +
-		float64(m.CacheWriteTokens)*costs.CacheWrite) / 1_000_000
+	return pricing.Cost(m.ModelID,
+		float64(m.InputTokens), float64(m.OutputTokens),
+		float64(m.CacheReadTokens), float64(m.CacheWriteTokens),
+		m.EventCost)
 }
 
 func (m *sessionMetrics) duration() time.Duration {
@@ -247,14 +241,10 @@ func groupEventsByHarnessSessionID(events []db.Event) (map[string][]db.Event, []
 // Uses the local pricing table when the model is known; falls back to
 // the event-reported cost for unknown models (e.g. openrouter/*).
 func computeTurnCost(t db.TokenTurn) float64 {
-	costs, ok := modelCosts[t.Model]
-	if !ok {
-		return t.EventCost
-	}
-	return (float64(t.Input)*costs.Input +
-		float64(t.Output)*costs.Output +
-		float64(t.CacheRead)*costs.CacheRead +
-		float64(t.CacheWrite)*costs.CacheWrite) / 1_000_000
+	return pricing.Cost(t.Model,
+		float64(t.Input), float64(t.Output),
+		float64(t.CacheRead), float64(t.CacheWrite),
+		t.EventCost)
 }
 
 // modelMetrics tracks per-model metrics accumulated across turns.
@@ -330,14 +320,10 @@ func collectModelMetrics(events []db.Event) map[string]*modelMetrics {
 		// Cost using the full key (provider/model).
 		// If the model is not in the local pricing table, fall back to the
 		// cost reported in the event payload (e.g. openrouter/* models).
-		if costs, ok := modelCosts[key]; ok {
-			m.Cost += (float64(p.InputTokens)*costs.Input +
-				float64(p.OutputTokens)*costs.Output +
-				float64(p.CacheReadTokens)*costs.CacheRead +
-				float64(p.CacheWriteTokens)*costs.CacheWrite) / 1_000_000
-		} else {
-			m.Cost += p.Cost
-		}
+		m.Cost += pricing.Cost(key,
+			float64(p.InputTokens), float64(p.OutputTokens),
+			float64(p.CacheReadTokens), float64(p.CacheWriteTokens),
+			p.Cost)
 
 		// Latency and throughput only for turns with valid duration.
 		if p.DurationMs > 0 {

@@ -8,6 +8,8 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
+
+	"github.com/prismatic-koi/prism/internal/pricing"
 )
 
 // ---------- model performance breakdown ----------
@@ -151,7 +153,7 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 
 		// Cost.
 		costStr := "-"
-		if _, ok := modelCosts[row.key]; ok {
+		if _, ok := pricing.Lookup(row.key); ok {
 			costStr = formatCost(m.Cost)
 		}
 
