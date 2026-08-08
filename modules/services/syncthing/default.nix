@@ -33,6 +33,31 @@ in
           "/persist/home/${username}/.config/syncthing";
       description = "Location for syncthing config";
     };
+    nx.services.syncthing.apiKeyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Path to a runtime file that holds the Syncthing REST API key, or
+        `null` when this host has no pinned key.
+
+        Set by ./secrets.nix on the hosts that carry a sops-encrypted key
+        (issue #2461). Consumers — currently the Syncthing `/metrics`
+        scrape in `modules/services/alloy` — must read the file at
+        runtime. The key value itself never enters the Nix store.
+      '';
+    };
+    nx.services.syncthing.apiKeyGroup = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        Name of the group that owns `apiKeyFile`, or `null` when this
+        host has no pinned key.
+
+        A consumer that runs under systemd `DynamicUser` has no stable
+        UID to grant the file to, so it joins this group through
+        `SupplementaryGroups` instead.
+      '';
+    };
     nx.services.syncthing.obsidian.enable = lib.mkEnableOption "Set up syncthing obsidian folder" // {
       default = false;
     };
