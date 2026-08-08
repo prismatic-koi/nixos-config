@@ -3661,6 +3661,13 @@ type usageSnapshotRequest struct {
 	Windows             *usageSnapshotWindows  `json:"windows"`
 	Fallback            *usageSnapshotFallback `json:"fallback"`
 	Overage             *usageSnapshotOverage  `json:"overage"`
+	// OrganizationID and WorkspaceID mirror `anthropic-organization-id` and
+	// `anthropic-workspace-id` (issue #2713, parent #2699). Like every other
+	// field on this type, they carry no credential and are not part of the
+	// isEmpty gate below — an org/workspace pair with no rate-limit data
+	// attached is not worth persisting on its own.
+	OrganizationID string `json:"organization_id"`
+	WorkspaceID    string `json:"workspace_id"`
 }
 
 type usageSnapshotWindows struct {
@@ -3747,6 +3754,8 @@ func (r usageSnapshotRequest) toSnapshot(accountName, capturedAt string) usage.S
 		UnifiedStatus:       r.UnifiedStatus,
 		RepresentativeClaim: r.RepresentativeClaim,
 		UnifiedReset:        r.UnifiedReset,
+		OrganizationID:      r.OrganizationID,
+		WorkspaceID:         r.WorkspaceID,
 	}
 	if r.Windows != nil {
 		fiveHour := r.Windows.FiveHour.toWindow()

@@ -137,6 +137,15 @@ type Snapshot struct {
 	Windows             *Windows  `json:"windows,omitempty"`
 	Fallback            *Fallback `json:"fallback,omitempty"`
 	Overage             *Overage  `json:"overage,omitempty"`
+	// OrganizationID and WorkspaceID mirror the `anthropic-organization-id`
+	// and `anthropic-workspace-id` response headers (issue #2713, parent
+	// #2699). Both are server-assigned and stable across a local account
+	// rename, which is why fleet-wide attribution keys off the org ID rather
+	// than the account name. Neither is derived from, nor read alongside, the
+	// bearer token — the token reaches only the `authorization` request
+	// header (internal/usage/refresh.go).
+	OrganizationID string `json:"organization_id,omitempty"`
+	WorkspaceID    string `json:"workspace_id,omitempty"`
 }
 
 // DirForHome returns the usage directory for a caller that has ALREADY

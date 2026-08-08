@@ -39,6 +39,8 @@ func fullRateLimitHeaders() http.Header {
 	h.Set("anthropic-ratelimit-unified-fallback-percentage", "0.5")
 	h.Set("anthropic-ratelimit-unified-overage-status", "rejected")
 	h.Set("anthropic-ratelimit-unified-overage-disabled-reason", "out_of_credits")
+	h.Set("anthropic-organization-id", "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6")
+	h.Set("anthropic-workspace-id", "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD")
 	return h
 }
 
@@ -413,6 +415,61 @@ func TestParseRateLimitHeaders_FullSet(t *testing.T) {
 	if p.Overage == nil || p.Overage.DisabledReason != "out_of_credits" {
 		t.Errorf("Overage = %+v", p.Overage)
 	}
+	if p.OrganizationID != "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6" {
+		t.Errorf("OrganizationID = %q", p.OrganizationID)
+	}
+	if p.WorkspaceID != "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD" {
+		t.Errorf("WorkspaceID = %q", p.WorkspaceID)
+	}
+}
+
+// TestParseRateLimitHeaders_OrgAndWorkspaceOmittedWhenAbsent covers the
+// edge case AC for issue #2713: a response carrying neither header must
+// produce a payload with both fields absent, not present-and-empty.
+func TestParseRateLimitHeaders_OrgAndWorkspaceOmittedWhenAbsent(t *testing.T) {
+	h := http.Header{}
+	h.Set("anthropic-ratelimit-unified-status", "allowed")
+
+	p := ParseRateLimitHeaders(h)
+	if p == nil {
+		t.Fatal("payload is nil")
+	}
+	if p.OrganizationID != "" {
+		t.Errorf("OrganizationID = %q, want empty", p.OrganizationID)
+	}
+	if p.WorkspaceID != "" {
+		t.Errorf("WorkspaceID = %q, want empty", p.WorkspaceID)
+	}
+
+	snap := p.ToSnapshot("work", time.Now())
+	raw, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, present := decoded["organization_id"]; present {
+		t.Error("organization_id present in JSON, want omitted when absent from the response")
+	}
+	if _, present := decoded["workspace_id"]; present {
+		t.Error("workspace_id present in JSON, want omitted when absent from the response")
+	}
+}
+
+// TestParseRateLimitHeaders_NoRateLimitHeadersYieldsNilEvenWithOrgID covers
+// the ordering rule in ParseRateLimitHeaders: an org/workspace pair with no
+// accompanying rate-limit data must not turn an otherwise-empty response
+// into a persistable payload.
+func TestParseRateLimitHeaders_NoRateLimitHeadersYieldsNilEvenWithOrgID(t *testing.T) {
+	h := http.Header{}
+	h.Set("anthropic-organization-id", "1c5dbea6-0b0b-4750-bf6c-e7d38bc643d6")
+	h.Set("anthropic-workspace-id", "wrkspc_01DU7EeZcQ8gMsz6T4vvtwVD")
+
+	if p := ParseRateLimitHeaders(h); p != nil {
+		t.Errorf("payload = %+v, want nil \u2014 org/workspace alone must not make an empty response persistable", p)
+	}
 }
 
 // TestParseRateLimitHeaders_SevenDayHasNoSurpassedThreshold guards the
@@ -515,6 +572,7 @@ func TestSnapshotPayload_MarshalsToTheEndpointSchema(t *testing.T) {
 	allowed := map[string]bool{
 		"unified_status": true, "representative_claim": true, "unified_reset": true,
 		"windows": true, "fallback": true, "overage": true,
+		"organization_id": true, "workspace_id": true,
 	}
 	for key := range decoded {
 		if !allowed[key] {

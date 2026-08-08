@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 40
+	currentSchemaVersion = 41
 )
 
 // DB wraps a SQLite connection.
@@ -45,6 +45,14 @@ type DB struct {
 	// across goroutines and a test may install its own.
 	redactorMu sync.RWMutex
 	redactor   *payload.Redactor
+
+	// accountResolver resolves the active account name recorded on every
+	// event and spawn-input row at write time (issue #2714). nil means "use
+	// the process default" — see account_name.go. Guarded by
+	// accountResolverMu because a handle is shared across goroutines and a
+	// test may install its own.
+	accountResolverMu sync.RWMutex
+	accountResolver   *AccountResolver
 }
 
 // Path returns the filesystem path of the database file.
@@ -65,7 +73,13 @@ CREATE TABLE IF NOT EXISTS agent_events (
   type               TEXT NOT NULL,
   payload            TEXT NOT NULL,
   created_at         INTEGER NOT NULL,
-  instance_id        TEXT REFERENCES sessions(instance_id)
+  instance_id        TEXT REFERENCES sessions(instance_id),
+  -- Active prism account name at the moment this row was written, recorded
+  -- by WriteEvent from the mtime-cached resolver (issue #2714). NULLABLE for
+  -- back-compat with pre-migration rows; new rows always carry a value
+  -- ("unknown" when the account store cannot be resolved). Records the NAME
+  -- only — never any accounts/*.json token content.
+  account_name       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_session    ON agent_events(session_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_repo       ON agent_events(repo, type, created_at DESC);
@@ -307,6 +321,13 @@ CREATE TABLE IF NOT EXISTS spawn_inputs (
 
     -- Free-form JSON blob for forward-compat.
     extras                 TEXT,
+
+    -- Active prism account name at spawn time, recorded by InsertSpawnInputs
+    -- from the mtime-cached resolver (issue #2714). Audit symmetry with
+    -- profile_name / isolation_flag. NULLABLE for back-compat with
+    -- pre-migration rows; new rows always carry a value ("unknown" when the
+    -- account store cannot be resolved). Records the NAME only.
+    account_name           TEXT,
 
     created_at             INTEGER NOT NULL
 );
@@ -866,7 +887,7 @@ func seedSchemaVersionIfEmpty(conn sqlExecutor) error {
 }
 
 // runMigrations reads the current schema_version and applies all pending
-// migrations in order from v1 to v37.
+// migrations in order from v1 to currentSchemaVersion.
 func runMigrations(conn sqlExecutor) error {
 	var version int
 	if err := conn.QueryRow("SELECT version FROM schema_version").Scan(&version); err != nil {
@@ -987,6 +1008,9 @@ func runMigrations(conn sqlExecutor) error {
 		return err
 	}
 	if err := migrateV39ToV40(conn, &version); err != nil {
+		return err
+	}
+	if err := migrateV40ToV41(conn, &version); err != nil {
 		return err
 	}
 	if version > currentSchemaVersion {
@@ -1379,6 +1403,55 @@ func migrateV39ToV40(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v39\u2192v40: bump version: %w", err)
 	}
 	*version = 40
+	return nil
+}
+
+// migrateV40ToV41 adds a nullable account_name column to agent_events and to
+// spawn_inputs (issue #2714, parent #2699).
+//
+// The column records the active prism account name at the moment each row is
+// written, so that #2704 can attribute spend to a subscription. It is written
+// by WriteEvent / WriteEventReturningRowID (per event) and by
+// InsertSpawnInputs (per spawn) from the mtime-cached resolver in
+// account_name.go. See that file for why capture happens at write time rather
+// than at scrape time.
+//
+// No backfill: pre-migration rows keep a NULL account_name, which every reader
+// treats as "account not recorded". Backfilling would be a lie — the account
+// active when an old row was written is not recoverable, and guessing it from
+// today's active account is exactly the retroactive-attribution trap this
+// train avoids.
+//
+// Each ALTER TABLE is guarded by a pragma_table_info check so the migration is
+// idempotent: on a fresh database the declarative schema block above already
+// created both columns, and a second run of this migration matches the guard
+// and does nothing. Both columns are nullable, so the ALTER TABLE adds them
+// with an implicit NULL default and does not rewrite existing rows or lose
+// data on a populated database.
+func migrateV40ToV41(conn sqlExecutor, version *int) error {
+	if *version >= 41 {
+		return nil
+	}
+	for _, col := range []struct{ table, ddl string }{
+		{"agent_events", `ALTER TABLE agent_events ADD COLUMN account_name TEXT`},
+		{"spawn_inputs", `ALTER TABLE spawn_inputs ADD COLUMN account_name TEXT`},
+	} {
+		var exists int
+		if err := conn.QueryRow(
+			`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'account_name'`, col.table,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("db: migration v40\u2192v41: check %s.account_name column: %w", col.table, err)
+		}
+		if exists == 0 {
+			if _, err := conn.Exec(col.ddl); err != nil {
+				return fmt.Errorf("db: migration v40\u2192v41: add %s.account_name: %w", col.table, err)
+			}
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 41`); err != nil {
+		return fmt.Errorf("db: migration v40\u2192v41: bump version: %w", err)
+	}
+	*version = 41
 	return nil
 }
 
@@ -2888,6 +2961,14 @@ type SpawnInputs struct {
 	// Free-form JSON blob for forward-compat.
 	Extras *string
 
+	// AccountName is the active prism account at spawn time (issue #2714).
+	// It is populated on read by SpawnInputsByInstanceID. On write it is
+	// IGNORED: InsertSpawnInputs resolves the account itself from the
+	// mtime-cached resolver, so the recorded value always reflects the live
+	// account store at spawn time and a caller cannot spoof or forget it.
+	// nil only on a pre-migration row read back as SQL NULL.
+	AccountName *string
+
 	// ms epoch, mirrors sessions.started_at.
 	CreatedAt int64
 }
@@ -2909,6 +2990,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     model_variant_overrides,
     skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
     prompt_text, prompt_source, abtest_pair_id, extras,
+    account_name,
     created_at
 ) VALUES (
     ?,
@@ -2919,6 +3001,7 @@ INSERT OR IGNORE INTO spawn_inputs (
     ?,
     ?, ?, ?,
     ?, ?, ?, ?,
+    ?,
     ?
 )`,
 		si.InstanceID,
@@ -2929,6 +3012,7 @@ INSERT OR IGNORE INTO spawn_inputs (
 		si.ModelVariantOverrides,
 		si.SkillsManifestHash, si.PromptTemplateHash, si.AgentPromptHash,
 		si.PromptText, si.PromptSource, si.AbtestPairID, si.Extras,
+		d.resolveAccountName(),
 		si.CreatedAt,
 	)
 	if err != nil {
@@ -2950,6 +3034,7 @@ SELECT
     model_variant_overrides,
     skills_manifest_hash, prompt_template_hash, agent_prompt_hash,
     prompt_text, prompt_source, abtest_pair_id, extras,
+    account_name,
     created_at
 FROM spawn_inputs
 WHERE instance_id = ?`
@@ -2959,7 +3044,7 @@ WHERE instance_id = ?`
 	var isolationMode sql.NullString
 	var prNumber sql.NullInt64
 	var branchFlag, modelVariantOverrides, skillsManifestHash, promptTemplateHash, agentPromptHash sql.NullString
-	var promptText, promptSource, abtestPairID, extras sql.NullString
+	var promptText, promptSource, abtestPairID, extras, accountName sql.NullString
 	var hostModeFlag, containersFlag, ignoreConcurrencyCap int
 	err := row.Scan(
 		&si.InstanceID,
@@ -2970,6 +3055,7 @@ WHERE instance_id = ?`
 		&modelVariantOverrides,
 		&skillsManifestHash, &promptTemplateHash, &agentPromptHash,
 		&promptText, &promptSource, &abtestPairID, &extras,
+		&accountName,
 		&si.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -3032,6 +3118,9 @@ WHERE instance_id = ?`
 	}
 	if extras.Valid {
 		si.Extras = &extras.String
+	}
+	if accountName.Valid {
+		si.AccountName = &accountName.String
 	}
 	return &si, nil
 }
