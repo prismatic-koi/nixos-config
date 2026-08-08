@@ -22,6 +22,10 @@ Do NOT load this skill for:
 
 ## Scoring rubric
 
+Before scoring, consider whether the issue should be split into more than one issue. This is a consideration, not a gate — it does not block or forbid a spawn. Some large issues are genuinely atomic, and forcing a split would fragment them into PRs that leave `main` incoherent. Name the split signals as you weigh them: an AC count above roughly 10; a schema migration; a new package or module; more than one independently shippable capability in one issue. When two or more are present, consider splitting. Record the split decision — split or not, and why — before choosing a tier.
+
+Tier and issue size are separate axes. `prism spawn --profile` answers "how strong a model"; it does not answer "is this one issue or two". Issue #2683 is the worked example: `max` was the correct tier call, and the session still cost $13.03 — 54% of its 8-session batch's total spend — because the issue itself was oversized (13 ACs, a DB migration, a new Go package, a live model call, a 23-file diff), not because the tier was wrong.
+
 Score the task by summing the point values of every signal that applies. Signals are additive — a task can trigger multiple simplifying signals and multiple hardening signals simultaneously.
 
 | Signal | Points |
