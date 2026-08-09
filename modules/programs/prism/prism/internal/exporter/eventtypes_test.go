@@ -168,9 +168,10 @@ func TestExporter_HostileEventTypeCannotCorruptTheExposition(t *testing.T) {
 	}
 	// 2 from #2700 (build_info, agent_events_total) + 6 from #2703's
 	// lifecycle and outcome counters + 4 from #2704 (three cost/token
-	// counters and prism_account_info) + 4 from #2702's state gauges.
-	if got := len(exp.FamilyNames()); got != 16 {
-		t.Fatalf("exposition has %d families, want 16: %v", got, exp.FamilyNames())
+	// counters and prism_account_info) + 4 from #2702's state gauges + 2
+	// from #2708's sidecar-liveness gauges.
+	if got := len(exp.FamilyNames()); got != 18 {
+		t.Fatalf("exposition has %d families, want 18: %v", got, exp.FamilyNames())
 	}
 }
 

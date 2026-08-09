@@ -6,6 +6,7 @@ package exporter_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/exporter"
@@ -218,4 +219,154 @@ func countOccurrences(haystack, needle string) int {
 		}
 	}
 	return n
+}
+
+// ── #2708: prism_sidecars_live / prism_sidecars_stale ──────────────────────
+
+// setLastSeen backdates a session's agent_status.last_seen by age, so the
+// test can put it on either side of exporter.SidecarStaleThreshold without
+// racing the clock.
+func setLastSeen(t *testing.T, h *harness, sessionName string, age time.Duration) {
+	t.Helper()
+	ms := time.Now().Add(-age).UnixMilli()
+	if _, err := h.raw().Exec(`UPDATE agent_status SET last_seen = ? WHERE session_name = ?`, ms, sessionName); err != nil {
+		t.Fatalf("setLastSeen: %v", err)
+	}
+}
+
+func TestExporter_SidecarLivenessGaugesAppearInMetrics(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	exp := h.scrape(h.exp)
+	for _, name := range []string{exporter.MetricSidecarsLive, exporter.MetricSidecarsStale} {
+		exp.Family(t, name)
+	}
+}
+
+// ── AC (edge-case): an empty database produces no series and no error ─────
+
+func TestExporter_SidecarLivenessGaugesAreEmptyOnAnEmptyDatabase(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	exp := h.scrape(h.exp)
+	for _, name := range []string{exporter.MetricSidecarsLive, exporter.MetricSidecarsStale} {
+		f := exp.Family(t, name)
+		if len(f.Samples) != 0 {
+			t.Errorf("%s has %d samples on an empty database, want 0: %+v", name, len(f.Samples), f.Samples)
+		}
+	}
+	if h.logBuf.Len() != 0 {
+		t.Errorf("an empty database logged something; the exporter must not error: %s", h.logBuf.String())
+	}
+}
+
+// ── AC (functional): a fresh last_seen counts as live, a stale one counts
+// as dead-or-wedged ─────────────────────────────────────────────────────
+
+func TestExporter_SidecarLivenessReflectsLastSeen(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	liveInstance, liveSession := h.spawnFixture(repo, "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		liveSession, repo, "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(liveSession, liveInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	setLastSeen(t, h, liveSession, 30*time.Second) // well inside the threshold
+
+	staleInstance, staleSession := h.spawnFixture(repo, "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		staleSession, repo, "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(staleSession, staleInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	setLastSeen(t, h, staleSession, exporter.SidecarStaleThreshold+time.Minute) // well past the threshold
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 1 {
+		t.Errorf("%s%v = %v, want 1 (one fresh session)", exporter.MetricSidecarsLive, labels, got)
+	}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 1 {
+		t.Errorf("%s%v = %v, want 1 (one stale session)", exporter.MetricSidecarsStale, labels, got)
+	}
+}
+
+// ── AC (edge-case): a session with ended_at set is counted in neither
+// gauge ───────────────────────────────────────────────────────────────
+
+func TestExporter_SidecarLivenessExcludesEndedSessions(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	instanceID, sessionName := h.spawnFixture(repo, "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		sessionName, repo, "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	setLastSeen(t, h, sessionName, 30*time.Second)
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 1 {
+		t.Fatalf("%s%v = %v before ending, want 1", exporter.MetricSidecarsLive, labels, got)
+	}
+
+	if err := h.writeDB.SetEnded(sessionName); err != nil {
+		t.Fatalf("SetEnded: %v", err)
+	}
+
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 0 {
+		t.Errorf("%s%v = %v after ending, want 0 — an ended session must not count as live", exporter.MetricSidecarsLive, labels, got)
+	}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 0 {
+		t.Errorf("%s%v = %v after ending, want 0 — an ended session must not count as stale either", exporter.MetricSidecarsStale, labels, got)
+	}
+}
+
+// ── AC (edge-case): a NULL or zero last_seen is handled without panicking
+// and without being miscounted as live ──────────────────────────────────
+
+func TestExporter_SidecarLivenessTreatsZeroLastSeenAsStaleNotLive(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	instanceID, sessionName := h.spawnFixture(repo, "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		sessionName, repo, "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	// agent_status.last_seen is NOT NULL, so the reachable zero-evidence case
+	// is the literal value 0 (e.g. a row seeded before any WriteEvent call),
+	// not SQL NULL. Force it explicitly rather than relying on whatever the
+	// seed path defaulted it to.
+	if _, err := h.raw().Exec(`UPDATE agent_status SET last_seen = 0 WHERE session_name = ?`, sessionName); err != nil {
+		t.Fatalf("UPDATE last_seen = 0: %v", err)
+	}
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 0 {
+		t.Errorf("%s%v = %v with last_seen = 0, want 0 — no positive evidence of liveness must never count as live", exporter.MetricSidecarsLive, labels, got)
+	}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 1 {
+		t.Errorf("%s%v = %v with last_seen = 0, want 1", exporter.MetricSidecarsStale, labels, got)
+	}
 }

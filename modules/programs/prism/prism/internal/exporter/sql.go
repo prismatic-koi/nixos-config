@@ -195,6 +195,16 @@ const (
 	// bus_messages.repo only — never .text, which #2699 section 5 bans (see
 	// the narrowing note above).
 	BusMessagesPendingSQL = `SELECT repo FROM bus_messages WHERE delivered_at IS NULL`
+
+	// SidecarLivenessSQL backs the #2708 prism_sidecars_live and
+	// prism_sidecars_stale gauges. It reads every session whose sidecar has
+	// not ended, plus the one column (last_seen) needed to classify it as
+	// live or stale against SidecarStaleThreshold (see gauges.go). Like
+	// SessionsActiveSQL, ended_at IS NULL means agent_status is never pruned
+	// while the row is live, so this is safe against the 90-day prune by
+	// construction. last_seen is a heartbeat column, not a body column, so
+	// it is not in the #2699 section 5 forbidden list.
+	SidecarLivenessSQL = `SELECT repo, last_seen FROM agent_status WHERE ended_at IS NULL`
 )
 
 // AllSQL is every statement the exporter issues, in one slice, for the
@@ -208,6 +218,7 @@ var AllSQL = []string{
 	MergeQueueDepthSQL,
 	MergesByStatusSQL,
 	BusMessagesPendingSQL,
+	SidecarLivenessSQL,
 }
 
 // agentEventSource is the tailcursor.Source over agent_events. The value

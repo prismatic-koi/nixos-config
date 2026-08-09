@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
 	"github.com/prismatic-koi/prism/internal/metrics"
@@ -29,6 +30,13 @@ import (
 // All four read a small, indexed table (agent_status.ended_at,
 // pending_merges' PK, and the pending-bus partial index at db.go:181), so
 // they are cheap enough to recompute on every scrape.
+//
+// Two more gauges, added by #2708, share this file and this shape for the
+// same reason -- a point-in-time liveness question is exactly what a
+// scrape-time plain-SQL recompute is for:
+//
+//	prism_sidecars_live{repo}    gauge  agent_status (ended_at IS NULL, last_seen fresh)
+//	prism_sidecars_stale{repo}   gauge  agent_status (ended_at IS NULL, last_seen stale)
 
 // Metric names for the four #2702 gauges.
 const (
@@ -37,6 +45,35 @@ const (
 	MetricMergesByStatus     = "prism_merges_by_status"
 	MetricBusMessagesPending = "prism_bus_messages_pending"
 )
+
+// Metric names for the #2708 sidecar-liveness gauges.
+const (
+	MetricSidecarsLive  = "prism_sidecars_live"
+	MetricSidecarsStale = "prism_sidecars_stale"
+)
+
+// SidecarStaleThreshold is how long agent_status.last_seen can go silent,
+// for a session with ended_at IS NULL, before its sidecar counts as dead or
+// wedged rather than merely quiet (#2708).
+//
+// last_seen is a heartbeat: it is populated from MAX(agent_events.created_at)
+// (see the v13->v14 migration in internal/db/db.go) and updated by every
+// live WriteEvent call. A sidecar that has died or wedged stops emitting
+// events entirely, so its last_seen stops advancing while ended_at stays
+// NULL -- exactly the failure prism-restore.service cannot see, because it
+// reports only whether the spawner ran, not whether any given sidecar is
+// still alive.
+//
+// The value is deliberately set well above DefaultPollInterval (15s, see
+// exporter.go): the exporter recomputes this gauge on every scrape, so a
+// threshold close to the scrape cadence would flap a healthy-but-quiet
+// session in and out of "stale" on ordinary jitter. It is deliberately set
+// well below reviewAgentActivityWindow and DefaultReviewAgentInactivityTimeout
+// (both 15m, internal/review/monitor.go and internal/sidecar/sidecar.go): those
+// windows govern when prism itself force-ends a wedged review agent, and this
+// gauge exists precisely to surface the wedge to an operator before that
+// self-healing path fires, not after.
+const SidecarStaleThreshold = 5 * time.Minute
 
 // unknownStateLabel is the label value prism_sessions_active{state} uses for
 // an agent_status.state value outside the pinned set (see stateLabel below).
@@ -287,10 +324,106 @@ func (c *busMessagesPendingCollector) Collect() []metrics.Sample {
 	return samples
 }
 
-// registerStateGauges constructs and registers the four #2702 gauges.
+// sidecarLivenessCollector implements both #2708 gauges,
+// prism_sidecars_live and prism_sidecars_stale, from a single query
+// (SidecarLivenessSQL). Both gauges are grouped by repo only -- a bounded
+// label set under #2699 section 6 -- never by session_name or instance_id.
+//
+// A session with ended_at set is excluded by the query itself (WHERE
+// ended_at IS NULL) and so lands in neither gauge. A row with last_seen NULL
+// or zero -- a session that has not yet written any event -- folds to
+// "stale", never "live": it has no positive evidence of a live sidecar, and
+// the zero/NULL value must never be miscounted as freshness.
+type sidecarLivenessCollector struct {
+	conn   *sql.DB
+	logger *log.Logger
+
+	// live selects which of the two gauges this collector instance reports:
+	// true for prism_sidecars_live, false for prism_sidecars_stale.
+	live bool
+
+	// now returns the reference time staleness is measured against. Set in
+	// tests to something other than time.Now for a deterministic threshold
+	// crossing; nil defaults to time.Now.
+	now func() time.Time
+}
+
+func (c *sidecarLivenessCollector) Name() string {
+	if c.live {
+		return MetricSidecarsLive
+	}
+	return MetricSidecarsStale
+}
+
+func (c *sidecarLivenessCollector) Kind() metrics.Kind { return metrics.KindGauge }
+
+func (c *sidecarLivenessCollector) Help() string {
+	if c.live {
+		return "Prism sessions whose sidecar is live (ended_at IS NULL, last_seen within SidecarStaleThreshold), by repo."
+	}
+	return "Prism sessions that have not ended but whose sidecar has gone quiet (last_seen older than SidecarStaleThreshold, or never set) -- a dead or wedged sidecar, by repo."
+}
+
+func (c *sidecarLivenessCollector) nowFunc() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *sidecarLivenessCollector) Collect() []metrics.Sample {
+	rows, err := c.conn.Query(SidecarLivenessSQL)
+	if err != nil {
+		c.logger.Printf("gauge %s: query failed: %v", c.Name(), err)
+		return nil
+	}
+	defer rows.Close()
+
+	cutoff := c.nowFunc().Add(-SidecarStaleThreshold)
+	counts := make(map[string]float64)
+	for rows.Next() {
+		var repo string
+		var lastSeen sql.NullInt64
+		if err := rows.Scan(&repo, &lastSeen); err != nil {
+			c.logger.Printf("gauge %s: scan failed: %v", c.Name(), err)
+			return nil
+		}
+
+		// A NULL or zero last_seen has no positive evidence of a live
+		// sidecar, so it is never treated as fresh, regardless of cutoff.
+		isLive := false
+		if lastSeen.Valid && lastSeen.Int64 > 0 {
+			seen := time.UnixMilli(lastSeen.Int64)
+			isLive = !seen.Before(cutoff)
+		}
+
+		if isLive == c.live {
+			counts[repo]++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		c.logger.Printf("gauge %s: iterate rows failed: %v", c.Name(), err)
+		return nil
+	}
+
+	samples := make([]metrics.Sample, 0, len(counts))
+	for repo, v := range counts {
+		samples = append(samples, metrics.Sample{
+			LabelNames:  []string{"repo"},
+			LabelValues: []string{repo},
+			Value:       v,
+		})
+	}
+	return samples
+}
+
+// registerStateGauges constructs and registers the four #2702 gauges plus
+// the two #2708 sidecar-liveness gauges.
 func registerStateGauges(reg *metrics.Registry, conn *sql.DB, logger *log.Logger) {
 	reg.MustRegister(&sessionsActiveCollector{conn: conn, logger: logger})
 	reg.MustRegister(&mergeQueueDepthCollector{conn: conn, logger: logger})
 	reg.MustRegister(&mergesByStatusCollector{conn: conn, logger: logger})
 	reg.MustRegister(&busMessagesPendingCollector{conn: conn, logger: logger})
+	reg.MustRegister(&sidecarLivenessCollector{conn: conn, logger: logger, live: true})
+	reg.MustRegister(&sidecarLivenessCollector{conn: conn, logger: logger, live: false})
 }

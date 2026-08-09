@@ -195,8 +195,8 @@ func TestExporter_ServesParseablePrometheusText(t *testing.T) {
 
 // #2700 shipped exactly two metrics; #2703 adds the six lifecycle and
 // outcome counters; #2704 adds the three cost/token counters and the
-// prism_account_info gauge; #2702 adds the four state gauges. #2706 owns
-// the rest.
+// prism_account_info gauge; #2702 adds the four state gauges; #2708 adds
+// the two sidecar-liveness gauges. #2706 owns the rest.
 func TestExporter_ShipsExactlyTheSixteenSpecifiedMetrics(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
@@ -218,6 +218,8 @@ func TestExporter_ShipsExactlyTheSixteenSpecifiedMetrics(t *testing.T) {
 		exporter.MetricReviewVerdictsTotal,
 		exporter.MetricSessionsActive,
 		exporter.MetricSessionsEndedTotal,
+		exporter.MetricSidecarsLive,
+		exporter.MetricSidecarsStale,
 		exporter.MetricSpawnsTotal,
 		exporter.MetricSpendByProfileUSDTotal,
 	}
@@ -572,6 +574,11 @@ func TestExporter_ExposesNoUnboundedLabel(t *testing.T) {
 		exporter.MetricMergeQueueDepth:    1000,
 		exporter.MetricMergesByStatus:     1000,
 		exporter.MetricBusMessagesPending: 1000,
+		// The two #2708 sidecar-liveness gauges: repo is the only label,
+		// bounded at low tens under #2699 section 6, same as the #2702 gauges
+		// above.
+		exporter.MetricSidecarsLive:  1000,
+		exporter.MetricSidecarsStale: 1000,
 	}
 	for name, family := range exp.Families {
 		bound, ok := bounds[name]
