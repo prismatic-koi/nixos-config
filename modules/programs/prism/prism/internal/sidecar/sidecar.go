@@ -2776,6 +2776,11 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// per-turn msg_assistant $.model above is written unconditionally, so a
 		// subagent row still records the subagent's own model.
 		if f.Model != "" {
+			// NOTE: This gate and the corresponding finished-debounce suppression in
+			// handleSessionFinished (events.go:266) share one root cause: pi exposes no
+			// subagent identity, so agentName is always empty and this gate always
+			// passes on its second clause. Both sites must be revisited together if pi
+			// ever grows subagent identity. See issue #2735.
 			isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
 			if isRootAgent {
 				if err := s.cfg.DB.UpdateModelIDs(s.cfg.SessionName, f.Model); err != nil {
