@@ -1296,6 +1296,25 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
+	// restoreSession drives a REAL tmux server (cmdTestServer), so
+	// setupFullLayout's `tmux.SendKeys(name+":0", NvimCmd(directory))`
+	// (internal/session/session.go) doesn't just record a string — it
+	// types the command into a live shell in a live pane, which really
+	// execs the `nvim` binary. That real nvim process is the writer of
+	// `.local/state/nvim` under $HOME (issue #2719): it is a background
+	// process the test neither owns nor waits on, so it can still be
+	// writing its state dir when a later t.TempDir() cleanup (for this
+	// fakeHome) runs RemoveAll, racing on "directory not empty". Stub
+	// `nvim` on PATH with a no-op shim so window 0 never launches a real
+	// editor and there is no writer left to race — this test only
+	// asserts on window 1 (the agent pane), so the edit window's content
+	// is not under test.
+	nvimBinDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nvimBinDir, "nvim"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake nvim: %v", err)
+	}
+	t.Setenv("PATH", nvimBinDir+":"+os.Getenv("PATH"))
+
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
 
