@@ -476,6 +476,116 @@ func StandardSandboxMounts(cfg Config, sandboxHomeDir, hostHome string, mode iso
 		},
 	}
 
+	// ── Go module cache + build cache (RW, conditional, Dst==Src) ────────
+	// ~/go/pkg/mod (GOMODCACHE) and ~/.cache/go-build (GOCACHE), issue
+	// #2731. This mirrors the Darwin sandbox-exec grant from issue #2621
+	// (generateProfile section 5k): Darwin granted both caches, Linux granted
+	// neither, and the asymmetry was accidental. bwrap does not FAIL without
+	// them — it rebuilds cold into the sandbox interior on every session, so
+	// the cost was silent. Every worker and all five review agents paid it.
+	//
+	// PATHS come from goCacheDirsForGOOS (go_cache.go), the same platform-
+	// aware list generateProfile walks on Darwin. One list, so the two
+	// platforms and the four consumers (two grants, two pre-creation paths)
+	// cannot drift. goosLinux is pinned rather than read from runtime.GOOS
+	// because this slice is walked only by bwrap and bwrap is Linux-only
+	// (config.ValidIsolationModes; see the package comment) — pinning also
+	// keeps the emitted argv deterministic when the suite runs on Darwin.
+	// Note the GOCACHE path differs from Darwin's: os.UserCacheDir() is
+	// ~/.cache on Linux, not ~/Library/Caches.
+	//
+	// READ-WRITE is load-bearing for both. go writes module downloads and its
+	// lock file under GOMODCACHE, and build/test outputs under GOCACHE; a
+	// read-only bind does not make `go build ./...` work. Concurrency is safe
+	// by design — the module cache uses a lock file and the build cache is
+	// content-addressed, both built for concurrent multi-process access,
+	// which is exactly what parallel workers plus the host shell do. #2621
+	// accepted that reasoning for Darwin and it is unchanged here.
+	//
+	// LEAF DIRECTORIES ONLY, never a parent — the same scope #2621 fixed on
+	// Darwin, where (subpath ~/Library/Caches) was explicitly rejected as too
+	// broad:
+	//   - NOT ~/go: that would expose ~/go/bin, where `go install` drops
+	//     binaries that are typically on the host's PATH. A sandboxed agent
+	//     must not be able to plant an executable the user later runs.
+	//   - NOT ~/.cache: the user's whole cache tree. The sandbox binds the
+	//     leaves it needs (nix, bun, prism/clipboard) and nothing else.
+	//
+	// EXEC ASYMMETRY WITH DARWIN, accepted (issue #2731). goCacheDir carries
+	// execDenied, true for the module cache: on Darwin the profile emits
+	// (deny process-exec* file-map-executable) for ~/go/pkg/mod, so the agent
+	// can write module source there but cannot run anything it plants among
+	// it. A bwrap bind mount CANNOT express that — bwrap's grammar has no
+	// per-bind noexec and no noexec remount — so the field is read here for
+	// documentation value only and the Linux module cache is exec-capable
+	// where the Darwin one is not. No mechanism is invented to emulate it.
+	//
+	// That is acceptable, for three reasons:
+	//   1. It grants the agent no capability it lacks. The sandbox already
+	//      permits exec from every other writable path it holds — the
+	//      worktree, /tmp, ~/.npm (npx runs cached JS), ~/.cache/bun. An
+	//      agent that wants to run a binary it wrote does not need the
+	//      module cache to do it.
+	//   2. The host-side risk is identical on both platforms, and is the
+	//      risk #2621 already accepted and stated: both grants are WRITE, so
+	//      on either platform a compromised agent can mutate an extracted
+	//      module that a later HOST build compiles (go verifies module zips
+	//      against go.sum on download, but does not re-verify an already-
+	//      extracted tree — that is what `go mod verify` is for). Darwin's
+	//      deny narrows in-sandbox execution only; it does not narrow that.
+	//   3. The Darwin deny is coupled to the GOTOOLCHAIN=local pin (see
+	//      goCacheDir.execDenied and GoToolchainEnv) — the pin exists so the
+	//      deny does not break the toolchain auto-download path. bwrap has
+	//      neither half of that mechanism, so nothing here is left
+	//      half-wired: the Linux sandbox behaves as an unpinned toolchain
+	//      always has, except that a downloaded toolchain now persists in the
+	//      shared cache instead of being discarded with the session interior.
+	//
+	// OptionalIfMissing because bwrap ABORTS on a missing bind source (the
+	// #2243 lesson recorded on the ~/.cache/nix entry above). prepareVolumeDirs
+	// pre-creates BOTH directories host-side so the binds are normally always
+	// active — that is what makes the cache warm on a machine that has never
+	// run go, where a skipped mount would instead leave every session cold
+	// forever. This guard covers the case where that creation failed (it is
+	// non-fatal by design, e.g. the unwritable HOME of the nix build sandbox):
+	// the session then starts normally, just without the mount, and go falls
+	// back to building into the ephemeral sandbox interior exactly as it did
+	// before this change.
+	//
+	// HOST PERSISTENCE is the other half of "warm" on these machines. Both
+	// Linux hosts wipe the root btrfs subvolume on every boot, so a cache
+	// directory that is not persisted starts empty after each reboot.
+	// ~/.cache/go-build rides the ".cache" entry in
+	// modules/system/impermanence.nix; ~/go/pkg/mod has its own entry in
+	// modules/programs/prism/prism-tui.nix, because ~/go is not persisted.
+	// Remove either entry and this mount still works, but only within one
+	// boot.
+	//
+	// sandbox-exec does not walk this slice (see the package comment): there
+	// generateProfile emits explicit RW (subpath ...) grants on the same two
+	// logical caches at their Darwin paths, in section 5k.
+	for _, dir := range goCacheDirsForGOOS(hostHome, goosLinux) {
+		if sandboxHomeDir == "" {
+			break
+		}
+		// SandboxPath is the host path re-rooted at the in-sandbox $HOME —
+		// Dst==Src under bwrap, where sandboxHomeDir == hostHome. Deriving it
+		// with filepath.Rel keeps the single source of truth intact: the leaf
+		// names are spelled once, in go_cache.go. A Rel failure means the
+		// path is not under hostHome, which cannot happen for a path this
+		// package built from hostHome — skip rather than emit a bind rooted
+		// at "/".
+		rel, err := filepath.Rel(hostHome, dir.path)
+		if err != nil {
+			continue
+		}
+		specs = append(specs, MountSpec{
+			HostPath:          dir.path,
+			SandboxPath:       filepath.Join(sandboxHomeDir, rel),
+			OptionalIfMissing: true,
+		})
+	}
+
 	return specs
 }
 

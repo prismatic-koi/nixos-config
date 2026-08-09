@@ -227,6 +227,33 @@ in
 
       xdg.configFile."prism/config.json".text = builtins.toJSON prismConfig;
 
+      # Go module cache — persist across the boot wipe (issue #2731).
+      #
+      # A bwrap sandbox binds ~/go/pkg/mod (GOMODCACHE) and ~/.cache/go-build
+      # (GOCACHE) read-write, so a session reuses the host caches instead of
+      # rebuilding cold. That grant needs the host directories to survive a
+      # reboot, and only one of the two does by default: modules/system/
+      # impermanence.nix persists ".cache" wholesale, so GOCACHE is covered,
+      # while ~/go is not persisted at all. The root btrfs subvolume is
+      # recreated on every boot (the wipe-root service), so without this entry
+      # GOMODCACHE is destroyed at each boot and every session after a reboot
+      # re-downloads the whole module set — and each boot's copy is retained
+      # in old_roots for 14 days.
+      #
+      # The LEAF only, never ~/go. ~/go/bin holds `go install` output that is
+      # typically on the host PATH. The sandbox grant is the leaf for that
+      # reason (internal/container/go_cache.go), and the persistence entry
+      # holds the same line.
+      #
+      # Declared here rather than in modules/system/impermanence.nix to match
+      # the repo pattern: each module persists the paths it owns (pi.nix
+      # persists .pi, anki.nix persists .local/share/Anki2). On Darwin the
+      # option is a declared no-op (modules/darwin/impermanence-stub.nix) and
+      # there is no boot wipe, so no guard is needed.
+      home.persistence."/persist" = {
+        directories = [ "go/pkg/mod" ];
+      };
+
       programs.zsh.shellAliases = {
         gwc = "prism clone";
       };

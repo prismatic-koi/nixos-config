@@ -975,5 +975,23 @@ func (m *Manager) prepareVolumeDirs(perSessionState bool) error {
 		}
 	}
 
+	// Go module cache (~/go/pkg/mod) and build cache (~/.cache/go-build),
+	// issue #2731: pre-create so the RW binds emitted by
+	// StandardSandboxMounts are always active, including on a machine that
+	// has never run go outside a sandbox. Without this the entries are
+	// skipped (they are OptionalIfMissing because bwrap aborts on a missing
+	// bind source), go builds into the ephemeral sandbox interior, the host
+	// directories are still never created — and the cache stays cold for
+	// every future session too. Same reasoning as the clipboard and usage
+	// dirs above.
+	//
+	// This is the Linux half of the pair; the Darwin half is
+	// ensureGoCacheDirs, called from sandboxExecIsolator.Prepare (#2621).
+	// Both walk the shared list in go_cache.go and both create through
+	// createGoCacheDirs, which logs and continues — a failure here (the
+	// unwritable HOME of the nix build sandbox) must not stop a session
+	// starting.
+	createGoCacheDirs("bwrap", goCacheDirsForGOOS(home, goosLinux))
+
 	return nil
 }
