@@ -261,6 +261,25 @@ type Config struct {
 	// used by the host-API handler to delegate operations (/spawn, /cleanup,
 	// /prompt). Used in tests to inject a stub binary.
 	PrismBinaryPath string
+	// PIExtensionDir is the host path to the prism PI extension directory
+	// (config.Config.PIExtensionDir), captured ONCE at sidecar startup from
+	// config.Load(). config.Load() memoises its result for the process
+	// lifetime (sync.Once), and this sidecar is a long-running process, so
+	// this field freezes at the value config.json held when the sidecar
+	// started.
+	//
+	// A `nixos-rebuild switch` that changes the extension rewrites
+	// config.json's pi_extension_dir on disk, but this cached value does not
+	// move — the running sidecar keeps handing the pre-switch store path to
+	// every session it spawns, silently (issue #2739). The /spawn handler
+	// compares this cached value against a fresh re-read of config.json and
+	// logs a loud, named diagnostic on mismatch so the failure is named
+	// rather than silent. `prism restart` clears it by replacing the process.
+	//
+	// Empty when config.json did not set pi_extension_dir at startup; the
+	// staleness check treats an empty value on either side as "unknown" and
+	// stays silent (fail open).
+	PIExtensionDir string
 	// StartupConnectTimeout is the duration the sidecar waits for the first
 	// SSE event before concluding the harness never bound to its port and
 	// transitioning to StateError via writeStartupError. Only applies when

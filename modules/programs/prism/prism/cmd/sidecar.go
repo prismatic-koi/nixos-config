@@ -418,6 +418,7 @@ func runSidecar(cmd *cobra.Command, args []string) error {
 		HarnessPipeTCPPort:      harnessPipeTCPPort,
 		PodmanProxyListenerPath: podmanProxyListenerPath,
 		CheckinPrivilegedRepos:  checkinPrivilegedRepos,
+		PIExtensionDir:          prismCfg.PIExtensionDir,
 		OnReady:                 onReady,
 		InitialPrompt:           initialPrompt,
 		TitleGenerator:          newTitleGenerator(),
