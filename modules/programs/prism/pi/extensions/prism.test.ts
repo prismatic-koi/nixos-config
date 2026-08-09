@@ -56,6 +56,8 @@ import {
   GIT_PUSH_REMINDER_MESSAGE,
   // turn_end signal resolver
   resolveTurnEndSignal,
+  // turn_end model derivation (issue #2727)
+  deriveTurnEndModel,
   // Frame writer
   makeFrameWriter,
   type FrameWriter,
@@ -4633,6 +4635,62 @@ describe("resolveTurnEndSignal — non-stop/unknown reasons", () => {
       resolveTurnEndSignal(undefined, false, false, false),
       "none",
     )
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #2727: deriveTurnEndModel — stamp the model onto the turn_end frame
+// ---------------------------------------------------------------------------
+
+describe("#2727: deriveTurnEndModel", () => {
+  it("combines provider and bare model into providerID/modelID", () => {
+    assert.equal(
+      deriveTurnEndModel({ provider: "anthropic", model: "claude-sonnet-4-6" }),
+      "anthropic/claude-sonnet-4-6",
+    )
+  })
+
+  it("strips a single leading provider/ prefix so it is applied exactly once", () => {
+    // Defence-in-depth: an already-prefixed model must not become
+    // anthropic/anthropic/claude-sonnet-4-6.
+    assert.equal(
+      deriveTurnEndModel({
+        provider: "anthropic",
+        model: "anthropic/claude-sonnet-4-6",
+      }),
+      "anthropic/claude-sonnet-4-6",
+    )
+  })
+
+  it("preserves a nested (openrouter-style) model id", () => {
+    // The leading segment (openrouter/) is stripped once; the inner
+    // provider path stays intact.
+    assert.equal(
+      deriveTurnEndModel({
+        provider: "openrouter",
+        model: "openrouter/anthropic/claude-sonnet-4-6",
+      }),
+      "openrouter/anthropic/claude-sonnet-4-6",
+    )
+  })
+
+  it("returns undefined when the model is missing", () => {
+    assert.equal(deriveTurnEndModel({ provider: "anthropic" }), undefined)
+  })
+
+  it("returns undefined when the provider is missing", () => {
+    assert.equal(deriveTurnEndModel({ model: "claude-sonnet-4-6" }), undefined)
+  })
+
+  it("returns undefined for empty-string provider or model", () => {
+    assert.equal(deriveTurnEndModel({ provider: "", model: "x" }), undefined)
+    assert.equal(deriveTurnEndModel({ provider: "anthropic", model: "" }), undefined)
+  })
+
+  it("returns undefined for a non-object message", () => {
+    assert.equal(deriveTurnEndModel(null), undefined)
+    assert.equal(deriveTurnEndModel(undefined), undefined)
+    assert.equal(deriveTurnEndModel("nope"), undefined)
   })
 })
 

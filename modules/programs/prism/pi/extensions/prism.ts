@@ -2732,6 +2732,41 @@ export function resolveTurnEndSignal(
   return "none"
 }
 
+/**
+ * Derive the wire `model` value for a `turn_end` frame from the turn's
+ * assistant message (issue #2727). The assistant message carries `provider`
+ * (a ProviderId) and `model` (a bare model id); the wire format is
+ * `providerID/modelID` — the exact shape `internal/pricing` is keyed on.
+ *
+ * Returns `undefined` when either part is missing or not a non-empty string,
+ * so the `turn_end` handler omits the field entirely and the sidecar still
+ * writes the row with `$.model` empty (wire spec §5.7). A leading
+ * `"<provider>/"` segment on the raw model is stripped at most once, and only
+ * when it equals the message's provider, matching the `set_model` handler's
+ * defence-in-depth normalisation (issue #2252) so the prefix is applied
+ * exactly once and a nested (openrouter-style) id is left intact.
+ *
+ * Exported for unit testing.
+ */
+export function deriveTurnEndModel(message: unknown): string | undefined {
+  if (message === null || typeof message !== "object") return undefined
+  const provider = (message as { provider?: unknown }).provider
+  const rawModel = (message as { model?: unknown }).model
+  if (
+    typeof provider !== "string" ||
+    provider === "" ||
+    typeof rawModel !== "string" ||
+    rawModel === ""
+  ) {
+    return undefined
+  }
+  const prefix = provider + "/"
+  const modelId = rawModel.startsWith(prefix)
+    ? rawModel.slice(prefix.length)
+    : rawModel
+  return provider + "/" + modelId
+}
+
 // ---------------------------------------------------------------------------
 // Activation guard — exported for unit testing.
 // ---------------------------------------------------------------------------
@@ -3581,6 +3616,12 @@ export default function prismExtension(pi: ExtensionAPI): void {
           ? (message as { usage?: Record<string, unknown> }).usage
           : undefined
       const turnEndFrame: Record<string, unknown> = { type: "turn_end" }
+      // Stamp the model this turn ran on so the sidecar can record $.model
+      // on the coalesced msg_assistant row and refresh agent_status's model
+      // columns (issue #2727). Omitted when the message carries no model —
+      // the sidecar tolerates its absence (wire spec §5.7).
+      const model = deriveTurnEndModel(message)
+      if (model !== undefined) turnEndFrame.model = model
       if (usage && typeof usage === "object") {
         const u: Record<string, unknown> = {}
         if (typeof usage.input === "number") u.input = usage.input

@@ -133,6 +133,29 @@ func (d *DB) UpdateRootModelID(sessionName, modelID string) error {
 	return nil
 }
 
+// UpdateModelIDs unconditionally sets BOTH model_id and root_model_id for
+// sessionName to the given model value. It is the pi socket-pipe counterpart
+// of UpdateRootModelID: the pi wire carries no spawn-time model seed (the
+// EffectiveModel probe returns empty for the pi harness), so model_id is never
+// populated by the upsertState path the way it is for SSE sessions. Writing
+// both columns from the live wire model keeps model_id and root_model_id in
+// sync for a root-agent pi session.
+//
+// It is a no-op when no row exists for sessionName (returns nil). The sidecar
+// calls it only for a root-agent turn whose frame carried a non-empty model,
+// so a subagent running a different model never overwrites the root agent's
+// recorded model.
+func (d *DB) UpdateModelIDs(sessionName, modelID string) error {
+	_, err := d.conn.Exec(
+		"UPDATE agent_status SET model_id = ?, root_model_id = ? WHERE session_name = ?",
+		modelID, modelID, sessionName,
+	)
+	if err != nil {
+		return fmt.Errorf("db: update model_id/root_model_id: %w", err)
+	}
+	return nil
+}
+
 // UpsertStatusSeedRootAgentName is like UpsertStatus but also writes
 // rootAgentName to root_agent_name when it is non-empty. On conflict (update),
 // root_agent_name is written via COALESCE — the existing value is preserved if
