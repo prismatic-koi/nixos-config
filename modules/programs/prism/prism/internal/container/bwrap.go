@@ -332,9 +332,10 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 	// StandardSandboxMounts (mounts.go, A2.M1) returns the mode-agnostic
 	// mount set for ~/.config/claude, ~/.mcp-auth, ~/.cache/nix, AWS config, AWS
 	// credentials, AWS SSO/CLI cache, kube config, the clipboard
-	// staging dir, prism profiles.json, and the prism usage snapshot dir
-	// (issue #2572). The bwrap appendBind appender (mounts.go) translates
-	// each MountSpec into the correct --bind / --ro-bind triple.
+	// staging dir, prism profiles.json, the prism usage snapshot dir
+	// (issue #2572), and the Go module and build caches (issue #2731). The
+	// bwrap appendBind appender (mounts.go) translates each MountSpec into
+	// the correct --bind / --ro-bind triple.
 	//
 	// Note on ordering: StandardSandboxMounts emits ~/.config/claude, ~/.mcp-auth,
 	// ~/.cache/nix, ~/.cache/bun, AWS config, AWS credentials, AWS SSO, AWS CLI,

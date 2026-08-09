@@ -1,6 +1,7 @@
 # Session lifecycle invariants
 
 <!-- doclint-ignore: manifest.json, raw/session.jsonl, dist/core/session-manager.js, modules/programs/prism/tmux.nix -->
+<!-- doclint-ignore: modules/system/impermanence.nix, modules/programs/prism/prism-tui.nix -->
 <!--
   `manifest.json` and `raw/session.jsonl` are runtime-created artifacts
   inside archive directories under `~/.local/share/prism/archive/...`;
@@ -20,6 +21,14 @@
   registers the global tmux `session-closed` hook. Same class as the
   out-of-subtree entries in
   `docs/diagnoses/review-agent-no-verdict-1993.md`.
+
+  `modules/system/impermanence.nix` and
+  `modules/programs/prism/prism-tui.nix` are the same class as
+  `modules/programs/prism/tmux.nix`: real tracked files, correct
+  references, out of the prism Go subtree that the nix sandbox copies
+  in. They name the two entries that keep the Go caches across a boot
+  wipe (issue #2731), so the bwrap warm-cache invariant depends on
+  them by name.
 -->
 
 This document is a falsifiability surface for the user to mark against intent.
@@ -240,3 +249,12 @@ Both hooks below are registered with `set-hook -g` in `modules/programs/prism/tm
 - `GOTOOLCHAIN` is `local` inside the sandbox, and cannot be changed from within it. Nix is authoritative for the Go toolchain version. A sandboxed agent never downloads a Go toolchain from the internet.
 - When a project's `go.mod` requires a newer Go than nix provides, the build **fails loudly** — `go: go.mod requires go >= <version> (running <version>)` — instead of downloading one. The fix is to bump the nix-pinned Go, not to widen the sandbox.
 - These last two statements are one mechanism, not two independent settings: the toolchain auto-download writes into `~/go/pkg/mod` and then executes from it, which the module-cache execution denial blocks. Changing either without the other either breaks `go build` on a `go.mod` version bump or makes the module cache executable again.
+
+### Go caches (`bwrap`)
+
+- A `bwrap` session shares the same two Go caches with the host, at their Linux default paths — `~/go/pkg/mod` (GOMODCACHE, the GOPATH default, the same path as Darwin) and `~/.cache/go-build` (GOCACHE; `os.UserCacheDir()` is `~/.cache` on Linux, not `~/Library/Caches`). Both are read-write and shared with the host rather than per-session, so a second session starts with a warm cache (issue #2731).
+- Both directories are created on the host before the sandbox starts. If that creation fails, the two binds are skipped and the session still starts: `go` then builds into the sandbox interior, which is the behaviour before #2731. The bind is conditional because bwrap stops at startup if a bind source does not exist (issue #2243).
+- Both cache directories survive a reboot on a machine with impermanence. `~/.cache/go-build` rides the `.cache` entry in `modules/system/impermanence.nix`. `~/go/pkg/mod` has its own entry in `modules/programs/prism/prism-tui.nix`, because `~/go` is not persisted. Both entries are load-bearing for the warm-cache invariant above: the root subvolume is recreated on every boot, so a cache directory that is not persisted starts empty after each boot.
+- No path above the two leaf directories is bound. `~/go/bin` and the remainder of `~/.cache` stay unreachable through this grant.
+- Binaries **can** be executed from `~/go/pkg/mod` in a `bwrap` session, where a `sandbox-exec` session denies it. A bwrap bind mount cannot express per-path execution denial, so the Darwin rule has no Linux equivalent. The grant gives the agent no capability it lacks — the sandbox already permits execution from the worktree, `/tmp`, `~/.npm`, and `~/.cache/bun` — and both platforms grant WRITE to the module cache, so the host-side risk is the same on each.
+- `GOTOOLCHAIN` is **not** pinned in a `bwrap` session, so Go's default of `auto` applies. A `go.mod` that requires a newer Go than nix provides downloads a toolchain into the shared module cache instead of failing loudly. This differs from `sandbox-exec`, where the pin and the module-cache execution denial are one mechanism.
