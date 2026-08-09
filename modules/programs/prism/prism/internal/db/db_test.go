@@ -1442,6 +1442,51 @@ func TestUpsertStatusWithRootAgent(t *testing.T) {
 	}
 }
 
+// TestUpdateModelIDs verifies that UpdateModelIDs sets BOTH model_id and
+// root_model_id, overwrites an existing value, and is a no-op (no error) when
+// no row exists for the session (issue #2727).
+func TestUpdateModelIDs(t *testing.T) {
+	d := openTestDB(t)
+
+	// No-op when no row exists.
+	if err := d.UpdateModelIDs("missing@main", "anthropic/claude-sonnet-4-6"); err != nil {
+		t.Fatalf("UpdateModelIDs on missing row: %v", err)
+	}
+
+	// Seed a row with no model, then stamp the live model.
+	if err := d.UpsertStatus("repo@main", "repo", "/code/repo/main", "active", nil, nil); err != nil {
+		t.Fatalf("UpsertStatus: %v", err)
+	}
+	if err := d.UpdateModelIDs("repo@main", "anthropic/claude-sonnet-4-6"); err != nil {
+		t.Fatalf("UpdateModelIDs: %v", err)
+	}
+	s, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if s.ModelID == nil || *s.ModelID != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("ModelID: got %v, want \"anthropic/claude-sonnet-4-6\"", s.ModelID)
+	}
+	if s.RootModelID == nil || *s.RootModelID != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("RootModelID: got %v, want \"anthropic/claude-sonnet-4-6\"", s.RootModelID)
+	}
+
+	// A second call overwrites both columns.
+	if err := d.UpdateModelIDs("repo@main", "anthropic/claude-opus-4-6"); err != nil {
+		t.Fatalf("UpdateModelIDs (second): %v", err)
+	}
+	s2, err := d.CurrentStatus("repo@main")
+	if err != nil {
+		t.Fatalf("CurrentStatus (second): %v", err)
+	}
+	if s2.ModelID == nil || *s2.ModelID != "anthropic/claude-opus-4-6" {
+		t.Errorf("ModelID after second call: got %v, want \"anthropic/claude-opus-4-6\"", s2.ModelID)
+	}
+	if s2.RootModelID == nil || *s2.RootModelID != "anthropic/claude-opus-4-6" {
+		t.Errorf("RootModelID after second call: got %v, want \"anthropic/claude-opus-4-6\"", s2.RootModelID)
+	}
+}
+
 // TestUpsertStatusWithRootAgent_SidecarWins verifies that calling
 // UpsertStatusWithRootAgent twice — first with agentName="worker", then with
 // agentName="coordinator" — results in root_agent_name="coordinator".
