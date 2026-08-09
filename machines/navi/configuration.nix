@@ -272,7 +272,7 @@
   };
 
   networking.firewall = {
-    allowedTCPPorts = [
+    interfaces.tailscale0.allowedTCPPorts = [
       6600 # mpd
     ];
   };

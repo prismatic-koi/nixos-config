@@ -43,7 +43,7 @@
       # needed for playerctl to access mpd
       services.mpdris2 = {
         enable = true;
-        mpd.host = "0.0.0.0";
+        mpd.host = "127.0.0.1";
       };
       home.persistence."/persist" = {
         directories = [
