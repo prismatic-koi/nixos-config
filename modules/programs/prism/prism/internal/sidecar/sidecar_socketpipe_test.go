@@ -28,6 +28,15 @@ import (
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
+// derefStr renders a *string for a test failure message: the pointed-to value,
+// or "<nil>" when the pointer is nil.
+func derefStr(p *string) string {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
+
 // maxSunPath is the POSIX limit for sockaddr_un.sun_path (104 on macOS, 108 on Linux).
 // We use 104 as the conservative cross-platform ceiling.
 const maxSunPath = 104
@@ -1078,6 +1087,203 @@ func TestSocketPipe_MsgAssistantCoalesced(t *testing.T) {
 	}
 	if p.Cost != 0.0015 {
 		t.Errorf("Cost = %v, want 0.0015", p.Cost)
+	}
+}
+
+// TestSocketPipe_ModelStampedOnMsgAssistant verifies that a `model` field on
+// the turn_end frame is recorded as $.model on the coalesced msg_assistant row
+// and refreshes agent_status.model_id / root_model_id (issue #2727 AC:
+// functional #1, #2). The format is providerID/modelID, matching the keys in
+// internal/pricing.
+func TestSocketPipe_ModelStampedOnMsgAssistant(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "hi"})
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"model": "anthropic/claude-sonnet-4-6",
+		"usage": map[string]any{"input": 2, "output": 293, "cost": 0.15},
+	})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var found bool
+	for _, ev := range events {
+		if ev.Type != "msg_assistant" {
+			continue
+		}
+		found = true
+		var p struct {
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+			t.Fatalf("unmarshal msg_assistant payload: %v", err)
+		}
+		if p.Model != "anthropic/claude-sonnet-4-6" {
+			t.Errorf("$.model = %q, want %q", p.Model, "anthropic/claude-sonnet-4-6")
+		}
+	}
+	if !found {
+		t.Fatal("expected a msg_assistant event")
+	}
+
+	st, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("expected a status row")
+	}
+	if st.ModelID == nil || *st.ModelID != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("model_id = %v, want %q", derefStr(st.ModelID), "anthropic/claude-sonnet-4-6")
+	}
+	if st.RootModelID == nil || *st.RootModelID != "anthropic/claude-sonnet-4-6" {
+		t.Errorf("root_model_id = %v, want %q", derefStr(st.RootModelID), "anthropic/claude-sonnet-4-6")
+	}
+}
+
+// TestSocketPipe_SubagentModelDoesNotOverwriteRoot verifies that a turn_end
+// frame from a subagent (a differing, non-empty `agent` field) records its own
+// model on that turn's msg_assistant row but does NOT overwrite the root
+// agent's recorded model in agent_status (issue #2727 AC: functional #3). This
+// mirrors handleMessageUpdated's subagent-suppression semantic on the SSE path.
+func TestSocketPipe_SubagentModelDoesNotOverwriteRoot(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	// The session's root agent is "worker" (set by newSocketPipeSidecar).
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	// Root-agent turn establishes the root model.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "root"})
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"agent": "worker",
+		"model": "anthropic/claude-opus-4-6",
+	})
+
+	// Subagent turn runs a different model — must not overwrite root's.
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "sub"})
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"agent": "subagent-x",
+		"model": "anthropic/claude-haiku-4-5",
+	})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	// agent_status must still hold the root agent's model.
+	st, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st == nil {
+		t.Fatal("expected a status row")
+	}
+	if st.RootModelID == nil || *st.RootModelID != "anthropic/claude-opus-4-6" {
+		t.Errorf("root_model_id = %v, want root model %q (subagent must not overwrite)", derefStr(st.RootModelID), "anthropic/claude-opus-4-6")
+	}
+	if st.ModelID == nil || *st.ModelID != "anthropic/claude-opus-4-6" {
+		t.Errorf("model_id = %v, want root model %q (subagent must not overwrite)", derefStr(st.ModelID), "anthropic/claude-opus-4-6")
+	}
+
+	// But each turn's own msg_assistant row records the model it ran on.
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	modelsByText := map[string]string{}
+	for _, ev := range events {
+		if ev.Type != "msg_assistant" {
+			continue
+		}
+		var p struct {
+			Text  string `json:"text"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+			t.Fatalf("unmarshal msg_assistant payload: %v", err)
+		}
+		modelsByText[p.Text] = p.Model
+	}
+	if modelsByText["root"] != "anthropic/claude-opus-4-6" {
+		t.Errorf("root turn $.model = %q, want %q", modelsByText["root"], "anthropic/claude-opus-4-6")
+	}
+	if modelsByText["sub"] != "anthropic/claude-haiku-4-5" {
+		t.Errorf("subagent turn $.model = %q, want %q (per-turn accuracy)", modelsByText["sub"], "anthropic/claude-haiku-4-5")
+	}
+}
+
+// TestSocketPipe_NoModelOnTurnEndWritesEmptyModel verifies the edge case: a
+// turn_end frame that carries no `model` field still writes its msg_assistant
+// row (with $.model empty) and leaves the agent_status model columns unchanged,
+// without error (issue #2727 AC: edge-case #6).
+func TestSocketPipe_NoModelOnTurnEndWritesEmptyModel(t *testing.T) {
+	sockPath := shortSockPath(t)
+	sc := newSocketPipeSidecar(t, sockPath)
+	wait := runSocketPipeSidecar(sc)
+
+	conn, _ := dialAndHandshake(t, sockPath)
+
+	sendJSON(t, conn, map[string]any{"type": "turn_start"})
+	sendJSON(t, conn, map[string]any{"type": "msg_assistant", "text": "hi"})
+	// turn_end with usage but NO model field.
+	sendJSON(t, conn, map[string]any{
+		"type":  "turn_end",
+		"usage": map[string]any{"input": 2, "output": 10},
+	})
+
+	sendJSON(t, conn, map[string]any{"type": "session_shutdown"})
+	conn.Close()
+	if err := wait(); err != nil {
+		t.Errorf("runStartupSocketPipe returned error: %v", err)
+	}
+
+	events := getEvents(t, sc.cfg.DB, sc.cfg.SessionName)
+	var found bool
+	for _, ev := range events {
+		if ev.Type != "msg_assistant" {
+			continue
+		}
+		found = true
+		var p struct {
+			Text  string `json:"text"`
+			Model string `json:"model"`
+		}
+		if err := json.Unmarshal([]byte(ev.Payload), &p); err != nil {
+			t.Fatalf("unmarshal msg_assistant payload: %v", err)
+		}
+		if p.Text != "hi" {
+			t.Errorf("text = %q, want %q", p.Text, "hi")
+		}
+		if p.Model != "" {
+			t.Errorf("$.model = %q, want empty for a frame with no model", p.Model)
+		}
+	}
+	if !found {
+		t.Fatal("expected a msg_assistant event even when the frame carries no model")
+	}
+
+	st, err := sc.cfg.DB.CurrentStatus(sc.cfg.SessionName)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if st != nil && st.RootModelID != nil && *st.RootModelID != "" {
+		t.Errorf("root_model_id = %q, want unchanged/empty when no model on the wire", *st.RootModelID)
 	}
 }
 

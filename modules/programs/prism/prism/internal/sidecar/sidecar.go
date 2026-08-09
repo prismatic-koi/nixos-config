@@ -2691,6 +2691,12 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		// fields from the usage object, then persist the turn_end frame.
 		var f struct {
 			Agent string `json:"agent"`
+			// Model is the model that produced this turn, stamped onto the
+			// wire by the pi extension as "providerID/modelID" (wire spec
+			// §5.7). Optional and tolerated when absent (§5.3): an older
+			// extension, or a turn pi cannot attribute to a model, sends no
+			// model field and the row is still written with $.model empty.
+			Model string `json:"model"`
 			Usage struct {
 				Input      int     `json:"input"`
 				Output     int     `json:"output"`
@@ -2732,6 +2738,7 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 		if text != "" {
 			p := payload.MsgAssistant{
 				Text:             text,
+				Model:            f.Model,
 				InputTokens:      f.Usage.Input,
 				OutputTokens:     f.Usage.Output,
 				CacheReadTokens:  f.Usage.CacheRead,
@@ -2739,6 +2746,23 @@ func (s *Sidecar) handlePipeFrame(line []byte) (cleanShutdown bool) {
 				Cost:             f.Usage.Cost,
 			}
 			s.writeEvent("msg_assistant", p, nil)
+		}
+
+		// Refresh agent_status.model_id / root_model_id with the live model
+		// this turn ran on, mirroring handleMessageUpdated's semantics on the
+		// SSE path (which calls UpdateRootModelID). Only write for a root-agent
+		// turn: when a root agent is known and this turn came from a subagent
+		// (a different, non-empty agent name), skip the update so a subagent's
+		// model does not overwrite the root agent's recorded model. The
+		// per-turn msg_assistant $.model above is written unconditionally, so a
+		// subagent row still records the subagent's own model.
+		if f.Model != "" {
+			isRootAgent := s.rootAgent == "" || agentName == "" || agentName == s.rootAgent
+			if isRootAgent {
+				if err := s.cfg.DB.UpdateModelIDs(s.cfg.SessionName, f.Model); err != nil {
+					s.logger().Printf("sidecar: UpdateModelIDs (pi turn_end) failed: %v", err)
+				}
+			}
 		}
 		s.writeEvent(frame.Type, json.RawMessage(line), nil)
 		// Track the most recent turn text for the final completion notification.

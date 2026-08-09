@@ -464,6 +464,9 @@ memory between `turn_start` and `turn_end`. On `turn_end`, a single
 - Token and cost fields (`inputTokens`, `outputTokens`, `cacheReadTokens`,
   `cacheWriteTokens`, `cost`) populated from the `turn_end` frame's `usage`
   object (zero when absent).
+- `model` populated from the `turn_end` frame's optional `model` field
+  (§5.7), in `providerID/modelID` form. Empty when the frame carries no
+  model — the row is still written.
 
 This produces one `msg_assistant` row per turn instead of ~50 fragmented
 rows. The payload schema matches `internal/payload/payload.go:MsgAssistant`.
@@ -523,9 +526,27 @@ this as a `turn_start` event row.
 ### 5.7 `turn_end`
 
 ```json
-{"type":"turn_end","usage":{"input":100,"output":50,"cache_read":40,"cache_write":5,"cost":0.0015}}
+{"type":"turn_end","model":"anthropic/claude-sonnet-4-6","usage":{"input":100,"output":50,"cache_read":40,"cache_write":5,"cost":0.0015}}
 ```
 
+- `model` (string, optional) — the model this turn ran on, in
+  `providerID/modelID` form (for example `anthropic/claude-sonnet-4-6`).
+  This is the exact shape `internal/pricing` is keyed on. The extension
+  derives it from the assistant message's `provider` and `model` fields
+  and stamps it here so the sidecar can record `$.model` on the coalesced
+  `msg_assistant` row (§5.5) and refresh `agent_status.model_id` /
+  `root_model_id`. It is **optional**: a turn PI cannot attribute to a
+  model — or an older extension build — sends no `model` field, and the
+  sidecar still writes the `msg_assistant` row with `$.model` empty and
+  leaves the `agent_status` model columns unchanged (issue #2727).
+  - The model is written to `agent_status.model_id` / `root_model_id`
+    only for a **root-agent** turn. When the `turn_end` frame carries an
+    `agent` field naming a subagent (a non-empty name that differs from
+    the session's root agent), the sidecar records `$.model` on that
+    turn's own `msg_assistant` row but does **not** update the
+    `agent_status` model columns, so a subagent's model never overwrites
+    the root agent's recorded model. This mirrors the SSE-path
+    `handleMessageUpdated` behaviour.
 - `usage` (object, optional) — token and cost accounting for the turn.
   Fields:
   - `input` (integer) — input tokens consumed.
