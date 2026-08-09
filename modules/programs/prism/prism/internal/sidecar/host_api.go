@@ -1617,6 +1617,20 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		logArgs = append(logArgs, "--repo", ownRepo)
 		s.logger().Printf("sidecar: host-API /spawn: prism %s", strings.Join(logArgs, " "))
 
+		// Staleness check (issue #2739). config.Load() memoises its result for
+		// the process lifetime, so this long-running sidecar froze
+		// pi_extension_dir at startup (s.cfg.PIExtensionDir). Re-read config.json
+		// fresh and compare: a mismatch means a switch changed the PI extension
+		// after this sidecar started, so newly spawned sessions may load the
+		// pre-switch extension. Log a loud, named diagnostic rather than fail
+		// silently. config.LoadFresh() fails open (defaults, empty
+		// pi_extension_dir) when config.json is missing or unreadable, and
+		// piExtensionStaleDiagnostic stays silent on an empty value either side,
+		// so this never blocks or crashes the spawn.
+		if warn := piExtensionStaleDiagnostic(s.cfg.PIExtensionDir, config.LoadFresh().PIExtensionDir); warn != "" {
+			s.logger().Printf("sidecar: host-API /spawn: %s", warn)
+		}
+
 		// Per-endpoint timeout: 10 min. `prism spawn` can legitimately take a
 		// while — it creates a git worktree, sets up a tmux session, and may
 		// pull a container image on first use. 10 min is the documented outer
