@@ -100,6 +100,36 @@
 #
 # The daemon holds a read-only SQLite handle and one loopback
 # listener, so the residual surface is small.
+#
+# ── Darwin (#2705) ───────────────────────────────────────────────────
+#
+# m4mac's Alloy daemon (`modules/services/alloy/default.nix`) runs as
+# root, because nix-darwin's `launchd.daemons` has no `DynamicUser`
+# equivalent and Alloy's job (reading arbitrary node_exporter
+# collectors) genuinely needs host-wide reach. The exporter's job is
+# narrower: read one user's `prism.db`, nothing else. Running it as
+# root to do that would be strictly more privilege than the task
+# needs, for no benefit — root does not make SQLite go faster.
+#
+# So this is a `launchd.daemons` entry (system-scope, so it starts at
+# boot without a login, matching the systemd-user unit's `RunAtLoad`+
+# restart-forever behaviour on Linux) with `UserName` set to the
+# prism user. launchd drops privilege to that user before exec, the
+# same mechanism macOS system daemons use throughout (e.g.
+# `/System/Library/LaunchDaemons` entries with a `UserName` key). The
+# daemon then reads `prism.db` under that user's home with exactly
+# the permission a normal login session would have — no more.
+#
+# This is deliberately NOT a `launchd.agents` (user-scope, LaunchAgent)
+# entry, unlike `flake-update-notifier`'s Darwin half. An agent only
+# runs while that user is logged in — graphical-session-gated,
+# effectively — which would reproduce the exact `up=0`-while-logged-out
+# gap the Linux systemd-user unit already has (see "Lifetime: no
+# lingering" above) but for a worse reason: on Linux that gap is an
+# accepted tradeoff against opening `linger` for unrelated units
+# (mpd). On Darwin there is no such tradeoff to make — a `UserName`-
+# scoped system daemon gets both boot-time start AND least privilege
+# at once, so there is no reason to accept the gap here.
 {
   config,
   lib,
@@ -111,6 +141,24 @@ let
   cfg = config.nx.services.prismExporter;
   username = config.nx.username;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
+  isDarwin = !isLinux;
+
+  # machines/m4mac/configuration.nix sets `users.users.${username}.home
+  # = "/Users/${username}"`. A `launchd.daemons` entry runs with no
+  # login shell and no environment inherited from the target user, so
+  # `$HOME` and `$XDG_STATE_HOME` are both unset at exec time — unlike
+  # the Linux `systemd.user.service`, which runs inside that user's own
+  # session and gets `$XDG_STATE_HOME` resolved for it. The exporter's
+  # `--db` default (`cmd/db.go`'s `dbPath()`) falls back to
+  # `$HOME/.local/state` when `$XDG_STATE_HOME` is unset, but `$HOME`
+  # itself is unset too under launchd, so that fallback would resolve
+  # against whatever directory launchd happens to exec from — not the
+  # user's home. So the Darwin daemon passes `--db` and `--state`
+  # explicitly, spelling out the same `~/.local/state/prism/...` layout
+  # the Linux unit gets for free from its session.
+  darwinHome = "/Users/${username}";
+  darwinDBPath = "${darwinHome}/.local/state/prism/prism.db";
+  darwinStatePath = "${darwinHome}/.local/state/prism/exporter-state.json";
 in
 {
   options.nx.services.prismExporter = {
@@ -150,66 +198,114 @@ in
   # Guarded by the `isLinux` specialArg rather than `lib.mkIf
   # pkgs.stdenv.isLinux`, for the same reason the alloy module does
   # it: `optionalAttrs` collapses at Nix time, before the module
-  # system walks the definition tree. Darwin is #2705.
+  # system walks the definition tree.
   config = lib.mkIf (cfg.enable && config.nx.programs.prism.enable) (
-    lib.optionalAttrs isLinux {
-      home-manager.users.${username} = {
-        systemd.user.services.prism-exporter = {
-          Unit = {
-            Description = "Prometheus exporter for prism operational metrics";
-            Documentation = [ "https://github.com/prismatic-koi/nixos-config/issues/2700" ];
-            # Retry for as long as it takes. See "Restart behaviour"
-            # in the module header.
-            StartLimitIntervalSec = 0;
-          };
+    lib.mkMerge [
+      (lib.optionalAttrs isLinux {
+        home-manager.users.${username} = {
+          systemd.user.services.prism-exporter = {
+            Unit = {
+              Description = "Prometheus exporter for prism operational metrics";
+              Documentation = [ "https://github.com/prismatic-koi/nixos-config/issues/2700" ];
+              # Retry for as long as it takes. See "Restart behaviour"
+              # in the module header.
+              StartLimitIntervalSec = 0;
+            };
 
-          Service = {
-            Type = "simple";
-            # systemd parses ExecStart itself — there is no shell in the
-            # loop. Its quoting rules resemble the POSIX ones but are not
-            # identical: a closing quote must be followed by whitespace,
-            # so the shell's `'it'\''s'` form for an embedded single
-            # quote is mis-parsed. escapeShellArg is therefore correct
-            # here for any address without a single quote in it, which
-            # covers every IP and hostname. It earns its place only if
-            # listenAddress ever carries whitespace.
-            ExecStart = lib.concatStringsSep " " [
-              "${prismPkg}/bin/prism exporter"
-              "--listen ${lib.escapeShellArg cfg.listenAddress}"
-              "--port ${toString cfg.port}"
-            ];
-            Restart = "always";
-            RestartSec = 10;
+            Service = {
+              Type = "simple";
+              # systemd parses ExecStart itself — there is no shell in the
+              # loop. Its quoting rules resemble the POSIX ones but are not
+              # identical: a closing quote must be followed by whitespace,
+              # so the shell's `'it'\''s'` form for an embedded single
+              # quote is mis-parsed. escapeShellArg is therefore correct
+              # here for any address without a single quote in it, which
+              # covers every IP and hostname. It earns its place only if
+              # listenAddress ever carries whitespace.
+              ExecStart = lib.concatStringsSep " " [
+                "${prismPkg}/bin/prism exporter"
+                "--listen ${lib.escapeShellArg cfg.listenAddress}"
+                "--port ${toString cfg.port}"
+              ];
+              Restart = "always";
+              RestartSec = 10;
 
-            # Logs go to the journal. The daemon writes one line per
-            # operational event (start, corrupt state file, cursor
-            # clamp, failed scrape), not one per scrape.
-            StandardOutput = "journal";
-            StandardError = "journal";
+              # Logs go to the journal. The daemon writes one line per
+              # operational event (start, corrupt state file, cursor
+              # clamp, failed scrape), not one per scrape.
+              StandardOutput = "journal";
+              StandardError = "journal";
 
-            # Every directive here is seccomp or prctl based, so it applies
-            # to an unprivileged user unit. See "Hardening" in the module
-            # header for the two families that are deliberately absent, and
-            # why CapabilityBoundingSet in particular must not come back.
-            NoNewPrivileges = true;
-            LockPersonality = true;
-            MemoryDenyWriteExecute = true;
-            RestrictRealtime = true;
-            RestrictSUIDSGID = true;
-            RestrictNamespaces = true;
-            RestrictAddressFamilies = "AF_INET AF_INET6 AF_UNIX";
-            SystemCallArchitectures = "native";
-            SystemCallFilter = "@system-service";
-          };
+              # Every directive here is seccomp or prctl based, so it applies
+              # to an unprivileged user unit. See "Hardening" in the module
+              # header for the two families that are deliberately absent, and
+              # why CapabilityBoundingSet in particular must not come back.
+              NoNewPrivileges = true;
+              LockPersonality = true;
+              MemoryDenyWriteExecute = true;
+              RestrictRealtime = true;
+              RestrictSUIDSGID = true;
+              RestrictNamespaces = true;
+              RestrictAddressFamilies = "AF_INET AF_INET6 AF_UNIX";
+              SystemCallArchitectures = "native";
+              SystemCallFilter = "@system-service";
+            };
 
-          Install = {
-            # default.target, not graphical-session.target: the
-            # exporter is a headless daemon and must run on a machine
-            # nobody has logged into graphically.
-            WantedBy = [ "default.target" ];
+            Install = {
+              # default.target, not graphical-session.target: the
+              # exporter is a headless daemon and must run on a machine
+              # nobody has logged into graphically.
+              WantedBy = [ "default.target" ];
+            };
           };
         };
-      };
-    }
+      })
+
+      (lib.optionalAttrs isDarwin {
+        launchd.daemons.prism-exporter = {
+          serviceConfig = {
+            # Drop privilege to the prism user before exec -- see the
+            # module header "Darwin (#2705)" for why this is a
+            # UserName-scoped system daemon rather than root or a
+            # per-user LaunchAgent.
+            UserName = username;
+
+            # /bin/wait4path guards against the daemon starting before
+            # the /nix APFS volume is mounted at boot (the prism
+            # binary lives in the store) -- same guard as
+            # launchd.daemons.alloy in modules/services/alloy/default.nix.
+            #
+            # --db and --state are explicit because, unlike the Linux
+            # systemd.user.service, a launchd system daemon execs with
+            # no $HOME -- see the module header for why the defaults
+            # cannot be relied on here.
+            ProgramArguments = [
+              "/bin/sh"
+              "-c"
+              (lib.concatStringsSep " " [
+                "/bin/wait4path ${prismPkg}/bin/prism &&"
+                "exec ${prismPkg}/bin/prism exporter"
+                "--listen ${lib.escapeShellArg cfg.listenAddress}"
+                "--port ${toString cfg.port}"
+                "--db ${lib.escapeShellArg darwinDBPath}"
+                "--state ${lib.escapeShellArg darwinStatePath}"
+              ])
+            ];
+
+            # RunAtLoad + KeepAlive is the launchd equivalent of the
+            # Linux unit's WantedBy default.target (starts at boot
+            # without a manual launchctl load) plus Restart = always
+            # (self-heals on crash, and on the "prism.db not there yet"
+            # exit path a freshly installed machine hits before prism
+            # first runs -- see "Restart behaviour" above).
+            RunAtLoad = true;
+            KeepAlive = true;
+
+            StandardOutPath = "/var/log/prism-exporter.log";
+            StandardErrorPath = "/var/log/prism-exporter.log";
+          };
+        };
+      })
+    ]
   );
 }

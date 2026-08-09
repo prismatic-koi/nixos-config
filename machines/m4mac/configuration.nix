@@ -71,6 +71,7 @@ in
     services = {
       alloy.enable = true;
       flakeUpdateNotifier.enable = true;
+      prismExporter.enable = true;
       syncthing = {
         enable = true;
         obsidian.enable = true;
