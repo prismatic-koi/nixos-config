@@ -151,10 +151,16 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 			tokStr = fmt.Sprintf("%.0f t/s", p50tps)
 		}
 
-		// Cost.
+		// Cost. A model in the pricing table gets a plain computed value. A
+		// model absent from the table falls back to the provider-reported
+		// cost (see pricing.Cost) — mark it with "†" so a reader can tell
+		// the two apart; see the legend below. A model with neither a table
+		// entry nor a reported cost still shows "-", never "$0.00".
 		costStr := "-"
 		if _, ok := pricing.Lookup(row.key); ok {
 			costStr = formatCost(m.Cost)
+		} else if m.Cost > 0 {
+			costStr = formatCost(m.Cost) + "\u2020"
 		}
 
 		provider := m.Provider
@@ -182,4 +188,5 @@ func renderModelBreakdown(metrics map[string]*modelMetrics, days int) {
 	fmt.Println()
 	fmt.Println(styleDim.Render("Note: TTFT p50 = time to first token (request→first chunk); DUR p50 = full turn duration (request→complete response)."))
 	fmt.Println(styleDim.Render("      SESSIONS = distinct harness sessions; AGENTS = dominant agent type (×N = N distinct agent types)."))
+	fmt.Println(styleDim.Render("      COST with no mark = computed from the pricing table. COST marked † = provider-reported cost for a model absent from the pricing table."))
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/prismatic-koi/prism/internal/db"
+	"github.com/prismatic-koi/prism/internal/pricing"
 )
 
 // --- helpers ---
@@ -1916,5 +1917,268 @@ func TestFormatDurationLong_ValidDurations(t *testing.T) {
 				t.Errorf("formatDurationLong(%v) = %q, want %q", tc.d, got, tc.want)
 			}
 		})
+	}
+}
+
+// --- issue #2738: prism stats model must not hide a provider-reported cost ---
+
+// TestRunStatsModel_UnknownModelShowsProviderReportedCost verifies that a
+// model absent from ModelCosts, but with a non-zero event-reported cost,
+// prints that cost instead of "-". This is the core defect in #2738: m.Cost
+// is already correct via the pricing.Cost fallback, but the display gate was
+// keyed on table presence alone.
+func TestRunStatsModel_UnknownModelShowsProviderReportedCost(t *testing.T) {
+	sid := "sid-2738-unknown"
+	events := []db.Event{
+		{
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"m1","agent":"coordinator","model":"anthropic/claude-opus-5","inputTokens":100,"outputTokens":50,"cost":0.238}`,
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sid,
+		},
+	}
+
+	metrics := collectModelMetrics(events)
+	m, ok := metrics["anthropic/claude-opus-5"]
+	if !ok {
+		t.Fatal("missing entry for anthropic/claude-opus-5")
+	}
+	if m.Cost != 0.238 {
+		t.Fatalf("m.Cost = %v, want 0.238 (fallback to event-reported cost)", m.Cost)
+	}
+
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "claude-opus-5") {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("output missing claude-opus-5 row:\n%s", out)
+	}
+	if !strings.Contains(line, "$0.24") {
+		t.Errorf("expected row to show the formatted cost ~$0.24, got line: %q", line)
+	}
+}
+
+// TestRunStatsModel_UnknownModelCostMarkedDistinctFromTableCost verifies that
+// a provider-reported cost (model absent from ModelCosts) is visually
+// distinguished from a table-computed cost, and that the distinction is
+// explained in the rendered output itself (not only in a code comment).
+func TestRunStatsModel_UnknownModelCostMarkedDistinctFromTableCost(t *testing.T) {
+	sidKnown := "sid-2738-known"
+	sidUnknown := "sid-2738-unknown2"
+	events := []db.Event{
+		{
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"m1","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":1000000,"outputTokens":1000000}`,
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sidKnown,
+		},
+		{
+			ID:               "e2",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"m2","agent":"coordinator","model":"anthropic/claude-opus-5","inputTokens":100,"outputTokens":50,"cost":5.5}`,
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sidUnknown,
+		},
+	}
+
+	metrics := collectModelMetrics(events)
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	var knownLine, unknownLine string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "claude-sonnet-4-6") {
+			knownLine = l
+		}
+		if strings.Contains(l, "claude-opus-5") {
+			unknownLine = l
+		}
+	}
+	if knownLine == "" || unknownLine == "" {
+		t.Fatalf("missing expected rows in output:\n%s", out)
+	}
+
+	// The known-model row must render exactly as it always has: no marker.
+	if strings.Contains(knownLine, "\u2020") {
+		t.Errorf("table-computed cost row should carry no marker, got: %q", knownLine)
+	}
+	// The unknown-model row must carry the marker distinguishing a
+	// provider-reported cost from a table-computed one.
+	if !strings.Contains(unknownLine, "\u2020") {
+		t.Errorf("provider-reported cost row should carry a distinguishing marker, got: %q", unknownLine)
+	}
+
+	// The distinction must be explained in the output itself.
+	if !strings.Contains(out, "provider-reported") {
+		t.Errorf("output must explain the marker's meaning (provider-reported cost), got:\n%s", out)
+	}
+	if !strings.Contains(out, "pricing table") {
+		t.Errorf("output must explain the unmarked case (pricing-table cost), got:\n%s", out)
+	}
+}
+
+// TestRunStatsModel_UnknownModelNoCostStillShowsDash verifies the guard #2738
+// explicitly keeps: a model absent from ModelCosts with no reported cost
+// still shows "-", never "$0.00".
+func TestRunStatsModel_UnknownModelNoCostStillShowsDash(t *testing.T) {
+	sid := "sid-2738-nocost"
+	events := []db.Event{
+		{
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"m1","agent":"coordinator","model":"openrouter/some/model","inputTokens":1000,"outputTokens":500}`,
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sid,
+		},
+	}
+
+	metrics := collectModelMetrics(events)
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "openrouter") {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("missing openrouter row in output:\n%s", out)
+	}
+	if strings.Contains(line, "$0.00") {
+		t.Errorf("a model with no table entry and no reported cost must never show $0.00, got: %q", line)
+	}
+	if strings.Contains(line, "\u2020") {
+		t.Errorf("a dash row must not carry the provider-reported marker, got: %q", line)
+	}
+}
+
+// TestRunStatsModel_KnownModelCostUnchanged locks in that a model present in
+// the pricing table renders exactly as it did before #2738: a plain
+// formatted cost with no marker.
+func TestRunStatsModel_KnownModelCostUnchanged(t *testing.T) {
+	sid := "sid-2738-known2"
+	events := []db.Event{
+		{
+			ID:               "e1",
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          `{"messageId":"m1","agent":"coordinator","model":"anthropic/claude-sonnet-4-6","inputTokens":1000000,"outputTokens":1000000}`,
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sid,
+		},
+	}
+
+	metrics := collectModelMetrics(events)
+	m := metrics["anthropic/claude-sonnet-4-6"]
+	wantCost := formatCost(m.Cost)
+
+	out := captureStdout(t, func() {
+		renderModelBreakdown(metrics, 7)
+	})
+	var line string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "claude-sonnet-4-6") {
+			line = l
+			break
+		}
+	}
+	if !strings.Contains(line, wantCost) {
+		t.Errorf("expected row to contain %q, got: %q", wantCost, line)
+	}
+	if strings.Contains(line, "\u2020") {
+		t.Errorf("table-computed cost must not carry the marker, got: %q", line)
+	}
+}
+
+// TestRunStatsModel_NoModelCostsMutated is a static guard that #2738 does not
+// add, remove, or change any entry in pricing.ModelCosts. It fails loudly if
+// a future edit to this PR's branch slips a table change in.
+func TestRunStatsModel_NoModelCostsMutated(t *testing.T) {
+	want := map[string]pricing.ModelCost{
+		"anthropic/claude-sonnet-4-6":          {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
+		"anthropic/claude-opus-4-6":            {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
+		"anthropic/claude-haiku-4-5":           {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
+		"github-copilot/claude-sonnet-4.6":     {Input: 3.0, Output: 15.0, CacheRead: 0.30, CacheWrite: 3.75},
+		"github-copilot/claude-opus-4.6":       {Input: 15.0, Output: 75.0, CacheRead: 1.50, CacheWrite: 18.75},
+		"github-copilot/claude-haiku-4.5":      {Input: 0.80, Output: 4.0, CacheRead: 0.08, CacheWrite: 1.00},
+		"google/gemini-3-flash-preview":        {Input: 0.15, Output: 0.60, CacheRead: 0.0375, CacheWrite: 0},
+		"google/gemini-3.1-flash-lite-preview": {Input: 0.075, Output: 0.30, CacheRead: 0.01875, CacheWrite: 0},
+	}
+	if len(pricing.ModelCosts) != len(want) {
+		t.Fatalf("pricing.ModelCosts has %d entries, want %d (a model was added or removed)", len(pricing.ModelCosts), len(want))
+	}
+	for k, v := range want {
+		got, ok := pricing.ModelCosts[k]
+		if !ok {
+			t.Errorf("missing pricing.ModelCosts entry for %q", k)
+			continue
+		}
+		if got != v {
+			t.Errorf("pricing.ModelCosts[%q] = %+v, want %+v", k, got, v)
+		}
+	}
+}
+
+// TestRunStatsModel_CostAgreesWithPricingCostFallback is the structural half
+// of the AC that prism stats model and prism_model_cost_usd_total report the
+// same figure for the same model and session set. Both paths compute
+// per-turn cost with pricing.Cost (collectModelMetrics here; the exporter's
+// costCounters.apply in internal/exporter/cost.go) — this test recomputes
+// the expected total independently, over the same events, with the exact
+// function both paths share, for a model absent from the pricing table.
+// internal/exporter/cost_test.go's TestExporter_CostEqualsPricingCost is the
+// same assertion from the exporter's side; together the two lock both
+// consumers to the one shared implementation, so they cannot silently
+// diverge again as they had before #2722.
+func TestRunStatsModel_CostAgreesWithPricingCostFallback(t *testing.T) {
+	sid := "sid-2738-agree"
+	type turn struct {
+		in, out int
+		cost    float64
+	}
+	turns := []turn{
+		{111, 50, 0.23868425},
+		{963, 200, 0.262923},
+		{2863, 400, 0.30826825},
+	}
+	var events []db.Event
+	var want float64
+	for i, tn := range turns {
+		events = append(events, db.Event{
+			ID:               fmt.Sprintf("e%d", i),
+			SessionName:      "testrepo@main",
+			Type:             "msg_assistant",
+			Payload:          fmt.Sprintf(`{"messageId":"m%d","agent":"coordinator","model":"anthropic/claude-opus-5","inputTokens":%d,"outputTokens":%d,"cost":%v}`, i, tn.in, tn.out, tn.cost),
+			CreatedAt:        time.Now(),
+			HarnessSessionID: &sid,
+		})
+		want += pricing.Cost("anthropic/claude-opus-5", float64(tn.in), float64(tn.out), 0, 0, tn.cost)
+	}
+
+	metrics := collectModelMetrics(events)
+	m, ok := metrics["anthropic/claude-opus-5"]
+	if !ok {
+		t.Fatal("missing entry for anthropic/claude-opus-5")
+	}
+	if math.Abs(m.Cost-want) > 1e-9 {
+		t.Errorf("collectModelMetrics cost = %v, pricing.Cost total = %v (diff %v); prism stats and the exporter must agree", m.Cost, want, math.Abs(m.Cost-want))
 	}
 }
