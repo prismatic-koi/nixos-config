@@ -242,9 +242,16 @@ func CycleProducedVerdictsForTest(expectedSessions []string, groupData map[strin
 }
 
 // ForceTerminateStuckMembersForTest is an exported wrapper around
-// forceTerminateStuckMembers for use in external test packages (#1709).
-func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, perAgentTimeout time.Duration) {
-	forceTerminateStuckMembers(d, agentSessions, perAgentTimeout)
+// forceTerminateStuckMembers for use in external test packages (#1709, #2729).
+// It returns the number of live members the sweep spared.
+func ForceTerminateStuckMembersForTest(d *db.DB, agentSessions []string, groupDeadline time.Duration) int {
+	return forceTerminateStuckMembers(d, agentSessions, groupDeadline)
+}
+
+// ReviewAgentActivityWindowForTest exposes the activity window the sweep uses
+// so the guard test can assert it equals the sidecar watchdog timeout (#2729).
+func ReviewAgentActivityWindowForTest() time.Duration {
+	return reviewAgentActivityWindow
 }
 
 // ReapSideEffectsForTest replaces the reaper's three process-side effects

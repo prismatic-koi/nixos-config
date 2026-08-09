@@ -142,6 +142,34 @@ func (d *DB) CountHarnessFrames(sessionName string) (int, error) {
 	return n, nil
 }
 
+// LastInboundFrameAt returns the created_at of the most recent inbound
+// (extension → sidecar) harness frame for sessionName. ok is false when the
+// session has no inbound frame on record.
+//
+// The monitor's group-wide safety-deadline sweep uses this to tell a live
+// review agent from a dead-watchdog row (#2729). The sidecar's inactivity
+// watchdog resets on inbound frames only (internal/sidecar/events.go), so a
+// member with a recent inbound frame has a watchdog that has not yet fired
+// and still owns the session; a member whose newest inbound frame is older
+// than that watchdog window, yet is still non-terminal, has a dead watchdog
+// — the case the monitor sweep is the backstop for. Inbound is therefore the
+// correct direction to read: an outbound frame the sidecar sent does not
+// reset the watchdog and does not prove the agent is alive.
+func (d *DB) LastInboundFrameAt(sessionName string) (time.Time, bool, error) {
+	var ms sql.NullInt64
+	err := d.conn.QueryRow(
+		`SELECT MAX(created_at) FROM harness_frames WHERE session_name = ? AND direction = ?`,
+		sessionName, HarnessFrameDirectionIn,
+	).Scan(&ms)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("db: last inbound frame for %q: %w", sessionName, err)
+	}
+	if !ms.Valid {
+		return time.Time{}, false, nil
+	}
+	return time.UnixMilli(ms.Int64), true, nil
+}
+
 // PruneHarnessFrames deletes frames older than olderThan.
 //
 // IMPORTANT: this only touches the harness_frames table. agent_events and
