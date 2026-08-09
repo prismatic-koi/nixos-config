@@ -10,6 +10,7 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/exporter"
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
 
 func gaugeValue(t *testing.T, h *harness, metric string, labels map[string]string) float64 {
@@ -368,5 +369,100 @@ func TestExporter_SidecarLivenessTreatsZeroLastSeenAsStaleNotLive(t *testing.T) 
 	}
 	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 1 {
 		t.Errorf("%s%v = %v with last_seen = 0, want 1", exporter.MetricSidecarsStale, labels, got)
+	}
+}
+
+// seedSidecarSession spawns a session and writes an agent_status row for it
+// in the given state, with last_seen backdated by age. A small helper shared
+// by the two quiet-by-design tests below.
+func seedSidecarSession(t *testing.T, h *harness, repo, state string, age time.Duration) string {
+	t.Helper()
+	instanceID, sessionName := h.spawnFixture(repo, "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		sessionName, repo, "/tmp/prism-test", state, nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(sessionName, instanceID); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	setLastSeen(t, h, sessionName, age)
+	return sessionName
+}
+
+// ── AC (edge-case, round-1 review finding): a session in a quiet-by-design
+// state (idle, waiting, escalated) with a last_seen well past the
+// threshold is NOT counted stale. This is the exact shape a real fleet
+// session ("obsidian") surfaced against navi: ended_at IS NULL, state
+// idle, last_seen 15 minutes stale, sidecar perfectly healthy — nobody was
+// talking to it. ───────────────────────────────────────────────────────
+
+func TestExporter_SidecarLivenessExcludesQuietByDesignStates(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	for _, state := range []string{"idle", "waiting", "escalated"} {
+		// Well past SidecarStaleThreshold, matching the real "obsidian" shape.
+		seedSidecarSession(t, h, repo, state, exporter.SidecarStaleThreshold+time.Minute)
+	}
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 — a session quiet by design (idle/waiting/escalated) must never be counted stale", exporter.MetricSidecarsStale, labels, got)
+	}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 — a quiet-by-design session is excluded from both gauges, not counted live either", exporter.MetricSidecarsLive, labels, got)
+	}
+}
+
+// ── AC (functional, inverse of the above): a session in an
+// activity-expected state (active) with a last_seen past the threshold IS
+// counted stale — this is the whole point of the metric, and the fix above
+// must not blunt it. ─────────────────────────────────────────────────────
+
+func TestExporter_SidecarLivenessCountsStaleActiveSession(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	seedSidecarSession(t, h, repo, "active", exporter.SidecarStaleThreshold+time.Minute)
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 1 {
+		t.Errorf("%s%v = %v, want 1 — a silent active session past the threshold is the exact dead-or-wedged case this gauge exists to catch", exporter.MetricSidecarsStale, labels, got)
+	}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, labels); got != 0 {
+		t.Errorf("%s%v = %v, want 0", exporter.MetricSidecarsLive, labels, got)
+	}
+}
+
+// ── AC (functional): compacting and reviewing are activity-expected too,
+// same as active — silence in either state past the threshold counts
+// stale. ────────────────────────────────────────────────────────────────
+
+func TestExporter_SidecarLivenessCountsStaleCompactingAndReviewing(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	repo := "nixos-config"
+	seedSidecarSession(t, h, repo, "compacting", exporter.SidecarStaleThreshold+time.Minute)
+	seedSidecarSession(t, h, repo, "reviewing", exporter.SidecarStaleThreshold+time.Minute)
+
+	labels := map[string]string{"repo": repo}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, labels); got != 2 {
+		t.Errorf("%s%v = %v, want 2 (compacting + reviewing)", exporter.MetricSidecarsStale, labels, got)
+	}
+}
+
+// ── AC (anti-drift guard, mirrors
+// TestReviewAgentActivityWindow_MatchesWatchdog in internal/review):
+// SidecarStaleThreshold must equal the sidecar's own inactivity-watchdog
+// timeout, or the rationale in its doc comment ("this is the number prism
+// itself already trusts") stops being true. ─────────────────────────────
+
+func TestSidecarStaleThreshold_MatchesReviewWatchdog(t *testing.T) {
+	if got, want := exporter.SidecarStaleThreshold, sidecar.DefaultReviewAgentInactivityTimeout; got != want {
+		t.Errorf("exporter.SidecarStaleThreshold = %v, want %v (sidecar.DefaultReviewAgentInactivityTimeout) — the two must not drift", got, want)
 	}
 }

@@ -35,8 +35,14 @@ import (
 // same reason -- a point-in-time liveness question is exactly what a
 // scrape-time plain-SQL recompute is for:
 //
-//	prism_sidecars_live{repo}    gauge  agent_status (ended_at IS NULL, last_seen fresh)
-//	prism_sidecars_stale{repo}   gauge  agent_status (ended_at IS NULL, last_seen stale)
+//	prism_sidecars_live{repo}    gauge  agent_status (activity-expected state, last_seen fresh)
+//	prism_sidecars_stale{repo}   gauge  agent_status (activity-expected state, last_seen stale)
+//
+// Both restrict to agent_status.state values where continuous event
+// production is actually expected (active, compacting, reviewing) -- see
+// sidecarActivityExpected below for why the quiet-by-design states (idle,
+// waiting, escalated) are excluded from both gauges rather than counted
+// stale.
 
 // Metric names for the four #2702 gauges.
 const (
@@ -53,8 +59,9 @@ const (
 )
 
 // SidecarStaleThreshold is how long agent_status.last_seen can go silent,
-// for a session with ended_at IS NULL, before its sidecar counts as dead or
-// wedged rather than merely quiet (#2708).
+// for a session in an activity-expected state (see
+// sidecarActivityExpected below) with ended_at IS NULL, before its sidecar
+// counts as dead or wedged rather than merely quiet (#2708).
 //
 // last_seen is a heartbeat: it is populated from MAX(agent_events.created_at)
 // (see the v13->v14 migration in internal/db/db.go) and updated by every
@@ -64,16 +71,31 @@ const (
 // reports only whether the spawner ran, not whether any given sidecar is
 // still alive.
 //
-// The value is deliberately set well above DefaultPollInterval (15s, see
-// exporter.go): the exporter recomputes this gauge on every scrape, so a
-// threshold close to the scrape cadence would flap a healthy-but-quiet
-// session in and out of "stale" on ordinary jitter. It is deliberately set
-// well below reviewAgentActivityWindow and DefaultReviewAgentInactivityTimeout
-// (both 15m, internal/review/monitor.go and internal/sidecar/sidecar.go): those
-// windows govern when prism itself force-ends a wedged review agent, and this
-// gauge exists precisely to surface the wedge to an operator before that
-// self-healing path fires, not after.
-const SidecarStaleThreshold = 5 * time.Minute
+// The value is pinned to DefaultReviewAgentInactivityTimeout /
+// reviewAgentActivityWindow (both 15m: internal/sidecar/sidecar.go and
+// internal/review/monitor.go), rather than picked independently, for two
+// reasons:
+//
+//  1. prism already has an established definition of "this agent has gone
+//     quiet too long": the review-agent inactivity watchdog. Reusing it
+//     keeps the fleet's notion of "too quiet" consistent across the
+//     exporter and the watchdog rather than introducing a second, competing
+//     number.
+//  2. Even an activity-expected session has legitimate quiet stretches --
+//     a single long tool call (a nix build, a large test run) emits
+//     tool_call at the start and tool_result at the end, with nothing in
+//     between. A short threshold (an earlier version of this gauge used 5m)
+//     trips on exactly that shape and produces a false positive. 15m is the
+//     number prism itself already trusts not to flap on ordinary tool
+//     latency; see TestSidecarStaleThreshold_MatchesReviewWatchdog for the
+//     mechanical anti-drift guard (analogous to
+//     TestReviewAgentActivityWindow_MatchesWatchdog in internal/review).
+//
+// It is still well above DefaultPollInterval (15s, see exporter.go): the
+// exporter recomputes this gauge on every scrape, so a threshold close to
+// the scrape cadence would flap a healthy-but-quiet session in and out of
+// "stale" on ordinary jitter.
+const SidecarStaleThreshold = 15 * time.Minute
 
 // unknownStateLabel is the label value prism_sessions_active{state} uses for
 // an agent_status.state value outside the pinned set (see stateLabel below).
@@ -324,16 +346,54 @@ func (c *busMessagesPendingCollector) Collect() []metrics.Sample {
 	return samples
 }
 
-// sidecarLivenessCollector implements both #2708 gauges,
-// prism_sidecars_live and prism_sidecars_stale, from a single query
-// (SidecarLivenessSQL). Both gauges are grouped by repo only -- a bounded
-// label set under #2699 section 6 -- never by session_name or instance_id.
+// sidecarActivityExpected reports whether a session in state s is expected
+// to be continuously producing agent_events -- and so whether a silent
+// last_seen in that state is evidence the sidecar has died or wedged,
+// rather than evidence of nothing at all (#2708 round-1 review finding).
 //
-// A session with ended_at set is excluded by the query itself (WHERE
-// ended_at IS NULL) and so lands in neither gauge. A row with last_seen NULL
-// or zero -- a session that has not yet written any event -- folds to
-// "stale", never "live": it has no positive evidence of a live sidecar, and
-// the zero/NULL value must never be miscounted as freshness.
+// Real fleet data caught the gap this closes: a session in StateIdle can sit
+// quiet for well over an hour with a perfectly healthy sidecar -- nobody is
+// talking to it, so it has nothing to emit. Flagging that as "stale" is a
+// standing false positive that trains an operator to ignore the gauge.
+//
+// The candidate set is deliberately narrow -- only the states where
+// continuous event production is the expected behaviour:
+//
+//   - StateActive: the agent is mid-turn. Silence here for longer than
+//     SidecarStaleThreshold is genuinely suspicious (modulo the long-tool-call
+//     allowance the threshold itself already gives, per its doc comment).
+//   - StateCompacting: an automatic, bounded, in-turn operation; the agent is
+//     still working and still expected to report back.
+//   - StateReviewing: the worker is mid-review, waiting on `prism review`'s
+//     own agents -- but it is still the active turn of the parent session,
+//     which resumes and reports the moment the review completes.
+//
+// Excluded, and never counted in either gauge, because silence is the
+// expected steady state, not a symptom:
+//
+//   - StateIdle: nobody is talking to it (the case found in review).
+//   - StateWaiting: blocked on human input; silence is the point.
+//   - StateEscalated: awaiting coordinator guidance via `prism escalate`;
+//     same shape as waiting, just addressed to a different party.
+//
+// Also excluded: the terminal states (agent.IsTerminal: finished, error,
+// interrupted, deleted). SidecarLivenessSQL already filters to
+// `ended_at IS NULL`, so a terminal-state row here is a narrow race window
+// (state written moments before ended_at) rather than the normal case, and
+// it carries no liveness signal either way -- the session is already on its
+// way out. An unrecognised state (outside agent.AgentState's pinned set,
+// per stateLabel's advisory-only note above) is excluded for the same
+// reason a terminal state is: absent positive evidence that continuous
+// activity is expected, silence must not be read as a symptom.
+func sidecarActivityExpected(state string) bool {
+	switch agent.AgentState(state) {
+	case agent.StateActive, agent.StateCompacting, agent.StateReviewing:
+		return true
+	default:
+		return false
+	}
+}
+
 type sidecarLivenessCollector struct {
 	conn   *sql.DB
 	logger *log.Logger
@@ -359,9 +419,9 @@ func (c *sidecarLivenessCollector) Kind() metrics.Kind { return metrics.KindGaug
 
 func (c *sidecarLivenessCollector) Help() string {
 	if c.live {
-		return "Prism sessions whose sidecar is live (ended_at IS NULL, last_seen within SidecarStaleThreshold), by repo."
+		return "Prism sessions in an activity-expected state (active, compacting, reviewing) whose sidecar is live (ended_at IS NULL, last_seen within SidecarStaleThreshold), by repo."
 	}
-	return "Prism sessions that have not ended but whose sidecar has gone quiet (last_seen older than SidecarStaleThreshold, or never set) -- a dead or wedged sidecar, by repo."
+	return "Prism sessions in an activity-expected state (active, compacting, reviewing) that have not ended but whose sidecar has gone quiet (last_seen older than SidecarStaleThreshold, or never set) -- a dead or wedged sidecar, by repo. Sessions in a quiet-by-design state (idle, waiting, escalated) are excluded, not counted stale."
 }
 
 func (c *sidecarLivenessCollector) nowFunc() time.Time {
@@ -384,9 +444,18 @@ func (c *sidecarLivenessCollector) Collect() []metrics.Sample {
 	for rows.Next() {
 		var repo string
 		var lastSeen sql.NullInt64
-		if err := rows.Scan(&repo, &lastSeen); err != nil {
+		var state sql.NullString
+		if err := rows.Scan(&repo, &lastSeen, &state); err != nil {
 			c.logger.Printf("gauge %s: scan failed: %v", c.Name(), err)
 			return nil
+		}
+
+		// A session in a quiet-by-design state (idle, waiting, escalated) or
+		// a terminal/unrecognised state carries no liveness signal either
+		// way and is excluded from both gauges (#2708 round-1 review
+		// finding; see sidecarActivityExpected).
+		if !sidecarActivityExpected(state.String) {
+			continue
 		}
 
 		// A NULL or zero last_seen has no positive evidence of a live
