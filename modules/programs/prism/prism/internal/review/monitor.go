@@ -140,21 +140,40 @@ func MonitorFunc(opts MonitorOpts) error {
 	proglog.Infof("[prism monitor-review] watching group %s for PR #%s (worker: %s)\n",
 		opts.GroupID, opts.PRNumber, opts.WorkerSession)
 
-	// Set deadline if timeout is specified.
+	// Set deadline if timeout is specified. This is a single GROUP-WIDE wall
+	// clock for the whole round — every member shares it. It is NOT a
+	// per-agent budget (#2729): the structurally-slowest agent absorbs the
+	// group's elapsed time.
 	var deadline time.Time
 	if opts.Timeout > 0 {
 		deadline = time.Now().Add(opts.Timeout)
 	}
 
 	// Poll loop: check GroupCompleted every pollInterval.
-	timedOut := false
+	//
+	// When the group-wide safety deadline fires we do NOT reap every
+	// non-terminal member outright — the old behaviour reaped a live agent
+	// mid-build identically to a wedged one, and the round was then reported
+	// incomplete and re-run (#2729). Instead forceTerminateStuckMembers reaps
+	// only the DEAD-watchdog members — those with no recent inbound frame —
+	// and returns how many still-live members it spared.
+	//
+	// While any member is still live we keep polling: its per-session sidecar
+	// inactivity watchdog owns it and will drive it terminal (it finishes, or
+	// the watchdog fires on inactivity), at which point GroupCompleted trips
+	// and the round is reported as a normal completion rather than
+	// incomplete-with-no-verdict.
+	//
+	// The #1709 guarantee — rows must not sit `active` forever and block the
+	// next `prism review` — is preserved two independent ways. First, a
+	// dead-watchdog member IS still reaped here, and a spared member cannot
+	// stay live forever: once it goes silent its newest inbound frame ages
+	// past the activity window within one window, so a later pass reaps it.
+	// Second, SetGroupDeliveredAt below records the group's end-of-life once
+	// results are delivered, and that — not member state — is what releases
+	// the in-progress guard (ActiveReviewGroupForParent).
+	deadlineLogged := false
 	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			proglog.Infof("[prism monitor-review] timeout reached for group %s — delivering partial results\n", opts.GroupID)
-			timedOut = true
-			break
-		}
-
 		done, groupErr := d.GroupCompleted(opts.GroupID)
 		if groupErr != nil {
 			proglog.Warnf("[prism monitor-review] warning: GroupCompleted(%s): %v — retrying\n", opts.GroupID, groupErr)
@@ -163,19 +182,23 @@ func MonitorFunc(opts MonitorOpts) error {
 			break
 		}
 
-		time.Sleep(pollInterval)
-	}
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			if !deadlineLogged {
+				proglog.Infof("[prism monitor-review] group-wide safety deadline reached for group %s — reaping dead-watchdog members, sparing any still-live agent\n", opts.GroupID)
+				deadlineLogged = true
+			}
+			spared := forceTerminateStuckMembers(d, opts.AgentSessions, opts.Timeout)
+			if spared == 0 {
+				// No live members remain: every member is now terminal (reaped
+				// or finished). Deliver the partial results.
+				proglog.Infof("[prism monitor-review] group %s — no live members remain after deadline; delivering partial results\n", opts.GroupID)
+				break
+			}
+			// Live members remain — keep polling. Do not deliver a premature
+			// incomplete round; their watchdog will drive them terminal.
+		}
 
-	// If the outer safety timeout fired, force-terminate any remaining
-	// non-terminal members (#1709). Without this, agent rows stay in
-	// `active` indefinitely, GroupCompleted keeps returning false on the
-	// next call, and a subsequent `prism review` for the same parent
-	// refuses with "round N already in progress". The per-session sidecar
-	// inactivity watchdog should normally cover this case, but the monitor
-	// adds a belt-and-braces sweep for sessions whose sidecar died,
-	// crashed, or was misconfigured with ActivityTimeout=0.
-	if timedOut {
-		forceTerminateStuckMembers(d, opts.AgentSessions, opts.Timeout)
+		time.Sleep(pollInterval)
 	}
 
 	// Aggregate results.
@@ -407,17 +430,63 @@ func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult,
 	}
 }
 
-// forceTerminateStuckMembers walks the given session names and transitions any
-// row still in a non-terminal state to `error` so the monitor's safety-timeout
-// path leaves the review group genuinely terminal (#1709).
+// reviewAgentActivityWindow is how recently a review-agent member must have
+// produced an inbound frame for its sidecar inactivity watchdog to count as
+// alive and still in charge of the session.
 //
-// Without this sweep, a row stuck at state="active" past the safety deadline
-// keeps GroupCompleted returning false, blocks ActiveReviewGroupForParent
-// from clearing, and forces the worker into manual `prism cleanup` recovery.
-// The per-session sidecar inactivity watchdog should normally rescue these
-// rows long before the monitor's outer timeout fires; this is the belt-and-
-// braces fallback for the case where the sidecar itself is unreachable
-// (crashed, killed without cleanup, etc.).
+// It MUST equal the sidecar's DefaultReviewAgentInactivityTimeout. The
+// watchdog resets on each inbound frame and fires after that much continuous
+// silence, so:
+//
+//   - last inbound frame within the window → the watchdog has NOT fired and
+//     still owns the session; the monitor sweep must leave it alone.
+//   - last inbound frame older than the window, yet the row is still
+//     non-terminal → a live watchdog WOULD already have reaped it, so the
+//     watchdog is dead. That is the exact case the sweep is the backstop for.
+//
+// It is duplicated here rather than imported because internal/sidecar imports
+// internal/review, so review cannot import sidecar without an import cycle.
+// The guard test TestReviewAgentActivityWindow_MatchesWatchdog asserts the
+// two constants stay equal, so the duplication cannot silently drift.
+const reviewAgentActivityWindow = 15 * time.Minute
+
+// memberWatchdogAlive reports whether sess has produced an inbound frame
+// recently enough that its sidecar inactivity watchdog cannot have fired yet
+// (#2729). A member with no inbound frame on record is treated as not alive:
+// a review agent that never sent a frame either failed to start or has a dead
+// pipe, and in both cases the watchdog is not resetting on its behalf.
+func memberWatchdogAlive(d *db.DB, sess string) (bool, error) {
+	lastFrame, ok, err := d.LastInboundFrameAt(sess)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	return time.Since(lastFrame) < reviewAgentActivityWindow, nil
+}
+
+// forceTerminateStuckMembers walks the given session names when the monitor's
+// group-wide safety deadline has fired and transitions to `error` ONLY the
+// non-terminal members whose sidecar inactivity watchdog is dead — those with
+// no inbound frame inside reviewAgentActivityWindow. It returns the number of
+// members it SPARED because their watchdog is still alive.
+//
+// Why not reap every non-terminal member (the pre-#2729 behaviour): the
+// deadline is a group-wide wall clock, and reaping on it alone killed a live
+// agent mid-build identically to a wedged one. The sweep exists as a
+// belt-and-braces backstop for a DEAD watchdog (a sidecar that crashed, was
+// killed without cleanup, or ran with ActivityTimeout=0), NOT as a cap on a
+// healthy agent — so a member whose watchdog is demonstrably alive (recent
+// inbound frames) is left to that watchdog and to normal completion.
+//
+// What happens to a spared live member (the #1709 constraint): the caller
+// keeps polling while spared > 0. A spared member therefore never sits
+// `active` forever — it either reaches a real verdict (GroupCompleted trips
+// and the round is reported complete), or it goes silent and its newest
+// inbound frame ages past the activity window, at which point a later pass of
+// this sweep reaps it as a dead watchdog. Either way the group becomes
+// terminal, and SetGroupDeliveredAt then releases the in-progress guard.
 //
 // After setting state="error" we also call SetEnded so that ended_at is
 // written atomically for both agent_status and sessions rows. This mirrors
@@ -430,8 +499,11 @@ func persistReviewOutcome(d *db.DB, workerSession string, results []AgentResult,
 //
 // All failures are logged but non-fatal: a stuck DB row is recoverable via
 // `prism cleanup`, but a hard error here would also block the partial
-// review-results delivery the monitor has already promised the worker.
-func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeout time.Duration) {
+// review-results delivery the monitor has already promised the worker. A
+// frame-read error is treated as "cannot confirm alive" and the member is
+// reaped rather than spared — leaving a row `active` forever (the #1709 bug)
+// is the worse failure, and the poll loop would otherwise spin on it.
+func forceTerminateStuckMembers(d *db.DB, agentSessions []string, groupDeadline time.Duration) (spared int) {
 	for _, sess := range agentSessions {
 		if sess == "" {
 			continue
@@ -450,14 +522,23 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 		if isTerminalAgentState(status.State) {
 			continue
 		}
-		proglog.Warnf("[prism monitor-review] force-terminating stuck member %s (state=%q, per-agent timeout=%v)\n",
-			sess, status.State, perAgentTimeout)
+		// Dead-watchdog check (#2729): spare a member whose watchdog is still
+		// alive (recent inbound frames). The caller keeps polling while any
+		// member is spared, so the row is not abandoned.
+		if alive, aliveErr := memberWatchdogAlive(d, sess); aliveErr != nil {
+			proglog.Warnf("[prism monitor-review] warning: activity check for %s failed (%v) — treating as dead watchdog and reaping\n", sess, aliveErr)
+		} else if alive {
+			spared++
+			continue
+		}
+		proglog.Warnf("[prism monitor-review] force-terminating dead-watchdog member %s (state=%q, group-wide deadline=%v)\n",
+			sess, status.State, groupDeadline)
 		// Record WHY this row is about to close, before it closes (#2613).
 		// The monitor is the only path that force-terminates a member of a
 		// live round, and without this record the resulting row is
 		// indistinguishable in the report from a readiness-gate cleanup.
 		if err := d.RecordSessionReap(sess, db.ReapCauseMonitorTimeout,
-			fmt.Sprintf("still in state %q when the monitor safety deadline fired (per-agent timeout %v)", status.State, perAgentTimeout)); err != nil {
+			fmt.Sprintf("still in state %q with no recent frames when the group-wide monitor deadline (%v) fired", status.State, groupDeadline)); err != nil {
 			proglog.Warnf("[prism monitor-review] warning: RecordSessionReap(%s): %v\n", sess, err)
 		}
 		if err := d.UpsertStatus(sess, status.Repo, status.Worktree, "error", nil, nil); err != nil {
@@ -470,6 +551,7 @@ func forceTerminateStuckMembers(d *db.DB, agentSessions []string, perAgentTimeou
 			proglog.Warnf("[prism monitor-review] warning: SetEnded(%s) after force-terminate: %v\n", sess, err)
 		}
 	}
+	return spared
 }
 
 // buildMonitorResults constructs AgentResult entries from GroupResults data,

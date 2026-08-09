@@ -14,7 +14,102 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/db"
 	"github.com/prismatic-koi/prism/internal/review"
+	"github.com/prismatic-koi/prism/internal/sidecar"
 )
+
+// seedInboundFrame records one inbound harness frame for sess at the given
+// time, so the sweep's dead-watchdog check has a last-inbound-frame timestamp
+// to read (#2729).
+func seedInboundFrame(t *testing.T, d *db.DB, sess string, at time.Time) {
+	t.Helper()
+	if err := d.WriteHarnessFrame(db.HarnessFrame{
+		ID:          sess + "-frame-" + at.Format("150405.000"),
+		SessionName: sess,
+		Direction:   db.HarnessFrameDirectionIn,
+		Type:        "turn_start",
+		Payload:     "{}",
+		CreatedAt:   at,
+	}); err != nil {
+		t.Fatalf("seed inbound frame for %q: %v", sess, err)
+	}
+}
+
+// TestReviewAgentActivityWindow_MatchesWatchdog is the anti-drift guard
+// (#2729). The monitor sweep's activity window must equal the sidecar's
+// inactivity-watchdog timeout, or the sweep's "is the watchdog alive" test
+// stops meaning what it claims. The two constants live in different packages
+// (internal/sidecar imports internal/review, so review cannot import sidecar
+// in non-test code) and this test is the mechanical link between them.
+func TestReviewAgentActivityWindow_MatchesWatchdog(t *testing.T) {
+	if got, want := review.ReviewAgentActivityWindowForTest(), sidecar.DefaultReviewAgentInactivityTimeout; got != want {
+		t.Errorf("activity window %v != sidecar watchdog timeout %v — they must match so a spared member is exactly one the watchdog still owns", got, want)
+	}
+}
+
+// TestForceTerminateStuckMembers_SparesLiveMember verifies the #2729 core
+// fix: a non-terminal member that produced an inbound frame within the
+// activity window is SPARED, not reaped. Its watchdog is alive and owns it.
+func TestForceTerminateStuckMembers_SparesLiveMember(t *testing.T) {
+	d := openTestDB(t)
+	live := "prism-test@invoker-spare-live~review-1-review-qa"
+	if err := d.UpsertStatus(live, "testrepo", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// A fresh inbound frame: the watchdog cannot have fired.
+	seedInboundFrame(t, d, live, time.Now().Add(-30*time.Second))
+
+	spared := review.ForceTerminateStuckMembersForTest(d, []string{live}, 20*time.Minute)
+
+	if spared != 1 {
+		t.Errorf("spared count: got %d, want 1", spared)
+	}
+	status, err := d.CurrentStatus(live)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("session row disappeared after sweep")
+	}
+	if status.State != "active" {
+		t.Errorf("live member state after sweep: got %q, want %q (a live member must not be reaped)", status.State, "active")
+	}
+	if status.EndedAt != nil {
+		t.Error("ended_at set on a spared live member — it must stay live for its watchdog")
+	}
+}
+
+// TestForceTerminateStuckMembers_ReapsStaleMember verifies the dead-watchdog
+// case: a non-terminal member whose newest inbound frame is older than the
+// activity window is reaped (#2729). A live watchdog would already have
+// reaped it, so a still-active row proves the watchdog is dead.
+func TestForceTerminateStuckMembers_ReapsStaleMember(t *testing.T) {
+	d := openTestDB(t)
+	stale := "prism-test@invoker-reap-stale~review-1-review-qa"
+	if err := d.UpsertStatus(stale, "testrepo", "/wt", "active", nil, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// Last inbound frame well past the activity window: the watchdog is dead.
+	seedInboundFrame(t, d, stale, time.Now().Add(-(review.ReviewAgentActivityWindowForTest() + 5*time.Minute)))
+
+	spared := review.ForceTerminateStuckMembersForTest(d, []string{stale}, 20*time.Minute)
+
+	if spared != 0 {
+		t.Errorf("spared count: got %d, want 0 (stale member must be reaped)", spared)
+	}
+	status, err := d.CurrentStatus(stale)
+	if err != nil {
+		t.Fatalf("CurrentStatus: %v", err)
+	}
+	if status == nil {
+		t.Fatal("session row disappeared after sweep")
+	}
+	if status.State != "error" {
+		t.Errorf("stale member state after sweep: got %q, want %q", status.State, "error")
+	}
+	if status.EndedAt == nil {
+		t.Error("ended_at not set on reaped stale member")
+	}
+}
 
 // TestForceTerminateStuckMembers_TransitionsActiveRows verifies the core
 // invariant: an active row is rewritten to "error" by the sweep, AND that
