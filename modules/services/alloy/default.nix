@@ -150,17 +150,26 @@ let
 
   # ── Prism exporter scrape (issue #2701) ──────────────────────────────
   #
-  # The exporter is a user-scope systemd service, running on the host
-  # only when a session is logged in (lingering is not enabled — see
-  # the prism-exporter module header for why). Alloy dials the
-  # loopback endpoint regardless of login state, so the scrape target
-  # will report up=0 when no session exists. That is expected behaviour
-  # and is accounted for in the AC for #2701.
+  # On NixOS (navi, tui) the exporter is a user-scope systemd service,
+  # running on the host only when a session is logged in (lingering is
+  # not enabled — see the prism-exporter module header for why). Alloy
+  # dials the loopback endpoint regardless of login state, so the
+  # scrape target will report up=0 when no session exists. That is
+  # expected behaviour and is accounted for in the AC for #2701.
   #
-  # Gate on both the exporter being enabled (system config) and isLinux
-  # (Darwin is #2705). Forward to the existing prometheus.remote_write.
+  # On Darwin (m4mac, #2705) the exporter is a launchd system daemon,
+  # boot-started independent of any login, so this up=0-while-logged-
+  # out gap does not apply there — see the prism-exporter module
+  # header's "Darwin (#2705)" section for why.
+  #
+  # Gate on the exporter being enabled (system config). #2705 ported the
+  # exporter to Darwin as a UserName-scoped launchd daemon (see
+  # modules/services/prism-exporter/default.nix), listening on the same
+  # loopback port on both platforms, so the scrape block below needs no
+  # platform branch -- `isLinux` is intentionally absent here. Forward to
+  # the existing prometheus.remote_write.
   prismExporterCfg = config.nx.services.prismExporter;
-  scrapePrismExporter = isLinux && prismExporterCfg.enable;
+  scrapePrismExporter = prismExporterCfg.enable;
 
   # ── Systemd unit health metrics (issue #2462) ───────────────────────
   #
