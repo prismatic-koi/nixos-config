@@ -7,7 +7,6 @@
 }:
 let
   hostname = config.networking.hostName;
-  configDir = config.nx.services.syncthing.configDir;
   username = config.nx.username;
   hosts = [
     "navi"
@@ -51,6 +50,33 @@ let
   hasApiKey = builtins.elem hostname apiKeyHosts;
   apiKeySecret = "${hostname}/gui-apikey";
   apiKeyEnvTemplate = "syncthing-gui-apikey.env";
+
+  # ── GUI basic-auth credential (issue #2698) ─────────────────────
+  #
+  # Issue #2461 pinned a Bearer token so Alloy's /metrics scrape had
+  # the correct long-term credential, but left it non-load-bearing:
+  # no GUI user/password meant Syncthing never installed
+  # `basicAuthAndSessionMiddleware`, so /metrics answered any local
+  # request with no auth at all (#2698). This closes that gap.
+  #
+  # Reuses `hasApiKey`/`apiKeyHosts` (navi, tui) as the scope — the
+  # same two hosts, no reason for a second host list.
+  #
+  # The password must NOT go through `services.syncthing.settings.gui`
+  # (that whole attrset, apart from `guiPasswordFile` itself, is
+  # embedded as JSON directly into the world-readable
+  # `merge-syncthing-config` script — see the nixpkgs syncthing
+  # module). `guiPasswordFile` is a nixpkgs-native escape hatch: it
+  # takes a *path*, read at activation time by `merge-syncthing-config`
+  # to bcrypt-hash the password and PATCH it into Syncthing over the
+  # REST API. The path itself is fine in the store; the file it points
+  # at is the sops-decrypted runtime secret, never the store.
+  #
+  # `gui.user` is not a secret -- a username carries no sensitive
+  # value -- so it is set directly in `settings.gui.user` below and is
+  # fine to embed in the store script alongside the rest of
+  # `cleanedConfig`.
+  guiPasswordSecret = "${hostname}/gui-password";
 
   # Group that owns the decrypted key file. Alloy runs under systemd
   # DynamicUser, so it has no stable user to name as the file owner; it
@@ -114,6 +140,22 @@ in
           systemd.services.syncthing.serviceConfig.EnvironmentFile = [
             config.sops.templates.${apiKeyEnvTemplate}.path
           ];
+
+          # GUI basic-auth credential (issue #2698). The password file
+          # is owned by the syncthing user itself: `merge-syncthing-config`
+          # runs as `cfg.user` (see the upstream module's `updateConfig`
+          # systemd unit), so it needs read access, not the alloy-facing
+          # `apiKeyGroup`.
+          sops.secrets.${guiPasswordSecret} = {
+            sopsFile = ./secrets/gui-password.sops.yaml;
+            owner = username;
+            mode = "0400";
+          };
+
+          services.syncthing = {
+            settings.gui.user = username;
+            guiPasswordFile = config.sops.secrets.${guiPasswordSecret}.path;
+          };
         }
       ))
 
