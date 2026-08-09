@@ -554,6 +554,12 @@ this as a `turn_start` event row.
   - `cache_read` (integer) — cached input tokens read.
   - `cache_write` (integer) — input tokens written to cache.
   - `cost` (number) — turn cost in USD as a JSON number (not a string).
+- `agent` (string, optional) — **Declared but not currently emitted by the pi extension.**
+  Pi exposes no subagent identity (no Task-style tool, no agent field on any
+  event or message). The go sidecar reads this field defensively for the
+  SSE-path case, where message events do carry `info.agent`, and the
+  agent-keyed branches in `handleTurnEnd` and `handleSessionFinished` are
+  therefore SSE-path-only today.
 
 Fields are **optional within `usage`**: any one of them can be absent
 when PI does not have the data (for example, cache fields are

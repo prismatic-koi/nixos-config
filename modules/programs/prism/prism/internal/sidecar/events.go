@@ -263,6 +263,11 @@ func (s *Sidecar) handleSessionFinished() {
 	// agent), suppress the finished debounce entirely. The parent agent is
 	// likely about to resume — the next state_change{finished} after the root
 	// agent completes will start the timer normally.
+	// NOTE: This suppression and the corresponding model gate in handleTurnEnd
+	// (sidecar.go:2780) share one root cause: pi exposes no subagent identity,
+	// so lastAssistantAgent is always empty (fed from agentName fallback) and
+	// this suppression never fires on pi. Both sites must be revisited together
+	// if pi ever grows subagent identity. See issue #2735.
 	if s.lastAssistantAgent != "" && s.rootAgent != "" && s.lastAssistantAgent != s.rootAgent {
 		s.logger().Printf("sidecar: finished suppressed: lastAssistantAgent=%q is not rootAgent=%q", s.lastAssistantAgent, s.rootAgent)
 		return

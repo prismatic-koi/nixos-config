@@ -298,7 +298,7 @@ to use. The classes are:
   running agent: the monitor's safety deadline, a cleanup of your own
   session that cascaded, or an operator `prism cleanup`. The report names
   which one. If it names the monitor's safety deadline twice in a row, the
-  agent is exceeding the round timeout — escalate rather than re-running.
+  agent's sidecar watchdog is dead — escalate rather than re-running.
 - **session ended mid-review** — the agent's DB row was closed while the
   round was running and no path recorded why, so no verdict was recorded.
   Re-run once; if the same agent is reaped in two consecutive rounds,
