@@ -86,6 +86,27 @@ func withCreateSessionHook(t *testing.T, fn func(opts session.Opts)) {
 	t.Cleanup(func() { onRestoreSessionCreate = prev })
 }
 
+// stubNvimOnPath writes a no-op `nvim` shim (`#!/bin/sh\nexit 0\n`) into a
+// fresh t.TempDir() and prepends that directory to PATH for the duration of
+// the test. setupFullLayout (internal/session/session.go) unconditionally
+// sends NvimCmd into the session's edit window via a real tmux.SendKeys —
+// against the real tmux server these restore tests drive (cmdTestServer),
+// that really execs the `nvim` binary. That real, unmanaged nvim process is
+// the writer of `.local/state/nvim` under the test's fake HOME (issue
+// #2719): it can still be writing its state dir when a later t.TempDir()
+// cleanup for HOME runs RemoveAll, racing on "directory not empty". These
+// tests only assert on the agent window (window 1), so the edit window's
+// content is never under test — stubbing nvim removes the writer instead of
+// waiting on or hiding the race.
+func stubNvimOnPath(t *testing.T) {
+	t.Helper()
+	nvimBinDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(nvimBinDir, "nvim"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake nvim: %v", err)
+	}
+	t.Setenv("PATH", nvimBinDir+":"+os.Getenv("PATH"))
+}
+
 // agentPaneStartCmd reads #{pane_start_command} from the agent window (window 1)
 // of the named session. The agent window is created with "new-window ... sh -c
 // <cmd>", so the command is embedded in the pane's start command synchronously
@@ -1309,11 +1330,7 @@ func TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists(t *testing.T) 
 	// editor and there is no writer left to race — this test only
 	// asserts on window 1 (the agent pane), so the edit window's content
 	// is not under test.
-	nvimBinDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(nvimBinDir, "nvim"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake nvim: %v", err)
-	}
-	t.Setenv("PATH", nvimBinDir+":"+os.Getenv("PATH"))
+	stubNvimOnPath(t)
 
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
@@ -1388,6 +1405,13 @@ func TestRestoreSession_HostMode_NoSessionFlag_WhenFileMissing(t *testing.T) {
 	// Empty fake HOME — no pi sessions dir present, so the resolver
 	// must fail and the launcher must omit --session.
 	t.Setenv("HOME", t.TempDir())
+
+	// Same real-tmux setup as TestRestoreSession_HostMode_AppendsSessionFlagWhenFileExists
+	// (config.IsolationHost + real tmux via callRestoreSession ->
+	// setupFullLayout -> NvimCmd), so it carries the identical
+	// .local/state/nvim teardown race (issue #2719). Stub nvim here too —
+	// see stubNvimOnPath's doc comment for the full writer identification.
+	stubNvimOnPath(t)
 
 	s := newCmdTestServer(t)
 	withCmdServer(t, s)
