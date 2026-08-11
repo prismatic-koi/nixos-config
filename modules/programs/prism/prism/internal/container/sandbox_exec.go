@@ -379,9 +379,10 @@ func generateProfile(m *Manager) string {
 	// in-sandbox — GITHUB_TOKEN, OPENROUTER_API_KEY, etc. are resolved
 	// host-side by agent-run (credentialEnvVars, including the #2029
 	// GitHubTokenPath file fallback) and injected into the sandbox env as
-	// VALUES before sandbox-exec starts. The single exception is
-	// gitlab_token, which IS read in-sandbox — see
-	// collectSecretsDAllowlistNames (issue #2668).
+	// VALUES before sandbox-exec starts. The exceptions are the few secrets
+	// that ARE read in-sandbox — gitlab_token (issue #2668) and the pi
+	// grafana MCP config bundle (issue #2746) — see
+	// collectSecretsDAllowlistNames.
 	//
 	// Shape:
 	//   1. deny file-write* on the secrets.d subtree, no exceptions — nothing
@@ -390,9 +391,11 @@ func generateProfile(m *Manager) string {
 	//   2. deny file-read* on the secrets.d subtree, with require-not
 	//      exceptions for exactly the inventoried agent-needed secret NAMES
 	//      (collectSecretsDAllowlistNames: ssh access key + .pub, signing key
-	//      + .pub, aws readonly-config, aws credentials, kube agents-config —
-	//      each derived from its stable host source path, so a source that is
-	//      absent or not sops-backed simply produces no exception).
+	//      + .pub, aws readonly-config, aws credentials, kube agents-config,
+	//      plus the two config-gated names gitlab_token and the grafana config
+	//      bundle — each derived from its stable host source path, so a source
+	//      that is absent, unconfigured, or not sops-backed simply produces no
+	//      exception).
 	//
 	// The exceptions live inside the deny rule itself (require-all +
 	// require-not) rather than as separate (allow ...) rules emitted after
@@ -1293,17 +1296,29 @@ func generateProfile(m *Manager) string {
 //	~/.config/aws/credentials            — read via AWS_SHARED_CREDENTIALS_FILE env (#2234)
 //	~/.config/kube/agents-config         — read via KUBECONFIG env (#2235)
 //	cfg.GitLabTokenPath                  — the gitlab_token sops secret (#2668)
+//	cfg.GrafanaConfigPath                — the pi grafana MCP config bundle (#2746)
 //
-// The GitLab entry is the one addition since #2211 and it meets the rule
-// below: an in-sandbox consumer reads it. Any zsh the agent starts sources
-// the home-manager session vars, which re-derive GITLAB_TOKEN by running
-// `cat <this path>`. With the read denied that cat fails and OVERWRITES the
-// injected GITLAB_TOKEN with an empty string, so glab breaks in every
-// zsh-launched command — the same mechanism the bwrap SHELL=/bin/sh pin
-// works around on Linux. Note what the exception does NOT do: the token
+// The last two entries are the only additions since #2211, and both meet the
+// rule below: an in-sandbox consumer reads them.
+//
+// GitLab: any zsh the agent starts sources the home-manager session vars,
+// which re-derive GITLAB_TOKEN by running `cat <this path>`. With the read
+// denied that cat fails and OVERWRITES the injected GITLAB_TOKEN with an
+// empty string, so glab breaks in every zsh-launched command — the same
+// mechanism the bwrap SHELL=/bin/sh pin works around on Linux. Note what the exception does NOT do: the token
 // VALUE is already inside the sandbox as an env var (credentialEnvVars
 // injects it), so this grants a second route to a secret the sandbox
 // already holds, not a new secret. The exception is one file, by name.
+//
+// Grafana: the pi grafana MCP extension calls
+// readFileSync(process.env.GRAFANA_MCP_CONFIG_PATH) from inside the sandbox
+// to get the Grafana URL and API key for the mcp-grafana child process, so
+// unlike the GitLab case there is no host-side read and no injected VALUE —
+// the in-sandbox read IS the delivery mechanism, and denying it is what kept
+// grafana off Darwin sandbox-exec hosts until #2746. cfg.GrafanaConfigPath
+// carries the same path prism injects as GRAFANA_MCP_CONFIG_PATH, sourced
+// from the role-filtered agent env, so a review role — which has that var
+// stripped (#2533) — gets no exception either. Again one file, by name.
 //
 // Each source is resolved via filepath.EvalSymlinks; when the resolved
 // target is a sops secrets.d path (…/secrets.d/<N>/<name>), <name> is
@@ -1317,7 +1332,8 @@ func generateProfile(m *Manager) string {
 // workkube, …) stays denied. Do NOT add a source here merely because a
 // secret exists — only because an in-sandbox consumer reads it. gitlab_token
 // moved from the denied list to the sources above when #2668 gave it such a
-// consumer; it is still denied on any host that does not configure it.
+// consumer, and the grafana config bundle when #2746 did; both are still
+// denied on any host (or role) that does not configure them.
 func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	if home == "" {
 		return nil
@@ -1345,6 +1361,15 @@ func collectSecretsDAllowlistNames(m *Manager, home string) []string {
 	// exception is emitted and gitlab_token stays denied (issue #2668).
 	if m.cfg.GitLabTokenPath != "" {
 		sources = append(sources, m.cfg.GitLabTokenPath)
+	}
+	// The grafana source is config-driven in the same way: it is the value
+	// prism injects as GRAFANA_MCP_CONFIG_PATH, which the sandbox-exec spawn
+	// path copies onto the Manager config. A host without
+	// nx.programs.prism.pi.grafana.enable leaves it empty, and so does every
+	// review role (agent_env_roles.go strips the var), so no exception is
+	// emitted and the bundle stays denied (issue #2746).
+	if m.cfg.GrafanaConfigPath != "" {
+		sources = append(sources, m.cfg.GrafanaConfigPath)
 	}
 	seen := map[string]bool{}
 	var names []string

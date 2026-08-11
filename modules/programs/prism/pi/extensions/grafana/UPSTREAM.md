@@ -89,20 +89,40 @@ earlier iteration did) leaves the env-var path unreachable in the sandbox
 namespace and every session ENOENTs silently. When the env var is unset
 (grafana disabled) the bind is a no-op.
 
-## Sandbox-exec (Darwin) — not supported in v1
+## Sandbox-exec (Darwin) — the secrets.d carve-out
 
-The extension is Linux-only in v1. `nx.programs.prism.pi.grafana.enable = true`
-on Darwin fails at eval time via a `pi.nix` assertion. The reason is
-`sandbox_exec.go` §3c: the entire `secrets.d` subtree is denied by default
-with named re-allow exceptions maintained by hand in
-`collectSecretsDAllowlistNames`. Adding grafana to that allowlist is a
-deliberate audit-required change that this PR intentionally defers — m4mac
-(the sole Darwin host in this flake) leaves grafana disabled per the issue's
-design decisions, so there is no forcing function for the sandbox-exec work.
-When a Darwin host wants grafana, the follow-up is: add the grafana secret
-name to `collectSecretsDAllowlistNames` behind a config gate, add the
-positive+negative test pair per `sandbox-exec-testing.md`, and drop the
-assertion.
+Darwin has no bind mounts, so the delivery problem is the inverse of the bwrap
+one: the file is already at the path the env var names, and the question is
+whether the sandbox may READ it. By default it may not. `sandbox_exec.go` §3c
+denies the entire `secrets.d` subtree and re-allows a hand-maintained
+inventory of secret NAMES in `collectSecretsDAllowlistNames`. Until issue
+#2746 grafana was not on that list, so `pi.grafana.enable = true` on a
+sandbox-exec host was rejected at eval time by an assertion.
+
+#2746 removed the assertion and added the bundle to the inventory. The
+mechanism mirrors the `gitlab_token` carve-out (#2668):
+
+- `Config.GrafanaConfigPath` carries the same path prism injects as
+  `GRAFANA_MCP_CONFIG_PATH`. The sandbox-exec spawn path
+  (`cmd/agent_run_sandbox_exec_darwin.go`) copies it off the role-filtered
+  agent env map.
+- `collectSecretsDAllowlistNames` resolves that path with `EvalSymlinks`,
+  extracts the `secrets.d/<N>/<name>` name, and emits ONE `require-not`
+  exception for it. The regex matches any generation counter, so the grant
+  survives a sops rotation mid-session.
+- When the path is empty the exception is absent and the bundle stays denied.
+  That covers a host with grafana disabled AND every review role, whose
+  `GRAFANA_MCP_CONFIG_PATH` is stripped by `internal/config/agent_env_roles.go`
+  (#2533) — so the file grant tracks the tool capability with no second list.
+
+Every other name under `secrets.d/<N>/` — `github_token`, the role PATs,
+`aws-config`, `workkube` — stays denied. The paired positive/negative
+integration tests live in
+`internal/integration/sandbox_exec_grafana_config_darwin_test.go`, per
+`sandbox-exec-testing.md`; the profile-shape unit tests live in
+`internal/container/grafana_sandbox_test.go`.
+
+Darwin host-mode sessions have no SBPL profile and were never affected.
 
 ## Deferred registration (issue #2532)
 
@@ -229,4 +249,6 @@ tool result, not as an exception. The session continues.
   `ACTIVATE_GRAFANA_DESCRIPTION` in `extension.ts` too: that description is the
   only Grafana text a non-eager session ever sees, so it is what the agent uses
   to decide whether to activate.
-- **Darwin support.** See "Sandbox-exec (Darwin) — not supported in v1" above.
+- **Darwin support.** See "Sandbox-exec (Darwin) — the secrets.d carve-out"
+  above. A new sops bundle needs no code change; the carve-out derives the
+  secret name from the configured path.

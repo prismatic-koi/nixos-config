@@ -27,34 +27,6 @@ in
     lib.mkIf (config.nx.programs.prism.enable && config.nx.programs.prism.pi.enable && cfg.enable)
       (
         lib.mkMerge [
-          # Darwin + sandbox-exec is deliberately unsupported in v1 — the SBPL
-          # profile denies the entire secrets.d subtree with a hand-maintained
-          # allowlist in collectSecretsDAllowlistNames (sandbox_exec.go §3c) that
-          # does NOT include grafana. Adding it there is a follow-up that needs
-          # a positive+negative sandbox-exec integration test pair per the
-          # sandbox-exec testing convention. Darwin host-mode does not have this
-          # constraint (no SBPL) and is allowed.
-          {
-            assertions = [
-              {
-                assertion =
-                  !(pkgs.stdenv.isDarwin && config.nx.programs.prism.agent.isolation.default == "sandbox-exec");
-                message = ''
-                  nx.programs.prism.pi.grafana.enable = true is not yet supported on
-                  Darwin under sandbox-exec isolation. The pi grafana extension reads
-                  a sops-decrypted secret file whose path lives under
-                  ~/.config/sops-nix/secrets/, which the sandbox-exec profile denies
-                  by default (see collectSecretsDAllowlistNames in
-                  internal/container/sandbox_exec.go). Adding grafana to that
-                  allowlist is a follow-up requiring a paired positive+negative
-                  integration test per the sandbox-exec testing convention. Options:
-                    - Use host isolation on this machine
-                      (nx.programs.prism.agent.isolation.default = "host").
-                    - Leave grafana disabled on this Darwin host.
-                '';
-              }
-            ];
-          }
           # Linux: system-level sops. /run/secrets/<name> is a tmpfs symlink into
           # the concrete /run/secrets.d/<N>/<name> generated at activation. The
           # tmpfs guarantees the decrypted content never touches persistent
@@ -69,14 +41,22 @@ in
             };
           })
 
-          # Darwin: home-manager sops. Same shape as container-tokens.nix. Note
-          # that the Darwin sandbox-exec profile denies reads on the entire
-          # ~/.config/sops-nix/secrets tree with a hand-maintained allowlist in
-          # collectSecretsDAllowlistNames (sandbox_exec.go §3c) — grafana is NOT
-          # on that allowlist in v1, so pi.grafana.enable = true on Darwin under
-          # sandbox-exec is rejected by an assertion in pi.nix. Host-mode Darwin
-          # sessions can still read the file, so we still emit the secret so the
-          # option shape is symmetric across platforms.
+          # Darwin: home-manager sops. Same shape as container-tokens.nix. The
+          # secret lands at ~/.config/sops-nix/secrets/<name>, a symlink into
+          # the per-user TMPDIR secrets.d/<N>/<name> generation dir.
+          #
+          # The Darwin sandbox-exec profile denies reads on that whole
+          # secrets.d tree with a hand-maintained allowlist in
+          # collectSecretsDAllowlistNames (sandbox_exec.go §3c). Since issue
+          # #2746 that allowlist admits THIS bundle by name, gated on
+          # Config.GrafanaConfigPath — the same path prism injects as
+          # GRAFANA_MCP_CONFIG_PATH — so a sandbox-exec session can perform the
+          # readFileSync the extension needs. The gate is per-session and
+          # role-aware: a host with grafana disabled, or a review role (whose
+          # GRAFANA_MCP_CONFIG_PATH is stripped by
+          # internal/config/agent_env_roles.go), emits no exception and the
+          # bundle stays denied. Darwin host-mode sessions have no SBPL profile
+          # and can always read the file.
           (lib.mkIf pkgs.stdenv.isDarwin {
             home-manager.users.${username}.sops.secrets.${secretName} = {
               sopsFile = secretsFile;
