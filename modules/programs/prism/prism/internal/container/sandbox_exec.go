@@ -1571,6 +1571,48 @@ func init() {
 	})
 }
 
+// SandboxExecShellEnv returns the K=V env-slice entry that pins SHELL to
+// /bin/sh for the sandbox-exec interior env, mirroring bwrap's
+// standardSandboxEnvArgs pin (bwrap.go) for the same reason.
+//
+// # Root cause (issue #2674)
+//
+// Inside a Darwin sandbox-exec session, any zsh invocation clobbers an
+// injected sops-backed credential env var (e.g. GITHUB_TOKEN, GITLAB_TOKEN)
+// to an empty string. zsh sources the home-manager session variables, which
+// re-derive each sops-backed var with a literal `cat <sops-path>` command
+// substitution. Inside the sandbox, the secrets.d deny (issue #2211, section
+// 3c of generateProfile) makes that cat fail, so the re-derivation yields an
+// empty string and OVERWRITES the value agent-run injected via credEnv
+// (m.CredentialEnvVars, cmd/agent_run_sandbox_exec_darwin.go). /bin/sh
+// sources neither /etc/zshenv nor any home-manager session-variables file,
+// so an invocation that consults $SHELL (the agent bash tool, most TUIs)
+// gets a clean shell that does not wipe credentials.
+//
+// Unlike bwrap, sandbox-exec has no --clearenv/--setenv rebuild of the
+// sandbox interior: the sandbox shares the harness process's own env
+// (MinimalIsolatedExecEnv godoc above). MinimalIsolatedExecEnv's allow-list
+// does not include SHELL, so without this pin no consumer of $SHELL inside
+// the sandbox gets ANY defined value — this is not a case of a zsh value
+// leaking through unfiltered, it's a case of nothing setting SHELL at all
+// until this pin does.
+//
+// # Consumer safety check
+//
+// No sandbox-exec consumer in this tree relies on $SHELL resolving to zsh
+// or bash specifically: SessionWorkDirGitEnv/KubeEnv/GlabEnv, CredentialEnvVars,
+// and AppendSandboxEnvVarsKV(AgentEnvVars/RuntimeEnv) do not read $SHELL, and
+// BuildArgs/PIInvocation pass argv directly to sandbox-exec/pi rather than
+// through a shell. The pin is therefore safe to apply unconditionally.
+//
+// Callers should append this last (or after any other SHELL-setting source)
+// so it wins under Go's "last occurrence wins" duplicate-key convention for
+// exec env slices — see the GOTOOLCHAIN append in
+// cmd/agent_run_sandbox_exec_darwin.go for the sibling case.
+func SandboxExecShellEnv() []string {
+	return []string{"SHELL=/bin/sh"}
+}
+
 // MinimalIsolatedExecEnv filters a hostEnv slice (K=V pairs, as returned by
 // os.Environ()) down to the minimal allow-list that the isolation harness
 // (bwrap on Linux, sandbox-exec on Darwin) needs. It is the same logic as

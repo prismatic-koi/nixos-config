@@ -1546,6 +1546,21 @@ func TestMinimalIsolatedExecEnv_AllowsExpectedKeys(t *testing.T) {
 	}
 }
 
+// ── SandboxExecShellEnv ──────────────────────────────────────────────────────
+
+// TestSandboxExecShellEnv_PinsShellToBinSh asserts the SHELL=/bin/sh pin
+// (issue #2674), mirroring bwrap's standardSandboxEnvArgs SHELL pin. This
+// test runs on Linux (this file carries no darwin build tag) so it gives
+// deterministic coverage of the pin's shape independent of the Darwin-only
+// integration tests, which cannot run in CI or in a nested sandbox
+// (issue #2749).
+func TestSandboxExecShellEnv_PinsShellToBinSh(t *testing.T) {
+	got := SandboxExecShellEnv()
+	if len(got) != 1 || got[0] != "SHELL=/bin/sh" {
+		t.Fatalf("SandboxExecShellEnv() = %v, want [\"SHELL=/bin/sh\"]", got)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 // extractClause finds a top-level (...) form whose opening text matches the
