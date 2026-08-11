@@ -273,6 +273,29 @@ rec {
       battery-monitor =
         if final.stdenv.isLinux then final.callPackage ../pkgs/battery-monitor.nix { } else null;
 
+      # grafana-alloy: on Darwin only, drop the `netgo` build tag so the
+      # binary links the cgo resolver instead of the pure-Go one. The
+      # pure-Go resolver reads /etc/resolv.conf directly and ignores
+      # macOS's per-interface "scoped" resolvers -- which is where
+      # tailscale installs the `tailnet.internal` split-DNS route on
+      # Darwin. With `netgo` in `tags`, the cgo resolver is compiled
+      # OUT of the binary entirely, so `GODEBUG=netdns=cgo` (set on the
+      # launchd daemon in modules/services/alloy/default.nix) has
+      # nothing to switch to -- it's an inert flag without this
+      # override. See issue #2694.
+      #
+      # `tags` is a Go build-flag list, not a vendoring input, so
+      # removing `netgo` does not change `vendorHash`/`npmDepsHash` and
+      # needs no re-hash. The Linux build is untouched: `prev` is
+      # returned as-is there, so its `tags` still include `netgo`.
+      grafana-alloy =
+        if final.stdenv.isDarwin then
+          prev.grafana-alloy.overrideAttrs (oldAttrs: {
+            tags = final.lib.remove "netgo" (oldAttrs.tags or [ ]);
+          })
+        else
+          prev.grafana-alloy;
+
       _macronTypePkg =
         if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
       macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;
