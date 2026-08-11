@@ -311,6 +311,30 @@ type Config struct {
 	// exception is emitted. See issue #2668.
 	GitLabTokenPath string
 
+	// GrafanaConfigPath is the absolute host path to the sops-decrypted pi
+	// grafana MCP config bundle (e.g.
+	// ~/.config/sops-nix/secrets/grafana_config_home on Darwin). It is the
+	// SAME value prism injects into the sandbox as GRAFANA_MCP_CONFIG_PATH;
+	// the sandbox-exec spawn path copies it off AgentEnvVars so the profile
+	// generator has a named source rather than an ad-hoc map lookup.
+	//
+	// Its only consumer is collectSecretsDAllowlistNames, which uses it to
+	// admit the bundle's secret NAME to the sandbox-exec secrets.d allowlist —
+	// unlike GitLabTokenPath, prism never reads this file host-side. The pi
+	// grafana extension reads it itself, inside the sandbox, which is exactly
+	// the "an in-sandbox consumer reads it" test that inventory applies.
+	//
+	// Empty means no exception is emitted and the bundle stays denied. That
+	// covers a host with nx.programs.prism.pi.grafana.enable = false AND every
+	// review role, whose GRAFANA_MCP_CONFIG_PATH is stripped by
+	// internal/config/agent_env_roles.go (#2533) — so the file allowlist
+	// tracks the capability gate with no second list to maintain.
+	//
+	// The bwrap isolator does NOT read this field: it derives the same path
+	// inline from AgentEnvVars to emit its --ro-bind (#2452), and is unchanged
+	// by #2746.
+	GrafanaConfigPath string
+
 	// InitialPrompt is the initial prompt to deliver to the agent at startup.
 	// When non-empty, it is appended to the agent command as
 	// --agent <AgentRole> --prompt <text> so that the agent starts the session

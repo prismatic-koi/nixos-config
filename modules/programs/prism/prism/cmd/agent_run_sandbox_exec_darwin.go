@@ -213,6 +213,12 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// Profile-level agent env vars, filtered for the session role upstream of
 	// the isolator (issue #2533) — same resolver as the bwrap dispatch in
 	// agent_run.go, so both sandboxed modes deliver the same map for a role.
+	//
+	// This map is also where ctrCfg.GrafanaConfigPath below is sourced from,
+	// so the sandbox-exec secrets.d exception for the pi grafana MCP config
+	// bundle can never outlive the capability that needs it: a review role
+	// has GRAFANA_MCP_CONFIG_PATH stripped here, and therefore gets no
+	// profile exception for the bundle either (issues #2533, #2746).
 	agentEnvVars := config.AgentEnvVarsForRole(agentRole)
 
 	// Resolve the harness name from the DB status. Fall back to "pi"
@@ -268,6 +274,7 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 		GitHubTokenPath:     cfg.GitHubTokenPath,
 		GitHubTokenPaths:    cfg.GitHubTokenPaths,
 		GitLabTokenPath:     cfg.GitLabTokenPath,
+		GrafanaConfigPath:   agentEnvVars["GRAFANA_MCP_CONFIG_PATH"],
 		HostAPISockPath:     hostAPISockPath,
 		InstanceID:          instanceID,
 		RuntimeEnv:          sandboxRuntimeEnv,

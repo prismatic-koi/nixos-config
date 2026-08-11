@@ -41,6 +41,13 @@ in
           enable = true;
           repos = [ "~/Documents/obsidian" ];
         };
+        # Grafana MCP, reusing the same instance (and sops bundle) as
+        # navi/tui. Readable under sandbox-exec since issue #2746 admitted
+        # grafana_config_home to the secrets.d allowlist.
+        pi.grafana = {
+          enable = true;
+          config = "home";
+        };
         projects.isolationOverrides = {
           "~/Documents/obsidian" = "host";
         };

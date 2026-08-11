@@ -168,12 +168,14 @@
         Selecting which sops bundle to use is controlled by
         nx.programs.prism.pi.grafana.config below.
 
-        Linux-only in v1. Enabling on Darwin under sandbox-exec is rejected
-        via an assertion because the sandbox-exec profile denies the entire
-        ~/.config/sops-nix/secrets subtree with a hand-maintained allowlist
-        (collectSecretsDAllowlistNames in internal/container/sandbox_exec.go)
-        — adding grafana to that allowlist is a deliberate audit-required
-        follow-up. Darwin under host-mode isolation is allowed.
+        Supported on every isolation mode. On Darwin under sandbox-exec the
+        SBPL profile denies the whole ~/.config/sops-nix/secrets subtree, so
+        the selected bundle is admitted by name through the hand-maintained
+        allowlist in collectSecretsDAllowlistNames
+        (internal/container/sandbox_exec.go), gated on the same path prism
+        injects as GRAFANA_MCP_CONFIG_PATH (issue #2746). Every other secret
+        name in that subtree stays denied, and a review role — which has
+        GRAFANA_MCP_CONFIG_PATH stripped — gets no exception at all.
       '';
     };
     nx.programs.prism.pi.grafana.config = lib.mkOption {

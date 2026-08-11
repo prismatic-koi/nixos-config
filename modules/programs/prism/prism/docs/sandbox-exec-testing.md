@@ -217,6 +217,12 @@ integration test coverage exists for:
   the host configures it, denied when it does not, with `github_token` in
   the same generation dir denied in both cases, plus the paired negative
   that strips the exception. See `sandbox_exec_gitlab_token_darwin_test.go`.
+- **The grafana config-bundle carve-out** — the one name #2746 adds to that
+  allowlist, derived from `Config.GrafanaConfigPath` (the path prism injects
+  as `GRAFANA_MCP_CONFIG_PATH`): readable in-sandbox when the host and role
+  configure it, denied when they do not, with `github_token` in the same
+  generation dir denied in both cases, plus the paired negative that strips
+  the exception. See `sandbox_exec_grafana_config_darwin_test.go`.
 - **Network egress** — `(allow network*)` permits outbound TCP.
 
 Each positive case has a paired negative case that mutates the profile to

@@ -1156,8 +1156,9 @@ func TestBwrapBuildArgs_GrafanaSecretBind_PositivePath(t *testing.T) {
 	}
 }
 
-// Negative test: when GRAFANA_MCP_CONFIG_PATH is unset (grafana disabled)
-// no grafana bind is emitted. This is the m4mac / default configuration.
+// Negative test: when GRAFANA_MCP_CONFIG_PATH is unset (grafana disabled, or
+// a review role whose copy of the var is stripped by #2533) no grafana bind
+// is emitted. This is the default configuration.
 func TestBwrapBuildArgs_GrafanaSecretBind_UnsetIsNoBind(t *testing.T) {
 	tmp := t.TempDir()
 	// Create a file that COULD be bound (to make the test robust against
