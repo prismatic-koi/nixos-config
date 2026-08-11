@@ -483,6 +483,16 @@ in
       (lib.optionalAttrs isDarwin {
         launchd.daemons.alloy = {
           serviceConfig = {
+            # GODEBUG=netdns=cgo forces the cgo resolver at runtime.
+            # Only effective because the overlay in overlays/default.nix
+            # drops the `netgo` build tag on Darwin -- without that,
+            # the cgo resolver isn't even compiled into the binary and
+            # this flag is inert. See issue #2694: the pure-Go resolver
+            # ignores macOS's scoped resolvers, so it cannot see the
+            # tailscale-installed split-DNS route for tailnet.internal.
+            EnvironmentVariables = {
+              GODEBUG = "netdns=cgo";
+            };
             ProgramArguments = [
               "/bin/sh"
               "-c"
