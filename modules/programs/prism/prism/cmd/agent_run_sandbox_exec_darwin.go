@@ -513,6 +513,14 @@ func runAgentRunSandboxExec(sessionName string, status *db.Status, agentRunStart
 	// package keeps the LAST occurrence of a duplicated key.
 	env = append(env, container.GoToolchainEnv()...)
 
+	// SHELL=/bin/sh: pinned last so it wins over any inherited or
+	// profile-level SHELL entry, mirroring bwrap's standardSandboxEnvArgs
+	// pin (internal/container/bwrap.go) and the same "last occurrence wins"
+	// convention used for GOTOOLCHAIN above. See container.SandboxExecShellEnv
+	// godoc for the full root-cause rationale (issue #2674) and the
+	// no-consumer-relies-on-zsh safety check.
+	env = append(env, container.SandboxExecShellEnv()...)
+
 	// argv[0] is "sandbox-exec" (from BuildArgs); the well-known binary path
 	// on macOS is /usr/bin/sandbox-exec.
 	const sandboxExecBinary = "/usr/bin/sandbox-exec"
