@@ -4,10 +4,63 @@
   lib,
   ...
 }:
+let
+  # The qute://start logo is an external <img>, so page CSS in
+  # startpage.css.js cannot reach the shapes inside it. Recolour a copy of
+  # the upstream SVG at eval time, using the live theme palette, and apply
+  # it with `content:` on `.logo` in startpage.css.js.
+  #
+  # Read from the qutebrowser package output rather than a vendored copy, so
+  # this cannot drift from the upstream asset. If upstream moves or
+  # restructures the icon, `builtins.readFile` throws and eval fails loudly
+  # rather than silently falling back to an unthemed logo.
+  qutebrowserLogoSvgPath = "${pkgs.qutebrowser}/${pkgs.python3.sitePackages}/qutebrowser/icons/qutebrowser.svg";
+  qutebrowserLogoSvgRaw = builtins.readFile qutebrowserLogoSvgPath;
+
+  qutebrowserLogoSvgThemed =
+    let
+      recoloured =
+        builtins.replaceStrings
+          [ "#cee5fd" "#7ebaff" "#0a396e" ]
+          [
+            config.theme.blue
+            config.theme.aqua
+            config.theme.bg0
+          ]
+          qutebrowserLogoSvgRaw;
+      # The upstream SVG is pretty-printed across ~100 lines. Embedded
+      # verbatim, those raw newlines land inside a double-quoted CSS
+      # `url("...")` string, which is a CSS parse error (a quoted string
+      # cannot contain a literal newline) and silently drops the whole
+      # `content` declaration. Collapse them to spaces before encoding.
+      singleLine = builtins.replaceStrings [ "\n" "\r" ] [ " " " " ] recoloured;
+    in
+    # `#` starts a fragment inside a data URI and truncates it there, and
+    # `"` would terminate the CSS string this URI is embedded in, so both
+    # must be percent-encoded, along with the theme's substituted colours.
+    builtins.replaceStrings [ "#" "\"" ] [ "%23" "%22" ] singleLine;
+in
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
     home-manager.users.${config.nx.username} = {
       programs.qutebrowser.greasemonkey = with config.theme; [
+        # css styling for the qute://start logo, themed at eval time from
+        # config.theme — see qutebrowserLogoSvgThemed above
+        (pkgs.writeText "startpage-logo.css.js"
+          # css
+          ''
+            // ==UserScript==
+            // @name    Userstyle (startpage-logo.css)
+            // @include   /^qute://start/*/
+            // @include    about:blank
+            // ==/UserScript==
+            GM_addStyle(`
+            .logo {
+              content: url("data:image/svg+xml,${qutebrowserLogoSvgThemed}");
+            }
+            `)
+          ''
+        )
         # general theme variables, to be used in other scripts
         # made available here to all sites
         (pkgs.writeText "theme.css.js"
