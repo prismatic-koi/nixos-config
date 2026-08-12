@@ -24,7 +24,7 @@ let
           [ "#cee5fd" "#7ebaff" "#0a396e" ]
           [
             config.theme.blue
-            config.theme.aqua
+            config.theme.green
             config.theme.bg0
           ]
           qutebrowserLogoSvgRaw;
