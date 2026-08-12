@@ -28,12 +28,17 @@ let
             config.theme.bg0
           ]
           qutebrowserLogoSvgRaw;
+      # The upstream SVG is pretty-printed across ~100 lines. Embedded
+      # verbatim, those raw newlines land inside a double-quoted CSS
+      # `url("...")` string, which is a CSS parse error (a quoted string
+      # cannot contain a literal newline) and silently drops the whole
+      # `content` declaration. Collapse them to spaces before encoding.
+      singleLine = builtins.replaceStrings [ "\n" "\r" ] [ " " " " ] recoloured;
     in
-    # A `#` starts a fragment inside a data URI and truncates it there, so
-    # every `#` in the SVG (the substituted theme colours, and any other
-    # occurrence such as namespace URLs or other fill values) must be
-    # percent-encoded.
-    builtins.replaceStrings [ "#" ] [ "%23" ] recoloured;
+    # `#` starts a fragment inside a data URI and truncates it there, and
+    # `"` would terminate the CSS string this URI is embedded in, so both
+    # must be percent-encoded, along with the theme's substituted colours.
+    builtins.replaceStrings [ "#" "\"" ] [ "%23" "%22" ] singleLine;
 in
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
