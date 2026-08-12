@@ -522,6 +522,15 @@
         xdg.configFile."prism/skills".source = skillsDir;
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
+        # Keybindings rebinding: app.message.followUp from alt+enter to ctrl+enter.
+        # Alt+Enter is bound to something else at the OS level (macOS) and never
+        # reaches pi. Ctrl+Enter is available and works under tmux with extended
+        # keys enabled (already configured in tmux.nix). User bindings replace the
+        # defaults for that action per pi's keybindings.md. Changes can be reloaded
+        # live in a pi session with /reload without restarting the session.
+        home.file.".pi/agent/keybindings.json".text = builtins.toJSON {
+          "app.message.followUp" = "ctrl+enter";
+        };
         # Note: ~/.pi/agent/system-prompt.md and coordinator-system-prompt.md
         # were removed in the #2064 cleanup. They were staged by the pre-#2031
         # mechanism (when prism wrote a per-session APPEND_SYSTEM.md staging
