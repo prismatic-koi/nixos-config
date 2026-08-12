@@ -523,7 +523,7 @@
 
         home.file.".pi/agent/settings.json".text = builtins.toJSON piSettings;
         # Keybindings rebinding: app.message.followUp from alt+enter to ctrl+enter.
-        # Alt+Enter is bound to something else at the OS level (macOS) and never
+        # Alt+Enter is bound to something else at the OS level and never
         # reaches pi. Ctrl+Enter is available and works under tmux with extended
         # keys enabled (already configured in tmux.nix). User bindings replace the
         # defaults for that action per pi's keybindings.md. Changes can be reloaded
