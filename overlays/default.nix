@@ -175,6 +175,22 @@ rec {
       # derivation from nixpkgs-unstable.
       openscad-unstable = stablePkgs.openscad-unstable;
 
+      # calibre: interim master-pin. nixpkgs PR #549154 ("calibre:
+      # 9.11.0 -> 9.13.0") merged to nixpkgs `master` on 2026-08-12 as
+      # commit 94378a13aefbd0b9396c74f0345aa77e2c51649a, fixing a build
+      # failure against current ffmpeg (`'AVCodec' has no member named
+      # 'sample_fmts'`). That bump has NOT yet reached `nixos-unstable`
+      # (our `nixpkgs` input), so we pin to `nixpkgs-master` here as an
+      # interim measure.
+      #
+      # nixpkgs bump PR: https://github.com/NixOS/nixpkgs/pull/549154
+      #
+      # REMOVAL CONDITION: delete this master-pin block (reverting to
+      # plain `nixos-unstable` calibre) once our `nixpkgs`
+      # (`nixos-unstable`) input carries nixpkgs commit
+      # 94378a13aefbd0b9396c74f0345aa77e2c51649a.
+      calibre = masterPkgs.calibre;
+
       # qutebrowser: widen the built-in AMD+Wayland GBM workaround guard in
       # `misc/backendproblem.py::_fix_wayland_amd_gbm` from exact QtWebEngine
       # 6.11.0 to all 6.11.x. Upstream self-deactivated the workaround on
