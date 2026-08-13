@@ -475,6 +475,18 @@ type Sidecar struct {
 	// hostAPITCPSrv is the HTTP server for the host-API TCP listener (Darwin only).
 	// Stored so Shutdown() can drain in-flight requests gracefully. Protected by mu.
 	hostAPITCPSrv *http.Server
+	// binaryStaleOnce and binaryStaleDiag hold the (issue #2742) prism-binary
+	// staleness check's process-scoped result. Deliberately fields on
+	// *Sidecar rather than a closure-local var inside hostAPIHandler():
+	// hostAPIHandler() is called once per listener it backs, and on Darwin a
+	// container session starts BOTH the Unix-socket server (Run(), always)
+	// and the TCP server (runStartupHTTP(), Darwin container mode) — each
+	// call would otherwise build its own independent sync.Once/diagnostic
+	// pair, and a stale sidecar could log the diagnostic twice. Hoisting to
+	// the Sidecar makes the dedup genuinely once-per-process regardless of
+	// how many host-API listeners this process starts.
+	binaryStaleOnce sync.Once
+	binaryStaleDiag string
 	// shuttingDown is set to true at the start of Shutdown(). Used by Run()
 	// to prevent OnReady from firing after SIGTERM even when the HTTP health
 	// probe succeeds during the container-stop grace period. Protected by mu.

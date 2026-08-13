@@ -172,6 +172,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 	if len(abtestFlag) == 2 {
 		var resp struct {
 			SessionNames []string `json:"session_names"`
+			// Warning carries the sidecar's prism-binary staleness diagnostic
+			// (issue #2742), set only when the sidecar that handled this spawn
+			// launched from a binary a switch has since replaced. Empty in the
+			// common case; the field is simply absent from the JSON then.
+			Warning string `json:"warning"`
 		}
 		body := map[string]any{
 			"prompt":                 promptFlag,
@@ -223,6 +228,9 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		for _, sn := range resp.SessionNames {
 			fmt.Printf("session %q created\n", sn)
 		}
+		if resp.Warning != "" {
+			fmt.Fprintln(os.Stderr, resp.Warning)
+		}
 		// --wait on the abtest path is not supported — there are two
 		// sessions and no single terminal definition. Surface this rather
 		// than silently dropping the flag (issue #1500 review-code feedback).
@@ -234,6 +242,11 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 
 	var resp struct {
 		SessionName string `json:"session_name"`
+		// Warning carries the sidecar's prism-binary staleness diagnostic
+		// (issue #2742), set only when the sidecar that handled this spawn
+		// launched from a binary a switch has since replaced. Empty in the
+		// common case; the field is simply absent from the JSON then.
+		Warning string `json:"warning"`
 	}
 	body := map[string]any{
 		"prompt":                 promptFlag,
@@ -301,10 +314,16 @@ func proxySpawn(apiURL string, cmd *cobra.Command) error {
 		waitTimeout, _ := cmd.Flags().GetDuration("wait-timeout")
 		if !jsonFlag {
 			fmt.Printf("session %q spawned; waiting for terminal state...\n", resp.SessionName)
+			if resp.Warning != "" {
+				fmt.Fprintln(os.Stderr, resp.Warning)
+			}
 		}
 		return waitForSpawnTerminal(resp.SessionName, jsonFlag, waitTimeout)
 	}
 	fmt.Printf("session %q created\n", resp.SessionName)
+	if resp.Warning != "" {
+		fmt.Fprintln(os.Stderr, resp.Warning)
+	}
 	return nil
 }
 

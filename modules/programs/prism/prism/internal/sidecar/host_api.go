@@ -329,7 +329,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
 	// the absolute path at binary launch time, avoiding CWD-relative resolution.
 	// When Config.PrismBinaryPath is set (e.g. in tests), it is used instead.
+	//
+	// Also the single chokepoint for the prism-binary staleness check (issue
+	// #2742): every one of the 10 delegated-operation exec sites below calls
+	// prismBinary(), so checking here — rather than per-endpoint — covers
+	// all of them with no per-endpoint staleness code. checkBinaryStale()
+	// itself is a no-op after its first call (sync.Once on the Sidecar, so
+	// the dedup holds across every host-API listener this process starts,
+	// not just this one hostAPIHandler() build — see the field comment on
+	// binaryStaleOnce), so calling it on every exec is cheap.
 	prismBinary := func() string {
+		s.checkBinaryStale()
 		if s.cfg.PrismBinaryPath != "" {
 			return s.cfg.PrismBinaryPath
 		}
@@ -1722,6 +1732,15 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		outStr := string(out)
 
+		// Binary staleness (issue #2742): checkBinaryStale() (called via
+		// prismBinary() above, as part of building cmd) already ran and cached
+		// its result on s. The sidecar log line is capped at once per process,
+		// but the caller of `prism spawn` needs its own signal — the sidecar
+		// log is not read in practice. Surface the cached diagnostic in the
+		// response body; "" when the sidecar is current or the check could not
+		// resolve one side, in which case the field is omitted.
+		staleWarning := s.binaryStaleDiag
+
 		// Abtest path: prism spawn --abtest prints two session lines.
 		// Parse both and return them in "session_names".
 		if len(req.Abtest) == 2 {
@@ -1732,7 +1751,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					sessionNames = append(sessionNames, ownRepo+"@"+req.Branch+"-"+p)
 				}
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"session_names": sessionNames})
+			resp := map[string]any{"session_names": sessionNames}
+			if staleWarning != "" {
+				resp["warning"] = staleWarning
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 
@@ -1743,7 +1766,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Fallback: derive from ownRepo@branch (branch already sanitised by spawn).
 			sessionName = ownRepo + "@" + req.Branch
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
+		respFields := map[string]string{"session_name": sessionName}
+		if staleWarning != "" {
+			respFields["warning"] = staleWarning
+		}
+		writeJSON(w, http.StatusOK, respFields)
 	})
 
 	// POST /review

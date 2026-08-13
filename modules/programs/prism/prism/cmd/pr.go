@@ -136,6 +136,12 @@ var prCmd = &cobra.Command{
 			repo := filepath.Base(bareRoot)
 			var resp struct {
 				SessionName string `json:"session_name"`
+				// Warning carries the sidecar's prism-binary staleness
+				// diagnostic (issue #2742), set only when the sidecar that
+				// handled this spawn launched from a binary a switch has
+				// since replaced. Empty in the common case; the field is
+				// simply absent from the JSON then.
+				Warning string `json:"warning"`
 			}
 			body := map[string]any{
 				"repo":                   repo,
@@ -166,6 +172,9 @@ var prCmd = &cobra.Command{
 				return proxyErr
 			}
 			fmt.Printf("session %q created\n", resp.SessionName)
+			if resp.Warning != "" {
+				fmt.Fprintln(os.Stderr, resp.Warning)
+			}
 			return nil
 		}
 
