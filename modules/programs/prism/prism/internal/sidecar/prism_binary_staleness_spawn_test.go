@@ -158,6 +158,71 @@ func TestHostAPI_Spawn_NoInstalledPrism_NoCrashNoBlock(t *testing.T) {
 	}
 }
 
+// TestCheckBinaryStale_FiresFromNonSpawnCallSite: checkBinaryStale() is the
+// method prismBinary() calls on every one of its 10 exec sites, not just
+// /spawn's. Calling it directly (standing in for any of those other 9 call
+// sites — /review, /cleanup, /prompt, /investigate, ...) must populate
+// s.binaryStaleDiag and log, with no /spawn request involved at all. This
+// pins the review-goal finding that the check must not be reachable only
+// through /spawn.
+func TestCheckBinaryStale_FiresFromNonSpawnCallSite(t *testing.T) {
+	oldDir := t.TempDir()
+	newDir := t.TempDir()
+	oldBin := writeStubBinary(t, oldDir)
+	newBin := writeStubBinary(t, newDir)
+
+	sc, buf := newSpawnSidecarForBinaryStaleness(t, oldBin)
+	putOnPath(t, newBin)
+
+	// No HTTP request at all — this is what any of the other 9
+	// prismBinary()-calling handlers do before building their exec.Cmd.
+	sc.checkBinaryStale()
+
+	if sc.binaryStaleDiag == "" {
+		t.Fatal("checkBinaryStale() left binaryStaleDiag empty for a genuine mismatch")
+	}
+	if !strings.Contains(buf.String(), "STALE PRISM BINARY") {
+		t.Errorf("sidecar log does not contain STALE PRISM BINARY; log = %s", buf.String())
+	}
+}
+
+// TestCheckBinaryStale_DedupesAcrossHostAPIHandlerBuilds: on Darwin,
+// hostAPIHandler() is called twice per process — once for the always-on Unix
+// socket server, once for the container-mode TCP server — each building an
+// independent set of closures. Because binaryStaleOnce/binaryStaleDiag are
+// fields on *Sidecar rather than local to hostAPIHandler(), two separate
+// handler builds sharing the same Sidecar must still log exactly once. This
+// pins the review-code finding that a closure-local sync.Once would double-
+// log on that platform.
+func TestCheckBinaryStale_DedupesAcrossHostAPIHandlerBuilds(t *testing.T) {
+	oldDir := t.TempDir()
+	newDir := t.TempDir()
+	oldBin := writeStubBinary(t, oldDir)
+	newBin := writeStubBinary(t, newDir)
+
+	sc, buf := newSpawnSidecarForBinaryStaleness(t, oldBin)
+	putOnPath(t, newBin)
+
+	// Build the host-API handler twice, as Run() does on Darwin in container
+	// mode (Unix listener + TCP listener), and drive one /spawn request
+	// through each.
+	handlerA := sc.hostAPIHandler()
+	handlerB := sc.hostAPIHandler()
+
+	for _, h := range []http.Handler{handlerA, handlerB} {
+		req := newHostAPIRequest(t, http.MethodPost, "/spawn", `{"branch":"feature","prompt":"go"}`)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+		}
+	}
+
+	if got := strings.Count(buf.String(), "STALE PRISM BINARY"); got != 1 {
+		t.Errorf("sidecar log contains %d STALE PRISM BINARY line(s) across 2 hostAPIHandler() builds, want exactly 1; log = %s", got, buf.String())
+	}
+}
+
 // TestHostAPI_Spawn_StaleBinary_LogsOnce: the sidecar log line is emitted at
 // most once per process (AC edge-case) even though every one of the 10
 // prismBinary() exec sites could otherwise trigger it — two /spawn calls in

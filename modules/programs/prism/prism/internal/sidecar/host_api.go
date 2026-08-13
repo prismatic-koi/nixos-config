@@ -12,11 +12,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
@@ -331,7 +329,17 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 	// Uses os.Executable() — consistent with StartSidecarWithOpts — to get
 	// the absolute path at binary launch time, avoiding CWD-relative resolution.
 	// When Config.PrismBinaryPath is set (e.g. in tests), it is used instead.
+	//
+	// Also the single chokepoint for the prism-binary staleness check (issue
+	// #2742): every one of the 10 delegated-operation exec sites below calls
+	// prismBinary(), so checking here — rather than per-endpoint — covers
+	// all of them with no per-endpoint staleness code. checkBinaryStale()
+	// itself is a no-op after its first call (sync.Once on the Sidecar, so
+	// the dedup holds across every host-API listener this process starts,
+	// not just this one hostAPIHandler() build — see the field comment on
+	// binaryStaleOnce), so calling it on every exec is cheap.
 	prismBinary := func() string {
+		s.checkBinaryStale()
 		if s.cfg.PrismBinaryPath != "" {
 			return s.cfg.PrismBinaryPath
 		}
@@ -340,47 +348,6 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return os.Args[0]
 		}
 		return self
-	}
-
-	// binaryStaleDiagnostic reports whether this sidecar's launch-time prism
-	// binary (the exact path prismBinary() hands to every one of the 10 exec
-	// sites below) has diverged from the prism binary a switch has since
-	// installed (issue #2742). This is the single chokepoint for that check —
-	// prismBinary() is the sole path all delegated operations exec through,
-	// so no per-endpoint staleness code is needed.
-	//
-	// Computed lazily, once, on first call (sync.Once): the launch-time path
-	// never changes for the life of this process, and neither does the
-	// currently-installed path once a switch has happened, so a single
-	// resolve-and-compare is enough for the rest of the process's life. This
-	// also bounds the sidecar-log line to at most once per process even
-	// though every one of the 10 exec sites calls prismBinary().
-	//
-	// Fails open: an unresolvable launch path (e.g. a test's stub
-	// PrismBinaryPath) or an unresolvable currently-installed path (no
-	// `prism` on PATH) yields "", and prismBinaryStaleDiagnostic treats ""
-	// on either side as unknown and stays silent. Never blocks, delays, or
-	// fails the operation it is checked from.
-	var (
-		binaryStaleOnce sync.Once
-		binaryStaleDiag string
-	)
-	binaryStaleDiagnostic := func() string {
-		binaryStaleOnce.Do(func() {
-			cached, err := filepath.EvalSymlinks(prismBinary())
-			if err != nil {
-				return
-			}
-			current, err := currentInstalledPrismPath()
-			if err != nil {
-				return
-			}
-			binaryStaleDiag = prismBinaryStaleDiagnostic(cached, current)
-			if binaryStaleDiag != "" {
-				s.logger().Printf("sidecar: %s", binaryStaleDiag)
-			}
-		})
-		return binaryStaleDiag
 	}
 
 	// GET /stats
@@ -1765,13 +1732,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		outStr := string(out)
 
-		// Binary staleness (issue #2742): the sidecar log line is emitted at
-		// most once per process by binaryStaleDiagnostic()'s sync.Once, but the
-		// caller of `prism spawn` needs its own signal — the sidecar log is not
-		// read in practice. Surface the (possibly cached, from an earlier call)
-		// diagnostic in the response body; "" when the sidecar is current or the
-		// check could not resolve one side, in which case the field is omitted.
-		staleWarning := binaryStaleDiagnostic()
+		// Binary staleness (issue #2742): checkBinaryStale() (called via
+		// prismBinary() above, as part of building cmd) already ran and cached
+		// its result on s. The sidecar log line is capped at once per process,
+		// but the caller of `prism spawn` needs its own signal — the sidecar
+		// log is not read in practice. Surface the cached diagnostic in the
+		// response body; "" when the sidecar is current or the check could not
+		// resolve one side, in which case the field is omitted.
+		staleWarning := s.binaryStaleDiag
 
 		// Abtest path: prism spawn --abtest prints two session lines.
 		// Parse both and return them in "session_names".

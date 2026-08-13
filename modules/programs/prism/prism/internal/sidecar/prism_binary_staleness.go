@@ -2,6 +2,7 @@ package sidecar
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 )
@@ -54,6 +55,51 @@ func prismBinaryStaleDiagnostic(cached, current string) string {
 			"investigate, ...) are still running pre-switch code. Run "+
 			"`prism restart` to pick up the new binary. (issue #2742)",
 		cached, current)
+}
+
+// checkBinaryStale runs the prism-binary staleness check (issue #2742) at
+// most once for the life of this Sidecar, caching its result in
+// s.binaryStaleDiag. It resolves the sidecar's own launch-time prism binary
+// (mirroring prismBinary()'s own resolution: s.cfg.PrismBinaryPath when a
+// test has set it, otherwise os.Executable()), resolves the
+// currently-installed prism binary on PATH, and compares them via
+// prismBinaryStaleDiagnostic. A non-empty result is logged once, here.
+//
+// Called from inside the prismBinary() closure in host_api.go, the single
+// chokepoint every one of the 10 delegated-operation exec sites passes
+// through, so this fires (once) regardless of which endpoint a caller hits
+// first. See the binaryStaleOnce field comment on *Sidecar for why this
+// state lives on the Sidecar rather than a closure-local variable: on
+// Darwin, hostAPIHandler() backs two listeners (Unix socket and, in
+// container mode, TCP), and a closure-local sync.Once would not dedupe
+// across both.
+//
+// Never blocks, delays, or fails the caller: resolution failures on either
+// side (test stub, no `prism` on PATH) leave s.binaryStaleDiag at "" per
+// prismBinaryStaleDiagnostic's fail-open contract.
+func (s *Sidecar) checkBinaryStale() {
+	s.binaryStaleOnce.Do(func() {
+		launch := s.cfg.PrismBinaryPath
+		if launch == "" {
+			self, err := os.Executable()
+			if err != nil {
+				return
+			}
+			launch = self
+		}
+		cached, err := filepath.EvalSymlinks(launch)
+		if err != nil {
+			return
+		}
+		current, err := currentInstalledPrismPath()
+		if err != nil {
+			return
+		}
+		s.binaryStaleDiag = prismBinaryStaleDiagnostic(cached, current)
+		if s.binaryStaleDiag != "" {
+			s.logger().Printf("sidecar: %s", s.binaryStaleDiag)
+		}
+	})
 }
 
 // currentInstalledPrismPath resolves the prism binary currently on PATH,
