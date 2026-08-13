@@ -248,10 +248,24 @@ rec {
       # removing `netgo` does not change `vendorHash`/`npmDepsHash` and
       # needs no re-hash. The Linux build is untouched: `prev` is
       # returned as-is there, so its `tags` still include `netgo`.
+      #
+      # Also on Darwin only: disable the test phase. The `checkPhase` link
+      # step exhausts the macOS runner's disk when compiling the test suite.
+      # The derivation hash changes from the `netgo` removal (no binary cache
+      # hit), so every flake update rebuilds alloy and its full test suite
+      # from source on the runner; the product binary builds fine but the
+      # test binary link hits `errno=28` (ENOSPC, no space left on device).
+      # See failed run: https://github.com/prismatic-koi/nixos-config/actions/runs/31683738928
+      #
+      # REMOVAL CONDITION: revisit if the `netgo` override is ever dropped.
+      # Without the `netgo` change, `grafana-alloy` gets a binary cache hit
+      # on Darwin, the test phase costs the runner nothing, and `doCheck = false`
+      # becomes dead weight.
       grafana-alloy =
         if final.stdenv.isDarwin then
           prev.grafana-alloy.overrideAttrs (oldAttrs: {
             tags = final.lib.remove "netgo" (oldAttrs.tags or [ ]);
+            doCheck = false;
           })
         else
           prev.grafana-alloy;
