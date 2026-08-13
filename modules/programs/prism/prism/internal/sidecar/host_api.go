@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/prismatic-koi/prism/internal/agent"
@@ -338,6 +340,47 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			return os.Args[0]
 		}
 		return self
+	}
+
+	// binaryStaleDiagnostic reports whether this sidecar's launch-time prism
+	// binary (the exact path prismBinary() hands to every one of the 10 exec
+	// sites below) has diverged from the prism binary a switch has since
+	// installed (issue #2742). This is the single chokepoint for that check —
+	// prismBinary() is the sole path all delegated operations exec through,
+	// so no per-endpoint staleness code is needed.
+	//
+	// Computed lazily, once, on first call (sync.Once): the launch-time path
+	// never changes for the life of this process, and neither does the
+	// currently-installed path once a switch has happened, so a single
+	// resolve-and-compare is enough for the rest of the process's life. This
+	// also bounds the sidecar-log line to at most once per process even
+	// though every one of the 10 exec sites calls prismBinary().
+	//
+	// Fails open: an unresolvable launch path (e.g. a test's stub
+	// PrismBinaryPath) or an unresolvable currently-installed path (no
+	// `prism` on PATH) yields "", and prismBinaryStaleDiagnostic treats ""
+	// on either side as unknown and stays silent. Never blocks, delays, or
+	// fails the operation it is checked from.
+	var (
+		binaryStaleOnce sync.Once
+		binaryStaleDiag string
+	)
+	binaryStaleDiagnostic := func() string {
+		binaryStaleOnce.Do(func() {
+			cached, err := filepath.EvalSymlinks(prismBinary())
+			if err != nil {
+				return
+			}
+			current, err := currentInstalledPrismPath()
+			if err != nil {
+				return
+			}
+			binaryStaleDiag = prismBinaryStaleDiagnostic(cached, current)
+			if binaryStaleDiag != "" {
+				s.logger().Printf("sidecar: %s", binaryStaleDiag)
+			}
+		})
+		return binaryStaleDiag
 	}
 
 	// GET /stats
@@ -1722,6 +1765,14 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 
 		outStr := string(out)
 
+		// Binary staleness (issue #2742): the sidecar log line is emitted at
+		// most once per process by binaryStaleDiagnostic()'s sync.Once, but the
+		// caller of `prism spawn` needs its own signal — the sidecar log is not
+		// read in practice. Surface the (possibly cached, from an earlier call)
+		// diagnostic in the response body; "" when the sidecar is current or the
+		// check could not resolve one side, in which case the field is omitted.
+		staleWarning := binaryStaleDiagnostic()
+
 		// Abtest path: prism spawn --abtest prints two session lines.
 		// Parse both and return them in "session_names".
 		if len(req.Abtest) == 2 {
@@ -1732,7 +1783,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 					sessionNames = append(sessionNames, ownRepo+"@"+req.Branch+"-"+p)
 				}
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"session_names": sessionNames})
+			resp := map[string]any{"session_names": sessionNames}
+			if staleWarning != "" {
+				resp["warning"] = staleWarning
+			}
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 
@@ -1743,7 +1798,11 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			// Fallback: derive from ownRepo@branch (branch already sanitised by spawn).
 			sessionName = ownRepo + "@" + req.Branch
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"session_name": sessionName})
+		respFields := map[string]string{"session_name": sessionName}
+		if staleWarning != "" {
+			respFields["warning"] = staleWarning
+		}
+		writeJSON(w, http.StatusOK, respFields)
 	})
 
 	// POST /review
