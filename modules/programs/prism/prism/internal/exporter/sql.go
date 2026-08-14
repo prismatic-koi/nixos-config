@@ -132,14 +132,30 @@ const (
 	// string never leaves the query, only the aggregate numbers inside it.
 	// account_name is a plain column added by #2714, stamped at write time —
 	// it is the account NAME, mapped to the server-assigned org ID at emit
-	// time (cost.go), never used as an identity label directly. profile_name
-	// is the #2720-sanctioned safe label on spawn_inputs; a spawn with no
-	// --profile flag has it NULL and folds to "default" at scan time.
+	// time (cost.go), never used as an identity label directly.
+	//
+	// profile_name is now read from agent_events, a plain column stamped at
+	// write time by #2768 — NOT through a spawn_inputs join. The join was
+	// wrong: it missed for every session with no spawn_inputs row (a
+	// coordinator is never spawned), so all coordinator spend folded to
+	// "default", which was 58% of live fleet spend. Reading the write-time
+	// column attributes each row to its real tier. See db/profile_name.go.
+	//
+	// Counter-continuity decision (the same #2767 raises for the repo label,
+	// decided the same way): these are TAIL-CURSOR counters. Switching the
+	// source column starts corrected series going forward; historical
+	// "default" spend on pre-#2768 rows stays misattributed and is NOT
+	// backfilled — the tier was never recorded on those rows, so any backfill
+	// would be a guess, the retroactive-attribution trap #2714 already
+	// documents. A pre-migration row has profile_name NULL and folds to the
+	// explicit "unknown" placeholder at scan time (Records below), never an
+	// empty label.
 	//
 	// None of the projected columns appear in the #2699 section 5 forbidden
 	// list: rowid is the cursor; $.model is a closed-set label; the four token
 	// fields and $.cost are aggregate numbers; account_name and profile_name
-	// are closed-set operator dimensions.
+	// are closed-set operator dimensions, both on agent_events. The
+	// spawn_inputs join is gone entirely from this statement.
 	CostEventsTailSQL = `SELECT ae.rowid, ` +
 		`COALESCE(JSON_EXTRACT(ae.payload, '$.model'), ''), ` +
 		`COALESCE(JSON_EXTRACT(ae.payload, '$.inputTokens'), 0), ` +
@@ -147,9 +163,8 @@ const (
 		`COALESCE(JSON_EXTRACT(ae.payload, '$.cacheReadTokens'), 0), ` +
 		`COALESCE(JSON_EXTRACT(ae.payload, '$.cacheWriteTokens'), 0), ` +
 		`COALESCE(JSON_EXTRACT(ae.payload, '$.cost'), 0.0), ` +
-		`ae.account_name, si.profile_name ` +
+		`ae.account_name, ae.profile_name ` +
 		`FROM agent_events ae ` +
-		`LEFT JOIN spawn_inputs si ON si.instance_id = ae.instance_id ` +
 		`WHERE ae.rowid > ? AND ae.type = 'msg_assistant' ` +
 		`ORDER BY ae.rowid ASC LIMIT ?`
 )
@@ -362,9 +377,10 @@ type costEvent struct {
 	// to account_org_id="unknown".
 	AccountName string
 
-	// ProfileName is the resolved profile label: spawn_inputs.profile_name, or
-	// "default" when that column is NULL. The fold happens at scan time so the
-	// accumulator never special-cases NULL.
+	// ProfileName is the resolved profile label: agent_events.profile_name
+	// (stamped at write time by #2768), or "unknown" when that column is NULL —
+	// a pre-#2768 row that never recorded the tier. The fold happens at scan
+	// time so the accumulator never special-cases NULL.
 	ProfileName string
 }
 
@@ -413,12 +429,15 @@ func (s costEventSource) Records(ctx context.Context, afterID int64, limit int) 
 			// "unknown" (the pre-#2714 edge-case AC).
 			AccountName: accountName.String,
 		}
-		// A spawn with no --profile flag has profile_name NULL; label it
-		// "default", never the empty string (mirrors LifecycleEventsTailSQL).
+		// A pre-#2768 row has profile_name NULL (the tier was never recorded);
+		// fold it to the explicit "unknown" placeholder, never the empty string
+		// (#2768 edge-case AC; matches #2766's repo fold). New rows always carry
+		// a resolved tier, so "unknown" here means "pre-migration", not
+		// "coordinator" — a coordinator's rows now carry its real tier.
 		if profileName.Valid {
 			rec.Value.ProfileName = profileName.String
 		} else {
-			rec.Value.ProfileName = "default"
+			rec.Value.ProfileName = unknownProfile
 		}
 		out = append(out, rec)
 	}

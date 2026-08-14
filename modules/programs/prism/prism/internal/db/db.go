@@ -31,7 +31,7 @@ const (
 	// It must be bumped whenever a new migrateVNtoVN+1 function is added.
 	// A meta-test in db_test.go asserts that this constant equals the count of
 	// migration functions, so forgetting to bump it will fail CI.
-	currentSchemaVersion = 41
+	currentSchemaVersion = 42
 )
 
 // DB wraps a SQLite connection.
@@ -53,6 +53,13 @@ type DB struct {
 	// test may install its own.
 	accountResolverMu sync.RWMutex
 	accountResolver   *AccountResolver
+
+	// profileResolver resolves the active prism profile recorded on every
+	// event row at write time (issue #2768). nil means "use the process
+	// default" — see profile_name.go. Guarded by profileResolverMu because a
+	// handle is shared across goroutines and a test may install its own.
+	profileResolverMu sync.RWMutex
+	profileResolver   *ProfileResolver
 }
 
 // Path returns the filesystem path of the database file.
@@ -79,7 +86,15 @@ CREATE TABLE IF NOT EXISTS agent_events (
   -- back-compat with pre-migration rows; new rows always carry a value
   -- ("unknown" when the account store cannot be resolved). Records the NAME
   -- only — never any accounts/*.json token content.
-  account_name       TEXT
+  account_name       TEXT,
+  -- Active prism profile at the moment this row was written, recorded by
+  -- WriteEvent from the mtime-cached resolver (issue #2768). NULLABLE for
+  -- back-compat with pre-migration rows; new rows always carry a value
+  -- ("unknown" when no profile can be resolved). This is the tier the cost
+  -- counter attributes spend along. It exists BECAUSE a coordinator session
+  -- has no spawn_inputs row to join to — see profile_name.go and
+  -- exporter/sql.go CostEventsTailSQL.
+  profile_name       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_session    ON agent_events(session_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_repo       ON agent_events(repo, type, created_at DESC);
@@ -1013,6 +1028,9 @@ func runMigrations(conn sqlExecutor) error {
 	if err := migrateV40ToV41(conn, &version); err != nil {
 		return err
 	}
+	if err := migrateV41ToV42(conn, &version); err != nil {
+		return err
+	}
 	if version > currentSchemaVersion {
 		return fmt.Errorf(
 			"db schema version %d is newer than this prism binary (max %d); "+
@@ -1452,6 +1470,57 @@ func migrateV40ToV41(conn sqlExecutor, version *int) error {
 		return fmt.Errorf("db: migration v40\u2192v41: bump version: %w", err)
 	}
 	*version = 41
+	return nil
+}
+
+// migrateV41ToV42 adds a nullable profile_name column to agent_events
+// (issue #2768, parent #2699).
+//
+// The column records the active prism profile at the moment each event row is
+// written, so the #2704 cost counter can attribute spend to the real tier of
+// EVERY session — including a coordinator, which is never spawned and so has
+// no spawn_inputs row to join to. Before this column, CostEventsTailSQL
+// LEFT JOINed spawn_inputs for the profile; that join missed for every
+// coordinator and folded all of their spend to "default", which was 58% of
+// live fleet spend. It is written by WriteEvent / WriteEventReturningRowID
+// from the mtime-cached resolver in profile_name.go. See that file for why
+// capture happens at write time rather than at scrape time.
+//
+// No backfill — the same policy as migrateV40ToV41's account_name, and the
+// same answer #2767 reaches for the repo label. These are tail-cursor
+// counters: corrected values start a NEW series and the historical "default"
+// spend stays misattributed. It cannot be recomputed, because the tier was
+// never recorded on those rows and guessing today's active profile for an old
+// row is exactly the retroactive-attribution trap this train avoids. A
+// pre-migration row keeps profile_name NULL, which the exporter folds to the
+// explicit "unknown" placeholder (never an empty label).
+//
+// spawn_inputs already carries profile_name (its own column), so only
+// agent_events is altered here. The ALTER TABLE is guarded by a
+// pragma_table_info check so the migration is idempotent: on a fresh database
+// the declarative schema block above already created the column, and a second
+// run matches the guard and does nothing. The column is nullable, so the
+// ALTER TABLE adds it with an implicit NULL default and does not rewrite
+// existing rows or lose data on a populated database.
+func migrateV41ToV42(conn sqlExecutor, version *int) error {
+	if *version >= 42 {
+		return nil
+	}
+	var exists int
+	if err := conn.QueryRow(
+		`SELECT COUNT(*) FROM pragma_table_info('agent_events') WHERE name = 'profile_name'`,
+	).Scan(&exists); err != nil {
+		return fmt.Errorf("db: migration v41\u2192v42: check agent_events.profile_name column: %w", err)
+	}
+	if exists == 0 {
+		if _, err := conn.Exec(`ALTER TABLE agent_events ADD COLUMN profile_name TEXT`); err != nil {
+			return fmt.Errorf("db: migration v41\u2192v42: add agent_events.profile_name: %w", err)
+		}
+	}
+	if _, err := conn.Exec(`UPDATE schema_version SET version = 42`); err != nil {
+		return fmt.Errorf("db: migration v41\u2192v42: bump version: %w", err)
+	}
+	*version = 42
 	return nil
 }
 

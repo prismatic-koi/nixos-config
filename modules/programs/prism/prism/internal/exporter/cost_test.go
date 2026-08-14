@@ -58,7 +58,11 @@ type assistantOpts struct {
 	// account is the account_name column. A nil pointer writes SQL NULL (a
 	// pre-#2714 row); a non-nil pointer writes that exact string.
 	account    *string
-	instanceID string // "" leaves instance_id NULL (no profile join)
+	instanceID string // "" leaves instance_id NULL
+	// profile is the agent_events.profile_name column, stamped at write time
+	// by #2768. "" writes SQL NULL (a pre-#2768 row, which folds to
+	// "unknown"); a non-empty value writes that exact tier.
+	profile    string
 	model      string
 	input      int64
 	output     int64
@@ -88,11 +92,15 @@ func (h *harness) insertAssistant(o assistantOpts) {
 	if o.account != nil {
 		account = *o.account
 	}
+	var profile any
+	if o.profile != "" {
+		profile = o.profile
+	}
 	_, err := h.raw().Exec(
-		`INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id, account_name)
-		 VALUES (?, ?, ?, ?, 'msg_assistant', ?, ?, ?, ?)`,
+		`INSERT INTO agent_events (id, session_name, repo, worktree, type, payload, created_at, instance_id, account_name, profile_name)
+		 VALUES (?, ?, ?, ?, 'msg_assistant', ?, ?, ?, ?, ?)`,
 		uuid.New().String(), "prism-test@cost", "nixos-config", "/tmp/prism-test",
-		payload, time.Now().UnixMilli(), instance, account,
+		payload, time.Now().UnixMilli(), instance, account, profile,
 	)
 	if err != nil {
 		h.t.Fatalf("insert msg_assistant: %v", err)
@@ -353,25 +361,71 @@ func TestExporter_UnknownModelFallsBackToEventCost(t *testing.T) {
 	}
 }
 
-// ── AC (functional): spend split by profile ───────────────────────────────
+// ── AC (functional): spend split by profile, read from agent_events ────────
+//
+// #2768: profile_name is stamped on each agent_events row at write time and
+// read directly, NOT joined from spawn_inputs. So a row's tier is whatever
+// was stamped on it, regardless of whether a spawn_inputs row exists.
 
 func TestExporter_SpendByProfile(t *testing.T) {
 	h := newHarness(t)
 	h.start(h.exp)
 	h.writeSnapshot("work", orgWork, wsWork, time.Now())
 
-	// A spawn with profile "max", and a msg_assistant under its instance.
-	iid, _ := h.spawnFixture("nixos-config", "worker", "bwrap", "max")
-	h.insertAssistant(assistantOpts{account: strptr("work"), instanceID: iid, model: knownModel, input: 1_000_000})
+	// A worker turn stamped with profile "max" (1M input = 3 USD).
+	h.insertAssistant(assistantOpts{account: strptr("work"), profile: "max", model: knownModel, input: 1_000_000})
 
-	// A turn with no instance (no spawn_inputs) folds to profile "default".
-	h.insertAssistant(assistantOpts{account: strptr("work"), model: knownModel, output: 1_000_000})
+	// A second worker turn stamped "heavy" (1M output = 15 USD).
+	h.insertAssistant(assistantOpts{account: strptr("work"), profile: "heavy", model: knownModel, output: 1_000_000})
 
 	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "max"}); got != 3 {
 		t.Errorf("spend under profile=max = %v, want 3", got)
 	}
-	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "default"}); got != 15 {
-		t.Errorf("spend under profile=default = %v, want 15", got)
+	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "heavy"}); got != 15 {
+		t.Errorf("spend under profile=heavy = %v, want 15", got)
+	}
+}
+
+// ── AC (functional): a coordinator (no spawn_inputs row) is its real tier ──
+//
+// The bug this issue fixes: a coordinator is never spawned, so it has no
+// spawn_inputs row. The old join-based query missed and folded ALL its spend
+// to "default". Now profile_name is stamped on the event itself, so the
+// coordinator's spend lands under its real tier even with no spawn_inputs row
+// and no instance_id. It must NOT appear under "default".
+
+func TestExporter_CoordinatorSpendAttributedToRealTierNotDefault(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.writeSnapshot("work", orgWork, wsWork, time.Now())
+
+	// A coordinator turn: no instance_id, no spawn_inputs row, but the profile
+	// "heavy" was resolved and stamped at write time (1M input = 3 USD).
+	h.insertAssistant(assistantOpts{account: strptr("work"), profile: "heavy", model: knownModel, input: 1_000_000})
+
+	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "heavy"}); got != 3 {
+		t.Errorf("coordinator spend under profile=heavy = %v, want 3", got)
+	}
+	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "default"}); got != 0 {
+		t.Errorf("spend under profile=default = %v, want 0 (coordinator spend must not fold to default)", got)
+	}
+}
+
+// ── AC (edge): a pre-#2768 row (NULL profile_name) folds to "unknown" ──────
+
+func TestExporter_NullProfileNameFoldsToUnknownNotEmpty(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+	h.writeSnapshot("work", orgWork, wsWork, time.Now())
+
+	// profile == "" -> SQL NULL profile_name, the pre-#2768 shape.
+	h.insertAssistant(assistantOpts{account: strptr("work"), model: knownModel, input: 1_000_000})
+
+	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": "unknown"}); got != 3 {
+		t.Errorf("spend under profile=unknown = %v, want 3 (NULL profile_name must fold to the explicit placeholder)", got)
+	}
+	if got := h.costValue(exporter.MetricSpendByProfileUSDTotal, map[string]string{"account_org_id": orgWork, "profile": ""}); got != 0 {
+		t.Errorf("spend under empty profile label = %v, want 0 (NULL must never be emitted as an empty label)", got)
 	}
 }
 

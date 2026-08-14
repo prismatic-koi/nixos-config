@@ -28,6 +28,12 @@ func (d *DB) WriteEvent(e Event) error {
 	// (issue #2714). See account_name.go for why. Never NULL on a new row.
 	accountName := d.resolveAccountName()
 
+	// Resolve the active profile the same way (issue #2768). See
+	// profile_name.go for why capture happens here rather than at scrape time,
+	// and why a coordinator — which has no spawn_inputs row — needs it. Never
+	// NULL on a new row.
+	profileName := d.resolveProfileName()
+
 	tx, err := d.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("db: write event: begin tx: %w", err)
@@ -35,9 +41,9 @@ func (d *DB) WriteEvent(e Event) error {
 	defer tx.Rollback() //nolint:errcheck
 
 	const insertQ = `
-INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id, account_name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID, accountName); err != nil {
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id, account_name, profile_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if _, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID, accountName, profileName); err != nil {
 		return fmt.Errorf("db: write event: insert: %w", err)
 	}
 
@@ -589,8 +595,10 @@ func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
 	// Second redaction control (issue #2589) — see WriteEvent.
 	e.Payload = d.redactPayload(e.Payload)
 
-	// Write-time account resolution — see WriteEvent and account_name.go.
+	// Write-time account and profile resolution — see WriteEvent,
+	// account_name.go, and profile_name.go.
 	accountName := d.resolveAccountName()
+	profileName := d.resolveProfileName()
 
 	tx, err := d.conn.Begin()
 	if err != nil {
@@ -599,9 +607,9 @@ func (d *DB) WriteEventReturningRowID(e Event) (int64, error) {
 	defer tx.Rollback() //nolint:errcheck
 
 	const insertQ = `
-INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id, account_name)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-	result, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID, accountName)
+INSERT INTO agent_events (id, session_name, repo, worktree, harness_session_id, type, payload, created_at, instance_id, account_name, profile_name)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	result, err := tx.Exec(insertQ, e.ID, e.SessionName, e.Repo, e.Worktree, e.HarnessSessionID, e.Type, e.Payload, createdAt, e.InstanceID, accountName, profileName)
 	if err != nil {
 		return 0, fmt.Errorf("db: write event: insert: %w", err)
 	}
