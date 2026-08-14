@@ -139,6 +139,7 @@ func stateLabel(state string) (label string, known bool) {
 //   - sum by (repo) collects every repo-less session into one unnamed bucket
 //   - a repo template variable gets a blank entry, which an operator cannot
 //     read
+//
 // Folding to a single explicit placeholder prevents both: the series still
 // appears (it is a real session), but with a readable, stable label.
 func repoLabel(repo string) string {
