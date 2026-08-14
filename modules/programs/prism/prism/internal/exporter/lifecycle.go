@@ -126,18 +126,28 @@ func newLifecycleCounters(reg *metrics.Registry) *lifecycleCounters {
 // closed dispatch over agent_events.type: every type this switch does not
 // name is a no-op, which covers the vast majority of rows (msg_assistant,
 // tool_call, and so on) that carry none of the six counters.
+//
+// The five repo-labelled counters (spawnsTotal, sessionsEndedTotal,
+// escalationsTotal, doomLoopsTotal, permissionDeniedTotal) fold empty or
+// whitespace-only ev.Repo to the unknownRepoLabel placeholder via repoLabel(),
+// to prevent unbounded label cardinality and blank template-variable entries
+// (#2764, #2767). Counters are tail-cursor accumulated and persisted across
+// restarts, so a label-value correction ends the old series and starts a new
+// one at zero. Per #2769's precedent on the profile label, corrected values
+// start a new series going forward; pre-correction rows keep their original
+// label value (no backfill).
 func (lc *lifecycleCounters) apply(ev lifecycleEvent) error {
 	switch ev.Type {
 	case session.EventSpawnIntent:
-		return lc.spawnsTotal.Inc(ev.Repo, ev.AgentRole, ev.IsolationMode, ev.ProfileName)
+		return lc.spawnsTotal.Inc(repoLabel(ev.Repo), ev.AgentRole, ev.IsolationMode, ev.ProfileName)
 	case db.SessionReapEventType:
-		return lc.sessionsEndedTotal.Inc(ev.Repo, ev.AgentRole, ev.EndState)
+		return lc.sessionsEndedTotal.Inc(repoLabel(ev.Repo), ev.AgentRole, ev.EndState)
 	case eventTypeEscalated:
-		return lc.escalationsTotal.Inc(ev.Repo)
+		return lc.escalationsTotal.Inc(repoLabel(ev.Repo))
 	case eventTypeDoomLoop:
-		return lc.doomLoopsTotal.Inc(ev.Repo)
+		return lc.doomLoopsTotal.Inc(repoLabel(ev.Repo))
 	case eventTypePermissionDenied:
-		return lc.permissionDeniedTotal.Inc(ev.Repo)
+		return lc.permissionDeniedTotal.Inc(repoLabel(ev.Repo))
 	default:
 		if verdict, ok := verdictLabel(ev.Type); ok {
 			return lc.reviewVerdictsTotal.Inc(verdict)
