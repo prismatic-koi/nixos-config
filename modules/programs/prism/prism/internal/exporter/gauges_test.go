@@ -466,3 +466,132 @@ func TestSidecarStaleThreshold_MatchesReviewWatchdog(t *testing.T) {
 		t.Errorf("exporter.SidecarStaleThreshold = %v, want %v (sidecar.DefaultReviewAgentInactivityTimeout) — the two must not drift", got, want)
 	}
 }
+
+// ── #2764 AC (functional): empty or whitespace-only repo is folded to
+// "unknown" placeholder. The session is not dropped — it still appears
+// in the gauge.
+
+func TestExporter_EmptyRepoLabelFoldsToUnknown(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	// Create a session with an empty repo.
+	emptyRepoInstance, emptyRepoSession := h.spawnFixture("", "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		emptyRepoSession, "", "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(emptyRepoSession, emptyRepoInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+
+	// Create a session with a whitespace-only repo.
+	whitespaceInstance, whitespaceSession := h.spawnFixture("   ", "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		whitespaceSession, "   ", "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(whitespaceSession, whitespaceInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+
+	// Create a session with a non-empty repo to verify it is not folded.
+	normalInstance, normalSession := h.spawnFixture("nixos-config", "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		normalSession, "nixos-config", "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(normalSession, normalInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+
+	// Test prism_sessions_active: both empty and whitespace-only repos fold to "unknown"
+	unknownLabels := map[string]string{"repo": "unknown", "agent_role": "worker", "state": "active"}
+	if got := gaugeValue(t, h, exporter.MetricSessionsActive, unknownLabels); got != 2 {
+		t.Errorf("%s%v = %v, want 2 (empty + whitespace-only folded to 'unknown')",
+			exporter.MetricSessionsActive, unknownLabels, got)
+	}
+
+	// Verify that the normal repo is not folded.
+	normalLabels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "state": "active"}
+	if got := gaugeValue(t, h, exporter.MetricSessionsActive, normalLabels); got != 1 {
+		t.Errorf("%s%v = %v, want 1 (non-empty repo must not be folded)",
+			exporter.MetricSessionsActive, normalLabels, got)
+	}
+
+	// Verify raw empty/whitespace values are never exposed as labels.
+	emptyLabels := map[string]string{"repo": "", "agent_role": "worker", "state": "active"}
+	if got := gaugeValue(t, h, exporter.MetricSessionsActive, emptyLabels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 — raw empty repo must never be exposed as a label",
+			exporter.MetricSessionsActive, emptyLabels, got)
+	}
+	whitespaceLabels := map[string]string{"repo": "   ", "agent_role": "worker", "state": "active"}
+	if got := gaugeValue(t, h, exporter.MetricSessionsActive, whitespaceLabels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 — raw whitespace-only repo must never be exposed as a label",
+			exporter.MetricSessionsActive, whitespaceLabels, got)
+	}
+}
+
+// ── #2764 AC (functional): empty or whitespace-only repo is folded to
+// "unknown" on all five repo-labelled gauges.
+
+func TestExporter_EmptyRepoFoldsOnAllGauges(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	// Write data to all five gauges with empty repo.
+	if _, err := h.writeDB.EnqueueMerge(201, "", "prism-test@empty", "instance-empty", nil); err != nil {
+		t.Fatalf("EnqueueMerge: %v", err)
+	}
+	if err := h.writeDB.WriteBusMessage(db.BusMessage{
+		ID:          "bus-empty",
+		FromSession: "prism-test@a",
+		ToSession:   "prism-test@b",
+		Repo:        "",
+		Text:        "test",
+	}); err != nil {
+		t.Fatalf("WriteBusMessage: %v", err)
+	}
+
+	emptyRepoInstance, emptyRepoSession := h.spawnFixture("", "worker", "bwrap", "")
+	if err := h.writeDB.UpsertStatusSeedRootAgentName(
+		emptyRepoSession, "", "/tmp/prism-test", "active", nil, nil, "worker", "pi", "bwrap",
+	); err != nil {
+		t.Fatalf("UpsertStatusSeedRootAgentName: %v", err)
+	}
+	if err := h.writeDB.SetInstanceID(emptyRepoSession, emptyRepoInstance); err != nil {
+		t.Fatalf("SetInstanceID: %v", err)
+	}
+	setLastSeen(t, h, emptyRepoSession, 30*time.Second) // make it live
+
+	unknownLabels := map[string]string{"repo": "unknown"}
+
+	// Test prism_merge_queue_depth{repo="unknown"}
+	if got := gaugeValue(t, h, exporter.MetricMergeQueueDepth, unknownLabels); got != 1 {
+		t.Errorf("%s%v = %v, want 1", exporter.MetricMergeQueueDepth, unknownLabels, got)
+	}
+
+	// Test prism_merges_by_status{repo="unknown"}
+	mergeStatusLabels := map[string]string{"repo": "unknown", "status": "watching"}
+	if got := gaugeValue(t, h, exporter.MetricMergesByStatus, mergeStatusLabels); got != 1 {
+		t.Errorf("%s%v = %v, want 1", exporter.MetricMergesByStatus, mergeStatusLabels, got)
+	}
+
+	// Test prism_bus_messages_pending{repo="unknown"}
+	if got := gaugeValue(t, h, exporter.MetricBusMessagesPending, unknownLabels); got != 1 {
+		t.Errorf("%s%v = %v, want 1", exporter.MetricBusMessagesPending, unknownLabels, got)
+	}
+
+	// Test prism_sidecars_live{repo="unknown"}
+	if got := gaugeValue(t, h, exporter.MetricSidecarsLive, unknownLabels); got != 1 {
+		t.Errorf("%s%v = %v, want 1", exporter.MetricSidecarsLive, unknownLabels, got)
+	}
+
+	// Test prism_sidecars_stale{repo="unknown"} (should be 0 since last_seen is fresh)
+	if got := gaugeValue(t, h, exporter.MetricSidecarsStale, unknownLabels); got != 0 {
+		t.Errorf("%s%v = %v, want 0 (session is not stale)", exporter.MetricSidecarsStale, unknownLabels, got)
+	}
+}
