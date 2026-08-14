@@ -73,6 +73,14 @@ const TailerCostEvents = "agent_events_cost"
 // org ID. Both edge cases are explicit ACs of #2704 — attribute, never drop.
 const unknownOrgID = "unknown"
 
+// unknownProfile is the profile label for a cost row whose profile_name is
+// SQL NULL — a pre-#2768 row that never recorded the tier. #2768 folds NULL
+// to this explicit placeholder at scan time (sql.go) rather than to an empty
+// label or the old, meaningless "default" bucket. New rows always carry a
+// resolved tier stamped at write time (db/profile_name.go), so "unknown"
+// here means "written before the tier was recorded", never "coordinator".
+const unknownProfile = "unknown"
+
 // Token-kind label values for prism_model_tokens_total{kind}.
 const (
 	tokenKindInput      = "input"
