@@ -75,6 +75,25 @@ func (h *harness) spawnFixture(repo, agentRole, isolationMode, profileName strin
 	return instanceID, sessionName
 }
 
+// writeEventWithRepo writes an event with a specified repo, for testing
+// empty repo folding. Most tests use writeEvent (from exporter_test.go) which
+// defaults to "nixos-config".
+func (h *harness) writeEventWithRepo(eventType, repo string, age time.Duration) {
+	h.t.Helper()
+	err := h.writeDB.WriteEvent(db.Event{
+		ID:          uuid.New().String(),
+		SessionName: "prism-test@exporter",
+		Repo:        repo,
+		Worktree:    "/tmp/prism-test",
+		Type:        eventType,
+		Payload:     `{"note":"test"}`,
+		CreatedAt:   time.Now().Add(-age),
+	})
+	if err != nil {
+		h.t.Fatalf("WriteEvent(%s): %v", eventType, err)
+	}
+}
+
 // endFixture ends the session created by spawnFixture with endState, and
 // writes the session_reaped event RecordSessionReap would write.
 func (h *harness) endFixture(instanceID, sessionName, endState string) {
@@ -209,6 +228,51 @@ func TestExporter_EscalationsTotalIgnoresOtherEventTypes(t *testing.T) {
 
 	if got := counterValue(t, h, exporter.MetricEscalationsTotal, map[string]string{"repo": "nixos-config"}); got != 0 {
 		t.Errorf("prism_escalations_total{repo=nixos-config} = %v, want 0 (no session.escalated event was written)", got)
+	}
+}
+
+// ── AC (edge-case): an empty repo is folded to "unknown" label ───────────
+
+func TestExporter_LifecycleCountersFoldsEmptyRepoToUnknown(t *testing.T) {
+	h := newHarness(t)
+	h.start(h.exp)
+
+	// Write events with empty repo and non-empty repo.
+	h.spawnFixture("", "worker", "bwrap", "max")
+	h.spawnFixture("nixos-config", "worker", "bwrap", "max")
+	h.writeEventWithRepo("session.escalated", "", 0)
+	h.writeEventWithRepo("session.escalated", "nixos-config", 0)
+	h.writeEventWithRepo("doom_loop_detected", "", 0)
+	h.writeEventWithRepo("doom_loop_detected", "nixos-config", 0)
+	h.writeEventWithRepo("permission_denied", "", 0)
+	h.writeEventWithRepo("permission_denied", "nixos-config", 0)
+
+	// Empty repo should fold to "unknown".
+	unknownLabels := map[string]string{"repo": "unknown", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "max"}
+	if got := counterValue(t, h, exporter.MetricSpawnsTotal, unknownLabels); got != 1 {
+		t.Errorf("%s with empty repo = %v, want 1 (should fold to 'unknown')", exporter.MetricSpawnsTotal, got)
+	}
+
+	// Non-empty repo should not fold.
+	nonEmptyLabels := map[string]string{"repo": "nixos-config", "agent_role": "worker", "isolation_mode": "bwrap", "profile": "max"}
+	if got := counterValue(t, h, exporter.MetricSpawnsTotal, nonEmptyLabels); got != 1 {
+		t.Errorf("%s with non-empty repo = %v, want 1", exporter.MetricSpawnsTotal, got)
+	}
+
+	// Check the other repo-labelled counters.
+	escalationLabels := map[string]string{"repo": "unknown"}
+	if got := counterValue(t, h, exporter.MetricEscalationsTotal, escalationLabels); got != 1 {
+		t.Errorf("%s with empty repo = %v, want 1 (should fold to 'unknown')", exporter.MetricEscalationsTotal, got)
+	}
+
+	doomLabels := map[string]string{"repo": "unknown"}
+	if got := counterValue(t, h, exporter.MetricDoomLoopsTotal, doomLabels); got != 1 {
+		t.Errorf("%s with empty repo = %v, want 1 (should fold to 'unknown')", exporter.MetricDoomLoopsTotal, got)
+	}
+
+	permissionLabels := map[string]string{"repo": "unknown"}
+	if got := counterValue(t, h, exporter.MetricPermissionDeniedTotal, permissionLabels); got != 1 {
+		t.Errorf("%s with empty repo = %v, want 1 (should fold to 'unknown')", exporter.MetricPermissionDeniedTotal, got)
 	}
 }
 
