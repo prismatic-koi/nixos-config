@@ -3,6 +3,7 @@ package exporter
 import (
 	"database/sql"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -101,6 +102,12 @@ const SidecarStaleThreshold = 15 * time.Minute
 // an agent_status.state value outside the pinned set (see stateLabel below).
 const unknownStateLabel = "other"
 
+// unknownRepoLabel is the label value all repo-labelled gauges use for an
+// agent_status.repo value that is empty or whitespace-only. Empty repo label
+// values create unbounded label sets and confuse dashboard templating (see
+// stateLabel's doc comment for the rationale; the pattern is identical).
+const unknownRepoLabel = "unknown"
+
 // stateLabel folds an agent_status.state value into the closed label set
 // pinned to internal/agent/agent.go's AgentState constants — the
 // authoritative state enum for a prism session (#2702's "pin the state
@@ -124,6 +131,21 @@ func stateLabel(state string) (label string, known bool) {
 	default:
 		return unknownStateLabel, false
 	}
+}
+
+// repoLabel folds an agent_status.repo value that is empty or whitespace-only
+// into unknownRepoLabel. An empty repo label value has two effects on a
+// dashboard (#2764):
+//   - sum by (repo) collects every repo-less session into one unnamed bucket
+//   - a repo template variable gets a blank entry, which an operator cannot
+//     read
+// Folding to a single explicit placeholder prevents both: the series still
+// appears (it is a real session), but with a readable, stable label.
+func repoLabel(repo string) string {
+	if strings.TrimSpace(repo) == "" {
+		return unknownRepoLabel
+	}
+	return repo
 }
 
 // sessionsActiveCollector implements prism_sessions_active by reading
@@ -169,7 +191,7 @@ func (c *sessionsActiveCollector) Collect() []metrics.Sample {
 		if !known {
 			sawUnknown = true
 		}
-		counts[sessionsActiveKey{repo: repo, role: role.String, state: label}]++
+		counts[sessionsActiveKey{repo: repoLabel(repo), role: role.String, state: label}]++
 	}
 	if err := rows.Err(); err != nil {
 		c.logger.Printf("gauge %s: iterate rows failed: %v", MetricSessionsActive, err)
@@ -225,7 +247,7 @@ func (c *mergeQueueDepthCollector) Collect() []metrics.Sample {
 			c.logger.Printf("gauge %s: scan failed: %v", MetricMergeQueueDepth, err)
 			return nil
 		}
-		counts[repo]++
+		counts[repoLabel(repo)]++
 	}
 	if err := rows.Err(); err != nil {
 		c.logger.Printf("gauge %s: iterate rows failed: %v", MetricMergeQueueDepth, err)
@@ -276,7 +298,7 @@ func (c *mergesByStatusCollector) Collect() []metrics.Sample {
 			c.logger.Printf("gauge %s: scan failed: %v", MetricMergesByStatus, err)
 			return nil
 		}
-		counts[mergesByStatusKey{repo: repo, status: status}]++
+		counts[mergesByStatusKey{repo: repoLabel(repo), status: status}]++
 	}
 	if err := rows.Err(); err != nil {
 		c.logger.Printf("gauge %s: iterate rows failed: %v", MetricMergesByStatus, err)
@@ -328,7 +350,7 @@ func (c *busMessagesPendingCollector) Collect() []metrics.Sample {
 			c.logger.Printf("gauge %s: scan failed: %v", MetricBusMessagesPending, err)
 			return nil
 		}
-		counts[repo]++
+		counts[repoLabel(repo)]++
 	}
 	if err := rows.Err(); err != nil {
 		c.logger.Printf("gauge %s: iterate rows failed: %v", MetricBusMessagesPending, err)
@@ -467,7 +489,7 @@ func (c *sidecarLivenessCollector) Collect() []metrics.Sample {
 		}
 
 		if isLive == c.live {
-			counts[repo]++
+			counts[repoLabel(repo)]++
 		}
 	}
 	if err := rows.Err(); err != nil {
