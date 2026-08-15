@@ -14,8 +14,10 @@ package quick
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -24,6 +26,55 @@ import (
 
 	"github.com/prismatic-koi/prism/internal/config"
 )
+
+// piExecTimeout bounds how long the `pi` subprocess invoked by
+// realPiExec is allowed to run before it is killed. `pi` is the only
+// subprocess in the quick pr path with no natural completion signal from
+// the caller's side, so it is also the only one that previously had no
+// deadline at all (issue #2777).
+//
+// This is a package-level var, not a const, solely so tests can shorten
+// it to exercise the real timeout path (context.DeadlineExceeded, process
+// kill) without a real 3-minute wait — mirroring the parent-deadline seam
+// used by mergequeue's execGH test. Production code never reassigns it.
+var piExecTimeout = 3 * time.Minute
+
+// piEnvBlockList names the environment variables stripped from the `pi`
+// subprocess's environment. These are set by prism when the CURRENT
+// process is itself running as an agent session under prism, and if
+// forwarded unchanged to a nested `pi` invocation, they make the nested
+// process believe it IS that session (issue #2777): it would try to
+// attach to the calling session's harness pipe and session file, and its
+// stdin is /dev/null, so any prompt it renders as a result can never be
+// answered.
+var piEnvBlockList = []string{
+	"PI_SESSION_ID",
+	"PI_SESSION_FILE",
+	"PI_CODING_AGENT",
+	"PI_CODING_AGENT_DIR",
+	"PRISM_HARNESS_PIPE",
+}
+
+// filteredEnv returns os.Environ() with every variable named in
+// piEnvBlockList removed, preserving every other variable (including
+// PATH, so `pi` itself and its own tool invocations keep resolving).
+func filteredEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		blocked := false
+		for _, name := range piEnvBlockList {
+			if strings.HasPrefix(kv, name+"=") {
+				blocked = true
+				break
+			}
+		}
+		if !blocked {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
 
 // titleMaxLen is the maximum PR title length enforced by the existing
 // convention. Pi is instructed to respect this in the system prompt; we
@@ -69,14 +120,30 @@ func realPiLookPath() error {
 }
 
 func realPiExec(args []string, stdin string) piResult {
-	cmd := exec.Command("pi", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), piExecTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "pi", args...)
 	if stdin != "" {
 		cmd.Stdin = strings.NewReader(stdin)
 	}
+
+	// Explicit environment: strip the PI_*/PRISM_HARNESS_PIPE vars that
+	// would otherwise be inherited from a calling prism agent session
+	// (issue #2777) and keep everything else.
+	cmd.Env = filteredEnv()
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	// Tee stderr to the user's terminal (so `pi` progress is visible while
+	// it runs) and to the capture buffer (so callers can still inspect it
+	// on error) at the same time.
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+
 	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		err = fmt.Errorf("pi subprocess timed out after %s: %w", piExecTimeout, err)
+	}
 	return piResult{
 		stdout: stdout.String(),
 		stderr: stderr.String(),
@@ -397,6 +464,7 @@ func stagedDiff() (string, error) {
 // chosen because Sonnet 4.6 is highly reliable with structured JSON output
 // and the parse path is unambiguous (no regex on free-form text).
 func generateDescription(qp config.QuickProfile, diff string) (title, body string, err error) {
+	fmt.Println("Generating PR description with pi...")
 	// Pi's `--print --mode json` non-interactive path. Flags chosen per
 	// the issue ACs:
 	//   --print           one-shot completion
