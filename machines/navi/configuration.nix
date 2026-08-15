@@ -72,6 +72,7 @@
         ageKeys.enable = true;
       };
       hardware-boot-switch.enable = true;
+      systemdResolved.enable = true;
     };
     gaming = {
       enable = true;

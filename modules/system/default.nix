@@ -16,6 +16,7 @@ in
     ./nfs-mounts.nix
     ./nix-options.nix
     ./sops.nix
+    ./systemd-resolved.nix
     ./users.nix
   ];
   config = lib.mkMerge [
