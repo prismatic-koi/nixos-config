@@ -279,6 +279,33 @@ func (b *bwrapIsolator) BuildArgs(m *Manager) []string {
 		}
 	}
 
+	// ── DNS: systemd-resolved runtime dir (read-only, conditional) ──────────
+	// On hosts that run systemd-resolved, /etc/resolv.conf is a symlink chain
+	// that ends at /run/systemd/resolve/stub-resolv.conf. The /etc ro-bind
+	// above makes the symlink visible inside the sandbox, but the runtime dir
+	// it points at is not bound, so the symlink dangles: /etc/resolv.conf is
+	// unreadable in-namespace and every outbound name lookup fails. c-ares
+	// (Node's dns.resolve*) finds no nameserver and falls back to 127.0.0.1:53
+	// (nothing there — resolved listens on 127.0.0.53), returning ECONNREFUSED;
+	// glibc getaddrinfo via nss-resolve cannot reach resolved's varlink socket
+	// and returns EAI_AGAIN. undici wraps either as "TypeError: fetch failed",
+	// which is what the pi anthropic-oauth flow surfaces from inside the
+	// sandbox while the same flow works on the host.
+	//
+	// Binding the single runtime dir read-only fixes both resolver paths at
+	// once: c-ares reads stub-resolv.conf (nameserver 127.0.0.53, reachable on
+	// the shared loopback because the net namespace is not unshared) and
+	// nss-resolve reaches resolved's io.systemd.Resolve socket, which lives in
+	// the same dir. The bind is conditional on os.Stat so hosts without
+	// systemd-resolved (e.g. a static /etc/resolv.conf, or CI) are unaffected —
+	// there the dir does not exist and /etc/resolv.conf is a plain file already
+	// reachable through the /etc bind. Note this DNS breakage affects every
+	// networked tool in the sandbox (gh over https, nix substituters,
+	// git-over-https), not just pi auth; the fix restores all of them.
+	if _, err := os.Stat("/run/systemd/resolve"); err == nil {
+		args = append(args, "--ro-bind", "/run/systemd/resolve", "/run/systemd/resolve")
+	}
+
 	// ── Per-user nix profiles (read-only, conditional) ──────────────────────
 	// These locations hold the home-manager per-user profile (pi,
 	// git, nix, …). They are conditional because they may not exist on
