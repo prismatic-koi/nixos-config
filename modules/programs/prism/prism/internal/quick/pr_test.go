@@ -593,6 +593,54 @@ func TestExtractTitleBody_NoAssistantMessage(t *testing.T) {
 	}
 }
 
+// TestGenerateDescription_PrintsProgressBeforePiExec verifies that a
+// progress line reaches stdout before the (seamed) pi call runs, so the
+// user sees output during the model call instead of a silent hang
+// (issue #2777).
+func TestGenerateDescription_PrintsProgressBeforePiExec(t *testing.T) {
+	r := newRecorder()
+	installSeams(t, r)
+
+	piStarted := false
+	piExecFn = func(args []string, stdin string) piResult {
+		piStarted = true
+		return piResult{stdout: piNDJSON(`{"title":"Fix x","body":""}`)}
+	}
+
+	// Capture stdout, draining concurrently per the stdout-capture-testing
+	// convention (issue #1798) — the printed line is tiny here, but the
+	// convention is followed regardless of size.
+	origStdout := os.Stdout
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = pw
+
+	done := make(chan string, 1)
+	go func() {
+		buf, _ := io.ReadAll(pr)
+		done <- string(buf)
+	}()
+
+	_, _, err = generateDescription(config.QuickProfile{Model: "anthropic/claude-sonnet-4-6"}, "diff")
+
+	os.Stdout = origStdout
+	_ = pw.Close()
+	captured := <-done
+	_ = pr.Close()
+
+	if err != nil {
+		t.Fatalf("generateDescription: %v", err)
+	}
+	if !piStarted {
+		t.Fatal("generateDescription: piExecFn was never called")
+	}
+	if strings.TrimSpace(captured) == "" {
+		t.Fatal("generateDescription: expected a progress line on stdout before the pi call, got none")
+	}
+}
+
 // ── Small assertion helpers ────────────────────────────────────────────────
 
 func requireFlag(t *testing.T, argv []string, flag string) {
