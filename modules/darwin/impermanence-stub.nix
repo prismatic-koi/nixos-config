@@ -189,6 +189,21 @@
       description = "Stub for networking.nameservers (darwin compatibility)";
     };
 
+    # Stub for darwin compatibility: networking.networkmanager.dns
+    networking.networkmanager.dns = lib.mkOption {
+      type = lib.types.str;
+      default = "default";
+      description = "Stub for networking.networkmanager.dns (darwin compatibility)";
+    };
+
+    # Stub for darwin compatibility: services.resolved
+    # systemd-resolved is Linux-only
+    services.resolved.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = "Stub for services.resolved.enable (darwin compatibility)";
+    };
+
     # Stub for darwin compatibility: programs.nh
     # nh is a NixOS helper tool, not typically used on Darwin
     programs.nh = lib.mkOption {
