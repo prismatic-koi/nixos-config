@@ -264,10 +264,15 @@ runner (the same runner class `build-and-cache.yml` and
 not a nested prism sandbox, so a top-level `sandbox-exec` profile applies
 and the tests execute rather than skip. See issue #2749.
 
-The job runs:
+The test binaries (`bash`, `git`, `aws`, `kubectl`, `socat`) must resolve to
+a `/nix/store/...` path — see "Nix-store binary requirement" below — so the
+job installs Nix (`cachix/install-nix-action`, the same action every other
+nix-using job in this workflow already uses) and runs the tests inside
+`nix shell`:
 
 ```
-go test ./internal/integration/ -run '^TestSandboxExec' -race
+nix shell nixpkgs#bash nixpkgs#git nixpkgs#awscli2 nixpkgs#kubectl nixpkgs#socat \
+  --command go test ./internal/integration/ -run '^TestSandboxExec' -race
 ```
 
 **No-duplication mechanism.** Every test function in
@@ -306,6 +311,22 @@ other required job.
 This job is CI-only test execution. It does not change worker isolation:
 it does not touch `config.ValidIsolationModes`, and no worker spawn
 default moves to `host` mode.
+
+### Nix-store binary requirement
+
+`requireNixBash`, `requireNixGit`, `requireNixAws`, `requireNixKubectl`, and
+`requireNixSocat` (in the corresponding `sandbox_exec_*_darwin_test.go`
+files) each resolve their binary via `exec.LookPath` + `filepath.EvalSymlinks`
+and skip the test when the resolved path is not under `/nix/store/` — Apple-
+signed and Homebrew binaries SIGABRT under the deny-default sandbox (see
+#1190). A bare `macos-15` runner has no Nix installed and no `/nix/store`
+binaries on `PATH` by default, so without the Nix-install step and the
+`nix shell` wrapper above, every `TestSandboxExec*` test would resolve these
+binaries to system paths (`/bin/bash`, the Homebrew Cellar `git`, and so on)
+and SKIP — which the job's guard step (below) catches and fails on, but the
+tests still would not have actually run. This is why the job installs Nix
+and runs the tests through `nix shell` rather than relying on whatever
+binaries the bare runner image happens to ship.
 
 ## Out of scope
 

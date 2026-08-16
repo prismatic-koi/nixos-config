@@ -185,15 +185,42 @@ jobs:
         with:
           go-version-file: modules/programs/prism/prism/go.mod
           cache-dependency-path: modules/programs/prism/prism/go.sum
+      # The sandbox-exec test suite hard-requires its test binaries (bash,
+      # git, aws, kubectl, socat) to resolve to a /nix/store/... path — see
+      # requireNixBash / requireNixGit / requireNixAws / requireNixKubectl /
+      # requireNixSocat in internal/integration/sandbox_exec_*_darwin_test.go,
+      # which skip when the resolved binary is not under /nix/store (Apple-
+      # signed and Homebrew binaries SIGABRT under the deny-default sandbox,
+      # see #1190). A bare macos-15 runner has no Nix installed, so without
+      # this step every TestSandboxExec* test would resolve `bash` to
+      # /bin/bash and skip. Install Nix so the run step below can put
+      # Nix-store binaries on PATH via `nix shell`.
+      - uses: cachix/install-nix-action@v31
+        if: steps.changes.outputs.go == 'true'
+        with:
+          extra_nix_config: |-
+            accept-flake-config = true
+            access-tokens = github.com=${{ secrets.GITHUB_TOKEN }}
+          nix_path: nixpkgs=channel:nixos-unstable
+      - uses: cachix/cachix-action@v17
+        if: steps.changes.outputs.go == 'true'
+        with:
+          authToken: ${{ secrets.CACHIX_TOKEN }}
+          extraPullNames: nix-community
+          name: lucidph3nx-nixos-config
       - name: go test ./internal/integration -run TestSandboxExec -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
-        # Capture verbose output so the guard step below can confirm no
-        # selected test reported SKIP and at least one test ran. tee keeps
-        # live progress visible in the Actions log.
+        # Run inside `nix shell` so bash/git/aws/kubectl/socat resolve to
+        # /nix/store/... paths on PATH, satisfying the requireNix* helpers
+        # above. Capture verbose output so the guard step below can confirm
+        # no selected test reported SKIP and at least one test ran. tee
+        # keeps live progress visible in the Actions log.
         run: |
           set -o pipefail
-          go test -v ./internal/integration/ -run '^TestSandboxExec' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+          nix shell --print-build-logs \
+            nixpkgs#bash nixpkgs#git nixpkgs#awscli2 nixpkgs#kubectl nixpkgs#socat \
+            --command go test -v ./internal/integration/ -run '^TestSandboxExec' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
