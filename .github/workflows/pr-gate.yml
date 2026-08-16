@@ -226,17 +226,18 @@ jobs:
         # either of these two test files calls). The two target test files
         # also check that TMPDIR resolves under /var/folders, because the
         # production secrets.d deny regexes are keyed to that path — a bare
-        # macos-15 runner starts with TMPDIR under /private/tmp, so export
-        # the macOS per-user temp dir before running go test. Capture
-        # verbose output so the guard step below can confirm no selected
-        # test reported SKIP and at least one test ran. tee keeps live
-        # progress visible in the Actions log.
+        # macos-15 runner starts with TMPDIR under /private/tmp. `nix shell`
+        # sets its own TMPDIR for the command it wraps, which clobbers an
+        # export made in the outer shell before `nix shell` starts, so the
+        # TMPDIR export must happen inside the wrapped `--command` itself
+        # (round-4 review-context finding, PR #2785). Capture verbose
+        # output so the guard step below can confirm no selected test
+        # reported SKIP and at least one test ran. tee keeps live progress
+        # visible in the Actions log.
         run: |
           set -o pipefail
-          TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
-          export TMPDIR
           nix shell --print-build-logs nixpkgs#bash \
-            --command go test -v ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+            --command bash -c 'TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"; export TMPDIR; go test -v ./internal/integration/ -run "^TestSandboxExec(GitLabToken|GrafanaConfig)" -race' 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
