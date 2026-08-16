@@ -50,12 +50,14 @@ in
       type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
-        Name of the group that owns `apiKeyFile`, or `null` when this
-        host has no pinned key.
+        Name of the group that owns `apiKeyFile`, or `null` when the
+        consumer needs no group grant to read it.
 
         A consumer that runs under systemd `DynamicUser` has no stable
         UID to grant the file to, so it joins this group through
-        `SupplementaryGroups` instead.
+        `SupplementaryGroups` instead. On Darwin the consumer (Alloy)
+        is a root launchd daemon and reads the file directly, so this
+        stays `null` even though `apiKeyFile` is set.
       '';
     };
     nx.services.syncthing.obsidian.enable = lib.mkEnableOption "Set up syncthing obsidian folder" // {
