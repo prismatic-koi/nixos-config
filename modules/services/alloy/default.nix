@@ -2,10 +2,13 @@
 #
 # Part of the fleet telemetry train (issue #2458). The first child
 # (issue #2460) added host metrics. Issue #2461 added a Syncthing
-# `/metrics` scrape on the Linux hosts. Loki log shipping and other
-# signals are still out of scope here — a commented seam is left in
-# the generated Alloy config so a later train can wire `loki.write`
-# without redesigning the module surface.
+# `/metrics` scrape on the Linux hosts and issue #2697 extended it to
+# m4mac — see the "Darwin REST API key delivery" comment in
+# modules/services/syncthing/secrets.nix for how the key reaches
+# Syncthing there without a launchd `EnvironmentFile`. Loki log
+# shipping and other signals are still out of scope here — a
+# commented seam is left in the generated Alloy config so a later
+# train can wire `loki.write` without redesigning the module surface.
 #
 # Every scrape forwards to the single `prometheus.remote_write`
 # below. Do not add a second one.
@@ -64,13 +67,13 @@
 #     hwmon (lm_sensors temperatures), thermal_zone, plus many
 #     others.
 #   * Darwin: boottime, cpu, diskstats, filesystem, loadavg,
-#     meminfo, netdev, time, uname. No temperature collectors on
-#     Darwin — matches the AC ("temperatures on Linux where
-#     lm_sensors exposes them").
+#     meminfo, netdev, thermal, time, uname.
 #
 # We rely on the platform-appropriate defaults rather than pinning
 # `set_collectors` so the exporter's platform-conditional collector
-# registration handles the split naturally.
+# registration handles the split naturally. One Darwin default is
+# turned off again with `disable_collectors` — see the `thermal` note
+# in the generated config below (issue #2765).
 #
 # ── Systemd unit health metrics (issue #2462, NixOS only) ───────────
 #
@@ -134,19 +137,33 @@ let
 
   # ── Syncthing scrape (issue #2461) ──────────────────────────────────
   #
-  # Emitted only on a Linux host that runs Syncthing AND carries a
-  # pinned, sops-encrypted REST API key. One reason for each term:
+  # Emitted on any host that runs Syncthing AND carries a pinned,
+  # sops-encrypted REST API key. One reason for each term:
   #
-  #   * isLinux — m4mac is out of scope until #2694 confirms the Darwin
-  #     Alloy path works at all. Keeping this term first also lets the
-  #     `&&` short-circuit skip the NixOS-only options below on Darwin.
   #   * syncthing.enable — a host without Syncthing must still evaluate,
   #     and must not emit a scrape target that can never come up.
   #   * apiKeyFile != null — /metrics needs the API key, so a host with
   #     no pinned key gets no scrape rather than a target that always
   #     gets a 403.
+  #
+  # The `isLinux` term that #2461 carried here is gone (issue #2697):
+  # #2694 confirmed the Darwin Alloy path pushes metrics, and
+  # modules/services/syncthing/secrets.nix now pins an API key on
+  # m4mac too. `apiKeyFile` stays the single gate on both platforms.
   syncthingCfg = config.nx.services.syncthing;
-  scrapeSyncthing = isLinux && syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
+  scrapeSyncthing = syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
+
+  # Syncthing's GUI/REST listen address, which is also where it serves
+  # /metrics. On NixOS Syncthing is a system service; on Darwin it runs
+  # under home-manager (modules/services/syncthing/default.nix), so the
+  # same setting lives in the user's home-manager config. The `if` keeps
+  # the NixOS-only option path from being read at all on Darwin, where
+  # `services.syncthing` does not exist.
+  syncthingGuiAddress =
+    if isLinux then
+      config.services.syncthing.guiAddress
+    else
+      config.home-manager.users.${config.nx.username}.services.syncthing.guiAddress;
 
   # ── Prism exporter scrape (issue #2701) ──────────────────────────────
   #
@@ -264,6 +281,14 @@ let
 
   # Starts with a newline and ends without a blank line, so that the
   # empty case reproduces the previous file byte for byte.
+  #
+  # The body below is deliberately platform-neutral: the generated
+  # River must stay byte-identical on navi and tui after #2697. The
+  # Darwin-only caveat lives here instead. On Darwin `apiKeyFile` is a
+  # user-scope sops secret and alloy is a root launchd daemon, so
+  # alloy can read the file, but only after the user has logged in and
+  # the sops-nix launchd agent has decrypted it. Scrapes before that
+  # first login fail and retry; nothing else is affected.
   syncthingScrapeBlock = lib.optionalString scrapeSyncthing ''
 
     // ── Syncthing folder + connection metrics ───────────────────────
@@ -278,7 +303,7 @@ let
     // world-readable.
     prometheus.scrape "syncthing" {
       targets = [
-        {"__address__" = "${config.services.syncthing.guiAddress}"},
+        {"__address__" = "${syncthingGuiAddress}"},
       ]
       metrics_path      = "/metrics"
       bearer_token_file = "${syncthingCfg.apiKeyFile}"
@@ -323,7 +348,18 @@ let
 
       textfile {
         directory = "${systemdUserUnitTextfileDir}"
-      }''}
+      }''}${lib.optionalString isDarwin ''
+
+      // `thermal` is in the Darwin default collector set, but the
+      // IOKit call it makes (IOPMCopyCPUPowerStatus) records nothing
+      // on this hardware, so the collector fails on every scrape and
+      // writes "no CPU power status has been recorded" into
+      // /var/log/alloy.log. It produces no metric here, so turning it
+      // off loses no data and keeps the log readable for the next
+      // real fault. Name confirmed against node_exporter's
+      // collector/thermal_darwin.go, which registers the collector as
+      // `thermal` and carries that exact error string. See #2765.
+      disable_collectors = ["thermal"]''}
     }
 
     prometheus.scrape "node" {

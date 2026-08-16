@@ -42,7 +42,8 @@ let
   #
   # Hosts listed here must have a `<host>/gui-apikey` entry in
   # ./secrets/gui-apikey.sops.yaml, or sops-nix fails at activation.
-  # Scope is navi and tui (both Linux); m4mac waits on #2694.
+  # Scope is navi and tui (both Linux). m4mac carries its own key in
+  # its own sops file — see the Darwin block below.
   apiKeyHosts = [
     "navi"
     "tui"
@@ -50,6 +51,113 @@ let
   hasApiKey = builtins.elem hostname apiKeyHosts;
   apiKeySecret = "${hostname}/gui-apikey";
   apiKeyEnvTemplate = "syncthing-gui-apikey.env";
+
+  # ── Darwin REST API key delivery (issue #2697) ──────────────────
+  #
+  # Same goal as the Linux block above — hand Syncthing a pinned,
+  # sops-encrypted REST API key so Alloy can present it as a Bearer
+  # token on /metrics — but launchd has none of the systemd machinery
+  # that made this easy on navi and tui. There is no launchd
+  # `EnvironmentFile`.
+  #
+  # CHOSEN MECHANISM: wrap the syncthing binary.
+  # `services.syncthing.package` becomes a symlinkJoin of the real
+  # package whose `bin/syncthing` is a makeWrapper shim. The shim
+  # reads the sops-decrypted key file at start time and exports
+  # STGUIAPIKEY before it execs the real binary. Syncthing accepts
+  # that variable as a valid API key (`IsValidAPIKey` in
+  # lib/config/guiconfiguration.go tests it alongside the config.xml
+  # value). Only the *path* of the key file ever enters the Nix
+  # store. The key itself exists in the sops runtime file (0400,
+  # owned by the user) and in the process environment of syncthing,
+  # which on macOS only the same user or root can read. That is the
+  # exact analogue of the systemd `EnvironmentFile` route used on
+  # Linux, which also ends with the value in the process environment.
+  #
+  # Wrapping the package, rather than overriding the launchd agent's
+  # `ProgramArguments`, keeps home-manager's own `copyKeys` step and
+  # its `syncthing serve ...` argument list as the single source of
+  # truth. Overriding `ProgramArguments` would mean copying both into
+  # this repo and re-syncing them on every home-manager bump.
+  #
+  # REJECTED ALTERNATIVES, and why:
+  #
+  #   * launchd `EnvironmentVariables` — the closest launchd analogue
+  #     of a systemd EnvironmentFile. home-manager renders agents
+  #     into ~/Library/LaunchAgents/*.plist at mode 0644, so the key
+  #     would be readable by every local user. That is the same leak
+  #     class #2461 rejected for `settings.gui.apikey`.
+  #   * `services.syncthing.settings.gui.apikey` — home-manager
+  #     embeds `settings` as JSON in the world-readable
+  #     `merge-syncthing-config` script in /nix/store. Rejected for
+  #     navi and tui by #2461 for exactly this reason.
+  #   * `syncthing serve --gui-apikey=<key>` via `extraOptions` —
+  #     puts the key in the process argument vector, which `ps` shows
+  #     to every local user.
+  #   * `launchctl setenv STGUIAPIKEY` — imperative, not declarative,
+  #     session-wide, and inherited by every later process of that
+  #     user rather than by syncthing alone.
+  #   * Reading the key Syncthing generates for itself out of
+  #     config.xml — needs no secret at all, but the key would then be
+  #     host-local mutable state rather than sops-encrypted, which the
+  #     acceptance criteria for #2697 rule out.
+  #
+  # NOT SOLVED HERE: Syncthing installs its auth middleware only when
+  # a GUI user and password are set (`guiCfg.IsAuthEnabled()` in
+  # lib/api/api.go), so /metrics on m4mac still answers unauthenticated
+  # localhost requests. That is the m4mac half of #2698, which was
+  # scoped to navi and tui. The Bearer token wired below is correct
+  # and future-proof, exactly as it was on Linux before #2698 closed
+  # the gap there.
+  darwinApiKeyHosts = [ "m4mac" ];
+  hasDarwinApiKey = builtins.elem hostname darwinApiKeyHosts;
+  darwinApiKeySecretName = "${hostname}-syncthing-apikey";
+  darwinApiKeyPath =
+    config.home-manager.users.${username}.sops.secrets.${darwinApiKeySecretName}.path;
+
+  # Bounded wait before reading the key, for `syncthing serve` only.
+  # sops-nix decrypts user-scope secrets from its own launchd agent,
+  # and launchd gives no ordering guarantee between that agent and the
+  # syncthing one. A syncthing that wins the race would start with no
+  # STGUIAPIKEY and keep its self-generated key until the next restart,
+  # which would make every Alloy scrape fail with 403 once the m4mac
+  # half of #2698 lands.
+  #
+  # Every other subcommand (`syncthing cli ...` and friends) skips the
+  # wait. They still get the key when it is there, but they must not
+  # hang for a minute on a host where sops has not run yet -- this
+  # wrapper is what `syncthing` resolves to in the user's PATH.
+  darwinApiKeyShim = pkgs.writeShellScript "syncthing-stguiapikey" ''
+    key=${lib.escapeShellArg darwinApiKeyPath}
+
+    if [ "''${1-}" = serve ]; then
+      waited=0
+      while [ ! -r "$key" ] && [ "$waited" -lt 60 ]; do
+        ${pkgs.coreutils}/bin/sleep 1
+        waited=$((waited + 1))
+      done
+      if [ ! -r "$key" ]; then
+        echo "syncthing: $key not readable after ''${waited}s; starting without the pinned API key" >&2
+      fi
+    fi
+
+    if [ -r "$key" ]; then
+      STGUIAPIKEY=$(${pkgs.coreutils}/bin/cat "$key")
+      export STGUIAPIKEY
+    fi
+  '';
+
+  # `.` (source) rather than a nested exec, so the export survives
+  # into the syncthing process that makeWrapper's wrapper execs.
+  darwinSyncthingPackage = pkgs.symlinkJoin {
+    name = "syncthing-pinned-api-key-${pkgs.syncthing.version}";
+    paths = [ pkgs.syncthing ];
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    postBuild = ''
+      wrapProgram $out/bin/syncthing --run ". ${darwinApiKeyShim}"
+    '';
+    meta.mainProgram = "syncthing";
+  };
 
   # ── GUI basic-auth credential (issue #2698) ─────────────────────
   #
@@ -156,6 +264,35 @@ in
             settings.gui.user = username;
             guiPasswordFile = config.sops.secrets.${guiPasswordSecret}.path;
           };
+        }
+      ))
+
+      # Darwin: pin the Syncthing REST API key from sops (issue #2697).
+      # See the "Darwin REST API key delivery" comment above for the
+      # chosen mechanism and the rejected alternatives.
+      #
+      # `optionalAttrs` (not `mkIf`) does the platform split, for the
+      # same reason as the Linux block above: the home-manager sops
+      # module is imported on Darwin only (modules/system/sops.nix),
+      # so `home-manager.users.<user>.sops` does not exist on NixOS and
+      # `mkIf` would still register the option path there.
+      (lib.optionalAttrs (!isLinux) (
+        lib.mkIf hasDarwinApiKey {
+          home-manager.users.${username} = {
+            sops.secrets.${darwinApiKeySecretName} = {
+              sopsFile = ./secrets/m4mac-gui-apikey.sops.yaml;
+              key = apiKeySecret;
+              mode = "0400";
+            };
+
+            services.syncthing.package = darwinSyncthingPackage;
+          };
+
+          # Alloy runs as a root launchd daemon on Darwin, so it reads
+          # this user-owned 0400 file directly. There is no DynamicUser
+          # and so no group to grant — `apiKeyGroup` stays null here,
+          # unlike on Linux.
+          nx.services.syncthing.apiKeyFile = darwinApiKeyPath;
         }
       ))
 

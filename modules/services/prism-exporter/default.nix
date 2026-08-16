@@ -157,8 +157,13 @@ let
   # explicitly, spelling out the same `~/.local/state/prism/...` layout
   # the Linux unit gets for free from its session.
   darwinHome = "/Users/${username}";
-  darwinDBPath = "${darwinHome}/.local/state/prism/prism.db";
-  darwinStatePath = "${darwinHome}/.local/state/prism/exporter-state.json";
+  darwinStateDir = "${darwinHome}/.local/state/prism";
+  darwinDBPath = "${darwinStateDir}/prism.db";
+  darwinStatePath = "${darwinStateDir}/exporter-state.json";
+
+  # See the StandardOutPath comment in the Darwin branch below for why
+  # this is not /var/log/prism-exporter.log (issue #2781).
+  darwinLogPath = "${darwinStateDir}/prism-exporter.log";
 in
 {
   options.nx.services.prismExporter = {
@@ -301,10 +306,46 @@ in
             RunAtLoad = true;
             KeepAlive = true;
 
-            StandardOutPath = "/var/log/prism-exporter.log";
-            StandardErrorPath = "/var/log/prism-exporter.log";
+            # Logs go to the run-as user's own state directory, NOT to
+            # /var/log. launchd opens these two redirects AFTER it
+            # drops privilege to `UserName` and BEFORE it execs the
+            # program, so a path that user cannot write aborts the
+            # spawn with 78/EX_CONFIG and the binary never runs at all.
+            # /var/log is root-owned, so the original
+            # /var/log/prism-exporter.log crash-looped forever under
+            # KeepAlive and produced neither metrics nor a log file to
+            # explain why -- issue #2781, a regression from #2705.
+            #
+            # Contrast launchd.daemons.alloy in
+            # modules/services/alloy/default.nix, which writes
+            # /var/log/alloy.log successfully: it runs as root and sets
+            # no UserName. The privilege drop is the whole difference.
+            #
+            # This directory is where the daemon already writes
+            # exporter-state.json next to prism.db, so any user that
+            # can run the exporter at all can write the log beside it.
+            # `~/Library/Logs` is the other idiomatic macOS choice, but
+            # it is no more guaranteed to exist -- the macOS user
+            # template ships only FontCollections and Preferences under
+            # ~/Library -- so it buys nothing and would split the
+            # daemon's files across two directories.
+            StandardOutPath = darwinLogPath;
+            StandardErrorPath = darwinLogPath;
           };
         };
+
+        # launchd creates the log FILE, but not its parent directory,
+        # and it opens the redirect before exec. On a machine where
+        # prism has not run yet, `~/.local/state/prism` does not exist,
+        # and a missing parent would reproduce the exact EX_CONFIG
+        # crash-loop this change fixes. Create it during activation,
+        # as the user, so every parent is user-owned. `mkdir -p` is a
+        # no-op when the directory is already there, so this never
+        # disturbs prism's own state.
+        system.activationScripts.extraActivation.text = lib.mkAfter ''
+          echo "ensuring ${darwinStateDir} exists for the prism exporter..."
+          sudo -u ${username} /bin/mkdir -p ${lib.escapeShellArg darwinStateDir}
+        '';
       })
     ]
   );
