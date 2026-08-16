@@ -246,106 +246,114 @@ the load-bearing check.
 
 ## CI execution — the macos-15 job
 
-The Darwin-tagged tests described above never execute unless something
-provides a real macOS host with a functioning top-level `sandbox-exec`. Two
-environments look plausible but don't work:
+The Darwin-tagged tests described above need a real macOS host with a
+working top-level `sandbox-exec`. Two environments look plausible. Neither
+one works:
 
 - **The ubuntu `go-tests` job** — the `//go:build darwin` tag excludes
-  `sandbox_exec_*_darwin_test.go` from the Linux build entirely, so these
+  `sandbox_exec_*_darwin_test.go` from the Linux build entirely. These
   files never compile there.
-- **A prism worker sandbox on Darwin** — `requireSandboxExec(t)` skips
-  because a nested `sandbox-exec` profile cannot be applied inside an
+- **A prism worker sandbox on Darwin** — `requireSandboxExec(t)` skips,
+  because a nested `sandbox-exec` profile cannot apply inside an
   already-sandboxed worker. Every test in this suite reports SKIP, not
   PASS, in that environment.
 
-So a `go-tests-macos-sandbox-exec` job runs on a GitHub-hosted `macos-15`
-runner (the same runner class `build-and-cache.yml` and
-`update-flakes.yml` already use). A `macos-15` runner is a bare macOS VM,
-not a nested prism sandbox, so a top-level `sandbox-exec` profile applies
-and the tests execute rather than skip. See issue #2749.
+A `go-tests-macos-sandbox-exec` job runs on a GitHub-hosted `macos-15`
+runner instead. This is the same runner class that `build-and-cache.yml`
+and `update-flakes.yml` already use. A `macos-15` runner is a bare macOS
+VM, not a nested prism sandbox. A top-level `sandbox-exec` profile applies
+there, so the tests execute rather than skip. See issue #2749.
 
-The test binary (`bash`) must resolve to a `/nix/store/...` path — see
-"Nix-store binary requirement" below — so the job installs Nix
-(`cachix/install-nix-action`, the same action every other nix-using job in
-this workflow already uses) and runs the tests inside `nix shell`:
+The test binary (`bash`) must resolve to a `/nix/store/...` path. See
+"Nix-store binary requirement" below. The job installs Nix with the
+cachix/install-nix-action GitHub Action. Every other nix-using job in this
+workflow already uses that same action. The job then runs the tests inside
+`nix shell`:
 
 ```
 nix shell nixpkgs#bash \
   --command go test ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race
 ```
 
+The two selected tests also need `TMPDIR` to resolve under `/var/folders`.
+The production secrets.d deny regexes key off that path. A bare `macos-15`
+runner starts with `TMPDIR` under `/private/tmp`, so the job exports
+`TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"` before it runs `go test`.
+
 **Selector scope: the two named carve-out families, not the whole
 `TestSandboxExec*` family.** Issue #2749's problem statement names exactly
-two affected files — `sandbox_exec_gitlab_token_darwin_test.go` and
-`sandbox_exec_grafana_config_darwin_test.go` — and the `-run` selector is
-scoped to match only their `TestSandboxExecGitLabToken_*` and
-`TestSandboxExecGrafanaConfig_*` functions. A wider `^TestSandboxExec`
-selector was tried first and found (PR #2785, round-2 review) to
-deterministically SKIP several other sandbox-exec suites on a bare
-`macos-15` runner — for example the playwright suite, because
-`playwright-cli` is not installed by this job — which would turn the guard
-step (and therefore the required `pr-gate` check) permanently red for a
-provisioning gap unrelated to any individual PR's change. Widening the
-selector to cover another `TestSandboxExec*` suite is a deliberate,
-separate change: audit that suite's own `require*`/skip preconditions
-against what a bare `macos-15` runner actually provides (host keychain
-state, Xcode CLT, additional Nix-store binaries, and so on), provision
-whatever it needs in this job, and only then add its prefix to `-run`.
+two affected files: `sandbox_exec_gitlab_token_darwin_test.go` and
+`sandbox_exec_grafana_config_darwin_test.go`. The `-run` selector matches
+only their `TestSandboxExecGitLabToken_*` and `TestSandboxExecGrafanaConfig_*`
+functions. A wider `^TestSandboxExec` selector was tried first. PR #2785
+(round-2 review) found that this selector skips several other sandbox-exec
+suites on a bare `macos-15` runner. For example, the playwright suite
+skips, because `playwright-cli` is not installed by this job. A skip in
+those suites turns the guard step, and therefore the required `pr-gate`
+check, permanently red. The cause is a provisioning gap, not a defect in
+any given PR's change. Widening the selector to cover
+another `TestSandboxExec*` suite is a deliberate, separate change. First
+audit that suite's own `require*`/skip preconditions. Check what a bare
+`macos-15` runner actually provides: host keychain state, Xcode command
+line tools, and any additional Nix-store binaries the suite needs.
+Provision whatever the suite needs in this job. Add its prefix to `-run`
+only after that audit.
 
 **No-duplication mechanism.** Every test function in
-`sandbox_exec_*_darwin_test.go` is named `TestSandboxExec*`, and no
+`sandbox_exec_*_darwin_test.go` carries the name `TestSandboxExec*`. No
 cross-platform (untagged) test in `internal/integration/` uses that
-prefix. So the `-run` selector on macOS matches only darwin sandbox-exec
-test functions; every other integration test in the package compiles
-(harmless — it's Go) but does not execute, because it never matches the
-selector. On the ubuntu `go-tests` job the darwin files do not compile at
-all. Each test therefore runs at most once across the whole pipeline. When
-adding a new darwin sandbox-exec test that should run in this job, name its
-function `TestSandboxExec*` and, once its own preconditions are verified
-against a bare `macos-15` runner (see the selector-scope note above), add
-its prefix to the `-run` pattern.
+prefix. The `-run` selector on macOS therefore matches only darwin
+sandbox-exec test functions. Every other integration test in the package
+compiles — that is harmless, because it is Go. It does not execute,
+because it never matches the selector. On the ubuntu `go-tests` job the
+darwin files do not compile at all. Each test therefore runs at most once
+across the whole pipeline. If you add a new darwin sandbox-exec test that
+must run in this job, name its function `TestSandboxExec*`. Verify its own
+preconditions against a bare `macos-15` runner first (see the
+selector-scope note above), then add its prefix to the `-run` pattern.
 
 **A SKIP must never read as a PASS.** `go test` exits 0 even when every
-selected test skips (for example, if the `/var/folders` `TMPDIR` guard in
-`requireSandboxExec`/`requireNixBash` trips on a future runner image
-change), so a green exit code alone is not sufficient evidence that the
+selected test skips. For example, the `/var/folders` `TMPDIR` guard in
+`requireSandboxExec`/`requireNixBash` can trip on a future runner image
+change. A green exit code alone is not enough evidence that the
 sandbox-exec tests actually ran. The job's guard step parses the `-v`
-output and fails the job if:
+output. It must fail the job if:
 
 - any selected test reports SKIP, or
-- zero selected tests ran at all — this guards against the `-run`
-  selector matching nothing, including future naming drift.
+- zero selected tests ran at all. This guards against the `-run` selector
+  matching nothing, including future naming drift.
 
-This mirrors the ubuntu `go-tests` job's "Summarise skipped tests" step,
-except it fails the job on any SKIP or on a zero-test run rather than only
-summarising them — a SKIP in this suite means the coverage this document
-exists to guarantee did not run at all.
+This mirrors the ubuntu `go-tests` job's "Summarise skipped tests" step. It
+differs in one way: it fails the job on any SKIP or on a zero-test run,
+rather than only summarising them. A SKIP in this suite means the coverage
+this document exists to guarantee did not run at all.
 
 The job is gated on the same Go-relevant path filter as the ubuntu
-`go-tests` job, and its result feeds the `pr-gate` fan-in check like every
+`go-tests` job. Its result feeds the `pr-gate` fan-in check, like every
 other required job.
 
-This job is CI-only test execution. It does not change worker isolation:
-it does not touch `config.ValidIsolationModes`, and no worker spawn
+This job is CI-only test execution. It does not change worker isolation.
+It does not touch `config.ValidIsolationModes`, and no worker spawn
 default moves to `host` mode.
 
 ### Nix-store binary requirement
 
-`requireNixBash` (in `sandbox_exec_helpers_darwin_test.go`, the only
-`requireNix*` helper either of the two selected test files calls) resolves
-`bash` via `exec.LookPath` + `filepath.EvalSymlinks` and skips the test when
-the resolved path is not under `/nix/store/` — Apple-signed and Homebrew
-binaries SIGABRT under the deny-default sandbox (see #1190). A bare
-`macos-15` runner has no Nix installed and no `/nix/store` binaries on
-`PATH` by default, so without the Nix-install step and the `nix shell`
-wrapper above, the selected tests would resolve `bash` to `/bin/bash` and
-SKIP — which the job's guard step catches and fails on, but the tests still
-would not have actually run. This is why the job installs Nix and runs the
-tests through `nix shell` rather than relying on whatever `bash` the bare
-runner image happens to ship. A future selector widening that pulls in a
-suite calling `requireNixGit`, `requireNixAws`, `requireNixKubectl`, or
-`requireNixSocat` must add the corresponding `nixpkgs#...` package to this
-`nix shell` invocation.
+`requireNixBash` is the only `requireNix*` helper either of the two
+selected test files calls (defined in
+`sandbox_exec_helpers_darwin_test.go`). It resolves `bash` through
+`exec.LookPath` and `filepath.EvalSymlinks`, then skips the test if the
+resolved path is not under `/nix/store/`. Apple-signed and Homebrew
+binaries fail with SIGABRT under the deny-default sandbox (see #1190). A
+bare `macos-15` runner has no Nix installed and no `/nix/store` binaries on
+`PATH` by default. Without the Nix-install step and the `nix shell`
+wrapper above, the selected tests resolve `bash` to `/bin/bash` and skip.
+The job's guard step catches that and fails on it. The tests still do not
+actually run in that case. The job installs Nix and runs the tests
+through `nix shell` for this reason. It does not rely on
+whatever `bash` the bare runner image happens to ship. A future selector
+widening that pulls in a suite calling `requireNixGit`, `requireNixAws`,
+`requireNixKubectl`, or `requireNixSocat` must add the corresponding
+`nixpkgs#` package to this `nix shell` invocation.
 
 ## Out of scope
 

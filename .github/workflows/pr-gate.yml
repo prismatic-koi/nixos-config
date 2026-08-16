@@ -223,12 +223,18 @@ jobs:
         working-directory: modules/programs/prism/prism
         # Run inside `nix shell` so bash resolves to a /nix/store/... path
         # on PATH, satisfying requireNixBash (the only requireNix* helper
-        # either of these two test files calls). Capture verbose output so
-        # the guard step below can confirm no selected test reported SKIP
-        # and at least one test ran. tee keeps live progress visible in the
-        # Actions log.
+        # either of these two test files calls). The two target test files
+        # also check that TMPDIR resolves under /var/folders, because the
+        # production secrets.d deny regexes are keyed to that path — a bare
+        # macos-15 runner starts with TMPDIR under /private/tmp, so export
+        # the macOS per-user temp dir before running go test. Capture
+        # verbose output so the guard step below can confirm no selected
+        # test reported SKIP and at least one test ran. tee keeps live
+        # progress visible in the Actions log.
         run: |
           set -o pipefail
+          TMPDIR="$(getconf DARWIN_USER_TEMP_DIR)"
+          export TMPDIR
           nix shell --print-build-logs nixpkgs#bash \
             --command go test -v ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
