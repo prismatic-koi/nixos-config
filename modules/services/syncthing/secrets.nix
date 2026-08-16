@@ -108,7 +108,9 @@ let
   # localhost requests. That is the m4mac half of #2698, which was
   # scoped to navi and tui. The Bearer token wired below is correct
   # and future-proof, exactly as it was on Linux before #2698 closed
-  # the gap there.
+  # the gap there. Tracked in #2783 -- do not let this paragraph be
+  # the only record of the deferral, which is the failure #2697 was
+  # filed to correct.
   darwinApiKeyHosts = [ "m4mac" ];
   hasDarwinApiKey = builtins.elem hostname darwinApiKeyHosts;
   darwinApiKeySecretName = "${hostname}-syncthing-apikey";
@@ -120,8 +122,8 @@ let
   # and launchd gives no ordering guarantee between that agent and the
   # syncthing one. A syncthing that wins the race would start with no
   # STGUIAPIKEY and keep its self-generated key until the next restart,
-  # which would make every Alloy scrape fail with 403 once the m4mac
-  # half of #2698 lands.
+  # which would make every Alloy scrape fail with 403 once #2783 turns
+  # the endpoint's authentication on.
   #
   # Every other subcommand (`syncthing cli ...` and friends) skips the
   # wait. They still get the key when it is there, but they must not
