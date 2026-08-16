@@ -24,6 +24,7 @@ jobs:
       - go-tests-battery-monitor
       - nix-build-battery-monitor-checked
       - pi-extension-tests
+      - go-tests-macos-sandbox-exec
     if: always()
     steps:
       - name: Check upstream job results
@@ -33,17 +34,20 @@ jobs:
           GO_TESTS_BM_RESULT: ${{ needs.go-tests-battery-monitor.result }}
           NIX_BUILD_BM_CHECKED_RESULT: ${{ needs.nix-build-battery-monitor-checked.result }}
           PI_EXTENSION_TESTS_RESULT: ${{ needs.pi-extension-tests.result }}
+          GO_TESTS_MACOS_SANDBOX_EXEC_RESULT: ${{ needs.go-tests-macos-sandbox-exec.result }}
         run: |
           echo "go-tests: $GO_TESTS_RESULT"
           echo "nix-build-prism-checked: $NIX_BUILD_PRISM_CHECKED_RESULT"
           echo "go-tests-battery-monitor: $GO_TESTS_BM_RESULT"
           echo "nix-build-battery-monitor-checked: $NIX_BUILD_BM_CHECKED_RESULT"
           echo "pi-extension-tests: $PI_EXTENSION_TESTS_RESULT"
+          echo "go-tests-macos-sandbox-exec: $GO_TESTS_MACOS_SANDBOX_EXEC_RESULT"
           if [ "$GO_TESTS_RESULT" != "success" ] \
              || [ "$NIX_BUILD_PRISM_CHECKED_RESULT" != "success" ] \
              || [ "$GO_TESTS_BM_RESULT" != "success" ] \
              || [ "$NIX_BUILD_BM_CHECKED_RESULT" != "success" ] \
-             || [ "$PI_EXTENSION_TESTS_RESULT" != "success" ]; then
+             || [ "$PI_EXTENSION_TESTS_RESULT" != "success" ] \
+             || [ "$GO_TESTS_MACOS_SANDBOX_EXEC_RESULT" != "success" ]; then
             echo "pr-gate: one or more required jobs did not succeed" >&2
             exit 1
           fi
@@ -138,6 +142,94 @@ jobs:
       - name: No Go-relevant changes
         if: steps.changes.outputs.go != 'true'
         run: echo "no Go-relevant paths touched; skipping go-tests"
+
+  # Runs the Darwin-only sandbox-exec integration tests on a bare macOS VM.
+  #
+  # These tests live under internal/integration/sandbox_exec_*_darwin_test.go
+  # (build-tagged darwin) and never execute on the ubuntu go-tests job
+  # above: the darwin files do not compile on Linux, and inside a prism
+  # worker sandbox they SKIP because a nested sandbox-exec profile cannot be
+  # applied. A GitHub-hosted macos-15 runner is a bare macOS VM, not a
+  # nested prism sandbox, so a top-level sandbox-exec profile applies and
+  # the tests actually execute. See issue #2749.
+  #
+  # No-duplication mechanism: every test function in those files is named
+  # TestSandboxExec*, and no cross-platform (untagged) test in
+  # internal/integration/ uses that prefix, so -run '^TestSandboxExec'
+  # selects only the darwin sandbox-exec tests here. Each test therefore
+  # runs exactly once across the whole pipeline (ubuntu compiles but does
+  # not run them; macos runs but does not run anything else).
+  #
+  # This job does NOT change worker isolation: it is CI-only test
+  # execution, not a change to config.ValidIsolationModes or any worker
+  # spawn default.
+  go-tests-macos-sandbox-exec:
+    name: go-tests-macos-sandbox-exec
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detect Go-relevant changes
+        id: changes
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            go:
+              - 'modules/programs/prism/prism/**'
+              - 'pkgs/prism.nix'
+              - '**/go.mod'
+              - '**/go.sum'
+              - '.github/workflows/pr-gate.yml'
+      - name: Set up Go
+        if: steps.changes.outputs.go == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: modules/programs/prism/prism/go.mod
+          cache-dependency-path: modules/programs/prism/prism/go.sum
+      - name: go test ./internal/integration -run TestSandboxExec -race
+        if: steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        # Capture verbose output so the guard step below can confirm no
+        # selected test reported SKIP and at least one test ran. tee keeps
+        # live progress visible in the Actions log.
+        run: |
+          set -o pipefail
+          go test -v ./internal/integration/ -run '^TestSandboxExec' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+      # A SKIP must never read as a PASS (this was a review blocker on the
+      # parent issue). go test exits 0 even when every selected test
+      # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
+      # image change), so a green exit code alone is not sufficient
+      # evidence that the sandbox-exec tests actually ran. This step fails
+      # the job if any selected TestSandboxExec* test reports SKIP, or if
+      # zero TestSandboxExec* tests ran at all (guards the -run selector
+      # matching nothing, e.g. future naming drift away from the
+      # TestSandboxExec* prefix). Modelled on the ubuntu go-tests job's
+      # "Summarise skipped tests" step.
+      - name: Guard against SKIP-as-PASS and a zero-test run
+        if: always() && steps.changes.outputs.go == 'true'
+        working-directory: modules/programs/prism/prism
+        run: |
+          if [ ! -f /tmp/go-test-macos-sandbox-exec.log ]; then
+            echo "::error::go test log not found - likely the test step did not run" >&2
+            exit 1
+          fi
+
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+
+          echo "TestSandboxExec* tests run: ${run_count:-0}"
+          if [ -n "$skip_lines" ]; then
+            echo "::error::one or more TestSandboxExec* tests reported SKIP - a skip must not read as a pass:"
+            echo "$skip_lines"
+            exit 1
+          fi
+          if [ -z "$run_count" ] || [ "$run_count" -eq 0 ]; then
+            echo "::error::0 TestSandboxExec* tests ran - the -run selector matched nothing, check for naming drift" >&2
+            exit 1
+          fi
+          echo "go-tests-macos-sandbox-exec: ${run_count} TestSandboxExec* test(s) ran, none skipped"
+      - name: No Go-relevant changes
+        if: steps.changes.outputs.go != 'true'
+        run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"
 
   # Builds prism with doCheck=true so the homeless-shelter sandbox
   # signal ($HOME=/homeless-shelter) is preserved in the PR pipeline.

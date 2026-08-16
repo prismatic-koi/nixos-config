@@ -244,6 +244,69 @@ Pure refactors that do not change the generated SBPL output are exempt. The
 integration tests must continue to pass on the refactored code, which is
 the load-bearing check.
 
+## CI execution — the macos-15 job
+
+The Darwin-tagged tests described above never execute unless something
+provides a real macOS host with a functioning top-level `sandbox-exec`. Two
+environments look plausible but don't work:
+
+- **The ubuntu `go-tests` job** — the `//go:build darwin` tag excludes
+  `sandbox_exec_*_darwin_test.go` from the Linux build entirely, so these
+  files never compile there.
+- **A prism worker sandbox on Darwin** — `requireSandboxExec(t)` skips
+  because a nested `sandbox-exec` profile cannot be applied inside an
+  already-sandboxed worker. Every test in this suite reports SKIP, not
+  PASS, in that environment.
+
+So a `go-tests-macos-sandbox-exec` job runs on a GitHub-hosted `macos-15`
+runner (the same runner class `build-and-cache.yml` and
+`update-flakes.yml` already use). A `macos-15` runner is a bare macOS VM,
+not a nested prism sandbox, so a top-level `sandbox-exec` profile applies
+and the tests execute rather than skip. See issue #2749.
+
+The job runs:
+
+```
+go test ./internal/integration/ -run '^TestSandboxExec' -race
+```
+
+**No-duplication mechanism.** Every test function in
+`sandbox_exec_*_darwin_test.go` is named `TestSandboxExec*`, and no
+cross-platform (untagged) test in `internal/integration/` uses that
+prefix. So the `-run '^TestSandboxExec'` selector on macOS runs only the
+darwin sandbox-exec tests; every other integration test in the package
+compiles (harmless — it's Go) but does not execute, because it never
+matches the selector. On the ubuntu `go-tests` job the darwin files do not
+compile at all. Each test therefore runs exactly once across the whole
+pipeline. When adding a new darwin sandbox-exec test, name its function
+`TestSandboxExec*` so it is picked up automatically — no workflow change is
+needed.
+
+**A SKIP must never read as a PASS.** `go test` exits 0 even when every
+selected test skips (for example, if the `/var/folders` `TMPDIR` guard in
+`requireSandboxExec`/`requireNixBash` trips on a future runner image
+change), so a green exit code alone is not sufficient evidence that the
+sandbox-exec tests actually ran. The job's guard step parses the `-v`
+output and fails the job if:
+
+- any selected `TestSandboxExec*` test reports SKIP, or
+- zero `TestSandboxExec*` tests ran at all — this guards against the
+  `-run` selector matching nothing, including future naming drift away
+  from the `TestSandboxExec*` prefix.
+
+This mirrors the ubuntu `go-tests` job's "Summarise skipped tests" step,
+except it fails the job on any SKIP or on a zero-test run rather than only
+summarising them — a SKIP in this suite means the coverage this document
+exists to guarantee did not run at all.
+
+The job is gated on the same Go-relevant path filter as the ubuntu
+`go-tests` job, and its result feeds the `pr-gate` fan-in check like every
+other required job.
+
+This job is CI-only test execution. It does not change worker isolation:
+it does not touch `config.ValidIsolationModes`, and no worker spawn
+default moves to `host` mode.
+
 ## Out of scope
 
 - Migrating the profile to `(version 3)` — separate spike in #1190.
