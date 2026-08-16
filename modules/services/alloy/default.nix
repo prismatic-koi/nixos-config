@@ -157,8 +157,13 @@ let
   # /metrics. On NixOS Syncthing is a system service; on Darwin it runs
   # under home-manager (modules/services/syncthing/default.nix), so the
   # same setting lives in the user's home-manager config. The `if` keeps
-  # the NixOS-only option path from being read at all on Darwin, where
-  # `services.syncthing` does not exist.
+  # the NixOS-only option path from being read at all on Darwin. Note
+  # that `services.syncthing` itself DOES resolve there -- it is a
+  # `cert`/`key` submodule stub from modules/darwin/impermanence-stub.nix,
+  # which secrets.nix writes into on both platforms -- but that stub
+  # declares no `guiAddress`, so reading it on Darwin is an eval error.
+  # The guard is load-bearing: do not remove it on the grounds that
+  # `config.services.syncthing` evaluates.
   syncthingGuiAddress =
     if isLinux then
       config.services.syncthing.guiAddress
