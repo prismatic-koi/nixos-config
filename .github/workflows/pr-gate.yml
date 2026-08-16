@@ -155,10 +155,20 @@ jobs:
   #
   # No-duplication mechanism: every test function in those files is named
   # TestSandboxExec*, and no cross-platform (untagged) test in
-  # internal/integration/ uses that prefix, so -run '^TestSandboxExec'
-  # selects only the darwin sandbox-exec tests here. Each test therefore
-  # runs exactly once across the whole pipeline (ubuntu compiles but does
-  # not run them; macos runs but does not run anything else).
+  # internal/integration/ uses that prefix. Each test therefore runs at
+  # most once across the whole pipeline (ubuntu compiles but does not run
+  # them; macos runs a selected subset and does not run anything else).
+  #
+  # Selector scope: -run is scoped to the two carve-out test families named
+  # in issue #2749 (TestSandboxExecGitLabToken_* and
+  # TestSandboxExecGrafanaConfig_*), not the full TestSandboxExec* family.
+  # review-context (PR #2785, round 2) found that a wider '^TestSandboxExec'
+  # selector deterministically SKIPs several other sandbox-exec suites on a
+  # bare macos-15 runner (for example the playwright suite, because
+  # playwright-cli is not installed) and turns the job permanently red for
+  # provisioning gaps unrelated to any individual PR. Widen the selector
+  # (and provision whatever each additional suite's requireNix*/skip guard
+  # needs) as a deliberate follow-up, not as a side effect of this job.
   #
   # This job does NOT change worker isolation: it is CI-only test
   # execution, not a change to config.ValidIsolationModes or any worker
@@ -208,19 +218,19 @@ jobs:
           authToken: ${{ secrets.CACHIX_TOKEN }}
           extraPullNames: nix-community
           name: lucidph3nx-nixos-config
-      - name: go test ./internal/integration -run TestSandboxExec -race
+      - name: go test ./internal/integration -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race
         if: steps.changes.outputs.go == 'true'
         working-directory: modules/programs/prism/prism
-        # Run inside `nix shell` so bash/git/aws/kubectl/socat resolve to
-        # /nix/store/... paths on PATH, satisfying the requireNix* helpers
-        # above. Capture verbose output so the guard step below can confirm
-        # no selected test reported SKIP and at least one test ran. tee
-        # keeps live progress visible in the Actions log.
+        # Run inside `nix shell` so bash resolves to a /nix/store/... path
+        # on PATH, satisfying requireNixBash (the only requireNix* helper
+        # either of these two test files calls). Capture verbose output so
+        # the guard step below can confirm no selected test reported SKIP
+        # and at least one test ran. tee keeps live progress visible in the
+        # Actions log.
         run: |
           set -o pipefail
-          nix shell --print-build-logs \
-            nixpkgs#bash nixpkgs#git nixpkgs#awscli2 nixpkgs#kubectl nixpkgs#socat \
-            --command go test -v ./internal/integration/ -run '^TestSandboxExec' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
+          nix shell --print-build-logs nixpkgs#bash \
+            --command go test -v ./internal/integration/ -run '^TestSandboxExec(GitLabToken|GrafanaConfig)' -race 2>&1 | tee /tmp/go-test-macos-sandbox-exec.log
       # A SKIP must never read as a PASS (this was a review blocker on the
       # parent issue). go test exits 0 even when every selected test
       # skips (e.g. the /var/folders TMPDIR guard tripping on a runner
@@ -240,20 +250,20 @@ jobs:
             exit 1
           fi
 
-          run_count=$(grep -cE '^=== RUN   TestSandboxExec' /tmp/go-test-macos-sandbox-exec.log || true)
-          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
+          run_count=$(grep -cE '^=== RUN   TestSandboxExec(GitLabToken|GrafanaConfig)' /tmp/go-test-macos-sandbox-exec.log || true)
+          skip_lines=$(grep -E '^(--- SKIP: TestSandboxExec(GitLabToken|GrafanaConfig)|    [^ ].*_test\.go:[0-9]+: skipping)' /tmp/go-test-macos-sandbox-exec.log || true)
 
-          echo "TestSandboxExec* tests run: ${run_count:-0}"
+          echo "TestSandboxExec(GitLabToken|GrafanaConfig)* tests run: ${run_count:-0}"
           if [ -n "$skip_lines" ]; then
-            echo "::error::one or more TestSandboxExec* tests reported SKIP - a skip must not read as a pass:"
+            echo "::error::one or more selected tests reported SKIP - a skip must not read as a pass:"
             echo "$skip_lines"
             exit 1
           fi
           if [ -z "$run_count" ] || [ "$run_count" -eq 0 ]; then
-            echo "::error::0 TestSandboxExec* tests ran - the -run selector matched nothing, check for naming drift" >&2
+            echo "::error::0 tests ran - the -run selector matched nothing, check for naming drift" >&2
             exit 1
           fi
-          echo "go-tests-macos-sandbox-exec: ${run_count} TestSandboxExec* test(s) ran, none skipped"
+          echo "go-tests-macos-sandbox-exec: ${run_count} test(s) ran, none skipped"
       - name: No Go-relevant changes
         if: steps.changes.outputs.go != 'true'
         run: echo "no Go-relevant paths touched; skipping go-tests-macos-sandbox-exec"
