@@ -3,10 +3,9 @@
 # Part of the fleet telemetry train (issue #2458). The first child
 # (issue #2460) added host metrics. Issue #2461 added a Syncthing
 # `/metrics` scrape on the Linux hosts and issue #2697 extended it to
-# m4mac — see the "Darwin REST API key delivery" comment in
-# modules/services/syncthing/secrets.nix for how the key reaches
-# Syncthing there without a launchd `EnvironmentFile`. Loki log
-# shipping and other signals are still out of scope here — a
+# m4mac; issue #2787 then dropped the Bearer token that scrape used
+# — see the "Syncthing scrape" comment below. Loki log shipping and
+# other signals are still out of scope here — a
 # commented seam is left in the generated Alloy config so a later
 # train can wire `loki.write` without redesigning the module surface.
 #
@@ -137,21 +136,20 @@ let
 
   # ── Syncthing scrape (issue #2461) ──────────────────────────────────
   #
-  # Emitted on any host that runs Syncthing AND carries a pinned,
-  # sops-encrypted REST API key. One reason for each term:
+  # Emitted on any host that runs Syncthing. `syncthing.enable` is the
+  # only gate: a host without Syncthing must still evaluate, and must
+  # not emit a scrape target that can never come up.
   #
-  #   * syncthing.enable — a host without Syncthing must still evaluate,
-  #     and must not emit a scrape target that can never come up.
-  #   * apiKeyFile != null — /metrics needs the API key, so a host with
-  #     no pinned key gets no scrape rather than a target that always
-  #     gets a 403.
-  #
-  # The `isLinux` term that #2461 carried here is gone (issue #2697):
-  # #2694 confirmed the Darwin Alloy path pushes metrics, and
-  # modules/services/syncthing/secrets.nix now pins an API key on
-  # m4mac too. `apiKeyFile` stays the single gate on both platforms.
+  # Two earlier terms are gone. The `isLinux` term that #2461 carried
+  # here went in #2697, once #2694 confirmed the Darwin Alloy path
+  # pushes metrics. The pinned-key term went in #2787, which removed
+  # the pinned REST API key and the GUI auth on all three hosts and
+  # standardised on "localhost is the boundary" — Syncthing binds
+  # 127.0.0.1:8384 and serves /metrics there with no credential, so
+  # there is nothing left to gate on. See
+  # modules/services/syncthing/secrets.nix for the full rationale.
   syncthingCfg = config.nx.services.syncthing;
-  scrapeSyncthing = syncthingCfg.enable && syncthingCfg.apiKeyFile != null;
+  scrapeSyncthing = syncthingCfg.enable;
 
   # Syncthing's GUI/REST listen address, which is also where it serves
   # /metrics. On NixOS Syncthing is a system service; on Darwin it runs
@@ -217,8 +215,7 @@ let
   # service can read it — DynamicUser's implied ProtectSystem=strict
   # makes most of the filesystem read-only, not inaccessible, so a
   # world-readable path outside /usr, /boot, and /efi remains
-  # readable without any extra grant (unlike the Syncthing API key,
-  # which needs SupplementaryGroups because it is NOT world-readable).
+  # readable without any extra grant.
   systemdUserUnitTextfileDir = "/var/lib/prometheus-node-exporter-textfile";
   systemdUserUnitTextfileName = "systemd-user-units.prom";
 
@@ -288,32 +285,29 @@ let
   # empty case reproduces the previous file byte for byte.
   #
   # The body below is deliberately platform-neutral: the generated
-  # River must stay byte-identical on navi and tui after #2697. The
-  # Darwin-only caveat lives here instead. On Darwin `apiKeyFile` is a
-  # user-scope sops secret and alloy is a root launchd daemon, so
-  # alloy can read the file, but only after the user has logged in and
-  # the sops-nix launchd agent has decrypted it. Scrapes before that
-  # first login fail and retry; nothing else is affected.
+  # River is identical on navi, tui, and m4mac, differing only in the
+  # interpolated GUI address.
   syncthingScrapeBlock = lib.optionalString scrapeSyncthing ''
 
     // ── Syncthing folder + connection metrics ───────────────────────
     //
     // Syncthing serves a Prometheus endpoint at /metrics on its REST
-    // API port. That endpoint needs the REST API key, which Syncthing
-    // accepts as a Bearer token.
+    // API port, which is bound to loopback (127.0.0.1:8384, set
+    // explicitly in modules/services/syncthing/default.nix).
     //
-    // `bearer_token_file` keeps the key out of this generated file:
-    // alloy reads the sops-decrypted path at scrape time, on every
-    // scrape. Do NOT inline the key here — /etc/alloy/config.alloy is
-    // world-readable.
+    // No credential is sent. Issue #2787 removed the GUI auth and the
+    // pinned REST API key on every host: with GUI auth off Syncthing
+    // never installs its auth middleware on /metrics, so the Bearer
+    // token this block used to carry was ignored anyway. Alloy dials
+    // localhost and forwards over the authenticated remote_write
+    // below, so no credential is needed here.
     prometheus.scrape "syncthing" {
       targets = [
         {"__address__" = "${syncthingGuiAddress}"},
       ]
-      metrics_path      = "/metrics"
-      bearer_token_file = "${syncthingCfg.apiKeyFile}"
-      forward_to        = [prometheus.remote_write.default.receiver]
-      scrape_interval   = "60s"
+      metrics_path    = "/metrics"
+      forward_to      = [prometheus.remote_write.default.receiver]
+      scrape_interval = "60s"
     }
   '';
 
@@ -471,18 +465,15 @@ in
           # the seam for a sops-decrypted path.
         };
 
-        # The upstream module runs alloy under DynamicUser, so there is
-        # no stable UID to grant the Syncthing key file to. Alloy joins
-        # the group that owns the file instead — see the `apiKeyGroup`
-        # comment in modules/services/syncthing/secrets.nix.
-        systemd.services.alloy.serviceConfig.SupplementaryGroups = lib.mkIf scrapeSyncthing [
-          syncthingCfg.apiKeyGroup
-        ];
-
         # World-readable so the alloy DynamicUser service can read the
         # textfile written into it -- see the module header "Systemd
-        # unit health metrics" for why no group grant is needed here
-        # (unlike the Syncthing key file above).
+        # unit health metrics" for why no group grant is needed here.
+        #
+        # Alloy needs no group grant for the Syncthing scrape either.
+        # It used to join the group that owned the pinned REST API
+        # key, because DynamicUser gives it no stable UID to grant the
+        # file to; issue #2787 removed the key, so the group and the
+        # grant are both gone.
         systemd.tmpfiles.rules = [
           "d ${systemdUserUnitTextfileDir} 0755 ${config.nx.username} users - -"
         ];
