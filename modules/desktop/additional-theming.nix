@@ -5,7 +5,7 @@
   ...
 }:
 {
-  config = lib.mkIf pkgs.stdenv.isLinux {
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
     home-manager.users.${config.nx.username} = {
       # set up the cusors and icon themes the way I like it
       home.pointerCursor = {

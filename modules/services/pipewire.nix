@@ -10,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.services.pipewire.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.services.pipewire.enable && pkgs.stdenv.hostPlatform.isLinux) {
     services.pipewire = {
       enable = true;
       pulse.enable = true;

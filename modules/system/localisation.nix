@@ -13,7 +13,7 @@ in
       time.timeZone = "Pacific/Auckland";
     }
     # i18n options are Linux-only
-    (lib.mkIf pkgs.stdenv.isLinux {
+    (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
       i18n.defaultLocale = locale;
       i18n.extraLocaleSettings = {
         LC_ADDRESS = locale;

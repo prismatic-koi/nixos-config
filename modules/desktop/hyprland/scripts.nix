@@ -5,7 +5,7 @@
   ...
 }:
 {
-  config = lib.mkIf (config.nx.desktop.hyprland.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.hyprland.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username} = {
       home.sessionPath = [ "$HOME/.local/scripts" ];
       # NOTE: `cli.system.setHyprGaps` previously lived here and ran on

@@ -10,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.services.polkit.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.services.polkit.enable && pkgs.stdenv.hostPlatform.isLinux) {
     environment.systemPackages = with pkgs; [
       polkit
       polkit_gnome

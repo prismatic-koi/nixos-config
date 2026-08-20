@@ -6,8 +6,8 @@
 }:
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-  isLinux = pkgs.stdenv.isLinux;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 in
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable (

@@ -10,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.services.mpd.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.services.mpd.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username} = {
       home.packages = with pkgs; [
         mpc # for commandline control

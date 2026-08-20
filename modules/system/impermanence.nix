@@ -13,7 +13,7 @@ in
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.system.impermanence.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.system.impermanence.enable && pkgs.stdenv.hostPlatform.isLinux) {
     # Wipe the disk on each boot using a systemd stage 1 service.
     # Explicitly enable systemd initrd so the wipe-root service always runs,
     # regardless of whether nixpkgs auto-enables it for the current hardware layout.

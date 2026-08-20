@@ -7,7 +7,7 @@
 with config.theme;
 let
   background = if type == "dark" then bg0 else bg_dim;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
 

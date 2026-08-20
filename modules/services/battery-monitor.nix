@@ -131,7 +131,7 @@ in
     };
   };
 
-  config = lib.mkIf pkgs.stdenv.isLinux {
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
     # openrazer remains the kernel-side driver for the Razer mouse.
     # It exposes charge_level / charge_status under
     # /sys/bus/hid/devices/*1532*/ which the daemon reads directly —

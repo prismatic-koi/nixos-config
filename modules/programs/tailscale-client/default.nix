@@ -130,7 +130,7 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       # ── NixOS ────────────────────────────────────────────────────────
-      (lib.mkIf pkgs.stdenv.isLinux {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         # System-scope sops secrets. Root-owned (0400 by default) since
         # they are consumed by the root-run tailscale-headscale-up unit.
         sops.secrets."${loginServerKey}" = {
@@ -239,7 +239,7 @@ in
       })
 
       # ── Darwin ───────────────────────────────────────────────────────
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         # nix-darwin's services.tailscale runs `tailscaled` as a launchd
         # system daemon. No authKeyFile / extraUpFlags support here —
         # everything is done by the user agent below.

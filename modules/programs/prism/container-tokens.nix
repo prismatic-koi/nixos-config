@@ -65,7 +65,7 @@ in
     lib.mkMerge [
       # Linux: system-level sops secrets.  Nothing consumes an env var for
       # these tokens on Linux any more — prism reads the file directly.
-      (lib.mkIf pkgs.stdenv.isLinux {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         sops.secrets = lib.mapAttrs' (
           _key: name:
           lib.nameValuePair name {
@@ -82,7 +82,7 @@ in
 
       # Darwin: home-manager sops secrets.  Same story — the paths are
       # threaded into prism's config.json and read at spawn/use time.
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         home-manager.users.${username} = {
           sops.secrets = lib.mapAttrs' (
             _key: name:

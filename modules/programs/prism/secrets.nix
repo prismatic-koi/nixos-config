@@ -6,8 +6,8 @@
 }:
 let
   username = config.nx.username;
-  isLinux = pkgs.stdenv.isLinux;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   secretsFile = ../secrets/openrouter.sops.yaml;
 in
 {

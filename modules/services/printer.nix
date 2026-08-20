@@ -10,7 +10,7 @@
       default = false;
     };
   };
-  config = lib.mkIf (config.nx.services.printer.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.services.printer.enable && pkgs.stdenv.hostPlatform.isLinux) {
     # cups for printing
     services.printing = {
       enable = true;

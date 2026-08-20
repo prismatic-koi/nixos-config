@@ -13,7 +13,7 @@ in
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.desktop.screenshot.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.screenshot.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username} = {
       home = {
         file.".local/scripts/application.grim.screenshotToClipboard" = {

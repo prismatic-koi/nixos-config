@@ -26,7 +26,7 @@
         }
       ];
     }
-    (lib.mkIf (config.nx.system.systemdResolved.enable && pkgs.stdenv.isLinux) {
+    (lib.mkIf (config.nx.system.systemdResolved.enable && pkgs.stdenv.hostPlatform.isLinux) {
       services.resolved.enable = true;
       # NetworkManager does not select the systemd-resolved backend on its own
       # even when services.resolved.enable is true, so set it explicitly.

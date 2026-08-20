@@ -248,7 +248,7 @@
   config = lib.mkIf config.nx.programs.prism.pi.enable (
     let
       envPrefix = config.nx.programs.prism._internal.agentEnvPrefix;
-      clipboardCmd = if pkgs.stdenv.isDarwin then "pbcopy" else "wl-copy";
+      clipboardCmd = if pkgs.stdenv.hostPlatform.isDarwin then "pbcopy" else "wl-copy";
 
       # AWS skill with clipboard command substituted at eval time.
       awsSkillFile = pkgs.replaceVars ./skills/aws/SKILL.md {

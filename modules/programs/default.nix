@@ -99,7 +99,7 @@
       );
       home-manager.users.${config.nx.username} = {
         # xdg.mimeApps is Linux-only
-        xdg.mimeApps.enable = pkgs.stdenv.isLinux;
+        xdg.mimeApps.enable = pkgs.stdenv.hostPlatform.isLinux;
         # some default programs that require no configuration
         home.packages =
           with pkgs;
@@ -136,7 +136,7 @@
             xdg-utils
             yq-go
           ]
-          ++ lib.optionals pkgs.stdenv.isLinux [
+          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
             yt-dlp # Linux-only due to D-Bus dependencies
           ];
       };
