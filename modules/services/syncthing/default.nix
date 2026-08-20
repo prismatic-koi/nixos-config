@@ -116,6 +116,38 @@ in
           configDir = config.nx.services.syncthing.configDir;
           overrideDevices = true;
           settings = {
+            # Clear the GUI credential #2698 wrote into the runtime
+            # config.xml (issue #2787). Dropping `guiPasswordFile`
+            # stops this repo from SETTING a password; it clears
+            # nothing that is already there, and the credential lives
+            # in persisted host state, not in the store. Left alone,
+            # `IsAuthEnabled()` stays true after the switch, Syncthing
+            # keeps its auth middleware on /metrics, and the Alloy
+            # scrape — which no longer sends a Bearer token — gets 401.
+            # The Syncthing series for navi and tui would disappear
+            # silently.
+            #
+            # Empty strings, not omission: `merge-syncthing-config`
+            # emits `PATCH /rest/config/gui` only for keys present in
+            # `settings`, and its `filterAttrsRecursive` drops only
+            # `null` and `{}`, so "" survives into the request body.
+            # PATCH merges, so `apikey`, `address`, and the TLS
+            # settings are untouched. `IsAuthEnabled()` is
+            # `AuthMode == LDAP || (len(User) > 0 && len(Password) > 0)`
+            # (lib/config/guiconfiguration.go), so two empty strings
+            # turn it off. The upstream assertion that forbids
+            # `settings.gui.password` alongside `guiPasswordFile` is
+            # satisfied because `guiPasswordFile` is now null.
+            #
+            # Linux only. The home-manager module used on m4mac sends
+            # PUT, not PATCH, for these sub-options, which would
+            # replace the whole `gui` object and drop its apikey and
+            # address. m4mac never had GUI auth (#2698 was navi and
+            # tui only), so it needs no clearing.
+            gui = {
+              user = "";
+              password = "";
+            };
             devices = {
               "k8s" = {
                 id = "FZVNVGQ-6TJDJLG-DRWSAWW-AQLKQM7-U36GWON-7ZQ7CLF-32MBYFN-SFHWHAX";

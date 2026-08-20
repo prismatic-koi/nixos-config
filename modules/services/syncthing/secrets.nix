@@ -33,16 +33,41 @@ let
   # recorded here on purpose: a silent revert is the failure #2697 was
   # filed to correct.
   #
-  # Why the removal is safe:
+  # WHAT IS GIVEN UP. GUI auth was never scoped to /metrics. Syncthing
+  # wraps the WHOLE handler in `basicAuthAndSessionMiddleware` when
+  # `guiCfg.IsAuthEnabled()` is true (lib/api/api.go), so turning it
+  # off on navi and tui drops the credential check on the entire REST
+  # API, not only on the metrics endpoint. A local process reaches
+  # /rest with no credential in two steps: `GET /` sits outside the
+  # `/rest` prefix the CSRF manager guards, so the server returns a
+  # valid `CSRF-Token-<id>` cookie, and replaying that value in the
+  # `X-CSRF-Token-<id>` header passes the check (lib/api/api_csrf.go).
+  # That reaches `POST /rest/config`, which is enough to add a folder
+  # on any path the syncthing user can read and share it to an
+  # arbitrary device ID. The pinned key never defended that path
+  # either — the CSRF bootstrap needs no API key — so what is lost
+  # here is specifically #2698's GUI auth on navi and tui. m4mac never
+  # had GUI auth, so its posture does not change.
+  #
+  # WHY WE ACCEPT IT:
   #
   #   * Localhost is the boundary. Syncthing binds its GUI and REST
   #     API to 127.0.0.1:8384 — set explicitly in ./default.nix so the
   #     property is declared, not inherited from an upstream default.
   #     Port 8384 is never opened in a firewall (only 22000 and 21027,
   #     for sync and discovery), so nothing off the host can reach it.
-  #   * These are single-user personal machines. GUI auth and the
-  #     pinned key defended only against a second local user who reads
-  #     /metrics or drives the web UI. There is no second local user.
+  #   * These are single-user personal machines, so the exposure is to
+  #     other processes of the same user, not to another person.
+  #     Named residual risk: that set includes sandboxed prism agents,
+  #     which get unrestricted loopback by design (see
+  #     ../../programs/prism/prism/docs/podman-proxy.md). For that
+  #     principal the REST API is a genuine widening — its sandbox
+  #     restricts the filesystem it can read, and `POST /rest/config`
+  #     does not. We accept it knowingly: the agent sandbox is a guard
+  #     rail against agent mistakes, not a boundary against a hostile
+  #     same-user process, and an agent is not the adversary this
+  #     decision is defending against. Re-evaluate this line if that
+  #     stops being true.
   #   * Metrics leave the host on an authenticated outbound path, not
   #     an inbound scrape. Alloy runs locally, dials
   #     127.0.0.1:8384/metrics, and pushes to ts-metrics-ingest over
@@ -56,6 +81,13 @@ let
   #     guards. With GUI auth off, the Bearer token is ignored.
   #   * The cost was real and daily: a login prompt on the web UI, for
   #     no gain.
+  #
+  # CLEARING WHAT #2698 ALREADY WROTE. Removing `guiPasswordFile` stops
+  # this repo from setting a credential; it clears nothing already in
+  # the runtime config.xml, which is persisted host state. ./default.nix
+  # sets `settings.gui.user` and `.password` to "" on the Linux hosts to
+  # converge that — see the comment there for why empty strings rather
+  # than omission, and why it is Linux only.
   #
   # This reverses #2461, #2698, and #2782, and supersedes #2783. Do
   # not re-add GUI auth or a pinned key without first changing the
