@@ -7,8 +7,8 @@
 let
   username = config.nx.username;
   kubeDir = "${config.home-manager.users.${username}.home.homeDirectory}/.config/kube";
-  isLinux = pkgs.stdenv.isLinux;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 in
 {
   options = {

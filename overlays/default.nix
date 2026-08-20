@@ -50,7 +50,7 @@ rec {
       # See: https://github.com/NixOS/nixpkgs/issues/507531
       # Remove this override once upstream lands a fix.
       direnv =
-        if final.stdenv.isDarwin then
+        if final.stdenv.hostPlatform.isDarwin then
           prev.direnv.overrideAttrs (_: {
             doCheck = false;
           })
@@ -97,7 +97,10 @@ rec {
       # session-bus notifications). See pkgs/battery-monitor.nix and
       # modules/services/battery-monitor/DESIGN.md.
       battery-monitor =
-        if final.stdenv.isLinux then final.callPackage ../pkgs/battery-monitor.nix { } else null;
+        if final.stdenv.hostPlatform.isLinux then
+          final.callPackage ../pkgs/battery-monitor.nix { }
+        else
+          null;
 
       # grafana-alloy: on Darwin only, drop the `netgo` build tag so the
       # binary links the cgo resolver instead of the pure-Go one. The
@@ -128,7 +131,7 @@ rec {
       # on Darwin, the test phase costs the runner nothing, and `doCheck = false`
       # becomes dead weight.
       grafana-alloy =
-        if final.stdenv.isDarwin then
+        if final.stdenv.hostPlatform.isDarwin then
           prev.grafana-alloy.overrideAttrs (oldAttrs: {
             tags = final.lib.remove "netgo" (oldAttrs.tags or [ ]);
             doCheck = false;
@@ -137,9 +140,9 @@ rec {
           prev.grafana-alloy;
 
       _macronTypePkg =
-        if final.stdenv.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
-      macron-type = if final.stdenv.isDarwin then final._macronTypePkg.server else null;
-      macron-send = if final.stdenv.isDarwin then final._macronTypePkg.client else null;
+        if final.stdenv.hostPlatform.isDarwin then final.callPackage ../pkgs/macron-type.nix { } else null;
+      macron-type = if final.stdenv.hostPlatform.isDarwin then final._macronTypePkg.server else null;
+      macron-send = if final.stdenv.hostPlatform.isDarwin then final._macronTypePkg.client else null;
 
     };
 }

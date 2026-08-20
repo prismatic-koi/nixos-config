@@ -8,7 +8,7 @@ let
   username = config.nx.username;
 in
 {
-  config = lib.mkIf pkgs.stdenv.isLinux {
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
     # Set up main user account
     # Define a user account. Don't forget to set a password with 'passwd'.
     users.users.${username} = {

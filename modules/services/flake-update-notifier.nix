@@ -47,7 +47,7 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       # ── Linux ──────────────────────────────────────────────────────────────
-      (lib.mkIf pkgs.stdenv.isLinux {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         home-manager.users.${config.nx.username} = {
           # Ensure the NixOS snowflake icon theme is present so notify-send can
           # resolve the `nix-snowflake` icon name at runtime.
@@ -84,7 +84,7 @@ in
       })
 
       # ── Darwin ─────────────────────────────────────────────────────────────
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         home-manager.users.${config.nx.username}.launchd.agents.flake-update-notifier = {
           enable = true;
           config = {

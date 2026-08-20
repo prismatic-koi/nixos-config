@@ -33,12 +33,12 @@
       };
     }
     # NixOS-specific settings
-    (lib.optionalAttrs pkgs.stdenv.isLinux {
+    (lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
       settings.auto-optimise-store = true;
       gc.dates = "daily";
     })
     # Darwin-specific settings
-    (lib.optionalAttrs pkgs.stdenv.isDarwin {
+    (lib.optionalAttrs pkgs.stdenv.hostPlatform.isDarwin {
       optimise.automatic = true;
       gc.interval = {
         Weekday = 0;

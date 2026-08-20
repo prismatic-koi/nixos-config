@@ -15,7 +15,7 @@ let
   #   Linux  — system sops secret.
   #   Darwin — home-manager sops secret.
   githubTokenPath =
-    if pkgs.stdenv.isDarwin then
+    if pkgs.stdenv.hostPlatform.isDarwin then
       config.home-manager.users.${username}.sops.secrets.github_token.path
     else
       config.sops.secrets.github_token.path;
@@ -30,7 +30,7 @@ let
   gitlabTokenPath =
     if !config.nx.programs.gitlab-cli.enable then
       ""
-    else if pkgs.stdenv.isDarwin then
+    else if pkgs.stdenv.hostPlatform.isDarwin then
       config.home-manager.users.${username}.sops.secrets.gitlab_token.path
     else
       config.sops.secrets.gitlab_token.path;

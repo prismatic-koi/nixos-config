@@ -21,7 +21,7 @@ in
       description = "Enable OLED specific settings";
     };
   };
-  config = lib.mkIf (config.nx.desktop.hyprlock.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.hyprlock.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.programs.hyprlock =
       let
         oled = config.nx.desktop.hyprlock.oled;

@@ -61,7 +61,7 @@
           '';
       };
       # XDG desktop entries and MIME associations are Linux-only
-      xdg.desktopEntries = lib.mkIf pkgs.stdenv.isLinux {
+      xdg.desktopEntries = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         lf = {
           name = "lf";
           genericName = "file manager";
@@ -76,7 +76,7 @@
           mimeType = [ "inode/directory" ];
         };
       };
-      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.isLinux {
+      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         "inode/directory" = [ "lf.desktop" ];
         "inode/mount-point" = [ "lf.desktop" ];
       };

@@ -15,14 +15,14 @@ with config.theme;
     home-manager.users.${config.nx.username} = {
       programs.zathura = {
         enable = true;
-        options = lib.mkIf pkgs.stdenv.isLinux {
+        options = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
           selection-clipboard = "clipboard";
           default-bg = bg_dim;
           default-fg = foreground;
         };
       };
       # XDG MIME associations are Linux-only
-      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.isLinux {
+      xdg.mimeApps.defaultApplications = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         "application/pdf" = [ "org.pwmt.zathura.desktop" ];
       };
     };

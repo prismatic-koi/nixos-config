@@ -115,7 +115,7 @@ in
       }
 
       # Darwin: home-manager sops with certs placed directly in syncthing config directory
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         home-manager.users.${username} = {
           sops.secrets = {
             "${hostname}-syncthing-cert" = {

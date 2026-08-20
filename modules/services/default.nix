@@ -15,7 +15,7 @@
     ./syncthing
     ./udiskie.nix
   ];
-  config = lib.mkIf pkgs.stdenv.isLinux {
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
     # default service configuration, things that don't need their own module
 
     # Enable the OpenSSH daemon.

@@ -16,8 +16,8 @@ in
   };
   config = lib.mkIf config.nx.programs.git.enable (
     let
-      isLinux = pkgs.stdenv.isLinux;
-      isDarwin = pkgs.stdenv.isDarwin;
+      isLinux = pkgs.stdenv.hostPlatform.isLinux;
+      isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
     in
     lib.mkMerge [
       # Common git and ssh configuration for both platforms

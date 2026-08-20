@@ -21,7 +21,7 @@ in
       (
         config.nx.programs.qutebrowser.enable
         && config.nx.services.qutebrowser.clearHistoryTask
-        && pkgs.stdenv.isLinux
+        && pkgs.stdenv.hostPlatform.isLinux
       )
       {
         home-manager.users.${config.nx.username} = {

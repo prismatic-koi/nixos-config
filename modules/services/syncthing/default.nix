@@ -21,13 +21,16 @@ in
     nx.services.syncthing.databaseDir = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then "${homeDir}/.local/state/syncthing" else "/persist/cache/syncthing";
+        if pkgs.stdenv.hostPlatform.isDarwin then
+          "${homeDir}/.local/state/syncthing"
+        else
+          "/persist/cache/syncthing";
       description = "Location for syncthing database";
     };
     nx.services.syncthing.configDir = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then
+        if pkgs.stdenv.hostPlatform.isDarwin then
           "${homeDir}/Library/Application Support/Syncthing"
         else
           "/persist/home/${username}/.config/syncthing";
@@ -39,7 +42,7 @@ in
     nx.services.syncthing.obsidian.path = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then
+        if pkgs.stdenv.hostPlatform.isDarwin then
           "${homeDir}/Documents/obsidian"
         else
           "/persist/home/${username}/documents/obsidian";
@@ -51,7 +54,7 @@ in
     nx.services.syncthing.calibre.path = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then
+        if pkgs.stdenv.hostPlatform.isDarwin then
           "${homeDir}/Documents/calibre"
         else
           "/persist/home/${username}/documents/calibre";
@@ -62,7 +65,11 @@ in
     };
     nx.services.syncthing.music.path = lib.mkOption {
       type = lib.types.str;
-      default = if pkgs.stdenv.isDarwin then "${homeDir}/Music" else "/persist/home/${username}/music/";
+      default =
+        if pkgs.stdenv.hostPlatform.isDarwin then
+          "${homeDir}/Music"
+        else
+          "/persist/home/${username}/music/";
       description = "Location for music folder";
     };
     nx.services.syncthing.photos.enable = lib.mkEnableOption "Set up syncthing photos folder" // {
@@ -71,7 +78,7 @@ in
     nx.services.syncthing.photos.path = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then
+        if pkgs.stdenv.hostPlatform.isDarwin then
           "${homeDir}/Pictures/photos"
         else
           "/persist/home/${username}/pictures/photos";
@@ -83,7 +90,7 @@ in
     nx.services.syncthing.darktable.path = lib.mkOption {
       type = lib.types.str;
       default =
-        if pkgs.stdenv.isDarwin then
+        if pkgs.stdenv.hostPlatform.isDarwin then
           "${homeDir}/.config/darktable"
         else
           "/persist/home/${username}/.config/darktable";
@@ -95,7 +102,7 @@ in
       # Common syncthing configuration (applies to both NixOS system-level and home-manager)
       {
         # NixOS: system-level syncthing service
-        services.syncthing = lib.mkIf pkgs.stdenv.isLinux {
+        services.syncthing = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
           enable = true;
           user = username;
 
@@ -188,7 +195,7 @@ in
         };
 
         # Darwin: home-manager syncthing service
-        home-manager.users.${username}.services.syncthing = lib.mkIf pkgs.stdenv.isDarwin {
+        home-manager.users.${username}.services.syncthing = lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
           enable = true;
 
           # Same loopback boundary as the NixOS branch above — see
@@ -237,7 +244,7 @@ in
       }
 
       # Linux-only: systemd and firewall configuration
-      (lib.mkIf pkgs.stdenv.isLinux {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         systemd.services.syncthing = {
           after = [ "network-online.target" ];
           wants = [ "network-online.target" ];
@@ -280,7 +287,7 @@ in
       })
 
       # Darwin-only: ensure syncthing starts on login/boot
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         # Upstream's services.syncthing HM module sets domain = lib.mkDefault
         # "user", which forces LimitLoadToSessionType = "Background" (see the
         # HM launchd module). Background/user-domain agents are NOT auto-loaded
