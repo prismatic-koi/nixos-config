@@ -33,33 +33,6 @@ in
           "/persist/home/${username}/.config/syncthing";
       description = "Location for syncthing config";
     };
-    nx.services.syncthing.apiKeyFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = ''
-        Path to a runtime file that holds the Syncthing REST API key, or
-        `null` when this host has no pinned key.
-
-        Set by ./secrets.nix on the hosts that carry a sops-encrypted key
-        (issue #2461). Consumers — currently the Syncthing `/metrics`
-        scrape in `modules/services/alloy` — must read the file at
-        runtime. The key value itself never enters the Nix store.
-      '';
-    };
-    nx.services.syncthing.apiKeyGroup = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      description = ''
-        Name of the group that owns `apiKeyFile`, or `null` when the
-        consumer needs no group grant to read it.
-
-        A consumer that runs under systemd `DynamicUser` has no stable
-        UID to grant the file to, so it joins this group through
-        `SupplementaryGroups` instead. On Darwin the consumer (Alloy)
-        is a root launchd daemon and reads the file directly, so this
-        stays `null` even though `apiKeyFile` is set.
-      '';
-    };
     nx.services.syncthing.obsidian.enable = lib.mkEnableOption "Set up syncthing obsidian folder" // {
       default = false;
     };
@@ -126,6 +99,16 @@ in
           enable = true;
           user = username;
 
+          # Localhost is the boundary (issue #2787). This is also
+          # Syncthing's own default, but it is declared here so the
+          # security property the module relies on is visible in the
+          # config instead of inherited silently: the GUI and the REST
+          # API — including /metrics — answer on loopback only, and
+          # port 8384 is never opened in the firewall below. See
+          # ./secrets.nix for why there is no GUI auth and no pinned
+          # REST API key.
+          guiAddress = "127.0.0.1:8384";
+
           # if you don't put the database and config somewhere stable
           # syncthing will panic every startup and rebuild the database or maybe remove and re-add the folder?
           # either way, its horrible and slow and this fixes it.
@@ -175,6 +158,11 @@ in
         # Darwin: home-manager syncthing service
         home-manager.users.${username}.services.syncthing = lib.mkIf pkgs.stdenv.isDarwin {
           enable = true;
+
+          # Same loopback boundary as the NixOS branch above — see
+          # that comment and ./secrets.nix (issue #2787).
+          guiAddress = "127.0.0.1:8384";
+
           settings = {
             devices = {
               "k8s" = {
