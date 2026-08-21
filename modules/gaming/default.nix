@@ -17,7 +17,7 @@
       default = false;
     };
   };
-  config = lib.mkIf (config.nx.gaming.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.gaming.enable && pkgs.stdenv.hostPlatform.isLinux) {
     hardware.graphics = {
       enable = true;
       enable32Bit = true;

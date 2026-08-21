@@ -10,7 +10,7 @@
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.udiskie.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.udiskie.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.services.udiskie = {
       enable = true;
       automount = true;

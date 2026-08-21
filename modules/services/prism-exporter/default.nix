@@ -201,7 +201,7 @@ in
   };
 
   # Guarded by the `isLinux` specialArg rather than `lib.mkIf
-  # pkgs.stdenv.isLinux`, for the same reason the alloy module does
+  # pkgs.stdenv.hostPlatform.isLinux`, for the same reason the alloy module does
   # it: `optionalAttrs` collapses at Nix time, before the module
   # system walks the definition tree.
   config = lib.mkIf (cfg.enable && config.nx.programs.prism.enable) (

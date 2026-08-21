@@ -33,7 +33,7 @@ in
           # storage; the file is bound into prism-spawned bwrap sandboxes by
           # internal/container/bwrap.go when cfg.AgentEnvVars["GRAFANA_MCP_CONFIG_PATH"]
           # is set.
-          (lib.mkIf pkgs.stdenv.isLinux {
+          (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
             sops.secrets.${secretName} = {
               owner = username;
               mode = "0600";
@@ -57,7 +57,7 @@ in
           # internal/config/agent_env_roles.go), emits no exception and the
           # bundle stays denied. Darwin host-mode sessions have no SBPL profile
           # and can always read the file.
-          (lib.mkIf pkgs.stdenv.isDarwin {
+          (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
             home-manager.users.${username}.sops.secrets.${secretName} = {
               sopsFile = secretsFile;
             };

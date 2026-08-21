@@ -11,7 +11,7 @@ with config.theme;
       default = true;
     };
   };
-  config = lib.mkIf (config.nx.desktop.swaync.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.swaync.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.home = {
       packages = [
         pkgs.libnotify

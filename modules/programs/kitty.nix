@@ -6,8 +6,8 @@
 }:
 with config.theme;
 let
-  isDarwin = pkgs.stdenv.isDarwin;
-  isLinux = pkgs.stdenv.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
   background = if type == "dark" then bg0 else bg_dim;
 
   kittyconf = ''
@@ -116,6 +116,13 @@ in
     };
   };
   config = lib.mkIf config.nx.programs.kitty.enable {
+    # Make kitty terminfo available system-wide so the xterm-kitty entry
+    # is present in all terminfo search paths (especially important for
+    # sudo and root contexts, and for cross-platform coverage).
+    environment.systemPackages = [
+      pkgs.kitty.terminfo
+    ];
+
     home-manager.users.${config.nx.username} = {
       programs.kitty = {
         enable = true;

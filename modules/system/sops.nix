@@ -26,12 +26,12 @@ in
   config = lib.mkIf config.nx.system.sops.enable (
     lib.mkMerge [
       # Darwin: disable system-level sops, set a dummy keyFile to satisfy assertions
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         sops.age.keyFile = lib.mkForce "${homeDir}/.config/sops/age/keys.txt";
       })
 
       # NixOS system-level sops configuration
-      (lib.mkIf pkgs.stdenv.isLinux {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         # general sops module options
         sops.age = {
           keyFile = "/var/lib/sops-nix/key.txt";
@@ -62,7 +62,7 @@ in
       })
 
       # Darwin home-manager sops configuration
-      (lib.mkIf pkgs.stdenv.isDarwin {
+      (lib.mkIf pkgs.stdenv.hostPlatform.isDarwin {
         home-manager.users.${username} = {
           imports = [
             inputs.sops-nix.homeManagerModules.sops

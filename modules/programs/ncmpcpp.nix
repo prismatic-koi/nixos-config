@@ -17,7 +17,7 @@
         # no point in installing if mpd is not
         && config.nx.services.mpd.enable
         # mpd service only works on Linux
-        && pkgs.stdenv.isLinux
+        && pkgs.stdenv.hostPlatform.isLinux
       )
       {
         home-manager.users.${config.nx.username} = {

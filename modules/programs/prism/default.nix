@@ -120,7 +120,7 @@
               # secret lives under /run/secrets/, while on Darwin home-manager
               # sops-nix places it under ~/.config/sops-nix/secrets/.
               secretPath =
-                if pkgs.stdenv.isLinux then
+                if pkgs.stdenv.hostPlatform.isLinux then
                   config.sops.secrets.${secretName}.path
                 else
                   config.home-manager.users.${config.nx.username}.sops.secrets.${secretName}.path;
@@ -353,7 +353,7 @@
 
         # Auto-enable choose on Darwin when contextSwitcher is enabled
         nx.programs.choose.enable = lib.mkDefault (
-          pkgs.stdenv.isDarwin && config.nx.programs.prism.contextSwitcher.enable
+          pkgs.stdenv.hostPlatform.isDarwin && config.nx.programs.prism.contextSwitcher.enable
         );
 
         # Computed values that submodules can reference
@@ -372,7 +372,7 @@
         # intervene when memory pressure on the user slice crosses 80%, acting
         # as a safety net if pressure escapes the per-container cgroup caps.
         # Guarded by isLinux — Darwin does not have systemd.
-        systemd.oomd.enableUserSlices = lib.mkIf pkgs.stdenv.isLinux true;
+        systemd.oomd.enableUserSlices = lib.mkIf pkgs.stdenv.hostPlatform.isLinux true;
       }
     ]
   );

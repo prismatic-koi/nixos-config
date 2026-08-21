@@ -7,8 +7,8 @@
 let
   username = config.nx.username;
   awsDir = "${config.home-manager.users.${username}.home.homeDirectory}/.config/aws";
-  isLinux = pkgs.stdenv.isLinux;
-  isDarwin = pkgs.stdenv.isDarwin;
+  isLinux = pkgs.stdenv.hostPlatform.isLinux;
+  isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
 in
 {
   options = {

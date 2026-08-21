@@ -30,7 +30,7 @@ in
       description = "variant of the wallpaper";
     };
   };
-  config = lib.mkIf (config.nx.desktop.wallpaper.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.wallpaper.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username} =
       {
         config,

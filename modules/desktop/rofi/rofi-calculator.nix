@@ -6,7 +6,7 @@
 }:
 with config.theme;
 {
-  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.home.file.".local/scripts/application.rofi.calculator" = {
       executable = true;
       text =

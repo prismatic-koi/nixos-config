@@ -445,7 +445,7 @@ in
       # ── NixOS ────────────────────────────────────────────────────────
       #
       # Guarded by the `isLinux` specialArg from flake.nix rather than
-      # `lib.mkIf pkgs.stdenv.isLinux`. mkIf is lazy on its value but
+      # `lib.mkIf pkgs.stdenv.hostPlatform.isLinux`. mkIf is lazy on its value but
       # the module system still walks the definition tree to register
       # option paths, and top-level `launchd` does not exist on NixOS
       # (nor does top-level `services.alloy` on nix-darwin). Using
@@ -455,7 +455,7 @@ in
       # comes via specialArgs so evaluating it does not require
       # resolving the module option set (which is what caused
       # infinite recursion when the same pattern was tried against
-      # `pkgs.stdenv.isDarwin`).
+      # `pkgs.stdenv.hostPlatform.isDarwin`).
       (lib.optionalAttrs isLinux {
         services.alloy = {
           enable = true;

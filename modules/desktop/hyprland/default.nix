@@ -22,7 +22,7 @@ in
       };
     };
   };
-  config = lib.mkIf pkgs.stdenv.isLinux (
+  config = lib.mkIf pkgs.stdenv.hostPlatform.isLinux (
     lib.mkMerge [
       {
         # enable for system

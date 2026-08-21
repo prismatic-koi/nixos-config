@@ -28,7 +28,7 @@ in
       default = false;
     };
   };
-  config = lib.mkIf (config.nx.gaming.yuzu.enable && pkgs.stdenv.isLinux) {
+  config = lib.mkIf (config.nx.gaming.yuzu.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username} = {
       home.packages = [
         yuzu-appimage
@@ -39,7 +39,7 @@ in
           ".config/yuzu"
         ];
       };
-      xdg.desktopEntries = lib.mkIf pkgs.stdenv.isLinux {
+      xdg.desktopEntries = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         yuzu =
           let
             yuzu-icon = pkgs.fetchurl {

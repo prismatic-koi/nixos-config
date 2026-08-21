@@ -43,7 +43,7 @@ in
           ".local/share/cura"
         ];
       };
-      xdg.desktopEntries = lib.mkIf pkgs.stdenv.isLinux {
+      xdg.desktopEntries = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
         cura =
           let
             cura-icon = pkgs.fetchurl {

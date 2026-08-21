@@ -24,7 +24,7 @@ with config.theme;
   };
   config = lib.mkMerge [
     # Linux: rofi configuration
-    (lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.isLinux) {
+    (lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
       home-manager.users.${config.nx.username} = {
         programs.rofi = {
           enable = true;
