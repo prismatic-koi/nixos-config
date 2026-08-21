@@ -212,9 +212,6 @@ in
     ACTION=="add", SUBSYSTEM=="usb", ATTR{idVendor}=="8087", ATTR{power/autosuspend}="-1"
   '';
 
-  # Ensure proper ACPI handling
-  services.acpid.enable = true;
-
   networking.hostName = "tui";
 
   # home-manager is awesome
