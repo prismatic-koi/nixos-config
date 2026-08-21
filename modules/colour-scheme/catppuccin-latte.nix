@@ -5,14 +5,12 @@
   ...
 }:
 let
-  themev2Data = import ./themev2/palette.nix { colourLib = import ./lib.nix; };
+  latteThemev2 = import ./themev2/catppuccin-latte.nix { colourLib = import ./lib.nix; };
 in
 {
   # Parallel themev2 schema (migration increment #1). Additive: no consumer
-  # reads themev2 yet. See ./themev2/palette.nix and ./themev2/register.md.
-  themev2 = lib.mkIf (
-    config.nx.desktop.theme == "catppuccin-latte"
-  ) themev2Data.schemes.catppuccin-latte;
+  # reads themev2 yet. See ./themev2/catppuccin-latte.nix.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "catppuccin-latte") latteThemev2;
 
   theme = lib.mkIf (config.nx.desktop.theme == "catppuccin-latte") {
     name = "catppuccin-latte";

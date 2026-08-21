@@ -2,11 +2,10 @@
 #   nix run .#theme-preview              # all sample schemes
 #   nix run .#theme-preview -- <scheme>  # one named scheme
 #
-# Output is grouped: neutrals, brights, the tailwind-inspired hue palette,
-# tinted backgrounds, and the roles. Each swatch block shows the slot name,
-# the hex value and the provenance tag (upstream / derived / adjusted) with a
-# 24-bit ANSI colour block. The swatch is the visual personalisation map.
-# Renders exact hex in a truecolor terminal (e.g. kitty).
+# Output is grouped (neutrals / brights / hues / tinted backgrounds / roles).
+# Each block is just a 24-bit ANSI colour swatch and the slot name. Renders
+# exact hex in a truecolor terminal (e.g. kitty). Provenance lives in the
+# per-scheme files as inline comments, not here.
 {
   lib,
   runCommand,
@@ -14,22 +13,102 @@
 }:
 let
   colourLib = import ../lib.nix;
-  palette = import ./palette.nix { inherit colourLib; };
-  inherit (palette) schemes groups;
+  schemes = {
+    edge = import ./edge.nix { inherit colourLib; };
+    everforest = import ./everforest.nix { inherit colourLib; };
+    catppuccin-latte = import ./catppuccin-latte.nix { inherit colourLib; };
+  };
 
-  # One data line per slot: "slot|hex|provenance|method". Group titles are
-  # emitted as "##<title>" marker lines the renderer turns into headers.
-  mkLine =
-    scheme: group: slot:
-    let
-      e = scheme.${group}.${slot};
-    in
-    "${slot}|${e.value}|${e.provenance}|${e.method}";
+  # Display order the preview walks. Group titles are printed as headers.
+  groups = [
+    {
+      title = "Neutrals";
+      band = "neutrals";
+      slots = [
+        "background_darkest"
+        "background_dark"
+        "background"
+        "surface"
+        "overlay"
+        "muted"
+        "foreground_dim"
+        "foreground"
+      ];
+    }
+    {
+      title = "Brights";
+      band = "brights";
+      slots = [
+        "bright_red"
+        "bright_orange"
+        "bright_yellow"
+        "bright_green"
+        "bright_cyan"
+        "bright_blue"
+        "bright_magenta"
+        "bright_brown"
+      ];
+    }
+    {
+      title = "Hues";
+      band = "hues";
+      slots = [
+        "red"
+        "orange"
+        "amber"
+        "yellow"
+        "lime"
+        "green"
+        "emerald"
+        "teal"
+        "cyan"
+        "sky"
+        "blue"
+        "indigo"
+        "violet"
+        "purple"
+        "fuchsia"
+        "pink"
+        "rose"
+        "brown"
+      ];
+    }
+    {
+      title = "Tinted backgrounds";
+      band = "backgrounds";
+      slots = [
+        "bg_red"
+        "bg_green"
+        "bg_blue"
+        "bg_yellow"
+        "bg_visual"
+      ];
+    }
+    {
+      title = "Roles";
+      band = "roles";
+      slots = [
+        "primary"
+        "secondary"
+        "error"
+        "warning"
+        "success"
+        "info"
+        "selection"
+        "cursor"
+        "border"
+      ];
+    }
+  ];
 
+  # One data line per slot: "slot|hex". Group titles become "##<title>" marker
+  # lines the renderer turns into headers.
   mkSchemeData =
     scheme:
     lib.concatStringsSep "\n" (
-      lib.concatMap (g: [ "##${g.title}" ] ++ map (mkLine scheme g.group) g.slots) groups
+      lib.concatMap (
+        g: [ "##${g.title}" ] ++ map (slot: "${slot}|${scheme.${g.band}.${slot}}") g.slots
+      ) groups
     );
 
   # A file per scheme, named <scheme>.dat. An unknown scheme has no file, so
@@ -65,8 +144,8 @@ writeShellApplication {
         return 1
       fi
       printf '\n\033[1m=== %s ===\033[0m\n' "$scheme"
-      local slot hex prov method r g b swatch
-      while IFS='|' read -r slot hex prov method; do
+      local slot hex r g b swatch
+      while IFS='|' read -r slot hex; do
         [ -z "$slot" ] && continue
         case "$slot" in
           '##'*)
@@ -78,7 +157,7 @@ writeShellApplication {
         g=$((16#''${hex:3:2}))
         b=$((16#''${hex:5:2}))
         swatch=$(printf '\033[48;2;%d;%d;%dm      \033[0m' "$r" "$g" "$b")
-        printf '  %s  %-15s %s  %-9s %s\n' "$swatch" "$slot" "$hex" "$prov" "$method"
+        printf '  %s  %s\n' "$swatch" "$slot"
       done < "$file"
     }
 

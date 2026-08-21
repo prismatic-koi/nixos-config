@@ -5,12 +5,12 @@
   ...
 }:
 let
-  themev2Data = import ./themev2/palette.nix { colourLib = import ./lib.nix; };
+  everforestThemev2 = import ./themev2/everforest.nix { colourLib = import ./lib.nix; };
 in
 {
   # Parallel themev2 schema (migration increment #1). Additive: no consumer
-  # reads themev2 yet. See ./themev2/palette.nix and ./themev2/register.md.
-  themev2 = lib.mkIf (config.nx.desktop.theme == "everforest") themev2Data.schemes.everforest;
+  # reads themev2 yet. See ./themev2/everforest.nix.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "everforest") everforestThemev2;
 
   theme = lib.mkIf (config.nx.desktop.theme == "everforest") {
     name = "everforest";

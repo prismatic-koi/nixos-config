@@ -5,12 +5,12 @@
   ...
 }:
 let
-  themev2Data = import ./themev2/palette.nix { colourLib = import ./lib.nix; };
+  edgeThemev2 = import ./themev2/edge.nix { colourLib = import ./lib.nix; };
 in
 {
   # Parallel themev2 schema (migration increment #1). Additive: no consumer
-  # reads themev2 yet. See ./themev2/palette.nix and ./themev2/register.md.
-  themev2 = lib.mkIf (config.nx.desktop.theme == "edge") themev2Data.schemes.edge;
+  # reads themev2 yet. See ./themev2/edge.nix.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "edge") edgeThemev2;
 
   theme = lib.mkIf (config.nx.desktop.theme == "edge") {
     name = "edge";

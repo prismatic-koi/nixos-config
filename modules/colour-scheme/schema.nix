@@ -11,33 +11,12 @@ let
   # themev2 (migration increment #1): a parallel schema — a semantic neutrals
   # band (no baseX codes), an ANSI bright band, and a tailwind-inspired hue
   # palette (Tailwind hue names, with `brown` added and `maroon` reached via
-  # luminance). Purely additive; no consumer reads it yet. See
-  # ./themev2/palette.nix for the sample data and ./themev2/register.md for
-  # the personalisation map.
+  # luminance). Purely additive; no consumer reads it yet. Each slot is a
+  # plain hex string, exactly like `theme` above. The sample schemes live one
+  # per file in ./themev2/ (edge.nix, everforest.nix, catppuccin-latte.nix);
+  # provenance is recorded as inline comments in those files.
   colourLib = import ./lib.nix;
-  themev2Data = import ./themev2/palette.nix { inherit colourLib; };
-
-  # One palette slot: its resolved hex plus provenance metadata.
-  colourSlot = types.submodule {
-    options = {
-      value = mkOption { type = types.str; };
-      provenance = mkOption {
-        type = types.enum [
-          "upstream"
-          "derived"
-          "adjusted"
-        ];
-      };
-      source = mkOption {
-        type = types.str;
-        default = "";
-      };
-      method = mkOption {
-        type = types.str;
-        default = "";
-      };
-    };
-  };
+  defaultThemev2 = import ./themev2/everforest.nix { inherit colourLib; };
 
   mkSlots =
     names:
@@ -45,7 +24,7 @@ let
       map (
         n:
         nameValuePair n (mkOption {
-          type = colourSlot;
+          type = types.str;
         })
       ) names
     );
@@ -224,7 +203,7 @@ in
     # in this increment; every other scheme falls back to this default.
     themev2 = mkOption {
       type = themev2Type;
-      default = themev2Data.schemes.everforest;
+      default = defaultThemev2;
     };
   };
 }
