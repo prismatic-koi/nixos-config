@@ -1,66 +1,69 @@
-# themev2 divergence register
+# themev2 personalisation map
 
-This is the authoritative provenance record for the `themev2` schema
-(migration increment #1). It lists every slot whose provenance is **derived**
-or **adjusted**, across the three sample schemes. The palette data lives in
-`palette.nix`; the schema option lives in `../schema.nix`; the visual form of
-this register is `nix run .#theme-preview`.
+This is the authoritative **personalisation map** for the `themev2` schema
+(migration increment #1). It records, per slot, whether a colour is **native**
+to the scheme (`upstream`) or **invented** for it (`derived` / `adjusted`), so
+that the invented ones can be found again and tuned.
+
+**This is not a fidelity audit.** Divergence from an upstream palette is not a
+defect to minimise. An `adjusted` value — a hand-picked literal that does not
+match any source colour — is a legitimate, first-class personalisation choice.
+A `derived` value is a colour the scheme did not provide, computed so the slot
+is filled. The map exists to make those choices visible and revisitable, not
+to flag them as problems. Record every one honestly; tune them later.
+
+The palette data lives in `palette.nix`; the schema option lives in
+`../schema.nix`; the visual form of this map is `nix run .#theme-preview`.
 
 ## Palette shape
 
-- **Neutral spine** — the base24 monotone slots `base00`–`base07` plus extra
-  backgrounds `base10`/`base11`.
+- **Neutrals** — a semantic band (dark → light), no baseX codes:
+  `background_darkest`, `background_dark`, `background`, `surface`, `overlay`,
+  `muted`, `foreground_dim`, `foreground`. The default text and background
+  colours are first-class slots here.
 - **Bright band** — kept for ANSI correctness (kitty `color9`–`color14` map to
   `bright_red`/`yellow`/`green`/`cyan`/`blue`/`magenta`), plus `bright_orange`
   and `bright_brown`.
-- **Tailwind-inspired hue palette** — follows Tailwind's 17 chromatic hue
-  names (red, orange, amber, yellow, lime, green, emerald, teal, cyan, sky,
-  blue, indigo, violet, purple, fuchsia, pink, rose) with **two documented
-  adaptations**:
+- **Tailwind-inspired hue palette** — a flat list of Tailwind's 17 chromatic
+  hue names (red, orange, amber, yellow, lime, green, emerald, teal, cyan,
+  sky, blue, indigo, violet, purple, fuchsia, pink, rose) with **two
+  documented adaptations**:
   - `brown` is **added** — Tailwind omits it, but base24/ANSI and terminals
     need it.
   - `maroon` is **not a slot** — it is reachable by luminance (`darken red`).
 
-  This hue band replaces the old base24 accent band; `magenta` maps onto
-  Tailwind `fuchsia`.
-- **Tinted backgrounds** and a **role core**, both computed.
+  `magenta` maps onto Tailwind `fuchsia`.
+- **Tinted backgrounds** and a **role core** (`primary`, `secondary`, `error`,
+  `warning`, `success`, `info`, `selection`, `cursor`, `border`), both
+  computed. Roles do not duplicate neutrals — anything needing the default
+  text/background colour references `neutrals.foreground` /
+  `neutrals.background`.
 
-## Provenance model
+## Provenance categories
 
-Every slot carries one of three provenance categories:
-
-| Category | Form | In this register |
+| Category | Form | In this map |
 |---|---|---|
-| upstream | literal hex present in the scheme's authoritative source | no |
+| upstream | literal hex present in the scheme's authoritative source (native) | no |
 | derived | value produced by a Nix expression — a `colourLib` call, or an alias to another slot | yes |
-| adjusted | literal hex that does **not** match the source | yes, plus an inline comment in `palette.nix` |
+| adjusted | hand-picked literal hex that does **not** match the source (a personalisation) | yes, plus an inline comment in `palette.nix` |
 
-Provenance tracks the **hex**, not the name. A slot tagged `upstream` may now
-carry a Tailwind name that differs from the source palette's own name for that
-hex (e.g. Catppuccin's `mauve` fills the `violet` slot). `colourLib` shifts
+Provenance tracks the **hex**, not the name. A slot tagged `upstream` may carry
+a Tailwind name that differs from the source palette's own name for that hex
+(e.g. Catppuccin's `mauve` fills the `violet` slot). `colourLib` shifts
 luminance only, not hue, so a `derived` hue is the nearest native colour
-lightened or darkened. Role-core aliases are recorded as `derived` with method
-`alias -> <slot>`, because their value is a Nix reference, not a source
-literal.
+lightened or darkened. Role aliases are recorded as `derived` with method
+`alias -> <slot>`.
 
 ## Authoritative sources
 
 - **edge** — `sainnhe/edge`, dark background, `style = default`
-  (`autoload/edge.vim`). Upstream has **no orange slot** and no bright band.
+  (`autoload/edge.vim`). No native orange, no bright band.
 - **everforest** — `sainnhe/everforest`, dark background, `background = medium`
   (`autoload/everforest.vim`). Muted palette — many Tailwind hues are derived.
 - **catppuccin-latte** — `catppuccin/palette`, `latte` flavour
   (`palette.json`).
 
-Historical context: `onedark` (not a sample scheme here) carries a known
-undocumented orange fudge in v1. `edge` carries the same class of divergence —
-its v1 orange `#e59676` has no upstream source. It is recorded honestly as
-`adjusted`.
-
 ### Upstream name → Tailwind slot mapping (catppuccin-latte)
-
-Latte has enough colours to fill most hue slots directly. The source name and
-the slot it fills:
 
 | Latte source name | Tailwind slot | Hex |
 |---|---|---|
@@ -80,17 +83,16 @@ the slot it fills:
 
 ## edge (dark)
 
-### adjusted
+### adjusted (personalisation)
 
-| Slot | Value | Source note |
+| Slot | Value | Note |
 |---|---|---|
-| `orange` (hue) | `#e59676` | edge upstream has no orange slot; value carried over from the v1 theme. |
+| `orange` (hue) | `#e59676` | edge has no native orange; this literal is carried over from the v1 theme. A deliberate personalisation. |
 
 ### derived
 
 | Slot | Group | Value | Method |
 |---|---|---|---|
-| `base07` | spine | `#d0d7e0` | `lighten fg 20` |
 | `bright_red` | brights | `#ee878d` | `lighten red 15` |
 | `bright_orange` | brights | `#e8a58a` | `lighten orange 15` |
 | `bright_yellow` | brights | `#e2c388` | `lighten yellow 15` |
@@ -115,13 +117,15 @@ the slot it fills:
 | `bg_blue` | backgrounds | `#243c4e` | `darken blue 62` |
 | `bg_yellow` | backgrounds | `#54462c` | `darken yellow 62` |
 | `bg_visual` | backgrounds | `#523959` | `darken fuchsia 62` |
+| `primary` | roles | `#a0c980` | `alias -> green` |
+| `secondary` | roles | `#5fa0ce` | `alias -> blue` |
 | `error` | roles | `#ec7279` | `alias -> red` |
 | `warning` | roles | `#e59676` | `alias -> orange` (aliases the adjusted orange) |
 | `success` | roles | `#a0c980` | `alias -> green` |
 | `info` | roles | `#5fa0ce` | `alias -> blue` |
-| `selection` | roles | `#3b3e48` | `alias -> base02` |
-| `cursor` | roles | `#c5cdd9` | `alias -> base05` |
-| `border` | roles | `#535c6a` | `alias -> base03` |
+| `selection` | roles | `#3b3e48` | `alias -> overlay` |
+| `cursor` | roles | `#c5cdd9` | `alias -> foreground` |
+| `border` | roles | `#535c6a` | `alias -> muted` |
 
 ## everforest (dark)
 
@@ -131,9 +135,7 @@ No adjusted slots. The palette is muted, so many Tailwind hues are derived.
 
 | Slot | Group | Value | Method |
 |---|---|---|---|
-| `base06` | spine | `#d8ccb4` | `lighten fg 12` |
-| `base07` | spine | `#dfd5c1` | `lighten fg 28` |
-| `base11` | spine | `#1b1f23` | `darken bg0 40` |
+| `background_darkest` | neutrals | `#1b1f23` | `darken bg0 40` |
 | `bright_red` | brights | `#e99193` | `lighten red 15` |
 | `bright_orange` | brights | `#e9a789` | `lighten orange 15` |
 | `bright_yellow` | brights | `#e0c692` | `lighten yellow 15` |
@@ -158,18 +160,21 @@ No adjusted slots. The palette is muted, so many Tailwind hues are derived.
 | `bg_blue` | backgrounds | `#304744` | `darken blue 62` |
 | `bg_yellow` | backgrounds | `#534730` | `darken yellow 62` |
 | `bg_visual` | backgrounds | `#513a45` | `darken fuchsia 62` |
+| `primary` | roles | `#a7c080` | `alias -> green` |
+| `secondary` | roles | `#7fbbb3` | `alias -> blue` |
 | `error` | roles | `#e67e80` | `alias -> red` |
 | `warning` | roles | `#e69875` | `alias -> orange` |
 | `success` | roles | `#a7c080` | `alias -> green` |
 | `info` | roles | `#7fbbb3` | `alias -> blue` |
-| `selection` | roles | `#475258` | `alias -> base02` |
-| `cursor` | roles | `#d3c6aa` | `alias -> base05` |
-| `border` | roles | `#7a8478` | `alias -> base03` |
+| `selection` | roles | `#475258` | `alias -> overlay` |
+| `cursor` | roles | `#d3c6aa` | `alias -> foreground` |
+| `border` | roles | `#7a8478` | `alias -> muted` |
 
 ## catppuccin-latte (light)
 
-No adjusted slots. Thirteen hue slots map straight to upstream latte colours
-(see the mapping table above); the rest are derived.
+No adjusted slots, and the neutrals are all native. Thirteen hue slots map
+straight to upstream latte colours (see the mapping table above); the rest are
+derived.
 
 ### derived
 
@@ -193,15 +198,16 @@ No adjusted slots. Thirteen hue slots map straight to upstream latte colours
 | `bg_blue` | backgrounds | `#d6e3fd` | `lighten blue 82` |
 | `bg_yellow` | backgrounds | `#f9ead6` | `lighten yellow 82` |
 | `bg_visual` | backgrounds | `#fbe6f5` | `lighten fuchsia 82` |
+| `primary` | roles | `#40a02b` | `alias -> green` |
+| `secondary` | roles | `#1e66f5` | `alias -> blue` |
 | `error` | roles | `#d20f39` | `alias -> red` |
 | `warning` | roles | `#fe640b` | `alias -> orange` |
 | `success` | roles | `#40a02b` | `alias -> green` |
 | `info` | roles | `#1e66f5` | `alias -> blue` |
-| `selection` | roles | `#ccd0da` | `alias -> base02` |
-| `cursor` | roles | `#4c4f69` | `alias -> base05` |
-| `border` | roles | `#9ca0b0` | `alias -> base03` |
+| `selection` | roles | `#ccd0da` | `alias -> overlay` |
+| `cursor` | roles | `#4c4f69` | `alias -> foreground` |
+| `border` | roles | `#9ca0b0` | `alias -> muted` |
 
-Note: on the light scheme, brights are `darken`ed (a more saturated variant
-reads correctly on a light background) and tinted backgrounds are `lighten`ed
-toward white — the light-vs-dark conditional mirrors the pattern in
-`modules/programs/prism/pi.nix`.
+Note: on the light scheme, brights are `darken`ed and tinted backgrounds are
+`lighten`ed toward white — the light-vs-dark conditional mirrors the pattern
+in `modules/programs/prism/pi.nix`.

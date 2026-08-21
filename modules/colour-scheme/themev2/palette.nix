@@ -4,8 +4,9 @@
 # plus the display grouping the preview walks.
 #
 # Structure:
-#   - a base24 MONOTONE spine (base00–base07) plus extra backgrounds
-#     (base10/base11) — the neutral band;
+#   - a NEUTRALS band with semantic names and no baseX codes
+#     (background_darkest, background_dark, background, surface, overlay,
+#     muted, foreground_dim, foreground);
 #   - a BRIGHT band kept for ANSI correctness (kitty color9–color14 map to
 #     bright_red/yellow/green/cyan/blue/magenta), plus bright_orange and
 #     bright_brown;
@@ -113,17 +114,15 @@ let
     {
       name = "edge";
       type = t;
-      spine = {
-        base00 = up src "#2c2e34"; # bg0
-        base01 = up src "#33353f"; # bg1
-        base02 = up src "#3b3e48"; # bg3 (selection)
-        base03 = up src "#535c6a"; # grey_dim (comments)
-        base04 = up src "#758094"; # grey
-        base05 = up src fg; # fg
-        base06 = up src "#828a98"; # bg_grey (light fg)
-        base07 = der "lighten fg 20" (lighten fg 20);
-        base10 = up src "#24262a"; # bg_dim (darker bg)
-        base11 = up src "#202023"; # black (darkest bg)
+      neutrals = {
+        background_darkest = up src "#202023"; # black
+        background_dark = up src "#24262a"; # bg_dim
+        background = up src "#2c2e34"; # bg0
+        surface = up src "#33353f"; # bg1
+        overlay = up src "#3b3e48"; # bg3
+        muted = up src "#535c6a"; # grey_dim
+        foreground_dim = up src "#758094"; # grey
+        foreground = up src fg; # fg
       };
       brights = {
         bright_red = der (brightMethod t "red" 15) (brighten t red 15);
@@ -163,13 +162,15 @@ let
         bg_visual = der (tintMethod t "fuchsia" 62) (tint t fuchsia 62);
       };
       roles = {
+        primary = der "alias -> green" green;
+        secondary = der "alias -> blue" blue;
         error = der "alias -> red" red;
         warning = der "alias -> orange" orange;
         success = der "alias -> green" green;
         info = der "alias -> blue" blue;
-        selection = der "alias -> base02" "#3b3e48";
-        cursor = der "alias -> base05" fg;
-        border = der "alias -> base03" "#535c6a";
+        selection = der "alias -> overlay" "#3b3e48";
+        cursor = der "alias -> foreground" fg;
+        border = der "alias -> muted" "#535c6a";
       };
     };
 
@@ -211,17 +212,15 @@ let
     {
       name = "everforest";
       type = t;
-      spine = {
-        base00 = up src bg0; # bg0
-        base01 = up src "#343f44"; # bg1
-        base02 = up src "#475258"; # bg3 (selection)
-        base03 = up src "#7a8478"; # grey0 (comments)
-        base04 = up src "#859289"; # grey1
-        base05 = up src fg; # fg
-        base06 = der "lighten fg 12" (lighten fg 12);
-        base07 = der "lighten fg 28" (lighten fg 28);
-        base10 = up src "#232a2e"; # bg_dim (darker bg)
-        base11 = der "darken bg0 40" (darken bg0 40);
+      neutrals = {
+        background_darkest = der "darken bg0 40" (darken bg0 40);
+        background_dark = up src "#232a2e"; # bg_dim
+        background = up src bg0; # bg0
+        surface = up src "#343f44"; # bg1
+        overlay = up src "#475258"; # bg3
+        muted = up src "#7a8478"; # grey0
+        foreground_dim = up src "#859289"; # grey1
+        foreground = up src fg; # fg
       };
       brights = {
         bright_red = der (brightMethod t "red" 15) (brighten t red 15);
@@ -261,13 +260,15 @@ let
         bg_visual = der (tintMethod t "fuchsia" 62) (tint t fuchsia 62);
       };
       roles = {
+        primary = der "alias -> green" green;
+        secondary = der "alias -> blue" blue;
         error = der "alias -> red" red;
         warning = der "alias -> orange" orange;
         success = der "alias -> green" green;
         info = der "alias -> blue" blue;
-        selection = der "alias -> base02" "#475258";
-        cursor = der "alias -> base05" fg;
-        border = der "alias -> base03" "#7a8478";
+        selection = der "alias -> overlay" "#475258";
+        cursor = der "alias -> foreground" fg;
+        border = der "alias -> muted" "#7a8478";
       };
     };
 
@@ -315,17 +316,15 @@ let
     {
       name = "catppuccin-latte";
       type = t;
-      spine = {
-        base00 = up src "#eff1f5"; # base (main bg)
-        base01 = up src "#e6e9ef"; # mantle
-        base02 = up src "#ccd0da"; # surface0 (selection)
-        base03 = up src "#9ca0b0"; # overlay0 (comments)
-        base04 = up src "#6c6f85"; # subtext0
-        base05 = up src "#4c4f69"; # text (main fg)
-        base06 = up src "#5c5f77"; # subtext1
-        base07 = up src "#7c7f93"; # overlay2
-        base10 = up src "#dce0e8"; # crust (extra bg)
-        base11 = up src "#bcc0cc"; # surface1 (extra bg)
+      neutrals = {
+        background_darkest = up src "#bcc0cc"; # surface1
+        background_dark = up src "#dce0e8"; # crust
+        background = up src "#eff1f5"; # base
+        surface = up src "#e6e9ef"; # mantle
+        overlay = up src "#ccd0da"; # surface0
+        muted = up src "#9ca0b0"; # overlay0
+        foreground_dim = up src "#6c6f85"; # subtext0
+        foreground = up src "#4c4f69"; # text
       };
       brights = {
         bright_red = der (brightMethod t "red" 12) (brighten t red 12);
@@ -365,13 +364,15 @@ let
         bg_visual = der (tintMethod t "fuchsia" 82) (tint t fuchsia 82);
       };
       roles = {
+        primary = der "alias -> green" green;
+        secondary = der "alias -> blue" blue;
         error = der "alias -> red" red;
         warning = der "alias -> orange" orange;
         success = der "alias -> green" green;
         info = der "alias -> blue" blue;
-        selection = der "alias -> base02" "#ccd0da";
-        cursor = der "alias -> base05" "#4c4f69";
-        border = der "alias -> base03" "#9ca0b0";
+        selection = der "alias -> overlay" "#ccd0da";
+        cursor = der "alias -> foreground" "#4c4f69";
+        border = der "alias -> muted" "#9ca0b0";
       };
     };
 
@@ -384,23 +385,21 @@ in
   # Display order the preview walks. Group titles are printed as headers.
   groups = [
     {
-      title = "Neutrals (base24 spine)";
-      group = "spine";
+      title = "Neutrals";
+      group = "neutrals";
       slots = [
-        "base00"
-        "base01"
-        "base02"
-        "base03"
-        "base04"
-        "base05"
-        "base06"
-        "base07"
-        "base10"
-        "base11"
+        "background_darkest"
+        "background_dark"
+        "background"
+        "surface"
+        "overlay"
+        "muted"
+        "foreground_dim"
+        "foreground"
       ];
     }
     {
-      title = "Brights (ANSI)";
+      title = "Brights";
       group = "brights";
       slots = [
         "bright_red"
@@ -414,7 +413,7 @@ in
       ];
     }
     {
-      title = "Tailwind-inspired hues";
+      title = "Hues";
       group = "hues";
       slots = [
         "red"
@@ -449,9 +448,11 @@ in
       ];
     }
     {
-      title = "Role core";
+      title = "Roles";
       group = "roles";
       slots = [
+        "primary"
+        "secondary"
         "error"
         "warning"
         "success"
