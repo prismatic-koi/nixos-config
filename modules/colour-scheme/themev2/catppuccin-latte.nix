@@ -12,14 +12,18 @@ rec {
   name = "catppuccin-latte";
   type = "light";
 
-  # Neutrals (dark -> light)
+  # Neutrals: background_0..5 is a strict luminance ramp (light theme ->
+  # background_0 lightest, climbing darker toward the foreground);
+  # foreground_dim / foreground are named text anchors. Reordered from the
+  # source palette so the ramp is monotonic (base -> mantle -> crust ->
+  # surface0 -> surface1 -> overlay0).
   neutrals = {
-    background_darkest = "#bcc0cc";
-    background_dark = "#dce0e8";
-    background = "#eff1f5";
-    surface = "#e6e9ef";
-    overlay = "#ccd0da";
-    muted = "#9ca0b0";
+    background_0 = "#eff1f5"; # primary/default background (main canvas; base)
+    background_1 = "#e6e9ef";
+    background_2 = "#dce0e8";
+    background_3 = "#ccd0da";
+    background_4 = "#bcc0cc";
+    background_5 = "#9ca0b0";
     foreground_dim = "#6c6f85";
     foreground = "#4c4f69";
   };
@@ -75,8 +79,8 @@ rec {
     warning = hues.orange;
     success = hues.green;
     info = hues.blue;
-    selection = neutrals.overlay;
+    selection = neutrals.background_3;
     cursor = neutrals.foreground;
-    border = neutrals.muted;
+    border = neutrals.background_5;
   };
 }

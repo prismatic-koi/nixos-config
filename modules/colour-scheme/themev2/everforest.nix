@@ -12,14 +12,16 @@ rec {
   name = "everforest";
   type = "dark";
 
-  # Neutrals (dark -> light)
+  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
+  # background_0 darkest, climbing lighter toward the foreground);
+  # foreground_dim / foreground are named text anchors.
   neutrals = {
-    background_darkest = darken bg0 40; # derived — darkest, from background
-    background_dark = "#232a2e";
-    background = bg0;
-    surface = "#343f44";
-    overlay = "#475258";
-    muted = "#7a8478";
+    background_0 = darken bg0 40; # derived — darkest
+    background_1 = "#232a2e";
+    background_2 = bg0; # primary/default background (main canvas)
+    background_3 = "#343f44";
+    background_4 = "#475258";
+    background_5 = "#7a8478";
     foreground_dim = "#859289";
     foreground = "#d3c6aa";
   };
@@ -75,8 +77,8 @@ rec {
     warning = hues.orange;
     success = hues.green;
     info = hues.blue;
-    selection = neutrals.overlay;
+    selection = neutrals.background_4;
     cursor = neutrals.foreground;
-    border = neutrals.muted;
+    border = neutrals.background_5;
   };
 }

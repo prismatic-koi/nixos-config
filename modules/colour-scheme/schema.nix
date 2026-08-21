@@ -8,8 +8,8 @@
 # It is then free to be used by all other modules
 with lib;
 let
-  # themev2 (migration increment #1): a parallel schema — a semantic neutrals
-  # band (no baseX codes), an ANSI bright band, and a tailwind-inspired hue
+  # themev2 (migration increment #1): a parallel schema — a numbered neutral
+  # ramp (no baseX codes), an ANSI bright band, and a tailwind-inspired hue
   # palette (Tailwind hue names, with `brown` added and `maroon` reached via
   # luminance). Purely additive; no consumer reads it yet. Each slot is a
   # plain hex string, exactly like `theme` above. The sample schemes live one
@@ -33,18 +33,21 @@ let
     options = {
       name = mkOption { type = types.str; };
       type = mkOption { type = types.str; };
-      # Semantic neutrals band (dark -> light), no baseX codes. The default
-      # text and background colours are first-class slots here; roles that
-      # need them reference neutrals.foreground / neutrals.background.
+      # Neutral band, no baseX codes: background_0..background_5 is a strict
+      # luminance ramp (numeric order always reads background -> foreground,
+      # so background_0 is the darkest on a dark theme and the lightest on a
+      # light theme). foreground_dim and foreground are named text anchors.
+      # Roles that need the default text/background reference
+      # neutrals.foreground / a neutrals.background_N slot.
       neutrals = mkOption {
         type = types.submodule {
           options = mkSlots [
-            "background_darkest"
-            "background_dark"
-            "background"
-            "surface"
-            "overlay"
-            "muted"
+            "background_0"
+            "background_1"
+            "background_2"
+            "background_3"
+            "background_4"
+            "background_5"
             "foreground_dim"
             "foreground"
           ];

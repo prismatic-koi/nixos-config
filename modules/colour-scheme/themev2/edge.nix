@@ -14,14 +14,16 @@ rec {
   name = "edge";
   type = "dark";
 
-  # Neutrals (dark -> light)
+  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
+  # background_0 darkest, climbing lighter toward the foreground);
+  # foreground_dim / foreground are named text anchors.
   neutrals = {
-    background_darkest = "#202023";
-    background_dark = "#24262a";
-    background = "#2c2e34";
-    surface = "#33353f";
-    overlay = "#3b3e48";
-    muted = "#535c6a";
+    background_0 = "#202023";
+    background_1 = "#24262a";
+    background_2 = "#2c2e34"; # primary/default background (main canvas)
+    background_3 = "#33353f";
+    background_4 = "#3b3e48";
+    background_5 = "#535c6a";
     foreground_dim = "#758094";
     foreground = "#c5cdd9";
   };
@@ -77,8 +79,8 @@ rec {
     warning = hues.orange;
     success = hues.green;
     info = hues.blue;
-    selection = neutrals.overlay;
+    selection = neutrals.background_4;
     cursor = neutrals.foreground;
-    border = neutrals.muted;
+    border = neutrals.background_5;
   };
 }

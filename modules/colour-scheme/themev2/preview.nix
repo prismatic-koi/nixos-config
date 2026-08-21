@@ -25,12 +25,12 @@ let
       title = "Neutrals";
       band = "neutrals";
       slots = [
-        "background_darkest"
-        "background_dark"
-        "background"
-        "surface"
-        "overlay"
-        "muted"
+        "background_0"
+        "background_1"
+        "background_2"
+        "background_3"
+        "background_4"
+        "background_5"
         "foreground_dim"
         "foreground"
       ];
