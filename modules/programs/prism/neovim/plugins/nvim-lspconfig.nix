@@ -53,6 +53,12 @@
             add_lsp('nil_ls', {
             	settings = { ["nil"] = {
             		formatting = { command = { "nixfmt" } },
+            		nix = {
+            			flake = {
+            				autoArchive = true,
+            				autoEvalInputs = false,
+            			},
+            		},
             	} },
             })
             add_lsp('pylsp')
