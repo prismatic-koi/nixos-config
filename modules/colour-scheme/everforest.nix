@@ -4,7 +4,14 @@
   pkgs,
   ...
 }:
+let
+  themev2Data = import ./themev2/palette.nix { colourLib = import ./lib.nix; };
+in
 {
+  # Parallel base26 schema (migration increment #1). Additive: no consumer
+  # reads themev2 yet. See ./themev2/palette.nix and ./themev2/register.md.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "everforest") themev2Data.schemes.everforest;
+
   theme = lib.mkIf (config.nx.desktop.theme == "everforest") {
     name = "everforest";
     type = "dark";

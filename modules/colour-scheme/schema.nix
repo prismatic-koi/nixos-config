@@ -8,6 +8,108 @@
 # It is then free to be used by all other modules
 with lib;
 let
+  # themev2 (migration increment #1): a parallel, base24-derived schema.
+  # Purely additive — no consumer reads it yet. See ./themev2/palette.nix
+  # for the sample data and ./themev2/register.md for the divergence record.
+  colourLib = import ./lib.nix;
+  themev2Data = import ./themev2/palette.nix { inherit colourLib; };
+
+  # One palette slot: its resolved hex plus provenance metadata.
+  colourSlot = types.submodule {
+    options = {
+      value = mkOption { type = types.str; };
+      provenance = mkOption {
+        type = types.enum [
+          "upstream"
+          "derived"
+          "adjusted"
+        ];
+      };
+      source = mkOption {
+        type = types.str;
+        default = "";
+      };
+      method = mkOption {
+        type = types.str;
+        default = "";
+      };
+    };
+  };
+
+  mkSlots =
+    names:
+    listToAttrs (
+      map (
+        n:
+        nameValuePair n (mkOption {
+          type = colourSlot;
+        })
+      ) names
+    );
+
+  themev2Type = types.submodule {
+    options = {
+      name = mkOption { type = types.str; };
+      type = mkOption { type = types.str; };
+      palette = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "base00"
+            "base01"
+            "base02"
+            "base03"
+            "base04"
+            "base05"
+            "base06"
+            "base07"
+            "base10"
+            "base11"
+            "red"
+            "orange"
+            "yellow"
+            "green"
+            "cyan"
+            "blue"
+            "magenta"
+            "brown"
+            "bright_red"
+            "bright_orange"
+            "bright_yellow"
+            "bright_green"
+            "bright_cyan"
+            "bright_blue"
+            "bright_magenta"
+            "bright_brown"
+          ];
+        };
+      };
+      backgrounds = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "bg_red"
+            "bg_green"
+            "bg_blue"
+            "bg_yellow"
+            "bg_visual"
+          ];
+        };
+      };
+      roles = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "error"
+            "warning"
+            "success"
+            "info"
+            "selection"
+            "cursor"
+            "border"
+          ];
+        };
+      };
+    };
+  };
+
   themeType = types.submodule {
     options = {
       name = mkOption { type = types.str; };
@@ -79,6 +181,15 @@ in
         bg_blue = "#ddf4ff";
         bg_yellow = "#fff8c5";
       };
+    };
+
+    # Parallel base26 schema. Defaults to everforest; the sample scheme
+    # modules override it via mkIf on nx.desktop.theme, exactly parallel to
+    # `theme` above. Only edge, everforest and catppuccin-latte populate it
+    # in this increment; every other scheme falls back to this default.
+    themev2 = mkOption {
+      type = themev2Type;
+      default = themev2Data.schemes.everforest;
     };
   };
 }
