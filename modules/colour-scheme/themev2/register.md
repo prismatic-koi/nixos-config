@@ -1,10 +1,19 @@
 # themev2 divergence register
 
-This is the authoritative provenance record for the `themev2` base26 schema
-(migration increment #1). It lists every slot whose provenance is **derived**
-or **adjusted**, across the three sample schemes. The palette data lives in
+This is the authoritative provenance record for the `themev2` schema
+(migration increment #1) — a base24 spine plus an extended evocative-hue band
+(rosewater, flamingo, pink, mauve, maroon, peach, teal, sky, sapphire,
+lavender). It lists every slot whose provenance is **derived** or
+**adjusted**, across the three sample schemes. The palette data lives in
 `palette.nix`; the schema option lives in `../schema.nix`; the visual form of
 this register is `nix run .#theme-preview`.
+
+The hue band adds distinctions the base24 spine lacks on the hue axis (base24
+tiers luminance only, via the bright band). `colourLib` shifts luminance, not
+hue, so a derived hue is the nearest native accent lightened or darkened.
+Where a scheme has a single native colour for a family (e.g. one cyan for
+teal/sky/sapphire, one orange for peach, one magenta for mauve), the siblings
+are derived from it and kept as distinct slots rather than collapsed.
 
 ## Provenance model
 
@@ -59,6 +68,16 @@ its v1 orange `#e59676` has no upstream source. Both are recorded honestly as
 | `bright_blue` | `#82c0ee` | `lighten blue 15` |
 | `bright_magenta` | `#d99bed` | `lighten magenta 15` |
 | `bright_brown` | `#b78571` | `lighten brown 15` |
+| `rosewater` | `#ebb098` | `lighten orange 25` |
+| `flamingo` | `#ee8289` | `lighten red 12` |
+| `pink` | `#da9fed` | `lighten magenta 18` |
+| `mauve` | `#c27ed7` | `darken magenta 8` |
+| `maroon` | `#d4666c` | `darken red 10` |
+| `peach` | `#e79e80` | `lighten orange 8` |
+| `teal` | `#4f9ea4` | `darken cyan 15` |
+| `sky` | `#82c0ee` | `lighten blue 15` |
+| `sapphire` | `#61a3d3` | `darken blue 10` |
+| `lavender` | `#8cc6ef` | `lighten blue 22` |
 | `bg_red` | `#592b2d` | `darken red 62` |
 | `bg_green` | `#3c4c30` | `darken green 62` |
 | `bg_blue` | `#294559` | `darken blue 62` |
@@ -92,6 +111,16 @@ No adjusted slots — v1 matched upstream exactly.
 | `bright_blue` | `#92c5be` | `lighten blue 15` |
 | `bright_magenta` | `#dca8c0` | `lighten magenta 15` |
 | `bright_brown` | `#b88770` | `lighten brown 15` |
+| `rosewater` | `#ecb197` | `lighten orange 25` |
+| `flamingo` | `#e98d8f` | `lighten red 12` |
+| `pink` | `#ddabc3` | `lighten magenta 18` |
+| `mauve` | `#c48ca7` | `darken magenta 8` |
+| `maroon` | `#cf7173` | `darken red 10` |
+| `peach` | `#e8a080` | `lighten orange 8` |
+| `teal` | `#6fa37c` | `darken cyan 15` |
+| `sky` | `#92c5be` | `lighten blue 15` |
+| `sapphire` | `#72a8a1` | `darken blue 10` |
+| `lavender` | `#9bc9c3` | `lighten blue 22` |
 | `bg_red` | `#572f30` | `darken red 62` |
 | `bg_green` | `#3f4830` | `darken green 62` |
 | `bg_blue` | `#304744` | `darken blue 62` |
@@ -107,8 +136,11 @@ No adjusted slots — v1 matched upstream exactly.
 
 ## catppuccin-latte (light)
 
-No adjusted slots — the monotone band and accents all map to upstream latte
-colours.
+No adjusted slots — the monotone band, accents, and the full evocative-hue
+band all map to upstream latte colours. The ten hue slots (rosewater,
+flamingo, pink, mauve, maroon, peach, teal, sky, sapphire, lavender) are
+taken straight from `catppuccin/palette` (latte) and tagged `upstream`, so
+they carry no register row.
 
 ### derived
 

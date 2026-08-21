@@ -8,9 +8,10 @@
 # It is then free to be used by all other modules
 with lib;
 let
-  # themev2 (migration increment #1): a parallel, base24-derived schema.
-  # Purely additive — no consumer reads it yet. See ./themev2/palette.nix
-  # for the sample data and ./themev2/register.md for the divergence record.
+  # themev2 (migration increment #1): a parallel schema — a base24 spine plus
+  # an extended evocative-hue band. Purely additive; no consumer reads it yet.
+  # See ./themev2/palette.nix for the sample data and ./themev2/register.md
+  # for the divergence record.
   colourLib = import ./lib.nix;
   themev2Data = import ./themev2/palette.nix { inherit colourLib; };
 
@@ -91,6 +92,22 @@ let
             "bg_blue"
             "bg_yellow"
             "bg_visual"
+          ];
+        };
+      };
+      hues = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "rosewater"
+            "flamingo"
+            "pink"
+            "mauve"
+            "maroon"
+            "peach"
+            "teal"
+            "sky"
+            "sapphire"
+            "lavender"
           ];
         };
       };
@@ -183,7 +200,7 @@ in
       };
     };
 
-    # Parallel base26 schema. Defaults to everforest; the sample scheme
+    # Parallel themev2 schema. Defaults to everforest; the sample scheme
     # modules override it via mkIf on nx.desktop.theme, exactly parallel to
     # `theme` above. Only edge, everforest and catppuccin-latte populate it
     # in this increment; every other scheme falls back to this default.

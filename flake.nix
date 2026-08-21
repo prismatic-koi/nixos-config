@@ -171,7 +171,7 @@
         theme-preview = {
           type = "app";
           program = "${pkgs.callPackage ./modules/colour-scheme/themev2/preview.nix { }}/bin/theme-preview";
-          meta.description = "Render truecolor swatches for the themev2 base26 sample schemes";
+          meta.description = "Render truecolor swatches for the themev2 sample schemes";
         };
       });
 

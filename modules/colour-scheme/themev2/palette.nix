@@ -1,7 +1,13 @@
-# themev2 base26 palette data — the single source of truth for both the
-# NixOS module option (see ../schema.nix) and the truecolor swatch preview
-# (see ./preview.nix). Pure data: takes colourLib, returns the three sample
-# schemes plus the display grouping the preview walks.
+# themev2 palette data — the single source of truth for both the NixOS module
+# option (see ../schema.nix) and the truecolor swatch preview (see
+# ./preview.nix). Pure data: takes colourLib, returns the three sample schemes
+# plus the display grouping the preview walks.
+#
+# The palette is a base24 spine (24 base24 slots plus bright_orange and
+# bright_brown) with an extended evocative-hue band layered on top:
+# rosewater, flamingo, pink, mauve, maroon, peach, teal, sky, sapphire,
+# lavender. The hue band adds distinctions the base24 spine lacks on the hue
+# axis (base24 only tiers luminance via the bright band).
 #
 # Provenance model (three categories, one per slot):
 #   upstream — literal hex equal to the scheme's authoritative source.
@@ -100,6 +106,23 @@ let
         bright_magenta = der (brightMethod t "magenta" 15) (brighten t magenta 15);
         bright_brown = der (brightMethod t "brown" 15) (brighten t brown 15);
       };
+      # Extended hue band. edge upstream has none of these hues, so each is
+      # derived from the nearest native accent by luminance (colourLib shifts
+      # luminance only, not hue). peach/mauve/teal/sky/sapphire are derived
+      # from the single orange/magenta/cyan/blue they would otherwise collapse
+      # onto, so the slots stay distinct.
+      hues = {
+        rosewater = der "lighten orange 25" (lighten orange 25);
+        flamingo = der "lighten red 12" (lighten red 12);
+        pink = der "lighten magenta 18" (lighten magenta 18);
+        mauve = der "darken magenta 8" (darken magenta 8);
+        maroon = der "darken red 10" (darken red 10);
+        peach = der "lighten orange 8" (lighten orange 8);
+        teal = der "darken cyan 15" (darken cyan 15);
+        sky = der "lighten blue 15" (lighten blue 15);
+        sapphire = der "darken blue 10" (darken blue 10);
+        lavender = der "lighten blue 22" (lighten blue 22);
+      };
       backgrounds = {
         bg_red = der (tintMethod t "red" 62) (tint t red 62);
         bg_green = der (tintMethod t "green" 62) (tint t green 62);
@@ -165,6 +188,22 @@ let
         bright_magenta = der (brightMethod t "magenta" 15) (brighten t magenta 15);
         bright_brown = der (brightMethod t "brown" 15) (brighten t brown 15);
       };
+      # Extended hue band. everforest upstream has none of these hues, so each
+      # is derived from the nearest native accent by luminance. The siblings
+      # (peach/mauve/teal/sky/sapphire) are derived from the single native
+      # orange/magenta/cyan/blue so the slots stay distinct.
+      hues = {
+        rosewater = der "lighten orange 25" (lighten orange 25);
+        flamingo = der "lighten red 12" (lighten red 12);
+        pink = der "lighten magenta 18" (lighten magenta 18);
+        mauve = der "darken magenta 8" (darken magenta 8);
+        maroon = der "darken red 10" (darken red 10);
+        peach = der "lighten orange 8" (lighten orange 8);
+        teal = der "darken cyan 15" (darken cyan 15);
+        sky = der "lighten blue 15" (lighten blue 15);
+        sapphire = der "darken blue 10" (darken blue 10);
+        lavender = der "lighten blue 22" (lighten blue 22);
+      };
       backgrounds = {
         bg_red = der (tintMethod t "red" 62) (tint t red 62);
         bg_green = der (tintMethod t "green" 62) (tint t green 62);
@@ -228,6 +267,22 @@ let
         bright_magenta = der (brightMethod t "magenta" 12) (brighten t magenta 12);
         bright_brown = der (brightMethod t "brown" 12) (brighten t brown 12);
       };
+      # Extended hue band. latte carries all ten upstream — taken straight
+      # from catppuccin/palette (latte). Some duplicate an existing spine
+      # accent by value (peach==orange, mauve==magenta, teal==cyan); they are
+      # kept as distinct named slots, as catppuccin defines them.
+      hues = {
+        rosewater = up src "#dc8a78";
+        flamingo = up src "#dd7878";
+        pink = up src "#ea76cb";
+        mauve = up src "#8839ef";
+        maroon = up src "#e64553";
+        peach = up src "#fe640b";
+        teal = up src "#179299";
+        sky = up src "#04a5e5";
+        sapphire = up src "#209fb5";
+        lavender = up src "#7287fd";
+      };
       backgrounds = {
         bg_red = der (tintMethod t "red" 82) (tint t red 82);
         bg_green = der (tintMethod t "green" 82) (tint t green 82);
@@ -255,7 +310,7 @@ in
   # Display order the preview walks. Group titles are printed as headers.
   groups = [
     {
-      title = "Palette (base26)";
+      title = "Base24 spine";
       group = "palette";
       slots = [
         "base00"
@@ -276,6 +331,12 @@ in
         "blue"
         "magenta"
         "brown"
+      ];
+    }
+    {
+      title = "Brights";
+      group = "palette";
+      slots = [
         "bright_red"
         "bright_orange"
         "bright_yellow"
@@ -284,6 +345,22 @@ in
         "bright_blue"
         "bright_magenta"
         "bright_brown"
+      ];
+    }
+    {
+      title = "Evocative hues";
+      group = "hues";
+      slots = [
+        "rosewater"
+        "flamingo"
+        "pink"
+        "mauve"
+        "maroon"
+        "peach"
+        "teal"
+        "sky"
+        "sapphire"
+        "lavender"
       ];
     }
     {
