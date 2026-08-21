@@ -8,10 +8,11 @@
 # It is then free to be used by all other modules
 with lib;
 let
-  # themev2 (migration increment #1): a parallel schema — a base24 spine plus
-  # an extended evocative-hue band. Purely additive; no consumer reads it yet.
-  # See ./themev2/palette.nix for the sample data and ./themev2/register.md
-  # for the divergence record.
+  # themev2 (migration increment #1): a parallel schema — a base24 neutral
+  # spine, an ANSI bright band, and a tailwind-inspired hue palette (Tailwind
+  # hue names, with `brown` added and `maroon` reached via luminance). Purely
+  # additive; no consumer reads it yet. See ./themev2/palette.nix for the
+  # sample data and ./themev2/register.md for the divergence record.
   colourLib = import ./lib.nix;
   themev2Data = import ./themev2/palette.nix { inherit colourLib; };
 
@@ -52,7 +53,8 @@ let
     options = {
       name = mkOption { type = types.str; };
       type = mkOption { type = types.str; };
-      palette = mkOption {
+      # base24 monotone spine + extra backgrounds (the neutral band).
+      spine = mkOption {
         type = types.submodule {
           options = mkSlots [
             "base00"
@@ -65,14 +67,14 @@ let
             "base07"
             "base10"
             "base11"
-            "red"
-            "orange"
-            "yellow"
-            "green"
-            "cyan"
-            "blue"
-            "magenta"
-            "brown"
+          ];
+        };
+      };
+      # ANSI bright band. bright_red/yellow/green/cyan/blue/magenta map to
+      # kitty color9–color14; bright_orange and bright_brown are additions.
+      brights = mkOption {
+        type = types.submodule {
+          options = mkSlots [
             "bright_red"
             "bright_orange"
             "bright_yellow"
@@ -84,6 +86,33 @@ let
           ];
         };
       };
+      # Tailwind-inspired hue palette. 17 Tailwind hue names plus `brown`
+      # (Tailwind omits it; base24/ANSI need it). `maroon` is not a slot — it
+      # is reached via luminance (darken red).
+      hues = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "red"
+            "orange"
+            "amber"
+            "yellow"
+            "lime"
+            "green"
+            "emerald"
+            "teal"
+            "cyan"
+            "sky"
+            "blue"
+            "indigo"
+            "violet"
+            "purple"
+            "fuchsia"
+            "pink"
+            "rose"
+            "brown"
+          ];
+        };
+      };
       backgrounds = mkOption {
         type = types.submodule {
           options = mkSlots [
@@ -92,22 +121,6 @@ let
             "bg_blue"
             "bg_yellow"
             "bg_visual"
-          ];
-        };
-      };
-      hues = mkOption {
-        type = types.submodule {
-          options = mkSlots [
-            "rosewater"
-            "flamingo"
-            "pink"
-            "mauve"
-            "maroon"
-            "peach"
-            "teal"
-            "sky"
-            "sapphire"
-            "lavender"
           ];
         };
       };

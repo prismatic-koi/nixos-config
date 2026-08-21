@@ -2,10 +2,12 @@
 #   nix run .#theme-preview              # all sample schemes
 #   nix run .#theme-preview -- <scheme>  # one named scheme
 #
-# Each swatch block shows the slot name, the hex value and the provenance tag
-# (upstream / derived / adjusted) with a 24-bit ANSI colour block. The swatch
-# is the visual divergence register. Renders exact hex in a truecolor
-# terminal (e.g. kitty).
+# Output is grouped: neutrals (base24 spine), brights, the tailwind-inspired
+# hue palette, tinted backgrounds, and the role core. Each swatch block shows
+# the slot name, the hex value and the provenance tag (upstream / derived /
+# adjusted) with a 24-bit ANSI colour block. The swatch is the visual
+# divergence register. Renders exact hex in a truecolor terminal (e.g.
+# kitty).
 {
   lib,
   runCommand,

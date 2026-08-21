@@ -3,19 +3,34 @@
 # ./preview.nix). Pure data: takes colourLib, returns the three sample schemes
 # plus the display grouping the preview walks.
 #
-# The palette is a base24 spine (24 base24 slots plus bright_orange and
-# bright_brown) with an extended evocative-hue band layered on top:
-# rosewater, flamingo, pink, mauve, maroon, peach, teal, sky, sapphire,
-# lavender. The hue band adds distinctions the base24 spine lacks on the hue
-# axis (base24 only tiers luminance via the bright band).
+# Structure:
+#   - a base24 MONOTONE spine (base00–base07) plus extra backgrounds
+#     (base10/base11) — the neutral band;
+#   - a BRIGHT band kept for ANSI correctness (kitty color9–color14 map to
+#     bright_red/yellow/green/cyan/blue/magenta), plus bright_orange and
+#     bright_brown;
+#   - a TAILWIND-INSPIRED hue band that carries all the chromatic colour. It
+#     follows Tailwind's 17 chromatic hue names (red, orange, amber, yellow,
+#     lime, green, emerald, teal, cyan, sky, blue, indigo, violet, purple,
+#     fuchsia, pink, rose) with two documented adaptations:
+#       * `brown` is ADDED — Tailwind omits it, but base24/ANSI and terminals
+#         need it.
+#       * `maroon` is NOT a slot — it is reachable by luminance (darken red).
+#     This band REPLACES the old base24 accent band (base08–base0F) and the
+#     bespoke Catppuccin-named band; `magenta` maps onto Tailwind `fuchsia`.
+#   - computed tinted backgrounds and a universal role core.
 #
 # Provenance model (three categories, one per slot):
-#   upstream — literal hex equal to the scheme's authoritative source.
+#   upstream — literal hex present in the scheme's authoritative source. The
+#              slot may now carry a Tailwind name that differs from the source
+#              palette's own name for that hex; provenance tracks the hex, not
+#              the name.
 #   derived  — value produced by a Nix expression (a colourLib call, or an
-#              alias to another slot). Self-documenting; carries a `method`.
+#              alias). Self-documenting; carries a `method`. colourLib shifts
+#              luminance only, so a derived hue is the nearest native colour
+#              lightened or darkened.
 #   adjusted — literal hex that does NOT match the source. Carries a `source`
-#              note AND an inline comment, because the value form alone cannot
-#              reveal the divergence.
+#              note AND an inline comment.
 #
 # The divergence register (./register.md) is the authoritative provenance
 # record; it lists every derived and adjusted slot.
@@ -63,22 +78,42 @@ let
     let
       t = "dark";
       src = "sainnhe/edge (dark, default)";
-      # upstream accent literals
-      red = "#ec7279";
-      yellow = "#deb974";
-      green = "#a0c980";
-      cyan = "#5dbbc1";
-      blue = "#6cb6eb";
-      magenta = "#d38aea"; # upstream calls it "purple"
       fg = "#c5cdd9";
-      # edge has NO upstream orange — carried from the v1 theme (a divergence).
-      orange = "#e59676";
+      # native edge accents (upstream literals)
+      nred = "#ec7279";
+      nyellow = "#deb974";
+      ngreen = "#a0c980";
+      ncyan = "#5dbbc1";
+      nblue = "#6cb6eb";
+      npurple = "#d38aea";
+      # edge upstream has NO orange — carried from the v1 theme (adjusted).
+      norange = "#e59676";
+
+      # Tailwind-hue values. Upstream where a native colour lands nearest the
+      # Tailwind hue; otherwise derived from the nearest native by luminance.
+      red = nred;
+      orange = norange;
+      yellow = nyellow;
+      green = ngreen;
+      teal = ncyan; # edge cyan is a soft teal-cyan → Tailwind teal
+      cyan = lighten teal 10;
+      emerald = darken teal 10;
+      lime = lighten green 15;
+      amber = darken yellow 8;
+      sky = nblue; # edge blue is a sky blue → Tailwind sky
+      blue = darken sky 12;
+      indigo = darken blue 15;
+      violet = npurple; # edge purple → Tailwind violet
+      purple = lighten violet 6;
+      fuchsia = lighten violet 12;
+      pink = lighten violet 18;
+      rose = lighten red 6;
       brown = darken orange 25;
     in
     {
       name = "edge";
       type = t;
-      palette = {
+      spine = {
         base00 = up src "#2c2e34"; # bg0
         base01 = up src "#33353f"; # bg1
         base02 = up src "#3b3e48"; # bg3 (selection)
@@ -89,46 +124,43 @@ let
         base07 = der "lighten fg 20" (lighten fg 20);
         base10 = up src "#24262a"; # bg_dim (darker bg)
         base11 = up src "#202023"; # black (darkest bg)
-        red = up src red;
-        orange = adj src orange; # ADJUSTED: edge upstream has no orange slot
-        yellow = up src yellow;
-        green = up src green;
-        cyan = up src cyan;
-        blue = up src blue;
-        magenta = up src magenta;
-        brown = der "darken orange 25" brown;
+      };
+      brights = {
         bright_red = der (brightMethod t "red" 15) (brighten t red 15);
         bright_orange = der (brightMethod t "orange" 15) (brighten t orange 15);
         bright_yellow = der (brightMethod t "yellow" 15) (brighten t yellow 15);
         bright_green = der (brightMethod t "green" 15) (brighten t green 15);
         bright_cyan = der (brightMethod t "cyan" 15) (brighten t cyan 15);
         bright_blue = der (brightMethod t "blue" 15) (brighten t blue 15);
-        bright_magenta = der (brightMethod t "magenta" 15) (brighten t magenta 15);
+        bright_magenta = der (brightMethod t "fuchsia" 15) (brighten t fuchsia 15);
         bright_brown = der (brightMethod t "brown" 15) (brighten t brown 15);
       };
-      # Extended hue band. edge upstream has none of these hues, so each is
-      # derived from the nearest native accent by luminance (colourLib shifts
-      # luminance only, not hue). peach/mauve/teal/sky/sapphire are derived
-      # from the single orange/magenta/cyan/blue they would otherwise collapse
-      # onto, so the slots stay distinct.
       hues = {
-        rosewater = der "lighten orange 25" (lighten orange 25);
-        flamingo = der "lighten red 12" (lighten red 12);
-        pink = der "lighten magenta 18" (lighten magenta 18);
-        mauve = der "darken magenta 8" (darken magenta 8);
-        maroon = der "darken red 10" (darken red 10);
-        peach = der "lighten orange 8" (lighten orange 8);
-        teal = der "darken cyan 15" (darken cyan 15);
-        sky = der "lighten blue 15" (lighten blue 15);
-        sapphire = der "darken blue 10" (darken blue 10);
-        lavender = der "lighten blue 22" (lighten blue 22);
+        red = up src red;
+        orange = adj src orange; # ADJUSTED: edge upstream has no orange slot
+        amber = der "darken yellow 8" amber;
+        yellow = up src yellow;
+        lime = der "lighten green 15" lime;
+        green = up src green;
+        emerald = der "darken teal 10" emerald;
+        teal = up src teal;
+        cyan = der "lighten teal 10" cyan;
+        sky = up src sky;
+        blue = der "darken sky 12" blue;
+        indigo = der "darken blue 15" indigo;
+        violet = up src violet;
+        purple = der "lighten violet 6" purple;
+        fuchsia = der "lighten violet 12" fuchsia;
+        pink = der "lighten violet 18" pink;
+        rose = der "lighten red 6" rose;
+        brown = der "darken orange 25" brown; # ADAPTATION: not a Tailwind hue
       };
       backgrounds = {
         bg_red = der (tintMethod t "red" 62) (tint t red 62);
         bg_green = der (tintMethod t "green" 62) (tint t green 62);
         bg_blue = der (tintMethod t "blue" 62) (tint t blue 62);
         bg_yellow = der (tintMethod t "yellow" 62) (tint t yellow 62);
-        bg_visual = der (tintMethod t "magenta" 62) (tint t magenta 62);
+        bg_visual = der (tintMethod t "fuchsia" 62) (tint t fuchsia 62);
       };
       roles = {
         error = der "alias -> red" red;
@@ -146,21 +178,40 @@ let
     let
       t = "dark";
       src = "sainnhe/everforest (dark, medium)";
-      red = "#e67e80";
-      orange = "#e69875";
-      yellow = "#dbbc7f";
-      green = "#a7c080";
-      cyan = "#83c092"; # upstream calls it "aqua"
-      blue = "#7fbbb3";
-      magenta = "#d699b6"; # upstream calls it "purple"
       fg = "#d3c6aa";
       bg0 = "#2d353b";
+      # native everforest accents (upstream literals)
+      nred = "#e67e80";
+      norange = "#e69875";
+      nyellow = "#dbbc7f";
+      ngreen = "#a7c080";
+      naqua = "#83c092";
+      nblue = "#7fbbb3";
+      npurple = "#d699b6";
+
+      red = nred;
+      orange = norange;
+      yellow = nyellow;
+      green = ngreen;
+      emerald = naqua; # everforest aqua is a green-cyan → Tailwind emerald
+      teal = darken emerald 12;
+      blue = nblue; # everforest blue is a muted teal-blue → Tailwind blue
+      cyan = lighten blue 12;
+      sky = lighten blue 20;
+      indigo = darken blue 18;
+      fuchsia = npurple; # everforest purple is a dusty pink-purple → fuchsia
+      violet = darken fuchsia 10;
+      purple = lighten fuchsia 4;
+      pink = lighten fuchsia 12;
+      rose = lighten red 6;
+      amber = darken yellow 8;
+      lime = lighten green 15;
       brown = darken orange 25;
     in
     {
       name = "everforest";
       type = t;
-      palette = {
+      spine = {
         base00 = up src bg0; # bg0
         base01 = up src "#343f44"; # bg1
         base02 = up src "#475258"; # bg3 (selection)
@@ -171,45 +222,43 @@ let
         base07 = der "lighten fg 28" (lighten fg 28);
         base10 = up src "#232a2e"; # bg_dim (darker bg)
         base11 = der "darken bg0 40" (darken bg0 40);
-        red = up src red;
-        orange = up src orange;
-        yellow = up src yellow;
-        green = up src green;
-        cyan = up src cyan;
-        blue = up src blue;
-        magenta = up src magenta;
-        brown = der "darken orange 25" brown;
+      };
+      brights = {
         bright_red = der (brightMethod t "red" 15) (brighten t red 15);
         bright_orange = der (brightMethod t "orange" 15) (brighten t orange 15);
         bright_yellow = der (brightMethod t "yellow" 15) (brighten t yellow 15);
         bright_green = der (brightMethod t "green" 15) (brighten t green 15);
         bright_cyan = der (brightMethod t "cyan" 15) (brighten t cyan 15);
         bright_blue = der (brightMethod t "blue" 15) (brighten t blue 15);
-        bright_magenta = der (brightMethod t "magenta" 15) (brighten t magenta 15);
+        bright_magenta = der (brightMethod t "fuchsia" 15) (brighten t fuchsia 15);
         bright_brown = der (brightMethod t "brown" 15) (brighten t brown 15);
       };
-      # Extended hue band. everforest upstream has none of these hues, so each
-      # is derived from the nearest native accent by luminance. The siblings
-      # (peach/mauve/teal/sky/sapphire) are derived from the single native
-      # orange/magenta/cyan/blue so the slots stay distinct.
       hues = {
-        rosewater = der "lighten orange 25" (lighten orange 25);
-        flamingo = der "lighten red 12" (lighten red 12);
-        pink = der "lighten magenta 18" (lighten magenta 18);
-        mauve = der "darken magenta 8" (darken magenta 8);
-        maroon = der "darken red 10" (darken red 10);
-        peach = der "lighten orange 8" (lighten orange 8);
-        teal = der "darken cyan 15" (darken cyan 15);
-        sky = der "lighten blue 15" (lighten blue 15);
-        sapphire = der "darken blue 10" (darken blue 10);
-        lavender = der "lighten blue 22" (lighten blue 22);
+        red = up src red;
+        orange = up src orange;
+        amber = der "darken yellow 8" amber;
+        yellow = up src yellow;
+        lime = der "lighten green 15" lime;
+        green = up src green;
+        emerald = up src emerald;
+        teal = der "darken emerald 12" teal;
+        cyan = der "lighten blue 12" cyan;
+        sky = der "lighten blue 20" sky;
+        blue = up src blue;
+        indigo = der "darken blue 18" indigo;
+        violet = der "darken fuchsia 10" violet;
+        purple = der "lighten fuchsia 4" purple;
+        fuchsia = up src fuchsia;
+        pink = der "lighten fuchsia 12" pink;
+        rose = der "lighten red 6" rose;
+        brown = der "darken orange 25" brown; # ADAPTATION: not a Tailwind hue
       };
       backgrounds = {
         bg_red = der (tintMethod t "red" 62) (tint t red 62);
         bg_green = der (tintMethod t "green" 62) (tint t green 62);
         bg_blue = der (tintMethod t "blue" 62) (tint t blue 62);
         bg_yellow = der (tintMethod t "yellow" 62) (tint t yellow 62);
-        bg_visual = der (tintMethod t "magenta" 62) (tint t magenta 62);
+        bg_visual = der (tintMethod t "fuchsia" 62) (tint t fuchsia 62);
       };
       roles = {
         error = der "alias -> red" red;
@@ -227,19 +276,46 @@ let
     let
       t = "light";
       src = "catppuccin/palette (latte)";
-      red = "#d20f39"; # red
-      orange = "#fe640b"; # peach
-      yellow = "#df8e1d"; # yellow
-      green = "#40a02b"; # green
-      cyan = "#179299"; # teal
-      blue = "#1e66f5"; # blue
-      magenta = "#8839ef"; # mauve
+      # native latte colours (upstream literals). The comment names the source
+      # palette's own name; the slot it fills carries the nearest Tailwind name.
+      lred = "#d20f39"; # red
+      lmaroon = "#e64553"; # maroon → rose
+      lpeach = "#fe640b"; # peach → orange
+      lyellow = "#df8e1d"; # yellow
+      lgreen = "#40a02b"; # green
+      lteal = "#179299"; # teal
+      lsky = "#04a5e5"; # sky
+      lsapphire = "#209fb5"; # sapphire → cyan
+      lblue = "#1e66f5"; # blue
+      llavender = "#7287fd"; # lavender → indigo
+      lmauve = "#8839ef"; # mauve → violet
+      lpink = "#ea76cb"; # pink → fuchsia
+      lflamingo = "#dd7878"; # flamingo → pink
+
+      red = lred;
+      orange = lpeach;
+      yellow = lyellow;
+      green = lgreen;
+      teal = lteal;
+      cyan = lsapphire;
+      sky = lsky;
+      blue = lblue;
+      indigo = llavender;
+      violet = lmauve;
+      fuchsia = lpink;
+      pink = lflamingo;
+      rose = lmaroon;
+      # latte has no distinct colour in these regions → derived by luminance.
+      amber = darken yellow 8;
+      lime = lighten green 15;
+      emerald = lighten teal 12;
+      purple = lighten violet 12;
       brown = darken orange 30;
     in
     {
       name = "catppuccin-latte";
       type = t;
-      palette = {
+      spine = {
         base00 = up src "#eff1f5"; # base (main bg)
         base01 = up src "#e6e9ef"; # mantle
         base02 = up src "#ccd0da"; # surface0 (selection)
@@ -250,45 +326,43 @@ let
         base07 = up src "#7c7f93"; # overlay2
         base10 = up src "#dce0e8"; # crust (extra bg)
         base11 = up src "#bcc0cc"; # surface1 (extra bg)
-        red = up src red;
-        orange = up src orange;
-        yellow = up src yellow;
-        green = up src green;
-        cyan = up src cyan;
-        blue = up src blue;
-        magenta = up src magenta;
-        brown = der "darken orange 30" brown;
+      };
+      brights = {
         bright_red = der (brightMethod t "red" 12) (brighten t red 12);
         bright_orange = der (brightMethod t "orange" 12) (brighten t orange 12);
         bright_yellow = der (brightMethod t "yellow" 12) (brighten t yellow 12);
         bright_green = der (brightMethod t "green" 12) (brighten t green 12);
         bright_cyan = der (brightMethod t "cyan" 12) (brighten t cyan 12);
         bright_blue = der (brightMethod t "blue" 12) (brighten t blue 12);
-        bright_magenta = der (brightMethod t "magenta" 12) (brighten t magenta 12);
+        bright_magenta = der (brightMethod t "fuchsia" 12) (brighten t fuchsia 12);
         bright_brown = der (brightMethod t "brown" 12) (brighten t brown 12);
       };
-      # Extended hue band. latte carries all ten upstream — taken straight
-      # from catppuccin/palette (latte). Some duplicate an existing spine
-      # accent by value (peach==orange, mauve==magenta, teal==cyan); they are
-      # kept as distinct named slots, as catppuccin defines them.
       hues = {
-        rosewater = up src "#dc8a78";
-        flamingo = up src "#dd7878";
-        pink = up src "#ea76cb";
-        mauve = up src "#8839ef";
-        maroon = up src "#e64553";
-        peach = up src "#fe640b";
-        teal = up src "#179299";
-        sky = up src "#04a5e5";
-        sapphire = up src "#209fb5";
-        lavender = up src "#7287fd";
+        red = up src red;
+        orange = up src orange;
+        amber = der "darken yellow 8" amber;
+        yellow = up src yellow;
+        lime = der "lighten green 15" lime;
+        green = up src green;
+        emerald = der "lighten teal 12" emerald;
+        teal = up src teal;
+        cyan = up src cyan;
+        sky = up src sky;
+        blue = up src blue;
+        indigo = up src indigo;
+        violet = up src violet;
+        purple = der "lighten violet 12" purple;
+        fuchsia = up src fuchsia;
+        pink = up src pink;
+        rose = up src rose;
+        brown = der "darken orange 30" brown; # ADAPTATION: not a Tailwind hue
       };
       backgrounds = {
         bg_red = der (tintMethod t "red" 82) (tint t red 82);
         bg_green = der (tintMethod t "green" 82) (tint t green 82);
         bg_blue = der (tintMethod t "blue" 82) (tint t blue 82);
         bg_yellow = der (tintMethod t "yellow" 82) (tint t yellow 82);
-        bg_visual = der (tintMethod t "magenta" 82) (tint t magenta 82);
+        bg_visual = der (tintMethod t "fuchsia" 82) (tint t fuchsia 82);
       };
       roles = {
         error = der "alias -> red" red;
@@ -310,8 +384,8 @@ in
   # Display order the preview walks. Group titles are printed as headers.
   groups = [
     {
-      title = "Base24 spine";
-      group = "palette";
+      title = "Neutrals (base24 spine)";
+      group = "spine";
       slots = [
         "base00"
         "base01"
@@ -323,19 +397,11 @@ in
         "base07"
         "base10"
         "base11"
-        "red"
-        "orange"
-        "yellow"
-        "green"
-        "cyan"
-        "blue"
-        "magenta"
-        "brown"
       ];
     }
     {
-      title = "Brights";
-      group = "palette";
+      title = "Brights (ANSI)";
+      group = "brights";
       slots = [
         "bright_red"
         "bright_orange"
@@ -348,19 +414,27 @@ in
       ];
     }
     {
-      title = "Evocative hues";
+      title = "Tailwind-inspired hues";
       group = "hues";
       slots = [
-        "rosewater"
-        "flamingo"
-        "pink"
-        "mauve"
-        "maroon"
-        "peach"
+        "red"
+        "orange"
+        "amber"
+        "yellow"
+        "lime"
+        "green"
+        "emerald"
         "teal"
+        "cyan"
         "sky"
-        "sapphire"
-        "lavender"
+        "blue"
+        "indigo"
+        "violet"
+        "purple"
+        "fuchsia"
+        "pink"
+        "rose"
+        "brown"
       ];
     }
     {
