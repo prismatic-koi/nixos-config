@@ -449,8 +449,8 @@
             customMessageText = "";
             customMessageLabel = primary;
             toolPendingBg = bg_dim;
-            toolSuccessBg = colourLib.darken bg_green 35;
-            toolErrorBg = colourLib.darken bg_red 35;
+            toolSuccessBg = if type == "light" then bg_green else colourLib.darken bg_green 35;
+            toolErrorBg = if type == "light" then bg_red else colourLib.darken bg_red 35;
             toolTitle = primary;
             toolOutput = "";
             # Markdown
