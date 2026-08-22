@@ -19,7 +19,7 @@ let
   #   grey1       -> neutrals.foreground_dim (dim text)
   #   grey2       -> neutrals.foreground
   #   statusline1 -> hues.indigo
-  #   statusline2 -> neutrals.foreground_dim
+  #   statusline2 -> hues.yellow            (warm; v1 gold #df8e1d == themev2 yellow on latte)
   #   statusline3 -> hues.red
   #
   # Property names use lowerCamelCase (QML convention):
@@ -68,7 +68,7 @@ let
 
         // statusline (no themev2 slot; see gap mapping above)
         readonly property color statusline1: "${theme.hues.indigo}"
-        readonly property color statusline2: "${theme.neutrals.foreground_dim}"
+        readonly property color statusline2: "${theme.hues.yellow}"
         readonly property color statusline3: "${theme.hues.red}"
 
         // metadata

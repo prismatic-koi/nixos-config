@@ -13,7 +13,7 @@ with config.themev2;
 #   grey1       -> neutrals.foreground_dim (dim text)
 #   grey2       -> neutrals.foreground
 #   statusline1 -> hues.indigo
-#   statusline2 -> neutrals.foreground_dim
+#   statusline2 -> hues.yellow          (warm; v1 gold #df8e1d == themev2 yellow on latte)
 #   statusline3 -> hues.red
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
@@ -210,7 +210,7 @@ with config.themev2;
             --system-theme-grey1: ${neutrals.foreground_dim};
             --system-theme-grey2: ${neutrals.foreground};
             --system-theme-statusline1: ${hues.indigo};
-            --system-theme-statusline2: ${neutrals.foreground_dim};
+            --system-theme-statusline2: ${hues.yellow};
             --system-theme-statusline3: ${hues.red};
             --system-theme-bg_dim: ${neutrals.background_dim};
             --system-theme-bg0: ${neutrals.background_0};
