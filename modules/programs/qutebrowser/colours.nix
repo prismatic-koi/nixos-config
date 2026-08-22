@@ -8,150 +8,152 @@
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
     home-manager.users.${config.nx.username} = {
       programs.qutebrowser.settings = {
-        colors = with config.theme; {
+        colors = with config.themev2; {
           webpage = {
             preferred_color_scheme = type;
           };
           keyhint = {
-            fg = foreground;
-            suffix.fg = red;
-            bg = bg0;
+            fg = neutrals.foreground;
+            suffix.fg = hues.red;
+            bg = neutrals.background_0;
           };
           messages = {
             error = {
-              bg = bg_red;
-              fg = foreground;
+              bg = backgrounds.bg_red;
+              fg = neutrals.foreground;
             };
             info = {
-              bg = bg_blue;
-              fg = foreground;
+              bg = backgrounds.bg_blue;
+              fg = neutrals.foreground;
             };
             warning = {
-              bg = bg_yellow;
-              fg = foreground;
+              bg = backgrounds.bg_yellow;
+              fg = neutrals.foreground;
             };
           };
           prompts = {
-            bg = bg0;
-            fg = foreground;
+            bg = neutrals.background_0;
+            fg = neutrals.foreground;
           };
           completion = {
             category = {
-              bg = bg3;
-              fg = foreground;
+              bg = neutrals.background_3;
+              fg = neutrals.foreground;
             };
-            fg = foreground;
+            fg = neutrals.foreground;
             even = {
-              bg = bg0;
+              bg = neutrals.background_0;
             };
             odd = {
-              bg = bg_dim;
+              bg = neutrals.background_dim;
             };
             match = {
-              fg = red;
+              fg = hues.red;
             };
             item = {
               selected = {
-                fg = foreground;
-                bg = bg_yellow;
+                fg = neutrals.foreground;
+                bg = backgrounds.bg_yellow;
                 border = {
-                  top = bg_yellow;
-                  bottom = bg_yellow;
+                  top = backgrounds.bg_yellow;
+                  bottom = backgrounds.bg_yellow;
                 };
               };
             };
             scrollbar = {
-              bg = bg_dim;
-              fg = foreground;
+              bg = neutrals.background_dim;
+              fg = neutrals.foreground;
             };
           };
           hints = {
-            bg = bg0;
-            fg = foreground;
+            bg = neutrals.background_0;
+            fg = neutrals.foreground;
             match = {
-              fg = red;
+              fg = hues.red;
             };
           };
           statusbar = {
             normal = {
-              fg = foreground;
-              bg = bg2;
+              fg = neutrals.foreground;
+              bg = neutrals.background_2;
             };
             insert = {
-              fg = bg0;
-              bg = statusline1;
+              fg = neutrals.background_0;
+              # statusline1 has no themev2 equivalent (dropped in the migration).
+              # Chosen accent for the insert/active-mode indicator: hues.indigo.
+              bg = hues.indigo;
             };
             caret = {
-              fg = bg0;
-              bg = purple;
+              fg = neutrals.background_0;
+              bg = hues.purple;
             };
             command = {
-              fg = foreground;
-              bg = bg0;
+              fg = neutrals.foreground;
+              bg = neutrals.background_0;
             };
             passthrough = {
-              fg = bg0;
-              bg = blue;
+              fg = neutrals.background_0;
+              bg = hues.blue;
             };
             url = {
               error = {
-                fg = orange;
+                fg = hues.orange;
               };
-              fg = foreground;
+              fg = neutrals.foreground;
               hover = {
-                fg = blue;
+                fg = hues.blue;
               };
               success = {
                 http = {
-                  fg = green;
+                  fg = hues.green;
                 };
                 https = {
-                  fg = green;
+                  fg = hues.green;
                 };
               };
             };
           };
           tabs = {
             bar = {
-              bg = bg_dim;
+              bg = neutrals.background_dim;
             };
             even = {
-              bg = bg0;
-              fg = foreground;
+              bg = neutrals.background_0;
+              fg = neutrals.foreground;
             };
             odd = {
-              bg = bg0;
-              fg = foreground;
+              bg = neutrals.background_0;
+              fg = neutrals.foreground;
             };
             selected = {
               even = {
-                bg = bg2;
-                fg = foreground;
+                bg = neutrals.background_2;
+                fg = neutrals.foreground;
               };
               odd = {
-                bg = bg2;
-                fg = foreground;
+                bg = neutrals.background_2;
+                fg = neutrals.foreground;
               };
             };
             indicator = {
-              start = blue;
-              stop = green;
-              error = red;
+              start = hues.blue;
+              stop = hues.green;
+              error = hues.red;
             };
           };
           downloads = {
-            bar.bg = bg0;
+            bar.bg = neutrals.background_0;
             error = {
-              bg = red;
-              fg = bg0;
+              bg = hues.red;
+              fg = neutrals.background_0;
             };
             start = {
-              bg = blue;
-              fg = bg0;
+              bg = hues.blue;
+              fg = neutrals.background_0;
             };
             stop = {
-              bg = green;
-              fg = bg0;
+              bg = hues.green;
+              fg = neutrals.background_0;
             };
             system = {
               bg = "rgb";
@@ -182,7 +184,7 @@
         #         body.with-listing-chooser.listing-chooser-collapsed .listing-chooser .grippy,
         #         #header, #sr-header-area, #header-bottom-left, .side #search, .searchexpando, #header-bottom-right, .listing-chooser, .expando-button
         #         {
-        #           background-color: ${config.theme.bg0};
+        #           background-color: ${config.themev2.neutrals.background_0};
         #         }
         #         /* hide other stuff */
         #         .subreddit-list {

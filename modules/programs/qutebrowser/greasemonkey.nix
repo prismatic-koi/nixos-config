@@ -23,9 +23,9 @@ let
         builtins.replaceStrings
           [ "#cee5fd" "#7ebaff" "#0a396e" ]
           [
-            config.theme.blue
-            config.theme.green
-            config.theme.bg0
+            config.themev2.hues.blue
+            config.themev2.hues.green
+            config.themev2.neutrals.background_0
           ]
           qutebrowserLogoSvgRaw;
       # The upstream SVG is pretty-printed across ~100 lines. Embedded
@@ -43,9 +43,9 @@ in
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
     home-manager.users.${config.nx.username} = {
-      programs.qutebrowser.greasemonkey = with config.theme; [
+      programs.qutebrowser.greasemonkey = with config.themev2; [
         # css styling for the qute://start logo, themed at eval time from
-        # config.theme — see qutebrowserLogoSvgThemed above
+        # config.themev2 — see qutebrowserLogoSvgThemed above
         (pkgs.writeText "startpage-logo.css.js"
           # css
           ''
@@ -72,34 +72,38 @@ in
             // ==/UserScript==
             GM_addStyle(`
             :root {
-              --system-theme-fg: ${foreground};
-              --system-theme-primary: ${primary};
-              --system-theme-secondary: ${secondary};
-              --system-theme-red: ${red};
-              --system-theme-orange: ${orange};
-              --system-theme-yellow: ${yellow};
-              --system-theme-green: ${green};
-              --system-theme-aqua: ${aqua};
-              --system-theme-blue: ${blue};
-              --system-theme-purple: ${purple};
-              --system-theme-grey0: ${grey0};
-              --system-theme-grey1: ${grey1};
-              --system-theme-grey2: ${grey2};
-              --system-theme-statusline1: ${statusline1};
-              --system-theme-statusline2: ${statusline2};
-              --system-theme-statusline3: ${statusline3};
-              --system-theme-bg_dim: ${bg_dim};
-              --system-theme-bg0: ${bg0};
-              --system-theme-bg1: ${bg1};
-              --system-theme-bg2: ${bg2};
-              --system-theme-bg3: ${bg3};
-              --system-theme-bg4: ${bg4};
-              --system-theme-bg5: ${bg5};
-              --system-theme-bg_visual: ${bg_visual};
-              --system-theme-bg_red: ${bg_red};
-              --system-theme-bg_green: ${bg_green};
-              --system-theme-bg_blue: ${bg_blue};
-              --system-theme-bg_yellow: ${bg_yellow};
+              --system-theme-fg: ${neutrals.foreground};
+              --system-theme-primary: ${roles.primary};
+              --system-theme-secondary: ${roles.secondary};
+              --system-theme-red: ${hues.red};
+              --system-theme-orange: ${hues.orange};
+              --system-theme-yellow: ${hues.yellow};
+              --system-theme-green: ${hues.green};
+              --system-theme-aqua: ${hues.teal};
+              --system-theme-blue: ${hues.blue};
+              --system-theme-purple: ${hues.purple};
+              --system-theme-grey0: ${neutrals.background_5};
+              --system-theme-grey1: ${neutrals.foreground_dim};
+              --system-theme-grey2: ${neutrals.foreground};
+              /* statusline1/2/3 have no themev2 equivalent (dropped in the
+                 migration). Chosen accents: statusline1 -> hues.indigo (matches
+                 the qutebrowser insert-mode statusbar choice in colours.nix),
+                 statusline2 -> neutrals.foreground_dim, statusline3 -> hues.red. */
+              --system-theme-statusline1: ${hues.indigo};
+              --system-theme-statusline2: ${neutrals.foreground_dim};
+              --system-theme-statusline3: ${hues.red};
+              --system-theme-bg_dim: ${neutrals.background_dim};
+              --system-theme-bg0: ${neutrals.background_0};
+              --system-theme-bg1: ${neutrals.background_1};
+              --system-theme-bg2: ${neutrals.background_2};
+              --system-theme-bg3: ${neutrals.background_3};
+              --system-theme-bg4: ${neutrals.background_4};
+              --system-theme-bg5: ${neutrals.background_5};
+              --system-theme-bg_visual: ${backgrounds.bg_visual};
+              --system-theme-bg_red: ${backgrounds.bg_red};
+              --system-theme-bg_green: ${backgrounds.bg_green};
+              --system-theme-bg_blue: ${backgrounds.bg_blue};
+              --system-theme-bg_yellow: ${backgrounds.bg_yellow};
             }
             `)
           ''
