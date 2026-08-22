@@ -12,8 +12,9 @@ let
   # ramp (no baseX codes), an ANSI bright band, and a tailwind-inspired hue
   # palette (Tailwind hue names, with `brown` added and `maroon` reached via
   # luminance). Purely additive; no consumer reads it yet. Each slot is a
-  # plain hex string, exactly like `theme` above. The sample schemes live one
-  # per file in ./themev2/ (edge.nix, everforest.nix, catppuccin-latte.nix);
+  # plain hex string, exactly like `theme` above. The schemes live one per
+  # file in ./themev2/ (edge.nix, everforest.nix, catppuccin-latte.nix,
+  # github-light.nix, gruvbox.nix, nightcity-kabuki.nix, onedark.nix);
   # provenance is recorded as inline comments in those files.
   colourLib = import ./lib.nix;
   defaultThemev2 = import ./themev2/everforest.nix { inherit colourLib; };
@@ -200,10 +201,10 @@ in
       };
     };
 
-    # Parallel themev2 schema. Defaults to everforest; the sample scheme
-    # modules override it via mkIf on nx.desktop.theme, exactly parallel to
-    # `theme` above. Only edge, everforest and catppuccin-latte populate it
-    # in this increment; every other scheme falls back to this default.
+    # Parallel themev2 schema. Defaults to everforest; each scheme module
+    # overrides it via mkIf on nx.desktop.theme, exactly parallel to `theme`
+    # above. edge, everforest, catppuccin-latte, github-light, gruvbox
+    # (light + dark), nightcity-kabuki and onedark populate it.
     themev2 = mkOption {
       type = themev2Type;
       default = defaultThemev2;
