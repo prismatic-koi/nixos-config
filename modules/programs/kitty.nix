@@ -9,6 +9,17 @@ let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
 
+  inherit (config.nx.colourScheme.visualiserGradient) baseIndex colours;
+
+  # Truecolor visualiser ramp: color16 .. color(baseIndex + len - 1), one
+  # line per entry, in order. Shared with modules/programs/ncmpcpp.nix via
+  # modules/colour-scheme/gradient.nix — see there for rationale.
+  visualiserGradientConf = lib.concatStrings (
+    lib.imap0 (
+      i: colour: "    color${builtins.toString (baseIndex + i)}                 ${colour}\n"
+    ) colours
+  );
+
   kittyconf = ''
     # Disable config auto-reload entirely (issue #2198, #2180-class FD-exhaustion
     # incidents). kitty >= 0.47.1 spawns a `kitten __watch_conf__` watcher that
@@ -106,6 +117,11 @@ let
     #: white
     color7                     ${neutrals.foreground_dim}
     color15                    ${neutrals.foreground}
+
+    #: ncmpcpp visualiser gradient (color16-color39) — see
+    #: modules/colour-scheme/gradient.nix for the single shared source of
+    #: truth this ramp is generated from.
+    ${visualiserGradientConf}
   '';
 in
 {
