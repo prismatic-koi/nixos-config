@@ -8,74 +8,32 @@ let
   colourLib = import ../colour-scheme/lib.nix;
   inherit (colourLib) mix nearestXterm256;
 
-  # Gradient hue order for the visualiser ramp: all 18 Tailwind-inspired
-  # config.themev2.hues slots, taken directly (one hue per band, no
-  # interpolation between a handful of anchors).
+  # Gradient hue order for the visualiser ramp: a short, monotonic,
+  # cool-to-warm sequence, close to the ncmpcpp default. Index 0 renders at
+  # the centre of the mirrored stereo display, so cool hues come first.
   #
-  # A small "sensible-looking" anchor list (e.g. blue/cyan/green/yellow/
-  # orange/red) is unsafe: many hue slots are darken/lighten DERIVATIONS of
-  # a shared upstream colour rather than perceptually independent hues (e.g.
-  # everforest's cyan = lighten blue 12, edge's blue = darken sky 12). Such a
-  # list can land entirely on derived slots for a given scheme and collapse
-  # to a handful of near-duplicate xterm-256 indices after quantisation (as
-  # low as 5 distinct bands out of 18, measured on everforest) — fewer bands
-  # than the six-name ncmpcpp default this replaces.
-  #
-  # The order below is NOT the natural rainbow sequence. It interleaves hues
-  # that are frequently derived from one another in the scheme files
-  # (emerald/teal/cyan, indigo/violet/purple, orange/amber, rose/brown) so
-  # they land far apart in the sequence. Combined with the monotonic
-  # luminance climb below, that spread pushes same-cluster hues onto
-  # different points of the climb, which reliably breaks the quantisation
-  # ties a naive rainbow order leaves in place. Chosen and verified
-  # empirically against all seven scheme files (eight variants, counting
-  # gruvbox's light and dark) — see the distinct-band table in the PR
-  # description — not by reasoning about which anchors "should" work.
+  # This intentionally does not chase distinct xterm-256 indices per band.
+  # Per the caveat on `hues` in modules/colour-scheme/schema.nix, the 18
+  # hue slots are not 18 perceptually independent colours — several are
+  # darken/lighten derivations of a handful of upstream anchors. A gradient
+  # can land on near-duplicate adjacent indices for some schemes; that is
+  # an expected property of a gradient, not a defect.
   visualiserHueOrder = [
-    "red"
-    "teal"
-    "fuchsia"
-    "yellow"
     "blue"
-    "brown"
-    "emerald"
-    "purple"
-    "amber"
-    "sky"
-    "rose"
-    "green"
-    "violet"
-    "orange"
     "cyan"
-    "pink"
+    "emerald"
+    "green"
     "lime"
-    "indigo"
+    "yellow"
+    "orange"
+    "red"
   ];
 
-  visualiserSteps = builtins.length visualiserHueOrder; # 18
-
-  # Secondary luminance axis: darken the low (bottom) end of the ramp and
-  # lighten the high (top) end, mixing straight toward black/white rather
-  # than the multiplicative darken/lighten so the shift behaves predictably
-  # on both very dark and very light schemes. +-30% was the smallest
-  # magnitude tried that cleared >=14 distinct bands of 18 on every scheme
-  # file.
-  visualiserLuminanceMagnitude = 30;
+  visualiserSteps = builtins.length visualiserHueOrder;
 
   rampColors =
     hues: hueOrder: n:
-    map (
-      i:
-      let
-        name = builtins.elemAt hueOrder i;
-        base = hues.${name};
-        pct = ((i / (n - 1.0)) * 2 - 1) * visualiserLuminanceMagnitude;
-      in
-      if pct < 0 then
-        mix base "#000000" (builtins.floor (-pct))
-      else
-        mix base "#ffffff" (builtins.floor pct)
-    ) (lib.range 0 (n - 1));
+    map (i: hues.${builtins.elemAt hueOrder i}) (lib.range 0 (n - 1));
 
   visualizerColor = lib.concatMapStringsSep "," (
     color: builtins.toString (nearestXterm256 color + 1)
