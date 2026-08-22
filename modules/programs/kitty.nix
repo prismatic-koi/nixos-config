@@ -4,11 +4,10 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
-  background = if type == "dark" then bg0 else bg_dim;
 
   kittyconf = ''
     # Disable config auto-reload entirely (issue #2198, #2180-class FD-exhaustion
@@ -44,69 +43,69 @@ let
 
 
 
-    foreground                 ${foreground}
-    background                 ${background}
-    selection_foreground       ${grey2}
-    selection_background       ${bg_visual}
+    foreground                 ${neutrals.foreground}
+    background                 ${neutrals.background_0}
+    selection_foreground       ${neutrals.foreground_dim}
+    selection_background       ${roles.selection}
 
-    cursor                     ${if isLinux then green else foreground}
-    cursor_text_color          ${bg1}
+    cursor                     ${if isLinux then hues.green else roles.cursor}
+    cursor_text_color          ${neutrals.background_1}
 
-    url_color                  ${blue}
+    url_color                  ${hues.blue}
 
-    active_border_color        ${green}
-    inactive_border_color      ${bg5}
-    bell_border_color          ${orange}
+    active_border_color        ${hues.green}
+    inactive_border_color      ${roles.border}
+    bell_border_color          ${hues.orange}
     visual_bell_color          none
 
     wayland_titlebar_color     system
     macos_titlebar_color       system
 
-    active_tab_background      ${bg0}
-    active_tab_foreground      ${foreground}
-    inactive_tab_background    ${bg2}
-    inactive_tab_foreground    ${grey2}
-    tab_bar_background         ${bg1}
+    active_tab_background      ${neutrals.background_0}
+    active_tab_foreground      ${neutrals.foreground}
+    inactive_tab_background    ${neutrals.background_2}
+    inactive_tab_foreground    ${neutrals.foreground_dim}
+    tab_bar_background         ${neutrals.background_1}
     tab_bar_margin_color       none
 
-    mark1_foreground           ${bg0}
-    mark1_background           ${blue}
-    mark2_foreground           ${bg0}
-    mark2_background           ${foreground}
-    mark3_foreground           ${bg0}
-    mark3_background           ${purple}
+    mark1_foreground           ${neutrals.background_0}
+    mark1_background           ${hues.blue}
+    mark2_foreground           ${neutrals.background_0}
+    mark2_background           ${neutrals.foreground}
+    mark3_foreground           ${neutrals.background_0}
+    mark3_background           ${hues.purple}
 
     #: black
-    color0                     ${bg1}
-    color8                     ${bg2}
+    color0                     ${neutrals.background_1}
+    color8                     ${neutrals.background_2}
 
     #: red
-    color1                     ${red}
-    color9                     ${red}
+    color1                     ${hues.red}
+    color9                     ${brights.bright_red}
 
     #: green
-    color2                     ${green}
-    color10                    ${green}
+    color2                     ${hues.green}
+    color10                    ${brights.bright_green}
 
     #: yellow
-    color3                     ${yellow}
-    color11                    ${yellow}
+    color3                     ${hues.yellow}
+    color11                    ${brights.bright_yellow}
 
     #: blue
-    color4                     ${blue}
-    color12                    ${blue}
+    color4                     ${hues.blue}
+    color12                    ${brights.bright_blue}
 
     #: magenta
-    color5                     ${purple}
-    color13                    ${purple}
+    color5                     ${hues.purple}
+    color13                    ${brights.bright_magenta}
 
     #: cyan
-    color6                     ${aqua}
-    color14                    ${aqua}
+    color6                     ${hues.cyan}
+    color14                    ${brights.bright_cyan}
 
     #: white
-    color7                     ${grey1}
-    color15                    ${grey2}
+    color7                     ${neutrals.foreground_dim}
+    color15                    ${neutrals.foreground}
   '';
 in
 {
