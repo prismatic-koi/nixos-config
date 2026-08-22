@@ -8,6 +8,125 @@
 # It is then free to be used by all other modules
 with lib;
 let
+  # themev2 (migration increment #1): a parallel schema — a numbered neutral
+  # ramp (no baseX codes), an ANSI bright band, and a tailwind-inspired hue
+  # palette (Tailwind hue names, with `brown` added and `maroon` reached via
+  # luminance). Purely additive; no consumer reads it yet. Each slot is a
+  # plain hex string, exactly like `theme` above. The sample schemes live one
+  # per file in ./themev2/ (edge.nix, everforest.nix, catppuccin-latte.nix);
+  # provenance is recorded as inline comments in those files.
+  colourLib = import ./lib.nix;
+  defaultThemev2 = import ./themev2/everforest.nix { inherit colourLib; };
+
+  mkSlots =
+    names:
+    listToAttrs (
+      map (
+        n:
+        nameValuePair n (mkOption {
+          type = types.str;
+        })
+      ) names
+    );
+
+  themev2Type = types.submodule {
+    options = {
+      name = mkOption { type = types.str; };
+      type = mkOption { type = types.str; };
+      # Neutral band, no baseX codes: background_0..background_5 is a strict
+      # luminance ramp (numeric order always reads background -> foreground,
+      # so background_0 is the darkest on a dark theme and the lightest on a
+      # light theme). foreground_dim and foreground are named text anchors.
+      # Roles that need the default text/background reference
+      # neutrals.foreground / a neutrals.background_N slot.
+      neutrals = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "background_0"
+            "background_1"
+            "background_2"
+            "background_3"
+            "background_4"
+            "background_5"
+            "foreground_dim"
+            "foreground"
+          ];
+        };
+      };
+      # ANSI bright band. bright_red/yellow/green/cyan/blue/magenta map to
+      # kitty color9–color14; bright_orange and bright_brown are additions.
+      brights = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "bright_red"
+            "bright_orange"
+            "bright_yellow"
+            "bright_green"
+            "bright_cyan"
+            "bright_blue"
+            "bright_magenta"
+            "bright_brown"
+          ];
+        };
+      };
+      # Tailwind-inspired hue palette. 17 Tailwind hue names plus `brown`
+      # (Tailwind omits it; base24/ANSI need it). `maroon` is not a slot — it
+      # is reached via luminance (darken red).
+      hues = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "red"
+            "orange"
+            "amber"
+            "yellow"
+            "lime"
+            "green"
+            "emerald"
+            "teal"
+            "cyan"
+            "sky"
+            "blue"
+            "indigo"
+            "violet"
+            "purple"
+            "fuchsia"
+            "pink"
+            "rose"
+            "brown"
+          ];
+        };
+      };
+      backgrounds = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "bg_red"
+            "bg_green"
+            "bg_blue"
+            "bg_yellow"
+            "bg_visual"
+          ];
+        };
+      };
+      # Universal role core. Does not duplicate neutrals — no foreground /
+      # background roles; consumers reference neutrals for those.
+      roles = mkOption {
+        type = types.submodule {
+          options = mkSlots [
+            "primary"
+            "secondary"
+            "error"
+            "warning"
+            "success"
+            "info"
+            "selection"
+            "cursor"
+            "border"
+          ];
+        };
+      };
+    };
+  };
+
   themeType = types.submodule {
     options = {
       name = mkOption { type = types.str; };
@@ -79,6 +198,15 @@ in
         bg_blue = "#ddf4ff";
         bg_yellow = "#fff8c5";
       };
+    };
+
+    # Parallel themev2 schema. Defaults to everforest; the sample scheme
+    # modules override it via mkIf on nx.desktop.theme, exactly parallel to
+    # `theme` above. Only edge, everforest and catppuccin-latte populate it
+    # in this increment; every other scheme falls back to this default.
+    themev2 = mkOption {
+      type = themev2Type;
+      default = defaultThemev2;
     };
   };
 }

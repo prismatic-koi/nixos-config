@@ -4,7 +4,14 @@
   pkgs,
   ...
 }:
+let
+  edgeThemev2 = import ./themev2/edge.nix { colourLib = import ./lib.nix; };
+in
 {
+  # Parallel themev2 schema (migration increment #1). Additive: no consumer
+  # reads themev2 yet. See ./themev2/edge.nix.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "edge") edgeThemev2;
+
   theme = lib.mkIf (config.nx.desktop.theme == "edge") {
     name = "edge";
     type = "dark";
