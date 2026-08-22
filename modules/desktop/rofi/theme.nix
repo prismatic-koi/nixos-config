@@ -7,6 +7,7 @@
 with config.themev2;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
+    # placeholder-color uses neutrals.foreground_dim (v1 grey1 -> dim text).
     home-manager.users.${config.nx.username}.home.file.".config/rofi/theme.rasi".text = ''
       * {
         background-color: transparent;
@@ -35,7 +36,7 @@ with config.themev2;
       }
       entry {
         padding: 10px;
-        placeholder-color: ${neutrals.foreground_dim}; # v1 grey1 -> dim text
+        placeholder-color: ${neutrals.foreground_dim};
       }
       listview {
         margin: 5px 0px 0px 0px;
