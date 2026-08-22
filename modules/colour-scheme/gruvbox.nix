@@ -3,7 +3,17 @@
   lib,
   ...
 }:
+let
+  gruvboxThemev2 = import ./themev2/gruvbox.nix { colourLib = import ./lib.nix; };
+in
 {
+  # Parallel themev2 schema (migration increment #1). Additive: no consumer
+  # reads themev2 yet. See ./themev2/gruvbox.nix.
+  themev2 = lib.mkMerge [
+    (lib.mkIf (config.nx.desktop.theme == "gruvbox-light") gruvboxThemev2.light)
+    (lib.mkIf (config.nx.desktop.theme == "gruvbox-dark") gruvboxThemev2.dark)
+  ];
+
   theme = lib.mkMerge [
     (lib.mkIf (config.nx.desktop.theme == "gruvbox-light") {
       name = "gruvbox-light";

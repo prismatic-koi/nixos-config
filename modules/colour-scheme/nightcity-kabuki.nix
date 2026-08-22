@@ -4,7 +4,14 @@
   pkgs,
   ...
 }:
+let
+  nightcityKabukiThemev2 = import ./themev2/nightcity-kabuki.nix { colourLib = import ./lib.nix; };
+in
 {
+  # Parallel themev2 schema (migration increment #1). Additive: no consumer
+  # reads themev2 yet. See ./themev2/nightcity-kabuki.nix.
+  themev2 = lib.mkIf (config.nx.desktop.theme == "nightcity-kabuki") nightcityKabukiThemev2;
+
   theme = lib.mkIf (config.nx.desktop.theme == "nightcity-kabuki") {
     name = "nightcity-kabuki";
     type = "dark";

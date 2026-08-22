@@ -17,6 +17,11 @@ let
     edge = import ./edge.nix { inherit colourLib; };
     everforest = import ./everforest.nix { inherit colourLib; };
     catppuccin-latte = import ./catppuccin-latte.nix { inherit colourLib; };
+    github-light = import ./github-light.nix { inherit colourLib; };
+    gruvbox-light = (import ./gruvbox.nix { inherit colourLib; }).light;
+    gruvbox-dark = (import ./gruvbox.nix { inherit colourLib; }).dark;
+    nightcity-kabuki = import ./nightcity-kabuki.nix { inherit colourLib; };
+    onedark = import ./onedark.nix { inherit colourLib; };
   };
 
   # Display order the preview walks. Group titles are printed as headers.
