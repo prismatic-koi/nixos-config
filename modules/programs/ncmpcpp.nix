@@ -5,39 +5,15 @@
   ...
 }:
 let
-  colourLib = import ../colour-scheme/lib.nix;
-  inherit (colourLib) mix nearestXterm256;
+  inherit (config.nx.colourScheme.visualiserGradient) baseIndex colours;
 
-  # Gradient hue order for the visualiser ramp: a short, monotonic,
-  # cool-to-warm sequence, close to the ncmpcpp default. Index 0 renders at
-  # the centre of the mirrored stereo display, so cool hues come first.
-  #
-  # This intentionally does not chase distinct xterm-256 indices per band.
-  # Per the caveat on `hues` in modules/colour-scheme/schema.nix, the 18
-  # hue slots are not 18 perceptually independent colours — several are
-  # darken/lighten derivations of a handful of upstream anchors. A gradient
-  # can land on near-duplicate adjacent indices for some schemes; that is
-  # an expected property of a gradient, not a defect.
-  visualiserHueOrder = [
-    "blue"
-    "cyan"
-    "emerald"
-    "green"
-    "lime"
-    "yellow"
-    "orange"
-    "red"
-  ];
-
-  visualiserSteps = builtins.length visualiserHueOrder;
-
-  rampColors =
-    hues: hueOrder: n:
-    map (i: hues.${builtins.elemAt hueOrder i}) (lib.range 0 (n - 1));
-
-  visualizerColor = lib.concatMapStringsSep "," (
-    color: builtins.toString (nearestXterm256 color + 1)
-  ) (rampColors config.themev2.hues visualiserHueOrder visualiserSteps);
+  # ncmpcpp's visualizer_color list value is the palette index + 1 (off by
+  # one). The colour list and base index come from
+  # modules/colour-scheme/gradient.nix — the single shared source of truth
+  # also read by modules/programs/kitty.nix.
+  visualizerColor = lib.concatMapStringsSep "," (i: builtins.toString (baseIndex + i + 1)) (
+    lib.range 0 (builtins.length colours - 1)
+  );
 in
 {
   options = {
