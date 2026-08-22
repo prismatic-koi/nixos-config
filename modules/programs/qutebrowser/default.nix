@@ -39,8 +39,8 @@
         # macOS dmenu replacement using choose-gui (native GUI, keyboard-friendly)
         # choose-gui reads from stdin and outputs selection to stdout, just like dmenu
         ${pkgs.choose-gui}/bin/choose -f 'JetbrainsMono Nerd Font' -c '${
-          builtins.substring 1 6 config.theme.green
-        }' -b '${builtins.substring 1 6 config.theme.bg2}' -s 20
+          builtins.substring 1 6 config.themev2.hues.green
+        }' -b '${builtins.substring 1 6 config.themev2.neutrals.background_2}' -s 20
       '';
 
       macos-password-prompt = pkgs.writeShellScriptBin "macos-password-prompt" ''
