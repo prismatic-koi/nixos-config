@@ -30,6 +30,7 @@ let
       title = "Neutrals";
       band = "neutrals";
       slots = [
+        "background_dim"
         "background_0"
         "background_1"
         "background_2"

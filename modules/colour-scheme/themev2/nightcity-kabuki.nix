@@ -13,11 +13,13 @@ rec {
   name = "nightcity-kabuki";
   type = "dark";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
-  # background_0 darkest, climbing lighter toward the foreground);
-  # foreground_dim / foreground are named text anchors.
+  # Neutrals: background_0 is the primary/default background; background_1..5
+  # climbs lighter toward the foreground; foreground_dim / foreground are
+  # named text anchors. No distinct shade sits below background_0 (it is
+  # already v1's bg_dim), so background_dim is set equal.
   neutrals = {
-    background_0 = "#1b1b1b"; # primary/default background (bg_dim)
+    background_dim = "#1b1b1b"; # no lower shade below background_0 (bg_dim); equal
+    background_0 = "#1b1b1b"; # bg_dim
     background_1 = "#282828"; # bg0
     background_2 = "#393633"; # bg2
     background_3 = "#4a4542"; # bg3

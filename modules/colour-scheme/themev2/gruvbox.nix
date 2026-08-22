@@ -13,11 +13,13 @@ in
     name = "gruvbox-light";
     type = "light";
 
-    # Neutrals: background_0..5 is a strict luminance ramp (light theme ->
-    # background_0 lightest, climbing darker toward the foreground);
-    # foreground_dim / foreground are named text anchors.
+    # Neutrals: background_0 is the primary/default background; background_1..5
+    # is a strict luminance ramp climbing darker toward the foreground;
+    # foreground_dim / foreground are named text anchors. No shade sits below
+    # background_0 in this light scheme, so background_dim is set equal to it.
     neutrals = {
-      background_0 = "#fbf1c7"; # primary/default background (bg0)
+      background_dim = "#fbf1c7"; # no lower shade on this light scheme; equal to background_0
+      background_0 = "#fbf1c7"; # bg0
       background_1 = "#ebdbb2"; # bg1
       background_2 = "#d5c4a1"; # bg2
       background_3 = "#bdae93"; # bg3
@@ -88,11 +90,13 @@ in
     name = "gruvbox-dark";
     type = "dark";
 
-    # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
-    # background_0 darkest, climbing lighter toward the foreground);
-    # foreground_dim / foreground are named text anchors.
+    # Neutrals: background_0 is the primary/default background; background_1..5
+    # climbs lighter toward the foreground; foreground_dim / foreground are
+    # named text anchors. v1's bg_dim equals bg0 for this scheme, so no
+    # distinct shade sits below background_0 — background_dim is set equal.
     neutrals = {
-      background_0 = "#282828"; # primary/default background (bg0)
+      background_dim = "#282828"; # v1 bg_dim == bg0 for this scheme; equal to background_0
+      background_0 = "#282828"; # bg0
       background_1 = "#3c3836"; # bg1
       background_2 = "#504945"; # bg2
       background_3 = "#665c54"; # bg3

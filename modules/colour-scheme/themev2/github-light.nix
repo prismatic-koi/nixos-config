@@ -10,11 +10,13 @@ rec {
   name = "github-light";
   type = "light";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (light theme ->
-  # background_0 lightest, climbing darker toward the foreground);
-  # foreground_dim / foreground are named text anchors.
+  # Neutrals: background_0 is the primary/default background; background_1..5
+  # is a strict luminance ramp climbing darker toward the foreground;
+  # foreground_dim / foreground are named text anchors. No shade sits below
+  # background_0 in this light scheme, so background_dim is set equal to it.
   neutrals = {
-    background_0 = "#ffffff"; # primary/default background (canvas.default)
+    background_dim = "#ffffff"; # no lower shade on this light scheme; equal to background_0
+    background_0 = "#ffffff"; # canvas.default
     background_1 = "#f6f8fa"; # canvas.subtle
     background_2 = "#eaeef2"; # border.muted
     background_3 = "#d0d7de"; # border.default

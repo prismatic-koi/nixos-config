@@ -12,16 +12,25 @@ rec {
   name = "everforest";
   type = "dark";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
-  # background_0 darkest, climbing lighter toward the foreground);
-  # foreground_dim / foreground are named text anchors.
+  # Neutrals: background_0 is the primary/default background; background_dim
+  # is the recessed shade below it; background_1..5 climb lighter toward the
+  # foreground. foreground_dim / foreground are named text anchors.
+  #
+  # Re-anchored (was background_2). The old background_0 (`darken bg0 40`)
+  # was a synthetic "derived, darkest" filler with no upstream provenance and
+  # no role reference — dropped rather than kept as an unlabelled extra dim
+  # step. background_1 ("#232a2e", upstream bg_dim) becomes background_dim.
+  # Only 3 raised surfaces exist above the primary, so background_4 and
+  # background_5 duplicate background_3 — noted, no further distinct shade
+  # is available.
   neutrals = {
-    background_0 = darken bg0 40; # derived — darkest
-    background_1 = "#232a2e";
-    background_2 = bg0; # primary/default background (main canvas)
-    background_3 = "#343f44";
-    background_4 = "#475258";
-    background_5 = "#7a8478";
+    background_dim = "#232a2e"; # upstream bg_dim — recessed below background_0
+    background_0 = bg0;
+    background_1 = "#343f44";
+    background_2 = "#475258";
+    background_3 = "#7a8478";
+    background_4 = "#7a8478"; # no further raised surface; duplicated from background_3
+    background_5 = "#7a8478"; # no further raised surface; duplicated from background_3
     foreground_dim = "#859289";
     foreground = "#d3c6aa";
   };

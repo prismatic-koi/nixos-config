@@ -14,16 +14,25 @@ rec {
   name = "edge";
   type = "dark";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
-  # background_0 darkest, climbing lighter toward the foreground);
-  # foreground_dim / foreground are named text anchors.
+  # Neutrals: background_0 is the primary/default background; background_dim
+  # is the recessed shade below it; background_1..5 climb lighter toward the
+  # foreground. foreground_dim / foreground are named text anchors.
+  #
+  # Re-anchored (was background_2). The old background_0 ("#202023") was a
+  # synthetic "derived, darkest" filler with no upstream provenance and no
+  # role reference — dropped rather than kept as an unlabelled extra dim
+  # step. background_1 ("#24262a", upstream bg_dim) becomes background_dim.
+  # Only 3 raised surfaces exist above the primary, so background_4 and
+  # background_5 duplicate background_3 — noted, no further distinct shade
+  # is available.
   neutrals = {
-    background_0 = "#202023";
-    background_1 = "#24262a";
-    background_2 = "#2c2e34"; # primary/default background (main canvas)
-    background_3 = "#33353f";
-    background_4 = "#3b3e48";
-    background_5 = "#535c6a";
+    background_dim = "#24262a"; # upstream bg_dim — recessed below background_0
+    background_0 = "#2c2e34";
+    background_1 = "#33353f";
+    background_2 = "#3b3e48";
+    background_3 = "#535c6a";
+    background_4 = "#535c6a"; # no further raised surface; duplicated from background_3
+    background_5 = "#535c6a"; # no further raised surface; duplicated from background_3
     foreground_dim = "#758094";
     foreground = "#c5cdd9";
   };
