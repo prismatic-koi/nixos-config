@@ -5,11 +5,11 @@
   ...
 }:
 let
-  theme = config.theme;
+  theme = config.themev2;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.theme.name == "edge")
+    lib.mkIf (config.themev2.name == "edge")
       [
         {
           plugin = pkgs.vimPlugins.edge;
@@ -33,38 +33,38 @@ in
                 pattern = "edge",
                 callback = function()
                   vim.api.nvim_set_hl(0, "ObsidianTodo", {
-                    fg = "${theme.purple}",
+                    fg = "${theme.hues.purple}",
                     bold = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianDone", {
-                    fg = "${theme.green}",
+                    fg = "${theme.hues.green}",
                     bold = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianRightArrow", {
-                    fg = "${theme.purple}",
+                    fg = "${theme.hues.purple}",
                     bold = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianTilde", {
-                    fg = "${theme.orange}",
+                    fg = "${theme.hues.orange}",
                     bold = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianRefText", {
-                    fg = "${theme.blue}",
+                    fg = "${theme.hues.blue}",
                   })
                   vim.api.nvim_set_hl(0, "ObsidianExtLinkIcon", {
-                    fg = "${theme.blue}",
+                    fg = "${theme.hues.blue}",
                   })
                   vim.api.nvim_set_hl(0, "ObsidianTag", {
-                    fg = "${theme.blue}",
+                    fg = "${theme.hues.blue}",
                     italic = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianBullet", {
-                    fg = "${theme.grey0}",
+                    fg = "${theme.neutrals.background_5}",
                     bold = true,
                   })
                   vim.api.nvim_set_hl(0, "ObsidianHighlightText", {
-                    fg = "${theme.bg0}",
-                    bg = "${theme.primary}",
+                    fg = "${theme.neutrals.background_0}",
+                    bg = "${theme.roles.primary}",
                   })
                 end,
               })

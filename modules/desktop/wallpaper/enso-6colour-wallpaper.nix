@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 let
   resolution = config.nx.desktop.wallpaper.resolution;
   variant = config.nx.desktop.wallpaper.variant;
@@ -17,13 +17,13 @@ in
           {
             text =
               let
-                colourbg = bg_dim;
-                colour1 = red;
-                colour2 = orange;
-                colour3 = yellow;
-                colour4 = green;
-                colour5 = blue;
-                colour6 = purple;
+                colourbg = neutrals.background_dim;
+                colour1 = hues.red;
+                colour2 = hues.orange;
+                colour3 = hues.yellow;
+                colour4 = hues.green;
+                colour5 = hues.blue;
+                colour6 = hues.purple;
               in
               # svg
               ''
@@ -85,13 +85,13 @@ in
           {
             text =
               let
-                colourbg = bg_dim;
-                colour1 = red;
-                colour2 = orange;
-                colour3 = yellow;
-                colour4 = green;
-                colour5 = blue;
-                colour6 = purple;
+                colourbg = neutrals.background_dim;
+                colour1 = hues.red;
+                colour2 = hues.orange;
+                colour3 = hues.yellow;
+                colour4 = hues.green;
+                colour5 = hues.blue;
+                colour6 = hues.purple;
               in
               # svg
               ''

@@ -6,7 +6,7 @@
 }:
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-  theme = config.theme;
+  theme = config.themev2;
   inherit (lib.generators) mkLuaInline;
 in
 {
@@ -127,15 +127,20 @@ in
                       col = {
                         active_border =
                           let
-                            # rainbow border colors in order
-                            colors = with theme; [
-                              red
-                              orange
-                              yellow
-                              green
-                              aqua
-                              blue
-                              purple
+                            # rainbow border colors in order. v1 `aqua` has no
+                            # themev2 slot; it maps to hues.teal — exact on
+                            # edge/github-light/gruvbox/nightcity, close on
+                            # latte/onedark (where hues.cyan is the exact match).
+                            # teal chosen for majority-scheme parity and to keep
+                            # firefox/qutebrowser consistent (issue #2814).
+                            colors = [
+                              theme.hues.red
+                              theme.hues.orange
+                              theme.hues.yellow
+                              theme.hues.green
+                              theme.hues.teal
+                              theme.hues.blue
+                              theme.hues.purple
                             ];
                             toRgba = color: "rgba(${builtins.substring 1 6 color}ff)";
                           in
@@ -143,7 +148,7 @@ in
                             colors = map toRgba colors;
                             angle = 45;
                           };
-                        inactive_border = "rgba(${builtins.substring 1 6 (theme.bg2)}ff)";
+                        inactive_border = "rgba(${builtins.substring 1 6 (theme.neutrals.background_2)}ff)";
                       };
                       layout = "dwindle";
                     };

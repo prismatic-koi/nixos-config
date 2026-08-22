@@ -45,13 +45,13 @@
               '';
             };
             # config.home-manager.users.${config.nx.username}.home.file."nixos-logo".source;
-            color = with config.theme; {
-              "1" = "${yellow}";
-              "2" = "${green}";
-              "3" = "${blue}";
-              "4" = "${purple}";
-              "5" = "${red}";
-              "6" = "${orange}";
+            color = with config.themev2; {
+              "1" = "${hues.yellow}";
+              "2" = "${hues.green}";
+              "3" = "${hues.blue}";
+              "4" = "${hues.purple}";
+              "5" = "${hues.red}";
+              "6" = "${hues.orange}";
             };
           };
           display = {

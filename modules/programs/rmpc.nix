@@ -173,7 +173,7 @@
               '';
           };
           xdg.configFile."rmpc/themes/custom.ron".text =
-            with config.theme;
+            with config.themev2;
             # rust
             ''
               #![enable(implicit_some)]
@@ -192,20 +192,20 @@
                   preview_label_style: (fg: "yellow"),
                   preview_metadata_group_style: (fg: "yellow", modifiers: "Bold"),
                   tab_bar: (
-                      active_style: (fg: "black", bg: "${primary}", modifiers: "Bold"),
+                      active_style: (fg: "black", bg: "${roles.primary}", modifiers: "Bold"),
                       inactive_style: (),
                       border_style: None,
                   ),
-                  highlighted_item_style: (fg: "${primary}", modifiers: "Bold"),
-                  current_item_style: (fg: "black", bg: "${primary}", modifiers: "Bold"),
-                  borders_style: (fg: "${secondary}"),
+                  highlighted_item_style: (fg: "${roles.primary}", modifiers: "Bold"),
+                  current_item_style: (fg: "black", bg: "${roles.primary}", modifiers: "Bold"),
+                  borders_style: (fg: "${roles.secondary}"),
                   highlight_border_style: (fg: "blue"),
                   symbols: (song: "", dir: "", playlist: "", marker: "M", ellipsis: "..."),
                   progress_bar: (
                       symbols: ["[", "=", ">", " ", "]"],
                       track_style: None,
-                      elapsed_style: (fg: "${primary}"),
-                      thumb_style: (fg: "${primary}"),
+                      elapsed_style: (fg: "${roles.primary}"),
+                      thumb_style: (fg: "${roles.primary}"),
                   ),
                   scrollbar: None,
                   song_table_format: [
@@ -222,8 +222,8 @@
                           width: "35%",
                       ),
                       (
-                          prop: (kind: Property(Album), style: (fg: "${secondary}"),
-                              default: (kind: Text("Unknown Album"), style: (fg: "${secondary}"))
+                          prop: (kind: Property(Album), style: (fg: "${roles.secondary}"),
+                              default: (kind: Text("Unknown Album"), style: (fg: "${roles.secondary}"))
                           ),
                           width: "30%",
                       ),

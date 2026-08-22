@@ -4,7 +4,7 @@
   lib,
   ...
 }:
-with config.theme;
+with config.themev2;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.home = {
@@ -18,7 +18,7 @@ with config.theme;
             import subprocess
             from datetime import datetime
 
-            ROFI_STYLE = 'listview { enabled: false;} inputbar { children: [entry]; border-color: ${orange};} entry { placeholder: "Add To-do Item"; }'
+            ROFI_STYLE = 'listview { enabled: false;} inputbar { children: [entry]; border-color: ${hues.orange};} entry { placeholder: "Add To-do Item"; }'
             OBSIDIAN_DAILIES_DIR = os.path.expanduser("~/documents/obsidian/dailies")
             TODO_MARKER = "## To-do List"
 
