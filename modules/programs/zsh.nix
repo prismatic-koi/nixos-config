@@ -81,7 +81,8 @@ in
             autosuggestion = {
               enable = true;
               # Use theme color on NixOS, default on darwin
-              highlight = lib.mkIf (isLinux && config ? theme) "fg=${config.theme.grey1}";
+              # v1 grey1 (dim text) -> themev2 neutrals.foreground_dim (issue #2814)
+              highlight = lib.mkIf (isLinux && config ? themev2) "fg=${config.themev2.neutrals.foreground_dim}";
             };
 
             syntaxHighlighting.enable = true;

@@ -86,11 +86,13 @@ in
               --system-theme-grey1: ${neutrals.foreground_dim};
               --system-theme-grey2: ${neutrals.foreground};
               /* statusline1/2/3 have no themev2 equivalent (dropped in the
-                 migration). Chosen accents: statusline1 -> hues.indigo (matches
-                 the qutebrowser insert-mode statusbar choice in colours.nix),
-                 statusline2 -> neutrals.foreground_dim, statusline3 -> hues.red. */
+                 migration). A statusline slot carries status, so each maps to a
+                 hue, never a grey: statusline1 -> hues.indigo (matches the
+                 qutebrowser insert-mode statusbar choice in colours.nix),
+                 statusline2 -> hues.yellow (warm; v1 gold #df8e1d == themev2
+                 yellow on latte), statusline3 -> hues.red. */
               --system-theme-statusline1: ${hues.indigo};
-              --system-theme-statusline2: ${neutrals.foreground_dim};
+              --system-theme-statusline2: ${hues.yellow};
               --system-theme-statusline3: ${hues.red};
               --system-theme-bg_dim: ${neutrals.background_dim};
               --system-theme-bg0: ${neutrals.background_0};

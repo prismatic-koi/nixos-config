@@ -15,11 +15,11 @@ let
       hash = "sha256-EreIuni6/XR0428rO4Lbi2usIreOyPWKm7kJJA2Nwqo=";
     };
   };
-  theme = config.theme;
+  theme = config.themev2;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.theme.name == "github-light")
+    lib.mkIf (config.themev2.name == "github-light")
       [
         {
           plugin = github-nvim-theme;
@@ -31,51 +31,51 @@ in
               	groups = {
               		all = {
               			ObsidianTodo = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               				style = "bold",
               			},
               			ObsidianDone = {
-              				fg = "${theme.green}",
+              				fg = "${theme.hues.green}",
               				bg = "none",
               				style = "bold",
               			},
               			ObsidianRightArrow = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               				style = "bold",
               			},
               			ObsidianTilde = {
-              				fg = "${theme.orange}",
+              				fg = "${theme.hues.orange}",
               				bg = "none",
               				style = "bold",
               			},
               			ObsidianRefText = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               				style = "NONE", -- no underline for obsidian links
               			},
               			ObsidianExtLinkIcon = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               			},
               			ObsidianTag = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               				style = "italic",
               			},
               			["@markup.heading.1.markdown"] = {
-              				fg = "${theme.blue}",
+              				fg = "${theme.hues.blue}",
               				bg = "none",
               				style = "bold",
               			},
               			["@markup.heading.2.markdown"] = {
-              				fg = "${theme.green}",
+              				fg = "${theme.hues.green}",
               				bg = "none",
               				style = "bold",
               			},
               			["@markup.heading.3.markdown"] = {
-              				fg = "${theme.purple}",
+              				fg = "${theme.hues.purple}",
               				bg = "none",
               				style = "bold",
               			},

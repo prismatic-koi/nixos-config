@@ -4,7 +4,7 @@
   lib,
   ...
 }:
-with config.theme;
+with config.themev2;
 {
   imports = [
     # rofi launcher scripts

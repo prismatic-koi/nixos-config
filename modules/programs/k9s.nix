@@ -104,116 +104,119 @@
             ];
           };
         };
-        skins.skin = with config.theme; {
+        # Colours source from config.themev2 (issue #2814). v1 `grey1` (dim
+        # text, no themev2 slot) maps to neutrals.foreground_dim; `primary` maps
+        # to roles.primary.
+        skins.skin = with config.themev2; {
           k9s = {
             body = {
-              fgColor = foreground;
-              bgColor = bg0;
-              logoColor = green;
+              fgColor = neutrals.foreground;
+              bgColor = neutrals.background_0;
+              logoColor = hues.green;
             };
             prompt = {
-              fgColor = foreground;
-              bgColor = bg0;
-              suggestColor = orange;
+              fgColor = neutrals.foreground;
+              bgColor = neutrals.background_0;
+              suggestColor = hues.orange;
             };
             info = {
-              fgColor = grey1;
-              sectionColor = green;
+              fgColor = neutrals.foreground_dim;
+              sectionColor = hues.green;
             };
             dialog = {
-              fgColor = foreground;
-              bgColor = bg0;
-              buttonFgColor = foreground;
-              buttonBgColor = green;
-              buttonFocusFgColor = bg1;
-              buttonFocusBgColor = blue;
-              labelFgColor = orange;
-              fieldFgColor = blue;
+              fgColor = neutrals.foreground;
+              bgColor = neutrals.background_0;
+              buttonFgColor = neutrals.foreground;
+              buttonBgColor = hues.green;
+              buttonFocusFgColor = neutrals.background_1;
+              buttonFocusBgColor = hues.blue;
+              labelFgColor = hues.orange;
+              fieldFgColor = hues.blue;
             };
             frame = {
               border = {
-                fgColor = green;
-                focusColor = green;
+                fgColor = hues.green;
+                focusColor = hues.green;
               };
               menu = {
-                fgColor = grey1;
-                keyColor = yellow;
-                numKeyColor = yellow;
+                fgColor = neutrals.foreground_dim;
+                keyColor = hues.yellow;
+                numKeyColor = hues.yellow;
               };
               crumbs = {
-                fgColor = bg1;
-                bgColor = green;
-                activeColor = yellow;
+                fgColor = neutrals.background_1;
+                bgColor = hues.green;
+                activeColor = hues.yellow;
               };
               status = {
-                newColor = blue;
-                modifyColor = green;
-                addColor = grey1;
-                pendingColor = orange;
-                errorColor = red;
-                highlightColor = yellow;
-                killColor = purple;
-                completedColor = grey1;
+                newColor = hues.blue;
+                modifyColor = hues.green;
+                addColor = neutrals.foreground_dim;
+                pendingColor = hues.orange;
+                errorColor = hues.red;
+                highlightColor = hues.yellow;
+                killColor = hues.purple;
+                completedColor = neutrals.foreground_dim;
               };
               title = {
-                fgColor = blue;
-                bgColor = bg0;
-                highlightColor = purple;
-                counterColor = foreground;
-                filterColor = blue;
+                fgColor = hues.blue;
+                bgColor = neutrals.background_0;
+                highlightColor = hues.purple;
+                counterColor = neutrals.foreground;
+                filterColor = hues.blue;
               };
             };
             views = {
               charts = {
-                bgColor = bg0;
+                bgColor = neutrals.background_0;
                 defaultDialColors = [
-                  green
-                  red
+                  hues.green
+                  hues.red
                 ];
                 defaultChartColors = [
-                  green
-                  red
+                  hues.green
+                  hues.red
                 ];
               };
               table = {
-                fgColor = yellow;
-                bgColor = bg0;
-                cursorFgColor = bg1;
-                cursorBgColor = blue;
-                markColor = yellow;
+                fgColor = hues.yellow;
+                bgColor = neutrals.background_0;
+                cursorFgColor = neutrals.background_1;
+                cursorBgColor = hues.blue;
+                markColor = hues.yellow;
                 header = {
-                  fgColor = grey1;
-                  bgColor = bg0;
-                  sorterColor = orange;
+                  fgColor = neutrals.foreground_dim;
+                  bgColor = neutrals.background_0;
+                  sorterColor = hues.orange;
                 };
               };
               xray = {
-                fgColor = blue;
-                bgColor = bg0;
-                cursorColor = foreground;
-                graphicColor = yellow;
+                fgColor = hues.blue;
+                bgColor = neutrals.background_0;
+                cursorColor = neutrals.foreground;
+                graphicColor = hues.yellow;
                 showIcons = false;
               };
               yaml = {
-                keyColor = green;
-                colonColor = grey1;
-                valueColor = grey1;
+                keyColor = hues.green;
+                colonColor = neutrals.foreground_dim;
+                valueColor = neutrals.foreground_dim;
               };
               logs = {
-                fgColor = grey1;
-                bgColor = bg0;
+                fgColor = neutrals.foreground_dim;
+                bgColor = neutrals.background_0;
                 indicator = {
-                  fgColor = blue;
-                  bgColor = bg0;
-                  toggleOnColor = primary;
-                  toggleOffColor = grey1;
+                  fgColor = hues.blue;
+                  bgColor = neutrals.background_0;
+                  toggleOnColor = roles.primary;
+                  toggleOffColor = neutrals.foreground_dim;
                 };
               };
               help = {
-                fgColor = grey1;
-                bgColor = bg0;
+                fgColor = neutrals.foreground_dim;
+                bgColor = neutrals.background_0;
                 indicator = {
-                  fgColor = blue;
+                  fgColor = hues.blue;
                 };
               };
             };

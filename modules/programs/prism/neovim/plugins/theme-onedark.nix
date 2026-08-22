@@ -5,11 +5,11 @@
   ...
 }:
 let
-  theme = config.theme;
+  theme = config.themev2;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.theme.name == "onedark")
+    lib.mkIf (config.themev2.name == "onedark")
       [
         {
           plugin = pkgs.vimPlugins.onedark-nvim;
@@ -20,46 +20,46 @@ in
               require("onedark").setup({
               	highlights = {
               		ObsidianTodo = {
-              			fg = "${theme.purple}",
+              			fg = "${theme.hues.purple}",
               			bg = "none",
               			fmt = "bold",
               		},
               		ObsidianDone = {
-              			fg = "${theme.green}",
+              			fg = "${theme.hues.green}",
               			bg = "none",
               			fmt = "bold",
               		},
               		ObsidianRightArrow = {
-              			fg = "${theme.purple}",
+              			fg = "${theme.hues.purple}",
               			bg = "none",
               			fmt = "bold",
               		},
               		ObsidianTilde = {
-              			fg = "${theme.orange}",
+              			fg = "${theme.hues.orange}",
               			bg = "none",
               			fmt = "bold",
               		},
               		ObsidianRefText = {
-              			fg = "${theme.blue}",
+              			fg = "${theme.hues.blue}",
               			bg = "none",
               		},
               		ObsidianExtLinkIcon = {
-              			fg = "${theme.blue}",
+              			fg = "${theme.hues.blue}",
               			bg = "none",
               		},
               		ObsidianTag = {
-              			fg = "${theme.blue}",
+              			fg = "${theme.hues.blue}",
               			bg = "none",
               			fmt = "italic",
               		},
                   ObsidianBullet = {
-                    fg = "${theme.grey0}",
+                    fg = "${theme.neutrals.background_5}",
                     bg = "none",
                     fmt = "bold",
                   },
                   ObsidianHighlightText = {
-                    fg = "${theme.bg0}",
-                    bg = "${theme.primary}",
+                    fg = "${theme.neutrals.background_0}",
+                    bg = "${theme.roles.primary}",
                   }
               	},
               })

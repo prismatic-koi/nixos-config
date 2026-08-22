@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.home =
@@ -25,7 +25,7 @@ with config.theme;
               fi
 
               # rofi style
-              rofi_style_emojipicker='inputbar { children: [entry]; border-color: ${blue};} entry { placeholder: "Select Emoji"; } element-icon { enabled: false; }'
+              rofi_style_emojipicker='inputbar { children: [entry]; border-color: ${hues.blue};} entry { placeholder: "Select Emoji"; } element-icon { enabled: false; }'
 
               # emoji list with a bunch of things taken out to make it more manageable
               custom_emoji_list="${homeDir}/.config/rofi-emoji/custom_emoji_list.txt"

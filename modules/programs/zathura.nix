@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 {
   options = {
     nx.programs.zathura.enable = lib.mkEnableOption "enables zathura" // {
@@ -17,8 +17,8 @@ with config.theme;
         enable = true;
         options = lib.mkIf pkgs.stdenv.hostPlatform.isLinux {
           selection-clipboard = "clipboard";
-          default-bg = bg_dim;
-          default-fg = foreground;
+          default-bg = neutrals.background_dim;
+          default-fg = neutrals.foreground;
         };
       };
       # XDG MIME associations are Linux-only

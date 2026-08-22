@@ -4,9 +4,9 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 let
-  background = if type == "dark" then bg0 else bg_dim;
+  background = if type == "dark" then neutrals.background_0 else neutrals.background_dim;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   prismPkg = pkgs.callPackage ../../../pkgs/prism.nix { };
   prism = "${prismPkg}/bin/prism";
@@ -155,11 +155,11 @@ in
               # PRISM_SESSION_NAME is set on prism panes and read by the
               # session-status helper to know which session to render.
               set -g status-right "#(${prism} sessions status --waiting --tmux-format)#(PRISM_SESSION_NAME=#{session_name} ${prism} sessions session-status --tmux-format)"
-              set -g status-style 'bg=${bg1} fg=${secondary}'
-              set -g message-style 'bg=${primary} fg=${bg1}'
-              set -g mode-style 'bg=${bg3} fg=${foreground}'
-              set -g status-left-style 'bg=${bg1} fg=${secondary}'
-              set -g status-right-style 'bg=${bg1} fg=${primary}'
+              set -g status-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
+              set -g message-style 'bg=${roles.primary} fg=${neutrals.background_1}'
+              set -g mode-style 'bg=${neutrals.background_3} fg=${neutrals.foreground}'
+              set -g status-left-style 'bg=${neutrals.background_1} fg=${roles.secondary}'
+              set -g status-right-style 'bg=${neutrals.background_1} fg=${roles.primary}'
               # for kitty images in image.nvim
               set -gq allow-passthrough on
               # sensible debugging behavior
