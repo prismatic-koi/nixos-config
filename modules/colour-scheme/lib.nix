@@ -94,6 +94,64 @@ let
     }:
     "#${encodePair r}${encodePair g}${encodePair b}";
 
+  # Round a (possibly negative) float to the nearest integer.
+  round =
+    n:
+    let
+      f = builtins.floor n;
+      frac = n - f;
+    in
+    if frac >= 0.5 then f + 1 else f;
+
+  # xterm-256 colour cube axis values for indices 16-231 (6x6x6 cube).
+  cubeSteps = [
+    0
+    95
+    135
+    175
+    215
+    255
+  ];
+
+  cubeIdxs = [
+    0
+    1
+    2
+    3
+    4
+    5
+  ];
+
+  absInt = n: if n < 0 then -n else n;
+
+  # Nearest cube-axis position (0-5) for a channel value 0-255.
+  nearestCubeStep =
+    ch:
+    let
+      diffs = map (i: {
+        idx = i;
+        diff = absInt (ch - builtins.elemAt cubeSteps i);
+      }) cubeIdxs;
+    in
+    (builtins.foldl' (best: d: if d.diff < best.diff then d else best) (builtins.elemAt diffs 0) diffs)
+    .idx;
+
+  # Nearest greyscale-ramp step (0-23) for a channel value 0-255. Index
+  # 232 + i represents grey level 8 + i*10.
+  nearestGreyStep = v: clamp 0 23 (round ((v - 8) / 10));
+
+  greyLevel = i: 8 + i * 10;
+
+  # Squared Euclidean distance between two { r, g, b } colours.
+  dist2 =
+    a: b:
+    let
+      dr = a.r - b.r;
+      dg = a.g - b.g;
+      db = a.b - b.b;
+    in
+    dr * dr + dg * dg + db * db;
+
 in
 {
   # darken color pct — darken a "#RRGGBB" colour by pct percent (0–100).
@@ -123,4 +181,52 @@ in
       g = scale c.g;
       b = scale c.b;
     };
+
+  # mix a b pct — interpolate pct percent of the way from a to b (0-100).
+  # mix a b 0 == a; mix a b 100 == b.
+  mix =
+    a: b: pct:
+    let
+      ca = parseHex a;
+      cb = parseHex b;
+      lerp = x: y: clamp 0 255 (round (x + (y - x) * pct / 100.0));
+    in
+    encodeHex {
+      r = lerp ca.r cb.r;
+      g = lerp ca.g cb.g;
+      b = lerp ca.b cb.b;
+    };
+
+  # nearestXterm256 color — map a "#RRGGBB" colour to the nearest xterm-256
+  # palette index in the range 16-255 (the 6x6x6 colour cube plus the
+  # 24-step greyscale ramp; indices 0-15 — the reconfigurable ANSI/bright
+  # slots — are deliberately excluded).
+  nearestXterm256 =
+    color:
+    let
+      c = parseHex color;
+
+      cubeR = nearestCubeStep c.r;
+      cubeG = nearestCubeStep c.g;
+      cubeB = nearestCubeStep c.b;
+      cubeColor = {
+        r = builtins.elemAt cubeSteps cubeR;
+        g = builtins.elemAt cubeSteps cubeG;
+        b = builtins.elemAt cubeSteps cubeB;
+      };
+      cubeIdx = 16 + 36 * cubeR + 6 * cubeG + cubeB;
+
+      greyStep = nearestGreyStep ((c.r + c.g + c.b) / 3);
+      greyV = greyLevel greyStep;
+      greyColor = {
+        r = greyV;
+        g = greyV;
+        b = greyV;
+      };
+      greyIdx = 232 + greyStep;
+
+      cubeDist = dist2 c cubeColor;
+      greyDist = dist2 c greyColor;
+    in
+    if cubeDist <= greyDist then cubeIdx else greyIdx;
 }

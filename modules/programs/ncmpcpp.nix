@@ -4,6 +4,49 @@
   lib,
   ...
 }:
+let
+  colourLib = import ../colour-scheme/lib.nix;
+  inherit (colourLib) mix nearestXterm256;
+
+  # Gradient anchors for the visualiser ramp, taken from config.themev2.hues.
+  # Bottom-to-top reads cool-to-warm (blue..red), re-deriving the classic
+  # six-colour ncmpcpp default from the active scheme instead of hard-coded
+  # ANSI names.
+  visualiserAnchors = with config.themev2.hues; [
+    blue
+    cyan
+    green
+    yellow
+    orange
+    red
+  ];
+
+  # Number of gradient bands/entries in visualizer_color. Upstream's sample
+  # config uses 12; 18 gives a visibly finer ramp across the 5 anchor
+  # segments above.
+  visualiserSteps = 18;
+
+  # Interpolate `n` evenly spaced colours along a piecewise-linear ramp
+  # through `anchors` (a non-empty list of "#RRGGBB" strings).
+  rampColors =
+    anchors: n:
+    let
+      segments = builtins.length anchors - 1;
+      colorAt =
+        i:
+        let
+          t = i * segments / (n - 1.0);
+          seg = if i == n - 1 then segments - 1 else builtins.floor t;
+          localPct = builtins.floor ((t - seg) * 100);
+        in
+        mix (builtins.elemAt anchors seg) (builtins.elemAt anchors (seg + 1)) localPct;
+    in
+    map colorAt (lib.range 0 (n - 1));
+
+  visualizerColor = lib.concatMapStringsSep "," (
+    color: builtins.toString (nearestXterm256 color + 1)
+  ) (rampColors visualiserAnchors visualiserSteps);
+in
 {
   options = {
     nx.programs.ncmpcpp.enable = lib.mkEnableOption "enables ncmpcpp" // {
@@ -30,9 +73,9 @@
               user_interface = "alternative";
               visualizer_output_name = "my_fifo";
               visualizer_in_stereo = "yes";
-              # this seemeded to stop worrking in the 0.10 update
-              # https://github.com/NixOS/nixpkgs/pull/343282
-              # visualizer_type = "spectrum"; # not sure why this stopped working (2024-09-29) investigate later
+              visualizer_type = "spectrum";
+              visualizer_spectrum_smooth_look = "yes";
+              visualizer_color = visualizerColor;
               main_window_color = 5;
               color1 = 3;
               color2 = 2;
