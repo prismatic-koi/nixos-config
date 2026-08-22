@@ -145,6 +145,11 @@ in
           name = "googlecalendar.css.js";
           text = builtins.readFile ./greasemonkey/googlecalendar.css.js;
         })
+        # style for the proton web suite (mail, calendar, drive, account, pass)
+        (pkgs.writeTextFile {
+          name = "proton.css.js";
+          text = builtins.readFile ./greasemonkey/proton.css.js;
+        })
         # style for searx
         (pkgs.writeTextFile {
           name = "searx.css.js";
