@@ -128,8 +128,11 @@ in
                         active_border =
                           let
                             # rainbow border colors in order. v1 `aqua` has no
-                            # themev2 slot; it maps to hues.teal, whose value
-                            # equals the old aqua in every scheme (issue #2814).
+                            # themev2 slot; it maps to hues.teal — exact on
+                            # edge/github-light/gruvbox/nightcity, close on
+                            # latte/onedark (where hues.cyan is the exact match).
+                            # teal chosen for majority-scheme parity and to keep
+                            # firefox/qutebrowser consistent (issue #2814).
                             colors = [
                               theme.hues.red
                               theme.hues.orange

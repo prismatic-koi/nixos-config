@@ -14,7 +14,7 @@ let
   # are unchanged so the QML consumers need no edits; only the Nix source of
   # each value moves onto the themev2 bands. Gap mappings (no direct themev2
   # slot) follow the qutebrowser/greasemonkey precedent:
-  #   aqua        -> hues.teal            (v1 aqua == themev2 teal value)
+  #   aqua        -> hues.teal            (nearest hue; exact on edge/github-light/gruvbox/nightcity, cyan exact on latte/onedark; teal keeps firefox+qutebrowser consistent)
   #   grey0       -> neutrals.background_5 (structural grey)
   #   grey1       -> neutrals.foreground_dim (dim text)
   #   grey2       -> neutrals.foreground

@@ -8,7 +8,7 @@ with config.themev2;
 # --system-theme-* CSS variables injected into site stylesheets; the gap
 # mappings match modules/programs/qutebrowser/greasemonkey.nix exactly so
 # firefox and qutebrowser theme the same pages identically:
-#   aqua        -> hues.teal            (v1 aqua == themev2 teal value)
+#   aqua        -> hues.teal            (nearest hue; exact on edge/github-light/gruvbox/nightcity, cyan exact on latte/onedark; teal keeps firefox+qutebrowser consistent)
 #   grey0       -> neutrals.background_5 (structural grey)
 #   grey1       -> neutrals.foreground_dim (dim text)
 #   grey2       -> neutrals.foreground
