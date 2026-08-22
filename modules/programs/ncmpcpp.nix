@@ -8,44 +8,78 @@ let
   colourLib = import ../colour-scheme/lib.nix;
   inherit (colourLib) mix nearestXterm256;
 
-  # Gradient anchors for the visualiser ramp, taken from config.themev2.hues.
-  # Bottom-to-top reads cool-to-warm (blue..red), re-deriving the classic
-  # six-colour ncmpcpp default from the active scheme instead of hard-coded
-  # ANSI names.
-  visualiserAnchors = with config.themev2.hues; [
-    blue
-    cyan
-    green
-    yellow
-    orange
-    red
+  # Gradient hue order for the visualiser ramp: all 18 Tailwind-inspired
+  # config.themev2.hues slots, taken directly (one hue per band, no
+  # interpolation between a handful of anchors).
+  #
+  # A small "sensible-looking" anchor list (e.g. blue/cyan/green/yellow/
+  # orange/red) is unsafe: many hue slots are darken/lighten DERIVATIONS of
+  # a shared upstream colour rather than perceptually independent hues (e.g.
+  # everforest's cyan = lighten blue 12, edge's blue = darken sky 12). Such a
+  # list can land entirely on derived slots for a given scheme and collapse
+  # to a handful of near-duplicate xterm-256 indices after quantisation (as
+  # low as 5 distinct bands out of 18, measured on everforest) — fewer bands
+  # than the six-name ncmpcpp default this replaces.
+  #
+  # The order below is NOT the natural rainbow sequence. It interleaves hues
+  # that are frequently derived from one another in the scheme files
+  # (emerald/teal/cyan, indigo/violet/purple, orange/amber, rose/brown) so
+  # they land far apart in the sequence. Combined with the monotonic
+  # luminance climb below, that spread pushes same-cluster hues onto
+  # different points of the climb, which reliably breaks the quantisation
+  # ties a naive rainbow order leaves in place. Chosen and verified
+  # empirically against all seven scheme files (eight variants, counting
+  # gruvbox's light and dark) — see the distinct-band table in the PR
+  # description — not by reasoning about which anchors "should" work.
+  visualiserHueOrder = [
+    "red"
+    "teal"
+    "fuchsia"
+    "yellow"
+    "blue"
+    "brown"
+    "emerald"
+    "purple"
+    "amber"
+    "sky"
+    "rose"
+    "green"
+    "violet"
+    "orange"
+    "cyan"
+    "pink"
+    "lime"
+    "indigo"
   ];
 
-  # Number of gradient bands/entries in visualizer_color. Upstream's sample
-  # config uses 12; 18 gives a visibly finer ramp across the 5 anchor
-  # segments above.
-  visualiserSteps = 18;
+  visualiserSteps = builtins.length visualiserHueOrder; # 18
 
-  # Interpolate `n` evenly spaced colours along a piecewise-linear ramp
-  # through `anchors` (a non-empty list of "#RRGGBB" strings).
+  # Secondary luminance axis: darken the low (bottom) end of the ramp and
+  # lighten the high (top) end, mixing straight toward black/white rather
+  # than the multiplicative darken/lighten so the shift behaves predictably
+  # on both very dark and very light schemes. +-30% was the smallest
+  # magnitude tried that cleared >=14 distinct bands of 18 on every scheme
+  # file.
+  visualiserLuminanceMagnitude = 30;
+
   rampColors =
-    anchors: n:
-    let
-      segments = builtins.length anchors - 1;
-      colorAt =
-        i:
-        let
-          t = i * segments / (n - 1.0);
-          seg = if i == n - 1 then segments - 1 else builtins.floor t;
-          localPct = builtins.floor ((t - seg) * 100);
-        in
-        mix (builtins.elemAt anchors seg) (builtins.elemAt anchors (seg + 1)) localPct;
-    in
-    map colorAt (lib.range 0 (n - 1));
+    hues: hueOrder: n:
+    map (
+      i:
+      let
+        name = builtins.elemAt hueOrder i;
+        base = hues.${name};
+        pct = ((i / (n - 1.0)) * 2 - 1) * visualiserLuminanceMagnitude;
+      in
+      if pct < 0 then
+        mix base "#000000" (builtins.floor (-pct))
+      else
+        mix base "#ffffff" (builtins.floor pct)
+    ) (lib.range 0 (n - 1));
 
   visualizerColor = lib.concatMapStringsSep "," (
     color: builtins.toString (nearestXterm256 color + 1)
-  ) (rampColors visualiserAnchors visualiserSteps);
+  ) (rampColors config.themev2.hues visualiserHueOrder visualiserSteps);
 in
 {
   options = {

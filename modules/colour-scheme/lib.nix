@@ -227,6 +227,20 @@ in
 
       cubeDist = dist2 c cubeColor;
       greyDist = dist2 c greyColor;
+
+      # Saturation: spread between the loudest and quietest channel. A
+      # colour with any meaningful saturation reads badly as a flat grey
+      # band in the visualiser, so the cube wins outright once saturation
+      # clears a small threshold — the grey ramp is reserved for colours
+      # that are genuinely close to neutral.
+      maxCh = if c.r > c.g then (if c.r > c.b then c.r else c.b) else (if c.g > c.b then c.g else c.b);
+      minCh = if c.r < c.g then (if c.r < c.b then c.r else c.b) else (if c.g < c.b then c.g else c.b);
+      saturation = maxCh - minCh;
     in
-    if cubeDist <= greyDist then cubeIdx else greyIdx;
+    if saturation > 20 then
+      cubeIdx
+    else if cubeDist <= greyDist then
+      cubeIdx
+    else
+      greyIdx;
 }
