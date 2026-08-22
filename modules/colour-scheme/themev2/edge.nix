@@ -14,16 +14,26 @@ rec {
   name = "edge";
   type = "dark";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (dark theme ->
-  # background_0 darkest, climbing lighter toward the foreground);
-  # foreground_dim / foreground are named text anchors.
+  # Neutrals: background_0 is the primary/default background; background_dim
+  # is the recessed shade below it; background_1..5 climb lighter toward the
+  # foreground. foreground_dim / foreground are named text anchors.
+  #
+  # Re-anchored (was background_2). The old background_0 ("#202023") was a
+  # synthetic "derived, darkest" filler with no upstream provenance and no
+  # role reference — dropped rather than kept as an unlabelled extra dim
+  # step. background_1 ("#24262a", upstream bg_dim) becomes background_dim.
+  # Only 3 raised surfaces exist above the primary. background_4 and
+  # background_5 are derived by lightening background_3 (8% / 16%) rather
+  # than duplicated outright, to keep the ramp a strict luminance climb —
+  # no v1/upstream shade exists past this point.
   neutrals = {
-    background_0 = "#202023";
-    background_1 = "#24262a";
-    background_2 = "#2c2e34"; # primary/default background (main canvas)
-    background_3 = "#33353f";
-    background_4 = "#3b3e48";
-    background_5 = "#535c6a";
+    background_dim = "#24262a"; # upstream bg_dim — recessed below background_0
+    background_0 = "#2c2e34";
+    background_1 = "#33353f";
+    background_2 = "#3b3e48";
+    background_3 = "#535c6a";
+    background_4 = lighten "#535c6a" 8; # derived — no further raised surface upstream
+    background_5 = lighten "#535c6a" 16; # derived — no further raised surface upstream
     foreground_dim = "#758094";
     foreground = "#c5cdd9";
   };
@@ -79,8 +89,8 @@ rec {
     warning = hues.orange;
     success = hues.green;
     info = hues.blue;
-    selection = neutrals.background_4;
+    selection = neutrals.background_2; # was background_4 pre-re-anchor (shifted -2)
     cursor = neutrals.foreground;
-    border = neutrals.background_5;
+    border = neutrals.background_3; # was background_5 pre-re-anchor (shifted -2)
   };
 }

@@ -12,13 +12,15 @@ rec {
   name = "catppuccin-latte";
   type = "light";
 
-  # Neutrals: background_0..5 is a strict luminance ramp (light theme ->
-  # background_0 lightest, climbing darker toward the foreground);
+  # Neutrals: background_0 is the primary/default background; background_1..5
+  # is a strict luminance ramp climbing darker toward the foreground;
   # foreground_dim / foreground are named text anchors. Reordered from the
   # source palette so the ramp is monotonic (base -> mantle -> crust ->
-  # surface0 -> surface1 -> overlay0).
+  # surface0 -> surface1 -> overlay0). No shade sits below background_0 in
+  # this light scheme, so background_dim is set equal to it.
   neutrals = {
-    background_0 = "#eff1f5"; # primary/default background (main canvas; base)
+    background_dim = "#eff1f5"; # no lower shade on this light scheme; equal to background_0
+    background_0 = "#eff1f5"; # base
     background_1 = "#e6e9ef";
     background_2 = "#dce0e8";
     background_3 = "#ccd0da";

@@ -34,15 +34,18 @@ let
     options = {
       name = mkOption { type = types.str; };
       type = mkOption { type = types.str; };
-      # Neutral band, no baseX codes: background_0..background_5 is a strict
-      # luminance ramp (numeric order always reads background -> foreground,
-      # so background_0 is the darkest on a dark theme and the lightest on a
-      # light theme). foreground_dim and foreground are named text anchors.
-      # Roles that need the default text/background reference
-      # neutrals.foreground / a neutrals.background_N slot.
+      # Neutral band: background_0 is universally the primary/default
+      # background (numeric order always reads background -> foreground, so
+      # background_1..5 climb progressively closer to the foreground).
+      # background_dim is the recessed shade below background_0 (or equal to
+      # it, noted, on schemes with no distinct lower shade). foreground_dim
+      # and foreground are named text anchors. Roles that need the default
+      # text/background reference neutrals.foreground / a
+      # neutrals.background_N slot.
       neutrals = mkOption {
         type = types.submodule {
           options = mkSlots [
+            "background_dim"
             "background_0"
             "background_1"
             "background_2"
