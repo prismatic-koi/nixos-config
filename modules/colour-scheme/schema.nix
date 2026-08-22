@@ -76,6 +76,18 @@ let
       # Tailwind-inspired hue palette. 17 Tailwind hue names plus `brown`
       # (Tailwind omits it; base24/ANSI need it). `maroon` is not a slot — it
       # is reached via luminance (darken red).
+      #
+      # Caveat: these 18 slots are NOT guaranteed to be perceptually
+      # independent colours. Per scheme, many slots are `darken` / `lighten`
+      # derivations of roughly six upstream anchors, and which slots are
+      # native (vs. derived) varies per scheme — the inline comments in each
+      # themev2/*.nix file record the actual provenance. For example, in
+      # themev2/everforest.nix, `cyan`, `sky`, and `indigo` are all
+      # lighten/darken derivations of the same `blue` anchor. A consumer
+      # that interpolates or ramps across hue slots (e.g. building a
+      # gradient) must not assume even spacing — verify the actual spread
+      # against each scheme's real values (e.g. after palette quantisation)
+      # rather than assume the 18 names imply 18 independent colours.
       hues = mkOption {
         type = types.submodule {
           options = mkSlots [
