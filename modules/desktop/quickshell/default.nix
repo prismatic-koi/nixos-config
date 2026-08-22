@@ -5,10 +5,22 @@
   ...
 }:
 let
-  theme = config.theme;
+  theme = config.themev2;
 
   # Theme.qml is generated at build time with the active color scheme.
   # QML components access colors via the Theme singleton, e.g. Theme.red
+  #
+  # Colours now come from config.themev2 (issue #2814). The QML property names
+  # are unchanged so the QML consumers need no edits; only the Nix source of
+  # each value moves onto the themev2 bands. Gap mappings (no direct themev2
+  # slot) follow the qutebrowser/greasemonkey precedent:
+  #   aqua        -> hues.teal            (v1 aqua == themev2 teal value)
+  #   grey0       -> neutrals.background_5 (structural grey)
+  #   grey1       -> neutrals.foreground_dim (dim text)
+  #   grey2       -> neutrals.foreground
+  #   statusline1 -> hues.indigo
+  #   statusline2 -> neutrals.foreground_dim
+  #   statusline3 -> hues.red
   #
   # Property names use lowerCamelCase (QML convention):
   #   bg_dim  -> bgDim
@@ -22,42 +34,42 @@ let
     // Do not edit — this file is built by modules/desktop/quickshell/default.nix
     QtObject {
         // accent colors
-        readonly property color red: "${theme.red}"
-        readonly property color orange: "${theme.orange}"
-        readonly property color yellow: "${theme.yellow}"
-        readonly property color green: "${theme.green}"
-        readonly property color aqua: "${theme.aqua}"
-        readonly property color blue: "${theme.blue}"
-        readonly property color purple: "${theme.purple}"
+        readonly property color red: "${theme.hues.red}"
+        readonly property color orange: "${theme.hues.orange}"
+        readonly property color yellow: "${theme.hues.yellow}"
+        readonly property color green: "${theme.hues.green}"
+        readonly property color aqua: "${theme.hues.teal}"
+        readonly property color blue: "${theme.hues.blue}"
+        readonly property color purple: "${theme.hues.purple}"
 
         // text colors
-        readonly property color foreground: "${theme.foreground}"
-        readonly property color primary: "${theme.primary}"
-        readonly property color secondary: "${theme.secondary}"
+        readonly property color foreground: "${theme.neutrals.foreground}"
+        readonly property color primary: "${theme.roles.primary}"
+        readonly property color secondary: "${theme.roles.secondary}"
 
         // grey scale
-        readonly property color grey0: "${theme.grey0}"
-        readonly property color grey1: "${theme.grey1}"
-        readonly property color grey2: "${theme.grey2}"
+        readonly property color grey0: "${theme.neutrals.background_5}"
+        readonly property color grey1: "${theme.neutrals.foreground_dim}"
+        readonly property color grey2: "${theme.neutrals.foreground}"
 
         // backgrounds
-        readonly property color bgDim: "${theme.bg_dim}"
-        readonly property color bg0: "${theme.bg0}"
-        readonly property color bg1: "${theme.bg1}"
-        readonly property color bg2: "${theme.bg2}"
-        readonly property color bg3: "${theme.bg3}"
-        readonly property color bg4: "${theme.bg4}"
-        readonly property color bg5: "${theme.bg5}"
-        readonly property color bgVisual: "${theme.bg_visual}"
-        readonly property color bgRed: "${theme.bg_red}"
-        readonly property color bgGreen: "${theme.bg_green}"
-        readonly property color bgBlue: "${theme.bg_blue}"
-        readonly property color bgYellow: "${theme.bg_yellow}"
+        readonly property color bgDim: "${theme.neutrals.background_dim}"
+        readonly property color bg0: "${theme.neutrals.background_0}"
+        readonly property color bg1: "${theme.neutrals.background_1}"
+        readonly property color bg2: "${theme.neutrals.background_2}"
+        readonly property color bg3: "${theme.neutrals.background_3}"
+        readonly property color bg4: "${theme.neutrals.background_4}"
+        readonly property color bg5: "${theme.neutrals.background_5}"
+        readonly property color bgVisual: "${theme.backgrounds.bg_visual}"
+        readonly property color bgRed: "${theme.backgrounds.bg_red}"
+        readonly property color bgGreen: "${theme.backgrounds.bg_green}"
+        readonly property color bgBlue: "${theme.backgrounds.bg_blue}"
+        readonly property color bgYellow: "${theme.backgrounds.bg_yellow}"
 
-        // statusline
-        readonly property color statusline1: "${theme.statusline1}"
-        readonly property color statusline2: "${theme.statusline2}"
-        readonly property color statusline3: "${theme.statusline3}"
+        // statusline (no themev2 slot; see gap mapping above)
+        readonly property color statusline1: "${theme.hues.indigo}"
+        readonly property color statusline2: "${theme.neutrals.foreground_dim}"
+        readonly property color statusline3: "${theme.hues.red}"
 
         // metadata
         readonly property string themeName: "${theme.name}"

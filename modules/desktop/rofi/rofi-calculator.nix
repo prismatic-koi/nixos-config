@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
     home-manager.users.${config.nx.username}.home.file.".local/scripts/application.rofi.calculator" = {
@@ -20,7 +20,7 @@ with config.theme;
           fi
 
           # rofi style
-          rofi_style_calculator='listview { enabled: false;} inputbar { children: [entry]; border-color: ${blue};} entry { placeholder: "Calculator"; } element-icon { enabled: false; }'
+          rofi_style_calculator='listview { enabled: false;} inputbar { children: [entry]; border-color: ${hues.blue};} entry { placeholder: "Calculator"; } element-icon { enabled: false; }'
 
           # start rofi with calculator args
           rofi -monitor "$monitor" -show calc -no-history -calc-command 'wl-copy "{result}"' -theme-str "$rofi_style_calculator"

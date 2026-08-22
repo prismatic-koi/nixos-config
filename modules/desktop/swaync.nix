@@ -4,7 +4,10 @@
   lib,
   ...
 }:
-with config.theme;
+with config.themev2;
+# Gap mapping (issue #2814): v1 `grey0` (used here for subtle 1px borders) has
+# no themev2 slot; it maps to neutrals.background_5, the structural grey nearest
+# the foreground, matching the qutebrowser/greasemonkey precedent.
 {
   options = {
     nx.desktop.swaync.enable = lib.mkEnableOption "enables swaync" // {
@@ -75,12 +78,12 @@ with config.theme;
               margin: 6px 12px;
               box-shadow: none;
               padding: 0;
-              color: ${foreground};
-              border: 1px solid ${grey0};
+              color: ${neutrals.foreground};
+              border: 1px solid ${neutrals.background_5};
             }
             .notification:hover {
-              background: ${green};
-              color: ${bg_dim};
+              background: ${hues.green};
+              color: ${neutrals.background_dim};
             }
             .notification-content {
               background: transparent;
@@ -88,8 +91,8 @@ with config.theme;
               border-radius: 5px;
             }
             .close-button {
-              background: ${bg0};
-              color: ${foreground};
+              background: ${neutrals.background_0};
+              color: ${neutrals.foreground};
               text-shadow: none;
               padding: 0;
               border-radius: 100%;
@@ -103,8 +106,8 @@ with config.theme;
             .close-button:hover {
               box-shadow: none;
               text-shadow: none;
-              color: ${bg_dim};
-              background: ${green};
+              color: ${neutrals.background_dim};
+              background: ${hues.green};
               transition: all 0.15s ease-in-out;
               border: none;
             }
@@ -113,14 +116,14 @@ with config.theme;
               padding: 4px;
               margin: 0;
               box-shadow: none;
-              background: ${bg0};
+              background: ${neutrals.background_0};
               border: 0px;
               color: inherit;
             }
             .notification-default-action:hover,
             .notification-action:hover {
-              background: ${green};
-              color: ${bg_dim};
+              background: ${hues.green};
+              color: ${neutrals.background_dim};
             }
 
             .notification-default-action {
@@ -140,7 +143,7 @@ with config.theme;
 
             .notification-action:last-child {
               /* border-bottom-right-radius: 0px; */
-              border-right: 1px solid ${grey0};
+              border-right: 1px solid ${neutrals.background_5};
             }
 
             .body-image {
@@ -184,7 +187,7 @@ with config.theme;
             }
 
             .control-center {
-              background: ${bg0};
+              background: ${neutrals.background_0};
             }
 
             .control-center-list {
@@ -210,16 +213,16 @@ with config.theme;
             /* Clear All Button */
             .widget-title > button {
               font-size: initial;
-              color: ${foreground};
+              color: ${neutrals.foreground};
               text-shadow: none;
-              background: ${bg0};
-              border: 1px solid ${grey0};
+              background: ${neutrals.background_0};
+              border: 1px solid ${neutrals.background_5};
               box-shadow: none;
               border-radius: 5px;
             }
             .widget-title > button:hover {
-              color: ${bg_dim};
-              background: ${green};
+              color: ${neutrals.background_dim};
+              background: ${hues.green};
             }
 
             /* DND widget */
@@ -230,15 +233,15 @@ with config.theme;
             .widget-dnd > switch {
               font-size: initial;
               /* border-radius: 10px; */
-              background: ${bg0};
-              border: 1px solid ${grey0};
+              background: ${neutrals.background_0};
+              border: 1px solid ${neutrals.background_5};
               box-shadow: none;
             }
             .widget-dnd > switch:checked {
-              background: ${blue};
+              background: ${hues.blue};
             }
             .widget-dnd > switch slider {
-              background: ${green};
+              background: ${hues.green};
               /* border-radius: 5px; */
             }
 

@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 let
   username = config.nx.username;
   # Absolute path to the sops-decrypted GitHub token secret file. Threaded into
@@ -59,15 +59,15 @@ let
     if emails != [ ] then builtins.head emails else "";
   isolationDefault = config.nx.programs.prism.agent.isolation.default;
   prismConfig = {
-    color_primary = primary;
-    color_secondary = secondary;
-    color_purple = purple;
-    color_yellow = yellow;
-    color_green = green;
-    color_blue = blue;
-    color_red = red;
-    color_foreground = foreground;
-    color_bg0 = bg0;
+    color_primary = roles.primary;
+    color_secondary = roles.secondary;
+    color_purple = hues.purple;
+    color_yellow = hues.yellow;
+    color_green = hues.green;
+    color_blue = hues.blue;
+    color_red = hues.red;
+    color_foreground = neutrals.foreground;
+    color_bg0 = neutrals.background_0;
     kitty_bin = "${pkgs.kitty}/bin/kitty";
     default_isolation_mode = isolationDefault;
     # sidecar_plugin_path: unused since container isolation removal; kept for forward compat.

@@ -3,7 +3,18 @@
   lib,
   ...
 }:
-with config.theme;
+with config.themev2;
+# Colours source from config.themev2 (issue #2814). This file sets the
+# --system-theme-* CSS variables injected into site stylesheets; the gap
+# mappings match modules/programs/qutebrowser/greasemonkey.nix exactly so
+# firefox and qutebrowser theme the same pages identically:
+#   aqua        -> hues.teal            (v1 aqua == themev2 teal value)
+#   grey0       -> neutrals.background_5 (structural grey)
+#   grey1       -> neutrals.foreground_dim (dim text)
+#   grey2       -> neutrals.foreground
+#   statusline1 -> hues.indigo
+#   statusline2 -> neutrals.foreground_dim
+#   statusline3 -> hues.red
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
     home-manager.users.${config.nx.username}.programs.firefox.profiles.main.userContent =
@@ -45,7 +56,7 @@ with config.theme;
             font-family: JetBrains Mono, monospace !important;
           }
           html {
-            background-color: ${bg1} !important;
+            background-color: ${neutrals.background_1} !important;
           }
           .Container--blue,
           .App-container, .App-primary,
@@ -55,22 +66,22 @@ with config.theme;
           .sticky-bar-context-handler,
           .Nav--secondary .Container,
           .sticky-bar-context-primary-section {
-            background-color: ${bg0} !important;
+            background-color: ${neutrals.background_0} !important;
           }
           .Nav-toggle,
           .Nav--primary {
-            background-color: ${bg1} !important;
+            background-color: ${neutrals.background_1} !important;
           }
           #InitialPageLoader,
           .Main {
-            background-color: ${bg_dim} !important;
+            background-color: ${neutrals.background_dim} !important;
           }
           #Nav,
           #Nav--primary,
           #Nav--secondary,
           #Container-inner,
           #Container--blue {
-            background-color: ${bg0} !important;
+            background-color: ${neutrals.background_0} !important;
           }
 
           .Map .Map--primary .Map--static,
@@ -91,35 +102,35 @@ with config.theme;
             display: none !important;
           }
           .Footer-section--global {
-            background-color: ${bg_dim} !important;
+            background-color: ${neutrals.background_dim} !important;
           }
           .pageLoader-animation {
-            background: ${bg0} !important;
+            background: ${neutrals.background_0} !important;
           }
           .Nav--secondary .Nav-menu-list-item.is-active a,
           .Nav-menu-list-item.is-active a {
-            color: ${bg0} !important;
-            background-color: ${primary} !important;
+            color: ${neutrals.background_0} !important;
+            background-color: ${roles.primary} !important;
             box-shadow: none !important;
           }
           .Nav-menu-list-item a {
-            color: ${foreground} !important;
+            color: ${neutrals.foreground} !important;
           }
           .SearchBar-actions-icon {
-            color: ${primary} !important;
+            color: ${roles.primary} !important;
           }
           .SearchBar-actions-find:focus,
           .SearchBar-actions-find:hover {
             background: none !important;
           }
           .SearchBar-actions-find {
-            border-color: ${primary} !important;
+            border-color: ${roles.primary} !important;
             box-shadow: none !important;
-            color: ${foreground} !important;
+            color: ${neutrals.foreground} !important;
             margin-right: 0px !important;
           }
           .SearchBar {
-            background-color: ${bg0} !important;
+            background-color: ${neutrals.background_0} !important;
             box-shadow: none !important;
           }
 
@@ -133,18 +144,18 @@ with config.theme;
           }
 
           html[dark], [dark] {
-            --yt-spec-base-background: ${bg_dim} !important;
-            --yt-spec-raised-background: ${bg0} !important;
-            --yt-spec-menu-background: ${bg0} !important;
-            --yt-spec-static-overlay-text-primary: ${foreground} !important;
-            --yt-spec-static-overlay-text-secondary: ${grey2} !important;
-            --yt-spec-text-primary: ${foreground} !important;
-            --yt-spec-text-secondary: ${grey2} !important;
-            --ytd-searchbox-background: ${bg_dim} !important;
-            --ytd-searchbox-legacy-border-color: ${bg0} !important;
+            --yt-spec-base-background: ${neutrals.background_dim} !important;
+            --yt-spec-raised-background: ${neutrals.background_0} !important;
+            --yt-spec-menu-background: ${neutrals.background_0} !important;
+            --yt-spec-static-overlay-text-primary: ${neutrals.foreground} !important;
+            --yt-spec-static-overlay-text-secondary: ${neutrals.foreground} !important;
+            --yt-spec-text-primary: ${neutrals.foreground} !important;
+            --yt-spec-text-secondary: ${neutrals.foreground} !important;
+            --ytd-searchbox-background: ${neutrals.background_dim} !important;
+            --ytd-searchbox-legacy-border-color: ${neutrals.background_0} !important;
           }
           .yt-spec-button-shape-next--call-to-action.yt-spec-button-shape-next--text {
-            color: ${green} !important;
+            color: ${hues.green} !important;
           }
           ytd-app {
             --ytd-mini-guide-width: 0px !important;
@@ -187,32 +198,32 @@ with config.theme;
         /* themed reddit */
         @-moz-document url-prefix("https://www.reddit.com") {
           :root {
-            --system-theme-fg: ${foreground};
-            --system-theme-red: ${red};
-            --system-theme-orange: ${orange};
-            --system-theme-yellow: ${yellow};
-            --system-theme-green: ${green};
-            --system-theme-aqua: ${aqua};
-            --system-theme-blue: ${blue};
-            --system-theme-purple: ${purple};
-            --system-theme-grey0: ${grey0};
-            --system-theme-grey1: ${grey1};
-            --system-theme-grey2: ${grey2};
-            --system-theme-statusline1: ${statusline1};
-            --system-theme-statusline2: ${statusline2};
-            --system-theme-statusline3: ${statusline3};
-            --system-theme-bg_dim: ${bg_dim};
-            --system-theme-bg0: ${bg0};
-            --system-theme-bg1: ${bg1};
-            --system-theme-bg2: ${bg2};
-            --system-theme-bg3: ${bg3};
-            --system-theme-bg4: ${bg4};
-            --system-theme-bg5: ${bg5};
-            --system-theme-bg_visual: ${bg_visual};
-            --system-theme-bg_red: ${bg_red};
-            --system-theme-bg_green: ${bg_green};
-            --system-theme-bg_blue: ${bg_blue};
-            --system-theme-bg_yellow: ${bg_yellow};
+            --system-theme-fg: ${neutrals.foreground};
+            --system-theme-red: ${hues.red};
+            --system-theme-orange: ${hues.orange};
+            --system-theme-yellow: ${hues.yellow};
+            --system-theme-green: ${hues.green};
+            --system-theme-aqua: ${hues.teal};
+            --system-theme-blue: ${hues.blue};
+            --system-theme-purple: ${hues.purple};
+            --system-theme-grey0: ${neutrals.background_5};
+            --system-theme-grey1: ${neutrals.foreground_dim};
+            --system-theme-grey2: ${neutrals.foreground};
+            --system-theme-statusline1: ${hues.indigo};
+            --system-theme-statusline2: ${neutrals.foreground_dim};
+            --system-theme-statusline3: ${hues.red};
+            --system-theme-bg_dim: ${neutrals.background_dim};
+            --system-theme-bg0: ${neutrals.background_0};
+            --system-theme-bg1: ${neutrals.background_1};
+            --system-theme-bg2: ${neutrals.background_2};
+            --system-theme-bg3: ${neutrals.background_3};
+            --system-theme-bg4: ${neutrals.background_4};
+            --system-theme-bg5: ${neutrals.background_5};
+            --system-theme-bg_visual: ${backgrounds.bg_visual};
+            --system-theme-bg_red: ${backgrounds.bg_red};
+            --system-theme-bg_green: ${backgrounds.bg_green};
+            --system-theme-bg_blue: ${backgrounds.bg_blue};
+            --system-theme-bg_yellow: ${backgrounds.bg_yellow};
           }
 
           /* Hide annoying stuff */
@@ -574,94 +585,94 @@ with config.theme;
             border-radius: 0px !important;
           }
           :root {
-            --color-base-font: ${foreground} !important;
-            --color-base-background: ${bg0} !important;
-            --color-base-background-mobile: ${bg0} !important;
-            --color-url-font: ${primary} !important;
-            --color-url-visited-font: ${purple} !important;
-            --color-header-background: ${bg_dim} !important;
-            --color-header-border: ${bg0} !important;
-            --color-footer-background: ${bg_dim} !important;
-            --color-footer-border: ${bg0} !important;
-            --color-sidebar-border: ${bg1} !important;
-            --color-sidebar-font: ${foreground} !important;
-            --color-sidebar-background: ${bg0} !important;
-            --color-backtotop-font: ${foreground} !important;
-            --color-backtotop-border: ${bg0} !important;
-            --color-backtotop-background: ${bg_dim} !important;
-            --color-btn-background: ${primary} !important;
-            --color-btn-font: ${bg0} !important;
-            --color-show-btn-background: ${bg1} !important;
-            --color-show-btn-font: ${foreground} !important;
-            --color-search-border: ${bg1} !important;
+            --color-base-font: ${neutrals.foreground} !important;
+            --color-base-background: ${neutrals.background_0} !important;
+            --color-base-background-mobile: ${neutrals.background_0} !important;
+            --color-url-font: ${roles.primary} !important;
+            --color-url-visited-font: ${hues.purple} !important;
+            --color-header-background: ${neutrals.background_dim} !important;
+            --color-header-border: ${neutrals.background_0} !important;
+            --color-footer-background: ${neutrals.background_dim} !important;
+            --color-footer-border: ${neutrals.background_0} !important;
+            --color-sidebar-border: ${neutrals.background_1} !important;
+            --color-sidebar-font: ${neutrals.foreground} !important;
+            --color-sidebar-background: ${neutrals.background_0} !important;
+            --color-backtotop-font: ${neutrals.foreground} !important;
+            --color-backtotop-border: ${neutrals.background_0} !important;
+            --color-backtotop-background: ${neutrals.background_dim} !important;
+            --color-btn-background: ${roles.primary} !important;
+            --color-btn-font: ${neutrals.background_0} !important;
+            --color-show-btn-background: ${neutrals.background_1} !important;
+            --color-show-btn-font: ${neutrals.foreground} !important;
+            --color-search-border: ${neutrals.background_1} !important;
             --color-search-shadow: none !important;
-            --color-search-background: ${bg0} !important;
-            --color-search-font: ${foreground} !important;
-            --color-search-background-hover: ${primary} !important;
+            --color-search-background: ${neutrals.background_0} !important;
+            --color-search-font: ${neutrals.foreground} !important;
+            --color-search-background-hover: ${roles.primary} !important;
             --color-error: #f55b5b;
             --color-error-background: darken(#db3434, 40%);
             --color-warning: #f1d561;
             --color-warning-background: darken(#dbba34, 40%);
             --color-success: #79f56e;
             --color-success-background: darken(#42db34, 40%);
-            --color-categories-item-selected-font: ${primary} !important;
-            --color-categories-item-border-selected: ${primary} !important;
-            --color-autocomplete-font: ${foreground} !important;
-            --color-autocomplete-border: ${bg1} !important;
+            --color-categories-item-selected-font: ${roles.primary} !important;
+            --color-categories-item-border-selected: ${roles.primary} !important;
+            --color-autocomplete-font: ${neutrals.foreground} !important;
+            --color-autocomplete-border: ${neutrals.background_1} !important;
             --color-autocomplete-shadow: none !important;
-            --color-autocomplete-background: ${bg_dim} !important;
-            --color-autocomplete-background-hover: ${bg_dim} !important;
-            --color-answer-font: ${foreground} !important;
-            --color-answer-background: ${bg0} !important;
-            --color-result-background: ${bg0} !important;
-            --color-result-border: ${bg0} !important;
-            --color-result-url-font: ${foreground} !important;
+            --color-autocomplete-background: ${neutrals.background_dim} !important;
+            --color-autocomplete-background-hover: ${neutrals.background_dim} !important;
+            --color-answer-font: ${neutrals.foreground} !important;
+            --color-answer-background: ${neutrals.background_0} !important;
+            --color-result-background: ${neutrals.background_0} !important;
+            --color-result-border: ${neutrals.background_0} !important;
+            --color-result-url-font: ${neutrals.foreground} !important;
             --color-result-vim-selected: #1f1f23cc;
-            --color-result-vim-arrow: ${primary} !important;
-            --color-result-description-highlight-font: ${foreground} !important;
-            --color-result-link-font: ${primary} !important;
-            --color-result-link-font-highlight: ${primary} !important;
-            --color-result-link-visited-font: ${purple} !important;
-            --color-result-publishdate-font: ${grey2} !important;
-            --color-result-engines-font: ${grey2} !important;
-            --color-result-search-url-border: ${bg1} !important;
-            --color-result-search-url-font: ${foreground} !important;
-            --color-result-detail-font: ${foreground} !important;
+            --color-result-vim-arrow: ${roles.primary} !important;
+            --color-result-description-highlight-font: ${neutrals.foreground} !important;
+            --color-result-link-font: ${roles.primary} !important;
+            --color-result-link-font-highlight: ${roles.primary} !important;
+            --color-result-link-visited-font: ${hues.purple} !important;
+            --color-result-publishdate-font: ${neutrals.foreground} !important;
+            --color-result-engines-font: ${neutrals.foreground} !important;
+            --color-result-search-url-border: ${neutrals.background_1} !important;
+            --color-result-search-url-font: ${neutrals.foreground} !important;
+            --color-result-detail-font: ${neutrals.foreground} !important;
             --color-result-detail-label-font: lightgray;
-            --color-result-detail-background: ${bg0}
-            --color-result-detail-hr: ${bg1} !important;
-            --color-result-detail-link: ${primary} !important;
+            --color-result-detail-background: ${neutrals.background_0}
+            --color-result-detail-hr: ${neutrals.background_1} !important;
+            --color-result-detail-link: ${roles.primary} !important;
             --color-result-detail-loader-border: rgba(255, 255, 255, 0.2);
             --color-result-detail-loader-borderleft: rgba(0, 0, 0, 0);
-            --color-result-image-span-font: ${foreground} !important;
-            --color-result-image-span-font-selected: ${bg0} !important;
-            --color-result-image-background: ${bg0} !important;
+            --color-result-image-span-font: ${neutrals.foreground} !important;
+            --color-result-image-span-font-selected: ${neutrals.background_0} !important;
+            --color-result-image-background: ${neutrals.background_0} !important;
             --color-settings-tr-hover: #2c2c32;
             --color-settings-engine-description-font: darken(#dcdcdc, 30%);
             --color-settings-table-group-background: #1b1b21;
-            --color-toolkit-badge-font: ${foreground} !important;
-            --color-toolkit-badge-background: ${bg1} !important;
+            --color-toolkit-badge-font: ${neutrals.foreground} !important;
+            --color-toolkit-badge-background: ${neutrals.background_1} !important;
             --color-toolkit-kbd-font: #000;
-            --color-toolkit-kbd-background: ${foreground} !important;
-            --color-toolkit-dialog-border: ${bg1} !important;
-            --color-toolkit-dialog-background: ${bg_dim} !important;
-            --color-toolkit-tabs-label-border: ${bg0} !important;
-            --color-toolkit-tabs-section-border: ${bg1} !important;
+            --color-toolkit-kbd-background: ${neutrals.foreground} !important;
+            --color-toolkit-dialog-border: ${neutrals.background_1} !important;
+            --color-toolkit-dialog-background: ${neutrals.background_dim} !important;
+            --color-toolkit-tabs-label-border: ${neutrals.background_0} !important;
+            --color-toolkit-tabs-section-border: ${neutrals.background_1} !important;
             --color-toolkit-select-background: #313338;
-            --color-toolkit-select-border: ${bg1} !important;
+            --color-toolkit-select-border: ${neutrals.background_1} !important;
             --color-toolkit-select-background-hover: #373b49;
-            --color-toolkit-input-text-font: ${foreground} !important;
+            --color-toolkit-input-text-font: ${neutrals.foreground} !important;
             --color-toolkit-checkbox-onoff-off-background: #313338;
             --color-toolkit-checkbox-onoff-on-background: #313338;
-            --color-toolkit-checkbox-onoff-on-mark-background: ${primary} !important;
-            --color-toolkit-checkbox-onoff-on-mark-color: ${bg0} !important;
+            --color-toolkit-checkbox-onoff-on-mark-background: ${roles.primary} !important;
+            --color-toolkit-checkbox-onoff-on-mark-color: ${neutrals.background_0} !important;
             --color-toolkit-checkbox-onoff-off-mark-background: #ddd;
-            --color-toolkit-checkbox-onoff-off-mark-color: ${bg0} !important;
-            --color-toolkit-checkbox-label-background: ${bg0} !important;
-            --color-toolkit-checkbox-label-border: ${bg0} !important;
-            --color-toolkit-checkbox-input-border: ${primary} !important;
-            --color-toolkit-engine-tooltip-border: ${bg0} !important;
-            --color-toolkit-engine-tooltip-background: ${bg0} !important;
+            --color-toolkit-checkbox-onoff-off-mark-color: ${neutrals.background_0} !important;
+            --color-toolkit-checkbox-label-background: ${neutrals.background_0} !important;
+            --color-toolkit-checkbox-label-border: ${neutrals.background_0} !important;
+            --color-toolkit-checkbox-input-border: ${roles.primary} !important;
+            --color-toolkit-engine-tooltip-border: ${neutrals.background_0} !important;
+            --color-toolkit-engine-tooltip-background: ${neutrals.background_0} !important;
             --color-toolkit-loader-border: rgba(255, 255, 255, 0.2);
             --color-toolkit-loader-borderleft: rgba(0, 0, 0, 0);
             --color-doc-code: #ddd;

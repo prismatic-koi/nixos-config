@@ -3,7 +3,9 @@
   lib,
   ...
 }:
-with config.theme;
+with config.themev2;
+# v1 `grey2` (inactive-tab text, no themev2 slot) maps to neutrals.foreground
+# (issue #2814), matching the qutebrowser/greasemonkey precedent.
 {
   options = {
     nx.programs.firefox.hideUrlbar = lib.mkEnableOption "hides the url bar in firefox by default" // {
@@ -49,17 +51,17 @@ with config.theme;
         # css
         ''
           :root {
-            --tab-active-bg-color: ${bg2};
-            --tab-inactive-bg-color: ${bg0};
-            --tab-active-fg-fallback-color: ${foreground};		/* color of text in an active tab without a container */
-            --tab-inactive-fg-fallback-color: ${grey2};		/* color of text in an inactive tab without a container */
-            --urlbar-focused-bg-color: ${bg0};
-            --urlbar-not-focused-bg-color: ${bg3};
-            --toolbar-bgcolor: ${bg0} !important;
+            --tab-active-bg-color: ${neutrals.background_2};
+            --tab-inactive-bg-color: ${neutrals.background_0};
+            --tab-active-fg-fallback-color: ${neutrals.foreground};		/* color of text in an active tab without a container */
+            --tab-inactive-fg-fallback-color: ${neutrals.foreground};		/* color of text in an inactive tab without a container */
+            --urlbar-focused-bg-color: ${neutrals.background_0};
+            --urlbar-not-focused-bg-color: ${neutrals.background_3};
+            --toolbar-bgcolor: ${neutrals.background_0} !important;
             --tab-font: 'Jetbrains Mono';
             --urlbar-font: 'Jetbrains Mono';
-            --statuspannel-bg: ${bg_dim};
-            --statuspannel-fg: ${foreground};
+            --statuspannel-bg: ${neutrals.background_dim};
+            --statuspannel-fg: ${neutrals.foreground};
 
             /* try increasing if you encounter problems */
             --urlbar-height-setting: 24px;

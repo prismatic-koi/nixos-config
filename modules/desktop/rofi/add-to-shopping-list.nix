@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.theme;
+with config.themev2;
 let
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
@@ -61,7 +61,7 @@ in
             }
 
             # Spawn rofi menu and get list item
-            ROFI_STYLE='listview { enabled: false;} inputbar { children: [entry]; border-color: ${purple};} entry { placeholder: "Add Item to Shopping List"; }'
+            ROFI_STYLE='listview { enabled: false;} inputbar { children: [entry]; border-color: ${hues.purple};} entry { placeholder: "Add Item to Shopping List"; }'
             selected_item=$(${pkgs.rofi}/bin/rofi -dmenu -i -theme-str "$ROFI_STYLE")
             add_item_to_shopping_list "$selected_item"
           '';
@@ -120,8 +120,10 @@ in
 
             # Spawn choose menu and get list item
             selected_item=$(echo \n | ${pkgs.choose-gui}/bin/choose -f "JetbrainsMono Nerd Font" -c "${
-              builtins.substring 1 6 config.theme.green
-            }" -b "${builtins.substring 1 6 config.theme.bg2}" -s 24 -m -n 0 -p "Add Item to Shopping List")
+              builtins.substring 1 6 config.themev2.hues.green
+            }" -b "${
+              builtins.substring 1 6 config.themev2.neutrals.background_2
+            }" -s 24 -m -n 0 -p "Add Item to Shopping List")
             add_item_to_shopping_list "$selected_item"
           '';
         };

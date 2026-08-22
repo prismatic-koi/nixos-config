@@ -6,7 +6,7 @@
 }:
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-  theme = config.theme;
+  theme = config.themev2;
   resolution = config.nx.desktop.wallpaper.resolution;
 in
 {
@@ -48,7 +48,7 @@ in
             {
               monitor = "";
               text = "cmd[update:1000] echo $(date +'%T')";
-              color = toRgba theme.foreground;
+              color = toRgba theme.neutrals.foreground;
               font_size = 95;
               font_family = "JetBrainsMono Nerd Font";
               position = "0, 100";
@@ -58,7 +58,7 @@ in
             {
               monitor = "";
               text = "cmd[update:1000] echo $(date +'%F')";
-              color = toRgba theme.foreground;
+              color = toRgba theme.neutrals.foreground;
               font_size = 22;
               font_family = "JetBrainsMono Nerd Font";
               position = "0, 0";
@@ -70,7 +70,7 @@ in
             {
               monitor = "";
               text = "cmd[update:5000] ${homeDir}/.local/scripts/cli.system.batteryStatus";
-              color = toRgba theme.foreground;
+              color = toRgba theme.neutrals.foreground;
               font_size = 18;
               font_family = "JetBrainsMono Nerd Font";
               position = "0, -200";
@@ -85,14 +85,14 @@ in
             dots_size = 0.2; # Scale of input-field height, 0.2 - 0.8
             dots_spacing = 0.35; # Scale of dots' absolute size, 0.0 - 1.0
             dots_center = false;
-            outer_color = toRgba theme.bg1;
-            inner_color = toRgba theme.bg_dim;
-            font_color = toRgba theme.green;
+            outer_color = toRgba theme.neutrals.background_1;
+            inner_color = toRgba theme.neutrals.background_dim;
+            font_color = toRgba theme.hues.green;
             fade_on_empty = false;
             rounding = 5;
-            check_color = toRgba theme.bg_dim;
-            fail_color = toRgba theme.red;
-            placeholder_text = ''<i><span foreground="#${theme.foreground}">Input Password...</span></i>'';
+            check_color = toRgba theme.neutrals.background_dim;
+            fail_color = toRgba theme.hues.red;
+            placeholder_text = ''<i><span foreground="#${theme.neutrals.foreground}">Input Password...</span></i>'';
             hide_input = false;
             position = "0, -100";
             halign = "center";
