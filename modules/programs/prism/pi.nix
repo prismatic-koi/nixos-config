@@ -350,7 +350,7 @@
         steeringMode = "one-at-a-time";
         defaultProjectTrust = "always";
         transport = "sse";
-        theme = config.theme.name;
+        theme = config.themev2.name;
         treeFilterMode = "default";
         quietStartup = true;
         enableInstallTelemetry = false;
@@ -423,70 +423,78 @@
       colourLib = import ../../colour-scheme/lib.nix;
 
       piTheme =
-        with config.theme;
+        with config.themev2;
+        # grey0/grey1 have no themev2 equivalent (nearest-neighbour mapping,
+        # issue #2811): grey0 (the more muted/lighter grey in v1) maps to
+        # neutrals.foreground_dim, the dedicated "dim text" anchor. grey1
+        # (the darker grey in v1) maps to neutrals.background_5, the step of
+        # the neutral ramp closest to the foreground short of foreground_dim
+        # itself. grey2 is unused in this theme block.
         builtins.toJSON {
           "$schema" =
             "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
-          name = config.theme.name;
+          name = config.themev2.name;
           colors = {
             # Core UI
-            accent = primary;
-            border = primary;
-            borderAccent = secondary;
-            borderMuted = grey0;
-            success = green;
-            error = red;
-            warning = orange;
-            muted = grey0;
-            dim = grey1;
+            accent = roles.primary;
+            border = roles.primary;
+            borderAccent = roles.secondary;
+            borderMuted = neutrals.foreground_dim;
+            success = roles.success;
+            error = roles.error;
+            warning = roles.warning;
+            muted = neutrals.foreground_dim;
+            dim = neutrals.background_5;
             text = "";
-            thinkingText = grey0;
+            thinkingText = neutrals.foreground_dim;
             # Backgrounds & Content
-            selectedBg = bg_visual;
-            userMessageBg = bg1;
+            selectedBg = backgrounds.bg_visual;
+            userMessageBg = neutrals.background_1;
             userMessageText = "";
-            customMessageBg = bg1;
+            customMessageBg = neutrals.background_1;
             customMessageText = "";
-            customMessageLabel = primary;
-            toolPendingBg = bg_dim;
-            toolSuccessBg = if type == "light" then bg_green else colourLib.darken bg_green 35;
-            toolErrorBg = if type == "light" then bg_red else colourLib.darken bg_red 35;
-            toolTitle = primary;
+            customMessageLabel = roles.primary;
+            toolPendingBg = neutrals.background_dim;
+            toolSuccessBg =
+              if type == "light" then backgrounds.bg_green else colourLib.darken backgrounds.bg_green 35;
+            toolErrorBg =
+              if type == "light" then backgrounds.bg_red else colourLib.darken backgrounds.bg_red 35;
+            toolTitle = roles.primary;
             toolOutput = "";
             # Markdown
-            mdHeading = orange;
-            mdLink = blue;
-            mdLinkUrl = grey0;
-            mdCode = green;
+            mdHeading = hues.orange;
+            mdLink = hues.blue;
+            mdLinkUrl = neutrals.foreground_dim;
+            mdCode = hues.green;
             mdCodeBlock = "";
-            mdCodeBlockBorder = grey0;
-            mdQuote = grey0;
-            mdQuoteBorder = grey0;
-            mdHr = grey0;
-            mdListBullet = aqua;
+            mdCodeBlockBorder = neutrals.foreground_dim;
+            mdQuote = neutrals.foreground_dim;
+            mdQuoteBorder = neutrals.foreground_dim;
+            mdHr = neutrals.foreground_dim;
+            mdListBullet = hues.cyan;
             # Tool Diffs
-            toolDiffAdded = green;
-            toolDiffRemoved = red;
-            toolDiffContext = grey0;
+            toolDiffAdded = hues.green;
+            toolDiffRemoved = hues.red;
+            toolDiffContext = neutrals.foreground_dim;
             # Syntax Highlighting
-            syntaxComment = grey0;
-            syntaxKeyword = red;
-            syntaxFunction = blue;
-            syntaxVariable = orange;
-            syntaxString = green;
-            syntaxNumber = purple;
-            syntaxType = aqua;
-            syntaxOperator = primary;
-            syntaxPunctuation = grey1;
+            syntaxComment = neutrals.foreground_dim;
+            syntaxKeyword = hues.red;
+            syntaxFunction = hues.blue;
+            syntaxVariable = hues.orange;
+            syntaxString = hues.green;
+            syntaxNumber = hues.purple;
+            syntaxType = hues.cyan;
+            syntaxOperator = roles.primary;
+            syntaxPunctuation = neutrals.background_5;
             # Thinking Level Borders
-            thinkingOff = grey0;
-            thinkingMinimal = grey1;
-            thinkingLow = aqua;
-            thinkingMedium = green;
-            thinkingHigh = orange;
-            thinkingXhigh = red;
+            thinkingOff = neutrals.foreground_dim;
+            thinkingMinimal = neutrals.background_5;
+            thinkingLow = hues.cyan;
+            thinkingMedium = hues.green;
+            thinkingHigh = hues.orange;
+            thinkingXhigh = hues.red;
             # Bash Mode
-            bashMode = orange;
+            bashMode = hues.orange;
           };
         };
     in
@@ -542,10 +550,10 @@
         # path (extension reads ~/.config/prism/agents/<role>.md at
         # before_agent_start).
         home.file.".pi/agent/AGENTS.md".text = builtins.readFile ./agents/global-instructions.md;
-        # Custom theme derived from config.theme, deployed so pi picks it up
+        # Custom theme derived from config.themev2, deployed so pi picks it up
         # from ~/.pi/agent/themes/ at runtime. The theme name matches
-        # config.theme.name and all colour values come from the system palette.
-        home.file.".pi/agent/themes/${config.theme.name}.json".text = piTheme;
+        # config.themev2.name and all colour values come from the system palette.
+        home.file.".pi/agent/themes/${config.themev2.name}.json".text = piTheme;
         home.file.".pi/agent/skills".source = skillsDir;
         # Vendored extensions directory — GC-rooted via this home.file entry.
         # The extension path referenced in settings.json points into this
