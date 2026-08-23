@@ -10,6 +10,7 @@
     ./edge.nix
     ./everforest.nix
     ./github-light.nix
+    ./gradient.nix
     ./gruvbox.nix
     ./nightcity-kabuki.nix
     ./onedark.nix

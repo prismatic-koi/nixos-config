@@ -94,6 +94,15 @@ let
     }:
     "#${encodePair r}${encodePair g}${encodePair b}";
 
+  # Round a (possibly negative) float to the nearest integer.
+  round =
+    n:
+    let
+      f = builtins.floor n;
+      frac = n - f;
+    in
+    if frac >= 0.5 then f + 1 else f;
+
 in
 {
   # darken color pct — darken a "#RRGGBB" colour by pct percent (0–100).
@@ -123,4 +132,20 @@ in
       g = scale c.g;
       b = scale c.b;
     };
+
+  # mix a b pct — interpolate pct percent of the way from a to b (0-100).
+  # mix a b 0 == a; mix a b 100 == b.
+  mix =
+    a: b: pct:
+    let
+      ca = parseHex a;
+      cb = parseHex b;
+      lerp = x: y: clamp 0 255 (round (x + (y - x) * pct / 100.0));
+    in
+    encodeHex {
+      r = lerp ca.r cb.r;
+      g = lerp ca.g cb.g;
+      b = lerp ca.b cb.b;
+    };
+
 }

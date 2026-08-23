@@ -4,6 +4,17 @@
   lib,
   ...
 }:
+let
+  inherit (config.nx.colourScheme.visualiserGradient) baseIndex colours;
+
+  # ncmpcpp's visualizer_color list value is the palette index + 1 (off by
+  # one). The colour list and base index come from
+  # modules/colour-scheme/gradient.nix — the single shared source of truth
+  # also read by modules/programs/kitty.nix.
+  visualizerColor = lib.concatMapStringsSep "," (i: builtins.toString (baseIndex + i + 1)) (
+    lib.range 0 (builtins.length colours - 1)
+  );
+in
 {
   options = {
     nx.programs.ncmpcpp.enable = lib.mkEnableOption "enables ncmpcpp" // {
@@ -30,9 +41,9 @@
               user_interface = "alternative";
               visualizer_output_name = "my_fifo";
               visualizer_in_stereo = "yes";
-              # this seemeded to stop worrking in the 0.10 update
-              # https://github.com/NixOS/nixpkgs/pull/343282
-              # visualizer_type = "spectrum"; # not sure why this stopped working (2024-09-29) investigate later
+              visualizer_type = "spectrum";
+              visualizer_spectrum_smooth_look = "yes";
+              visualizer_color = visualizerColor;
               main_window_color = 5;
               color1 = 3;
               color2 = 2;
