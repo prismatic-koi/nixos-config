@@ -191,7 +191,6 @@
     openscad-unstable
     parted
     protontricks
-    protonup-ng
     scanmem
     shotcut
     solvespace
