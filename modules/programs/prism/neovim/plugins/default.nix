@@ -4,7 +4,6 @@
     ./autopairs.nix
     ./colorizer.nix
     ./conform.nix
-    ./copilot.nix
     ./gitsigns.nix
     ./image.nix
     ./leap.nix
