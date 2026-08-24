@@ -61,7 +61,7 @@ in
   nx = {
     isLaptop = true;
     desktop = {
-      theme = "edge";
+      theme = "catppuccin-latte";
       hyprland = {
         lockTimeout.enable = false;
         screenTimeout.duration = 600; # screen off after 10 minutes
