@@ -25,7 +25,7 @@
             		},
             	},
             	filetypes = {
-            		markdown = true,
+            		markdown = false, -- these words are my own
             		yaml = true,
             		help = false,
             		gitcommit = false,
@@ -36,6 +36,23 @@
             		["."] = true,
             		rust = false, -- while learning rust, no copilot
             	},
+            })
+
+            -- copilot-lua's suggestion.hide_during_completion only understands
+            -- nvim-cmp's events natively. Since the completion engine migrated
+            -- to blink.cmp, re-wire the same ghost-text suppression to blink's
+            -- BlinkCmpMenuOpen / BlinkCmpMenuClose User autocmd events.
+            vim.api.nvim_create_autocmd("User", {
+            	pattern = "BlinkCmpMenuOpen",
+            	callback = function()
+            		vim.b.copilot_suggestion_hidden = true
+            	end,
+            })
+            vim.api.nvim_create_autocmd("User", {
+            	pattern = "BlinkCmpMenuClose",
+            	callback = function()
+            		vim.b.copilot_suggestion_hidden = false
+            	end,
             })
           '';
       }

@@ -173,7 +173,7 @@
               '';
           };
           xdg.configFile."rmpc/themes/custom.ron".text =
-            with config.themev2;
+            with config.theme;
             # rust
             ''
               #![enable(implicit_some)]

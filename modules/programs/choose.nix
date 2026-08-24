@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   choose-options = "-f 'JetBrainsMono Nerd Font' -c '${builtins.substring 1 6 hues.green}' -b '${

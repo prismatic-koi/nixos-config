@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   isLinux = pkgs.stdenv.hostPlatform.isLinux;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
@@ -120,9 +120,9 @@ in
 
             # Spawn choose menu and get list item
             selected_item=$(echo \n | ${pkgs.choose-gui}/bin/choose -f "JetbrainsMono Nerd Font" -c "${
-              builtins.substring 1 6 config.themev2.hues.green
+              builtins.substring 1 6 config.theme.hues.green
             }" -b "${
-              builtins.substring 1 6 config.themev2.neutrals.background_2
+              builtins.substring 1 6 config.theme.neutrals.background_2
             }" -s 24 -m -n 0 -p "Add Item to Shopping List")
             add_item_to_shopping_list "$selected_item"
           '';

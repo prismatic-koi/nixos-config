@@ -1,50 +1,52 @@
-# themev2 scheme: onedark (dark). Source: navarasu/onedark.nvim.
+# theme sample scheme: catppuccin-mocha (dark). Source: catppuccin/palette,
+# mocha flavour.
 #
 # Plain hex values. Provenance in inline comments only where a slot deviates
 # from upstream (rename / derived / adjusted); native colours get no comment.
+# Mocha provides enough colours to fill most slots natively.
 { colourLib }:
 let
   inherit (colourLib) darken lighten;
 in
 rec {
-  name = "onedark";
+  name = "catppuccin-mocha";
   type = "dark";
 
   # Neutrals: background_0 is the primary/default background; background_1..5
   # climbs lighter toward the foreground; foreground_dim / foreground are
-  # named text anchors. No distinct shade sits below background_0 (it is
-  # already v1's bg_dim), so background_dim is set equal.
+  # named text anchors. background_dim is set to mocha mantle (#181825), a
+  # real recessed shade below background_0 (base #1e1e2e).
   neutrals = {
-    background_dim = "#21252b"; # no lower shade below background_0 (bg_dim); equal
-    background_0 = "#21252b"; # bg_dim
-    background_1 = "#282c34"; # bg0
-    background_2 = "#31353f"; # bg1
-    background_3 = "#393f4a"; # bg2
-    background_4 = "#3b3f4c"; # bg3
-    background_5 = "#535965"; # grey0
-    foreground_dim = "#5c6370"; # grey1
-    foreground = "#abb2bf"; # fg
+    background_dim = "#181825"; # mantle — a real recessed shade below background_0
+    background_0 = "#1e1e2e"; # base
+    background_1 = "#313244"; # surface0
+    background_2 = "#45475a"; # surface1
+    background_3 = "#585b70"; # surface2
+    background_4 = "#6c7086"; # overlay0
+    background_5 = "#7f849c"; # overlay1
+    foreground_dim = "#a6adc8"; # subtext0
+    foreground = "#cdd6f4"; # text
   };
 
   # Tailwind-inspired hues
   hues = rec {
-    red = "#e86671";
-    orange = "#e89a5e"; # adjusted — v1 diverges from upstream #d19a66
+    red = "#f38ba8";
+    orange = "#fab387"; # upstream calls this peach
     amber = darken yellow 8; # derived from yellow
-    yellow = "#e5c07b";
+    yellow = "#f9e2af";
     lime = lighten green 15; # derived from green
-    green = "#98c379";
-    emerald = lighten cyan 10; # derived from cyan
-    teal = darken cyan 10; # derived from cyan
-    cyan = "#56b6c2";
-    sky = lighten blue 15; # derived from blue
-    blue = "#61afef";
-    indigo = darken purple 12; # derived from purple
-    violet = "#c678dd"; # upstream calls this purple
-    purple = violet; # onedark purple slot maps directly onto violet
-    fuchsia = lighten violet 10; # derived from violet
-    pink = lighten fuchsia 8; # derived from fuchsia — onedark has no pink
-    rose = darken red 6; # derived from red
+    green = "#a6e3a1";
+    emerald = lighten teal 12; # derived from teal
+    teal = "#94e2d5";
+    cyan = "#74c7ec"; # upstream calls this sapphire
+    sky = "#89dceb";
+    blue = "#89b4fa";
+    indigo = "#b4befe"; # upstream calls this lavender
+    violet = "#cba6f7"; # upstream calls this mauve
+    purple = lighten violet 12; # derived from violet
+    fuchsia = "#f5c2e7"; # upstream calls this pink
+    pink = "#f2cdcd"; # upstream calls this flamingo
+    rose = "#eba0ac"; # upstream calls this maroon
     brown = darken orange 25; # derived from orange (Tailwind omits brown)
   };
 

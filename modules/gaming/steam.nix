@@ -26,6 +26,7 @@
           enable = true;
           gamescopeSession.enable = false;
           protontricks.enable = true;
+          extraCompatPackages = [ pkgs.proton-ge-bin ];
           package = pkgs.steam.override {
             extraPkgs =
               pkgs: with pkgs; [
@@ -34,9 +35,6 @@
                 usbutils
               ];
           };
-        };
-        environment.sessionVariables = {
-          STEAM_EXTRA_COMPAT_TOOLS_PATHS = "/home/${config.nx.username}/.steam/root/compatibilitytools.d";
         };
         home-manager.users.${config.nx.username} = {
           home.persistence."/persist" = {

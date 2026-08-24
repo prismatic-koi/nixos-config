@@ -2,17 +2,19 @@
 {
   home-manager.users.${config.nx.username} = {
     home.packages = with pkgs; [
+      basedpyright
+      dockerfile-language-server-nodejs
+      gopls
       helm-ls
       lua-language-server
       nil
       rust-analyzer
       typescript-language-server
+      vscode-langservers-extracted
       yaml-language-server
     ];
     programs.neovim.plugins = [
       # LSP and completions for injected langs
-      pkgs.vimPlugins.otter-nvim
-      pkgs.vimPlugins.cmp-nvim-lsp
       pkgs.vimPlugins.vim-helm
       # LSP
       {
@@ -21,7 +23,7 @@
         config =
           # lua
           ''
-            local default_capabilities = require("cmp_nvim_lsp").default_capabilities()
+            local default_capabilities = require("blink.cmp").get_lsp_capabilities()
 
             function add_lsp(name, options)
             	options = options or {}
@@ -46,6 +48,7 @@
             add_lsp('cssls')
             add_lsp('dockerls')
             add_lsp('eslint')
+            add_lsp('gopls')
             add_lsp('helm_ls')
             add_lsp('html')
             add_lsp('jsonls')
@@ -56,12 +59,13 @@
             		nix = {
             			flake = {
             				autoArchive = true,
-            				autoEvalInputs = false,
+            				autoEvalInputs = true,
             			},
             		},
             	} },
             })
-            add_lsp('pylsp')
+            add_lsp('basedpyright')
+            add_lsp('rust_analyzer')
             add_lsp('ts_ls')
             add_lsp('yamlls', {
             	settings = { ["yamlls"] = {

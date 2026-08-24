@@ -5,7 +5,7 @@
   ...
 }:
 let
-  theme = config.themev2;
+  theme = config.theme;
 in
 {
   options = {

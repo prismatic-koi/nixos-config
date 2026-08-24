@@ -1,33 +1,37 @@
 {
+  config,
   pkgs,
   lib,
   ...
 }:
+let
+  colourLib = import ./lib.nix;
+  mk = name: import ./palettes/${name}.nix { inherit colourLib; };
+  gruvbox = mk "gruvbox";
+  byTheme = {
+    catppuccin-latte = mk "catppuccin-latte";
+    catppuccin-mocha = mk "catppuccin-mocha";
+    edge = mk "edge";
+    everforest = mk "everforest";
+    github-light = mk "github-light";
+    nightcity-kabuki = mk "nightcity-kabuki";
+    onedark = mk "onedark";
+    gruvbox-light = gruvbox.light;
+    gruvbox-dark = gruvbox.dark;
+  };
+in
 {
   imports = [
     ./schema.nix
-    ./catppuccin-latte.nix
-    ./edge.nix
-    ./everforest.nix
-    ./github-light.nix
     ./gradient.nix
-    ./gruvbox.nix
-    ./nightcity-kabuki.nix
-    ./onedark.nix
   ];
   options = {
     nx.desktop.theme = lib.mkOption {
       default = "everforest";
-      type = lib.types.enum [
-        "catppuccin-latte"
-        "edge"
-        "everforest"
-        "github-light"
-        "gruvbox-dark"
-        "gruvbox-light"
-        "nightcity-kabuki"
-        "onedark"
-      ];
+      type = lib.types.enum (builtins.attrNames byTheme);
     };
+  };
+  config = {
+    theme = byTheme.${config.nx.desktop.theme};
   };
 }

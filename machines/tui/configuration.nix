@@ -61,7 +61,7 @@ in
   nx = {
     isLaptop = true;
     desktop = {
-      theme = "edge";
+      theme = "catppuccin-mocha";
       hyprland = {
         lockTimeout.enable = false;
         screenTimeout.duration = 600; # screen off after 10 minutes
@@ -255,7 +255,6 @@ in
     openscad-unstable
     parted
     protontricks
-    protonup-ng
     shotcut
     solvespace
     usbutils

@@ -350,7 +350,7 @@
         steeringMode = "one-at-a-time";
         defaultProjectTrust = "always";
         transport = "sse";
-        theme = config.themev2.name;
+        theme = config.theme.name;
         treeFilterMode = "default";
         quietStartup = true;
         enableInstallTelemetry = false;
@@ -423,8 +423,8 @@
       colourLib = import ../../colour-scheme/lib.nix;
 
       piTheme =
-        with config.themev2;
-        # grey0/grey1 have no themev2 equivalent (nearest-neighbour mapping,
+        with config.theme;
+        # grey0/grey1 have no theme equivalent (nearest-neighbour mapping,
         # issue #2811): grey0 (the more muted/lighter grey in v1) maps to
         # neutrals.foreground_dim, the dedicated "dim text" anchor. grey1
         # (the darker grey in v1) maps to neutrals.background_5, the step of
@@ -433,7 +433,7 @@
         builtins.toJSON {
           "$schema" =
             "https://raw.githubusercontent.com/badlogic/pi-mono/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
-          name = config.themev2.name;
+          name = config.theme.name;
           colors = {
             # Core UI
             accent = roles.primary;
@@ -550,10 +550,10 @@
         # path (extension reads ~/.config/prism/agents/<role>.md at
         # before_agent_start).
         home.file.".pi/agent/AGENTS.md".text = builtins.readFile ./agents/global-instructions.md;
-        # Custom theme derived from config.themev2, deployed so pi picks it up
+        # Custom theme derived from config.theme, deployed so pi picks it up
         # from ~/.pi/agent/themes/ at runtime. The theme name matches
-        # config.themev2.name and all colour values come from the system palette.
-        home.file.".pi/agent/themes/${config.themev2.name}.json".text = piTheme;
+        # config.theme.name and all colour values come from the system palette.
+        home.file.".pi/agent/themes/${config.theme.name}.json".text = piTheme;
         home.file.".pi/agent/skills".source = skillsDir;
         # Vendored extensions directory — GC-rooted via this home.file entry.
         # The extension path referenced in settings.json points into this

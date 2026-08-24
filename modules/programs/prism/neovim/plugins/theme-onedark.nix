@@ -5,11 +5,11 @@
   ...
 }:
 let
-  theme = config.themev2;
+  theme = config.theme;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.themev2.name == "onedark")
+    lib.mkIf (config.theme.name == "onedark")
       [
         {
           plugin = pkgs.vimPlugins.onedark-nvim;

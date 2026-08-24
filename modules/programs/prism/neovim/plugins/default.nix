@@ -2,6 +2,7 @@
 {
   imports = [
     ./autopairs.nix
+    ./blink-cmp.nix
     ./colorizer.nix
     ./conform.nix
     ./copilot.nix
@@ -11,12 +12,12 @@
     ./markdown-preview.nix
     ./lualine.nix
     ./luasnip.nix
-    ./nvim-cmp.nix
     ./nvim-lspconfig.nix
     ./nvim-sops.nix
     ./nvim-tree.nix
     ./obsidian.nix
     ./oil.nix
+    ./otter.nix
     ./telescope.nix
     ./theme-catpuccin.nix
     ./theme-edge.nix

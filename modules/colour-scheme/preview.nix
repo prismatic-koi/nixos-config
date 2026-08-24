@@ -1,4 +1,4 @@
-# themev2 truecolor swatch preview. Wired as the `theme-preview` flake app:
+# theme truecolor swatch preview. Wired as the `theme-preview` flake app:
 #   nix run .#theme-preview              # all sample schemes
 #   nix run .#theme-preview -- <scheme>  # one named scheme
 #
@@ -12,16 +12,17 @@
   writeShellApplication,
 }:
 let
-  colourLib = import ../lib.nix;
+  colourLib = import ./lib.nix;
   schemes = {
-    edge = import ./edge.nix { inherit colourLib; };
-    everforest = import ./everforest.nix { inherit colourLib; };
-    catppuccin-latte = import ./catppuccin-latte.nix { inherit colourLib; };
-    github-light = import ./github-light.nix { inherit colourLib; };
-    gruvbox-light = (import ./gruvbox.nix { inherit colourLib; }).light;
-    gruvbox-dark = (import ./gruvbox.nix { inherit colourLib; }).dark;
-    nightcity-kabuki = import ./nightcity-kabuki.nix { inherit colourLib; };
-    onedark = import ./onedark.nix { inherit colourLib; };
+    edge = import ./palettes/edge.nix { inherit colourLib; };
+    everforest = import ./palettes/everforest.nix { inherit colourLib; };
+    catppuccin-latte = import ./palettes/catppuccin-latte.nix { inherit colourLib; };
+    catppuccin-mocha = import ./palettes/catppuccin-mocha.nix { inherit colourLib; };
+    github-light = import ./palettes/github-light.nix { inherit colourLib; };
+    gruvbox-light = (import ./palettes/gruvbox.nix { inherit colourLib; }).light;
+    gruvbox-dark = (import ./palettes/gruvbox.nix { inherit colourLib; }).dark;
+    nightcity-kabuki = import ./palettes/nightcity-kabuki.nix { inherit colourLib; };
+    onedark = import ./palettes/onedark.nix { inherit colourLib; };
   };
 
   # Display order the preview walks. Group titles are printed as headers.

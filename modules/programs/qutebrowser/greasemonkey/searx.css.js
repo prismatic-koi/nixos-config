@@ -38,12 +38,12 @@ GM_addStyle(`
     --color-search-background: var(--system-theme-bg0) !important;
     --color-search-font: var(--system-theme-fg) !important;
     --color-search-background-hover: var(--system-theme-primary) !important;
-    --color-error: #f55b5b;
-    --color-error-background: darken(#db3434, 40%);
-    --color-warning: #f1d561;
-    --color-warning-background: darken(#dbba34, 40%);
-    --color-success: #79f56e;
-    --color-success-background: darken(#42db34, 40%);
+    --color-error: var(--system-theme-red) !important;
+    --color-error-background: var(--system-theme-bg_red) !important;
+    --color-warning: var(--system-theme-yellow) !important;
+    --color-warning-background: var(--system-theme-bg_yellow) !important;
+    --color-success: var(--system-theme-green) !important;
+    --color-success-background: var(--system-theme-bg_green) !important;
     --color-categories-item-selected-font: var(--system-theme-primary) !important;
     --color-categories-item-border-selected: var(--system-theme-primary) !important;
     --color-autocomplete-font: var(--system-theme-fg) !important;
@@ -56,7 +56,7 @@ GM_addStyle(`
     --color-result-background: var(--system-theme-bg0) !important;
     --color-result-border: var(--system-theme-bg0) !important;
     --color-result-url-font: var(--system-theme-fg) !important;
-    --color-result-vim-selected: #1f1f23cc;
+    --color-result-vim-selected: var(--system-theme-bg_visual) !important;
     --color-result-vim-arrow: var(--system-theme-primary) !important;
     --color-result-description-highlight-font: var(--system-theme-fg) !important;
     --color-result-link-font: var(--system-theme-primary) !important;
@@ -67,8 +67,8 @@ GM_addStyle(`
     --color-result-search-url-border: var(--system-theme-bg1) !important;
     --color-result-search-url-font: var(--system-theme-fg) !important;
     --color-result-detail-font: var(--system-theme-fg) !important;
-    --color-result-detail-label-font: lightgray;
-    --color-result-detail-background: var(--system-theme-bg0}
+    --color-result-detail-label-font: var(--system-theme-grey2) !important;
+    --color-result-detail-background: var(--system-theme-bg0) !important;
     --color-result-detail-hr: var(--system-theme-bg1) !important;
     --color-result-detail-link: var(--system-theme-primary) !important;
     --color-result-detail-loader-border: rgba(255, 255, 255, 0.2);
@@ -76,26 +76,26 @@ GM_addStyle(`
     --color-result-image-span-font: var(--system-theme-fg) !important;
     --color-result-image-span-font-selected: var(--system-theme-bg0) !important;
     --color-result-image-background: var(--system-theme-bg0) !important;
-    --color-settings-tr-hover: #2c2c32;
-    --color-settings-engine-description-font: darken(#dcdcdc, 30%);
-    --color-settings-table-group-background: #1b1b21;
+    --color-settings-tr-hover: var(--system-theme-bg1) !important;
+    --color-settings-engine-description-font: var(--system-theme-grey2) !important;
+    --color-settings-table-group-background: var(--system-theme-bg_dim) !important;
     --color-toolkit-badge-font: var(--system-theme-fg) !important;
     --color-toolkit-badge-background: var(--system-theme-bg1) !important;
-    --color-toolkit-kbd-font: #000;
+    --color-toolkit-kbd-font: var(--system-theme-bg0) !important;
     --color-toolkit-kbd-background: var(--system-theme-fg) !important;
     --color-toolkit-dialog-border: var(--system-theme-bg1) !important;
     --color-toolkit-dialog-background: var(--system-theme-bg_dim) !important;
     --color-toolkit-tabs-label-border: var(--system-theme-bg0) !important;
     --color-toolkit-tabs-section-border: var(--system-theme-bg1) !important;
-    --color-toolkit-select-background: #313338;
+    --color-toolkit-select-background: var(--system-theme-bg1) !important;
     --color-toolkit-select-border: var(--system-theme-bg1) !important;
-    --color-toolkit-select-background-hover: #373b49;
+    --color-toolkit-select-background-hover: var(--system-theme-bg2) !important;
     --color-toolkit-input-text-font: var(--system-theme-fg) !important;
-    --color-toolkit-checkbox-onoff-off-background: #313338;
-    --color-toolkit-checkbox-onoff-on-background: #313338;
+    --color-toolkit-checkbox-onoff-off-background: var(--system-theme-bg1) !important;
+    --color-toolkit-checkbox-onoff-on-background: var(--system-theme-bg1) !important;
     --color-toolkit-checkbox-onoff-on-mark-background: var(--system-theme-primary) !important;
     --color-toolkit-checkbox-onoff-on-mark-color: var(--system-theme-bg0) !important;
-    --color-toolkit-checkbox-onoff-off-mark-background: #ddd;
+    --color-toolkit-checkbox-onoff-off-mark-background: var(--system-theme-fg) !important;
     --color-toolkit-checkbox-onoff-off-mark-color: var(--system-theme-bg0) !important;
     --color-toolkit-checkbox-label-background: var(--system-theme-bg0) !important;
     --color-toolkit-checkbox-label-border: var(--system-theme-bg0) !important;
@@ -104,8 +104,8 @@ GM_addStyle(`
     --color-toolkit-engine-tooltip-background: var(--system-theme-bg0) !important;
     --color-toolkit-loader-border: rgba(255, 255, 255, 0.2);
     --color-toolkit-loader-borderleft: rgba(0, 0, 0, 0);
-    --color-doc-code: #ddd;
-    --color-doc-code-background: #4d5a6f;
+    --color-doc-code: var(--system-theme-fg) !important;
+    --color-doc-code-background: var(--system-theme-bg2) !important;
   }
 `)
 

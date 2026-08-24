@@ -15,11 +15,11 @@ let
       hash = "sha256-EreIuni6/XR0428rO4Lbi2usIreOyPWKm7kJJA2Nwqo=";
     };
   };
-  theme = config.themev2;
+  theme = config.theme;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.themev2.name == "github-light")
+    lib.mkIf (config.theme.name == "github-light")
       [
         {
           plugin = github-nvim-theme;

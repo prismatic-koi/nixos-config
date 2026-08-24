@@ -45,7 +45,7 @@
               '';
             };
             # config.home-manager.users.${config.nx.username}.home.file."nixos-logo".source;
-            color = with config.themev2; {
+            color = with config.theme; {
               "1" = "${hues.yellow}";
               "2" = "${hues.green}";
               "3" = "${hues.blue}";

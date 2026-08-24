@@ -6,7 +6,7 @@
 }:
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-  theme = config.themev2;
+  theme = config.theme;
   inherit (lib.generators) mkLuaInline;
 in
 {
@@ -128,7 +128,7 @@ in
                         active_border =
                           let
                             # rainbow border colors in order. v1 `aqua` has no
-                            # themev2 slot; it maps to hues.teal — exact on
+                            # theme slot; it maps to hues.teal — exact on
                             # edge/github-light/gruvbox/nightcity, close on
                             # latte/onedark (where hues.cyan is the exact match).
                             # teal chosen for majority-scheme parity and to keep
@@ -332,7 +332,7 @@ in
                 {
                   # reduce touchpad sensitivity
                   name = "asup1415:00-093a:300c-touchpad";
-                  sensitivity = 0.5;
+                  sensitivity = 0.4;
                 }
               ];
               # ---- env -------------------------------------------------------
