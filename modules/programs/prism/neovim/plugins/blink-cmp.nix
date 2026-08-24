@@ -26,7 +26,14 @@
           	},
           	snippets = { preset = "luasnip" },
           	sources = {
-          		default = { "lsp", "snippets" },
+          		default = { "lsp", "snippets", "buffer", "path" },
+          	},
+          	cmdline = {
+          		preset = "default",
+          		sources = {
+          			["/"] = { "buffer" },
+          			[":"] = { "cmdline", "buffer" },
+          		},
           	},
           })
         '';
