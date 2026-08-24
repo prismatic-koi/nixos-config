@@ -17,6 +17,7 @@
     ./nvim-tree.nix
     ./obsidian.nix
     ./oil.nix
+    ./otter.nix
     ./telescope.nix
     ./theme-catpuccin.nix
     ./theme-edge.nix
