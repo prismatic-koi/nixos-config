@@ -12,7 +12,6 @@
     programs.neovim.plugins = [
       # LSP and completions for injected langs
       pkgs.vimPlugins.otter-nvim
-      pkgs.vimPlugins.cmp-nvim-lsp
       pkgs.vimPlugins.vim-helm
       # LSP
       {
@@ -21,7 +20,7 @@
         config =
           # lua
           ''
-            local default_capabilities = require("cmp_nvim_lsp").default_capabilities()
+            local default_capabilities = require("blink.cmp").get_lsp_capabilities()
 
             function add_lsp(name, options)
             	options = options or {}

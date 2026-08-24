@@ -1,0 +1,35 @@
+{ config, pkgs, ... }:
+{
+  home-manager.users.${config.nx.username}.programs.neovim.plugins = [
+    {
+      plugin = pkgs.vimPlugins.blink-cmp;
+      type = "lua";
+      config =
+        # lua
+        ''
+          require("blink.cmp").setup({
+          	keymap = {
+          		preset = "none",
+          		["<C-n>"] = { "select_next", "fallback" },
+          		["<C-p>"] = { "select_prev", "fallback" },
+          		["<C-d>"] = { "scroll_documentation_down", "fallback" },
+          		["<C-f>"] = { "scroll_documentation_up", "fallback" },
+          		["<C-Space>"] = { "show", "fallback" },
+          		["<CR>"] = { "select_and_accept", "fallback" },
+          		["<Tab>"] = { "select_next", "snippet_forward", "fallback" },
+          		["<S-Tab>"] = { "select_prev", "snippet_backward", "fallback" },
+          	},
+          	completion = {
+          		accept = {
+          			auto_brackets = { enabled = false },
+          		},
+          	},
+          	snippets = { preset = "luasnip" },
+          	sources = {
+          		default = { "lsp", "snippets" },
+          	},
+          })
+        '';
+    }
+  ];
+}
