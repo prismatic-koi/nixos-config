@@ -332,7 +332,7 @@ in
                 {
                   # reduce touchpad sensitivity
                   name = "asup1415:00-093a:300c-touchpad";
-                  sensitivity = 0.5;
+                  sensitivity = 0.4;
                 }
               ];
               # ---- env -------------------------------------------------------
