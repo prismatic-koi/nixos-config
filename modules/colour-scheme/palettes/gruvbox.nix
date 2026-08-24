@@ -1,4 +1,4 @@
-# themev2 scheme: gruvbox (light + dark). Source: morhetz/gruvbox.
+# theme scheme: gruvbox (light + dark). Source: morhetz/gruvbox.
 #
 # One file, two variants — mirrors how modules/colour-scheme/gruvbox.nix
 # handles gruvbox-light and gruvbox-dark. Plain hex values. Provenance in

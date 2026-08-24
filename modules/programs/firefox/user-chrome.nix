@@ -3,8 +3,8 @@
   lib,
   ...
 }:
-with config.themev2;
-# v1 `grey2` (inactive-tab text, no themev2 slot) maps to neutrals.foreground
+with config.theme;
+# v1 `grey2` (inactive-tab text, no theme slot) maps to neutrals.foreground
 # (issue #2814), matching the qutebrowser/greasemonkey precedent.
 {
   options = {

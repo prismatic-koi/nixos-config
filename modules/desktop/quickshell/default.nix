@@ -5,21 +5,21 @@
   ...
 }:
 let
-  theme = config.themev2;
+  theme = config.theme;
 
   # Theme.qml is generated at build time with the active color scheme.
   # QML components access colors via the Theme singleton, e.g. Theme.red
   #
-  # Colours now come from config.themev2 (issue #2814). The QML property names
+  # Colours now come from config.theme (issue #2814). The QML property names
   # are unchanged so the QML consumers need no edits; only the Nix source of
-  # each value moves onto the themev2 bands. Gap mappings (no direct themev2
+  # each value moves onto the theme bands. Gap mappings (no direct theme
   # slot) follow the qutebrowser/greasemonkey precedent:
   #   aqua        -> hues.teal            (nearest hue; exact on edge/github-light/gruvbox/nightcity, cyan exact on latte/onedark; teal keeps firefox+qutebrowser consistent)
   #   grey0       -> neutrals.background_5 (structural grey)
   #   grey1       -> neutrals.foreground_dim (dim text)
   #   grey2       -> neutrals.foreground
   #   statusline1 -> hues.indigo
-  #   statusline2 -> hues.yellow            (warm; v1 gold #df8e1d == themev2 yellow on latte)
+  #   statusline2 -> hues.yellow            (warm; v1 gold #df8e1d == theme yellow on latte)
   #   statusline3 -> hues.red
   #
   # Property names use lowerCamelCase (QML convention):
@@ -66,7 +66,7 @@ let
         readonly property color bgBlue: "${theme.backgrounds.bg_blue}"
         readonly property color bgYellow: "${theme.backgrounds.bg_yellow}"
 
-        // statusline (no themev2 slot; see gap mapping above)
+        // statusline (no theme slot; see gap mapping above)
         readonly property color statusline1: "${theme.hues.indigo}"
         readonly property color statusline2: "${theme.hues.yellow}"
         readonly property color statusline3: "${theme.hues.red}"

@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 {
   options = {
     nx.programs.zathura.enable = lib.mkEnableOption "enables zathura" // {

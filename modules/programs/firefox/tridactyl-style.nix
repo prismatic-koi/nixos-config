@@ -3,8 +3,8 @@
   lib,
   ...
 }:
-with config.themev2;
-# v1 `grey0` (scrollbar track, no themev2 slot) maps to neutrals.background_5
+with config.theme;
+# v1 `grey0` (scrollbar track, no theme slot) maps to neutrals.background_5
 # (issue #2814), matching the qutebrowser/greasemonkey precedent.
 {
   config = lib.mkIf config.nx.programs.firefox.enable {

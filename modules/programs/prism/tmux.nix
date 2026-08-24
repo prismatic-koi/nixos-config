@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   background = if type == "dark" then neutrals.background_0 else neutrals.background_dim;
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;

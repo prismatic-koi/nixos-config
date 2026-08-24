@@ -3,7 +3,7 @@
   lib,
   ...
 }:
-with config.themev2;
+with config.theme;
 {
   config = lib.mkIf config.nx.programs.firefox.enable {
     home-manager.users.${config.nx.username} = {

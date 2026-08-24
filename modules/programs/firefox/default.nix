@@ -48,7 +48,7 @@ in
               "browser.urlbar.update2.engineAliasRefresh" = true; # allow search engine updates
               "browser.sessionstore.resume_from_crash" = false; # disable session restore after crash (its just a shutdown)
               "toolkit.legacyUserProfileCustomizations.stylesheets" = true;
-              "ui.systemUsesDarkTheme" = if config.themev2.type == "dark" then 1 else 0;
+              "ui.systemUsesDarkTheme" = if config.theme.type == "dark" then 1 else 0;
               "extensions.pocket.enabled" = false;
 
               # disable some gestures

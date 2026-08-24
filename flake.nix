@@ -164,14 +164,14 @@
       });
 
       apps = forEachSystem (pkgs: {
-        # themev2 truecolor swatch preview (see
-        # modules/colour-scheme/themev2/preview.nix):
+        # theme truecolor swatch preview (see
+        # modules/colour-scheme/preview.nix):
         #   nix run .#theme-preview              # all sample schemes
         #   nix run .#theme-preview -- <scheme>  # one named scheme
         theme-preview = {
           type = "app";
-          program = "${pkgs.callPackage ./modules/colour-scheme/themev2/preview.nix { }}/bin/theme-preview";
-          meta.description = "Render truecolor swatches for the themev2 sample schemes";
+          program = "${pkgs.callPackage ./modules/colour-scheme/preview.nix { }}/bin/theme-preview";
+          meta.description = "Render truecolor swatches for the theme sample schemes";
         };
       });
 

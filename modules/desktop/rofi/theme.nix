@@ -4,7 +4,7 @@
   lib,
   ...
 }:
-with config.themev2;
+with config.theme;
 {
   config = lib.mkIf (config.nx.desktop.rofi.enable && pkgs.stdenv.hostPlatform.isLinux) {
     # placeholder-color uses neutrals.foreground_dim (v1 grey1 -> dim text).

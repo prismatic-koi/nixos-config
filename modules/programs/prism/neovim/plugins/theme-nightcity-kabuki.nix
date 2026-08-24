@@ -15,11 +15,11 @@ let
       hash = "sha256-/ATSVsUaiy6yMREVyxFRJZxuWFbcCKxwZiy3EXsssoI=";
     };
   };
-  theme = config.themev2;
+  theme = config.theme;
 in
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins =
-    lib.mkIf (config.themev2.name == "nightcity-kabuki")
+    lib.mkIf (config.theme.name == "nightcity-kabuki")
       [
         {
           plugin = nightcity-theme;

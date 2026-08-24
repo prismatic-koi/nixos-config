@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
   isLinux = pkgs.stdenv.hostPlatform.isLinux;

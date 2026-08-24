@@ -1,4 +1,4 @@
-# themev2 scheme: onedark (dark). Source: navarasu/onedark.nvim.
+# theme scheme: onedark (dark). Source: navarasu/onedark.nvim.
 #
 # Plain hex values. Provenance in inline comments only where a slot deviates
 # from upstream (rename / derived / adjusted); native colours get no comment.

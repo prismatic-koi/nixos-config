@@ -8,7 +8,7 @@
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
     home-manager.users.${config.nx.username} = {
       programs.qutebrowser.settings = {
-        colors = with config.themev2; {
+        colors = with config.theme; {
           webpage = {
             preferred_color_scheme = type;
           };
@@ -79,7 +79,7 @@
             };
             insert = {
               fg = neutrals.background_0;
-              # statusline1 has no themev2 equivalent (dropped in the migration).
+              # statusline1 has no theme equivalent (dropped in the migration).
               # Chosen accent for the insert/active-mode indicator: hues.indigo.
               bg = hues.indigo;
             };
@@ -184,7 +184,7 @@
         #         body.with-listing-chooser.listing-chooser-collapsed .listing-chooser .grippy,
         #         #header, #sr-header-area, #header-bottom-left, .side #search, .searchexpando, #header-bottom-right, .listing-chooser, .expando-button
         #         {
-        #           background-color: ${config.themev2.neutrals.background_0};
+        #           background-color: ${config.theme.neutrals.background_0};
         #         }
         #         /* hide other stuff */
         #         .subreddit-list {

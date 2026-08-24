@@ -1,61 +1,59 @@
-# themev2 sample scheme: edge (dark). Source: sainnhe/edge, style=default.
+# theme sample scheme: everforest (dark). Source: sainnhe/everforest,
+# background=medium.
 #
-# Plain hex values, like the v1 scheme files. Provenance lives in inline
-# comments, but only where a slot deviates from the upstream palette:
-#   * a rename    — "# upstream calls this <name>"
-#   * derived     — "# derived ..." (a colourLib expression)
-#   * adjusted    — "# adjusted ..." (a hand-picked literal, not in upstream)
-# A straightforward native colour gets no comment.
+# Plain hex values. Provenance in inline comments only where a slot deviates
+# from upstream (rename / derived / adjusted); native colours get no comment.
 { colourLib }:
 let
   inherit (colourLib) darken lighten;
+  bg0 = "#2d353b";
 in
 rec {
-  name = "edge";
+  name = "everforest";
   type = "dark";
 
   # Neutrals: background_0 is the primary/default background; background_dim
   # is the recessed shade below it; background_1..5 climb lighter toward the
   # foreground. foreground_dim / foreground are named text anchors.
   #
-  # Re-anchored (was background_2). The old background_0 ("#202023") was a
-  # synthetic "derived, darkest" filler with no upstream provenance and no
-  # role reference — dropped rather than kept as an unlabelled extra dim
-  # step. background_1 ("#24262a", upstream bg_dim) becomes background_dim.
+  # Re-anchored (was background_2). The old background_0 (`darken bg0 40`)
+  # was a synthetic "derived, darkest" filler with no upstream provenance and
+  # no role reference — dropped rather than kept as an unlabelled extra dim
+  # step. background_1 ("#232a2e", upstream bg_dim) becomes background_dim.
   # Only 3 raised surfaces exist above the primary. background_4 and
   # background_5 are derived by lightening background_3 (8% / 16%) rather
   # than duplicated outright, to keep the ramp a strict luminance climb —
   # no v1/upstream shade exists past this point.
   neutrals = {
-    background_dim = "#24262a"; # upstream bg_dim — recessed below background_0
-    background_0 = "#2c2e34";
-    background_1 = "#33353f";
-    background_2 = "#3b3e48";
-    background_3 = "#535c6a";
-    background_4 = lighten "#535c6a" 8; # derived — no further raised surface upstream
-    background_5 = lighten "#535c6a" 16; # derived — no further raised surface upstream
-    foreground_dim = "#758094";
-    foreground = "#c5cdd9";
+    background_dim = "#232a2e"; # upstream bg_dim — recessed below background_0
+    background_0 = bg0;
+    background_1 = "#343f44";
+    background_2 = "#475258";
+    background_3 = "#7a8478";
+    background_4 = lighten "#7a8478" 3; # derived — no further raised surface upstream
+    background_5 = lighten "#7a8478" 6; # derived — no further raised surface upstream
+    foreground_dim = "#859289";
+    foreground = "#d3c6aa";
   };
 
   # Tailwind-inspired hues
   hues = rec {
-    red = "#ec7279";
-    orange = "#e59676"; # adjusted — edge upstream has no orange
+    red = "#e67e80";
+    orange = "#e69875";
     amber = darken yellow 8; # derived from yellow
-    yellow = "#deb974";
+    yellow = "#dbbc7f";
     lime = lighten green 15; # derived from green
-    green = "#a0c980";
-    emerald = darken teal 10; # derived from teal
-    teal = "#5dbbc1"; # upstream calls this cyan
-    cyan = lighten teal 10; # derived — native cyan fills teal
-    sky = "#6cb6eb"; # upstream calls this blue
-    blue = darken sky 12; # derived from sky
-    indigo = darken blue 15; # derived from blue
-    violet = "#d38aea"; # upstream calls this purple
-    purple = lighten violet 6; # derived from violet
-    fuchsia = lighten violet 12; # derived from violet
-    pink = lighten violet 18; # derived from violet
+    green = "#a7c080";
+    emerald = "#83c092"; # upstream calls this aqua
+    teal = darken emerald 12; # derived from emerald
+    cyan = lighten blue 12; # derived from blue
+    sky = lighten blue 20; # derived from blue
+    blue = "#7fbbb3";
+    indigo = darken blue 18; # derived from blue
+    violet = darken fuchsia 10; # derived from fuchsia
+    purple = lighten fuchsia 4; # derived from fuchsia
+    fuchsia = "#d699b6"; # upstream calls this purple
+    pink = lighten fuchsia 12; # derived from fuchsia
     rose = lighten red 6; # derived from red
     brown = darken orange 25; # derived from orange (Tailwind omits brown)
   };

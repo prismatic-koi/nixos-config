@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   username = config.nx.username;
   # Absolute path to the sops-decrypted GitHub token secret file. Threaded into

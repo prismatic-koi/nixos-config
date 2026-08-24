@@ -4,7 +4,7 @@
   pkgs,
   ...
 }:
-with config.themev2;
+with config.theme;
 let
   resolution = config.nx.desktop.wallpaper.resolution;
   variant = config.nx.desktop.wallpaper.variant;
