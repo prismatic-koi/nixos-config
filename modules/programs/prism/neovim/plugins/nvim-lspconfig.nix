@@ -2,12 +2,15 @@
 {
   home-manager.users.${config.nx.username} = {
     home.packages = with pkgs; [
+      basedpyright
+      dockerfile-language-server-nodejs
       gopls
       helm-ls
       lua-language-server
       nil
       rust-analyzer
       typescript-language-server
+      vscode-langservers-extracted
       yaml-language-server
     ];
     programs.neovim.plugins = [
@@ -61,7 +64,8 @@
             		},
             	} },
             })
-            add_lsp('pylsp')
+            add_lsp('basedpyright')
+            add_lsp('rust_analyzer')
             add_lsp('ts_ls')
             add_lsp('yamlls', {
             	settings = { ["yamlls"] = {

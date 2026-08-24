@@ -36,14 +36,6 @@
         	end,
         })
 
-        -- format on save
-        vim.api.nvim_create_autocmd("BufWritePre", {
-        	group = augroup("format_on_save"),
-        	callback = function()
-        		vim.lsp.buf.format()
-        	end,
-        })
-
         -- auto reload buffer when file changes externally
         vim.api.nvim_create_autocmd({ "FocusGained", "BufEnter", "CursorHold", "CursorHoldI" }, {
         	group = augroup("auto_reload"),
