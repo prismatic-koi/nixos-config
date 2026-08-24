@@ -12,7 +12,6 @@
     ];
     programs.neovim.plugins = [
       # LSP and completions for injected langs
-      pkgs.vimPlugins.otter-nvim
       pkgs.vimPlugins.vim-helm
       # LSP
       {
