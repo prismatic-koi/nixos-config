@@ -38,7 +38,7 @@ let
     window_margin_width 10
     window_padding_width 0
     confirm_os_window_close 0
-    background_opacity ${if isLinux then "0.8" else "1"}
+    background_opacity ${if isLinux then "0.95" else "1"}
     enable_audio_bell no
     paste_actions no-op
     cursor_trail 1
