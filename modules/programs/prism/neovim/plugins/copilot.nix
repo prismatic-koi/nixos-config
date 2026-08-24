@@ -25,7 +25,7 @@
             		},
             	},
             	filetypes = {
-            		markdown = true,
+            		markdown = false, -- these words are my own
             		yaml = true,
             		help = false,
             		gitcommit = false,
