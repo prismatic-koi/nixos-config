@@ -2,15 +2,6 @@
 {
   home-manager.users.${config.nx.username}.programs.neovim.plugins = [
     {
-      plugin = pkgs.vimPlugins.cmp_luasnip;
-      type = "lua";
-      config =
-        # lua
-        ''
-          require("cmp").setup()
-        '';
-    }
-    {
       plugin = pkgs.vimPlugins.luasnip;
       type = "lua";
       config =
