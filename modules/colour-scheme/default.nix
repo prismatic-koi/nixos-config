@@ -10,6 +10,7 @@ let
   gruvbox = mk "gruvbox";
   byTheme = {
     catppuccin-latte = mk "catppuccin-latte";
+    catppuccin-mocha = mk "catppuccin-mocha";
     edge = mk "edge";
     everforest = mk "everforest";
     github-light = mk "github-light";

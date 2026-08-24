@@ -17,6 +17,7 @@ let
     edge = import ./palettes/edge.nix { inherit colourLib; };
     everforest = import ./palettes/everforest.nix { inherit colourLib; };
     catppuccin-latte = import ./palettes/catppuccin-latte.nix { inherit colourLib; };
+    catppuccin-mocha = import ./palettes/catppuccin-mocha.nix { inherit colourLib; };
     github-light = import ./palettes/github-light.nix { inherit colourLib; };
     gruvbox-light = (import ./palettes/gruvbox.nix { inherit colourLib; }).light;
     gruvbox-dark = (import ./palettes/gruvbox.nix { inherit colourLib; }).dark;
