@@ -6,6 +6,11 @@
     ];
     programs.neovim.plugins = [
       {
+        plugin = pkgs.vimPlugins.telescope-fzf-native-nvim;
+        type = "lua";
+        config = "";
+      }
+      {
         plugin = pkgs.vimPlugins.telescope-nvim;
         type = "lua";
         config =
