@@ -255,7 +255,6 @@ in
     openscad-unstable
     parted
     protontricks
-    protonup-ng
     shotcut
     solvespace
     usbutils
