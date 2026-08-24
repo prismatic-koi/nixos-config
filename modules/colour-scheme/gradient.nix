@@ -73,7 +73,7 @@ in
     colours = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       readOnly = true;
-      default = evalRamp config.themev2.hues rampLength;
+      default = evalRamp config.theme.hues rampLength;
       description = "Ordered list of 24 '#RRGGBB' hex colours interpolated across the visualiser hue arc, for kitty color16-color39.";
     };
   };

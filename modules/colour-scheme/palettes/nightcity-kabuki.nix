@@ -1,4 +1,4 @@
-# themev2 scheme: nightcity-kabuki (dark). Source: the v1 scheme definition
+# theme scheme: nightcity-kabuki (dark). Source: the v1 scheme definition
 # (../nightcity-kabuki.nix) — nightcity-kabuki has no widely-published
 # canonical upstream palette.
 #

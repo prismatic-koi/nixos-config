@@ -3,8 +3,8 @@
   lib,
   ...
 }:
-with config.themev2;
-# Colours source from config.themev2 (issue #2814). This file sets the
+with config.theme;
+# Colours source from config.theme (issue #2814). This file sets the
 # --system-theme-* CSS variables injected into site stylesheets; the gap
 # mappings match modules/programs/qutebrowser/greasemonkey.nix exactly so
 # firefox and qutebrowser theme the same pages identically:
@@ -13,7 +13,7 @@ with config.themev2;
 #   grey1       -> neutrals.foreground_dim (dim text)
 #   grey2       -> neutrals.foreground
 #   statusline1 -> hues.indigo
-#   statusline2 -> hues.yellow          (warm; v1 gold #df8e1d == themev2 yellow on latte)
+#   statusline2 -> hues.yellow          (warm; v1 gold #df8e1d == theme yellow on latte)
 #   statusline3 -> hues.red
 {
   config = lib.mkIf config.nx.programs.firefox.enable {

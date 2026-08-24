@@ -23,9 +23,9 @@ let
         builtins.replaceStrings
           [ "#cee5fd" "#7ebaff" "#0a396e" ]
           [
-            config.themev2.hues.blue
-            config.themev2.hues.green
-            config.themev2.neutrals.background_0
+            config.theme.hues.blue
+            config.theme.hues.green
+            config.theme.neutrals.background_0
           ]
           qutebrowserLogoSvgRaw;
       # The upstream SVG is pretty-printed across ~100 lines. Embedded
@@ -43,9 +43,9 @@ in
 {
   config = lib.mkIf config.nx.programs.qutebrowser.enable {
     home-manager.users.${config.nx.username} = {
-      programs.qutebrowser.greasemonkey = with config.themev2; [
+      programs.qutebrowser.greasemonkey = with config.theme; [
         # css styling for the qute://start logo, themed at eval time from
-        # config.themev2 — see qutebrowserLogoSvgThemed above
+        # config.theme — see qutebrowserLogoSvgThemed above
         (pkgs.writeText "startpage-logo.css.js"
           # css
           ''
@@ -85,11 +85,11 @@ in
               --system-theme-grey0: ${neutrals.background_5};
               --system-theme-grey1: ${neutrals.foreground_dim};
               --system-theme-grey2: ${neutrals.foreground};
-              /* statusline1/2/3 have no themev2 equivalent (dropped in the
+              /* statusline1/2/3 have no theme equivalent (dropped in the
                  migration). A statusline slot carries status, so each maps to a
                  hue, never a grey: statusline1 -> hues.indigo (matches the
                  qutebrowser insert-mode statusbar choice in colours.nix),
-                 statusline2 -> hues.yellow (warm; v1 gold #df8e1d == themev2
+                 statusline2 -> hues.yellow (warm; v1 gold #df8e1d == theme
                  yellow on latte), statusline3 -> hues.red. */
               --system-theme-statusline1: ${hues.indigo};
               --system-theme-statusline2: ${hues.yellow};

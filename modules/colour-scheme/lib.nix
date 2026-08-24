@@ -2,7 +2,7 @@
 # Pure Nix — no module system args. Import directly:
 #
 #   let colourLib = import ./lib.nix;
-#   in colourLib.darken config.theme.bg_green 15
+#   in colourLib.darken config.theme.hues.green 15
 #
 # pct is an integer percentage, e.g. 15 = 15%.
 let

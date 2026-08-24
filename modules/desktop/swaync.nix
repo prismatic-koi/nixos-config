@@ -4,9 +4,9 @@
   lib,
   ...
 }:
-with config.themev2;
+with config.theme;
 # Gap mapping (issue #2814): v1 `grey0` (used here for subtle 1px borders) has
-# no themev2 slot; it maps to neutrals.background_5, the structural grey nearest
+# no theme slot; it maps to neutrals.background_5, the structural grey nearest
 # the foreground, matching the qutebrowser/greasemonkey precedent.
 {
   options = {

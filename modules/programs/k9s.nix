@@ -104,10 +104,10 @@
             ];
           };
         };
-        # Colours source from config.themev2 (issue #2814). v1 `grey1` (dim
-        # text, no themev2 slot) maps to neutrals.foreground_dim; `primary` maps
+        # Colours source from config.theme (issue #2814). v1 `grey1` (dim
+        # text, no theme slot) maps to neutrals.foreground_dim; `primary` maps
         # to roles.primary.
-        skins.skin = with config.themev2; {
+        skins.skin = with config.theme; {
           k9s = {
             body = {
               fgColor = neutrals.foreground;

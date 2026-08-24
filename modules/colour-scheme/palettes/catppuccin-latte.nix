@@ -1,4 +1,4 @@
-# themev2 sample scheme: catppuccin-latte (light). Source: catppuccin/palette,
+# theme sample scheme: catppuccin-latte (light). Source: catppuccin/palette,
 # latte flavour.
 #
 # Plain hex values. Provenance in inline comments only where a slot deviates

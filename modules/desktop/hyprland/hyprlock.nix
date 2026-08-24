@@ -6,7 +6,7 @@
 }:
 let
   homeDir = config.home-manager.users.${config.nx.username}.home.homeDirectory;
-  theme = config.themev2;
+  theme = config.theme;
   resolution = config.nx.desktop.wallpaper.resolution;
 in
 {

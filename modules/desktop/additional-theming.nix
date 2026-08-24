@@ -31,7 +31,7 @@
           # not in home dir please
           configLocation = "${config.home-manager.users.${config.nx.username}.xdg.configHome}/gtk-2.0/gtkrc";
         };
-        gtk3 = lib.mkIf (config.themev2.type == "dark") {
+        gtk3 = lib.mkIf (config.theme.type == "dark") {
           extraConfig.gtk-application-prefer-dark-theme = true;
         };
         gtk4.theme = null;
@@ -40,7 +40,7 @@
         enable = true;
         platformTheme.name = "adwaita";
         style =
-          if config.themev2.type == "dark" then
+          if config.theme.type == "dark" then
             {
               name = "adwaita-dark";
               package = pkgs.adwaita-qt;

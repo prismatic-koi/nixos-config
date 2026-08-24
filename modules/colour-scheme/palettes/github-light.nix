@@ -1,4 +1,4 @@
-# themev2 scheme: github-light (light). Source: GitHub Primer light palette.
+# theme scheme: github-light (light). Source: GitHub Primer light palette.
 #
 # Plain hex values. Provenance in inline comments only where a slot deviates
 # from upstream (rename / derived / adjusted); native colours get no comment.
