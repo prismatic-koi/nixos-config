@@ -26,7 +26,14 @@
           	},
           	snippets = { preset = "luasnip" },
           	sources = {
-          		default = { "lsp", "snippets" },
+          		default = { "lsp", "snippets", "buffer", "path" },
+          	},
+          	cmdline = {
+          		keymap = { preset = "cmdline" },
+          		sources = { "buffer", "cmdline" },
+          		completion = {
+          			menu = { auto_show = true },
+          		},
           	},
           })
         '';
