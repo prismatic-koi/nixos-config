@@ -27,6 +27,9 @@
           	snippets = { preset = "luasnip" },
           	sources = {
           		default = { "lsp", "snippets", "buffer", "path" },
+          		providers = {
+          			buffer = { min_keyword_length = 5 },
+          		},
           	},
           	cmdline = {
           		keymap = { preset = "cmdline" },

@@ -2,6 +2,7 @@
 {
   home-manager.users.${config.nx.username} = {
     home.packages = with pkgs; [
+      gopls
       helm-ls
       lua-language-server
       nil
@@ -45,6 +46,7 @@
             add_lsp('cssls')
             add_lsp('dockerls')
             add_lsp('eslint')
+            add_lsp('gopls')
             add_lsp('helm_ls')
             add_lsp('html')
             add_lsp('jsonls')
@@ -55,7 +57,7 @@
             		nix = {
             			flake = {
             				autoArchive = true,
-            				autoEvalInputs = false,
+            				autoEvalInputs = true,
             			},
             		},
             	} },
