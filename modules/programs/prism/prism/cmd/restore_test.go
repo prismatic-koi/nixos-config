@@ -63,16 +63,6 @@ func withRestoreConfig(t *testing.T, cfg config.Config) {
 	t.Cleanup(func() { loadRestoreConfig = prev })
 }
 
-// withCreateSessionHook installs onRestoreSessionCreate for the duration of the
-// test and restores it to nil on cleanup. The hook is called with the opts
-// snapshot just before session.Create is invoked inside restoreProjectSession.
-func withCreateSessionHook(t *testing.T, fn func(opts session.Opts)) {
-	t.Helper()
-	prev := onRestoreSessionCreate
-	onRestoreSessionCreate = fn
-	t.Cleanup(func() { onRestoreSessionCreate = prev })
-}
-
 // stubNvimOnPath writes a no-op `nvim` shim (`#!/bin/sh\nexit 0\n`) into a
 // fresh t.TempDir() and prepends that directory to PATH for the duration of
 // the test. setupFullLayout (internal/session/session.go) unconditionally

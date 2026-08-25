@@ -34,7 +34,17 @@ type Capabilities struct {
 	// a session can start in this mode: the per-role slot supplies the model,
 	// provider, and thinking level that reach pi over argv. True for bwrap
 	// and sandbox-exec; false for host.
-	// Cites: cmd/pr.go:225-240, cmd/review.go:435-445.
+	//
+	// Two distinct uses, both pre-dating the #2854 rename:
+	//   1. "is a profiles.json load failure fatal" — cmd/pr.go, cmd/review.go,
+	//      cmd/spawn.go, cmd/switch.go (the load-and-gate blocks).
+	//   2. "is this mode sandboxed" — cmd/switch.go AgentEnvVars injection,
+	//      which is gated on !RequiresProfilesFile because host mode is the
+	//      only mode that injects agent env vars into the pane command.
+	// Use (2) reads awkwardly against the name. The conflation is older than
+	// the rename and is not resolved here.
+	// Cites: cmd/pr.go:232, cmd/review.go:439, cmd/spawn.go:647,
+	//        cmd/switch.go:61, :310, :354, :385.
 	RequiresProfilesFile bool
 
 	// NeedsHostAPISocket means the sidecar binds the host-API Unix socket for

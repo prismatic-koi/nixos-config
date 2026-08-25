@@ -1416,9 +1416,11 @@ func TestPollAgents_ProgressCallback_Timeout(t *testing.T) {
 // returns an error. This covers the spawn-failure path AC from issue #782:
 // "unit tests verify the progress-line output format for spawn-failure path."
 //
-// The RequireSlot gate fires after successful DB
-// operations (UpsertStatus, AllocatePort) but before any tmux session is
-// created — so no tmux is needed for this test.
+// The RequireSlot gate fires before the agent loop and before any DB write or
+// tmux session — so no tmux is needed for this test. (Pre-#2854 the failure
+// came from ResolveAgentConfigContent, which sat inside the loop and so ran
+// after UpsertStatus and AllocatePort. The gate that replaced it is strictly
+// earlier, which is why no per-agent progress line is emitted.)
 func TestRun_ProgressCallback_SpawnFailure(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "prism.db")
 

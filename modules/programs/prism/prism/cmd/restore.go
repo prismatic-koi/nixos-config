@@ -51,13 +51,6 @@ const (
 // process-wide config.Load() singleton cache.
 var loadRestoreConfig = func() config.Config { return config.Load() }
 
-// onRestoreSessionCreate is called just before session.Create in
-// restoreProjectSession. In production it is nil (no-op). Tests may set it to
-// capture the session.Opts and assert that the restored fields are populated
-// correctly. The hook is invoked with a snapshot of opts before Create is
-// called.
-var onRestoreSessionCreate func(opts session.Opts)
-
 var restoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Recreate tmux sessions from prism.db",
@@ -392,13 +385,6 @@ func restoreProjectSession(d *db.DB, s db.Status, pendingStagger *bool, staggerD
 	// When s.Repo == "", RefreshWorktree and AllocatePort are skipped. The
 	// session is still created with the full layout; it just won't have an
 	// agent serve port allocated.
-
-	// Invoke the test hook (nil in production) with a snapshot of opts
-	// so tests can assert the restored fields without intercepting
-	// session.Create.
-	if onRestoreSessionCreate != nil {
-		onRestoreSessionCreate(opts)
-	}
 
 	// Apply stagger delay: if a previous session was just created, sleep
 	// before starting this one. *pendingStagger is set by the Restore() loop

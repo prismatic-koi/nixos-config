@@ -1445,7 +1445,6 @@ func runAbtestSpawn(cmd *cobra.Command, profileA, profileB string) error {
 				pairID:             pairID,
 				bareRoot:           bareRoot,
 				agentFlag:          agentFlag,
-				plannedRole:        plannedRole,
 				promptText:         promptText,
 				promptSource:       promptSource,
 				modelFlag:          modelFlag,
@@ -1510,7 +1509,6 @@ type spawnOneAbtestArgs struct {
 	pairID             string
 	bareRoot           string
 	agentFlag          string
-	plannedRole        string
 	promptText         string
 	promptSource       string
 	modelFlag          string
