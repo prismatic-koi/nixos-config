@@ -198,6 +198,14 @@
                 thinking = "xhigh";
               };
             };
+
+            ox-alpha = profileFromSlots {
+              _default = slot "worker" {
+                provider = "openrouter";
+                model = "stealth/ox-alpha";
+                thinking = "high";
+              };
+            };
           };
 
           quickProfiles = {
