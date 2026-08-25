@@ -136,7 +136,7 @@
               }
               // reviewSlots {
                 provider = "anthropic";
-                model = "anthropic/claude-haiku-4-5";
+                model = "anthropic/claude-sonnet-5";
                 thinking = "off";
               }
               // analyticalSlots {
@@ -196,14 +196,6 @@
                 provider = "anthropic";
                 model = "anthropic/claude-opus-5";
                 thinking = "xhigh";
-              };
-            };
-
-            ox-alpha = profileFromSlots {
-              _default = slot "worker" {
-                provider = "openrouter";
-                model = "stealth/ox-alpha";
-                thinking = "high";
               };
             };
           };
