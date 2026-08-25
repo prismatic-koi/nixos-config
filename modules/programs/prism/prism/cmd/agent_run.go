@@ -105,6 +105,11 @@ func init() {
 	// values fall back to the slot, matching the pre-#2086 behaviour.
 	agentRunCmd.Flags().String("model", "", "Model identifier override (overrides profile slot's model; sourced from prism spawn --model)")
 	agentRunCmd.Flags().String("variant", "", "Variant/thinking-level override (overrides profile slot's thinking; sourced from prism spawn --variant)")
+	// --provider: CLI override forwarded from `prism spawn --provider` via the
+	// tmux pane command (issue #2852). When set, populatePIConfig uses this
+	// value in place of the active profile slot's Provider. Empty value falls
+	// back to the slot, matching the pre-#2852 behaviour.
+	agentRunCmd.Flags().String("provider", "", "Provider override (overrides profile slot's provider; sourced from prism spawn --provider)")
 	rootCmd.AddCommand(agentRunCmd)
 
 	// Register the per-mode AgentRun handlers with the container package
@@ -137,6 +142,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	sessionName, _ := cmd.Flags().GetString("session")
 	modelOverride, _ := cmd.Flags().GetString("model")
 	variantOverride, _ := cmd.Flags().GetString("variant")
+	providerOverride, _ := cmd.Flags().GetString("provider")
 
 	// Open the agent-run log file as early as possible so that pre-exec
 	// `[timing]` markers can be written to it and the failure point is
@@ -203,7 +209,7 @@ func runAgentRun(cmd *cobra.Command, args []string) error {
 	// read them without re-parsing argv. Cleared by clearAgentRunStatus.
 	// Empty fields mean "no override" — the active profile slot's value
 	// is used unchanged (issue #2086).
-	storeAgentRunOverrides(sessionName, piOverrides{Model: modelOverride, Variant: variantOverride})
+	storeAgentRunOverrides(sessionName, piOverrides{Model: modelOverride, Variant: variantOverride, Provider: providerOverride})
 
 	return iso.AgentRun(cmd.Context(), container.AgentRunOpts{
 		SessionName: sessionName,
@@ -758,6 +764,10 @@ func logAgentRunWarning(logFile *os.File, format string, args ...any) {
 type piOverrides struct {
 	Model   string
 	Variant string
+
+	// Provider, when non-empty, wins over slot.Provider before PIInvocation
+	// emits --provider on pi's argv (issue #2852).
+	Provider string
 }
 
 // populatePIConfig fills the PI-specific fields on ctrCfg for harness=pi sessions.
@@ -787,10 +797,11 @@ type piOverrides struct {
 //  5. Populates PIExtensionHostDir from cfg.PIExtensionDir (set by Nix).
 //  6. Copies PIProvider, PIModel, PIThinking from the profile slot, then
 //     applies any CLI overrides from `prism agent-run --model` /
-//     `--variant` (issue #2086). A non-empty Model override wins over
-//     slot.Model; a non-empty Variant override wins over slot.Thinking.
-//     Empty override fields leave the slot value unchanged so the
-//     pre-#2086 default path is preserved.
+//     `--variant` / `--provider` (issues #2086 and #2852). A non-empty Model
+//     override wins over slot.Model; a non-empty Variant override wins over
+//     slot.Thinking; a non-empty Provider override wins over slot.Provider.
+//     Empty override fields leave the slot values unchanged so the pre-#2086
+//     default path is preserved.
 func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, cfg config.Config, overrides piOverrides) error {
 	// Load profiles.json.
 	pf, pfErr := config.LoadProfiles()
@@ -873,6 +884,9 @@ func populatePIConfig(ctrCfg *container.Config, sessionName, agentRole string, c
 	}
 	if overrides.Variant != "" {
 		ctrCfg.PIThinking = overrides.Variant
+	}
+	if overrides.Provider != "" {
+		ctrCfg.PIProvider = overrides.Provider
 	}
 
 	// Resolve the pi binary path. This must be the absolute store

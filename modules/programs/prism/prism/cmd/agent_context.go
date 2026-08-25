@@ -160,6 +160,14 @@ var precedenceRules = map[string][]string{
 		"~/.config/prism/config.json default_isolation_mode field",
 		"compiled-in default (host)",
 	},
+	// Provider precedence (issue #2852). The CLI override wins over the
+	// profile slot on every spawned pi pane and on the root config content's
+	// defaultProvider. pi-only: --provider with a non-pi --harness exits
+	// non-zero, and it is mutually exclusive with --abtest.
+	"provider": {
+		"--provider flag on prism spawn",
+		"profile slot provider field from ~/.config/prism/profiles.json",
+	},
 }
 
 var agentContextCmd = &cobra.Command{

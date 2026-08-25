@@ -137,6 +137,51 @@ func TestSandboxExecAgentPaneCmd_NoOverrideFlagsByDefault(t *testing.T) {
 	}
 }
 
+// TestBwrapAgentPaneCmd_ProviderOverrideAppended asserts that --provider
+// lands on the tmux pane command when AgentPaneOpts.Provider is set
+// (issue #2852).
+func TestBwrapAgentPaneCmd_ProviderOverrideAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &bwrapIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@bwrap",
+		Provider:    "openrouter",
+	})
+	if err != nil {
+		t.Fatalf("bwrap AgentPaneCmd: unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "--provider 'openrouter'") {
+		t.Errorf("bwrap AgentPaneCmd missing --provider 'openrouter'; got %q", got)
+	}
+}
+
+// TestSandboxExecAgentPaneCmd_ProviderOverrideAppended mirrors the bwrap
+// provider test for sandbox-exec (issue #2852).
+func TestSandboxExecAgentPaneCmd_ProviderOverrideAppended(t *testing.T) {
+	withFakePrismBinary(t, "/nix/store/abcd-prism/bin/prism")
+	iso := &sandboxExecIsolator{}
+	got, err := iso.AgentPaneCmd(AgentPaneOpts{
+		SessionName: "prism-test@sbx",
+		Provider:    "openrouter",
+	})
+	if err != nil {
+		t.Fatalf("sandbox-exec AgentPaneCmd: unexpected error: %v", err)
+	}
+	if !strings.Contains(got, "--provider 'openrouter'") {
+		t.Errorf("sandbox-exec AgentPaneCmd missing --provider 'openrouter'; got %q", got)
+	}
+}
+
+// TestAppendAgentRunOverrides_EmptyProviderOmitted asserts the #2852 edge
+// case directly on the shared helper: an empty Provider emits no
+// --provider flag at all (no blank argument).
+func TestAppendAgentRunOverrides_EmptyProviderOmitted(t *testing.T) {
+	got := appendAgentRunOverrides("prism agent-run --session 'x'", AgentPaneOpts{})
+	if strings.Contains(got, "--provider") {
+		t.Errorf("--provider emitted with empty override; got %q", got)
+	}
+}
+
 // TestBwrapAgentPaneCmd_PartialOverride_ModelOnly verifies that supplying
 // only Model (no Variant) emits --model but not --variant. Mirrors the
 // operator workflow where one axis is varied for an A/B test.

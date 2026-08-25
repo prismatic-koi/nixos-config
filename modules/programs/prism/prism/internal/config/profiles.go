@@ -230,12 +230,16 @@ func variantFromThinking(thinking string) string {
 //     root role's model; other roles are unaffected (pi sessions have a
 //     single root agent per session).
 //   - If variantOverride is non-empty, set "variant" on the root role only.
+//   - If providerOverride is non-empty, set "defaultProvider" on the root role
+//     only (issue #2852). pi treats defaultProvider as a settings field
+//     (settings.md), so it rides the same config-content channel as model /
+//     variant. An empty value leaves the slot's provider in effect.
 //   - Returns ("", nil) when no flags are set (no injection needed).
 //
 // pf may be nil when no profile flag is used; it is only consulted when
 // profileName is non-empty.
-func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, variantOverride string) (string, error) {
-	if profileName == "" && modelOverride == "" && variantOverride == "" {
+func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, variantOverride, providerOverride string) (string, error) {
+	if profileName == "" && modelOverride == "" && variantOverride == "" && providerOverride == "" {
 		return "", nil
 	}
 
@@ -276,14 +280,21 @@ func BuildConfigContent(pf *ProfilesFile, profileName, rootRole, modelOverride, 
 	}
 
 	// Build the minimal JSON structure. Pi sessions have a single root agent;
-	// we only emit the top-level model and variant (no "agent" sub-map needed
-	// for role-level overrides — each session is already the right role).
+	// we only emit the top-level model, variant, and defaultProvider (no
+	// "agent" sub-map needed for role-level overrides — each session is
+	// already the right role).
 	cfg := make(map[string]any)
 	if topModel != "" {
 		cfg["model"] = topModel
 	}
 	if rootVariant != "" {
 		cfg["variant"] = rootVariant
+	}
+	// Apply providerOverride to the root role (issue #2852). Applied here so
+	// a call with only --provider still produces a JSON blob rather than an
+	// empty one.
+	if providerOverride != "" {
+		cfg["defaultProvider"] = providerOverride
 	}
 
 	if len(cfg) == 0 {

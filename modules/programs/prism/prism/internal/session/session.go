@@ -236,6 +236,14 @@ type Opts struct {
 	// override path); in bwrap and sandbox-exec modes it flows through
 	// AgentPaneOpts. Issue #2086.
 	Variant string
+
+	// Provider, when non-empty, is the CLI-supplied provider override (`prism
+	// spawn --provider <P>`, issue #2852). In host mode buildDirectAgentCmd
+	// appends `--provider <P>` to the pi argv; in bwrap and sandbox-exec modes
+	// the value flows through AgentPaneOpts onto the `prism agent-run` pane
+	// command. Scoped to pi (or empty harness) like Model / Variant. Empty
+	// value omits the flag and the profile slot's provider is used unchanged.
+	Provider string
 }
 
 // ValidatePILaunchOpts checks Opts against the requirements for a host-mode
@@ -406,8 +414,9 @@ func BuildAgentCmd(opts Opts) (string, error) {
 		// active profile slot's model/variant on the final pi argv. The
 		// host isolator's AgentPaneCmd returns DirectCmd unchanged, which
 		// already carries the flags via buildDirectAgentCmd above.
-		Model:   opts.Model,
-		Variant: opts.Variant,
+		Model:    opts.Model,
+		Variant:  opts.Variant,
+		Provider: opts.Provider,
 	})
 }
 
@@ -479,6 +488,9 @@ func buildDirectAgentCmd(opts Opts) string {
 		}
 		if opts.Variant != "" {
 			cmd += " --thinking " + shellQuote(opts.Variant)
+		}
+		if opts.Provider != "" {
+			cmd += " --provider " + shellQuote(opts.Provider)
 		}
 	}
 	// Append --session <id> for host-mode pi-resume (issue #1838).

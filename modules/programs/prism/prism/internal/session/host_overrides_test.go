@@ -51,6 +51,39 @@ func TestBuildDirectAgentCmd_HostModeVariantOverride(t *testing.T) {
 	}
 }
 
+// TestBuildDirectAgentCmd_HostModeProviderOverride asserts that Opts.Provider
+// produces `--provider <P>` on the direct pi launch command (issue #2852).
+func TestBuildDirectAgentCmd_HostModeProviderOverride(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "pi",
+		Provider:    "openrouter",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if !strings.Contains(cmd, "--provider 'openrouter'") {
+		t.Errorf("expected --provider 'openrouter' in direct cmd; got %q", cmd)
+	}
+}
+
+// TestBuildDirectAgentCmd_HostModeProviderGatedToPi asserts the #2852 edge
+// case: no --provider emit for a non-pi harness. buildDirectAgentCmd must
+// gate the override clause on HarnessName being pi or empty, exactly like
+// the --model / --thinking clause it sits beside.
+func TestBuildDirectAgentCmd_HostModeProviderGatedToPi(t *testing.T) {
+	opts := Opts{
+		Agent:       "worker",
+		SessionName: "myrepo@branch",
+		HarnessName: "some-other-harness",
+		Provider:    "openrouter",
+		Model:       "anthropic/claude-opus-4-8",
+	}
+	cmd := buildDirectAgentCmd(opts)
+	if strings.Contains(cmd, "--provider") {
+		t.Errorf("--provider emitted for non-pi harness; got %q", cmd)
+	}
+}
+
 // TestBuildDirectAgentCmd_HostModeBothOverrides asserts the combined case:
 // when both Model and Variant are set, both flag pairs appear, and the
 // pre-#2086 invariants (pi appears, --agent appears) are preserved.

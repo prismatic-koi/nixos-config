@@ -172,7 +172,7 @@ func TestPopulatePIConfig_CLIOverrideWins(t *testing.T) {
 	if ctrCfg.PIThinking != "high" {
 		t.Errorf("PIThinking = %q, want override value %q", ctrCfg.PIThinking, "high")
 	}
-	// Provider is not overridable today and must still come from the slot.
+	// Provider has no override on this call, so it must still come from the slot.
 	if ctrCfg.PIProvider != "anthropic" {
 		t.Errorf("PIProvider = %q, want slot value %q", ctrCfg.PIProvider, "anthropic")
 	}
@@ -241,12 +241,12 @@ func TestAgentRunCmd_FlagsRegistered(t *testing.T) {
 // sandbox-exec.
 func TestStoreLoadAgentRunOverrides_Roundtrip(t *testing.T) {
 	const session = "prism-test@cache-roundtrip"
-	storeAgentRunOverrides(session, piOverrides{Model: "M", Variant: "V"})
+	storeAgentRunOverrides(session, piOverrides{Model: "M", Variant: "V", Provider: "P"})
 	t.Cleanup(func() { clearAgentRunStatus(session) })
 
 	got := loadAgentRunOverrides(session)
-	if got.Model != "M" || got.Variant != "V" {
-		t.Errorf("loadAgentRunOverrides = %+v, want {Model:M Variant:V}", got)
+	if got.Model != "M" || got.Variant != "V" || got.Provider != "P" {
+		t.Errorf("loadAgentRunOverrides = %+v, want {Model:M Variant:V Provider:P}", got)
 	}
 
 	// Empty zero value when nothing stored.
@@ -259,6 +259,64 @@ func TestStoreLoadAgentRunOverrides_Roundtrip(t *testing.T) {
 	clearAgentRunStatus(session)
 	if got := loadAgentRunOverrides(session); got.Model != "" || got.Variant != "" {
 		t.Errorf("expected overrides to be cleared; got %+v", got)
+	}
+}
+
+// TestPopulatePIConfig_ProviderOverrideWins is the #2852 regression guard:
+// a non-empty Provider override wins over the active profile slot's
+// Provider on ctrCfg.PIProvider, and PIInvocation emits --provider with the
+// override value on the final pi argv. The slot's model/thinking are
+// untouched — provider is an independent axis.
+func TestPopulatePIConfig_ProviderOverrideWins(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("populatePIConfig depends on POSIX exec semantics")
+	}
+	configHome, _ := isolateForPopulatePIConfig(t)
+	// Profile slot says provider=anthropic. Override says openrouter.
+	writeProfiles(t, configHome, "test", "anthropic/claude-opus-4-7", "medium")
+
+	ctrCfg := container.Config{}
+	cfg := config.Config{PIExtensionDir: "/nix/store/fake-ext"}
+	overrides := piOverrides{Provider: "openrouter"}
+	if err := populatePIConfig(&ctrCfg, "prism-test@session", "worker", cfg, overrides); err != nil {
+		t.Fatalf("populatePIConfig: %v", err)
+	}
+
+	if ctrCfg.PIProvider != "openrouter" {
+		t.Errorf("PIProvider = %q, want override value %q", ctrCfg.PIProvider, "openrouter")
+	}
+	if ctrCfg.PIModel != "anthropic/claude-opus-4-7" {
+		t.Errorf("PIModel = %q, want slot value %q (provider override must not touch model)", ctrCfg.PIModel, "anthropic/claude-opus-4-7")
+	}
+
+	// End-to-end: the override lands on the final pi argv.
+	args := container.PIInvocation(ctrCfg)
+	if !argvHasPair(args, "--provider", "openrouter") {
+		t.Errorf("pi argv missing --provider override: %v", args)
+	}
+	if argvHasPair(args, "--provider", "anthropic") {
+		t.Errorf("slot provider leaked into argv after override: %v", args)
+	}
+}
+
+// TestPopulatePIConfig_EmptyProviderFallsThrough verifies that an empty
+// Provider override leaves the slot's provider unchanged on ctrCfg (issue
+// #2852 edge case) — the no-regression default path.
+func TestPopulatePIConfig_EmptyProviderFallsThrough(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("populatePIConfig depends on POSIX exec semantics")
+	}
+	configHome, _ := isolateForPopulatePIConfig(t)
+	writeProfiles(t, configHome, "test", "anthropic/claude-opus-4-7", "medium")
+
+	ctrCfg := container.Config{}
+	cfg := config.Config{PIExtensionDir: "/nix/store/fake-ext"}
+	if err := populatePIConfig(&ctrCfg, "prism-test@session", "worker", cfg, piOverrides{}); err != nil {
+		t.Fatalf("populatePIConfig: %v", err)
+	}
+
+	if ctrCfg.PIProvider != "anthropic" {
+		t.Errorf("PIProvider = %q, want slot value %q", ctrCfg.PIProvider, "anthropic")
 	}
 }
 

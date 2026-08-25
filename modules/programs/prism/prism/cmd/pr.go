@@ -250,7 +250,7 @@ var prCmd = &cobra.Command{
 		if lookupRole == "" {
 			lookupRole = "coordinator"
 		}
-		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag)
+		configContent, err := config.BuildConfigContent(pf, resolvedProfile, lookupRole, modelFlag, variantFlag, "")
 		if err != nil {
 			return err
 		}

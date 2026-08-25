@@ -256,6 +256,15 @@ type SpawnOpts struct {
 	// `prism spawn --variant <Y>`. Semantics mirror Model. Issue #2086.
 	Variant string
 
+	// Provider, when non-empty, is the CLI-supplied provider override from
+	// `prism spawn --provider <P>`. Forwarded to Opts.Provider and (for bwrap
+	// / sandbox-exec) into the AgentPaneOpts that builds the `prism
+	// agent-run` tmux pane command, so every spawned pi pane receives
+	// --provider <P> regardless of the profile slot's provider. Also emitted
+	// as defaultProvider on the root config content. Empty value leaves the
+	// slot's provider unchanged (no-regression default path). Issue #2852.
+	Provider string
+
 	// Note: ModelFlag / VariantFlag below are distinct from Model / Variant
 	// above. Model / Variant feed harness-routing (the agent-run launch argv);
 	// ModelFlag / VariantFlag feed the audit row written to spawn_inputs.
@@ -282,6 +291,10 @@ type SpawnOpts struct {
 	// VariantFlag is the raw --variant flag value (e.g. "high").
 	// Mirrors spawn_inputs.variant_flag.
 	VariantFlag string
+
+	// ProviderFlag is the raw --provider flag value (e.g. "openrouter").
+	// Mirrors spawn_inputs.provider_flag. Issue #2852.
+	ProviderFlag string
 
 	// AgentFlag is the raw --agent flag value as the user passed it
 	// (distinct from AgentRole, which is the resolved role written to
@@ -563,6 +576,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			ConfigEnvVarName: opts.ConfigEnvVarName,
 			Model:            opts.Model,
 			Variant:          opts.Variant,
+			Provider:         opts.Provider,
 		}
 		agentOnlyCmd, buildErr := BuildAgentCmd(previewOpts)
 		if buildErr != nil {
@@ -598,6 +612,7 @@ func SpawnSession(d *db.DB, opts SpawnOpts) error {
 			ConfigEnvVarName: opts.ConfigEnvVarName,
 			Model:            opts.Model,
 			Variant:          opts.Variant,
+			Provider:         opts.Provider,
 		}
 		previewCmd, buildErr := BuildAgentCmd(previewOpts)
 		if buildErr != nil {
@@ -1031,8 +1046,9 @@ func buildOptsForLayout(opts SpawnOpts, port int, promptFilePath string) Opts {
 		PIExtensionDir:      opts.PIExtensionDir,
 		// CLI overrides (issue #2086) flow into buildDirectAgentCmd (host)
 		// and AgentPaneOpts (bwrap / sandbox-exec) via BuildAgentCmd.
-		Model:   opts.Model,
-		Variant: opts.Variant,
+		Model:    opts.Model,
+		Variant:  opts.Variant,
+		Provider: opts.Provider,
 	}
 }
 
@@ -1220,8 +1236,9 @@ func spawnAgentOnlyLayout(opts SpawnOpts, port int) error {
 		RuntimeEnvVars:   opts.RuntimeEnvVars,
 		PIExtensionDir:   opts.PIExtensionDir,
 		// CLI overrides (issue #2086) for review-style agent-only layouts.
-		Model:   opts.Model,
-		Variant: opts.Variant,
+		Model:    opts.Model,
+		Variant:  opts.Variant,
+		Provider: opts.Provider,
 		// AgentEnvVars: the role-filtered profile env vars (issue #2533).
 		// This used to be omitted entirely, so a host-mode review session got
 		// no profile env vars while the same session under bwrap or
@@ -1297,6 +1314,10 @@ func spawnInputsFromOpts(opts SpawnOpts) db.SpawnInputs {
 	if opts.VariantFlag != "" {
 		s := opts.VariantFlag
 		si.VariantFlag = &s
+	}
+	if opts.ProviderFlag != "" {
+		s := opts.ProviderFlag
+		si.ProviderFlag = &s
 	}
 	if opts.AgentFlag != "" {
 		s := opts.AgentFlag

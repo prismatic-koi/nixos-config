@@ -1379,6 +1379,7 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 			Profile               string   `json:"profile"`
 			Model                 string   `json:"model"`
 			Variant               string   `json:"variant"`
+			Provider              string   `json:"provider"` // --provider override (#2852); empty = slot provider
 			Isolation             string   `json:"isolation"`
 			Harness               string   `json:"harness"`
 			IgnoreConcurrencyCap  bool     `json:"ignore_concurrency_cap"`
@@ -1562,6 +1563,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		if req.Variant != "" {
 			args = append(args, "--variant", req.Variant)
 		}
+		if req.Provider != "" {
+			args = append(args, "--provider", req.Provider)
+		}
 		if req.Isolation != "" {
 			args = append(args, "--isolation", req.Isolation)
 		}
@@ -1608,6 +1612,9 @@ func (s *Sidecar) hostAPIHandler() http.Handler {
 		}
 		if req.Variant != "" {
 			logArgs = append(logArgs, "--variant", req.Variant)
+		}
+		if req.Provider != "" {
+			logArgs = append(logArgs, "--provider", req.Provider)
 		}
 		if req.Isolation != "" {
 			logArgs = append(logArgs, "--isolation", req.Isolation)

@@ -224,6 +224,13 @@ type AgentPaneOpts struct {
 	// Sourced from `prism spawn --variant` (issue #2086). Empty value omits
 	// the flag and the slot's thinking is used unchanged.
 	Variant string
+
+	// Provider, when non-empty, is appended to the bwrap/sandbox-exec tmux
+	// pane command as `--provider <P>` so that `prism agent-run` overrides
+	// the active profile slot's provider on the final pi argv. Sourced from
+	// `prism spawn --provider` (issue #2852). Empty value omits the flag and
+	// the slot's provider is used unchanged.
+	Provider string
 }
 
 // ArchivePaths describes the per-mode paths that the archive copy step
@@ -518,21 +525,29 @@ func (h *hostIsolator) LogPaths() LogPaths {
 // shared helpers
 // ----------------------------------------------------------------------------
 
-// appendAgentRunOverrides appends `--model <X>` and/or `--variant <Y>` to the
-// `prism agent-run` tmux pane command when those overrides are set on opts.
-// Shared between the bwrap and sandbox-exec isolators because both modes
-// dispatch the agent via `prism agent-run` (which then re-reads the session
-// row, populates a container.Config, and launches pi via PIInvocation).
+// appendAgentRunOverrides appends `--model <X>`, `--variant <Y>`, and/or
+// `--provider <P>` to the `prism agent-run` tmux pane command when those
+// overrides are set on opts. Shared between the bwrap and sandbox-exec
+// isolators because both modes dispatch the agent via `prism agent-run`
+// (which then re-reads the session row, populates a container.Config, and
+// launches pi via PIInvocation).
 //
 // Issue #2086: without these flags the `--model` / `--variant` values passed
 // to `prism spawn` are silently dropped — `populatePIConfig` only consults
 // the active profile slot, so the CLI override never reaches pi's argv.
+// Issue #2852 extends the same threading to --provider. The pane command is
+// inherently pi-only (`prism agent-run` populates a PI container.Config), so
+// no additional harness gate is needed here; the pi-only gate for the flag
+// lives at `prism spawn` flag-parse time (#2852).
 func appendAgentRunOverrides(cmd string, opts AgentPaneOpts) string {
 	if opts.Model != "" {
 		cmd += " --model " + shellQuoteContainer(opts.Model)
 	}
 	if opts.Variant != "" {
 		cmd += " --variant " + shellQuoteContainer(opts.Variant)
+	}
+	if opts.Provider != "" {
+		cmd += " --provider " + shellQuoteContainer(opts.Provider)
 	}
 	return cmd
 }
