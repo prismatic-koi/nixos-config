@@ -27,6 +27,13 @@
           	snippets = { preset = "luasnip" },
           	sources = {
           		default = { "lsp", "snippets", "buffer", "path" },
+          		min_keyword_length = function(ctx)
+          			local ft = vim.bo[ctx.bufnr].filetype
+          			if ft == "markdown" or ft == "text" or ft == "gitcommit" then
+          				return 3
+          			end
+          			return 0
+          		end,
           		providers = {
           			buffer = { min_keyword_length = 5 },
           		},
