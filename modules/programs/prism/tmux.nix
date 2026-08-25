@@ -141,6 +141,19 @@ in
           extraConfig =
             # tmux
             ''
+              # Propagate KITTY_LISTEN_ON into the tmux session environment on
+              # attach (issue #2860). tmux fixes its server environment at
+              # startup, so a pane started before this line lands will not see
+              # it until the client next attaches - `attach -c` and a fresh
+              # `tmux attach` both trigger update-environment; a client that
+              # stays continuously attached across the config reload does not,
+              # until it detaches and reattaches. This lets zen-mode's
+              # `tmux show-environment KITTY_LISTEN_ON` resolve the current
+              # kitty control socket from inside a tmux pane, where
+              # zen-mode.nvim's own `$KITTY_LISTEN_ON` expansion is empty or
+              # stale (see modules/programs/prism/neovim/plugins/zenmode.nix).
+              set -ga update-environment "KITTY_LISTEN_ON"
+
               # appearance
               set -g extended-keys on
               set -g extended-keys-format csi-u
