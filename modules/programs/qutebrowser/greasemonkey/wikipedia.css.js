@@ -46,16 +46,29 @@ function applyThemeClass() {
   return true;
 }
 
-if (!applyThemeClass()) {
-  // `document.documentElement` can be missing for an instant at
-  // document-start. Retry once it (and its attributes) exist.
-  const observer = new MutationObserver(() => {
-    if (applyThemeClass()) observer.disconnect();
-  });
-  observer.observe(document, { childList: true, subtree: true });
-}
-
-GM_addStyle(`
+// `GM_addStyle` (see the qutebrowser wrapper,
+// qutebrowser/javascript/greasemonkey_wrapper.js) appends a <style> element
+// to `document.head`, falling back to `document.documentElement` only when
+// `head` does not exist yet:
+//
+//   const head = document.getElementsByTagName("head")[0];
+//   if (head === undefined) {
+//       document.documentElement.appendChild(oStyle);
+//   } else {
+//       head.appendChild(oStyle);
+//   }
+//
+// At document-start `document.documentElement` itself can still be null for
+// an instant -- that fallback then dereferences null, which is exactly the
+// "Cannot read properties of null (reading 'appendChild')" error this fixes.
+// The wrapper's own fallback already proves an appended <style> works from
+// `documentElement` just as well as from `head`, so the fix is simply to
+// defer the whole call (class swap + GM_addStyle) until `documentElement`
+// exists, using the same retry gate. `documentElement` appears at the very
+// start of parsing, before any of the page's own stylesheets, so the
+// !important overrides above still win the cascade.
+function injectStyle() {
+  GM_addStyle(`
   /* Remap Wikipedia's own custom properties onto --system-theme-* with
      !important, the same pattern github.css.js uses. Unlike GitHub, this
      override is not gated behind a media query: --system-theme-* already
@@ -111,3 +124,24 @@ GM_addStyle(`
     --border-color-muted: var(--system-theme-bg3) !important;
   }
 `);
+}
+
+if (document.documentElement) {
+  // Common case: `documentElement` already exists by the time this script
+  // runs. Apply both the class swap and the style injection immediately, in
+  // the same tick, before first paint.
+  applyThemeClass();
+  injectStyle();
+} else {
+  // `document.documentElement` can be missing for an instant at
+  // document-start. Retry once it exists, then run both steps together so
+  // neither one can dereference a null node.
+  const observer = new MutationObserver(() => {
+    if (document.documentElement) {
+      observer.disconnect();
+      applyThemeClass();
+      injectStyle();
+    }
+  });
+  observer.observe(document, { childList: true, subtree: true });
+}
