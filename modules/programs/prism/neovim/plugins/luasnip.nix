@@ -12,7 +12,6 @@
           local s = ls.snippet
           local sn = ls.snippet_node
           local t = ls.text_node
-          local i = ls.insert_node
           local d = ls.dynamic_node
 
           -- Note: I used to load in a plugin called friendly-snippets for more snippets
@@ -32,26 +31,6 @@
           			)
           		end, {})
           	),
-          	-- header snippets
-          	s("h1", { t("# "), i(0) }),
-          	s("h2", { t("## "), i(0) }),
-          	s("h3", { t("### "), i(0) }),
-          	s("h4", { t("#### "), i(0) }),
-          	s("h5", { t("##### "), i(0) }),
-          	s("h6", { t("###### "), i(0) }),
-          	-- image snippet
-          	s("img", { t("!["), i(1, "alt text"), t("]("), i(2, "path"), t(") "), i(0) }),
-          	-- formatting snippets
-          	s("strikethrough", { t("~~"), i(1), t("~~ "), i(0) }),
-          	s({ trig = "bold", name = "bold" }, { t("**"), i(1), t("** "), i(0) }),
-          	s({ trig = "b", name = "bold" }, { t("**"), i(1), t("** "), i(0) }),
-          	s({ trig = "i", name = "italic" }, { t("*"), i(1), t("* "), i(0) }),
-          	s({ trig = "italic", name = "italic" }, { t("*"), i(1), t("* "), i(0) }),
-          	s({ trig = "bi", name = "bold and italic" }, { t("***"), i(1), t("*** "), i(0) }),
-          	s({ trig = "bold and italic", name = "bold and italic" }, { t("***"), i(1), t("*** "), i(0) }),
-          	-- code snippets
-          	s("code", { t("`"), i(1), t("` "), i(0) }),
-          	s("codeblock", { t("```"), i(1, "language"), t({ "", "" }), i(0), t({ "", "```" }) }),
           })
         '';
     }
