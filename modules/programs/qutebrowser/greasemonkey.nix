@@ -140,6 +140,11 @@ in
           name = "github.css.js";
           text = builtins.readFile ./greasemonkey/github.css.js;
         })
+        # style for wikipedia
+        (pkgs.writeTextFile {
+          name = "wikipedia.css.js";
+          text = builtins.readFile ./greasemonkey/wikipedia.css.js;
+        })
         # style for google calendar
         (pkgs.writeTextFile {
           name = "googlecalendar.css.js";
